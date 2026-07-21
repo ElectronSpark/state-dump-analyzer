@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "router-dump-analyzer-design"
+version = "0.1.0"
+description = "Reference contracts and synthetic fixtures for a temporal router dump analyzer"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Router Dump Analyzer design team" }]
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+]
+
+[project.optional-dependencies]
+test = ["httpx>=0.27,<1"]
+
+[project.scripts]
+router-dump-demo = "router_dump_analyzer.demo_app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/router_dump_analyzer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

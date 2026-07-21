@@ -1,0 +1,41 @@
+{
+  "basis": {
+    "clock_domain": "node-a-realtime",
+    "kind": "reconstructed_time",
+    "time_ns": "1759680006000000000"
+  },
+  "destination": "203.0.113.42",
+  "egress_interfaces": [
+    "Ethernet2"
+  ],
+  "evidence": [],
+  "explanation": {
+    "children": [
+      {
+        "children": [
+          {
+            "children": [
+              {
+                "kind": "selected_entry",
+                "resource": "data-bridge-layer/ETE/etg-evpn-east/ete-srv6-p2"
+              }
+            ],
+            "kind": "encapsulation_tunnel_group",
+            "resource": "data-bridge-layer/ETG/blue/etg-evpn-east"
+          }
+        ],
+        "kind": "forwarding_group",
+        "resource": "data-bridge-layer/FORWARDING_GROUP/fg-blue-east"
+      }
+    ],
+    "kind": "correlation_chain",
+    "resource": "control-plane/EVPN_ROUTE/blue/203.0.113.0/24"
+  },
+  "matched_prefix": "203.0.113.0/24",
+  "next_hops": [
+    "fc00:0:2:100::"
+  ],
+  "provenance": "reconstructed",
+  "quality": "best_effort",
+  "vrf": "blue"
+}

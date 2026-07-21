@@ -1,0 +1,6 @@
+* text=auto
+*.sh text eol=lf
+*.tgz -text
+samples/external/ctf2-smalltrace/metadata -text
+samples/external/ctf2-smalltrace/dummystream -text
+samples/generated/** -text

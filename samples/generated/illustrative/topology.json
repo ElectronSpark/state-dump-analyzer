@@ -1,0 +1,60 @@
+{
+  "links": [
+    [
+      "ce-a",
+      "pe-a"
+    ],
+    [
+      "pe-a",
+      "p-1"
+    ],
+    [
+      "pe-a",
+      "p-2"
+    ],
+    [
+      "p-1",
+      "pe-b"
+    ],
+    [
+      "p-2",
+      "pe-b"
+    ],
+    [
+      "pe-b",
+      "ce-b"
+    ]
+  ],
+  "nodes": [
+    {
+      "id": "ce-a",
+      "role": "customer-edge"
+    },
+    {
+      "id": "pe-a",
+      "role": "provider-edge"
+    },
+    {
+      "id": "p-1",
+      "role": "provider"
+    },
+    {
+      "id": "p-2",
+      "role": "provider"
+    },
+    {
+      "id": "pe-b",
+      "role": "provider-edge"
+    },
+    {
+      "id": "ce-b",
+      "role": "customer-edge"
+    }
+  ],
+  "protocols": [
+    "IS-IS Level 2",
+    "SR-MPLS",
+    "SRv6",
+    "BGP EVPN"
+  ]
+}

@@ -1,0 +1,20 @@
+[
+  {
+    "directed": true,
+    "label": "Dependency State Change",
+    "link_type": "dependency_state_change",
+    "plugin_defined": true
+  },
+  {
+    "directed": true,
+    "label": "Forwarding Failover",
+    "link_type": "forwarding_failover",
+    "plugin_defined": true
+  },
+  {
+    "directed": true,
+    "label": "Observed Propagation",
+    "link_type": "observed_propagation",
+    "plugin_defined": true
+  }
+]

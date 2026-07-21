@@ -1,0 +1,8 @@
+name: router-dump-analyzer-demo
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip>=24
+  - pip:
+      - -e .[test]
