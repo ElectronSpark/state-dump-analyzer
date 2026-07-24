@@ -18,10 +18,19 @@ from scripts.generate_sample_bundle import (
     build_bundle,
 )
 from scripts.generate_packed_scale_bundle import PACK_ROOT, build_packed_bundle
-from scripts.generate_scale_fixtures import generate as generate_scale_fixtures
+from scripts.generate_scale_fixtures import (
+    DEFAULT_EVENT_COUNT,
+    DEFAULT_RESOURCE_COUNT,
+    _event_for_phase,
+    _layout,
+    _phase_start_ns,
+    generate as generate_scale_fixtures,
+)
+from scripts.validate_scale_archive import archive_matches
 from scripts.fetch_babeltrace_sample import FILES as CTF_FILES, fetch
 from router_dump_analyzer.demo_data import (
     configure_demo_archive,
+    configure_demo_scale,
     load_demo_dataset,
 )
 
@@ -348,7 +357,7 @@ class SampleBundleTests(unittest.TestCase):
             )
             self.assertIn(
                 (
-                    "data-bridge-layer/ETG/blue/etg-evpn-east",
+                    "data-bridge-layer/ETE/etg-evpn-east/ete-srv6-p2",
                     "data-bridge-layer/ETG/blue/etg-core-srv6",
                 ),
                 edge_pairs,
@@ -471,6 +480,9 @@ class SampleBundleTests(unittest.TestCase):
             dashboards = json.loads(
                 (illustrative / "dashboard-descriptors.json").read_text()
             )
+            resource_table_views = json.loads(
+                (illustrative / "resource-table-view-descriptors.json").read_text()
+            )
             topology = json.loads((illustrative / "topology.json").read_text())
 
             by_id = {item["resource_id"]: item for item in resources}
@@ -515,6 +527,29 @@ class SampleBundleTests(unittest.TestCase):
             self.assertTrue(all(item["plugin_defined"] for item in dashboards))
             self.assertTrue(all(item["movable"] for item in dashboards))
             self.assertEqual(
+                [item["view_id"] for item in resource_table_views],
+                ["etg-path-bundles"],
+            )
+            self.assertEqual(
+                [
+                    level["relation_types"]
+                    for level in resource_table_views[0]["levels"]
+                ],
+                [["owns"], ["next_hop"]],
+            )
+            ete_descriptor = next(item for item in descriptors if item["kind"] == "ETE")
+            self.assertEqual(
+                ete_descriptor["key_fields"],
+                ["parent_resource_id", "path_id"],
+            )
+            self.assertTrue(
+                all(
+                    set(item["key"]) == {"parent_resource_id", "path_id"}
+                    for item in resources
+                    if item["kind"] == "ETE"
+                )
+            )
+            self.assertEqual(
                 {item["relation_type"] for item in relationships},
                 {item["relation_type"] for item in relationship_descriptors},
             )
@@ -534,13 +569,28 @@ class SampleBundleTests(unittest.TestCase):
             self.assertIn("contains_ingress", {item["relation_type"] for item in fg_edges})
             self.assertIn("contains_egress", {item["relation_type"] for item in fg_edges})
 
-            for item in relationships:
-                if item["relation_type"] != "next_hop":
-                    continue
-                source_kind = by_id[item["source"]]["kind"]
-                if source_kind not in {"ETG", "DTE"}:
-                    continue
-                self.assertIn(by_id[item["target"]]["kind"], {"ETG", "IP_ROUTING"})
+            next_hop_edges = [
+                item for item in relationships if item["relation_type"] == "next_hop"
+            ]
+            self.assertTrue(next_hop_edges)
+            self.assertTrue(
+                all(
+                    by_id[item["source"]]["kind"] in {"ETE", "DTE"}
+                    for item in next_hop_edges
+                )
+            )
+            self.assertFalse(
+                any(
+                    by_id[item["source"]]["kind"] == "ETG"
+                    for item in next_hop_edges
+                )
+            )
+            self.assertTrue(
+                all(
+                    by_id[item["target"]]["kind"] in {"ETG", "IP_ROUTING"}
+                    for item in next_hop_edges
+                )
+            )
 
             def active(item: dict[str, object], timestamp: int) -> bool:
                 start = item.get("valid_from_ns")
@@ -578,6 +628,20 @@ class SampleBundleTests(unittest.TestCase):
                         1,
                         f"{etg_id} has no active ETE at {timestamp}",
                     )
+                    for ete_id in entries:
+                        next_hops = {
+                            item["target"]
+                            for item in relationships
+                            if item["source"] == ete_id
+                            and item["relation_type"] == "next_hop"
+                            and active(item, timestamp)
+                            and item["target"] in active_resources
+                        }
+                        self.assertGreaterEqual(
+                            len(next_hops),
+                            1,
+                            f"{ete_id} has no active next hop at {timestamp}",
+                        )
 
     def test_control_fixture_has_typed_protobuf_json_and_layer_events(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -612,6 +676,8 @@ class SampleBundleTests(unittest.TestCase):
             self.assertEqual({event["layer"] for event in events}, {"control-plane"})
 
     def test_scale_fixture_counts_and_hashes_are_deterministic(self) -> None:
+        self.assertGreater(DEFAULT_EVENT_COUNT, 100_000)
+        self.assertEqual(DEFAULT_RESOURCE_COUNT, 10_000)
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
             manifest_path = generate_scale_fixtures(output, 250, 125)
@@ -630,7 +696,7 @@ class SampleBundleTests(unittest.TestCase):
                 manifest["scenario_id"],
                 "evpn-multihome-mass-failover-v2",
             )
-            self.assertEqual(manifest["generator_version"], 2)
+            self.assertEqual(manifest["generator_version"], 7)
 
             scenario = json.loads((output / "scenario.json").read_text())
             walkthrough = json.loads((output / "walkthrough.json").read_text())
@@ -673,6 +739,7 @@ class SampleBundleTests(unittest.TestCase):
                     "ETG",
                     "EVPN_ES",
                     "IP_ROUTING",
+                    "NEIGHBOR",
                     "VIRTUAL_INTERFACE",
                 },
             )
@@ -682,6 +749,55 @@ class SampleBundleTests(unittest.TestCase):
             )
             self.assertEqual(plugin_schema["semantic_owner"], "plugin")
             self.assertFalse(plugin_schema["core_interprets_domain_types"])
+            self.assertFalse(
+                plugin_schema["projection_capabilities"]["route_resolution"][
+                    "available"
+                ]
+            )
+            self.assertFalse(
+                plugin_schema["projection_capabilities"]["underlay_topology"][
+                    "available"
+                ]
+            )
+            self.assertEqual(
+                {item["dashboard_id"] for item in plugin_schema["dashboards"]},
+                {"neighbor-health"},
+            )
+            self.assertEqual(
+                {item["lane_id"] for item in plugin_schema["record_lane_presets"]},
+                {"scale-neighbor-signals"},
+            )
+            self.assertTrue(plugin_schema["consistency_rules"])
+            self.assertTrue(
+                all(
+                    "Forwarding Group" not in prompt and "Glue" not in prompt
+                    for prompt in plugin_schema["review_prompts"]
+                )
+            )
+            self.assertEqual(
+                [view["view_id"] for view in plugin_schema["resource_table_views"]],
+                ["etg-path-bundles", "interface-neighbor-bundles"],
+            )
+            ete_kind = next(
+                item
+                for item in plugin_schema["resource_kinds"]
+                if item["kind"] == "ETE"
+            )
+            self.assertEqual(
+                ete_kind["key_fields"],
+                ["parent_resource_id", "path_id"],
+            )
+            ete_next_hops = [
+                item
+                for item in relationships
+                if item["type"] == "next_hop"
+                and "/ETE/" in item["source"]
+            ]
+            self.assertEqual(
+                len(ete_next_hops),
+                scenario["resource_counts"]["ETE_PRIMARY"]
+                + scenario["resource_counts"]["ETE_BACKUP"],
+            )
 
             create_event = next(
                 event
@@ -690,7 +806,7 @@ class SampleBundleTests(unittest.TestCase):
             )
             self.assertEqual(
                 {effect["kind"] for effect in create_event["effects"]},
-                {"ETG", "ETE", "DTE"},
+                {"ETG", "ETE", "DTE", "VIRTUAL_INTERFACE", "NEIGHBOR"},
             )
             multihome_event = next(
                 event
@@ -705,6 +821,29 @@ class SampleBundleTests(unittest.TestCase):
                 multihome_event["properties"]["home_mode"],
                 "all-active",
             )
+            created_vif = next(
+                effect
+                for effect in create_event["effects"]
+                if effect["kind"] == "VIRTUAL_INTERFACE"
+            )
+            self.assertEqual(created_vif["after"]["home_mode"], "single-home")
+            self.assertEqual(created_vif["after"]["neighbor_count"], 1)
+            self.assertEqual(created_vif["after"]["es_id"], "")
+            multihome_vif = next(
+                effect
+                for effect in multihome_event["effects"]
+                if effect["kind"] == "VIRTUAL_INTERFACE"
+            )
+            self.assertEqual(multihome_vif["effect_type"], "modify")
+            self.assertEqual(multihome_vif["after"]["home_mode"], "all-active")
+            self.assertTrue(multihome_vif["after"]["es_id"])
+            self.assertIn(
+                ("uses_interface", "add"),
+                {
+                    (effect["type"], effect["operation"])
+                    for effect in multihome_event["relationship_effects"]
+                },
+            )
             event_names = {event["event_name"] for event in events}
             self.assertTrue(
                 {
@@ -714,6 +853,51 @@ class SampleBundleTests(unittest.TestCase):
                     "evpn_mass_service_restore",
                     "dte_next_hop_dependency_change",
                 }.issubset(event_names)
+            )
+            self.assertFalse(any(event["action"] == "observe" for event in events))
+            self.assertTrue(
+                all(
+                    event["state_changed"]
+                    or event["outcome"] == "failure"
+                    for event in events
+                )
+            )
+            self.assertEqual(
+                sum(
+                    event["event_name"] == "evpn_single_home_service_create"
+                    for event in events
+                ),
+                scenario["single_home_services"],
+            )
+            self.assertEqual(
+                sum(event["state_changed"] for event in events),
+                scenario["expected_changes"]["state_change_events"],
+            )
+            generation_changes = [
+                event
+                for event in events
+                if "generation_after" in event["properties"]
+            ]
+            self.assertTrue(generation_changes)
+            self.assertEqual(
+                len(generation_changes),
+                len(
+                    {
+                        (
+                            event["resource_id"],
+                            event["phase"],
+                            event["properties"]["generation_after"],
+                        )
+                        for event in generation_changes
+                    }
+                ),
+            )
+            self.assertTrue(
+                all(
+                    event["properties"]["generation_before"]
+                    != event["properties"]["generation_after"]
+                    for event in generation_changes
+                )
             )
 
             failover = next(
@@ -780,6 +964,27 @@ class SampleBundleTests(unittest.TestCase):
             self.assertEqual(failed_churn["effects"], [])
             self.assertEqual(failed_churn["relationship_effects"], [])
             self.assertEqual(
+                sum(event["outcome"] == "failure" for event in events),
+                scenario["expected_changes"]["failed_next_hop_changes"],
+            )
+            successful_churn = [
+                event
+                for event in events
+                if event["phase"] == "next_hop_churn"
+                and event["outcome"] == "success"
+            ]
+            self.assertEqual(
+                len(successful_churn),
+                scenario["expected_changes"]["post_restore_next_hop_changes"],
+            )
+            self.assertTrue(
+                all(
+                    event["properties"]["next_hop_before"]
+                    != event["properties"]["next_hop_after"]
+                    for event in successful_churn
+                )
+            )
+            self.assertEqual(
                 {mutation["relation_type"] for mutation in mutations},
                 {"active_path", "next_hop", "selected_egress", "uses_interface"},
             )
@@ -789,6 +994,10 @@ class SampleBundleTests(unittest.TestCase):
             )
 
             service = walkthrough["services"][0]
+            self.assertEqual(
+                walkthrough["initial_focus_resource_id"],
+                service["resource_ids"]["etg"],
+            )
             states = service["states"]
             self.assertEqual([state["phase"] for state in states], phase_order)
             primary = service["resource_ids"]["primary_ete"]
@@ -826,6 +1035,320 @@ class SampleBundleTests(unittest.TestCase):
             first_relationship = relationships[0]
             self.assertIsInstance(first_event["timestamp_ns"], str)
             self.assertIsInstance(first_relationship["valid_from_ns"], str)
+
+    def test_scale_neighbor_resources_are_plugin_owned_temporal_bundles(
+        self,
+    ) -> None:
+        default_layout = _layout(DEFAULT_RESOURCE_COUNT)
+        self.assertEqual(sum(default_layout.resource_counts.values()), 10_000)
+        self.assertEqual(default_layout.neighbor_count, 500)
+        self.assertEqual(default_layout.vif_count, 499)
+
+        first_event = _event_for_phase(
+            "single_home_create",
+            0,
+            0,
+            _phase_start_ns("single_home_create"),
+            default_layout,
+        )
+        extra_neighbor_event = _event_for_phase(
+            "single_home_create",
+            default_layout.vif_count,
+            default_layout.vif_count,
+            _phase_start_ns("single_home_create") + default_layout.vif_count,
+            default_layout,
+        )
+        multihome_event = _event_for_phase(
+            "multihome_add",
+            0,
+            0,
+            _phase_start_ns("multihome_add"),
+            default_layout,
+        )
+        first_vif = next(
+            effect
+            for effect in first_event["effects"]
+            if effect["kind"] == "VIRTUAL_INTERFACE"
+        )
+        extra_vif = next(
+            effect
+            for effect in extra_neighbor_event["effects"]
+            if effect["kind"] == "VIRTUAL_INTERFACE"
+        )
+        multihome_vif = next(
+            effect
+            for effect in multihome_event["effects"]
+            if effect["kind"] == "VIRTUAL_INTERFACE"
+        )
+        self.assertEqual(first_vif["effect_type"], "create")
+        self.assertEqual(first_vif["after"]["home_mode"], "single-home")
+        self.assertEqual(first_vif["after"]["neighbor_count"], 1)
+        self.assertEqual(extra_vif["resource_id"], first_vif["resource_id"])
+        self.assertEqual(extra_vif["effect_type"], "modify")
+        self.assertEqual(extra_vif["after"]["home_mode"], "single-home")
+        self.assertEqual(extra_vif["after"]["neighbor_count"], 2)
+        self.assertEqual(multihome_vif["resource_id"], first_vif["resource_id"])
+        self.assertEqual(multihome_vif["after"]["home_mode"], "all-active")
+        self.assertEqual(multihome_vif["after"]["neighbor_count"], 2)
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            generate_scale_fixtures(output, 250, 125)
+            scenario = json.loads((output / "scenario.json").read_text())
+            schema = json.loads((output / "plugin-schema.json").read_text())
+            events = [
+                json.loads(line)
+                for line in (output / "events.jsonl").read_text().splitlines()
+            ]
+            relationships = [
+                json.loads(line)
+                for line in (output / "relationships.jsonl").read_text().splitlines()
+            ]
+            table_lines = (output / "resources.table.txt").read_text().splitlines()
+            header = table_lines[0].split("|")
+            records = [
+                dict(zip(header, line.split("|"), strict=True))
+                for line in table_lines[1:]
+            ]
+
+            self.assertEqual(len(records), 125)
+            self.assertEqual(sum(scenario["resource_counts"].values()), 125)
+            neighbor_rows = [item for item in records if item["KIND"] == "NEIGHBOR"]
+            vif_rows = [
+                item for item in records if item["KIND"] == "VIRTUAL_INTERFACE"
+            ]
+            self.assertEqual(
+                len(neighbor_rows),
+                scenario["resource_counts"]["NEIGHBOR"],
+            )
+            self.assertTrue(neighbor_rows)
+            self.assertTrue(vif_rows)
+            self.assertTrue(all(not item["NEIGHBOR"] for item in vif_rows))
+
+            first_neighbor = neighbor_rows[0]
+            key = json.loads(first_neighbor["KEY_JSON"])
+            state = json.loads(first_neighbor["STATE_JSON"])
+            self.assertEqual(key["local_interface_id"]["type"], "resource_id")
+            self.assertIn(
+                key["peer_identity"]["type"],
+                {"mac_address", "isis_system_id", "ipv4_address", "ipv6_address"},
+            )
+            self.assertEqual(key["protocol"]["type"], "enum")
+            self.assertEqual(state["status"], "up")
+            self.assertEqual(state["reachability"], "reachable")
+            self.assertTrue(state["peer_name"])
+            self.assertTrue(state["peer_address"])
+            self.assertTrue(state["member_interface"])
+            self.assertIn(state["protocol"], {"LLDP", "IS-IS", "ARP", "IPv6-ND"})
+            self.assertIn(state["member_interface"], state["resolution_basis"])
+            self.assertEqual(state["source"], "synthetic_plugin.neighbor_resolver")
+
+            vif_descriptor = next(
+                item
+                for item in schema["resource_kinds"]
+                if item["kind"] == "VIRTUAL_INTERFACE"
+            )
+            self.assertEqual(vif_descriptor["key_fields"], ["vrf", "interface_name"])
+            self.assertTrue(
+                all(
+                    set(json.loads(item["KEY_JSON"])) == {"vrf", "interface_name"}
+                    for item in vif_rows
+                )
+            )
+
+            neighbor_descriptor = next(
+                item
+                for item in schema["resource_kinds"]
+                if item["kind"] == "NEIGHBOR"
+            )
+            self.assertEqual(
+                neighbor_descriptor["key_fields"],
+                ["local_interface_id", "protocol", "peer_identity"],
+            )
+            self.assertEqual(neighbor_descriptor["condition_field"], "status")
+            self.assertTrue(neighbor_descriptor["label"])
+            self.assertTrue(neighbor_descriptor["properties"])
+            self.assertTrue(neighbor_descriptor["presentation_tags"])
+            self.assertTrue(neighbor_descriptor["icon"]["path"])
+            self.assertIn(
+                "resolution_basis",
+                neighbor_descriptor["default_table_fields"],
+            )
+
+            neighbor_relation = next(
+                item
+                for item in schema["relationship_types"]
+                if item["relation_type"] == "has_neighbor"
+            )
+            self.assertTrue(neighbor_relation["directed"])
+            self.assertTrue(neighbor_relation["structural"])
+            neighbor_edges = [
+                item for item in relationships if item["type"] == "has_neighbor"
+            ]
+            self.assertEqual(len(neighbor_edges), len(neighbor_rows))
+            self.assertEqual(
+                {item["target"] for item in neighbor_edges},
+                {item["RESOURCE_ID"] for item in neighbor_rows},
+            )
+            self.assertTrue(
+                all("/VIRTUAL_INTERFACE/" in item["source"] for item in neighbor_edges)
+            )
+
+            vif_attachment_event = next(
+                event
+                for event in events
+                if event["phase"] == "multihome_add"
+                and any(
+                    effect["kind"] == "VIRTUAL_INTERFACE"
+                    and effect["resource_id"].endswith("/ae-00001")
+                    for effect in event["effects"]
+                )
+            )
+            vif_attachment = next(
+                item
+                for item in relationships
+                if item["type"] == "uses_interface"
+                and item["target"].endswith("/ae-00001")
+                and item["phase"] == "multihome_add"
+            )
+            self.assertEqual(
+                vif_attachment["valid_from_ns"],
+                vif_attachment_event["timestamp_ns"],
+            )
+
+            view = next(
+                item
+                for item in schema["resource_table_views"]
+                if item["view_id"] == "interface-neighbor-bundles"
+            )
+            self.assertEqual(view["root_kinds"], ["VIRTUAL_INTERFACE"])
+            self.assertEqual(view["levels"][0]["target_kinds"], ["NEIGHBOR"])
+            self.assertEqual(view["levels"][0]["relation_types"], ["has_neighbor"])
+            self.assertEqual(view["levels"][0]["direction"], "outgoing")
+            self.assertEqual(view["default_expanded_depth"], 1)
+            self.assertGreater(view["max_roots"], 0)
+            self.assertGreater(view["max_children_per_node"], 0)
+            self.assertIn(
+                "state.resolution_basis",
+                {item["field"] for item in view["columns"]},
+            )
+
+            neighbor_effects = [
+                (event, effect)
+                for event in events
+                for effect in event["effects"]
+                if effect["kind"] == "NEIGHBOR"
+            ]
+            self.assertTrue(
+                any(effect["effect_type"] == "create" for _event, effect in neighbor_effects)
+            )
+            self.assertTrue(
+                any(
+                    effect["after"]["reachability"] == "unreachable"
+                    for _event, effect in neighbor_effects
+                )
+            )
+            self.assertTrue(
+                any(
+                    event["phase"] == "mass_es_restore"
+                    and effect["after"]["reachability"] == "reachable"
+                    for event, effect in neighbor_effects
+                )
+            )
+
+    def test_scale_create_effects_preserve_etg_and_ete_forwarding_state(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            generate_scale_fixtures(output, 250, 125)
+            events = [
+                json.loads(line)
+                for line in (output / "events.jsonl").read_bytes().splitlines()
+            ]
+
+            create = next(
+                event
+                for event in events
+                if event["event_name"] == "evpn_single_home_service_create"
+            )
+            etg = next(
+                effect for effect in create["effects"] if effect["kind"] == "ETG"
+            )
+            primary = next(
+                effect for effect in create["effects"] if effect["kind"] == "ETE"
+            )
+            multihome = next(
+                event
+                for event in events
+                if event["event_name"] == "evpn_multihome_attachment_add"
+                and any(
+                    effect["resource_id"].endswith("/backup")
+                    for effect in event["effects"]
+                )
+            )
+            backup = next(
+                effect
+                for effect in multihome["effects"]
+                if effect["resource_id"].endswith("/backup")
+            )
+
+            self.assertEqual(
+                etg["after"]["overlay_destination"],
+                create["properties"]["overlay_destination"],
+            )
+            self.assertEqual(
+                etg["after"]["encapsulation"],
+                create["properties"]["encapsulation"],
+            )
+            self.assertEqual(
+                primary["after"]["encapsulation"],
+                create["properties"]["encapsulation"],
+            )
+            self.assertEqual(
+                backup["after"]["encapsulation"]["transport_label"],
+                primary["after"]["encapsulation"]["transport_label"] + 1,
+            )
+
+            tracked_ids = {
+                etg["resource_id"],
+                primary["resource_id"],
+                backup["resource_id"],
+            }
+            folded: dict[str, dict[str, object]] = {
+                identifier: {} for identifier in tracked_ids
+            }
+            histories: dict[str, list[dict[str, object]]] = {
+                identifier: [] for identifier in tracked_ids
+            }
+            for event in events:
+                if event["outcome"] == "failure":
+                    continue
+                for effect in event["effects"]:
+                    identifier = effect["resource_id"]
+                    if identifier not in folded or not effect["state_changed"]:
+                        continue
+                    folded[identifier].update(effect.get("after") or {})
+                    histories[identifier].append(dict(folded[identifier]))
+
+            self.assertTrue(histories[etg["resource_id"]])
+            self.assertTrue(
+                all(
+                    state["overlay_destination"]
+                    == etg["after"]["overlay_destination"]
+                    and state["encapsulation"] == etg["after"]["encapsulation"]
+                    for state in histories[etg["resource_id"]]
+                )
+            )
+            for effect in (primary, backup):
+                self.assertTrue(histories[effect["resource_id"]])
+                self.assertTrue(
+                    all(
+                        state["encapsulation"]
+                        == effect["after"]["encapsulation"]
+                        for state in histories[effect["resource_id"]]
+                    )
+                )
 
     def test_packed_scale_bundle_has_ctf_status_variants_and_demo_projection(
         self,
@@ -956,6 +1479,23 @@ class SampleBundleTests(unittest.TestCase):
                             "event_records"
                         ]
 
+            self.assertTrue(
+                archive_matches(
+                    packed,
+                    minimum_events=250,
+                    resource_count=125,
+                    minimum_generator_version=4,
+                )
+            )
+            self.assertFalse(
+                archive_matches(
+                    packed,
+                    minimum_events=251,
+                    resource_count=125,
+                    minimum_generator_version=4,
+                )
+            )
+
             self.assertEqual(resource_total, 125)
             self.assertEqual(event_total, 250)
             self.assertIn(1, table_counts)
@@ -978,12 +1518,82 @@ class SampleBundleTests(unittest.TestCase):
             finally:
                 configure_demo_archive(None)
 
+            configure_demo_archive(packed)
+            configure_demo_scale(True)
+            try:
+                scale_dataset = load_demo_dataset()
+                self.assertTrue(scale_dataset["demo"]["scale_mode"])
+                self.assertEqual(scale_dataset["routes"], {})
+                self.assertEqual(scale_dataset["route_scenarios"], [])
+                self.assertFalse(
+                    scale_dataset["projection_capabilities"]["route_resolution"][
+                        "available"
+                    ]
+                )
+                self.assertFalse(
+                    scale_dataset["projection_capabilities"]["underlay_topology"][
+                        "available"
+                    ]
+                )
+                self.assertIn(
+                    "neighbor-health",
+                    {
+                        item["dashboard_id"]
+                        for item in scale_dataset["dashboard_descriptors"]
+                    },
+                )
+                self.assertIn(
+                    "scale-neighbor-signals",
+                    {
+                        item["lane_id"]
+                        for item in scale_dataset["record_lane_presets"]
+                    },
+                )
+                self.assertIn(
+                    "scale.neighbor.restore-reachability.v1",
+                    {
+                        item["rule_id"]
+                        for item in scale_dataset["schema"]["consistency_rules"]
+                    },
+                )
+                self.assertIn(
+                    "scale-neighbor-restore",
+                    {item["finding_id"] for item in scale_dataset["findings"]},
+                )
+                self.assertTrue(
+                    any(
+                        "/NEIGHBOR/" in item
+                        for item in scale_dataset["demo"]["initial_resource_ids"]
+                    )
+                )
+                self.assertTrue(
+                    all(
+                        "Forwarding Group" not in prompt and "Glue" not in prompt
+                        for prompt in scale_dataset["review_prompts"]
+                    )
+                )
+            finally:
+                configure_demo_scale(False)
+                configure_demo_archive(None)
+
             launch_script = (ROOT / "scripts" / "launch_demo.ps1").read_text(
                 encoding="utf-8"
             )
             self.assertIn("router-state-lab-100k.tgz", launch_script)
             self.assertIn("--fixture-archive", launch_script)
             self.assertIn("generate_packed_scale_bundle.py", launch_script)
+            self.assertIn("generator_version", launch_script)
+            self.assertIn("validate_scale_archive.py", launch_script)
+            self.assertIn("$MatchedEventTarget = 125000", launch_script)
+            self.assertIn("$ResourceTarget = 10000", launch_script)
+            self.assertNotIn("Start-Process", launch_script)
+
+            shell_launch_script = (
+                ROOT / "scripts" / "launch_demo.sh"
+            ).read_text(encoding="utf-8")
+            self.assertIn("matched_event_target=125000", shell_launch_script)
+            self.assertIn("resource_target=10000", shell_launch_script)
+            self.assertIn("validate_scale_archive.py", shell_launch_script)
 
     def test_scale_generator_refuses_unowned_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

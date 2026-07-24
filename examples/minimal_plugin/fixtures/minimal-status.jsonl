@@ -1,0 +1,2 @@
+{"kind":"interface","captured_at_ns":1759680000000000000,"ifindex":7,"name":"xe-0/0/0","admin_status":"up","oper_status":"up","description":"core uplink"}
+{"kind":"interface","captured_at_ns":1759680000001000000,"ifindex":8,"name":"xe-0/0/1","admin_status":"up","oper_status":"down","description":"peer link"}

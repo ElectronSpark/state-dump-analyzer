@@ -22,6 +22,9 @@
         24
       ]
     },
+    "key_fields": [
+      "id"
+    ],
     "kind": "DTE",
     "plugin_defined": true,
     "presentation_tags": []
@@ -49,6 +52,10 @@
         24
       ]
     },
+    "key_fields": [
+      "parent_resource_id",
+      "path_id"
+    ],
     "kind": "ETE",
     "plugin_defined": true,
     "presentation_tags": []
@@ -76,6 +83,10 @@
         24
       ]
     },
+    "key_fields": [
+      "vrf",
+      "id"
+    ],
     "kind": "ETG",
     "plugin_defined": true,
     "presentation_tags": []
@@ -103,6 +114,11 @@
         24
       ]
     },
+    "key_fields": [
+      "vrf",
+      "nlri",
+      "mac"
+    ],
     "kind": "EVPN_ROUTE",
     "plugin_defined": true,
     "presentation_tags": []
@@ -130,6 +146,9 @@
         24
       ]
     },
+    "key_fields": [
+      "id"
+    ],
     "kind": "FORWARDING_GROUP",
     "plugin_defined": true,
     "presentation_tags": []
@@ -156,6 +175,9 @@
         24
       ]
     },
+    "key_fields": [
+      "id"
+    ],
     "kind": "GLUE",
     "plugin_defined": true,
     "presentation_tags": [
@@ -186,6 +208,10 @@
         24
       ]
     },
+    "key_fields": [
+      "vrf",
+      "afi"
+    ],
     "kind": "IP_ROUTING",
     "plugin_defined": true,
     "presentation_tags": []
@@ -213,6 +239,10 @@
         24
       ]
     },
+    "key_fields": [
+      "local",
+      "remote"
+    ],
     "kind": "ISIS_ADJACENCY",
     "plugin_defined": true,
     "presentation_tags": []
@@ -240,6 +270,9 @@
         24
       ]
     },
+    "key_fields": [
+      "label"
+    ],
     "kind": "MPLS_LABEL_ENTRY",
     "plugin_defined": true,
     "presentation_tags": []
@@ -267,6 +300,10 @@
         24
       ]
     },
+    "key_fields": [
+      "node",
+      "label"
+    ],
     "kind": "MPLS_PREFIX_SID",
     "plugin_defined": true,
     "presentation_tags": []
@@ -294,6 +331,9 @@
         24
       ]
     },
+    "key_fields": [
+      "name"
+    ],
     "kind": "PHYSICAL_INTERFACE",
     "plugin_defined": true,
     "presentation_tags": []
@@ -321,6 +361,9 @@
         24
       ]
     },
+    "key_fields": [
+      "sid"
+    ],
     "kind": "SRV6_LOCAL_SID",
     "plugin_defined": true,
     "presentation_tags": []
@@ -348,6 +391,10 @@
         24
       ]
     },
+    "key_fields": [
+      "node",
+      "prefix"
+    ],
     "kind": "SRV6_LOCATOR",
     "plugin_defined": true,
     "presentation_tags": []
@@ -375,6 +422,9 @@
         24
       ]
     },
+    "key_fields": [
+      "id"
+    ],
     "kind": "VIRTUAL_INTERFACE",
     "plugin_defined": true,
     "presentation_tags": []
@@ -402,6 +452,9 @@
         24
       ]
     },
+    "key_fields": [
+      "name"
+    ],
     "kind": "VRF",
     "plugin_defined": true,
     "presentation_tags": []

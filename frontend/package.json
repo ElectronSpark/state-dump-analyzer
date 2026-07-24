@@ -1,0 +1,13 @@
+{
+  "name": "router-state-lab-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "check": "node scripts/check.mjs",
+    "serve": "node scripts/dev-server.mjs"
+  }
+}

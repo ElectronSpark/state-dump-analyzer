@@ -19,7 +19,7 @@
   "reconstruction": {
     "ambiguous": 0,
     "best_effort": 4,
-    "exact": 64,
+    "exact": 65,
     "unknown": 1
   },
   "resource_counts": {

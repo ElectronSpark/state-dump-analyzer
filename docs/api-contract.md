@@ -21,8 +21,10 @@ translated directly into Pydantic models/OpenAPI components.
   `best_effort`, `ambiguous`, or `unknown`.
 - Missing, explicit `null`, known removal, and unknown values are distinct. An
   unknown field is listed in `unknown_fields` and omitted from `properties`.
-- Page cursors and cluster IDs are opaque, revision/query-bound strings. Clients
-  must not parse them.
+- Page cursors and any cluster IDs are opaque, revision/query-bound strings.
+  Clients must not parse them. The runnable demo's cluster-detail request uses
+  the returned canonical lane resource and exact cluster time envelope as its
+  expansion handle; it does not require the client to parse `cluster_id`.
 
 ## 2. Time basis
 
@@ -71,6 +73,102 @@ Reconstructed time:
 The server rejects an observed request if the caller demands one simultaneous
 instant but the relevant capture ranges do not overlap.
 
+External topology and state consumers may instead provide an explicit temporal
+selector. An absolute selector is:
+
+```json
+{
+  "kind": "absolute_time",
+  "time_ns": "1759680005000000000",
+  "clock_domain": "utc",
+  "clock_policy": "strict"
+}
+```
+
+The server maps that instant into every selected node independently. The
+resolved `WorldBasis` echoes the selector and includes one result per node:
+
+```json
+{
+  "kind": "absolute_time",
+  "requested_time_ns": "1759680005000000000",
+  "resolved_at_min_ns": "1759680004998000000",
+  "resolved_at_max_ns": "1759680005002000000",
+  "clock_domain": "utc",
+  "selector": {
+    "kind": "absolute_time",
+    "time_ns": "1759680005000000000",
+    "clock_domain": "utc",
+    "clock_policy": "strict"
+  },
+  "node_resolutions": [
+    {
+      "node_id": "node-a",
+      "local_clock_domain": "node-a-monotonic",
+      "local_min_ns": "812345009000",
+      "local_max_ns": "812345013000",
+      "absolute_min_ns": "1759680004998000000",
+      "absolute_max_ns": "1759680005002000000",
+      "mapping_method": "piecewise_clock_anchors",
+      "quality": "best_effort",
+      "reason_code": null,
+      "evidence_ids": ["clock-anchor-a-19"]
+    },
+    {
+      "node_id": "node-b",
+      "local_clock_domain": null,
+      "local_min_ns": null,
+      "local_max_ns": null,
+      "absolute_min_ns": null,
+      "absolute_max_ns": null,
+      "mapping_method": null,
+      "quality": "unknown",
+      "reason_code": "clock_unaligned",
+      "evidence_ids": []
+    }
+  ],
+  "provenance": "reconstructed",
+  "quality": "unknown"
+}
+```
+
+A relative selector is anchored to the latest complete status watermark for one
+exact scope:
+
+```json
+{
+  "kind": "relative_to_watermark",
+  "offset_ns": "-5000000000",
+  "scope": {
+    "node_id": "node-a",
+    "status_perspective_id": "hardware-observed",
+    "topology_projection_id": "underlay-connectivity"
+  },
+  "clock_policy": "strict"
+}
+```
+
+`offset_ns` is zero or negative. The anchor is not the greatest event timestamp;
+it is the latest complete `ReconstructionWatermark` for exactly the requested
+node, status perspective, and optional topology projection. Cross-node relative
+queries return `kind: "relative_capture_vector"` because each node has its own
+anchor. They do not claim a simultaneous absolute instant.
+
+A relative result may contain exact local bounds and `null` absolute bounds.
+That node is still locally reconstructable; lack of a wall-clock transform only
+prevents treating it as part of a simultaneous absolute snapshot. Absolute
+selectors accept only clock domains advertised by provider discovery; an
+unknown domain returns `422`.
+
+Under `strict` policy, raw timestamps from different clock domains are never
+compared directly. A missing transform returns a per-node `clock_unaligned`
+result and unknown state. If the mapped uncertainty interval crosses a state or
+relationship transition, all supported alternatives are returned with
+`quality: "ambiguous"`; the server does not choose one endpoint. `best_effort`
+may use a recorded assumption, but it must expose the mapping method, evidence,
+and degraded quality. No policy silently substitutes another timestamp, node,
+status perspective, or topology projection.
+
 ## 3. State query
 
 Request:
@@ -83,6 +181,7 @@ Content-Type: application/json
 ```json
 {
   "basis": {"kind": "reconstructed_time", "time_ns": "1759680003015000000"},
+  "status_perspective_id": "hardware-observed",
   "resource_ids": ["res-route-1", "res-ete-b"],
   "include_relationships": true,
   "relation_types": ["depends_on", "references"],
@@ -96,6 +195,8 @@ Response:
 ```json
 {
   "revision_id": "rev-01",
+  "absolute_clock_domains": ["utc"],
+  "status_perspective_id": "hardware-observed",
   "basis": {
     "kind": "reconstructed_time",
     "requested_time_ns": "1759680003015000000",
@@ -113,7 +214,10 @@ Response:
         "node": "node-a",
         "layer": "data-bridge-layer",
         "kind": "ETE",
-        "parts": [["etg", {"type": "string", "value": "etg-100"}], ["id", {"type": "string", "value": "ete-b"}]]
+        "parts": [
+          ["parent_resource_id", {"type": "uuid", "value": "123e4567-e89b-12d3-a456-426614174000"}],
+          ["path_id", {"type": "uint64", "value": "7"}]
+        ]
       },
       "exists": true,
       "properties": {"neighbor": "198.51.100.0"},
@@ -146,7 +250,345 @@ Response:
 }
 ```
 
-## 4. Route resolution
+The same endpoint accepts an absolute or relative selector from section 2 and
+returns the resolved basis, including all per-node mappings. Resource rows use
+the generic envelope regardless of plugin kind: canonical typed key, tri-state
+`exists`, plugin properties, field-level unknowns, validity/capture ranges,
+provenance, quality, and evidence. Relationship rows are the same time-valid
+typed edges used by graph and topology projections.
+
+`status_perspective_id` selects one declared independent layer-local view. The
+server returns `422` for an undeclared perspective. When that perspective lacks
+status for an otherwise known resource, the row remains present with unknown
+status; the server neither borrows another perspective nor removes the resource.
+
+## 4. Topology providers, snapshots, and changes
+
+Provider discovery is revision-scoped:
+
+```http
+GET /v1/revisions/rev-01/topology/providers
+```
+
+```json
+{
+  "revision_id": "rev-01",
+  "status_perspectives": [
+    {
+      "perspective_id": "control-intended",
+      "label": "Control-plane intent",
+      "layer_id": "control-plane",
+      "role": "intended"
+    },
+    {
+      "perspective_id": "hardware-observed",
+      "label": "Observed hardware",
+      "layer_id": "hardware-driver-plane",
+      "role": "observed"
+    }
+  ],
+  "topology_projections": [
+    {
+      "projection_id": "underlay-connectivity",
+      "label": "Underlay connectivity",
+      "supported_status_perspective_ids": [
+        "control-intended",
+        "hardware-observed"
+      ],
+      "default_status_perspective_id": "hardware-observed",
+      "status_source_combination_policy": "all_required_usable"
+    }
+  ]
+}
+```
+
+Topology and status are selected independently:
+
+```http
+POST /v1/revisions/rev-01/topology/query
+Content-Type: application/json
+```
+
+```json
+{
+  "basis": {
+    "kind": "absolute_time",
+    "time_ns": "1759680005000000000",
+    "clock_domain": "utc",
+    "clock_policy": "strict"
+  },
+  "node_ids": ["node-a", "node-b"],
+  "topology_projection_id": "underlay-connectivity",
+  "status_perspective_id": "hardware-observed",
+  "include_resources": true,
+  "include_relationships": true,
+  "page_size": 500,
+  "cursor": null
+}
+```
+
+The response contains the resolved `basis`, selected descriptor IDs, generic
+`resources` and `relationships` from the state contract, plus plugin-inferred
+projection records. Each record has a discriminated resource, endpoint, or link
+payload and `usability` (`usable`, `unusable`, `degraded`, or `unknown`), source
+resource IDs, properties/unknowns, validity, provenance, quality, and evidence.
+Endpoint references contain exactly one canonical resource or declarative match.
+Matching targets carry a namespaced plugin matcher ID, typed arguments, and the
+plugin-resolved candidate set; the core does not interpret proprietary matching
+semantics.
+
+```json
+{
+  "revision_id": "rev-01",
+  "topology_projection_id": "underlay-connectivity",
+  "status_perspective_id": "hardware-observed",
+  "basis": {"kind": "absolute_time", "node_resolutions": []},
+  "resources": [],
+  "relationships": [],
+  "projection_records": [
+    {
+      "projection_id": "underlay-connectivity",
+      "status_perspective_id": "hardware-observed",
+      "payload": {
+        "kind": "link",
+        "link_id": "topo-link-17",
+        "source": {
+          "kind": "exact_resource",
+          "resource_id": "res-node-a-eth2"
+        },
+        "target": {
+          "kind": "match",
+          "matcher_id": "synthetic.peer-by-system-id",
+          "arguments": {"system_id": "0000.0000.0002"},
+          "resolved_candidate_resource_ids": ["res-node-b-eth7"]
+        },
+        "directed": false
+      },
+      "usability": "unknown",
+      "exists": true,
+      "source_resource_ids": ["res-node-a-eth2"],
+      "properties": {},
+      "unknown_fields": [
+        {
+          "name": "usability",
+          "reason_code": "selected_perspective_status_missing",
+          "evidence_ids": []
+        }
+      ],
+      "valid_from_ns": "1759680003000000000",
+      "valid_to_ns": null,
+      "provenance": "correlated",
+      "quality": "unknown",
+      "evidence_ids": ["ev-peer-match-17"]
+    }
+  ],
+  "complete": false,
+  "next_cursor": null,
+  "truncated": false
+}
+```
+
+Topology identity and operational status are distinct. Switching from
+`control-intended` to `hardware-observed` may change usability without changing
+node, port, or link identities. Missing selected-perspective status produces
+unknown usability. The server never treats a generic `depends_on` edge as a link
+unless the selected plugin projection emitted it as connectivity, and it never
+uses a descriptor's display default after the caller explicitly selected a
+perspective.
+
+Topology existence is also tri-state and independent from usability. A clock
+window that crosses relationship creation/removal returns a possible record
+with `exists: null`, supported presence alternatives, and unknown or ambiguous
+usability; clients must not count it as a definite link.
+
+Historical replay is also available:
+
+```http
+POST /v1/revisions/rev-01/topology/changes/query
+```
+
+The request supplies `start_basis`, `end_basis`, the same projection and status
+perspective IDs, a page size, and an opaque cursor. The response streams ordered
+resource existence/status changes and inferred-connectivity add/remove/status
+changes. Every change carries its node-local effective range, normalized
+absolute range when supported, uncertainty, before/after value, cause/evidence,
+provenance, and quality. Pagination is revision/query-bound; replaying all pages
+must produce the same snapshot as `topology/query` at the end basis.
+
+An unsupported projection/perspective combination returns `422`. A selected
+node whose clock cannot be aligned under strict policy remains in the response
+with `clock_unaligned`, unknown state, and `complete: false`; it is not silently
+dropped. If a caller explicitly requires a complete simultaneous result, the
+request fails unless every selected node has overlapping supported absolute
+ranges.
+
+### 4.1 Heterogeneous multi-node assemblies
+
+Multi-node reconstruction is assembly-scoped because its members may reference
+different immutable revisions and unrelated plug-in sets:
+
+```http
+GET /v1/topology-assemblies/fabric-01/capabilities
+POST /v1/topology-assemblies/fabric-01/query
+```
+
+Capabilities list every member's installed/active plug-in sets and the valid
+projection/perspective matrix for each plug-in run. Callers construct a separate
+selection for every member; local descriptor IDs are never assumed to match:
+
+```json
+{
+  "basis": {
+    "kind": "absolute_time",
+    "time_ns": "1759680005000000000",
+    "clock_domain": "utc"
+  },
+  "clock_policy": "strict",
+  "member_selections": [
+    {
+      "member_id": "pe-a",
+      "plugin_set_id": "alpha-evpn-1",
+      "projection_ref": {
+        "plugin_run_id": "run-alpha-7",
+        "projection_id": "alpha.fabric-links"
+      },
+      "perspective_ref": {
+        "plugin_run_id": "run-alpha-7",
+        "perspective_id": "alpha.hardware"
+      }
+    },
+    {
+      "member_id": "pe-b",
+      "plugin_set_id": "beta-router-2",
+      "projection_ref": {
+        "plugin_run_id": "run-beta-4",
+        "projection_id": "beta.underlay"
+      },
+      "perspective_ref": {
+        "plugin_run_id": "run-beta-4",
+        "perspective_id": "beta.asic-observed"
+      }
+    }
+  ],
+  "linker_ref": {
+    "plugin_run_id": "run-federation-2",
+    "linker_id": "demo.cross-vendor-boundary"
+  },
+  "resource_limit": 100,
+  "inter_node_link_limit": 500
+}
+```
+
+The demo accepts `node_queries` as an equivalent executable spelling of
+`member_selections`; production clients should use the capability-advertised
+field names and API version. Every returned resource uses the structured global
+reference `(member_id, revision_id, resource_id)`. Inter-node links retain both
+endpoint references, plug-in-run provenance, tri-state existence/usability,
+and `resolution` (`matched`, `ambiguous`, `unresolved`, or `conflict`) with all
+bounded candidates. The core never selects the first ambiguous candidate.
+
+The response also contains `context_id`, per-member clock/watermark resolution,
+coverage reasons, independent counts/cursors, and core-generated navigation
+targets. A node page resolves the frozen context through:
+
+```http
+GET /v1/topology-contexts/{context_id}/members/{member_id}
+```
+
+The returned target restores the exact node-local basis and semantic selection;
+relative links therefore do not drift when a watermark advances. Browser
+navigation starts at the primary multi-node topology page `/` (with `/topology`
+retained as a compatibility alias), opens an individual member workspace at
+`/node`, and returns to `/` while preserving the context and focused global
+resource or link.
+Context identifiers are server-owned, tenant/authorization-bound, versioned,
+and expiring in production. Plug-ins may not provide URLs.
+
+Each local plug-in emits normalized endpoint claims. The core may equality-join
+only an explicitly declared exact-token claim contract. Any semantic matching,
+alias handling, reciprocity policy, or cross-vendor inference is performed by
+the selected federation/linker plug-in and returned with provenance/evidence.
+Missing clocks, revisions, plug-ins, watermarks, or candidates remain scoped
+partial results with reason codes.
+
+#### Shared-medium segment projection
+
+A local plug-in represents a subnet or other multi-access medium with the
+existing v1 graph payloads: one `TopologyResourceRecord` whose plug-in-owned
+role is `connectivity-domain`, optional `TopologyEndpointRecord` port anchors,
+and one ordinary `TopologyLinkRecord` from each interface attachment to the
+domain resource. This is a bipartite projection, not an N-squared set of node
+links and not a new core hyperedge type. Segment role and identity details—such
+as prefix, VRF, VLAN, VPN, management, loopback, external, LAG, subinterface,
+physical-member, route, and neighbor interpretation—remain plug-in properties.
+
+For assembly consumers, the coordinator exposes a normalized view:
+
+- `network_segments[]` contains a stable assembly-scoped `segment_id`, the
+  versioned matcher contract and typed opaque key, plug-in semantics and any
+  merge-critical conflicts, current and observed member counts, operational
+  status, quality/confidence/evidence, time alignment, and bounded `members`.
+- `segment_attachments[]` contains a stable attachment ID, global endpoint and
+  component resource references, the plug-in's opaque attachment model,
+  current existence/status, validity interval, resolved observation time,
+  inference rule, provenance, evidence, and node deep link.
+- `segment_resolutions[]` records `shared`, `single_sided`, `absent`, semantic
+  conflict, or unsupported matcher-contract outcomes. The core equality-groups
+  only matchers advertised with `match_semantics: exact_token` and
+  `result_shape: connectivity_domain`; it never merges by prefix alone.
+
+The `segment_id` digest is scoped by assembly ID, matcher ID, matcher-contract
+version, and a recursively type-tagged opaque key, so integer `1` and string
+`"1"`, a UUID and its display string, or binary bytes and a similar-looking
+string cannot collide. The normalized key returned by the API is JSON-safe;
+binary atoms use base64 and arbitrarily large integers use decimal strings.
+Attachment IDs use stable member/revision/resource/domain identity (plus an
+optional explicit plug-in attachment key), never the ephemeral plug-in run ID.
+A single current attachment means only *single-sided in this query
+scope*. It is external only when the plug-in explicitly classifies it as such
+and declares complete applicable coverage. Management and loopback exclusion,
+and VPN placement in a separate presentation plane, are likewise plug-in
+decisions.
+
+Presentation does not change this model. A plug-in may set the bounded
+`topology_presentation.two_participant_shape` property to `compact_edge` (the
+typed API equivalent is `TopologyResourcePresentation` with
+`TopologyTwoParticipantShape.COMPACT_EDGE`). The core honors that request only
+when the selected physical-domain result is conflict-free, coverage is
+complete, all expected current attachments are present, and those attachments
+resolve to exactly two distinct current participants. It then draws one
+node-boundary-to-node-boundary line while retaining the original `segment_id`,
+attachment IDs, evidence, provenance, validity, and inspection targets. It does
+not fabricate an `inter_node_link` or remove the domain from the API.
+
+The default is `domain_node`. Multi-access, VPN, one-sided, incomplete,
+conflicted, or unresolved domains remain explicit domain objects. The core
+does not inspect prefix length, address overlap, VRF, VLAN, protocol, medium
+name, or label to decide whether a domain is pairwise. Plug-ins own that
+semantic declaration and its explanation/evidence; the core owns fail-closed
+validation, generic line-versus-domain rendering, layout, and accessible hover
+or pinned inspection.
+
+`network_segment_limit` and `segment_attachment_limit` bound this view.
+`completeness.network_segments_truncated`,
+`completeness.segment_attachments_truncated`, and
+`completeness.unresolved_network_segment_claims` prevent partial membership
+from looking complete. Attachment validity is evaluated at the resolved basis
+together with endpoint-resource existence; inactive historical attachments
+remain in the bounded result with `exists: false` but are not current members.
+`claim_valid_at_basis` and `endpoint_exists_at_basis` distinguish claim-window
+absence from endpoint-resource absence. Validity is half-open: `valid_from_ns`
+is inclusive and `valid_to_ns` is exclusive. The resource preview/page limit
+does not prune claims or attachments; those use their independent bounded
+topology limits.
+
+`inter_node_links` remains a route-trace compatibility projection. Such links
+carry `projection_role: route_trace_compatibility` and are suppressed in the
+physical topology whenever the segment projection is available. They are not
+drawn in parallel with subnet spokes and are not silently treated as segment
+membership.
+
+## 5. Route resolution
 
 Request:
 
@@ -155,6 +597,15 @@ Request:
   "basis": {"kind": "reconstructed_time", "time_ns": "1759680005000000000"},
   "vrf_resource_id": "res-vrf-blue",
   "destination": "203.0.113.42",
+  "traffic_class": "known_unicast",
+  "ingress_policy_scopes": [
+    {
+      "contract_id": "vendor.example.evpn-split-horizon.v1",
+      "arguments": [["ethernet_segment", "esi-01"], ["evi", 320]]
+    }
+  ],
+  "ingress_policy_scopes_complete": true,
+  "max_hops": 64,
   "max_recursion": 32,
   "max_branches": 256
 }
@@ -197,10 +648,303 @@ Response fields are stable even when resolution is incomplete:
 }
 ```
 
-`result` is `resolved`, `partially_resolved`, `unresolved`, or `cycle`. A cycle
-is a normal bounded result, not an HTTP 500.
+`traffic_class` and `ingress_policy_scopes` are optional typed context.
+`ingress_policy_scopes_complete` distinguishes a known-empty or known non-match
+from incomplete evidence and defaults to `true` for compatibility. Scope
+contract IDs, argument order and values are plug-in-owned; core compares a
+complete scope only by exact equality. If a constraint names traffic classes
+and the request omits the class, or an applicable scope does not match while
+the set is incomplete, the decision is unknown rather than guessed. An exact
+match is still sufficient to block.
 
-## 5. Timeline and cluster expansion
+`result` is `resolved`, `partially_resolved`, `unresolved`, `policy_blocked`,
+`cycle`, `hop_limit_exceeded`, or `recursion_limit_exceeded`. A cycle, policy
+block, or exhausted budget is a normal bounded result, not an HTTP 500. A
+`cycle` result includes the first and closing traversal-step indexes and the
+closed canonical state sequence. A `policy_blocked` branch includes the
+affected candidate plus `policy_decisions[]`, with the plug-in constraint,
+ingress scopes, `ingress_scopes_complete`, traffic class, verdict, explanation,
+and evidence. Rejected candidates remain inspectable.
+
+### 5.1 Cross-node multi-path trace
+
+The executable demo discovers and traces routes through independently
+reconstructed members and their heterogeneous plug-ins:
+
+```http
+GET  /v1/topology-assemblies/demo.fabric.multi-node/routes/capabilities
+POST /v1/topology-assemblies/demo.fabric.multi-node/routes/trace
+```
+
+The capabilities response advertises destinations, sources, route-resolver
+plug-ins, route-type/family/VRF facets, strict/best-effort modes, and bounded
+review scenarios. The heterogeneous demo covers connected and recursive-static
+routes, IPv4/IPv6 unicast, IS-IS, MPLS transport and L3VPN, SRv6, and EVPN type
+2/type 5 resolution. A demo request reuses the frozen topology context and may
+focus any returned path, including an inactive or retained dead one:
+
+```json
+{
+  "topology_context_id": "tctx1-2ebdfcbed0d01148d88e67d1",
+  "scenario_id": "single-active-primary",
+  "destination_id": "destination:blue-service-prefix",
+  "resolution_mode": "best_effort",
+  "focus_path_id": "route-path:underlay:pe-a-alternate",
+  "basis": {"kind": "relative_to_watermark", "offset_ns": "0"}
+}
+```
+
+The response returns a flat, ordered `paths[]` candidate set plus
+`multipath`, `focused_path_id`, `route_resolution_sequence[]`, `issues[]`,
+`interaction_targets[]`, `completeness`, and `context_consistency` envelopes.
+Every segment carries stable resource/link targets, plug-in provenance,
+activity/primary state, confidence, issue references, and a plug-in-provided
+`route_resolution` object. All-active scenarios have multiple active members
+and no fabricated singular primary; single-active scenarios may retain inactive
+eligible standby or withdrawn/dead candidates for inspection. Cross-layer
+scenarios preserve control-plane and observed-FIB disagreement as typed findings
+instead of rewriting one layer to agree with the other.
+
+Every path may additionally carry ordered `node_occurrences[]`. Each occurrence
+has a stable `occurrence_id` separate from physical node identity, and segments
+may use `source_occurrence_id` and `target_occurrence_id`. This preserves a
+closing repeated visit such as A -> P1 -> B -> P1; clients must not deduplicate
+it into the earlier P1 card. A cycle path has `result: "cycle"`,
+`terminal_reason`, and a `cycle` envelope that identifies the first and closing
+occurrences. The server checks complete canonical forwarding state, not router
+identity alone, before declaring the cycle.
+
+An ingress-policy rejection has `result: "policy_blocked"` and retains
+`policy_decisions[]`. A decision includes the stable decision/constraint
+identity, accept/reject outcome, reason, typed plug-in scope references, scope
+completeness, traffic applicability, explanation, evidence, and provider. This
+is an intentional candidate exclusion, distinct from a failed or dead
+adjacency. Federation does not assume that different plug-ins' contract IDs are
+compatible; the linker must preserve or explicitly map a scope contract,
+otherwise it marks the receiving scope set incomplete.
+`max_hops` and `max_recursion` are independently advertised and validated;
+their exhausted results remain distinct from a cycle even when the retained
+diagnostic prefix could eventually loop.
+
+Resolution segments and their text parts may additionally carry
+`highlight_target_ids[]`. Each ID references one typed `interaction_targets[]`
+entry with `kind: topology_node` or `kind: topology_link`. This is the exact
+graph-level focus chosen by the node or federation plug-in: a node-local
+resolution normally names one node, while a boundary resolution names one
+link. Broad `interaction_target_ids[]` remain the full supporting evidence and
+must not be substituted for the exact highlight set. The core validates and
+preserves these opaque IDs; it does not infer a target by parsing explanation
+text. Older plug-ins without this annotation receive only an identity-based
+node/link fallback, never adjacency-wide token matching.
+
+`route_resolution_evidence` keeps the visible `topology_context_id`
+authoritative while identifying any auxiliary, same-capture-vector plug-in
+projection snapshot used by the resolvers. This matters when the visible map
+is intentionally filtered to one layer, such as underlay forwarding, but an
+alternative path needs EVPN control-state evidence. Removing that display
+filter for route evidence does not replace the selected topology context or
+promote an inferred result to observed ground truth.
+
+The production-generalized envelope below shows how the same contract expands
+to arbitrary ingress/ground-truth selections and bounded comparison views:
+
+```http
+POST /v1/topology-assemblies/fabric-01/routes/trace
+```
+
+A request either supplies a previously frozen `context_id` or the full temporal
+and per-member selections accepted by the assembly query. It also makes path and
+completeness policy explicit:
+
+```json
+{
+  "context_id": "tctx1-fabric-1759680005",
+  "ingress": {
+    "member_id": "pe-a",
+    "vrf_resource_ref": {
+      "member_id": "pe-a",
+      "revision_id": "rev-a-17",
+      "resource_id": "VRF/blue"
+    },
+    "traffic_class": "known_unicast",
+    "policy_scopes": [],
+    "policy_scopes_complete": false
+  },
+  "destination": {"kind": "ipv6", "value": "2001:db8:100::42"},
+  "ground_truth": {
+    "policy": "selected_perspective",
+    "perspective_by_member": {
+      "pe-a": "alpha.hardware",
+      "pe-b": "beta.asic-observed"
+    }
+  },
+  "path_selection": "include_standby",
+  "completeness_policy": "strict",
+  "limits": {
+    "max_hops": 32,
+    "max_branches": 256,
+    "max_local_candidates_per_hop": 16,
+    "max_boundary_candidates": 8
+  }
+}
+```
+
+Optional `comparison_views[]` entries each name a stable `view_id` and a
+`perspective_by_member` map, for example control-plane perspectives to compare
+with hardware-selected ground truth. They do not override `ground_truth`.
+
+`path_selection` is `active_only`, `include_standby`, or `all_candidates`; it
+does not change the plug-in-declared group mode. A `single_active` group yields
+at most one selected `primary` plus optional non-forwarding `standby` paths. If
+the primary cannot be determined, the paths are `alternative` candidates rather
+than fabricated primary/standby roles. An `all_active` group yields one `ecmp`
+branch for each explicitly declared active member. Equal rank by itself never
+creates ECMP, and the server does not infer traffic shares from branch count.
+
+The response uses stable ordering and separates the aggregate result from each
+branch:
+
+```json
+{
+  "trace_id": "trace1-6f1d",
+  "context_id": "tctx1-fabric-1759680005",
+  "result": "resolved",
+  "complete": true,
+  "completeness_policy": "strict",
+  "ground_truth": {
+    "policy": "selected_perspective",
+    "quality": "exact"
+  },
+  "path_groups": [
+    {
+      "group_id": "group:pe-a:blue:2001-db8-100",
+      "mode": "single_active",
+      "paths": [
+        {
+          "path_id": "path:primary:8c2a",
+          "branch_id": "branch:primary:0",
+          "role": "primary",
+          "result": "resolved",
+          "quality": "exact",
+          "presentations": [
+            {
+              "presentation_id": "alpha.vpn-blue.service-overlay",
+              "role": "overlay",
+              "scope": "path",
+              "style": "band",
+              "label": "Tenant Blue service",
+              "topology_references": [
+                {
+                  "match": {
+                    "matcher_id": "alpha.connectivity-domain.exact.v1",
+                    "arguments": {"domain_key": "vpn:blue"}
+                  }
+                }
+              ],
+              "anchor_resources": [],
+              "facts": {"routing_scope": "blue"}
+            }
+          ],
+          "steps": [
+            {
+              "step_index": 0,
+              "step_id": "step:8c2a:0",
+              "phase": "local_lookup",
+              "member_id": "pe-a",
+              "resolution_text": "VRF blue matched 2001:db8:100::/64",
+              "resource_refs": [],
+              "provenance": {"plugin_run_id": "run-alpha-7"},
+              "quality": "exact",
+              "unknowns": []
+            },
+            {
+              "step_index": 1,
+              "step_id": "step:8c2a:1",
+              "phase": "federation_boundary",
+              "member_id": "pe-a",
+              "resolution_text": "Boundary matched to pe-b",
+              "provenance": {"plugin_run_id": "run-federation-2"},
+              "quality": "exact",
+              "unknowns": []
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "consistency_findings": [],
+  "coverage": {"complete": true, "reasons": []},
+  "navigation": {
+    "topology_href": "/?context_id=tctx1-fabric-1759680005&path_id=path%3Aprimary%3A8c2a",
+    "step_href_template": "/node?context_id=tctx1-fabric-1759680005&path_id={path_id}&step_id={step_id}"
+  }
+}
+```
+
+`steps[]` is always ordered by ascending `step_index`; a stable `step_id` is
+bound to the immutable context, path branch, member, canonical resource
+references, and normalized phase, not to `resolution_text`. Normalized phases
+include `local_lookup`, `candidate_selection`, `next_hop`, `failover`,
+`tunnel_action`, `adjacency_egress`, `federation_boundary`, and
+`remote_ingress`. Node plug-ins own local `resolution_text`, local candidates,
+proprietary status interpretation, typed policy scopes/constraints, and the
+canonical local lookup/packet context. The core owns temporal/context
+resolution, exact constraint evaluation, budgets, branch expansion, exact
+canonical-state cycle detection, stable ordering, coverage, comparison, and
+navigation. The federation linker owns inter-node boundary matches and their
+candidate evidence; it does not reinterpret a node plug-in's split-horizon
+decision.
+
+`paths[].presentations[]` is the bounded, core-preserved form of the
+`RoutePresentationDescriptor` sidecars encountered while resolving the path.
+`presentation_id` is stable and opaque. `role` is `principal`, `overlay`, or
+`annotation`; `scope` is `path`, `step`, `span`, or `resource`; and `style` is
+one of the safe semantic primitives `path`, `band`, `badge`, or `callout`.
+Topology references contain either a canonical resource identity or a declared
+exact-match topology reference. The response may add resolved topology target
+IDs, but it must retain an unresolved reference and reason when exact resolution
+is unavailable. `anchor_resources` bind step or span presentations by
+identity, never by parsing text.
+
+Presentations do not add hops, replace the outer L1-L3 path, or affect path
+selection and reachability. Labels and `facts` remain plug-in-owned display
+data: the server and client must not infer VPN, MPLS, SRv6, EVPN, VLAN, or other
+protocol semantics from them. Styles are mapped by the core UI theme; CSS,
+HTML, coordinates, and executable renderer content are not accepted.
+
+The bundled demo currently mirrors `presentations` into
+`presentation_layers` for older clients and may add resolved `endpoint_refs`
+or `topology_targets`. Those are response compatibility extensions: plug-ins
+author the canonical `style`, `topology_references`, `anchor_resources`,
+mapping-valued `facts`, and `description` fields shown above. Clients must
+accept that canonical shape without requiring a demo-only alias.
+
+Every `comparison_views[]` entry produces a `comparison_results[]` item with the
+same complete `path_groups[]` schema and its own coverage. Different
+perspectives are traced independently. `consistency_findings[]` references path
+and first-divergent-step IDs that exist in the ground-truth or comparison
+results and describes next-hop, egress-interface, destination, encapsulation,
+reachability, or update-lag differences. The server never splices preferred
+steps from multiple layers into a synthetic path.
+
+With `completeness_policy: "strict"`, an unavailable required member,
+unsupported status perspective, unknown required status, unaligned clock, or
+ambiguous/unresolved boundary makes the trace incomplete. Diagnostic path
+prefixes may still be returned, but there is no inferred continuation. With
+`best_effort`, bounded alternatives may continue and every affected step and
+path carries assumption reason codes, observation times, provenance, quality,
+and unknowns. Best-effort provenance is evidence for a provisional answer only;
+it must not be promoted to ground truth or silently reused as exact topology or
+reachability by another query.
+
+The UI uses `path_id`, `branch_id`, and `step_id` as focus keys. Hover and
+keyboard focus highlight the ordered fabric nodes/links and show a bounded card
+with role, group mode, result, hop count, egress/encapsulation, first divergence,
+and uncertainty. Click pins that focus; a step action opens its frozen member at
+`/node`, and the return URL restores the same path. Hover never mutates the
+selected time or reconstruction context.
+
+## 6. Timeline and cluster expansion
 
 Timeline query:
 
@@ -267,35 +1011,75 @@ failed programming callback remains visible without splitting the status bar.
 Unknown snapshot boundaries are open or hatched; they are not converted into
 fabricated create/delete events.
 
-An aggregated mark includes an opaque expansion handle:
+An aggregated mark includes an opaque ID plus the canonical lane resource and
+exact time envelope needed by the runnable demo's expansion endpoint:
 
 ```json
 {
-  "kind": "event_cluster",
   "cluster_id": "clu_AQByZXYtMDE...",
-  "lane_id": "lane-route-1",
+  "lane_id": "control-plane/ROUTE/blue/203.0.113.0/24",
   "start_ns": "1759680003000000000",
   "end_ns": "1759680004000000000",
-  "counts": {"total": 42, "failure": 3, "unknown": 1},
-  "representative_event_ids": ["event-401", "event-419"]
+  "count": 142,
+  "failure_count": 3,
+  "detail_count": 2,
+  "detail_truncated": true,
+  "event_uids": ["event-401", "event-419"],
+  "first_event_uid": "event-401",
+  "last_event_uid": "event-442"
 }
 ```
 
-Expansion is cursor-paginated in deterministic source order:
+Expansion is offset-paginated in deterministic `(timestamp_ns, event_uid)`
+order. The canonical `resource_id` is the returned lane resource, and
+`start_ns`/`end_ns` are the returned cluster envelope. `limit` is bounded to
+1..200. Because these bounds identify point events rather than a state-validity
+interval, event instants equal to either envelope boundary are included. These
+fields are submitted unchanged; clients must not derive resource
+identity by parsing either `lane_id` or `cluster_id`:
 
 ```http
-GET /v1/revisions/rev-01/timeline/clusters/clu_AQByZXYtMDE.../events?cursor=cur_AAE...
+POST /v1/revisions/rev-01/timeline/clusters/detail
+Content-Type: application/json
+```
+
+```json
+{
+  "resource_id": "control-plane/ROUTE/blue/203.0.113.0/24",
+  "start_ns": "1759680003000000000",
+  "end_ns": "1759680004000000000",
+  "offset": 0,
+  "limit": 100
+}
 ```
 
 ```json
 {
   "revision_id": "rev-01",
-  "cluster_id": "clu_AQByZXYtMDE...",
-  "events": [{"event_id": "event-419", "timestamp_ns": "1759680003015000000", "source_sequence": 4}],
-  "next_cursor": null,
-  "truncated": false
+  "resource_id": "control-plane/ROUTE/blue/203.0.113.0/24",
+  "start_ns": "1759680003000000000",
+  "end_ns": "1759680004000000000",
+  "offset": 0,
+  "limit": 100,
+  "total_count": 142,
+  "items": [
+    {
+      "event_uid": "event-419",
+      "time_ns": "1759680003015000000",
+      "resource_id": "control-plane/ROUTE/blue/203.0.113.0/24",
+      "effect_type": "modified",
+      "state_changed": true,
+      "outcome": "success"
+    }
+  ],
+  "next_offset": 100,
+  "truncated": true
 }
 ```
+
+`items` are the same redacted, plug-in-normalized per-resource marks used by
+the timeline, not unprojected raw events. `next_offset: null` and
+`truncated: false` identify the final page.
 
 ### Retained source records and regex lanes
 
@@ -349,7 +1133,94 @@ timeline-to-log navigation even when the log uses virtual scrolling. The core
 limits pattern length and searched text, rejects lookarounds/backreferences and
 unsafe repeated quantifiers, and caps lane and mark counts.
 
-## 6. Point-in-time resource tables and selected ranges
+### Windowed scale history
+
+A scale bootstrap may replace embedded history arrays with an explicit
+`history_transport.mode: "server-windowed"` descriptor. The bootstrap still
+contains revision/timeline bounds, exact counts, the compact resource catalog,
+and plug-in schemas, but `events` and `source_records` are empty. Clients must
+use the advertised bounded endpoints instead of interpreting an empty array as
+an empty capture. Non-scale revisions and topology-member snapshots may retain
+their compatible embedded streams.
+
+The combined virtual log query is:
+
+```http
+POST /v1/revisions/rev-01/event-log/query
+```
+
+```json
+{
+  "include_normalized": true,
+  "source_types": ["ctf", "syslog"],
+  "layers": ["control-plane"],
+  "search": "mass withdraw",
+  "start_ns": "1759680240000000000",
+  "end_ns": "1759680250000000000",
+  "offset": 0,
+  "limit": 120,
+  "locate": {"kind": "event", "uid": "event-50000"}
+}
+```
+
+It returns exact `total_count`, `inside_count`, and `outside_count`; selected
+range entries precede outside entries; every item has a stable zero-based
+`display_index`; and `located_display_index` addresses data rows before clients
+insert their own group headers. Ordering, range partitioning, pagination,
+redaction-before-search, and locating are core responsibilities. Event,
+resource, layer, and source-type values remain plug-in vocabulary.
+
+For immutable full-scale revisions, the core may build the literal-search
+corpus in the background after plug-in descriptors and sensitivity rules are
+final. Each indexed document is the same case-folded, redacted projection used
+for client search; raw plug-in payloads and sensitive values never enter the
+corpus. Bounded result postings are reusable across virtual pages and selected
+ranges. A successful event-only indexed response reports
+`indexed_search: true`; if the configured serving bound is exceeded, the core
+retains exact behavior through the compatible streaming fallback rather than
+truncating counts.
+
+The local demo persists only that safe projection in an immutable SQLite
+sidecar. Its identity covers the packed archive content, search-projection
+version, Python cache ABI, and Unicode case-folding data. Publication uses a
+same-directory temporary database followed by atomic replacement; invalid,
+incomplete, corrupt, or count-mismatched caches are rebuilt. SQLite result
+postings remain an implementation detail—the production serving contract uses
+the revision database and may implement literal candidates with PostgreSQL
+`pg_trgm` followed by exact substring verification.
+
+The demo may add an external-content, case-sensitive FTS5 trigram candidate index to
+that sidecar. Its metadata records whether the revision uses `fts5-trigram` or
+`sqlite-scan`; ordered safe-text digest, ordinal/size bounds, and a deterministic
+FTS vocabulary digest are checked before reuse, after a full source-aware FTS
+integrity check at publication. `MATCH` never defines the result: every
+candidate still passes a parameterized `instr(safe_text, search)` check, while
+empty, short, and parser-rejected needles take the exact scan
+path. `/health` exposes the non-sensitive serving state as
+`history_search_backend` without disclosing the cache path or revision identity.
+
+The visible density query is:
+
+```http
+POST /v1/revisions/rev-01/events/density/query
+```
+
+```json
+{
+  "start_ns": "1759680240000000000",
+  "end_ns": "1759680250000000000",
+  "bin_count": 240
+}
+```
+
+The response contains only populated exact bins with inclusive nanosecond
+bounds, total/failure counts, and the most frequent opaque plug-in event types.
+The core caps one request's work and response, while a client may retain an
+arbitrarily large logical zoom by requesting only visible bins plus overscan.
+For full-scale revisions the core answers from timestamp, failure, and
+event-type indexes; it does not rescan or serialize the 100K-event stream.
+
+## 7. Point-in-time resource tables and selected ranges
 
 The generic table query is driven by plugin resource descriptors; the core does
 not contain kind-specific columns:
@@ -377,6 +1248,46 @@ path geometry (`path`, four-number `view_box`, `render_mode`, and
 `stroke_width`). Timeline lanes and graph nodes render it generically; graph
 responses may echo the same icon on each node for clients that do not retain
 the schema. Missing or invalid icons use the core fallback glyph.
+
+The revision schema may include a `resource_table_views` array for bounded,
+relationship-grouped tables. For example:
+
+```json
+{
+  "view_id": "path-bundles",
+  "label": "Path bundles",
+  "root_kinds": ["ENCAP_GROUP"],
+  "levels": [
+    {
+      "label": "Path",
+      "relation_types": ["owns"],
+      "target_kinds": ["ENCAP_ENTRY"],
+      "direction": "outgoing"
+    },
+    {
+      "label": "Next hop",
+      "relation_types": ["next_hop"],
+      "target_kinds": [],
+      "direction": "outgoing"
+    }
+  ],
+  "default_expanded_depth": 2,
+  "max_roots": 100,
+  "max_children_per_node": 16
+}
+```
+
+A client selects it by sending `"view_id": "path-bundles"` to
+`resources/query`. The response adds `view` and recursive `bundles`; each
+node carries the normal resource-state envelope, the incoming relationship
+interval, and bounded children. Only resources and edges active at `time_ns`
+are included. The row type label, icon, presentation tags, and default fields
+come from the referenced resource-kind descriptor. A plug-in can therefore use
+the same mechanism for an interface-to-neighbor view (or any other resource
+graph) without adding that vocabulary to the query API or browser renderer.
+
+Resource kinds and relationship names above are illustrative
+plug-in data—the core traversal has no built-in forwarding vocabulary.
 
 The revision schema may also include a `dashboards` array. These are declarative
 plugin-owned module definitions, not pre-rendered markup. A typical descriptor is:
@@ -417,12 +1328,68 @@ plugin-owned module definitions, not pre-rendered markup. A typical descriptor i
 }
 ```
 
-The client evaluates each descriptor over the same `resources/query` response
-for the selected `time_ns`. Field paths are validated projections into the
-generic resource envelope, aggregates and filter operators come from fixed core
-enums, and row limits are bounded. The payload never contains plugin HTML, CSS,
-JavaScript, remote assets, or executable query expressions. Module order and
-open/collapse choices are browser-local preferences and are not revision data.
+Dashboard results are evaluated server-side over the complete point-in-time
+population, rather than over whichever resource-table page happens to be visible:
+
+```http
+POST /v1/revisions/rev-01/dashboards/query
+Content-Type: application/json
+```
+
+```json
+{
+  "time_ns": "1759680005000000000",
+  "dashboard_ids": ["protocol-state"]
+}
+```
+
+`time_ns` defaults to the revision capture time when omitted. Optional
+`dashboard_ids` is an array of non-empty descriptor IDs; duplicate IDs are
+removed while preserving request order. Omitting it evaluates every declared
+dashboard, while an empty array evaluates none. A successful response is:
+
+```json
+{
+  "revision_id": "rev-01",
+  "time_ns": "1759680005000000000",
+  "population_count": 247,
+  "dashboards": [
+    {
+      "dashboard_id": "protocol-state",
+      "statistics": [
+        {
+          "statistic_id": "average-metric",
+          "aggregation": "average",
+          "value": 17.5,
+          "matching_count": 42,
+          "sample_count": 42
+        }
+      ],
+      "tables": [
+        {
+          "table_id": "protocol-objects",
+          "items": [],
+          "total_count": 42,
+          "returned_count": 0,
+          "truncated": true
+        }
+      ]
+    }
+  ]
+}
+```
+
+`population_count` is the number of authoritative temporal resource envelopes
+the core evaluated for the selected declarations; table `total_count` is
+computed before its plug-in-declared, core-bounded row cap. Field paths are safe
+projections into the generic resource envelope, and aggregates and filter
+operators come from fixed core enums. The plug-in owns dashboard IDs, resource
+kinds, field paths, filters, columns, sorting, and aggregation declarations. The
+core owns revision/time resolution, assembling the full temporal population,
+safe declarative evaluation, redaction, and output bounds. The payload never
+contains plug-in HTML, CSS, JavaScript, remote assets, or executable query
+expressions. Module order and open/collapse choices are browser-local
+preferences and are not revision data.
 
 A range summary receives `[start_ns,end_ns)` and returns intersecting events,
 intersecting status/lifecycle intervals, relationship add/remove mutations with
@@ -432,7 +1399,7 @@ validity spans clipped to the lifecycles of both endpoint resources. The point
 cursor, pinned event, and selected range are independent client state; the
 request does not imply that selecting a range clears either of the others.
 
-## 7. Plugin selection and resume
+## 8. Plugin selection and resume
 
 Candidate response records the probe set:
 
@@ -463,7 +1430,7 @@ Selection includes optimistic-concurrency identity and an idempotency key:
 A stale selection returns `409 stale_probe_set`. `POST .../resume` is idempotent
 and returns the durable job resource.
 
-## 8. Errors and pagination
+## 9. Errors and pagination
 
 All non-success responses use:
 
@@ -481,6 +1448,7 @@ All non-success responses use:
 
 Required status mappings include `400 invalid_request`, `404 not_found`, `409`
 for stale selection/revision conflicts, `413` for upload/result limits, `422`
-for a semantically unsupported basis, `429` for query budgets, and `503` only
+for a semantically unsupported basis, unknown topology/status descriptor, or
+unsupported projection/perspective combination, `429` for query budgets, and `503` only
 for retryable infrastructure failures. A capped successful graph/timeline/state
 query sets `truncated=true`; it never masquerades as a complete exact result.

@@ -18,7 +18,7 @@ fixtures. No product or customer data is included.
 | Correlation and reconstruction | `generated/illustrative/{lifecycle,state,relationship}-intervals.jsonl`, mutations, causal links, and coverage | Resource create/modify/delete periods, a shared ingress/egress Forwarding Group, ETG/ETE ownership, standalone DTE next hops, Glue/VIF/hardware associations, and cross-layer failover. |
 | Dashboard | `generated/illustrative/dashboard-summary.json` and `dashboard-descriptors.json` | Summary counts plus four plugin-owned modules demonstrating common statistics, tables, default-open/collapsed state, and movable layout. |
 | Route calculation | `generated/illustrative/route-resolution*.json` and `route-scenarios.jsonl` | Observed-capture-vector and reconstructed route results plus failover, unresolved, and recursion-cycle acceptance cases. |
-| EVPN scale, fan-out, and churn | `generated-scale/*` (on demand) | Deterministic 100K-event/resource scenario with single-home creation, all-active EVPN multi-homing, bulk ES withdrawal/failover, bulk restore, DTE next-hop dependency changes, and a separate 100K-edge fan-out stream. |
+| EVPN scale, fan-out, and churn | `generated-scale/*` (on demand) | Deterministic 125K-event/10K-resource scenario with single-home creation, all-active EVPN multi-homing, bulk ES withdrawal/failover, bulk restore, repeated distinct DTE next-hop dependency changes, and a separate high-fan-out relationship stream. |
 | One-file packed demo dump | `generated-scale/router-state-lab-100k.tgz` | One outer TGZ containing four nested container TGZs. Every container has a synthetic CTF 2 stream, a normalized event export, and resource-status text; two containers use one table and two use multiple typed tables. The outer pack also carries the complete scale corpus and browser review projection. |
 
 ## Generate
@@ -28,7 +28,7 @@ From the repository root with Python 3.12:
 ```text
 python scripts/fetch_babeltrace_sample.py
 python scripts/generate_sample_bundle.py
-python scripts/generate_scale_fixtures.py --events 100000 --resources 100000
+python scripts/generate_scale_fixtures.py --events 125000 --resources 10000
 python scripts/generate_packed_scale_bundle.py
 ```
 

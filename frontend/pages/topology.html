@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#071019" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E" />
+    <title>Multi-node topology · Router State Lab</title>
+    <meta
+      name="description"
+      content="Reconstruct a historical topology across router state revisions with heterogeneous device plug-ins."
+    />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260721-multi-node-v1" />
+    <link rel="stylesheet" href="/assets/topology.css?v=20260722-route-stacks-v23" />
+  </head>
+  <body class="mn-body">
+    <div class="app-shell">
+      <header class="topbar mn-topbar">
+        <a class="brand" href="/" aria-label="Open the multi-node topology workspace">
+          <span class="brand-mark" aria-hidden="true">RSL</span>
+          <span>
+            <strong>Router State Lab</strong>
+            <small>topology home · multi-node reconstruction</small>
+          </span>
+        </a>
+        <nav class="topnav" aria-label="Multi-node topology sections">
+          <a href="#fabric">Fabric</a>
+          <a href="#route-trace">Route trace</a>
+          <a href="#route-tables">Route tables</a>
+          <a href="#links">Links</a>
+          <a href="#contract">Contract</a>
+        </nav>
+        <a id="mn-header-open-node" class="review-button mn-local-link" href="/node" hidden>Open selected node</a>
+      </header>
+
+      <div class="disclosure" role="note">
+        <span class="pulse-dot" aria-hidden="true"></span>
+        <strong>Cross-node capture vector.</strong>
+        <span>Clock bounds and missing node coverage remain visible; aligned wall clocks are never assumed.</span>
+        <a href="/docs" target="_blank" rel="noreferrer">API playground</a>
+      </div>
+
+      <main class="mn-main">
+        <section class="mn-hero section-wrap">
+          <div>
+            <p class="eyebrow">FEDERATED RECONSTRUCTION</p>
+            <h1>See the network each device believed it had.</h1>
+            <p>
+              Combine independent node revisions without requiring identical plug-ins. Each device keeps its own
+              parser, resource vocabulary, status perspective, clock mapping, and completeness boundary.
+            </p>
+          </div>
+          <div class="mn-hero-aside" aria-label="Current reconstruction identity">
+            <span>REVISION SET</span>
+            <strong id="mn-revision">Loading…</strong>
+            <small id="mn-basis-readout">Waiting for reconstruction</small>
+          </div>
+        </section>
+
+        <section class="section-wrap panel mn-query-panel" aria-labelledby="mn-query-title">
+          <div class="section-heading compact">
+            <div>
+              <p class="eyebrow">QUERY VECTOR</p>
+              <h2 id="mn-query-title">Reconstruction controls</h2>
+              <p>A topology intent is translated by the plug-in selected for each node.</p>
+            </div>
+            <span class="topology-contract-chip">versioned API</span>
+          </div>
+
+          <form id="mn-query-form" class="mn-query-form">
+            <label>
+              Topology intent
+              <select id="mn-projection"></select>
+              <small>Common intent; node plug-ins provide local projections</small>
+            </label>
+            <label>
+              Status perspective
+              <select id="mn-perspective"></select>
+              <small>Resolved to a supported layer per device</small>
+            </label>
+            <label>
+              Time basis
+              <select id="mn-basis-kind">
+                <option value="absolute_time">Absolute UTC instant</option>
+                <option value="relative_to_watermark">Relative to each watermark</option>
+              </select>
+              <small>Relative results are not simultaneous</small>
+            </label>
+            <label>
+              Clock policy
+              <select id="mn-clock-policy">
+                <option value="strict">Strict</option>
+                <option value="best_effort">Best effort</option>
+              </select>
+              <small>Strict leaves unaligned nodes unresolved</small>
+            </label>
+            <label id="mn-absolute-field">
+              UTC time (nanoseconds)
+              <input id="mn-absolute-time" inputmode="numeric" autocomplete="off" />
+              <small>Mapped independently into every node clock</small>
+            </label>
+            <label id="mn-relative-field" hidden>
+              Seconds from each watermark
+              <input id="mn-relative-seconds" value="-5" inputmode="decimal" autocomplete="off" />
+              <small>Zero means that node’s latest complete projection</small>
+            </label>
+            <button class="primary-action mn-run" type="submit">Reconstruct fabric</button>
+          </form>
+          <p class="mn-query-error" id="mn-query-error" role="alert"></p>
+        </section>
+
+        <section id="mn-source-banner" class="section-wrap mn-source-banner" aria-live="polite">
+          <span class="mn-spinner" aria-hidden="true"></span>
+          <strong>Discovering node providers…</strong>
+        </section>
+
+        <section class="section-wrap mn-metrics" aria-label="Topology reconstruction summary">
+          <article><span>Selected nodes</span><strong id="mn-node-count">—</strong><small id="mn-node-coverage">Awaiting query</small></article>
+          <article><span id="mn-link-metric-label">Connectivity domains</span><strong id="mn-link-count">—</strong><small id="mn-link-health">Awaiting query</small></article>
+          <article><span>Plug-in families</span><strong id="mn-plugin-count">—</strong><small>Coexisting in this revision set</small></article>
+          <article><span>Clock uncertainty</span><strong id="mn-clock-count">—</strong><small id="mn-clock-summary">Preserved per node</small></article>
+        </section>
+
+        <section class="section-wrap mn-workspace" id="fabric">
+          <aside class="panel mn-filter-panel" aria-labelledby="mn-node-index-title">
+            <div class="mn-panel-heading">
+              <div>
+                <p class="eyebrow">DEVICE SELECTION</p>
+                <h2 id="mn-node-index-title">Devices</h2>
+              </div>
+              <div class="mn-node-selection-actions">
+                <output id="mn-node-selection-summary" class="mn-summary-chip" aria-live="polite">Loading devices…</output>
+                <button id="mn-node-index-expand" type="button" aria-expanded="false" aria-controls="mn-node-index">Show all</button>
+                <button id="mn-select-all" type="button">Select all</button>
+              </div>
+            </div>
+            <label class="mn-search">
+              <span class="sr-only">Filter nodes</span>
+              <input id="mn-node-filter" type="search" placeholder="Search and highlight node, site, type, or plug-in…" />
+            </label>
+            <div class="mn-filter-row" aria-label="Highlight devices on the topology graph">
+              <button type="button" data-health="all" aria-pressed="true">Highlight all</button>
+              <button type="button" data-health="degraded" aria-pressed="false">Highlight attention</button>
+              <button type="button" data-health="incomplete" aria-pressed="false">Highlight incomplete</button>
+            </div>
+            <div class="mn-node-index" id="mn-node-index"></div>
+          </aside>
+
+          <div class="mn-map-stack">
+            <section class="panel mn-map-panel mn-link-map-panel" aria-labelledby="mn-map-title">
+              <div class="mn-panel-heading">
+                <div>
+                  <p class="eyebrow">LINK-STATUS TOPOLOGY</p>
+                  <h2 id="mn-map-title">Physical and logical adjacency</h2>
+                </div>
+                <div class="mn-map-heading-tools">
+                  <div class="mn-network-view-toggle" role="group" aria-label="Topology presentation plane">
+                    <button type="button" data-topology-network-view="underlay" aria-pressed="true">Underlay</button>
+                    <button type="button" data-topology-network-view="vpn" aria-pressed="false">VPNs</button>
+                  </div>
+                  <details class="mn-topology-element-picker" id="mn-topology-element-picker">
+                    <summary>
+                      <span>Elements</span>
+                      <output id="mn-topology-element-summary" aria-live="polite">subnets + interfaces</output>
+                    </summary>
+                    <div class="mn-topology-element-menu">
+                      <div class="mn-topology-element-presets" role="group" aria-label="Topology element presets">
+                        <button type="button" data-topology-element-preset="compact" aria-pressed="true">Compact</button>
+                        <button type="button" data-topology-element-preset="all" aria-pressed="false">All</button>
+                      </div>
+                      <fieldset>
+                        <legend>Show on the link-status graph</legend>
+                        <label><input type="checkbox" data-topology-element="subnets" checked /> <span>Subnets</span></label>
+                        <label><input type="checkbox" data-topology-element="vlans" /> <span>VLANs</span></label>
+                        <label><input type="checkbox" data-topology-element="interfaces" checked /> <span>Interfaces</span></label>
+                        <label><input type="checkbox" data-topology-element="subinterfaces" /> <span>Subinterfaces</span></label>
+                        <label><input type="checkbox" data-topology-element="lags" /> <span>LAGs</span></label>
+                        <label><input type="checkbox" data-topology-element="external" /> <span>External networks</span></label>
+                      </fieldset>
+                      <p>Plug-ins declare attachment types; hidden layers are contracted without changing connectivity.</p>
+                    </div>
+                  </details>
+                  <details class="mn-topology-guide" id="mn-topology-guide">
+                    <summary>How to read</summary>
+                    <div class="mn-topology-guide-card">
+                      <strong>Topology grammar</strong>
+                      <ul>
+                        <li><i class="is-router" aria-hidden="true"></i><span><b>Router card</b><small>One device snapshot at the selected time.</small></span></li>
+                        <li><i class="is-domain" aria-hidden="true"></i><span><b>Domain pill</b><small>A shared subnet or other plug-in-declared connectivity domain.</small></span></li>
+                        <li><i class="is-pair" aria-hidden="true"></i><span><b>Direct line</b><small>A complete two-participant domain whose plug-in allows compact presentation.</small></span></li>
+                        <li><i class="is-external" aria-hidden="true"></i><span><b>External stub</b><small>A network with one participant in the reconstructed device set.</small></span></li>
+                      </ul>
+                      <p>Hover for a quick explanation. Click or press Enter to pin the full plug-in evidence and core calculation. Drag objects to rearrange the graph.</p>
+                    </div>
+                  </details>
+                  <div class="mn-map-legend" aria-label="Link status legend">
+                    <span class="is-good">usable</span>
+                    <span class="is-warning">ambiguous</span>
+                    <span class="is-error">failed</span>
+                  </div>
+                </div>
+              </div>
+              <p class="mn-map-note">Only reconstructed adjacencies are drawn here. A full route mesh does not imply a full link mesh.</p>
+              <div id="mn-map-summary" class="mn-map-summary" aria-live="polite">
+                <span class="mn-summary-chip">Waiting for topology summary</span>
+              </div>
+              <div class="mn-map-stage mn-link-map-stage" id="mn-map-stage" tabindex="0" aria-label="Interactive link status topology">
+                <div class="mn-graph-controls" role="toolbar" aria-label="Link topology zoom controls">
+                  <button type="button" data-graph-action="zoom-out" aria-label="Zoom out">−</button>
+                  <output data-graph-zoom-readout aria-label="Current zoom">100%</output>
+                  <button type="button" data-graph-action="zoom-in" aria-label="Zoom in">+</button>
+                  <button type="button" data-graph-action="actual">1:1</button>
+                  <button type="button" data-graph-action="fit">Fit</button>
+                  <button type="button" id="mn-map-reset" data-graph-action="reset" aria-label="Reset topology layout">Reset</button>
+                </div>
+                <div class="mn-graph-gesture-hint">Click graph to engage · drag nodes/background · two-finger pan · pinch or Ctrl+wheel to zoom · arrows pan · F fits</div>
+                <svg id="mn-link-layer" role="group" aria-label="Physical and logical topology links"></svg>
+                <div id="mn-node-layer"></div>
+                <div class="empty-state" id="mn-map-empty">Run a reconstruction to draw link status.</div>
+                <aside id="mn-topology-hover-card" class="mn-route-hover-card mn-topology-hover-card" hidden></aside>
+              </div>
+            </section>
+
+          </div>
+        </section>
+
+        <section class="section-wrap panel mn-route-panel" id="route-trace" aria-labelledby="mn-route-title">
+          <div class="section-heading compact mn-route-heading">
+            <div>
+              <p class="eyebrow">CROSS-NODE ROUTE TRACE</p>
+              <h2 id="mn-route-title">Trace a route across nodes</h2>
+              <p>
+                Compare what each node resolves locally. Incomplete hops may be joined from the reconstructed
+                topology in best-effort mode, while disagreement remains explicit.
+              </p>
+            </div>
+            <span id="mn-route-api-status" class="topology-contract-chip">discovering tracer</span>
+          </div>
+
+          <form id="mn-route-form" class="mn-route-form">
+            <div class="mn-route-primary-controls">
+              <label class="mn-route-field-endpoint">
+                Source
+                <input id="mn-route-source" list="mn-route-sources" autocomplete="off" disabled />
+                <datalist id="mn-route-sources"></datalist>
+                <small>Ingress router, interface, address, or plug-in-owned endpoint</small>
+              </label>
+              <label class="mn-route-field-endpoint">
+                Destination
+                <input id="mn-route-destination" list="mn-route-destinations" autocomplete="off" disabled />
+                <datalist id="mn-route-destinations"></datalist>
+                <small>A prefix, address, service, or plug-in-owned target</small>
+              </label>
+              <label>
+                VRF
+                <input id="mn-route-vrf" list="mn-route-vrfs" autocomplete="off" disabled />
+                <datalist id="mn-route-vrfs"></datalist>
+                <small>Routing instance</small>
+              </label>
+              <label>
+                Directions to trace
+                <select id="mn-route-validation" disabled>
+                  <option value="bidirectional">Both directions</option>
+                  <option value="forward">Forward only</option>
+                  <option value="reverse">Return only</option>
+                </select>
+                <small>Each direction resolves independently</small>
+              </label>
+              <button id="mn-route-run" class="primary-action mn-route-run" type="submit" disabled>Trace route</button>
+            </div>
+
+            <details class="mn-route-advanced">
+              <summary>
+                <span>Advanced trace options</span>
+                <small>Demo scenario, route family and type, and missing-hop handling</small>
+              </summary>
+              <div class="mn-route-advanced-grid">
+                <label>
+                  Demo / failure scenario
+                  <select id="mn-route-scenario" disabled></select>
+                  <small>Chooses plug-in resolution behavior and a demo fault fixture</small>
+                </label>
+                <label>
+                  Route family
+                  <select id="mn-route-family" disabled></select>
+                  <small>AFI/SAFI or plug-in-normalized route family</small>
+                </label>
+                <label>
+                  Route type
+                  <select id="mn-route-type" disabled></select>
+                  <small>Forwarding interpretation requested from node plug-ins</small>
+                </label>
+                <label>
+                  Missing-hop policy
+                  <select id="mn-route-policy" disabled>
+                    <option value="best_effort">Best effort</option>
+                    <option value="strict">Strict</option>
+                  </select>
+                  <small>Best effort may infer bounded links; strict stops at gaps</small>
+                </label>
+              </div>
+            </details>
+          </form>
+          <p id="mn-route-error" class="mn-query-error" role="alert"></p>
+          <div id="mn-route-seed" class="mn-route-seed" hidden></div>
+
+          <div class="mn-route-workbench">
+          <section class="panel mn-map-panel mn-focused-route-panel mn-trace-map-panel" aria-labelledby="mn-route-map-title">
+            <div class="mn-panel-heading mn-route-map-heading">
+              <div>
+                <p class="eyebrow" id="mn-route-map-eyebrow">FOCUSED ROUTE TOPOLOGY</p>
+                <h3 id="mn-route-map-title">No route focused</h3>
+              </div>
+              <div id="mn-route-direction-tabs" class="mn-direction-tabs" role="tablist" aria-label="Traced route direction">
+                <button type="button" role="tab" data-route-direction="forward" aria-selected="true" disabled>
+                  <span>Forward</span><small>Source → destination</small><i data-direction-state="forward">not run</i>
+                </button>
+                <button type="button" role="tab" data-route-direction="reverse" aria-selected="false" disabled>
+                  <span>Return</span><small>Destination → source</small><i data-direction-state="reverse">not run</i>
+                </button>
+              </div>
+            </div>
+            <p id="mn-route-map-note" class="mn-map-note">Trace a source and destination to focus one forwarding path.</p>
+            <div class="mn-route-view-toolbar">
+              <div class="mn-route-view-toggle" role="group" aria-label="Route graph view">
+                <button type="button" data-route-graph-mode="all" aria-pressed="false">All paths</button>
+                <button type="button" data-route-graph-mode="focused" aria-pressed="true">Focused path</button>
+              </div>
+              <span id="mn-route-view-count">No candidates yet</span>
+              <div class="mn-route-quality-legend" aria-label="Route path state legend">
+                <span class="is-active">active</span>
+                <span class="is-standby">standby / inactive</span>
+                <span class="is-cycle">loop / repeated state</span>
+                <span class="is-policy-blocked">policy / split horizon</span>
+                <span class="is-dead">dead / dropped</span>
+                <span class="is-context">VPN context</span>
+              </div>
+              <button type="button" id="mn-route-clear-path" class="mn-route-clear-path" hidden>Clear selected path</button>
+            </div>
+            <div class="mn-map-stage mn-route-map-stage" id="mn-route-map-stage" tabindex="0" aria-label="Currently focused route topology">
+              <div class="mn-graph-controls" role="toolbar" aria-label="Route topology zoom controls">
+                <button type="button" data-graph-action="zoom-out" aria-label="Zoom out">−</button>
+                <output data-graph-zoom-readout aria-label="Current zoom">100%</output>
+                <button type="button" data-graph-action="zoom-in" aria-label="Zoom in">+</button>
+                <button type="button" data-graph-action="actual">1:1</button>
+                <button type="button" data-graph-action="fit">Fit</button>
+              </div>
+              <div class="mn-graph-gesture-hint">Click graph to engage · drag nodes/background · two-finger pan · pinch or Ctrl+wheel to zoom · arrows pan · F fits</div>
+              <svg id="mn-route-link-layer" role="group" aria-label="Selected directional route segments"></svg>
+              <div id="mn-route-node-layer"></div>
+              <div class="empty-state" id="mn-route-map-empty">No focused route path yet.</div>
+              <aside id="mn-route-hover-card" class="mn-route-hover-card" hidden></aside>
+            </div>
+          </section>
+
+          <div id="mn-route-result" class="mn-route-result" aria-live="polite">
+            <div id="mn-route-empty" class="mn-route-empty">
+              <strong>Choose a source and destination.</strong>
+              <span>Then trace the route to compare forward, return, ECMP, standby, and inactive alternatives.</span>
+            </div>
+            <div id="mn-route-content" hidden>
+              <div id="mn-direction-comparison" class="mn-direction-comparison" role="status"></div>
+              <div class="mn-route-summary-row">
+                <div id="mn-route-summary" class="mn-route-summary"></div>
+                <div class="mn-route-legend" aria-label="Route segment legend">
+                  <span class="is-primary">primary</span>
+                  <span class="is-ecmp">active ECMP</span>
+                  <span class="is-standby">standby / inactive</span>
+                  <span class="is-control-plane-only">control-plane only / not installed</span>
+                  <span class="is-cycle">loop-closing segment</span>
+                  <span class="is-policy-blocked">policy / split-horizon stop</span>
+                  <span class="is-inconsistent">inconsistent</span>
+                  <span class="is-inferred">inferred</span>
+                  <span class="is-unresolved">unresolved</span>
+                  <span class="is-service-overlay">service overlay (not a hop)</span>
+                </div>
+              </div>
+
+              <div class="mn-route-path-layout">
+                <aside class="mn-route-paths" aria-labelledby="mn-route-paths-title">
+                  <div class="mn-route-subheading">
+                    <span>PATH INDEX</span>
+                    <strong id="mn-route-paths-title">Candidate paths</strong>
+                  </div>
+                  <div id="mn-route-path-tabs" class="mn-route-path-tabs" role="tablist" aria-orientation="vertical"></div>
+                </aside>
+
+                <article class="mn-route-resolution" aria-labelledby="mn-route-resolution-title">
+                  <header class="mn-route-resolution-header">
+                    <div>
+                      <span>SELECTED PATH</span>
+                      <h3 id="mn-route-resolution-title">Route resolution</h3>
+                    </div>
+                    <div id="mn-route-path-badges" class="mn-route-path-badges"></div>
+                  </header>
+                  <div id="mn-route-hopline" class="mn-route-hopline" aria-label="Selected route node and link sequence"></div>
+                  <div class="mn-route-steps-heading">
+                    <h4>Resolution steps</h4>
+                    <span>Hover a step to highlight its node or link on the route map.</span>
+                  </div>
+                  <ol id="mn-route-steps" class="mn-route-steps"></ol>
+                </article>
+              </div>
+
+              <section class="mn-route-findings" aria-labelledby="mn-route-findings-title">
+                <div class="mn-route-subheading">
+                  <span>CONSISTENCY REPORT</span>
+                  <strong id="mn-route-findings-title">Findings</strong>
+                </div>
+                <div id="mn-route-findings"></div>
+              </section>
+            </div>
+          </div>
+          </div>
+        </section>
+
+        <section class="section-wrap panel mn-route-table-panel" id="route-tables" aria-labelledby="mn-route-table-title">
+          <div class="section-heading compact mn-route-table-heading">
+            <div>
+              <p class="eyebrow">CONTEXT-BOUND ROUTE TABLES</p>
+              <h2 id="mn-route-table-title">Route tables across route-capable nodes</h2>
+              <p>
+                Compare each device's plug-in-normalized route snapshot at the reconstructed capture vector.
+                Node-local times, completeness, and provenance remain visible.
+              </p>
+            </div>
+            <span id="mn-route-table-scope" class="topology-contract-chip">waiting for context</span>
+          </div>
+
+          <div id="mn-route-table-summary" class="mn-route-table-summary" aria-live="polite"></div>
+
+          <form id="mn-route-table-filters" class="mn-route-table-filters" role="search">
+            <label>
+              Search routes
+              <input id="mn-route-table-search" type="search" placeholder="Route ID, next hop, forwarding action, interface, plug-in…" />
+            </label>
+            <label>
+              Node
+              <select id="mn-route-table-node-filter"><option value="">All nodes</option></select>
+            </label>
+            <label>
+              VRF
+              <select id="mn-route-table-vrf-filter"><option value="">All VRFs</option></select>
+            </label>
+            <label>
+              Route family
+              <select id="mn-route-table-family-filter"><option value="">All route families</option></select>
+            </label>
+            <label>
+              Route type
+              <select id="mn-route-table-type-filter"><option value="">All types</option></select>
+            </label>
+            <label>
+              Protocol / source
+              <select id="mn-route-table-protocol-filter"><option value="">All protocols</option></select>
+            </label>
+            <label>
+              Destination / prefix
+              <input id="mn-route-table-destination-filter" type="search" placeholder="10.0.0.0/8, SID, MAC/IP…" />
+            </label>
+            <button id="mn-route-table-clear" class="secondary-action" type="button">Clear filters</button>
+          </form>
+
+          <p id="mn-route-table-error" class="mn-query-error" role="alert"></p>
+          <div id="mn-route-table-loading" class="mn-route-table-empty" hidden>
+            <span class="mn-spinner" aria-hidden="true"></span>
+            <strong>Reading time-bound route tables from node plug-ins…</strong>
+          </div>
+          <div class="mn-route-table-browser">
+            <nav id="mn-route-table-node-index" class="mn-route-table-node-index" aria-label="Route table node index"></nav>
+            <div id="mn-route-table-groups" class="mn-route-table-groups"></div>
+          </div>
+        </section>
+
+        <section class="section-wrap mn-detail-grid">
+          <article class="panel mn-node-detail" aria-labelledby="mn-detail-title">
+            <div class="mn-panel-heading">
+              <div>
+                <p class="eyebrow">SELECTED DEVICE</p>
+                <h2 id="mn-detail-title">Choose a node</h2>
+              </div>
+              <a id="mn-open-node" class="secondary-action" href="/node" hidden>Open node timeline ↗</a>
+            </div>
+            <div id="mn-node-detail" class="mn-detail-empty">Select a node in the map or index to inspect its local plug-in plan and clock basis.</div>
+          </article>
+
+          <article class="panel mn-links-panel" id="links" aria-labelledby="mn-links-title">
+            <div class="mn-panel-heading">
+              <div>
+                <p class="eyebrow">BOUNDARY EVIDENCE</p>
+                <h2 id="mn-links-title">Inter-node links</h2>
+              </div>
+              <span id="mn-link-table-count">0 returned</span>
+            </div>
+            <div class="mn-link-table-wrap">
+              <table class="mn-link-table">
+                <thead><tr><th>Endpoints</th><th>Status</th><th>Resolution</th><th>Evidence</th></tr></thead>
+                <tbody id="mn-link-table-body"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section class="section-wrap panel mn-contract" id="contract">
+          <div class="section-heading compact">
+            <div>
+              <p class="eyebrow">CORE / PLUG-IN BOUNDARY</p>
+              <h2>One query, heterogeneous providers</h2>
+              <p>The core coordinates time and identity and renders a generic connectivity-domain graph. It never invents device semantics.</p>
+            </div>
+          </div>
+          <div class="mn-contract-grid">
+            <article>
+              <span>Core coordinates</span>
+              <strong>Time + generic graph</strong>
+              <p>Capture vectors, stable node/domain/attachment references, status history, bounded rendering, navigation, and unknown preservation.</p>
+            </article>
+            <article>
+              <span>Each plug-in owns</span>
+              <strong>Network semantics</strong>
+              <p>Prefix and VRF meaning, VLAN/LAG/subinterface membership, management and loopback exclusions, external classification, and evidence-backed inference.</p>
+            </article>
+            <article>
+              <span>Federation linker owns</span>
+              <strong>Explicit claim joins</strong>
+              <p>It groups only plug-in-declared opaque matcher keys into cross-node attachments and preserves ambiguous, conflicting, or unresolved candidates.</p>
+            </article>
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        <span>Router State Lab · multi-node synthetic review demo</span>
+        <a href="/node">Open the individual node workspace</a>
+      </footer>
+    </div>
+
+    <div class="toast" id="mn-toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/assets/topology.js?v=20260722-route-stacks-v23"></script>
+  </body>
+</html>

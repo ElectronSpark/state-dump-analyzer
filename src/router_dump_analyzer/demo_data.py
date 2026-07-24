@@ -11,14 +11,23 @@ from __future__ import annotations
 import json
 import os
 import tarfile
+from hashlib import sha256
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
+from .dashboard_core import evaluate_dashboards
+from .demo_fixture_plugin import (
+    fixture_causal_link_descriptor as _causal_link_descriptor,
+    fixture_kind_descriptor as _kind_descriptor,
+    fixture_relationship_descriptor as _relationship_descriptor,
+    fixture_resource_label as _label_from_id,
+)
 from .demo_source_plugin import (
     RECORD_LANE_PRESETS,
+    SOURCE_RECORD_GROUP_DESCRIPTORS,
     SOURCE_RECORD_DESCRIPTORS,
     build_demo_source_records,
 )
@@ -30,6 +39,7 @@ PACK_ROOT = "router-state-lab-100k"
 PACK_ARCHIVE_ENV = "ROUTER_DUMP_DEMO_ARCHIVE"
 _demo_archive_override: Path | None = None
 _full_scale_enabled = False
+MAX_RESOURCE_TABLE_TRAVERSAL_NODES = 5_000
 
 
 def configure_demo_archive(path: Path | None) -> None:
@@ -237,7 +247,7 @@ DEMO_GAPS = [
     {
         "id": "scale",
         "area": "Scale",
-        "title": "100K-item browser performance proof",
+        "title": "100K+-event browser performance proof",
         "status": "partial",
         "detail": "A separate generator exists; the interactive fixture is intentionally review-sized.",
     },
@@ -263,57 +273,32 @@ REVIEW_PROMPTS = [
 def resource_id(record: dict[str, Any]) -> str:
     """Return a stable resource identifier, including legacy fixture records."""
 
-    explicit = record.get("resource_id")
+    explicit = (
+        record.get("resource_id")
+        or record.get("canonical_resource_id")
+        or record.get("resource_uid")
+    )
     if explicit:
         return str(explicit)
-    key = record.get("key", {})
-    kind = str(record.get("kind", "UNKNOWN"))
-    if kind == "ETG":
-        suffix = f"{key.get('vrf', 'default')}/{key.get('id', 'unknown')}"
-    elif kind == "ETE":
-        suffix = f"{key.get('etg', 'unknown')}/{key.get('id', 'unknown')}"
-    else:
-        suffix = "/".join(str(value) for value in key.values()) or "unknown"
-    return f"{record.get('layer', 'unknown')}/{kind}/{suffix}"
-
-
-def _label_from_id(identifier: str) -> str:
-    parts = identifier.split("/")
-    if len(parts) <= 2:
-        return identifier
-    return "/".join(parts[-2:] if parts[1] in {"ETG", "ETE", "EVPN_ROUTE"} else parts[-1:])
-
-
-def _kind_descriptor(kind: str) -> dict[str, Any]:
-    tags = ["connector", "compact"] if kind == "GLUE" else []
-    return {
-        "kind": kind,
-        "display_name": kind.replace("_", " ").title(),
-        "display_name_fields": ["name", "id"],
-        "default_table_fields": ["status", "oper_state", "program_state"],
-        "condition_field": "status",
-        "presentation_tags": tags,
-        "plugin_defined": True,
+    # Compatibility-only identity for old fixtures.  Type-preserving canonical
+    # JSON prevents integer/string and nested typed-key collisions; no device
+    # meaning is inferred from ETG/ETE names or slash-delimited display text.
+    identity = {
+        "layer": record.get("layer"),
+        "kind": record.get("kind"),
+        "key": record.get("key", {}),
     }
-
-
-def _relationship_descriptor(relation_type: str) -> dict[str, Any]:
-    return {
-        "relation_type": relation_type,
-        "label": relation_type.replace("_", " ").title(),
-        "directed": True,
-        "structural": False,
-        "plugin_defined": True,
-    }
-
-
-def _causal_link_descriptor(link_type: str) -> dict[str, Any]:
-    return {
-        "link_type": link_type,
-        "label": link_type.replace("_", " ").title(),
-        "directed": True,
-        "plugin_defined": True,
-    }
+    canonical = json.dumps(
+        identity,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=lambda value: {
+            "python_type": f"{type(value).__module__}.{type(value).__qualname__}",
+            "value": str(value),
+        },
+    ).encode("utf-8")
+    return f"legacy-resource:{sha256(canonical).hexdigest()}"
 
 
 def _contains(timestamp_ns: int, start: Any, end: Any) -> bool:
@@ -423,6 +408,9 @@ def load_demo_dataset() -> dict[str, Any]:
     dashboard_descriptors = read_optional_json_name(
         "dashboard-descriptors.json", []
     )
+    resource_table_views = read_optional_json_name(
+        "resource-table-view-descriptors.json", []
+    )
 
     lifecycle = read_optional_jsonl_name("lifecycle-intervals.jsonl")
     if not lifecycle:
@@ -488,7 +476,7 @@ def load_demo_dataset() -> dict[str, Any]:
                 "fixture": "synthetic-packed-tgz",
                 "mode": "packed-fixture",
                 "scenario": (
-                    "100K+ EVPN single-home to multi-home failover pack "
+                    "100K+-event EVPN single-home to multi-home failover pack "
                     "(browser-sized temporal review projection)"
                 ),
                 "disclosure": (
@@ -514,6 +502,8 @@ def load_demo_dataset() -> dict[str, Any]:
         "resources": resources,
         "kind_descriptors": descriptors,
         "dashboard_descriptors": dashboard_descriptors,
+        "resource_table_view_descriptors": resource_table_views,
+        "source_record_group_descriptors": SOURCE_RECORD_GROUP_DESCRIPTORS,
         "source_record_descriptors": SOURCE_RECORD_DESCRIPTORS,
         "record_lane_presets": RECORD_LANE_PRESETS,
         "relationship_descriptors": relationship_descriptors,
@@ -521,6 +511,8 @@ def load_demo_dataset() -> dict[str, Any]:
         "schema": {
             "resource_kinds": descriptors,
             "dashboards": dashboard_descriptors,
+            "resource_table_views": resource_table_views,
+            "source_record_groups": SOURCE_RECORD_GROUP_DESCRIPTORS,
             "source_record_types": SOURCE_RECORD_DESCRIPTORS,
             "record_lane_presets": RECORD_LANE_PRESETS,
             "relationship_types": relationship_descriptors,
@@ -574,12 +566,36 @@ def client_demo_dataset() -> dict[str, Any]:
 
     dataset = load_demo_dataset()
     if not is_scale_dataset(dataset):
-        return dataset
+        descriptor_by_kind = {
+            str(item.get("kind")): item
+            for item in dataset.get("kind_descriptors", [])
+            if isinstance(item, dict) and item.get("kind")
+        }
+        client = dict(dataset)
+        client["resources"] = []
+        for record in dataset.get("resources", []):
+            projected = _redact_resource_view(
+                {
+                    "state": dict(record.get("state", {})),
+                    "key": dict(record.get("key", {})),
+                    "resource": record,
+                },
+                descriptor_by_kind.get(str(record.get("kind", "UNKNOWN"))),
+            )
+            safe_record = dict(projected.get("resource") or record)
+            safe_record["state"] = projected.get("state", {})
+            safe_record["key"] = projected.get("key", {})
+            client["resources"].append(safe_record)
+        client["events"] = [
+            redact_event_for_client(item, dataset)
+            for item in dataset.get("events", [])
+        ]
+        return client
     client = {key: value for key, value in dataset.items() if not key.startswith("_")}
-    # The browser needs every identity and event timestamp for catalog search,
-    # density, and exact range grouping, but it does not need the server's full
-    # state/effect records for all 100K objects. Timeline/resource queries return
-    # those details on demand for the bounded visible working set.
+    # The browser needs every resource identity for its catalog, but history is
+    # queried in bounded windows.  Keeping the two large history streams out of
+    # the scale bootstrap prevents the browser from parsing and indexing more
+    # than 100K events before it can render the first useful view.
     client["resources"] = [
         {
             "resource_id": item["resource_id"],
@@ -594,28 +610,31 @@ def client_demo_dataset() -> dict[str, Any]:
         }
         for item in dataset["resources"]
     ]
-    client["events"] = [
-        {
-            "event_uid": item["event_uid"],
-            "timestamp_ns": item["timestamp_ns"],
-            "event_type": item["event_type"],
-            "display_name": item.get("display_name"),
-            "action": item.get("action", "observe"),
-            "outcome": item.get("outcome", "unknown"),
-            "state_changed": item.get("state_changed", False),
-            "layer": item.get("layer", "unknown"),
-            "phase": item.get("phase"),
-            "resource_id": item.get("resource_id"),
-            "resource_kind": item.get("resource_kind", "UNKNOWN"),
-            "subject": item.get("subject", {}),
-            **(
-                {"result": item["result"]}
-                if item.get("outcome") == "failure" and item.get("result")
-                else {}
+    client["events"] = []
+    client["source_records"] = []
+    revision_id = str(client.get("demo", {}).get("revision_id") or REVISION_ID)
+    client["history_transport"] = {
+        "mode": "server-windowed",
+        "events": {
+            "server_windowed": True,
+            "total_count": len(dataset.get("events", [])),
+            "query_endpoint": f"/v1/revisions/{revision_id}/event-log/query",
+            "detail_endpoint_template": (
+                f"/v1/revisions/{revision_id}/events/{{event_uid}}"
             ),
-        }
-        for item in dataset["events"]
-    ]
+        },
+        "source_records": {
+            "server_windowed": True,
+            "total_count": len(dataset.get("source_records", [])),
+            "query_endpoint": f"/v1/revisions/{revision_id}/event-log/query",
+        },
+        "density": {
+            "server_windowed": True,
+            "query_endpoint": (
+                f"/v1/revisions/{revision_id}/events/density/query"
+            ),
+        },
+    }
     return client
 
 
@@ -741,30 +760,33 @@ def resource_state_at(resource_identifier: str, timestamp_ns: int) -> dict[str, 
     state = dict(state_interval.get("properties", {})) if state_interval else {}
     if not state and record and exists:
         state = dict(record.get("state", {}))
+    kind = record.get("kind", "UNKNOWN") if record else "UNKNOWN"
+    descriptor = next(
+        (
+            item
+            for item in dataset.get("kind_descriptors", [])
+            if str(item.get("kind")) == str(kind)
+        ),
+        None,
+    )
+    condition_field = descriptor.get("condition_field") if descriptor else None
     if not exists:
         status = "absent"
         status_class = "absent"
     else:
         status = (
             (state_interval or {}).get("status")
-            or state.get("status")
-            or state.get("oper_state")
-            or state.get("program_state")
+            or (state.get(condition_field) if condition_field else None)
             or "unknown"
         )
-        status_class = (state_interval or {}).get("status_class")
-        if not status_class:
-            normalized = str(status).casefold()
-            status_class = (
-                "error"
-                if normalized in {"down", "error", "failed", "ineligible"}
-                else "healthy"
-                if normalized in {"up", "active", "ready", "programmed", "selected"}
-                else "unknown"
-            )
-    return {
+        status_class = (
+            (state_interval or {}).get("status_class")
+            or state.get("status_class")
+            or "unknown"
+        )
+    view = {
         "resource_id": resource_identifier,
-        "kind": record.get("kind", "UNKNOWN") if record else "UNKNOWN",
+        "kind": kind,
         "layer": record.get("layer", resource_identifier.split("/", 1)[0]) if record else resource_identifier.split("/", 1)[0],
         "label": record.get("label", _label_from_id(resource_identifier)) if record else _label_from_id(resource_identifier),
         "exists": exists,
@@ -777,6 +799,666 @@ def resource_state_at(resource_identifier: str, timestamp_ns: int) -> dict[str, 
         "quality": state_interval.get("quality", "unknown") if state_interval else "unknown",
         "resource": record,
     }
+    return _redact_resource_view(view, descriptor)
+
+
+def _descriptor_property_rules(
+    descriptor: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    if not descriptor:
+        return {}
+    return {
+        str(item["name"]): item
+        for item in descriptor.get("properties", [])
+        if isinstance(item, dict) and item.get("name")
+    }
+
+
+def _without_sensitive_fields(
+    value: Any,
+    sensitive_fields: set[str],
+) -> Any:
+    """Redact explicitly sensitive plug-in fields without guessing semantics."""
+
+    if not isinstance(value, dict) or not sensitive_fields:
+        return value
+    return {
+        key: nested
+        for key, nested in value.items()
+        if str(key) not in sensitive_fields
+    }
+
+
+type EventRedactionPolicy = tuple[
+    dict[str, frozenset[str]],
+    dict[str, str],
+    frozenset[str],
+]
+
+
+def _event_redaction_policy(
+    dataset: dict[str, Any],
+) -> EventRedactionPolicy:
+    """Compile plug-in sensitivity declarations for repeated event projection.
+
+    Event queries can walk more than 100K normalized records.  Compiling the
+    descriptor and resource-identity indexes once keeps the core security
+    boundary independent from page size without rebuilding those indexes for
+    every candidate event.
+    """
+
+    runtime = scale_runtime(dataset)
+    if runtime is not None and runtime.event_redaction_policy is not None:
+        return runtime.event_redaction_policy
+
+    sensitive_by_kind: dict[str, frozenset[str]] = {}
+    all_sensitive: set[str] = set()
+    for descriptor in dataset.get("kind_descriptors", []):
+        if not isinstance(descriptor, dict) or not descriptor.get("kind"):
+            continue
+        sensitive = frozenset(
+            name
+            for name, rule in _descriptor_property_rules(descriptor).items()
+            if bool(rule.get("sensitive", False))
+        )
+        sensitive_by_kind[str(descriptor["kind"])] = sensitive
+        all_sensitive.update(sensitive)
+
+    if not all_sensitive:
+        compiled = (sensitive_by_kind, {}, frozenset())
+        if runtime is not None:
+            runtime.event_redaction_policy = compiled
+        return compiled
+
+    records = (
+        runtime.resource_by_id.values()
+        if runtime is not None
+        else dataset.get("resources", [])
+    )
+    kind_by_resource_id = {
+        resource_id(record): str(record.get("kind", "UNKNOWN"))
+        for record in records
+        if isinstance(record, dict)
+    }
+    compiled = (
+        sensitive_by_kind,
+        kind_by_resource_id,
+        frozenset(all_sensitive),
+    )
+    if runtime is not None:
+        runtime.event_redaction_policy = compiled
+    return compiled
+
+
+def _event_resource_kinds(
+    event: dict[str, Any],
+    kind_by_resource_id: dict[str, str],
+) -> set[str]:
+    """Resolve the resource kinds explicitly referenced by a normalized event."""
+
+    kinds: set[str] = set()
+    identifiers: set[str] = set()
+
+    def collect(value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        for field in ("resource_kind", "kind"):
+            if value.get(field):
+                kinds.add(str(value[field]))
+        for field in ("resource_id", "resource"):
+            if value.get(field):
+                identifiers.add(str(value[field]))
+
+    collect(event)
+    collect(event.get("subject"))
+    for subject in event.get("subjects", []):
+        collect(subject)
+    for effect in event.get("effects", []):
+        collect(effect)
+    kinds.update(
+        kind_by_resource_id[identifier]
+        for identifier in identifiers
+        if identifier in kind_by_resource_id
+    )
+    return kinds
+
+
+def _redact_sensitive_tree(value: Any, sensitive_fields: set[str]) -> Any:
+    """Remove declared sensitive property names at any plug-in payload depth."""
+
+    if isinstance(value, dict):
+        return {
+            key: _redact_sensitive_tree(nested, sensitive_fields)
+            for key, nested in value.items()
+            if str(key) not in sensitive_fields
+        }
+    if isinstance(value, list):
+        return [
+            _redact_sensitive_tree(nested, sensitive_fields)
+            for nested in value
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            _redact_sensitive_tree(nested, sensitive_fields)
+            for nested in value
+        )
+    return value
+
+
+def _redact_resource_view(
+    view: dict[str, Any],
+    descriptor: dict[str, Any] | None,
+) -> dict[str, Any]:
+    rules = _descriptor_property_rules(descriptor)
+    sensitive_fields = {
+        name for name, rule in rules.items() if bool(rule.get("sensitive", False))
+    }
+    if not sensitive_fields:
+        return view
+    projected = dict(view)
+    projected["state"] = _without_sensitive_fields(
+        projected.get("state", {}), sensitive_fields
+    )
+    projected["key"] = _without_sensitive_fields(
+        projected.get("key", {}), sensitive_fields
+    )
+    record = projected.get("resource")
+    if isinstance(record, dict):
+        safe_record = {
+            key: nested
+            for key, nested in record.items()
+            if str(key) not in sensitive_fields
+        }
+        safe_record["state"] = _without_sensitive_fields(
+            record.get("state", {}), sensitive_fields
+        )
+        safe_record["key"] = _without_sensitive_fields(
+            record.get("key", {}), sensitive_fields
+        )
+        projected["resource"] = safe_record
+    return projected
+
+
+def redact_event_for_client(
+    event: dict[str, Any],
+    dataset: dict[str, Any] | None = None,
+    *,
+    policy: EventRedactionPolicy | None = None,
+) -> dict[str, Any]:
+    """Apply resource-property sensitivity rules to one event projection."""
+
+    active_dataset = dataset or load_demo_dataset()
+    sensitive_by_kind, kind_by_resource_id, all_sensitive = (
+        policy or _event_redaction_policy(active_dataset)
+    )
+    if not all_sensitive:
+        return event
+    sensitive: set[str] = set()
+    kinds = _event_resource_kinds(event, kind_by_resource_id)
+    for kind in kinds:
+        sensitive.update(sensitive_by_kind.get(kind, ()))
+    # A plug-in event that does not identify a resource kind, or names a kind
+    # outside the resource descriptor catalog, cannot safely be scoped to one
+    # policy. Fail closed rather than exposing an unclassifiable payload.
+    if not kinds or any(kind not in sensitive_by_kind for kind in kinds):
+        sensitive.update(all_sensitive)
+    if not sensitive:
+        return event
+    return _redact_sensitive_tree(event, sensitive)
+
+
+def redact_state_interval_for_client(
+    resource_identifier: str,
+    interval: dict[str, Any],
+    dataset: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Redact one generic temporal state interval using its kind descriptor."""
+
+    active_dataset = dataset or load_demo_dataset()
+    runtime = scale_runtime(active_dataset)
+    record = (
+        runtime.resource_by_id.get(resource_identifier)
+        if runtime is not None
+        else next(
+            (
+                item
+                for item in active_dataset.get("resources", [])
+                if resource_id(item) == resource_identifier
+            ),
+            None,
+        )
+    )
+    kind = str(record.get("kind", "UNKNOWN")) if record else "UNKNOWN"
+    descriptor = next(
+        (
+            item
+            for item in active_dataset.get("kind_descriptors", [])
+            if str(item.get("kind")) == kind
+        ),
+        None,
+    )
+    projected = dict(interval)
+    projected["properties"] = _redact_resource_view(
+        {"state": dict(interval.get("properties", {}))}, descriptor
+    ).get("state", {})
+    return projected
+
+
+def _resource_search_text(
+    record: dict[str, Any],
+    view: dict[str, Any],
+    descriptor: dict[str, Any] | None,
+) -> str:
+    """Build generic point-in-time search text from plug-in declarations."""
+
+    rules = _descriptor_property_rules(descriptor)
+    sensitive_fields = {
+        name for name, rule in rules.items() if bool(rule.get("sensitive", False))
+    }
+    values: list[Any] = [
+        view.get("resource_id", record.get("resource_id", "")),
+        view.get("label", record.get("label", "")),
+        view.get("kind", record.get("kind", "")),
+        view.get("layer", record.get("layer", "")),
+        view.get("status", ""),
+        view.get("status_class", ""),
+        view.get("exists", ""),
+    ]
+    key = view.get("key") or record.get("key") or {}
+    if isinstance(key, dict):
+        values.extend(
+            nested
+            for name, nested in key.items()
+            if str(name) not in sensitive_fields
+        )
+    state = view.get("state") or {}
+    if rules:
+        for name, rule in rules.items():
+            if rule.get("sensitive", False) or not rule.get("searchable", False):
+                continue
+            if isinstance(state, dict) and name in state:
+                values.append(state[name])
+            elif name in record:
+                values.append(record[name])
+        for name in descriptor.get("display_name_fields", ()) if descriptor else ():
+            if name in sensitive_fields:
+                continue
+            if isinstance(state, dict) and name in state:
+                values.append(state[name])
+            elif isinstance(key, dict) and name in key:
+                values.append(key[name])
+    else:
+        # Backward compatibility for legacy illustrative descriptors that did
+        # not yet declare PropertyDescriptor metadata. Explicit sensitive
+        # declarations always take precedence over this fallback.
+        values.append(state)
+    return " ".join(
+        json.dumps(value, sort_keys=True, ensure_ascii=False)
+        if isinstance(value, (dict, list, tuple))
+        else str(value)
+        for value in values
+        if value is not None
+    ).casefold()
+
+
+def _resource_table_view_at(
+    dataset: dict[str, Any],
+    timestamp_ns: int,
+    view_id: str,
+    *,
+    search: str | None,
+    limit: int | None,
+    offset: int,
+) -> dict[str, Any]:
+    """Project a bounded, plug-in-declared relationship tree at one moment.
+
+    The descriptor supplies every domain choice: root kinds, relationship hops,
+    direction, target kinds, columns, and bounds. This core helper only applies
+    temporal validity and performs generic graph traversal.
+    """
+
+    descriptors = dataset.get("resource_table_view_descriptors") or dataset.get(
+        "schema", {}
+    ).get("resource_table_views", [])
+    descriptor = next(
+        (item for item in descriptors if item.get("view_id") == view_id), None
+    )
+    if descriptor is None:
+        raise ValueError(f"unknown resource table view: {view_id}")
+
+    runtime = scale_runtime(dataset)
+    if runtime is not None:
+        resource_by_id = runtime.resource_by_id
+        root_records = [
+            record
+            for kind in descriptor.get("root_kinds", [])
+            for record in runtime.resources_by_kind.get(kind, [])
+        ]
+        counts_by_kind = dict(sorted(runtime.resource_counts.items()))
+
+        def endpoint_relationships(identifier: str) -> Iterable[dict[str, Any]]:
+            return runtime.relationships_by_endpoint.get(identifier, ())
+
+    else:
+        resource_by_id = {
+            resource_id(record): record for record in dataset.get("resources", [])
+        }
+        root_kinds = set(descriptor.get("root_kinds", []))
+        root_records = [
+            record
+            for record in dataset.get("resources", [])
+            if record.get("kind") in root_kinds
+        ]
+        counts_by_kind = dict(
+            sorted(
+                Counter(
+                    record.get("kind", "UNKNOWN")
+                    for record in resource_by_id.values()
+                ).items()
+            )
+        )
+        relationships_by_endpoint: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for relationship in relationships_at(timestamp_ns):
+            relationships_by_endpoint[relationship["source"]].append(relationship)
+            if relationship["target"] != relationship["source"]:
+                relationships_by_endpoint[relationship["target"]].append(relationship)
+
+        def endpoint_relationships(identifier: str) -> Iterable[dict[str, Any]]:
+            return relationships_by_endpoint.get(identifier, ())
+
+    descriptor_by_kind = {
+        item.get("kind"): item
+        for item in dataset.get("kind_descriptors", [])
+        if item.get("kind")
+    }
+    include_absent = bool(descriptor.get("include_absent", False))
+    levels = list(descriptor.get("levels", []))
+    max_children = max(
+        1, min(int(descriptor.get("max_children_per_node", 16)), 100)
+    )
+    traversal_node_limit = max(
+        1,
+        min(
+            int(
+                descriptor.get(
+                    "max_nodes",
+                    MAX_RESOURCE_TABLE_TRAVERSAL_NODES,
+                )
+            ),
+            MAX_RESOURCE_TABLE_TRAVERSAL_NODES,
+        ),
+    )
+    descriptor_limit = max(1, min(int(descriptor.get("max_roots", 100)), 500))
+    safe_limit = max(1, min(int(limit or descriptor_limit), descriptor_limit))
+    safe_offset = max(0, int(offset))
+    needle = search.casefold() if search else None
+    state_cache: dict[str, dict[str, Any]] = {}
+    existence_cache: dict[str, bool] = {}
+    neighbor_cache: dict[
+        tuple[str, int], list[tuple[dict[str, Any], dict[str, Any]]]
+    ] = {}
+
+    def temporal_state(identifier: str) -> dict[str, Any]:
+        if identifier not in state_cache:
+            raw_view = resource_state_at(identifier, timestamp_ns)
+            state_cache[identifier] = _redact_resource_view(
+                raw_view,
+                descriptor_by_kind.get(raw_view.get("kind")),
+            )
+        return state_cache[identifier]
+
+    def resource_exists(identifier: str) -> bool:
+        if identifier in existence_cache:
+            return existence_cache[identifier]
+        if runtime is not None:
+            exists = (
+                _active_interval(
+                    runtime.lifecycle_by_resource.get(identifier, []),
+                    timestamp_ns,
+                )
+                is not None
+            )
+        else:
+            exists = temporal_state(identifier)["exists"]
+        existence_cache[identifier] = exists
+        return exists
+
+    def neighbors(
+        identifier: str, depth: int
+    ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        cache_key = (identifier, depth)
+        cached = neighbor_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        if depth >= len(levels):
+            return []
+        level = levels[depth]
+        relation_types = set(level.get("relation_types", []))
+        target_kinds = set(level.get("target_kinds", []))
+        direction = level.get("direction", "outgoing")
+        found: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        seen: set[tuple[Any, ...]] = set()
+        for relationship in endpoint_relationships(identifier):
+            relation_type = relationship.get(
+                "relation_type", relationship.get("type", "related_to")
+            )
+            if relation_type not in relation_types:
+                continue
+            if runtime is not None and not _contains(
+                timestamp_ns,
+                relationship.get("valid_from_ns"),
+                relationship.get("valid_to_ns"),
+            ):
+                continue
+            candidates: list[str] = []
+            if (
+                direction in {"outgoing", "both"}
+                and relationship.get("source") == identifier
+            ):
+                candidates.append(str(relationship.get("target")))
+            if (
+                direction in {"incoming", "both"}
+                and relationship.get("target") == identifier
+            ):
+                candidates.append(str(relationship.get("source")))
+            for target_id in candidates:
+                target = resource_by_id.get(target_id)
+                if target is None or (
+                    target_kinds and target.get("kind") not in target_kinds
+                ):
+                    continue
+                if not include_absent and not resource_exists(target_id):
+                    continue
+                relationship_id = relationship.get("relationship_id")
+                identity = (
+                    ("id", str(relationship_id), target_id)
+                    if relationship_id is not None
+                    else (
+                        "structural",
+                        str(relation_type),
+                        str(relationship.get("source")),
+                        str(relationship.get("target")),
+                        relationship.get("valid_from_ns"),
+                        relationship.get("valid_to_ns"),
+                        target_id,
+                    )
+                )
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                found.append((relationship, target))
+        found.sort(
+            key=lambda pair: (
+                pair[1].get("kind", "UNKNOWN"),
+                pair[1].get("label", _label_from_id(resource_id(pair[1]))),
+                resource_id(pair[1]),
+                str(pair[0].get("relationship_id", "")),
+            )
+        )
+        neighbor_cache[cache_key] = found
+        return found
+
+    match_cache: dict[tuple[str, int], bool] = {}
+    search_traversal_count = 0
+    search_traversal_truncated = False
+
+    def branch_matches(record: dict[str, Any], depth: int) -> bool:
+        nonlocal search_traversal_count, search_traversal_truncated
+        identifier = resource_id(record)
+        cache_key = (identifier, depth)
+        cached = match_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        if needle is not None:
+            if search_traversal_count >= traversal_node_limit:
+                search_traversal_truncated = True
+                match_cache[cache_key] = False
+                return False
+            search_traversal_count += 1
+        if not include_absent and not resource_exists(identifier):
+            match_cache[cache_key] = False
+            return False
+        matched = needle is None or needle in _resource_search_text(
+            record,
+            temporal_state(identifier),
+            descriptor_by_kind.get(record.get("kind")),
+        )
+        if not matched and depth < len(levels):
+            matched = any(
+                branch_matches(target, depth + 1)
+                for _, target in neighbors(identifier, depth)[:max_children]
+            )
+        match_cache[cache_key] = matched
+        return matched
+
+    node_occurrence_count = 0
+    traversal_truncated = False
+
+    def build_node(
+        record: dict[str, Any],
+        depth: int,
+        relationship: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        nonlocal node_occurrence_count, traversal_truncated
+        # Check the global budget before materializing or recursively visiting
+        # this occurrence. A relationship tree may intentionally duplicate a
+        # resource under different parents, so the budget applies to rendered
+        # occurrences rather than unique resource identities.
+        if node_occurrence_count >= traversal_node_limit:
+            traversal_truncated = True
+            return None
+        identifier = resource_id(record)
+        view = temporal_state(identifier)
+        if not include_absent and not view["exists"]:
+            return None
+        node_occurrence_count += 1
+        node: dict[str, Any] = {
+            "resource": view,
+            "depth": depth,
+            "children": [],
+            "child_count": 0,
+            "truncated_child_count": 0,
+        }
+        if relationship is not None:
+            relation_type = relationship.get(
+                "relation_type", relationship.get("type", "related_to")
+            )
+            node["relationship"] = {
+                "relationship_id": relationship.get("relationship_id"),
+                "type": relation_type,
+                "source": relationship.get("source"),
+                "target": relationship.get("target"),
+                "quality": relationship.get("quality", "unknown"),
+                "valid_from_ns": relationship.get("valid_from_ns"),
+                "valid_to_ns": relationship.get("valid_to_ns"),
+            }
+            node["relation_label"] = levels[depth - 1].get(
+                "label", relation_type
+            )
+        if depth < len(levels):
+            children: list[dict[str, Any]] = []
+            child_candidates = neighbors(identifier, depth)
+            for child_relationship, child_record in child_candidates[:max_children]:
+                if node_occurrence_count >= traversal_node_limit:
+                    traversal_truncated = True
+                    break
+                child = build_node(child_record, depth + 1, child_relationship)
+                if child is not None:
+                    children.append(child)
+            node["child_count"] = len(child_candidates)
+            node["children"] = children
+            node["truncated_child_count"] = max(
+                0,
+                len(child_candidates) - len(children),
+            )
+            if node["truncated_child_count"]:
+                traversal_truncated = True
+        return node
+
+    root_records.sort(
+        key=lambda record: (
+            record.get("kind", "UNKNOWN"),
+            record.get("label", _label_from_id(resource_id(record))),
+            resource_id(record),
+        )
+    )
+    matched_roots: list[dict[str, Any]] = []
+    matched_count = 0
+    for record in root_records:
+        if not include_absent and not resource_exists(resource_id(record)):
+            continue
+        if not branch_matches(record, 0):
+            continue
+        if safe_offset <= matched_count < safe_offset + safe_limit:
+            matched_roots.append(record)
+        matched_count += 1
+
+    bundles: list[dict[str, Any]] = []
+    for record in matched_roots:
+        if node_occurrence_count >= traversal_node_limit:
+            traversal_truncated = True
+            break
+        node = build_node(record, 0)
+        if node is not None:
+            bundles.append(node)
+    unique_items: dict[str, dict[str, Any]] = {}
+
+    def collect(node: dict[str, Any]) -> None:
+        view = node["resource"]
+        unique_items[view["resource_id"]] = view
+        for child in node["children"]:
+            collect(child)
+
+    for bundle in bundles:
+        collect(bundle)
+    return {
+        "revision_id": REVISION_ID,
+        "time_ns": str(timestamp_ns),
+        "view_id": view_id,
+        "view": descriptor,
+        "bundles": bundles,
+        "items": list(unique_items.values()),
+        "count": matched_count,
+        "matched_count": matched_count,
+        "returned_count": len(bundles),
+        "returned_node_count": node_occurrence_count,
+        "traversal_node_limit": traversal_node_limit,
+        "traversal_truncated": traversal_truncated,
+        "search_traversal_count": search_traversal_count,
+        "search_traversal_truncated": search_traversal_truncated,
+        "matched_count_exact": not search_traversal_truncated,
+        "total_count": len(root_records),
+        "counts_by_kind": counts_by_kind,
+        "limit": safe_limit,
+        "offset": safe_offset,
+        "next_offset": (
+            safe_offset + len(bundles)
+            if safe_offset + len(bundles) < matched_count
+            else None
+        ),
+        "tables": [],
+        "windowed": runtime is not None or matched_count > len(bundles),
+    }
 
 
 def resources_at(
@@ -787,31 +1469,45 @@ def resources_at(
     search: str | None = None,
     limit: int | None = None,
     offset: int = 0,
+    view_id: str | None = None,
 ) -> dict[str, Any]:
     dataset = load_demo_dataset()
+    if view_id:
+        return _resource_table_view_at(
+            dataset,
+            timestamp_ns,
+            view_id,
+            search=search,
+            limit=limit,
+            offset=offset,
+        )
     needle = search.casefold() if search else None
     runtime = scale_runtime(dataset)
     if runtime is not None:
         safe_offset = max(0, int(offset))
         safe_limit = max(1, min(int(limit or 500), 1000))
+        descriptor_index = {
+            item["kind"]: item for item in dataset["kind_descriptors"]
+        }
         counts_by_kind: Counter[str] = Counter()
         matched_count = 0
         page_records: list[dict[str, Any]] = []
+        temporal_page_views: dict[str, dict[str, Any]] = {}
         for record in runtime.resources:
             if layers and record["layer"] not in layers:
                 continue
             if needle:
-                searchable = " ".join(
-                    (
-                        record["resource_id"],
-                        record.get("label", ""),
-                        record.get("kind", ""),
-                        json.dumps(record.get("key", {}), sort_keys=True),
-                        json.dumps(record.get("state", {}), sort_keys=True),
-                    )
-                ).casefold()
-                if needle not in searchable:
+                point_view = _redact_resource_view(
+                    resource_state_at(record["resource_id"], timestamp_ns),
+                    descriptor_index.get(record["kind"]),
+                )
+                if needle not in _resource_search_text(
+                    record,
+                    point_view,
+                    descriptor_index.get(record["kind"]),
+                ):
                     continue
+                temporal_page_views[record["resource_id"]] = point_view
             counts_by_kind[record["kind"]] += 1
             if kinds and record["kind"] not in kinds:
                 continue
@@ -819,12 +1515,13 @@ def resources_at(
                 page_records.append(record)
             matched_count += 1
         rows = [
-            resource_state_at(record["resource_id"], timestamp_ns)
+            temporal_page_views.get(record["resource_id"])
+            or _redact_resource_view(
+                resource_state_at(record["resource_id"], timestamp_ns),
+                descriptor_index.get(record["kind"]),
+            )
             for record in page_records
         ]
-        descriptor_index = {
-            item["kind"]: item for item in dataset["kind_descriptors"]
-        }
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in rows:
             grouped[row["kind"]].append(row)
@@ -858,17 +1555,25 @@ def resources_at(
             ],
             "windowed": True,
         }
+    descriptor_index = {item["kind"]: item for item in dataset["kind_descriptors"]}
     rows = []
     for record in dataset["resources"]:
         if kinds and record["kind"] not in kinds:
             continue
         if layers and record["layer"] not in layers:
             continue
-        if needle and needle not in json.dumps(record, sort_keys=True).casefold():
+        view = _redact_resource_view(
+            resource_state_at(record["resource_id"], timestamp_ns),
+            descriptor_index.get(record["kind"]),
+        )
+        if needle and needle not in _resource_search_text(
+            record,
+            view,
+            descriptor_index.get(record["kind"]),
+        ):
             continue
-        rows.append(resource_state_at(record["resource_id"], timestamp_ns))
+        rows.append(view)
     rows.sort(key=lambda item: (item["kind"], item["label"], item["resource_id"]))
-    descriptor_index = {item["kind"]: item for item in dataset["kind_descriptors"]}
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         grouped[row["kind"]].append(row)
@@ -904,6 +1609,80 @@ def events_in_range(start_ns: int, end_ns: int) -> list[dict[str, Any]]:
     ]
 
 
+def dashboard_query(
+    timestamp_ns: int,
+    *,
+    dashboard_ids: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Evaluate plug-in dashboard declarations over one temporal population."""
+
+    dataset = load_demo_dataset()
+    descriptors = [
+        item
+        for item in (
+            dataset.get("dashboard_descriptors")
+            or dataset.get("schema", {}).get("dashboards", [])
+        )
+        if isinstance(item, dict) and item.get("dashboard_id")
+    ]
+    selected_ids = (
+        {str(item) for item in dashboard_ids if str(item)}
+        if dashboard_ids is not None
+        else None
+    )
+    selected_descriptors = [
+        item
+        for item in descriptors
+        if selected_ids is None or str(item["dashboard_id"]) in selected_ids
+    ]
+    relevant_kinds: set[str] = set()
+    requires_unfiltered_population = False
+    for descriptor in selected_descriptors:
+        for widget in [
+            *descriptor.get("statistics", []),
+            *descriptor.get("tables", []),
+        ]:
+            if not isinstance(widget, dict) or str(
+                widget.get("aggregation", "count")
+            ) == "precomputed":
+                continue
+            kinds = {str(item) for item in widget.get("resource_kinds", [])}
+            if kinds:
+                relevant_kinds.update(kinds)
+            else:
+                requires_unfiltered_population = True
+
+    runtime = scale_runtime(dataset)
+    records = runtime.resources if runtime is not None else dataset.get("resources", [])
+    descriptor_by_kind = {
+        str(item.get("kind")): item
+        for item in dataset.get("kind_descriptors", [])
+        if isinstance(item, dict) and item.get("kind")
+    }
+    rows: list[dict[str, Any]] = []
+    if selected_descriptors and (relevant_kinds or requires_unfiltered_population):
+        for record in records:
+            kind = str(record.get("kind", "UNKNOWN"))
+            if not requires_unfiltered_population and kind not in relevant_kinds:
+                continue
+            rows.append(
+                _redact_resource_view(
+                    resource_state_at(resource_id(record), timestamp_ns),
+                    descriptor_by_kind.get(kind),
+                )
+            )
+    return {
+        "revision_id": REVISION_ID,
+        "time_ns": str(timestamp_ns),
+        "population_count": len(rows),
+        "dashboards": evaluate_dashboards(
+            selected_descriptors,
+            rows,
+            dashboard_ids=selected_ids,
+        ),
+    }
+
+
 def range_summary(start_ns: int, end_ns: int) -> dict[str, Any]:
     dataset = load_demo_dataset()
     selected = events_in_range(start_ns, end_ns)
@@ -926,7 +1705,6 @@ def range_summary(start_ns: int, end_ns: int) -> dict[str, Any]:
         }
         affected = sorted(affected_ids)
         endpoint_diff: list[dict[str, Any]] = []
-        status_segments: list[dict[str, Any]] = []
         for identifier in affected[:500]:
             before = resource_state_at(identifier, start_ns)
             after = resource_state_at(identifier, end_ns)
@@ -938,6 +1716,13 @@ def range_summary(start_ns: int, end_ns: int) -> dict[str, Any]:
                 endpoint_diff.append(
                     {"resource_id": identifier, "before": before, "after": after}
                 )
+
+        # Endpoint comparison and in-range status collection have independent
+        # budgets. A resource with many state intervals must not prevent later
+        # affected resources from being compared at the two range boundaries.
+        status_segments: list[dict[str, Any]] = []
+        status_segments_truncated = False
+        for identifier in affected:
             for interval in runtime.state_by_resource.get(identifier, []):
                 if _overlaps_range(
                     interval.get("valid_from_ns"),
@@ -945,10 +1730,11 @@ def range_summary(start_ns: int, end_ns: int) -> dict[str, Any]:
                     start_ns,
                     end_ns,
                 ):
-                    status_segments.append(interval)
                     if len(status_segments) >= 500:
+                        status_segments_truncated = True
                         break
-            if len(status_segments) >= 500:
+                    status_segments.append(interval)
+            if status_segments_truncated:
                 break
         return {
             "revision_id": REVISION_ID,
@@ -958,7 +1744,10 @@ def range_summary(start_ns: int, end_ns: int) -> dict[str, Any]:
             "failure_count": sum(
                 item.get("outcome") == "failure" for item in selected
             ),
-            "events": selected[:500],
+            "events": [
+                redact_event_for_client(item, dataset)
+                for item in selected[:500]
+            ],
             "counts": {
                 "by_outcome": dict(
                     Counter(item.get("outcome", "unknown") for item in selected)
@@ -969,8 +1758,14 @@ def range_summary(start_ns: int, end_ns: int) -> dict[str, Any]:
             },
             "affected_resource_count": len(affected),
             "affected_resources": affected[:500],
-            "status_segments": status_segments[:500],
+            "status_segments": [
+                redact_state_interval_for_client(
+                    str(item.get("resource", "")), item, dataset
+                )
+                for item in status_segments[:500]
+            ],
             "endpoint_diff": endpoint_diff[:500],
+            "endpoint_diff_evaluated_count": min(len(affected), 500),
             "relationship_change_count": len(mutations),
             "relationship_changes": [
                 {
@@ -983,13 +1778,13 @@ def range_summary(start_ns: int, end_ns: int) -> dict[str, Any]:
             "truncated": {
                 "events": len(selected) > 500,
                 "affected_resources": len(affected) > 500,
-                "status_segments": len(status_segments) >= 500,
+                "status_segments": status_segments_truncated,
                 "endpoint_diff": len(affected) > 500,
                 "relationship_changes": len(mutations) > 500,
             },
-            "selection_behavior": (
-                "highlight events and status spans; exact counts use the full "
-                "100K stream while detail arrays are bounded"
+                "selection_behavior": (
+                    "highlight events and status spans; exact counts use the full "
+                    "100K+-event stream while detail arrays are bounded"
             ),
         }
     affected_ids = (
@@ -1057,20 +1852,25 @@ def range_summary(start_ns: int, end_ns: int) -> dict[str, Any]:
         for item in dataset["state_intervals"]
         if item["resource"] in affected
         and (item.get("valid_to_ns") is None or int(item["valid_to_ns"]) > start_ns)
-        and (item.get("valid_from_ns") is None or int(item["valid_from_ns"]) <= end_ns)
+        and (item.get("valid_from_ns") is None or int(item["valid_from_ns"]) < end_ns)
     ]
     return {
         "revision_id": REVISION_ID,
         "start_ns": str(start_ns),
         "end_ns": str(end_ns),
         "event_count": len(selected),
-        "events": selected,
+        "events": [redact_event_for_client(item, dataset) for item in selected],
         "counts": {
             "by_outcome": dict(Counter(item.get("outcome", "unknown") for item in selected)),
             "by_action": dict(Counter(item.get("action", "unknown") for item in selected)),
         },
         "affected_resources": affected,
-        "status_segments": status_segments,
+        "status_segments": [
+            redact_state_interval_for_client(
+                str(item.get("resource", "")), item, dataset
+            )
+            for item in status_segments
+        ],
         "endpoint_diff": endpoint_diff,
         "relationship_changes": relationship_changes,
         "selection_behavior": "highlight events and status spans; endpoint diff is supplemental",
@@ -1084,5 +1884,5 @@ def _overlaps_range(
     query_end_ns: int,
 ) -> bool:
     return (end is None or int(end) > query_start_ns) and (
-        start is None or int(start) <= query_end_ns
+        start is None or int(start) < query_end_ns
     )

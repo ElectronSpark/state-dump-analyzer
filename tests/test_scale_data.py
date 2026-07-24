@@ -8,7 +8,13 @@ from router_dump_analyzer.scale_data import (
     _LazyIntervalMap,
     _ScaleTemporalIndex,
     _compact_event,
+    _icon_descriptor,
+    _resource_record,
+    _scale_projection_capabilities,
+    _status_class,
 )
+from router_dump_analyzer.demo_temporal_topology import build_demo_plugin_contract
+from scripts.generate_scale_fixtures import _plugin_schema
 
 
 RESOURCE_ID = "data-bridge-layer/DTE/blue/dte-000001"
@@ -22,7 +28,17 @@ def event(
     outcome: str,
     effect_type: str,
     after: dict[str, str],
+    state_changed: bool = True,
+    effect_fields: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    effect = {
+        "resource_id": RESOURCE_ID,
+        "kind": "DTE",
+        "effect_type": effect_type,
+        "state_changed": state_changed,
+        "after": after,
+    }
+    effect.update(effect_fields or {})
     return _compact_event(
         {
             "event_uid": uid,
@@ -31,20 +47,12 @@ def event(
             "event_name": "resource_update",
             "action": effect_type,
             "outcome": outcome,
-            "state_changed": True,
+            "state_changed": state_changed,
             "layer": "data-bridge-layer",
             "resource_id": RESOURCE_ID,
             "resource_kind": "DTE",
             "resource": RESOURCE_ID,
-            "effects": [
-                {
-                    "resource_id": RESOURCE_ID,
-                    "kind": "DTE",
-                    "effect_type": effect_type,
-                    "state_changed": True,
-                    "after": after,
-                }
-            ],
+            "effects": [effect],
             "properties": {},
             "result": {"updateStatus": "Ok" if outcome == "success" else "Error"},
         }
@@ -74,7 +82,7 @@ class LazyScaleTemporalIndexTests(unittest.TestCase):
             effect_type="update",
             after={"next_hop": "etg-c"},
         )
-        resources = {
+        self.resources = {
             RESOURCE_ID: {
                 "resource_id": RESOURCE_ID,
                 "state": {"status": "programmed", "next_hop": "snapshot-etg"},
@@ -87,25 +95,124 @@ class LazyScaleTemporalIndexTests(unittest.TestCase):
         events_by_resource = {
             RESOURCE_ID: [self.create, self.failure, self.update],
         }
-        self.index = _ScaleTemporalIndex(resources, events_by_resource)
+        self.index = _ScaleTemporalIndex(self.resources, events_by_resource)
         self.lifecycle = _LazyIntervalMap(
-            resources,
+            self.resources,
             self.index.lifecycle_intervals,
         )
-        self.states = _LazyIntervalMap(resources, self.index.state_intervals)
+        self.states = _LazyIntervalMap(self.resources, self.index.state_intervals)
 
-    def test_state_intervals_are_built_lazily_and_failures_do_not_mutate(self) -> None:
+    def test_state_intervals_honor_explicit_effects_independent_of_outcome(self) -> None:
         intervals = self.states[RESOURCE_ID]
 
         self.assertIs(intervals, self.states[RESOURCE_ID])
-        self.assertEqual(len(intervals), 2)
+        self.assertEqual(len(intervals), 3)
         self.assertEqual(intervals[0]["valid_from_ns"], "10")
-        self.assertEqual(intervals[0]["valid_to_ns"], "30")
+        self.assertEqual(intervals[0]["valid_to_ns"], "20")
         self.assertEqual(intervals[0]["properties"]["next_hop"], "etg-a")
-        self.assertEqual(intervals[1]["valid_from_ns"], "30")
-        self.assertIsNone(intervals[1]["valid_to_ns"])
+        self.assertEqual(intervals[1]["valid_from_ns"], "20")
+        self.assertEqual(intervals[1]["valid_to_ns"], "30")
+        self.assertEqual(intervals[1]["properties"]["next_hop"], "etg-b")
+        self.assertEqual(intervals[1]["status"], "down")
+        self.assertEqual(intervals[2]["valid_from_ns"], "30")
+        self.assertIsNone(intervals[2]["valid_to_ns"])
+        self.assertEqual(intervals[2]["properties"]["next_hop"], "etg-c")
+        self.assertEqual(intervals[2]["status"], "down")
+
+    def test_failed_event_without_declared_state_change_does_not_mutate(self) -> None:
+        ignored = event(
+            "event-failure-without-change",
+            20,
+            outcome="failure",
+            effect_type="update",
+            after={"status": "down", "next_hop": "etg-b"},
+            state_changed=False,
+        )
+        index = _ScaleTemporalIndex(
+            self.resources,
+            {RESOURCE_ID: [self.create, ignored, self.update]},
+        )
+
+        intervals = index.state_intervals(RESOURCE_ID)
+
+        self.assertEqual(len(intervals), 2)
+        self.assertEqual(intervals[0]["valid_to_ns"], "30")
         self.assertEqual(intervals[1]["properties"]["next_hop"], "etg-c")
         self.assertEqual(intervals[1]["status"], "active")
+
+    def test_failed_explicit_lifecycle_effects_are_not_discarded(self) -> None:
+        failed_delete = event(
+            "event-delete",
+            20,
+            outcome="failure",
+            effect_type="delete",
+            after={},
+        )
+        recreate = event(
+            "event-recreate",
+            30,
+            outcome="success",
+            effect_type="create",
+            after={"status": "active", "next_hop": "etg-c"},
+        )
+        index = _ScaleTemporalIndex(
+            self.resources,
+            {RESOURCE_ID: [self.create, failed_delete, recreate]},
+        )
+
+        lifecycle = index.lifecycle_intervals(RESOURCE_ID)
+        states = index.state_intervals(RESOURCE_ID)
+
+        self.assertEqual(
+            [(item["valid_from_ns"], item["valid_to_ns"]) for item in lifecycle],
+            [("10", "20"), ("30", None)],
+        )
+        self.assertEqual(
+            [(item["valid_from_ns"], item["valid_to_ns"]) for item in states],
+            [("10", "20"), ("30", None)],
+        )
+
+    def test_condition_class_aliases_survive_without_a_condition(self) -> None:
+        for field, declared_class in (
+            ("condition_class", "degraded"),
+            ("status_class", "error"),
+        ):
+            with self.subTest(field=field):
+                update = event(
+                    f"event-{field}",
+                    20,
+                    outcome="success",
+                    effect_type="update",
+                    after={"next_hop": "etg-b"},
+                    effect_fields={field: declared_class},
+                )
+                effect = update["effects"][0]
+                index = _ScaleTemporalIndex(
+                    self.resources,
+                    {RESOURCE_ID: [self.create, update]},
+                )
+
+                self.assertNotIn("condition", effect)
+                self.assertEqual(effect["status_class"], declared_class)
+                self.assertEqual(
+                    index.state_intervals(RESOURCE_ID)[-1]["status_class"],
+                    declared_class,
+                )
+
+    def test_public_condition_class_precedes_compatibility_alias(self) -> None:
+        update = event(
+            "event-condition-class-precedence",
+            20,
+            outcome="success",
+            effect_type="update",
+            after={"next_hop": "etg-b"},
+            effect_fields={
+                "condition_class": "degraded",
+                "status_class": "healthy",
+            },
+        )
+
+        self.assertEqual(update["effects"][0]["status_class"], "degraded")
 
     def test_lifecycle_and_snapshot_fallback_match_eager_contract(self) -> None:
         lifecycle = self.lifecycle[RESOURCE_ID]
@@ -119,12 +226,227 @@ class LazyScaleTemporalIndexTests(unittest.TestCase):
         sentinel = object()
         self.assertIs(self.states.get("missing", sentinel), sentinel)
 
-    def test_compactor_retains_only_successful_state_payloads(self) -> None:
+    def test_compactor_retains_explicit_state_payloads_independent_of_outcome(self) -> None:
         self.assertEqual(
             self.create["effects"][0]["after"]["next_hop"],
             "etg-a",
         )
-        self.assertNotIn("after", self.failure["effects"][0])
+        self.assertEqual(
+            self.failure["effects"][0]["after"]["next_hop"],
+            "etg-b",
+        )
+
+
+class ScaleKindDescriptorTests(unittest.TestCase):
+    def test_scale_semantics_override_review_fields_without_losing_icon(self) -> None:
+        review = {
+            "ETG": {
+                "kind": "ETG",
+                "display_name": "Encapsulation tunnel group",
+                "key_fields": ["review-id"],
+                "display_name_fields": ["review-name"],
+                "default_table_fields": ["review-status"],
+                "condition_field": "review-status",
+                "presentation_tags": ["forwarding"],
+                "icon": {"path": "M 2 2 L 22 22"},
+            }
+        }
+        scale = {
+            "ETG": {
+                "kind": "ETG",
+                "layer": "data-bridge-layer",
+                "key_fields": ["vrf", "service_id"],
+                "display_name_fields": ["service_id"],
+                "default_table_fields": ["status", "overlay_destination"],
+                "condition_field": "status",
+            }
+        }
+
+        descriptor = _icon_descriptor("ETG", review, scale)
+
+        self.assertEqual(descriptor["key_fields"], ["vrf", "service_id"])
+        self.assertEqual(descriptor["display_name_fields"], ["service_id"])
+        self.assertEqual(
+            descriptor["default_table_fields"],
+            ["status", "overlay_destination"],
+        )
+        self.assertEqual(descriptor["condition_field"], "status")
+        self.assertEqual(descriptor["layer"], "data-bridge-layer")
+        self.assertEqual(descriptor["icon"], review["ETG"]["icon"])
+        self.assertEqual(descriptor["presentation_tags"], ["forwarding"])
+        self.assertEqual(
+            descriptor["display_name"],
+            "Encapsulation Tunnel Group",
+        )
+
+    def test_review_semantics_do_not_leak_when_scale_descriptor_omits_them(
+        self,
+    ) -> None:
+        descriptor = _icon_descriptor(
+            "DTE",
+            {
+                "DTE": {
+                    "key_fields": ["wrong-review-id"],
+                    "default_table_fields": ["wrong-review-field"],
+                    "condition_field": "wrong-review-condition",
+                    "icon": {"path": "M 1 1 L 2 2"},
+                }
+            },
+            {"DTE": {"kind": "DTE", "layer": "data-bridge-layer"}},
+        )
+
+        self.assertEqual(descriptor["key_fields"], [])
+        self.assertEqual(
+            descriptor["default_table_fields"],
+            ["status", "oper_state", "next_hop"],
+        )
+        self.assertEqual(descriptor["condition_field"], "status")
+        self.assertEqual(descriptor["icon"]["path"], "M 1 1 L 2 2")
+        self.assertEqual(
+            descriptor["display_name"],
+            "Decapsulation Tunnel Entry",
+        )
+
+    def test_scale_plugin_declares_usable_fields_for_every_kind(self) -> None:
+        descriptors = _plugin_schema()["resource_kinds"]
+
+        self.assertEqual(
+            {item["kind"] for item in descriptors},
+            {
+                "ETG",
+                "ETE",
+                "DTE",
+                "EVPN_ES",
+                "NEIGHBOR",
+                "VIRTUAL_INTERFACE",
+                "IP_ROUTING",
+            },
+        )
+        for descriptor in descriptors:
+            with self.subTest(kind=descriptor["kind"]):
+                self.assertTrue(descriptor["key_fields"])
+                self.assertTrue(descriptor["display_name_fields"])
+                self.assertTrue(descriptor["default_table_fields"])
+                self.assertEqual(descriptor["condition_field"], "status")
+                self.assertIn("status", descriptor["default_table_fields"])
+
+
+class ScaleProjectionCapabilityTests(unittest.TestCase):
+    def test_missing_or_declared_scale_capabilities_default_to_safe_omission(
+        self,
+    ) -> None:
+        legacy = _scale_projection_capabilities({})
+        declared = _scale_projection_capabilities(_plugin_schema())
+
+        for capabilities in (legacy, declared):
+            self.assertTrue(
+                capabilities["resource_association_topology"]["available"]
+            )
+            self.assertFalse(capabilities["underlay_topology"]["available"])
+            self.assertFalse(capabilities["route_resolution"]["available"])
+
+    def test_scale_contract_does_not_expose_review_underlay_status_sources(
+        self,
+    ) -> None:
+        capabilities = _scale_projection_capabilities(_plugin_schema())
+        contract = build_demo_plugin_contract(
+            {
+                "demo": {
+                    "node": "router-state-lab-100k",
+                    "capture_ns": "1759680600000000000",
+                },
+                "relationship_descriptors": [
+                    {
+                        "relation_type": "uses_interface",
+                        "plugin_defined": True,
+                    },
+                    {
+                        "relation_type": "has_neighbor",
+                        "plugin_defined": True,
+                    },
+                ],
+                "projection_capabilities": capabilities,
+            }
+        )
+
+        self.assertEqual(
+            [
+                projection["projection_id"]
+                for projection in contract["topology_projections"]
+            ],
+            ["plugin.resource-association"],
+        )
+        self.assertEqual(
+            contract["topology_projections"][0]["static_connectivity"],
+            [],
+        )
+
+
+class PackedFixturePluginResourceRecordTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.legacy_values = (
+            "PLUGIN_NEIGHBOR",
+            "routing/PLUGIN_NEIGHBOR/blue/42",
+            "routing",
+            "blue",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "up",
+            "up",
+            "",
+            "192.0.2.42",
+        )
+
+    def test_generic_json_preserves_typed_plugin_keys_and_state(self) -> None:
+        record = _resource_record(
+            self.legacy_values,
+            key_json=(
+                '{"vrf":"red","protocol":"isis","peer_id":'
+                '{"type":"opaque_uint","value":42}}'
+            ),
+            state_json=(
+                '{"status":"established","hold_time_seconds":30,'
+                '"capabilities":["sr-mpls","srv6"]}'
+            ),
+        )
+
+        self.assertEqual(record["key"]["vrf"], "red")
+        self.assertEqual(
+            record["key"]["peer_id"],
+            {"type": "opaque_uint", "value": 42},
+        )
+        self.assertEqual(record["state"]["hold_time_seconds"], 30)
+        self.assertEqual(record["state"]["neighbor"], "192.0.2.42")
+        self.assertEqual(record["state"]["status"], "established")
+        self.assertEqual(record["status"], "established")
+
+    def test_legacy_rows_still_load_without_json_columns(self) -> None:
+        record = _resource_record(self.legacy_values)
+
+        self.assertEqual(record["key"], {"vrf": "blue"})
+        self.assertEqual(record["state"]["neighbor"], "192.0.2.42")
+        self.assertEqual(record["status"], "up")
+
+    def test_generic_columns_require_json_objects(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "KEY_JSON must contain a JSON object"):
+            _resource_record(self.legacy_values, key_json='["not", "an", "object"]')
+        with self.assertRaisesRegex(RuntimeError, "STATE_JSON must contain valid JSON"):
+            _resource_record(self.legacy_values, state_json="{broken")
+
+    def test_fixture_status_vocabulary_is_normalized_by_the_plugin_adapter(self) -> None:
+        self.assertEqual(_status_class("reachable"), "healthy")
+        self.assertEqual(_status_class("restored"), "healthy")
+        self.assertEqual(_status_class("degraded"), "degraded")
+        self.assertEqual(_status_class("withdrawn"), "error")
+        self.assertEqual(_status_class("vendor-failover-ready"), "unknown")
 
 
 if __name__ == "__main__":

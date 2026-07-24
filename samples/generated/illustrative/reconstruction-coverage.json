@@ -1,7 +1,7 @@
 {
   "ambiguous_outputs": 0,
   "best_effort_outputs": 12,
-  "exact_outputs": 64,
+  "exact_outputs": 65,
   "scope": "node-a",
   "unknown_outputs": 1,
   "unknown_reasons": {

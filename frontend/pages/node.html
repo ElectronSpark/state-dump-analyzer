@@ -10,7 +10,7 @@
       name="description"
       content="Interactive review demo for a temporal router dump analyzer."
     />
-    <link rel="stylesheet" href="/assets/styles.css?v=20260720-full-scale-125k" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260721-combinatorial-audit-v1" />
   </head>
   <body>
     <div class="app-shell">
@@ -27,6 +27,8 @@
           <a href="#resource-tables">Resources</a>
           <a href="#dependency-graph">Correlations</a>
           <a href="#findings">Consistency</a>
+          <a href="#temporal-topology">Topology</a>
+          <a id="open-fabric" href="/">Fabric</a>
           <a href="#route">Route</a>
           <a href="#plugin-dashboards">Dashboards</a>
         </nav>
@@ -38,7 +40,7 @@
       <div class="disclosure" role="note">
         <span class="pulse-dot" aria-hidden="true"></span>
         <strong>Synthetic review fixture.</strong>
-        <span id="disclosure-text">Loading the packed 100K fixture…</span>
+        <span id="disclosure-text">Loading the packed 100K+-event fixture…</span>
         <a href="/docs" target="_blank" rel="noreferrer">API playground</a>
       </div>
 
@@ -60,25 +62,8 @@
           </div>
           <div class="failure-chain" id="incident-chain" aria-label="Cross-layer failure propagation">
             <div class="chain-heading">
-              <span>Highlighted incident</span>
-              <span class="chain-latency">15 ms propagation</span>
-            </div>
-            <button class="chain-node hardware" data-event-index="4" type="button">
-              <span>Hardware</span>
-              <strong>NBR 198.51.100.0</strong>
-              <small>reachable → failed</small>
-            </button>
-            <div class="chain-arrow" aria-hidden="true">↓</div>
-            <button class="chain-node bridge" data-event-index="5" type="button">
-              <span>Data bridge</span>
-              <strong>ETE etg-100/ete-b</strong>
-              <small>program_state = error</small>
-            </button>
-            <div class="chain-arrow" aria-hidden="true">↓</div>
-            <div class="chain-node control passive">
-              <span>Control</span>
-              <strong>Route 192.0.2.128/25</strong>
-              <small>selected next hop unresolved</small>
+              <span>Loading plug-in incident…</span>
+              <span class="chain-latency">—</span>
             </div>
           </div>
         </section>
@@ -147,11 +132,11 @@
                     <form class="record-lane-form" id="record-lane-form">
                       <label>
                         Lane name
-                        <input id="record-lane-label" maxlength="120" placeholder="BFD diagnostics" required />
+                        <input id="record-lane-label" maxlength="120" placeholder="Unmatched diagnostics" required />
                       </label>
                       <label>
                         Safe regex
-                        <input id="record-lane-pattern" maxlength="160" placeholder="BFD|timeout|retry" required />
+                        <input id="record-lane-pattern" maxlength="160" placeholder="timeout|retry|warning" required />
                       </label>
                       <label>
                         Source
@@ -235,7 +220,7 @@
             <div>
               <p class="eyebrow">AT SELECTED TIME</p>
               <h2>Resource tables</h2>
-              <p>Types and columns are supplied by the active plug-in; rows reflect the independent time cursor.</p>
+              <p>The plug-in can add relationship-bundled views while every row remains an independent temporal resource.</p>
             </div>
             <label class="resource-search">
               Search resources
@@ -261,10 +246,26 @@
               </div>
               <span class="correlation-time-chip pending" id="correlation-time" aria-live="polite">Selected moment · loading…</span>
               <button class="graph-scope-toggle" id="graph-scope-toggle" type="button">Show full graph</button>
+              <button
+                class="correlation-panel-toggle"
+                id="correlation-panel-toggle"
+                type="button"
+                aria-expanded="true"
+                aria-controls="dependency-graph-content"
+              >Collapse correlation</button>
             </div>
-            <div class="graph-stage" id="graph-stage" role="group" aria-label="Resource dependency graph"></div>
-            <p class="panel-footnote" id="graph-note"></p>
-            <div class="correlation-list" id="correlation-list"></div>
+            <div class="graph-panel-content" id="dependency-graph-content">
+              <div class="graph-stage" id="graph-stage" role="group" aria-label="Resource dependency graph"></div>
+              <p class="panel-footnote" id="graph-note"></p>
+              <div class="correlation-list" id="correlation-list"></div>
+            </div>
+            <button
+              class="correlation-back-to-top"
+              id="correlation-back-to-top"
+              type="button"
+              aria-label="Back to the top of the page"
+              hidden
+            ><span aria-hidden="true">↑</span> Back to top</button>
           </article>
 
         </section>
@@ -279,6 +280,138 @@
             <div class="finding-summary" id="finding-summary"></div>
           </div>
           <div class="findings-grid" id="findings-grid"></div>
+        </section>
+
+        <section class="section-wrap panel temporal-topology" id="temporal-topology">
+          <div class="section-heading compact topology-heading">
+            <div>
+              <p class="eyebrow">EXTERNAL RECONSTRUCTION VIEW</p>
+              <h2>Temporal topology and layer status</h2>
+              <p>Inspect the generic resources and inferred connectivity an external topology reconstructor would receive. Projection, status perspective, and clock policy are independent choices.</p>
+            </div>
+            <span class="topology-contract-chip">generic API</span>
+          </div>
+
+          <form class="topology-query-form" id="topology-query-form">
+            <div class="topology-query-grid">
+              <label>
+                Topology projection
+                <select id="topology-projection" name="projection_id"></select>
+                <small id="topology-projection-note">Plug-in-defined connectivity semantics</small>
+              </label>
+              <label>
+                Status perspective
+                <select id="topology-perspective" name="status_perspective_id"></select>
+                <small id="topology-perspective-note">Layer supplying operational state</small>
+              </label>
+              <label>
+                Time basis
+                <select id="topology-basis-kind" name="basis_kind">
+                  <option value="absolute_time">Absolute timestamp</option>
+                  <option value="relative_to_watermark">Relative to layer watermark</option>
+                </select>
+                <small>Resolved independently for every node</small>
+              </label>
+              <label>
+                Clock policy
+                <select id="topology-clock-policy" name="clock_policy">
+                  <option value="strict">Strict</option>
+                  <option value="best_effort">Best effort</option>
+                </select>
+                <small>Strict keeps unaligned nodes unknown</small>
+              </label>
+            </div>
+
+            <div class="topology-time-editor">
+              <div class="topology-time-mode" id="topology-absolute-editor">
+                <label>
+                  Absolute timestamp (nanoseconds)
+                  <input id="topology-absolute-time" name="absolute_time_ns" inputmode="numeric" autocomplete="off" />
+                </label>
+                <label class="topology-clock-domain-field">
+                  Clock domain
+                  <input id="topology-absolute-clock-domain" name="absolute_clock_domain" value="utc" readonly aria-label="Absolute clock domain: UTC" />
+                </label>
+                <button class="secondary-action" id="topology-use-selected-time" type="button">Use selected moment</button>
+                <label class="topology-follow-toggle">
+                  <input id="topology-follow-cursor" type="checkbox" checked />
+                  Follow timeline selection
+                </label>
+              </div>
+              <div class="topology-time-mode" id="topology-relative-editor" hidden>
+                <label>
+                  Seconds from each layer watermark
+                  <input id="topology-relative-seconds" name="relative_seconds" value="-5" inputmode="decimal" autocomplete="off" />
+                </label>
+                <p>Zero is the latest complete status for each node and selected perspective. A negative value reconstructs its past.</p>
+              </div>
+              <button class="primary-action topology-run-query" type="submit">Reconstruct topology</button>
+              <span class="topology-query-error" id="topology-query-error" role="alert"></span>
+            </div>
+          </form>
+
+          <div class="topology-query-state" id="topology-query-state" aria-live="polite">
+            <div class="empty-state">Preparing topology providers&hellip;</div>
+          </div>
+
+          <section class="topology-clock-section" aria-labelledby="topology-clock-title">
+            <div class="topology-subheading">
+              <div>
+                <span class="inspector-kicker">RESOLVED BASIS</span>
+                <h3 id="topology-clock-title">Per-node time and clock confidence</h3>
+              </div>
+              <p id="topology-basis-summary">No topology query has run.</p>
+            </div>
+            <div class="topology-node-times" id="topology-node-times"></div>
+          </section>
+
+          <div class="topology-summary-grid" id="topology-summary-grid"></div>
+
+          <div class="topology-result-grid">
+            <section class="topology-result-panel topology-resources-panel" aria-labelledby="topology-resources-title">
+              <div class="topology-subheading">
+                <div>
+                  <span class="inspector-kicker">STATUS SNAPSHOT</span>
+                  <h3 id="topology-resources-title">Resources</h3>
+                </div>
+                <span id="topology-resource-count">0 returned</span>
+              </div>
+              <div class="topology-table-scroll">
+                <table class="topology-table">
+                  <thead><tr><th>Resource</th><th>Node / layer</th><th>Existence / status</th><th>Validity</th><th>Quality</th></tr></thead>
+                  <tbody id="topology-resource-body"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="topology-result-panel topology-connectivity-panel" aria-labelledby="topology-connectivity-title">
+              <div class="topology-subheading">
+                <div>
+                  <span class="inspector-kicker">PROJECTED GRAPH</span>
+                  <h3 id="topology-connectivity-title">Relationships and inferred connectivity</h3>
+                </div>
+                <span id="topology-connectivity-count">0 returned</span>
+              </div>
+              <div class="topology-table-scroll">
+                <table class="topology-table">
+                  <thead><tr><th>Source &rarr; target</th><th>Relationship</th><th>Status</th><th>Validity / evidence</th></tr></thead>
+                  <tbody id="topology-connectivity-body"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+
+          <section class="topology-result-panel topology-changes-panel" aria-labelledby="topology-changes-title">
+            <div class="topology-subheading">
+              <div>
+                <span class="inspector-kicker">HISTORICAL REPLAY</span>
+                <h3 id="topology-changes-title">Status and connectivity changes</h3>
+                <small>Bounded to the two minutes before the selected basis; use the API cursor for longer replay.</small>
+              </div>
+              <span id="topology-change-count">0 returned</span>
+            </div>
+            <div class="topology-change-list" id="topology-change-list"></div>
+          </section>
         </section>
 
         <section class="split-grid section-wrap">
@@ -304,7 +437,7 @@
               </label>
               <button type="submit">Resolve</button>
             </form>
-            <div id="route-result" class="route-result"></div>
+            <div id="route-result" class="route-result" aria-live="polite" aria-busy="false"></div>
           </article>
 
           <article class="panel inventory-panel" id="inventory">
@@ -343,8 +476,7 @@
           <div class="log-stream-controls" aria-label="Visible log streams">
             <span>Include</span>
             <label><input id="event-include-normalized" type="checkbox" checked /> Normalized events</label>
-            <label><input id="event-include-ctf" type="checkbox" /> CTF records</label>
-            <label><input id="event-include-external" type="checkbox" /> Non-CTF records</label>
+            <span id="event-source-group-controls" class="source-record-group-controls"></span>
             <output id="event-log-status" aria-live="polite">Preparing stream…</output>
           </div>
           <div class="table-wrap event-log-scroll" id="event-log-scroll" tabindex="0" aria-label="Scrollable normalized and source event log">
@@ -374,6 +506,7 @@
             <button id="reset-dashboard-layout" type="button">Reset layout</button>
           </div>
           <nav class="dashboard-index" id="dashboard-index" aria-label="Dashboard index"></nav>
+          <div class="dashboard-time-status" id="dashboard-time-status" role="status" aria-live="polite"></div>
           <div class="dashboard-modules" id="dashboard-modules"></div>
         </section>
       </main>
@@ -402,7 +535,7 @@
       <textarea
         id="review-notes"
         rows="7"
-        placeholder="Example: ETE keys also need EVI and ESI; show the raw callback body beside each mutation…"
+        placeholder="Example: this resource needs another compound-key field; show more source evidence beside each mutation…"
       ></textarea>
       <div class="drawer-actions">
         <button class="primary-action" id="copy-review" type="button">Copy review summary</button>
@@ -413,6 +546,6 @@
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <div class="timeline-hover" id="timeline-hover" role="dialog" aria-label="Timeline details" hidden></div>
 
-    <script type="module" src="/assets/app.js?v=20260720-source-record-scroll"></script>
+    <script type="module" src="/assets/app.js?v=20260722-scale-stream-v1"></script>
   </body>
 </html>

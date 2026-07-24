@@ -1,227 +1,273 @@
-# Router dump analyzer design pack
+# Router State Lab
 
-This repository turns the product brief into an implementation-ready design for
-a Python 3.12 server. It is intentionally generic: platform- and release-specific
-archive discovery, parsing, correlation, consistency, and forwarding semantics
-remain in versioned plugins.
+**Explore how router state changes across time, layers, and devices.**
 
-## Run the local review demo
+Router State Lab is a runnable design and conformance demo for a temporal router
+dump analyzer. It turns heterogeneous status tables and logs into resources,
+events, relationships, topology, and route explanations that can be inspected at
+any point in a capture.
 
-The repository now includes **Router State Lab**, a runnable FastAPI and browser
-demo launched from one synthetic 100K outer TGZ. The scenario combines an
-IS-IS underlay, SR-MPLS and SRv6 forwarding, EVPN routes, and plugin-defined
-Forwarding Group, ETG/ETE, standalone DTE, Virtual Interface, Glue, and hardware
-resources. It is designed for product and domain review: the timeline,
-point-in-time resource tables, temporal correlation graph, consistency findings,
-route explanations, archive inventory, and review notes are interactive, while
-every fixture-only or missing capability stays visible.
+The repository includes a deterministic **125,000-event / 10,000-resource**
+scenario covering IS-IS, SR-MPLS, SRv6, EVPN multihoming, MPLS VPNs, failover,
+and cross-layer inconsistency.
 
-### WSL / Linux (recommended)
+> [!IMPORTANT]
+> The web application currently reviews the bundled synthetic dump. It does not
+> yet accept arbitrary uploads or act as a production plug-in coordinator.
 
-Keep the repository on the native WSL filesystem rather than below `/mnt/c`.
-On the first run, the bootstrap installs a checksum-verified, WSL-native
-Miniforge distribution when Conda is not already available, creates the
-`router-dump-analyzer-demo` environment, and runs the complete test suite:
+## Start here
 
-```bash
-cd ~/state-dump-analyzer
-./scripts/bootstrap_wsl.sh
-```
+| Goal | Go to |
+|---|---|
+| Run the bundled demo | [Run the demo](#run-the-demo) |
+| Learn what to inspect | [What to try](#what-to-try) |
+| Build a device plug-in | [Plug-in author quickstart](docs/plugin-author-quickstart.md) |
+| Integrate with the API | [API payload contract](docs/api-contract.md) |
+| Understand the design | [Architecture and library decisions](docs/architecture.md) |
+| Regenerate sample data | [Sample input guide](samples/README.md) |
 
-Launch the hard-coded packed 100K+ demo at `http://127.0.0.1:8765`:
+## Run the demo
 
-```bash
-./scripts/launch_demo.sh
-```
+The normal launcher serves both the FastAPI backend and browser application.
+Node.js is not required unless you want to develop the frontend separately.
 
-The default launch now indexes the complete 125,000-matched-event, 100,000-resource
-normalized corpus (including 274,998 temporal relationships and 219,998
-relationship mutations). The loader streams the TGZ once and builds state and
-lifecycle intervals lazily for only the resources a bounded query touches. In
-the reference WSL workspace, a cold build is about 4–5 seconds and peaks below
-0.9 GiB; hardware and filesystem caches will vary. Browser tables, event-log
-rows, timeline lanes, and graph layouts are virtualized, while totals, event
-density, range counts, and plug-in statistics are calculated from the full
-corpus. Use `--review-projection` only when the small embedded projection is
-intentionally desired.
+### Windows
 
-The WSL launcher does not open a browser by default because Windows can reach
-the WSL service through localhost. A different port and a fixture rebuild are
-available when needed:
-
-```bash
-./scripts/launch_demo.sh --port 8876 --rebuild-fixture
-```
-
-### Windows / PowerShell
-
-From PowerShell, create the Python 3.12 Conda environment and run its tests. The
-`.cmd` wrapper also works on machines whose execution policy blocks local
-PowerShell scripts:
+Install [Miniconda](https://docs.conda.io/miniconda.html) or
+Anaconda, then run these commands from PowerShell in the repository root:
 
 ```powershell
 .\scripts\setup_demo.cmd
-```
-
-If the demo is already running, stop that process before rerunning setup; Windows
-locks the installed launcher while it is in use. The wrapper enables UTF-8 for
-older Conda versions, so repositories below Unicode paths are supported.
-
-Then launch the demo (it opens `http://127.0.0.1:8765`; the former Splunk-facing
-port is not used). The launcher generates the deterministic scale corpus,
-browser projection, and packed TGZ when they are missing:
-
-```powershell
 .\scripts\launch_demo.cmd
 ```
 
-Use a different port or avoid opening the default browser when needed:
+The setup script creates or updates the Python 3.12 environment and runs the
+test suite. The launcher generates the deterministic packed fixture when it is
+missing, starts the server, and opens `http://127.0.0.1:8765`.
+
+If port 8765 is occupied:
 
 ```powershell
-.\scripts\launch_demo.cmd -Port 8080 -NoBrowser
+.\scripts\launch_demo.cmd -Port 8876 -NoBrowser
 ```
 
-Force regeneration of the complete packed fixture when needed:
+To rebuild the complete fixture:
 
 ```powershell
 .\scripts\launch_demo.cmd -RebuildFixture -NoBrowser
 ```
 
-The equivalent manual commands are:
+### Linux or WSL
+
+Keep a WSL checkout on its native Linux filesystem rather than under `/mnt/c`
+for better filesystem performance:
+
+```bash
+./scripts/bootstrap_wsl.sh
+./scripts/launch_demo.sh
+```
+
+The bootstrap uses an existing compatible Conda installation when available.
+Its automatic Miniforge installation currently supports x86_64 Linux/WSL.
+
+The Linux launcher does not open a browser by default. Open
+`http://127.0.0.1:8765`, or choose another port:
+
+```bash
+./scripts/launch_demo.sh --port 8876
+```
+
+### Main URLs
+
+| URL | Purpose |
+|---|---|
+| `http://127.0.0.1:8765/` | Multi-node topology and route tracing |
+| `http://127.0.0.1:8765/node` | Individual-node temporal workspace |
+| `http://127.0.0.1:8765/docs` | Interactive API documentation |
+| `http://127.0.0.1:8765/health` | Server and fixture health |
+
+The topology page is the normal entry point. Select a device or endpoint there
+to open its node workspace with the same reconstruction context.
+
+## What to try
+
+1. **Trace both directions.** Choose a source, destination, and VRF; then compare
+   forward and return paths. Switch between all candidates and a focused path to
+   inspect active, standby, dead, incomplete, and best-effort resolutions. The
+   review scenarios also include a recursive next-hop cycle, a cross-node
+   forwarding loop, and an EVPN split-horizon policy block; the last keeps the
+   intentionally rejected candidate visible instead of calling it a dead link.
+2. **Explore the network model.** Toggle subnets, interfaces, subinterfaces,
+   VLANs, and LAGs. Compare physical/subnet connectivity with the focused route
+   graph and inspect how each inferred element was calculated.
+3. **Travel through time.** Open a node, click a moment, or drag horizontally
+   across the timeline to select a range. The resource state, relationships,
+   findings, and normalized event list follow the selected time.
+4. **Follow causality.** Expand temporal correlations to see dependencies and
+   dependents. Ctrl-click between timeline events and normalized source records;
+   press **Esc** to clear the current event, moment, or range.
+5. **Inspect scale without losing detail.** Browse the virtualized 125K-event
+   log, zoom-aware density lane, 10K-resource tables, unmatched-log lanes, route
+   tables, neighbor data, and plug-in-defined dashboards.
+6. **Look for disagreement.** Review delayed or failed updates, changing next
+   hops, asymmetric forwarding, and differences between control-plane,
+   forwarding, and hardware-layer reachability.
+
+Topology and route-path graphs support node dragging, background panning,
+touchpad gestures, pinch zoom, and Ctrl-wheel zoom. Hover or keyboard-focus
+interactive elements for provenance, status, resolution, and inference details.
+
+## The bundled scenario
+
+One outer TGZ contains four synthetic container dumps. Each container includes
+synthetic CTF 2 streams and resource-status text; some contain one table and
+others contain several typed tables. This archive drives the 125K-event
+single-node workspace. The topology and route pages use a separate built-in
+multi-node provider; their underlay and route facts are not decoded from the
+packed dump.
+
+| Dimension | Included coverage |
+|---|---|
+| Scale dump | 125,000 matched events, 10,000 resources, 47,598 relationship intervals, and 58,198 relationship mutations |
+| Protocols | Connected and static routes, IPv4/IPv6 unicast, IS-IS, SR-MPLS, SRv6, MPLS transport/L3VPN, and EVPN types 2 and 5 |
+| Multi-node route model | Ten assembly members (nine selected by default and one intentionally unavailable), seven routed nodes, shared and external subnets, VLAN subinterfaces, LAGs, physical ports, and EVPN Ethernet Segments |
+| Resource history | Forwarding Groups, ETGs with ETE paths, standalone DTEs, Virtual Interfaces, Glue, neighbors, IP routing, and hardware objects |
+| Change waves | Single-home creation, multihome expansion, mass ES withdrawal and failover, mass restore, and distinct next-hop churn |
+| Failure cases | Recursive and cross-node loops, split-horizon policy exclusion, hop/recursion limits, dead candidates, stale FIB state, cross-layer mismatch, missing intermediate resolution, one-way forwarding, and clock uncertainty |
+
+The full corpus is indexed by default. Timeline, graph, event-log, and table
+queries are bounded or virtualized rather than sending the entire dataset to the
+browser. A content- and projection-keyed SQLite sidecar caches only client-safe
+derived search text; raw and plug-in-declared sensitive values are not indexed.
+
+The Linux/WSL launcher also exposes the smaller embedded projection for an
+intentional lightweight UI review:
+
+```bash
+./scripts/launch_demo.sh --review-projection
+```
+
+## How the design is divided
+
+The central rule is simple: the core owns generic temporal machinery; plug-ins
+own device and protocol meaning.
+
+| Owner | Responsibilities |
+|---|---|
+| Core | Immutable revisions, safe archive inventory, source records, generic temporal storage, uncertainty, bounded queries, pagination, API contracts, LPM, bounded recursive/multipath traversal, exact typed policy comparison, cycle/limit handling, and reusable UI components |
+| Device plug-ins | Dump recognition, input parsing, resource types and keys, state transitions, relationships, forwarding-object projection, candidate rank/group semantics, typed policy scopes, topology classifications, consistency rules, route-resolution text, icons, and dashboard descriptors |
+| Federation/linker plug-ins | Matching endpoint claims and explaining inter-node connectivity without assuming every device uses the same plug-in |
+
+The core never turns missing evidence into invented state. If forward history,
+clock alignment, or cross-layer evidence is insufficient, the result remains
+`unknown`, `ambiguous`, `incomplete`, or explicitly best-effort.
+
+See the [architecture](docs/architecture.md) for the complete ownership model,
+temporal algorithms, storage recommendation, security boundary, and delivery
+sequence.
+
+## Build a device plug-in
+
+For the shortest working path, use these three resources:
+
+- **Start:** [Plug-in author quickstart](docs/plugin-author-quickstart.md)
+- **Copy:** [Minimal installable plug-in](examples/minimal_plugin)
+- **Reference:** [Normative plug-in contract](docs/plugin-contract.md)
+
+After running the normal environment setup, validate the example:
 
 ```powershell
-& "$env:USERPROFILE\anaconda3\Scripts\conda.exe" env create -f environment.yml
-& "$env:USERPROFILE\anaconda3\Scripts\conda.exe" run --no-capture-output -n router-dump-analyzer-demo router-dump-demo --fixture-archive samples\generated-scale\router-state-lab-100k.tgz --full-scale --open-browser
+conda activate router-dump-analyzer-demo
+python -m pip install --no-deps -e examples/minimal_plugin
+router-dump-plugin-validate minimal_router `
+  --artifact examples/minimal_plugin/fixtures/minimal-status.jsonl `
+  --node-hint router-1 `
+  --metadata platform=minimal-router-os `
+  --metadata software_version=1
+python -m unittest discover -s examples/minimal_plugin/tests -v
 ```
 
-The demo deliberately does not accept arbitrary dump uploads or claim to decode
-caller-provided archives. The hard-coded outer TGZ contains four nested container
-dumps, each with CTF logs and one or more resource-status tables, plus the full
-125K matched normalized-event corpus. By default the server indexes that
-complete corpus directly from the TGZ; the embedded browser-sized projection remains available
-through `--review-projection`. It inventories the raw container packs without
-extracting them. Every timeline lane has one canonical resource;
-an event selection, arbitrary point cursor, and horizontal-drag range remain
-independent. Hover cards expose lifecycle/status duration and failed updates.
-A selected range highlights intersecting events and intervals, groups its
-matching normalized events at the start of the event log, and shows relationship
-changes plus a supplemental endpoint diff. Exact range endpoints
-can also be entered as decimal-second offsets, or adjusted with the draggable
-**Start** and **End** borders; the band and its borders stay aligned when the
-timeline is zoomed. Moving the pointer across a lane displays a vertical guide
-through every lane with its exact offset tagged at the top, and compact labels
-separate the plug-in-defined resource type from its layer. A dedicated event
-density lane aggregates canonical normalized events into zoom-aware bins and
-shows failure density without counting duplicated correlation-tree lanes. Its
-high-resolution histogram uses 180 temporal bins per zoom unit, with no
-independent resolution cap, so its bin count follows the timeline scale
-directly. Timeline zoom itself has no application-defined upper bound; the
-numeric scale control accepts any value at or above 1, and Ctrl-wheel zoom is
-multiplicative. Density storage is sparse, so empty bins are not allocated.
-Pressing **Esc**
-clears the selected range, event, and
-explicit point-in-time cursor while returning queries to capture time. The
-**Lanes** chooser displays any
-explicit resource subset or the selected resource and its current correlations;
-plugin-defined relationship ribbons show how those correlations change across
-time. Correlations can be shown as one combined temporal association lane or
-as separate resource lanes with parent and association-period highlights. The
-point-in-time correlation panel separates expandable outgoing
-dependencies or owned targets from incoming dependents, while retaining the
-plug-in-defined relationship type and exact source-to-target direction. Its
-selected-moment tag is bound to the returned graph timestamp; while a new query
-is pending, the prior graph is dimmed and cannot be mistaken for the new moment.
-The focused graph uses three explicit columns for dependents, the selected
-resource, and the resources it depends on or owns. The all-correlations view
-arranges connected resources by dependency rank, omits unrelated isolated
-resources with an explicit count, and temporarily isolates a resource's
-immediate links on hover or keyboard focus. With no explicit resource focus,
-the panel shows all time-valid correlations rather than silently choosing an
-arbitrary resource.
-Ctrl-click navigates between timeline events and normalized log rows; a
-collapsed event mark targets its latest event, while a specific hover-list
-entry targets that exact event. Ctrl-clicking a correlation resource only
-navigates to it; clicking a timeline lane's left resource block expands or
-collapses a recursive correlation tree beneath that lane. Tree nodes are lane
-instances, so one canonical resource may appear under multiple parents and
-each branch keeps independent expansion state. The left pane uses compact
-Explorer-style rows with disclosure chevrons and continuous nesting guides.
-Resource-kind glyphs come from optional, validated plug-in SVG path metadata;
-missing or invalid metadata uses a generic core fallback. Ordinary clicks in
-the point-in-time
-correlation view do not navigate; its resource and relationship tags expose
-details on hover or keyboard focus. Resource cards include the complete
-selected-time normalized state and completeness information, so the correlation
-view uses the full width without a persistent selected-object side panel. At the
-end of the page, plug-in-defined
-dashboard descriptors are rendered through common point-in-time statistics and
-resource-table widgets. An Explorer-style tree index shows every available
-module in display order, with branch guides and clear open/closed states.
-Modules may be opened, closed, expanded, collapsed, moved
-with buttons, or dragged into a new order; that layout remains in local browser
-storage and can be reset to the plug-in defaults. The plug-in supplies resource
-kinds, safe field paths, aggregates, columns, and initial open/collapse behavior,
-but never injects HTML, CSS, or JavaScript. Open
-**Review gaps** in the UI to prioritize the production work
-and copy a review brief; selections remain in local browser storage only. API
-endpoints and payloads are also visible at `/docs` while the server is running.
+The validator checks discovery, manifest compatibility, schemas, capabilities,
+hooks, and parser selection. It intentionally does not execute the parser; the
+example's golden test verifies the device-specific output.
 
-## Recommended architecture
+## Developer workflows
 
-Build a modular server with these boundaries:
+### Run the checks
 
-1. A FastAPI control/API process accepts a dump and creates an immutable analysis revision.
-2. A separate Linux worker safely inventories nested archives and runs Babeltrace 2.1 plus the selected proprietary plugin.
-3. Plugins declare and emit all domain resources, derived resources, temporal relationship types, event correlations, findings, and forwarding objects. The core handles them generically and never invents domain semantics.
-4. PostgreSQL serves temporal resource and relationship intervals; object storage retains original artifacts. Optional Parquet/DuckDB is an overflow and offline-analysis path, not a requirement at 100K records.
-5. A thin browser client virtualizes lanes and uses WebGL for the timeline. The backend and all domain logic stay in Python 3.12; browser rendering necessarily uses TypeScript/JavaScript.
+With `router-dump-analyzer-demo` activated:
 
-The most important correctness rule is that **a final snapshot plus forward-only
-logs does not always determine the past**. Missing before-values, unsynchronized
-clocks, and incomplete events must appear as `unknown` or `ambiguous`, never as
-invented state.
-
-## Contents
-
-- [Architecture and library decisions](docs/architecture.md)
-- [Plugin contract and lifecycle](docs/plugin-contract.md)
-- [API payload contract](docs/api-contract.md)
-- [Public sample-input catalog](docs/public-sample-catalog.md)
-- [Reference Python protocol](src/router_dump_analyzer/plugin_api.py)
-- [Sample input guide](samples/README.md)
-- [Synthetic nested dump generator](scripts/generate_sample_bundle.py)
-- [Packed 100K+ dump generator](scripts/generate_packed_scale_bundle.py)
-- [Pinned public CTF 2 fixture fetcher](scripts/fetch_babeltrace_sample.py)
-
-## Build the fixtures
-
-Python 3.12 is sufficient; the fixture tooling has no third-party dependencies.
-
-```text
-python scripts/fetch_babeltrace_sample.py
-python scripts/generate_sample_bundle.py
-python scripts/generate_scale_fixtures.py --events 125000 --resources 100000
-python scripts/generate_packed_scale_bundle.py
+```powershell
 python -m unittest discover -s tests -v
+npm --prefix frontend run check
 ```
 
-The generated `samples/generated/node-a.tgz` contains three nested layer dumps,
-multi-section status output, public and product-shaped synthetic CTF 2 traces,
-synthetic domain-event exports, debug logs, codec-chain data, and protobuf
-examples. Sibling files under `samples/generated/illustrative/` demonstrate the
-full protocol/resource scenario, typed resource descriptors, resource lifecycle
-and status intervals, temporal correlations, findings, dashboard summaries,
-declarative dashboard modules, and route responses; they are not embedded in the
-input archive.
-The scale generator streams its output and creates a 125K-matched-event,
-100K-resource fixture without checking the large generated files into source
-control.
-The packed generator compresses that corpus, four nested per-container CTF/status
-dumps, and the review projection into
-`samples/generated-scale/router-state-lab-100k.tgz`, which is the launch
-script's hard-coded demo input.
+The frontend check requires Node.js 18 or newer but installs no packages.
 
-This remains a design and conformance-fixture package plus a review demo, not a
-production analyzer. The staged build order in the architecture document is
-intended to prevent UI work from getting ahead of temporal correctness and plugin
-contracts.
+### Develop frontend and backend separately
+
+The normal launcher uses one process. For split-process frontend work, start the
+API:
+
+```powershell
+.\scripts\launch_demo.cmd -ApiOnly -NoBrowser
+```
+
+In another terminal:
+
+```powershell
+npm --prefix frontend run check
+npm --prefix frontend run serve
+```
+
+Open `http://127.0.0.1:4173`. The development server proxies API and
+documentation requests to `http://127.0.0.1:8765`. See the
+[frontend guide](frontend/README.md) for details.
+
+### Regenerate fixtures
+
+The launcher automatically creates missing fixtures. Maintainers can regenerate
+them directly:
+
+```powershell
+python scripts/generate_sample_bundle.py
+python scripts/generate_scale_fixtures.py --events 125000 --resources 10000
+python scripts/generate_packed_scale_bundle.py
+```
+
+The generators are deterministic, and generated scale data is not checked into
+source control. See the [sample input guide](samples/README.md) for the fixture
+layout, public CTF source, and scenario phases.
+
+## Project map
+
+| Path | Contents |
+|---|---|
+| [`frontend/`](frontend) | HTML pages, JavaScript, CSS, page manifest, and dependency-free checks |
+| [`src/router_dump_analyzer/`](src/router_dump_analyzer) | FastAPI backend, temporal query engines, generic cores, plug-in API, and static-host adapter |
+| [`examples/minimal_plugin/`](examples/minimal_plugin) | Small installable reference plug-in with a golden fixture and tests |
+| [`samples/`](samples) | Public and generated sample inputs |
+| [`scripts/`](scripts) | Environment setup, launchers, fixture generators, and validators |
+| [`tests/`](tests) | Backend, API, fixture, scale, and frontend regression coverage |
+| [`docs/`](docs) | Architecture, contracts, authoring guidance, and audit records |
+
+## Documentation
+
+| Document | Use it for |
+|---|---|
+| [Architecture and library decisions](docs/architecture.md) | System boundaries, temporal model, reconstruction, performance, and security |
+| [API payload contract](docs/api-contract.md) | External state, topology, history, timeline, correlation, and route APIs |
+| [Plug-in author quickstart](docs/plugin-author-quickstart.md) | A linear, copy-paste path to a first plug-in |
+| [Plug-in contract and lifecycle](docs/plugin-contract.md) | Normative hooks, identity, provenance, topology, routes, and conformance |
+| [Public sample-input catalog](docs/public-sample-catalog.md) | Open-source traces and other useful test inputs |
+| [Sample input guide](samples/README.md) | Synthetic fixture contents and generation |
+| [Frontend guide](frontend/README.md) | Browser/backend boundary and split-process development |
+
+## Current scope
+
+Router State Lab is an implementation-oriented design package, deterministic
+conformance corpus, and interactive review demo. It is not yet a production
+analyzer: arbitrary upload ingestion, isolated worker execution, persistent
+multi-user storage, authentication, and deployment hardening remain future
+work. The production direction is documented without presenting those
+capabilities as already implemented.

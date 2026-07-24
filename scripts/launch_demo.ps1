@@ -3,15 +3,24 @@ param(
     [ValidateRange(1, 65535)]
     [int]$Port = 8765,
     [string]$BindAddress = "127.0.0.1",
+    [string]$FrontendDir = "",
     [switch]$NoBrowser,
+    [switch]$ApiOnly,
     [switch]$RebuildFixture
 )
 
 $ErrorActionPreference = "Stop"
 $EnvironmentName = "router-dump-analyzer-demo"
 $MatchedEventTarget = 125000
-$ResourceTarget = 100000
+$ResourceTarget = 10000
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$FrontendRoot = if ([string]::IsNullOrWhiteSpace($FrontendDir)) {
+    Join-Path $RepositoryRoot "frontend"
+}
+else {
+    (Resolve-Path -LiteralPath $FrontendDir).Path
+}
+$FrontendManifest = Join-Path $FrontendRoot "frontend-manifest.json"
 $FixtureArchiveArgument = "samples\generated-scale\router-state-lab-100k.tgz"
 $FixtureArchive = Join-Path $RepositoryRoot $FixtureArchiveArgument
 $ScaleScenario = Join-Path $RepositoryRoot "samples\generated-scale\scenario.json"
@@ -50,27 +59,24 @@ if (-not (Test-Path -LiteralPath $DemoPython)) {
 
 function Invoke-DemoPython {
     param([string[]]$PythonArguments)
-    $StartParameters = @{
-        FilePath = $script:DemoPython
-        ArgumentList = $PythonArguments
-        NoNewWindow = $true
-        Wait = $true
-        PassThru = $true
-    }
-    $CondaProcess = Start-Process @StartParameters
-    if ($CondaProcess.ExitCode -ne 0) {
-        throw "Fixture generation failed with exit code $($CondaProcess.ExitCode)."
+    & $script:DemoPython @PythonArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Fixture generation failed with exit code $LASTEXITCODE."
     }
 }
 
 Push-Location $RepositoryRoot
 try {
+    if (-not $ApiOnly -and -not (Test-Path -LiteralPath $FrontendManifest)) {
+        throw "Frontend distribution is incomplete: $FrontendManifest was not found."
+    }
     $ScaleReady = Test-Path -LiteralPath $ScaleScenario
     if ($ScaleReady) {
         try {
             $Scenario = Get-Content -Raw -LiteralPath $ScaleScenario | ConvertFrom-Json
             $ScaleReady = (
                 $Scenario.scenario_id -eq "evpn-multihome-mass-failover-v2" -and
+                [int64]$Scenario.generator_version -ge 7 -and
                 [int64]$Scenario.scale.events -ge $MatchedEventTarget -and
                 [int64]$Scenario.scale.resources -eq $ResourceTarget
             )
@@ -101,11 +107,24 @@ try {
         )
     }
 
-    if (
-        $RebuildFixture -or
-        $ScaleRebuilt -or
-        -not (Test-Path -LiteralPath $FixtureArchive)
-    ) {
+    $PackReady = Test-Path -LiteralPath $FixtureArchive
+    if ($PackReady) {
+        try {
+            & $DemoPython @(
+                "scripts\validate_scale_archive.py",
+                $FixtureArchive,
+                [string]$MatchedEventTarget,
+                [string]$ResourceTarget,
+                "7"
+            )
+            $PackReady = $LASTEXITCODE -eq 0
+        }
+        catch {
+            $PackReady = $false
+        }
+    }
+
+    if ($RebuildFixture -or $ScaleRebuilt -or -not $PackReady) {
         Write-Host "Packing CTF logs and heterogeneous resource tables into one TGZ..."
         Invoke-DemoPython @(
             "scripts\generate_packed_scale_bundle.py",
@@ -117,25 +136,28 @@ try {
         "-m", "router_dump_analyzer.demo_app",
         "--host", $BindAddress,
         "--port", [string]$Port,
+        "--frontend-dir", $FrontendRoot,
         "--fixture-archive", $FixtureArchiveArgument,
         "--full-scale"
     )
+    if ($ApiOnly) {
+        $DemoArguments += "--api-only"
+    }
     if (-not $NoBrowser) {
         $DemoArguments += "--open-browser"
     }
 
     Write-Host "Using packed fixture: $FixtureArchive"
     Write-Host "Loading at least $MatchedEventTarget matched events across $ResourceTarget resources."
-    Write-Host "Starting Router State Lab at http://${BindAddress}:$Port"
-    $DemoStartParameters = @{
-        FilePath = $DemoPython
-        ArgumentList = $DemoArguments
-        NoNewWindow = $true
-        Wait = $true
-        PassThru = $true
+    if ($ApiOnly) {
+        Write-Host "Starting Router State Lab backend API at http://${BindAddress}:$Port"
+        Write-Host "Run 'npm --prefix frontend run serve -- --backend http://${BindAddress}:$Port' in another terminal for the split frontend."
     }
-    $DemoProcess = Start-Process @DemoStartParameters
-    if ($DemoProcess.ExitCode -ne 0) {
+    else {
+        Write-Host "Starting Router State Lab at http://${BindAddress}:$Port"
+    }
+    & $DemoPython @DemoArguments
+    if ($LASTEXITCODE -ne 0) {
         throw "The demo did not start. Run .\scripts\setup_demo.cmd first."
     }
 }

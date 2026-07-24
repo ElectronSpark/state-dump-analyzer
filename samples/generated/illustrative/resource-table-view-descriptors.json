@@ -1,0 +1,53 @@
+[
+  {
+    "columns": [
+      {
+        "field": "state.overlay_destination",
+        "label": "Overlay destination",
+        "value_format": "text"
+      },
+      {
+        "field": "state.path",
+        "label": "Path",
+        "value_format": "text"
+      },
+      {
+        "field": "state.encapsulation",
+        "label": "Encapsulation",
+        "value_format": "auto"
+      }
+    ],
+    "default_expanded_depth": 2,
+    "default_selected": true,
+    "description": "Each ETG is followed by its active ETE paths and each path's time-valid next hop.",
+    "include_absent": false,
+    "label": "ETG path bundles",
+    "levels": [
+      {
+        "direction": "outgoing",
+        "label": "ETE path",
+        "relation_types": [
+          "owns"
+        ],
+        "target_kinds": [
+          "ETE"
+        ]
+      },
+      {
+        "direction": "outgoing",
+        "label": "Next hop",
+        "relation_types": [
+          "next_hop"
+        ],
+        "target_kinds": []
+      }
+    ],
+    "max_children_per_node": 8,
+    "max_roots": 100,
+    "plugin_defined": true,
+    "root_kinds": [
+      "ETG"
+    ],
+    "view_id": "etg-path-bundles"
+  }
+]

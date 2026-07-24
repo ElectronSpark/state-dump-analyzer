@@ -6,10 +6,11 @@ environment_name="${ROUTER_DUMP_ENV_NAME:-router-dump-analyzer-demo}"
 bind_address="127.0.0.1"
 port="8765"
 open_browser=false
+api_only=false
 rebuild_fixture=false
 full_scale=true
 matched_event_target=125000
-resource_target=100000
+resource_target=10000
 
 usage() {
     cat <<'EOF'
@@ -18,9 +19,11 @@ Usage: ./scripts/launch_demo.sh [options]
 Options:
   --host ADDRESS       Bind address (default: 127.0.0.1)
   --port PORT          TCP port (default: 8765)
+  --frontend-dir PATH  Frontend distribution (default: <repository>/frontend)
+  --api-only           Disable integrated pages for split-process development
   --open-browser       Ask the demo process to open the browser
   --no-browser         Keep browser launch disabled (the WSL default)
-  --rebuild-fixture    Regenerate the 100K+ corpus and packed TGZ
+  --rebuild-fixture    Regenerate the 125K-event / 10K-resource corpus and TGZ
   --review-projection  Load the small embedded review projection instead
   -h, --help           Show this help
 EOF
@@ -37,6 +40,14 @@ while (($#)); do
             [[ $# -ge 2 ]] || { printf '%s\n' '--port requires a value.' >&2; exit 2; }
             port="$2"
             shift
+            ;;
+        --frontend-dir)
+            [[ $# -ge 2 ]] || { printf '%s\n' '--frontend-dir requires a value.' >&2; exit 2; }
+            frontend_root="$2"
+            shift
+            ;;
+        --api-only)
+            api_only=true
             ;;
         --open-browser)
             open_browser=true
@@ -109,6 +120,7 @@ fi
 # This packed archive is the single, hard-coded demo input requested for review.
 fixture_argument="samples/generated-scale/router-state-lab-100k.tgz"
 fixture_archive="${repository_root}/${fixture_argument}"
+frontend_root="${frontend_root:-${repository_root}/frontend}"
 scale_scenario="${repository_root}/samples/generated-scale/scenario.json"
 review_manifest="${repository_root}/samples/generated/unpacked/node-a/manifest.json"
 review_resources="${repository_root}/samples/generated/illustrative/resources.jsonl"
@@ -116,6 +128,12 @@ review_resources="${repository_root}/samples/generated/illustrative/resources.js
 cd -- "${repository_root}"
 export PYTHONUTF8=1
 export PYTHONIOENCODING=utf-8
+
+if [[ "${api_only}" == false && ! -f "${frontend_root}/frontend-manifest.json" ]]; then
+    printf 'Frontend distribution is incomplete: %s/frontend-manifest.json was not found.\n' \
+        "${frontend_root}" >&2
+    exit 1
+fi
 
 scale_ready=false
 if [[ -f "${scale_scenario}" ]] && \
@@ -126,6 +144,7 @@ with open(sys.argv[1], encoding="utf-8") as stream:
 scale = scenario.get("scale", {})
 ready = (
     scenario.get("scenario_id") == "evpn-multihome-mass-failover-v2"
+    and int(scenario.get("generator_version", 0)) >= 7
     and int(scale.get("events", 0)) >= int(sys.argv[2])
     and int(scale.get("resources", 0)) == int(sys.argv[3])
 )
@@ -150,22 +169,8 @@ fi
 
 pack_ready=false
 if [[ -f "${fixture_archive}" ]] && \
-   "${demo_python}" -c '
-import json, sys, tarfile
-manifest = None
-with tarfile.open(sys.argv[1], mode="r|gz") as archive:
-    for member in archive:
-        if member.name == "router-state-lab-100k/manifest.json":
-            source = archive.extractfile(member)
-            manifest = json.load(source) if source is not None else None
-            break
-scale = (manifest or {}).get("scale", {})
-ready = (
-    int(scale.get("events", 0)) >= int(sys.argv[2])
-    and int(scale.get("resources", 0)) == int(sys.argv[3])
-)
-raise SystemExit(0 if ready else 1)
-' "${fixture_archive}" "${matched_event_target}" "${resource_target}"; then
+   "${demo_python}" scripts/validate_scale_archive.py \
+      "${fixture_archive}" "${matched_event_target}" "${resource_target}" 7; then
     pack_ready=true
 fi
 
@@ -179,8 +184,12 @@ demo_arguments=(
     -m router_dump_analyzer.demo_app
     --host "${bind_address}"
     --port "${port}"
+    --frontend-dir "${frontend_root}"
     --fixture-archive "${fixture_argument}"
 )
+if [[ "${api_only}" == true ]]; then
+    demo_arguments+=(--api-only)
+fi
 if [[ "${full_scale}" == true ]]; then
     demo_arguments+=(--full-scale)
 fi
@@ -195,5 +204,12 @@ if [[ "${full_scale}" == true ]]; then
 else
     printf 'Loading the embedded browser review projection.\n'
 fi
-printf 'Starting Router State Lab at http://%s:%s\n' "${bind_address}" "${port}"
+if [[ "${api_only}" == true ]]; then
+    printf 'Starting Router State Lab backend API at http://%s:%s\n' \
+        "${bind_address}" "${port}"
+    printf "Run 'npm --prefix frontend run serve -- --backend http://%s:%s' in another terminal for the split frontend.\n" \
+        "${bind_address}" "${port}"
+else
+    printf 'Starting Router State Lab at http://%s:%s\n' "${bind_address}" "${port}"
+fi
 exec "${demo_python}" "${demo_arguments[@]}"

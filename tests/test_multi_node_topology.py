@@ -1,0 +1,1525 @@
+from __future__ import annotations
+
+import json
+import re
+import unittest
+import uuid
+from itertools import permutations
+from urllib.parse import parse_qs, urlparse
+
+from fastapi.testclient import TestClient
+
+from router_dump_analyzer.demo_app import app
+from router_dump_analyzer.demo_data import REVISION_ID
+from router_dump_analyzer.demo_multi_node_topology import (
+    MULTI_NODE_TOPOLOGY_ID,
+    MultiNodeTopologyDemo,
+)
+
+
+def javascript_function(source: str, name: str) -> str:
+    """Return one top-level JavaScript function for focused source assertions."""
+
+    start = source.index(f"function {name}(")
+    following = re.search(r"\nfunction [A-Za-z0-9_$]+\(", source[start + 1 :])
+    return source[start:] if following is None else source[
+        start : start + 1 + following.start()
+    ]
+
+
+class MultiNodeTopologyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.client_context = TestClient(app)
+        cls.client = cls.client_context.__enter__()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.client_context.__exit__(None, None, None)
+
+    def test_capabilities_make_heterogeneous_plugin_selections_executable(self) -> None:
+        response = self.client.get("/v1/topologies/capabilities")
+        alias = self.client.get(
+            f"/v1/topology-assemblies/{MULTI_NODE_TOPOLOGY_ID}/capabilities"
+        )
+        revision_alias = self.client.get(
+            f"/v1/revisions/{REVISION_ID}/multi-node/capabilities"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), alias.json())
+        self.assertEqual(response.json(), revision_alias.json())
+        payload = response.json()
+        self.assertEqual(payload["assembly_id"], MULTI_NODE_TOPOLOGY_ID)
+        self.assertEqual(payload["deep_links"]["topology"]["route"], "/")
+        self.assertEqual(
+            urlparse(payload["deep_links"]["topology"]["href"]).path,
+            "/",
+        )
+        self.assertEqual(len(payload["nodes"]), 10)
+        active = [item for item in payload["nodes"] if item["default_selected"]]
+        self.assertEqual(
+            {item["node_id"] for item in active},
+            {
+                "node-a",
+                "node-b",
+                "node-c",
+                "node-d",
+                "node-e",
+                "transit-p-1",
+                "transit-p-2",
+                "ce-west",
+                "ce-east",
+            },
+        )
+        plugin_sets = {item["active_plugin_set_id"] for item in active}
+        self.assertEqual(len(plugin_sets), 9)
+        self.assertTrue(all(item["site"] for item in active))
+        self.assertTrue(all(item["roles"] for item in active))
+        for node in active:
+            installed = {
+                item["plugin_set_id"]: item
+                for item in node["installed_plugin_sets"]
+            }
+            self.assertIn(node["active_plugin_set_id"], installed)
+            providers = {
+                (plugin["plugin_id"], projection["projection_id"]): projection
+                for plugin in installed[node["active_plugin_set_id"]]["plugins"]
+                for projection in plugin["projections"]
+            }
+            for selection in node["default_projection_selections"]:
+                descriptor = providers[
+                    (selection["plugin_id"], selection["projection_id"])
+                ]
+                self.assertIn(
+                    selection["status_perspective_id"],
+                    descriptor["supported_status_perspective_ids"],
+                )
+        unavailable = next(
+            item for item in payload["nodes"] if item["node_id"] == "edge-c"
+        )
+        self.assertFalse(unavailable["available"])
+        self.assertTrue(unavailable["optional"])
+        segment_contract = payload["network_segment_contract"]
+        self.assertEqual(segment_contract["contract_version"], "1.0")
+        self.assertEqual(
+            segment_contract["key_encoding"]["form"],
+            "recursive_type_tagged_json",
+        )
+        self.assertTrue(
+            segment_contract["attachment_identity"][
+                "plugin_run_id_is_provenance_only"
+            ]
+        )
+        self.assertTrue(segment_contract["resource_preview_independent"])
+        self.assertEqual(
+            segment_contract["presentation"]["default"], "domain_node"
+        )
+        self.assertTrue(segment_contract["presentation"]["view_only"])
+        self.assertIn("TopologyResourceRecord", segment_contract["plugin_record_model"]["segment"])
+        self.assertIn("TopologyLinkRecord", segment_contract["plugin_record_model"]["attachment"])
+        ownership = payload["semantic_ownership"]
+        self.assertTrue(
+            any("bounded grouping" in item for item in ownership["core"])
+        )
+        self.assertTrue(
+            any("VLAN, LAG" in item for item in ownership["plugin"])
+        )
+
+    def test_segment_projection_models_shared_external_excluded_and_vpn_domains(self) -> None:
+        response = self.client.post(
+            "/v1/topologies/query",
+            json={
+                "resource_limit": 100,
+                "network_segment_limit": 100,
+                "segment_attachment_limit": 200,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        segments = payload["network_segments"]
+        attachments = payload["segment_attachments"]
+        self.assertEqual(payload["counts"]["network_segments"], len(segments))
+        self.assertEqual(
+            payload["counts"]["segment_attachments"], len(attachments)
+        )
+
+        by_prefix = {item["prefix"]: item for item in segments if item["prefix"]}
+        core_west = by_prefix["192.0.2.0/29"]
+        self.assertEqual(
+            set(core_west["node_ids"]),
+            {"node-a", "node-d", "node-e", "transit-p-1", "transit-p-2"},
+        )
+        self.assertEqual(core_west["existing_node_count"], 5)
+        self.assertEqual(core_west["existing_attachment_count"], 6)
+        self.assertTrue(core_west["shared_by_multiple_nodes"])
+        self.assertFalse(core_west["semantic_conflict"])
+        p2_attachments = [
+            item
+            for item in core_west["members"]
+            if item["node_id"] == "transit-p-2"
+        ]
+        self.assertEqual(len(p2_attachments), 2)
+        self.assertEqual(
+            core_west["topology_presentation"]["two_participant_shape"],
+            "domain_node",
+        )
+
+        edge = by_prefix["192.0.2.16/30"]
+        self.assertEqual(set(edge["node_ids"]), {"transit-p-2", "node-c"})
+        self.assertEqual(edge["existing_node_count"], 2)
+        self.assertEqual(edge["existing_attachment_count"], 2)
+        self.assertEqual(edge["returned_attachment_count"], 2)
+        self.assertEqual(len(edge["members"]), 2)
+        self.assertEqual(
+            edge["topology_presentation"]["two_participant_shape"],
+            "compact_edge",
+        )
+
+        alpha_attachment = next(
+            item
+            for item in core_west["members"]
+            if item["node_id"] == "node-a"
+        )
+        model = alpha_attachment["attachment_model"]
+        self.assertEqual(model["vlan"]["id"], 101)
+        self.assertTrue(model["lag_resource_id"].endswith("/LAG/ae0"))
+        self.assertEqual(len(model["physical_interface_resource_ids"]), 2)
+        self.assertEqual(alpha_attachment["inference"]["owner"], "plugin")
+        self.assertGreaterEqual(len(alpha_attachment["evidence"]), 3)
+
+        external = by_prefix["198.51.100.0/24"]
+        self.assertEqual(external["role"], "external")
+        self.assertTrue(external["single_sided_in_query_scope"])
+        self.assertTrue(external["plugin_asserted_external"])
+        self.assertEqual(external["node_ids"], ["node-c"])
+
+        management = by_prefix["172.20.0.0/24"]
+        self.assertEqual(management["role"], "management")
+        self.assertFalse(management["connectivity_enabled"])
+        self.assertEqual(management["presentation_plane"], "excluded_infrastructure")
+        loopbacks = [item for item in segments if item["role"] == "loopback"]
+        self.assertEqual(len(loopbacks), 9)
+        self.assertTrue(all(not item["connectivity_enabled"] for item in loopbacks))
+
+        vpn = by_prefix["10.20.0.0/24"]
+        self.assertEqual(vpn["role"], "vpn")
+        self.assertEqual(vpn["presentation_plane"], "vpn")
+        self.assertTrue(vpn["plugin_semantics"]["separate_view"])
+        self.assertEqual(
+            set(vpn["node_ids"]), {"node-a", "node-b", "node-d", "node-e"}
+        )
+
+        for segment in segments:
+            self.assertIn("typed_key", segment["match"])
+            self.assertTrue(segment["segment_id"].startswith("network-segment:"))
+            self.assertEqual(segment["semantic_owner"], "plugin")
+
+    def test_expanded_multihoming_domains_preserve_interface_stacks_and_planes(self) -> None:
+        payload = self.client.post(
+            "/v1/topologies/query",
+            json={
+                "resource_limit": 100,
+                "network_segment_limit": 100,
+                "segment_attachment_limit": 200,
+            },
+        ).json()
+        by_label = {item["label"]: item for item in payload["network_segments"]}
+
+        west_access = by_label["Blue west Ethernet segment / VLAN 310"]
+        east_access = by_label["Blue east Ethernet segment / VLAN 320"]
+        self.assertEqual(
+            set(west_access["node_ids"]), {"node-a", "node-d", "ce-west"}
+        )
+        self.assertEqual(
+            set(east_access["node_ids"]), {"node-b", "node-e", "ce-east"}
+        )
+        self.assertEqual(west_access["presentation_plane"], "physical")
+        self.assertEqual(east_access["presentation_plane"], "physical")
+        self.assertTrue(west_access["connectivity_enabled"])
+        self.assertTrue(east_access["connectivity_enabled"])
+
+        core_west = by_label["Core west multi-access"]
+        core_east = by_label["Core east multi-access"]
+        for node_id in ("node-d", "node-e"):
+            west_model = next(
+                item["attachment_model"]
+                for item in core_west["members"]
+                if item["node_id"] == node_id
+            )
+            east_model = next(
+                item["attachment_model"]
+                for item in core_east["members"]
+                if item["node_id"] == node_id
+            )
+            self.assertEqual(
+                west_model["lag_resource_id"], east_model["lag_resource_id"]
+            )
+            self.assertEqual(
+                west_model["physical_interface_resource_ids"],
+                east_model["physical_interface_resource_ids"],
+            )
+            self.assertNotEqual(
+                west_model["logical_interface_resource_id"],
+                east_model["logical_interface_resource_id"],
+            )
+            self.assertEqual(west_model["vlan"]["id"], 101)
+            self.assertEqual(east_model["vlan"]["id"], 102)
+
+        west_control = by_label["Blue west EVPN ES control state"]
+        east_control = by_label["Blue east EVPN ES control state"]
+        red_vpn = by_label["Red tenant IP-VRF"]
+        self.assertEqual(set(west_control["node_ids"]), {"node-a", "node-d"})
+        self.assertEqual(set(east_control["node_ids"]), {"node-b", "node-e"})
+        self.assertEqual(set(red_vpn["node_ids"]), {"node-d", "node-e"})
+        self.assertTrue(
+            all(
+                item["presentation_plane"] == "vpn"
+                and not item["connectivity_enabled"]
+                for item in (west_control, east_control, red_vpn)
+            )
+        )
+
+        by_prefix = {
+            item["prefix"]: item
+            for item in payload["network_segments"]
+            if item["prefix"]
+        }
+        for prefix, node_id in (
+            ("203.0.113.0/24", "node-e"),
+            ("10.100.10.0/24", "ce-west"),
+            ("10.100.20.0/24", "ce-east"),
+        ):
+            segment = by_prefix[prefix]
+            self.assertEqual(segment["node_ids"], [node_id])
+            self.assertEqual(segment["role"], "external")
+            self.assertTrue(segment["plugin_asserted_external"])
+
+        management = by_prefix["172.20.0.0/24"]
+        self.assertEqual(management["existing_node_count"], 9)
+        self.assertFalse(management["connectivity_enabled"])
+
+    def test_evpn_es_withdrawal_does_not_take_down_physical_access_domain(self) -> None:
+        capabilities = self.client.get("/v1/topologies/capabilities").json()
+        capture_ns = int(capabilities["time_bounds"]["capture_ns"])
+        failure_ns = capture_ns - 2_980_000_000
+        during = self.client.post(
+            "/v1/topologies/query",
+            json={
+                "basis": {
+                    "kind": "absolute_time",
+                    "clock_domain": "utc",
+                    "time_ns": str(failure_ns + 120_000_000),
+                },
+                "resource_limit": 100,
+            },
+        ).json()
+        restored = self.client.post(
+            "/v1/topologies/query",
+            json={
+                "basis": {
+                    "kind": "absolute_time",
+                    "clock_domain": "utc",
+                    "time_ns": str(capture_ns),
+                },
+                "resource_limit": 100,
+            },
+        ).json()
+
+        during_by_label = {
+            item["label"]: item for item in during["network_segments"]
+        }
+        restored_by_label = {
+            item["label"]: item for item in restored["network_segments"]
+        }
+        for site in ("west", "east"):
+            physical = during_by_label[
+                f"Blue {site} Ethernet segment / VLAN {310 if site == 'west' else 320}"
+            ]
+            control = during_by_label[f"Blue {site} EVPN ES control state"]
+            self.assertEqual(physical["operational_status"], "usable")
+            self.assertEqual(control["operational_status"], "unusable")
+            self.assertTrue(
+                all(item["status"] == "withdrawn" for item in control["members"])
+            )
+            self.assertEqual(
+                restored_by_label[f"Blue {site} EVPN ES control state"][
+                    "operational_status"
+                ],
+                "usable",
+            )
+
+    def test_resource_preview_limit_does_not_prune_topology_claims(self) -> None:
+        small_preview = self.client.post(
+            "/v1/topologies/query",
+            json={
+                "resource_limit": 1,
+                "network_segment_limit": 100,
+                "segment_attachment_limit": 200,
+                "inter_node_link_limit": 100,
+            },
+        )
+        full_preview = self.client.post(
+            "/v1/topologies/query",
+            json={
+                "resource_limit": 500,
+                "network_segment_limit": 100,
+                "segment_attachment_limit": 200,
+                "inter_node_link_limit": 100,
+            },
+        )
+        self.assertEqual(small_preview.status_code, 200)
+        self.assertEqual(full_preview.status_code, 200)
+        small = small_preview.json()
+        full = full_preview.json()
+        self.assertEqual(
+            {item["segment_id"] for item in small["network_segments"]},
+            {item["segment_id"] for item in full["network_segments"]},
+        )
+        self.assertEqual(
+            {item["attachment_id"] for item in small["segment_attachments"]},
+            {item["attachment_id"] for item in full["segment_attachments"]},
+        )
+        self.assertEqual(
+            {item["link_id"] for item in small["inter_node_links"]},
+            {item["link_id"] for item in full["inter_node_links"]},
+        )
+        self.assertLess(
+            sum(len(item["resources"]) for item in small["nodes"]),
+            sum(len(item["resources"]) for item in full["nodes"]),
+        )
+
+    def test_segment_status_is_temporal_and_mixed_attachments_are_degraded(self) -> None:
+        capabilities = self.client.get("/v1/topologies/capabilities").json()
+        capture_ns = int(capabilities["time_bounds"]["capture_ns"])
+        failure_ns = capture_ns - 2_980_000_000
+        during = self.client.post(
+            "/v1/topologies/query",
+            json={
+                "basis": {
+                    "kind": "absolute_time",
+                    "clock_domain": "utc",
+                    "time_ns": str(failure_ns + 50_000_000),
+                }
+            },
+        ).json()
+        restored = self.client.post(
+            "/v1/topologies/query",
+            json={
+                "basis": {
+                    "kind": "absolute_time",
+                    "clock_domain": "utc",
+                    "time_ns": str(capture_ns),
+                }
+            },
+        ).json()
+        during_core_west = next(
+            item
+            for item in during["network_segments"]
+            if item["prefix"] == "192.0.2.0/29"
+        )
+        restored_core_west = next(
+            item
+            for item in restored["network_segments"]
+            if item["prefix"] == "192.0.2.0/29"
+        )
+        self.assertEqual(during_core_west["operational_status"], "degraded")
+        self.assertEqual(restored_core_west["operational_status"], "usable")
+        self.assertEqual(
+            during_core_west["status_combination_policy"],
+            "all_existing_attachments_usable",
+        )
+        self.assertEqual(
+            during_core_west["segment_id"], restored_core_west["segment_id"]
+        )
+        self.assertEqual(
+            len(
+                [
+                    item
+                    for item in during_core_west["members"]
+                    if item["node_id"] == "transit-p-2"
+                ]
+            ),
+            1,
+        )
+        self.assertEqual(
+            len(
+                [
+                    item
+                    for item in restored_core_west["members"]
+                    if item["node_id"] == "transit-p-2"
+                ]
+            ),
+            2,
+        )
+        not_yet_active = next(
+            item
+            for item in during["segment_attachments"]
+            if item["segment_id"] == during_core_west["segment_id"]
+            and item["resource_id"].endswith("TenGig0-0-4.101")
+        )
+        self.assertFalse(not_yet_active["exists"])
+        self.assertFalse(not_yet_active["claim_valid_at_basis"])
+        self.assertTrue(not_yet_active["endpoint_exists_at_basis"])
+        self.assertIsNotNone(not_yet_active["validity"]["valid_from_ns"])
+
+        valid_from_ns = failure_ns + 100_000_000
+        valid_to_ns = capture_ns + 500_000_000
+
+        def temporary_attachment_at(time_ns: int) -> dict[str, object]:
+            result = self.client.post(
+                "/v1/topologies/query",
+                json={
+                    "basis": {
+                        "kind": "absolute_time",
+                        "clock_domain": "utc",
+                        "time_ns": str(time_ns),
+                    }
+                },
+            ).json()
+            return next(
+                item
+                for item in result["segment_attachments"]
+                if item["resource_id"].endswith("TenGig0-0-4.101")
+            )
+
+        at_start = temporary_attachment_at(valid_from_ns)
+        at_end = temporary_attachment_at(valid_to_ns)
+        self.assertTrue(at_start["claim_valid_at_basis"])
+        self.assertTrue(at_start["exists"])
+        self.assertFalse(at_end["claim_valid_at_basis"])
+        self.assertFalse(at_end["exists"])
+        self.assertTrue(at_end["endpoint_exists_at_basis"])
+
+    def test_segment_federation_uses_typed_opaque_keys_not_prefixes(self) -> None:
+        demo = MultiNodeTopologyDemo(
+            {
+                "demo": {
+                    "revision_id": "test-revision",
+                    "capture_ns": 1_000,
+                    "timeline_start_ns": 0,
+                    "timeline_end_ns": 1_000,
+                }
+            }
+        )
+        common_semantics = {
+            "network_kind": "l3_subnet",
+            "label": "same displayed network",
+            "role": "transit",
+            "routing_scope": {"kind": "vrf", "id": "blue"},
+            "address_family": "ipv4",
+            "prefix": "203.0.113.0/24",
+            "participates_in_connectivity": True,
+            "presentation_group": "physical",
+            "coverage_complete": True,
+        }
+
+        def claim(segment_key: object, index: int) -> dict[str, object]:
+            return {
+                "matcher_id": "demo.connectivity-domain-key.exact.v1",
+                "segment_key": segment_key,
+                "resource_id": f"node-a/INTERFACE/{index}",
+                "node_id": "node-a",
+                "member_id": "member:node-a",
+                "revision_id": "test-revision",
+                "plugin_set_id": "test-set",
+                "plugin_id": "test.plugin",
+                "plugin_instance_id": "test-instance",
+                "plugin_run_id": "test-run",
+                "plugin_version": "1.0",
+                "projection_id": "test.projection",
+                "status_perspective_id": "test.observed",
+                "usable": True,
+                "status": "up",
+                "exists": True,
+                "quality": "exact",
+                "resolved_time": {
+                    "basis_kind": "absolute_time",
+                    "query_time_ns": "1000",
+                },
+                "deep_link": {"href": f"/node?resource={index}"},
+                "plugin_semantics": common_semantics,
+                "attachment_model": {},
+                "confidence": {"score": 1.0},
+                "inference": {"owner": "plugin"},
+                "evidence": [],
+            }
+
+        segments, attachments, _, truncated, attachments_truncated = (
+            demo._assemble_network_segments(
+                [claim(1, 1), claim("1", 2), claim("another-domain", 3)],
+                10,
+                10,
+            )
+        )
+        self.assertEqual(len(segments), 3)
+        self.assertEqual(len(attachments), 3)
+        self.assertEqual(len({item["segment_id"] for item in segments}), 3)
+        self.assertEqual(len({item["match"]["typed_key"] for item in segments}), 3)
+        self.assertFalse(truncated)
+        self.assertFalse(attachments_truncated)
+
+        identifier = uuid.UUID("7ff7d7dc-88c7-44df-8578-72b049c22500")
+        binary = identifier.bytes
+        compound_claims = [
+            claim((identifier,), 10),
+            claim((str(identifier),), 11),
+            claim((binary,), 12),
+            claim((str(binary),), 13),
+        ]
+        compound_segments, compound_attachments, compound_resolutions, _, _ = (
+            demo._assemble_network_segments(compound_claims, 10, 10)
+        )
+        self.assertEqual(len(compound_segments), 4)
+        self.assertEqual(len({item["segment_id"] for item in compound_segments}), 4)
+        self.assertEqual(
+            len({item["match"]["typed_key"] for item in compound_segments}),
+            4,
+        )
+        self.assertTrue(
+            all(item["segment_key"]["type"] == "tuple" for item in compound_segments)
+        )
+        json.dumps(
+            {
+                "segments": compound_segments,
+                "attachments": compound_attachments,
+                "resolutions": compound_resolutions,
+            }
+        )
+
+        stable_claim = claim("stable-attachment", 14)
+        _, first_attachments, _, _, _ = demo._assemble_network_segments(
+            [stable_claim], 10, 10
+        )
+        rerun_claim = dict(stable_claim)
+        rerun_claim["plugin_run_id"] = "test-run-2"
+        _, rerun_attachments, _, _, _ = demo._assemble_network_segments(
+            [rerun_claim], 10, 10
+        )
+        self.assertEqual(
+            first_attachments[0]["attachment_id"],
+            rerun_attachments[0]["attachment_id"],
+        )
+
+        unknown_claim = claim("unknown", 4)
+        unknown_claim["matcher_id"] = "undeclared.matcher"
+        unknown_segments, unknown_attachments, resolutions, _, _ = (
+            demo._assemble_network_segments([unknown_claim], 10, 10)
+        )
+        self.assertEqual(unknown_segments, [])
+        self.assertEqual(unknown_attachments, [])
+        self.assertEqual(
+            resolutions[0]["resolution"], "unsupported_matcher_contract"
+        )
+
+        node_a_underlay = demo.contract["nodes"][0]["plugin_sets"][0]["plugins"][0][
+            "projections"
+        ][0]
+        node_a_underlay["fixture_network_segment_claims"][0][
+            "matcher_id"
+        ] = "undeclared.matcher"
+        result = demo.query({"node_ids": ["node-a"]})
+        unresolved = result["completeness"]["unresolved_network_segment_claims"]
+        self.assertFalse(result["complete"])
+        self.assertEqual(len(unresolved), 1)
+        self.assertEqual(
+            unresolved[0]["reason_code"],
+            "matcher_not_declared_as_exact_connectivity_domain",
+        )
+
+    def test_default_physical_graph_is_connected_but_not_a_full_mesh(self) -> None:
+        response = self.client.post(
+            "/v1/topologies/query",
+            json={"link_limit": 100, "resource_preview_limit": 100},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        active_nodes = {
+            item["node_id"] for item in payload["nodes"] if item["available"]
+        }
+        endpoint_pairs = {
+            frozenset(
+                {
+                    item["endpoint_a"]["node_id"],
+                    item["endpoint_b"]["node_id"],
+                }
+            )
+            for item in payload["inter_node_links"]
+            if item["link_type"].startswith(("underlay", "access"))
+        }
+        self.assertEqual(len(active_nodes), 9)
+        self.assertEqual(len(endpoint_pairs), 14)
+        self.assertLess(
+            len(endpoint_pairs), len(active_nodes) * (len(active_nodes) - 1) // 2
+        )
+        adjacency = {node_id: set() for node_id in active_nodes}
+        for left, right in (tuple(item) for item in endpoint_pairs):
+            adjacency[left].add(right)
+            adjacency[right].add(left)
+        reached = {next(iter(active_nodes))}
+        frontier = list(reached)
+        while frontier:
+            current = frontier.pop()
+            for neighbor in adjacency[current] - reached:
+                reached.add(neighbor)
+                frontier.append(neighbor)
+        self.assertEqual(reached, active_nodes)
+
+    def test_absolute_query_federates_distinct_node_plugins_and_deep_links(self) -> None:
+        body = {
+            "basis": {
+                "kind": "absolute_time",
+                "clock_domain": "utc",
+                "time_ns": "1759680003030000000",
+            },
+            "clock_policy": "best_effort",
+            "node_queries": [
+                {
+                    "node_id": "node-a",
+                    "plugin_set_id": "node-a.alpha-evpn.v1",
+                    "projections": [
+                        {
+                            "plugin_id": "demo.alpha.platform",
+                            "projection_id": "alpha.underlay-links",
+                            "status_perspective_id": "alpha.hardware-observed",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "node-b",
+                    "plugin_set_id": "node-b.beta-evpn.v2",
+                    "projections": [
+                        {
+                            "plugin_id": "demo.beta.forwarding",
+                            "projection_id": "beta.forwarding-links",
+                            "status_perspective_id": "beta.asic-observed",
+                        }
+                    ],
+                },
+                {
+                    "node_id": "transit-p-1",
+                    "plugin_set_id": "transit-p-1.gamma.v1",
+                    "projections": [
+                        {
+                            "plugin_id": "demo.gamma.isis",
+                            "projection_id": "gamma.isis-links",
+                            "status_perspective_id": "gamma.isis-observed",
+                        }
+                    ],
+                },
+            ],
+        }
+        response = self.client.post("/v1/topologies/reconstruct", json=body)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["context_id"].startswith("tctx1-"))
+        self.assertEqual(payload["deep_links"]["self"]["route"], "/")
+        self.assertEqual(
+            urlparse(payload["deep_links"]["self"]["href"]).path,
+            "/",
+        )
+        self.assertTrue(payload["deep_links"]["individual_nodes"])
+        for deep_link in payload["deep_links"]["individual_nodes"]:
+            self.assertEqual(deep_link["route"], "/node")
+            parsed = urlparse(deep_link["href"])
+            self.assertEqual(parsed.path, "/node")
+            self.assertEqual(parsed.fragment, "temporal-topology")
+        self.assertEqual(payload["resolved_basis"]["kind"], "absolute_time")
+        self.assertEqual(
+            {item["plugin_set_id"] for item in payload["nodes"]},
+            {
+                "node-a.alpha-evpn.v1",
+                "node-b.beta-evpn.v2",
+                "transit-p-1.gamma.v1",
+            },
+        )
+        self.assertEqual(len(payload["inter_node_links"]), 3)
+        self.assertEqual(
+            sorted(item["resolution"] for item in payload["inter_node_links"]),
+            ["ambiguous", "ambiguous", "matched"],
+        )
+        for link in payload["inter_node_links"]:
+            self.assertEqual(
+                link["inference"]["plugin_id"],
+                "demo.fabric.federation-linker",
+            )
+            self.assertEqual(
+                link["time_alignment"]["simultaneity"],
+                "same_absolute_instant",
+            )
+        ambiguous = next(
+            item
+            for item in payload["connector_resolutions"]
+            if item["resolution"] == "ambiguous"
+        )
+        self.assertGreaterEqual(len(ambiguous["claims"]), 3)
+        resource = payload["nodes"][0]["resources"][0]
+        self.assertEqual(resource["resource_ref"]["member_id"], "member:node-a")
+        self.assertEqual(resource["resource_ref"]["revision_id"], REVISION_ID)
+        parameters = parse_qs(urlparse(resource["deep_link"]["href"]).query)
+        parsed_resource_link = urlparse(resource["deep_link"]["href"])
+        self.assertEqual(parsed_resource_link.path, "/node")
+        self.assertEqual(parsed_resource_link.fragment, "timeline")
+        self.assertEqual(resource["deep_link"]["route"], "/node")
+        self.assertEqual(parameters["plugin_set_id"], ["node-a.alpha-evpn.v1"])
+        self.assertEqual(parameters["projection_id"], ["alpha.underlay-links"])
+        self.assertEqual(
+            parameters["status_perspective_id"], ["alpha.hardware-observed"]
+        )
+        self.assertEqual(parameters["context_id"], [payload["context_id"]])
+
+    def test_inter_node_link_ids_are_stable_unique_and_route_compatible(self) -> None:
+        node_ids = ("node-a", "transit-p-1", "node-b")
+        link_sets: list[set[str]] = []
+        endpoint_maps: list[dict[tuple[tuple[str, str], ...], str]] = []
+        for node_order in permutations(node_ids):
+            response = self.client.post(
+                "/v1/topologies/query",
+                json={"node_ids": list(node_order), "link_limit": 100},
+            )
+            self.assertEqual(response.status_code, 200)
+            links = response.json()["inter_node_links"]
+            link_ids = [item["link_id"] for item in links]
+            self.assertEqual(len(link_ids), len(set(link_ids)))
+            link_sets.append(set(link_ids))
+            endpoint_maps.append(
+                {
+                    tuple(
+                        sorted(
+                            (
+                                (endpoint["node_id"], endpoint["resource_id"])
+                                for endpoint in (
+                                    item["endpoint_a"],
+                                    item["endpoint_b"],
+                                )
+                            )
+                        )
+                    ): item["link_id"]
+                    for item in links
+                }
+            )
+
+        self.assertTrue(all(item == link_sets[0] for item in link_sets[1:]))
+        self.assertTrue(
+            all(item == endpoint_maps[0] for item in endpoint_maps[1:])
+        )
+        primary_id = (
+            "demo.connector-key.exact.v1:underlay:circuit-101:"
+            "node-a:transit-p-1"
+        )
+        self.assertIn(primary_id, link_sets[0])
+        primary_endpoints = next(
+            endpoints
+            for endpoints, link_id in endpoint_maps[0].items()
+            if link_id == primary_id
+        )
+        self.assertIn(
+            ("transit-p-1", "transit-p-1/ADJACENCY/pe-a"),
+            primary_endpoints,
+        )
+        alternate_ids = [
+            link_id
+            for link_id in link_sets[0]
+            if link_id.startswith(primary_id + ":candidate-")
+        ]
+        self.assertEqual(len(alternate_ids), 1)
+
+    def test_asymmetric_route_trace_roles_fail_closed(self) -> None:
+        demo = MultiNodeTopologyDemo(
+            {
+                "demo": {
+                    "revision_id": "test-revision",
+                    "capture_ns": 1_000,
+                    "timeline_start_ns": 0,
+                    "timeline_end_ns": 1_000,
+                }
+            }
+        )
+
+        def claim(node_id: str, role: str) -> dict[str, object]:
+            return {
+                "matcher_id": "test.connector.exact.v1",
+                "match_key": "shared-key",
+                "member_id": f"member:{node_id}",
+                "node_id": node_id,
+                "revision_id": "test-revision",
+                "resource_id": f"{node_id}/INTERFACE/1",
+                "plugin_set_id": f"{node_id}.set",
+                "plugin_id": f"test.{node_id}",
+                "plugin_instance_id": f"test.{node_id}.instance",
+                "plugin_run_id": f"test.{node_id}.run",
+                "plugin_version": "1.0",
+                "projection_id": f"test.{node_id}.projection",
+                "status_perspective_id": f"test.{node_id}.observed",
+                "link_type": "ethernet",
+                "directed": False,
+                "combination_policy": "all_claims_usable",
+                "presentation": {"route_trace": role},
+                "usable": True,
+                "status": "up",
+                "exists": True,
+                "resolved_time": {
+                    "basis_kind": "absolute_time",
+                    "query_time_ns": "1000",
+                },
+                "deep_link": {"href": f"/node?node_id={node_id}"},
+            }
+
+        links, _resolutions, _unmatched, _truncated = demo._join_claims(
+            [claim("node-a", "overlay"), claim("node-b", "include")],
+            10,
+            "test-context",
+        )
+        self.assertEqual(len(links), 1)
+        link = links[0]
+        self.assertEqual(link["presentation"]["route_trace"], "conflict")
+        self.assertEqual(link["projection_role"], "presentation_conflict")
+        self.assertEqual(link["operational"]["status"], "unknown")
+        self.assertEqual(
+            link["operational"]["reason"],
+            "plugin_route_trace_role_mismatch",
+        )
+
+        script = self.client.get("/assets/topology.js").text
+        self.assertIn('routeTraceRole === "include"', script)
+
+    def test_topology_basis_is_strict_and_canonical(self) -> None:
+        time_ns = 1_759_680_005_000_000_000
+        absolute_requests = (
+            {"kind": "absolute_time", "time_ns": time_ns},
+            {
+                "kind": "absolute_time",
+                "timestamp_ns": str(time_ns),
+                "clock_domain": "utc",
+            },
+        )
+        absolute_payloads = [
+            self.client.post(
+                "/v1/topologies/query",
+                json={"node_ids": ["node-a"], "basis": basis},
+            ).json()
+            for basis in absolute_requests
+        ]
+        self.assertEqual(
+            absolute_payloads[0]["context_id"],
+            absolute_payloads[1]["context_id"],
+        )
+        self.assertEqual(
+            absolute_payloads[0]["resolved_basis"]["requested"],
+            {
+                "kind": "absolute_time",
+                "clock_domain": "utc",
+                "time_ns": str(time_ns),
+            },
+        )
+
+        relative_payloads = [
+            self.client.post(
+                "/v1/topologies/query",
+                json={"node_ids": ["node-a"], "basis": basis},
+            ).json()
+            for basis in (
+                {"kind": "relative_to_scope_end"},
+                {"kind": "relative_to_watermark", "offset_ns": "0"},
+            )
+        ]
+        self.assertEqual(
+            relative_payloads[0]["context_id"],
+            relative_payloads[1]["context_id"],
+        )
+        self.assertEqual(
+            relative_payloads[0]["resolved_basis"]["requested"],
+            {"kind": "relative_to_watermark", "offset_ns": "0"},
+        )
+
+        for invalid_basis in ([], "", 0, False, None):
+            with self.subTest(invalid_basis=invalid_basis):
+                response = self.client.post(
+                    "/v1/topologies/query",
+                    json={"node_ids": ["node-a"], "basis": invalid_basis},
+                )
+                self.assertEqual(response.status_code, 422)
+        per_node_invalid = self.client.post(
+            "/v1/topologies/query",
+            json={
+                "node_queries": [
+                    {"node_id": "node-a", "basis": []},
+                ]
+            },
+        )
+        self.assertEqual(per_node_invalid.status_code, 422)
+        invalid_integer_shapes = (
+            {"kind": "absolute_time", "time_ns": time_ns + 0.5},
+            {"kind": "absolute_time", "time_ns": True},
+            {"kind": "absolute_time", "time_ns": f" {time_ns}"},
+            {"kind": "relative_to_watermark", "offset_ns": -0.5},
+            {"kind": "relative_to_watermark", "offset_ns": False},
+            {"kind": "relative_to_watermark", "offset_ns": "- 1"},
+        )
+        for basis in invalid_integer_shapes:
+            with self.subTest(basis=basis):
+                response = self.client.post(
+                    "/v1/topologies/query",
+                    json={"node_ids": ["node-a"], "basis": basis},
+                )
+                self.assertEqual(response.status_code, 422, response.text)
+
+    def test_node_id_selector_rejects_empty_duplicate_and_conflicting_forms(self) -> None:
+        invalid_requests = (
+            {"node_ids": []},
+            {"node_ids": ["node-a", "node-a"]},
+            {
+                "node_ids": ["node-a"],
+                "node_queries": [{"node_id": "node-b"}],
+            },
+        )
+        for request in invalid_requests:
+            with self.subTest(request=request):
+                response = self.client.post(
+                    "/v1/topologies/query", json=request
+                )
+                self.assertEqual(response.status_code, 422)
+
+    def test_relative_query_uses_projection_scoped_watermarks(self) -> None:
+        response = self.client.post(
+            f"/v1/revisions/{REVISION_ID}/multi-node/query",
+            json={
+                "basis": {
+                    "kind": "relative_to_watermark",
+                    "offset_ns": "-10000000",
+                }
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(
+            payload["resolved_basis"]["kind"], "relative_capture_vector"
+        )
+        self.assertEqual(payload["resolved_basis"]["simultaneity"], "not_implied")
+        resolved = [
+            item
+            for node in payload["nodes"]
+            for item in node["resolved_times"]
+        ]
+        self.assertGreater(len({item["query_time_ns"] for item in resolved}), 1)
+        for item in resolved:
+            scope = item["watermark_scope"]
+            self.assertTrue(scope["member_id"].startswith("member:"))
+            self.assertTrue(scope["plugin_run_id"].startswith("run:"))
+            self.assertIn("plugin_set_id", scope)
+            self.assertIn("projection_id", scope)
+            self.assertIn("status_perspective_id", scope)
+
+    def test_optional_unavailable_member_is_partial_not_silently_dropped(self) -> None:
+        response = self.client.post(
+            "/v1/topologies/query",
+            json={
+                "node_ids": ["edge-c"],
+                "clock_policy": "best_effort",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["complete"])
+        self.assertEqual(payload["completeness"]["incomplete_nodes"], ["edge-c"])
+        node = payload["nodes"][0]
+        self.assertFalse(node["complete"])
+        self.assertEqual(
+            node["completeness"]["reasons"][0]["reason_code"],
+            "plugin_dependency_unavailable",
+        )
+
+    def test_single_member_query_preserves_unresolved_connector_claims(self) -> None:
+        response = self.client.post(
+            "/v1/topologies/query",
+            json={"node_ids": ["node-a"], "link_limit": 20},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["complete"])
+        self.assertEqual(payload["inter_node_links"], [])
+        self.assertTrue(payload["connector_resolutions"])
+        self.assertTrue(
+            all(
+                item["resolution"] == "unresolved"
+                for item in payload["connector_resolutions"]
+            )
+        )
+        self.assertTrue(payload["completeness"]["unmatched_connector_claims"])
+
+    def test_context_member_and_node_query_preserve_navigation_context(self) -> None:
+        reconstruction = self.client.post(
+            "/v1/topologies/query",
+            json={
+                "basis": {
+                    "kind": "absolute_time",
+                    "time_ns": "1759680005000000000",
+                }
+            },
+        ).json()
+        context_id = reconstruction["context_id"]
+        member = self.client.get(
+            f"/v1/topology-contexts/{context_id}/members/member:node-a"
+        )
+        self.assertEqual(member.status_code, 200)
+        self.assertEqual(member.json()["member"]["node_id"], "node-a")
+
+        node = self.client.post(
+            "/v1/topologies/nodes/node-b/query",
+            json={
+                "basis": {
+                    "kind": "absolute_time",
+                    "time_ns": "1759680005000000000",
+                },
+                "plugin_set_id": "node-b.beta-evpn.v2",
+                "plugin_id": "demo.beta.forwarding",
+                "projection_id": "beta.forwarding-links",
+                "status_perspective_id": "beta.asic-observed",
+            },
+        )
+        self.assertEqual(node.status_code, 200)
+        self.assertEqual(node.json()["node"]["node_id"], "node-b")
+        href = node.json()["navigation"]["individual_node"]["href"]
+        self.assertIn("plugin_set_id=node-b.beta-evpn.v2", href)
+        self.assertIn("projection_id=beta.forwarding-links", href)
+
+    def test_invalid_cross_node_projection_selection_is_rejected(self) -> None:
+        response = self.client.post(
+            "/v1/topologies/query",
+            json={
+                "node_queries": [
+                    {
+                        "node_id": "node-a",
+                        "plugin_set_id": "node-a.alpha-evpn.v1",
+                        "projections": [
+                            {
+                                "plugin_id": "demo.beta.forwarding",
+                                "projection_id": "beta.forwarding-links",
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_page_style_flat_node_plans_and_limit_aliases_are_supported(self) -> None:
+        plans = [
+            (
+                "node-a",
+                "node-a.alpha-evpn.v1",
+                "alpha.underlay-links",
+                "alpha.hardware-observed",
+            ),
+            (
+                "node-b",
+                "node-b.beta-evpn.v2",
+                "beta.forwarding-links",
+                "beta.asic-observed",
+            ),
+            (
+                "transit-p-1",
+                "transit-p-1.gamma.v1",
+                "gamma.isis-links",
+                "gamma.isis-observed",
+            ),
+            (
+                "edge-c",
+                "edge-c.delta.v1",
+                "delta.legacy-links",
+                "delta.driver-observed",
+            ),
+        ]
+        response = self.client.post(
+            "/v1/topologies/reconstruct",
+            json={
+                "basis": {
+                    "kind": "absolute_time",
+                    "time_ns": "1759680005000000000",
+                },
+                "node_queries": [
+                    {
+                        "member_id": f"member:{node_id}",
+                        "node_id": node_id,
+                        "revision_id": REVISION_ID,
+                        "plugin_set_id": plugin_set_id,
+                        "projection_id": projection_id,
+                        "status_perspective_id": perspective_id,
+                    }
+                    for node_id, plugin_set_id, projection_id, perspective_id in plans
+                ],
+                "resource_preview_limit": 20,
+                "link_limit": 20,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload["nodes"]), 4)
+        self.assertEqual(payload["counts"]["inter_node_links"], 3)
+        self.assertEqual(
+            payload["nodes"][0]["node_query"]["projection_id"],
+            "alpha.underlay-links",
+        )
+
+    def test_topology_page_is_primary_and_former_route_remains_an_alias(self) -> None:
+        primary = self.client.get("/?basis_kind=relative_to_watermark")
+        alias = self.client.get("/topology?basis_kind=relative_to_watermark")
+        node = self.client.get("/node?node_id=node-a")
+
+        self.assertEqual(primary.status_code, 200)
+        self.assertEqual(alias.status_code, 200)
+        self.assertEqual(node.status_code, 200)
+        self.assertIn("Multi-node topology", primary.text)
+        self.assertEqual(primary.text, alias.text)
+        self.assertIn("Synthetic review fixture", node.text)
+        self.assertIn("20260722-route-stacks-v23", primary.text)
+        self.assertIn("control-plane only / not installed", primary.text)
+        topology_script = self.client.get("/assets/topology.js")
+        topology_styles = self.client.get("/assets/topology.css")
+        self.assertIn("pathIsControlPlaneOnly", topology_script.text)
+        self.assertIn("Control-plane route is not installed", topology_script.text)
+        self.assertIn("NO FIB / not installed", topology_script.text)
+        self.assertIn("is-control-plane-only", topology_styles.text)
+        for response in (primary, alias, node):
+            self.assertIn("no-store", response.headers["cache-control"])
+
+    def test_route_table_renders_searchable_plugin_declared_forwarding_actions(self) -> None:
+        page = self.client.get("/")
+        script = self.client.get("/assets/topology.js")
+        styles = self.client.get("/assets/topology.css")
+
+        self.assertIn("Forwarding actions", script.text)
+        self.assertIn('colspan="9"', script.text)
+        self.assertIn("forwarding action", page.text)
+        normalizer = javascript_function(
+            script.text, "normalizeRouteForwardingActions"
+        )
+        for contract in (
+            "raw?.forwarding_actions",
+            ".slice(0, 8)",
+            ".slice(0, 32)",
+            "applies_to_next_hop_id",
+            "value_type",
+        ):
+            self.assertIn(contract, normalizer)
+        matcher = javascript_function(
+            script.text, "routeTableEntryMatchesFilters"
+        )
+        self.assertIn("forwardingText", matcher)
+        self.assertIn("value.kind", matcher)
+        markup = javascript_function(
+            script.text, "routeTableForwardingMarkup"
+        )
+        self.assertIn("No forwarding action", markup)
+        self.assertIn("mn-forwarding-overflow", markup)
+        self.assertIn("action.applies_to_next_hop_id", markup)
+        for contract in (
+            ".mn-route-table-forwarding",
+            ".mn-forwarding-value",
+            ".mn-forwarding-overflow",
+        ):
+            self.assertIn(contract, styles.text)
+
+    def test_device_selector_is_above_the_topology_map(self) -> None:
+        page = self.client.get("/")
+        styles = self.client.get("/assets/topology.css")
+
+        self.assertEqual(page.status_code, 200)
+        self.assertLess(
+            page.text.index('class="panel mn-filter-panel"'),
+            page.text.index('class="mn-map-stack"'),
+        )
+        self.assertIn("DEVICE SELECTION", page.text)
+        self.assertIn("grid-template-columns: minmax(0, 1fr);", styles.text)
+        self.assertIn("grid-auto-flow: column;", styles.text)
+        self.assertIn("overflow-x: auto;", styles.text)
+
+    def test_topology_page_exposes_optional_element_layers(self) -> None:
+        page = self.client.get("/")
+        script = self.client.get("/assets/topology.js")
+        styles = self.client.get("/assets/topology.css")
+
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('id="mn-topology-element-picker"', page.text)
+        self.assertIn('id="mn-topology-element-summary"', page.text)
+        self.assertIn(
+            'data-topology-element-preset="compact" aria-pressed="true"',
+            page.text,
+        )
+        self.assertIn(
+            'data-topology-element-preset="all" aria-pressed="false"',
+            page.text,
+        )
+        for element in (
+            "subnets",
+            "vlans",
+            "interfaces",
+            "subinterfaces",
+            "lags",
+            "external",
+        ):
+            self.assertIn(f'data-topology-element="{element}"', page.text)
+        for element in ("subnets", "interfaces"):
+            self.assertIn(
+                f'data-topology-element="{element}" checked',
+                page.text,
+            )
+
+        self.assertIn("TOPOLOGY_ELEMENT_KEYS", script.text)
+        self.assertIn("TOPOLOGY_ELEMENT_PRESETS", script.text)
+        self.assertIn("topologyElementVisibility", script.text)
+        self.assertIn("syncTopologyElementControls", script.text)
+        self.assertIn("topologyAttachmentComponents", script.text)
+        self.assertIn("renderAttachmentComponents", script.text)
+        self.assertIn("topology_layers", script.text)
+        self.assertIn("mn-attachment-component", styles.text)
+        self.assertIn("is-junction-only", styles.text)
+        for contract in (
+            "topologyDomainPresentationDecision",
+            'requestedShape === "compact_edge"',
+            "domain.semantic_conflict !== true",
+            "completeMembership",
+            "participants.length === 2",
+            "mn-compact-domain-hit",
+            "data-network-attachment-ids",
+            "topologyDomainInspectorItem",
+            "bindTopologyInspectorElements",
+            "PLUGIN · declared or inferred meaning",
+            "CORE · presentation calculation",
+        ):
+            self.assertIn(contract, script.text)
+        self.assertIn('id="mn-topology-hover-card"', page.text)
+        self.assertIn("mn-topology-hover-card", styles.text)
+        self.assertIn("mn-compact-domain-edge", styles.text)
+
+    def test_topology_overview_ux_contracts_are_wired(self) -> None:
+        page = self.client.get("/")
+        script = self.client.get("/assets/topology.js")
+        styles = self.client.get("/assets/topology.css")
+
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual(script.status_code, 200)
+        self.assertEqual(styles.status_code, 200)
+
+        for contract in (
+            'id="mn-node-selection-summary"',
+            'id="mn-node-index-expand"',
+            'aria-controls="mn-node-index"',
+            'id="mn-topology-guide"',
+            'class="mn-topology-guide-card"',
+            'id="mn-map-summary"',
+            'id="mn-map-reset" data-graph-action="reset"',
+            'data-topology-element="external"',
+            'class="mn-route-quality-legend"',
+            'aria-label="Route path state legend"',
+        ):
+            self.assertIn(contract, page.text)
+        for label in (
+            "Router card",
+            "Domain pill",
+            "Direct line",
+            "External stub",
+            "standby / inactive",
+            "dead / dropped",
+            "VPN context",
+        ):
+            self.assertIn(label, page.text)
+
+        self.assertIn("topologyFocusedNodeKey", script.text)
+        self.assertIn('external: "external networks"', script.text)
+        self.assertIn('"All detail layers"', script.text)
+        self.assertIn('"Connectivity only"', script.text)
+
+        connectivity_edges = javascript_function(
+            script.text, "renderConnectivityEdges"
+        )
+        self.assertIn("const focusKey = options.focusKey", connectivity_edges)
+        self.assertIn("const emphasized = options.emphasized", connectivity_edges)
+        self.assertNotIn("state.focusedNodeKey", connectivity_edges)
+
+        direct_links = javascript_function(
+            script.text, "visibleDirectTopologyLinks"
+        )
+        self.assertIn("const planeHasSegments = visibleDomains.length > 0", direct_links)
+        self.assertIn("!planeHasSegments", direct_links)
+        self.assertIn("link.resolution_only", direct_links)
+        self.assertIn('routeTraceRole === "include"', direct_links)
+
+        topology_map = javascript_function(script.text, "renderLinkStatusMap")
+        self.assertIn("hiddenExternalDomains", topology_map)
+        self.assertIn('topologyElementVisible("external")', topology_map)
+        self.assertIn(
+            "topologyInspectorItems.set(`node:${node.key}`",
+            topology_map,
+        )
+        self.assertIn(
+            'button.dataset.topologyInspectMode = "preview"',
+            topology_map,
+        )
+        self.assertIn("const directLinks = visibleDirectTopologyLinks", topology_map)
+        self.assertIn("{ focusKey, emphasized, directLinks }", topology_map)
+        self.assertIn("{ showGlobalSelection: false }", topology_map)
+        inspector_binding = javascript_function(
+            script.text, "bindTopologyInspectorElements"
+        )
+        self.assertIn(
+            'element.dataset.topologyInspectMode === "preview"',
+            inspector_binding,
+        )
+        self.assertIn("if (previewOnly) return", inspector_binding)
+
+        graph_transform = javascript_function(script.text, "applyGraphTransform")
+        self.assertIn("stage.dataset.graphDetail", graph_transform)
+        self.assertIn('"overview"', graph_transform)
+        self.assertIn('"detail"', graph_transform)
+
+        route_mode = javascript_function(script.text, "setRouteGraphMode")
+        self.assertIn('if (mode === "all")', route_mode.replace("'", '"'))
+        self.assertIn(
+            'state.selectedRoutePathIds = { forward: "", reverse: "" };',
+            route_mode,
+        )
+
+        for contract in (
+            ".mn-node-index.is-expanded",
+            '#mn-map-stage[data-graph-detail="overview"]',
+            '#mn-map-stage[data-graph-detail="detail"]',
+            ".mn-topology-guide-card",
+            ".mn-map-summary",
+            ".mn-route-quality-legend",
+        ):
+            self.assertIn(contract, styles.text)
+
+    def test_topology_frontend_guards_async_state_and_route_edge_cases(self) -> None:
+        script = self.client.get("/assets/topology.js")
+
+        self.assertEqual(script.status_code, 200)
+        self.assertNotIn('api("/api/demo")', script.text)
+        for contract in (
+            "bootstrapFromCapabilities",
+            "topologyRequestGeneration",
+            "routeRequestGeneration",
+            "AbortController",
+            "immutableSnapshot",
+            "routeEndpointDisplayValue",
+            "routeEndpointScopeIssue",
+            "endpointRepresentsRouter",
+            "setAdvertisedSelectValue",
+            "normalizedRelativeSeconds",
+            "pathIsUsableActive",
+            "selectedPathEvidence",
+            "Selected but unusable",
+            "canonicalJson",
+            "path?.segments",
+            "queryControlsDirty",
+            'url.searchParams.set("topology_view"',
+            'url.searchParams.set("focus_resource"',
+            "outside the reconstructed device set",
+        ):
+            self.assertIn(contract, script.text)
+        self.assertEqual(script.text.count("new ResizeObserver"), 1)
+        self.assertIn(
+            'return [...new Set([...targetIds, `node-member:${node.member_id}`])]',
+            script.text,
+        )
+        self.assertIn(
+            'return [...new Set([...targetIds, `link:${link.link_id}`])]',
+            script.text,
+        )
+
+    def test_topology_frontend_uses_only_exact_plugin_plan_identifiers(self) -> None:
+        script = self.client.get("/assets/topology.js")
+
+        selector = javascript_function(script.text, "pickDeclaredId")
+        plan = javascript_function(script.text, "nodePlan")
+        self.assertIn("idGetter(item) === requestedId", selector)
+        self.assertIn("idGetter(item) === fallbackId", selector)
+        self.assertNotIn(".includes(", selector)
+        self.assertNotIn("semantic_role", selector)
+        self.assertNotIn(".label", selector)
+        self.assertIn("pickDeclaredId(", plan)
+
+    def test_route_frontend_requires_explicit_normalized_semantics(self) -> None:
+        script = self.client.get("/assets/topology.js")
+
+        self.assertEqual(script.status_code, 200)
+        route_table = javascript_function(script.text, "normalizeRouteTableEntry")
+        segment = javascript_function(script.text, "normalizeRouteSegment")
+        path = javascript_function(script.text, "normalizeRoutePath")
+        trace = javascript_function(script.text, "normalizeRouteTrace")
+        terminal = javascript_function(script.text, "routeValueIsTerminal")
+        usable = javascript_function(script.text, "pathIsUsableActive")
+        control_plane = javascript_function(script.text, "pathIsControlPlaneOnly")
+        quality = javascript_function(script.text, "routeQualityClasses")
+        findings = javascript_function(script.text, "routeFindingsMarkup")
+
+        self.assertIn("installed: explicitRouteBoolean(", route_table)
+        self.assertIn("selected: explicitRouteBoolean(", route_table)
+        self.assertIn("active: explicitRouteBoolean(", route_table)
+        self.assertIn('?? "unknown"', route_table)
+        self.assertNotIn("active !== false", route_table)
+        self.assertNotIn("raw?.installed ?? raw?.programmed ?? raw?.selected", route_table)
+
+        for normalizer in (segment, path):
+            self.assertIn("explicitRouteActivity(raw)", normalizer)
+            self.assertIn("explicitRouteSelection(raw)", normalizer)
+            self.assertIn("explicitRouteCompleteness(raw)", normalizer)
+            self.assertIn("explicitRouteConsistency(raw)", normalizer)
+            self.assertIn("explicitRouteDisposition(raw)", normalizer)
+            self.assertNotIn(".test(", normalizer)
+        self.assertIn('|| "unknown"', path)
+        self.assertNotIn('index === 0 ? "primary"', path)
+        self.assertNotIn('? "selected"', path)
+
+        self.assertIn("ROUTE_TERMINAL_RESULTS.has", terminal)
+        self.assertIn("legacyRouteDisposition", terminal)
+        self.assertNotIn("terminal_reason", terminal)
+        self.assertNotIn("reason_code", terminal)
+        self.assertNotIn(".test(", terminal)
+        self.assertIn("path?.forwarding_capable === false", control_plane)
+        self.assertNotIn(".test(", control_plane)
+        self.assertIn("ROUTE_SELECTED_STATES.has", usable)
+        self.assertIn("ROUTE_ACTIVE_STATES.has", usable)
+        self.assertIn("routeCompletenessIsUnknown", usable)
+        self.assertNotIn(".test(", usable)
+        self.assertIn("pathIsInconsistent", quality)
+        self.assertIn("pathIsInferred", quality)
+        self.assertIn("pathIsUnresolved", quality)
+        self.assertNotIn(".test(", quality)
+
+        self.assertIn("raw?.consistency?.issue_refs", trace)
+        self.assertNotIn("finding.title", trace)
+        self.assertNotIn("finding.message", trace)
+        self.assertNotIn(".test(", findings)
+
+    def test_all_path_graph_keeps_candidate_quality_local(self) -> None:
+        script = self.client.get("/assets/topology.js")
+        styles = self.client.get("/assets/topology.css")
+
+        self.assertEqual(script.status_code, 200)
+        for contract in (
+            "routeSegmentQualityState",
+            "routeNodeQualityClasses",
+            "applyRouteOverviewNodeQuality",
+            "data-route-quality-by-path",
+            "data-route-install-gate-by-path",
+            "data-route-install-gate",
+            "is-route-mixed",
+            'edgeDisposition = edge.terminal ? "terminal drop"',
+            'edgeDisposition = terminal ? "terminal drop"',
+            'M3,2 L3,10 M9,2 L9,10',
+            "segments: [segment]",
+            "termination_reason: terminal ? terminalReason",
+            'status: terminal ? (segment?.status || path?.status || "unknown")',
+            'operational: terminal ? (segment?.operational || path?.operational || "unknown")',
+        ):
+            self.assertIn(contract, script.text)
+        self.assertNotIn("memberships.flatMap(routeQualityClasses)", script.text)
+        self.assertIn(
+            ".mn-map-node.is-route-member.is-route-mixed",
+            styles.text,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

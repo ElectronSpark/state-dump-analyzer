@@ -10,12 +10,31 @@ from __future__ import annotations
 from typing import Any
 
 
+SOURCE_RECORD_GROUP_DESCRIPTORS: list[dict[str, Any]] = [
+    {
+        "group_id": "ctf",
+        "label": "CTF records",
+        "description": "Decoded trace records retained before normalization.",
+        "default_included": False,
+        "plugin_defined": True,
+    },
+    {
+        "group_id": "external",
+        "label": "Non-CTF records",
+        "description": "Timestamped logs, callbacks, and status text outside CTF.",
+        "default_included": False,
+        "plugin_defined": True,
+    },
+]
+
+
 SOURCE_RECORD_DESCRIPTORS: list[dict[str, Any]] = [
     {
         "source_type": "ctf",
         "label": "CTF records",
         "description": "Decoded CTF messages retained before normalization.",
         "color": "#66b8ff",
+        "stream_group": "ctf",
         "plugin_defined": True,
     },
     {
@@ -23,6 +42,7 @@ SOURCE_RECORD_DESCRIPTORS: list[dict[str, Any]] = [
         "label": "Syslog",
         "description": "Timestamped router and daemon text outside CTF.",
         "color": "#f5b85b",
+        "stream_group": "external",
         "plugin_defined": True,
     },
     {
@@ -30,6 +50,7 @@ SOURCE_RECORD_DESCRIPTORS: list[dict[str, Any]] = [
         "label": "Agent events",
         "description": "Structured callbacks emitted by non-CTF agents.",
         "color": "#a58bff",
+        "stream_group": "external",
         "plugin_defined": True,
     },
     {
@@ -37,6 +58,7 @@ SOURCE_RECORD_DESCRIPTORS: list[dict[str, Any]] = [
         "label": "Status text",
         "description": "Timestamped records recovered from textual status streams.",
         "color": "#9bd66f",
+        "stream_group": "external",
         "plugin_defined": True,
     },
 ]

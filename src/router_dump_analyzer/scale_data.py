@@ -1,4 +1,4 @@
-"""Load the full normalized 100K corpus from the packed synthetic fixture.
+"""Load the full normalized 100K+-event corpus from the packed fixture.
 
 The review fixture and the scale fixture intentionally have different transport
 shapes.  This module converts the pipe-delimited resource snapshot and JSONL
@@ -8,10 +8,14 @@ server-side indexes for bounded timeline, graph, and range queries.
 
 from __future__ import annotations
 
+import os
+import sys
 import tarfile
+import unicodedata
+from hashlib import sha256
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from operator import itemgetter
 from pathlib import Path, PurePosixPath
@@ -20,15 +24,58 @@ from typing import Any
 
 from pydantic_core import from_json
 
+from .demo_scale_plugin import (
+    RESOURCE_TABLE_COLUMNS,
+    RESOURCE_TABLE_JSON_COLUMNS,
+    scale_condition_class as _status_class,
+    scale_dashboards as _scale_dashboards,
+    scale_icon_descriptor as _icon_descriptor,
+    scale_initial_resource_ids as _initial_resource_ids,
+    scale_projection_capabilities as _scale_projection_capabilities,
+    scale_relationship_descriptor as _relationship_descriptor,
+    scale_resource_record as _resource_record,
+)
 from .demo_source_plugin import (
     RECORD_LANE_PRESETS,
+    SOURCE_RECORD_GROUP_DESCRIPTORS,
     SOURCE_RECORD_DESCRIPTORS,
     build_demo_source_records,
 )
+from .history_search_core import HistorySearchCorpus
 
 PACK_ROOT = "router-state-lab-100k"
 SCALE_PREFIX = f"{PACK_ROOT}/normalized-scale"
 MAX_SCALE_MEMBER_BYTES = 512 * 1024 * 1024
+HISTORY_SEARCH_PROJECTION_VERSION = b"redacted-sorted-json-casefold-fts5-v5"
+
+
+def _history_search_identity(archive_path: Path) -> str:
+    """Bind a derived safe-search sidecar to content and projection semantics."""
+
+    digest = sha256(HISTORY_SEARCH_PROJECTION_VERSION)
+    digest.update(unicodedata.unidata_version.encode("ascii"))
+    digest.update(str(sys.implementation.cache_tag).encode("ascii"))
+    with archive_path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _history_search_cache_path(archive_path: Path, identity: str) -> Path:
+    """Choose a stable local cache outside synced fixture directories."""
+
+    configured = os.environ.get("ROUTER_DUMP_SEARCH_CACHE_DIR")
+    if configured:
+        root = Path(configured).expanduser()
+    elif os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        root = Path(os.environ["LOCALAPPDATA"]) / "RouterDumpAnalyzer" / "cache"
+    elif os.environ.get("XDG_CACHE_HOME"):
+        root = Path(os.environ["XDG_CACHE_HOME"]) / "router-dump-analyzer"
+    else:
+        root = Path.home() / ".cache" / "router-dump-analyzer"
+    return root / (
+        f"{archive_path.stem}-{identity[:24]}.history-search.sqlite3"
+    )
 
 
 @dataclass(slots=True)
@@ -49,6 +96,11 @@ class ScaleRuntime:
     mutation_times: list[int]
     mutations_by_endpoint: dict[str, list[dict[str, Any]]]
     initial_resource_ids: list[str]
+    failure_event_times: list[int] = field(default_factory=list)
+    event_times_by_type: dict[str, list[int]] = field(default_factory=dict)
+    event_index_by_uid: dict[str, int] = field(default_factory=dict)
+    event_search: HistorySearchCorpus = field(default_factory=HistorySearchCorpus)
+    event_redaction_policy: Any | None = None
 
 
 def _safe_archive_member_name(name: str) -> None:
@@ -88,39 +140,12 @@ def _review_jsonl(
     ]
 
 
-def _label_from_id(resource_id: str) -> str:
-    parts = resource_id.split("/")
-    if len(parts) <= 2:
-        return resource_id
-    return "/".join(parts[-2:] if parts[1] in {"ETG", "ETE"} else parts[-1:])
-
-
-@lru_cache(maxsize=64)
-def _status_class_cached(normalized: str) -> str:
-    if any(token in normalized for token in ("down", "error", "fail", "withdraw")):
-        return "error"
-    if normalized in {
-        "active",
-        "ready",
-        "programmed",
-        "standby",
-        "up",
-        "observed",
-    }:
-        return "healthy"
-    return "unknown"
-
-
-def _status_class(status: Any) -> str:
-    return _status_class_cached(str(status or "unknown").casefold())
-
-
 class _ScaleTemporalIndex:
     """Build temporal intervals only for resources a query actually touches.
 
-    The scale fixture has 100K resources but every interactive request is
+    The scale fixture has thousands of resources, but every interactive request is
     deliberately bounded to at most a few hundred of them. Eagerly expanding
-    every successful event effect into rich state and lifecycle dictionaries
+    every explicit event effect into rich state and lifecycle dictionaries
     made startup allocate hundreds of thousands of objects that most sessions
     never read. The compact event index is sufficient to reconstruct exactly
     the same intervals on demand, after which they are cached for later queries.
@@ -155,31 +180,63 @@ class _ScaleTemporalIndex:
             cached = self._lifecycle_cache.get(identifier)
             if cached is not None:
                 return cached
-            start_ns: str | None = None
-            start_event_uid: str | None = None
+            intervals: list[dict[str, Any]] = []
+            open_interval: dict[str, Any] | None = None
+            saw_lifecycle_effect = False
             for event in self._events_by_resource.get(identifier, ()):
-                if event.get("outcome") == "failure":
-                    continue
                 for effect in event.get("effects", ()):
-                    if effect.get("resource_id") != identifier:
+                    if (
+                        effect.get("resource_id") != identifier
+                        or not effect.get("state_changed", False)
+                    ):
                         continue
                     operation = str(effect.get("effect_type", "")).casefold()
                     if operation in {"create", "add", "insert"}:
-                        start_ns = str(event["timestamp_ns"])
-                        start_event_uid = str(event["event_uid"])
-                        break
-                if start_ns is not None:
-                    break
-            intervals = [
-                {
-                    "resource": identifier,
-                    "valid_from_ns": start_ns,
-                    "valid_to_ns": None,
-                    "start_event_uid": start_event_uid,
-                    "end_event_uid": None,
-                    "quality": "exact" if start_ns is not None else "observed_snapshot",
-                }
-            ]
+                        saw_lifecycle_effect = True
+                        if open_interval is None:
+                            open_interval = {
+                                "resource": identifier,
+                                "valid_from_ns": str(event["timestamp_ns"]),
+                                "valid_to_ns": None,
+                                "start_event_uid": str(event["event_uid"]),
+                                "end_event_uid": None,
+                                "quality": "exact",
+                            }
+                    elif operation in {"delete", "remove"}:
+                        saw_lifecycle_effect = True
+                        timestamp = str(event["timestamp_ns"])
+                        if open_interval is None and not intervals:
+                            # A delete without an observed create still proves
+                            # presence immediately before the mutation. Keep
+                            # the unknown/open start instead of inventing one.
+                            intervals.append(
+                                {
+                                    "resource": identifier,
+                                    "valid_from_ns": None,
+                                    "valid_to_ns": timestamp,
+                                    "start_event_uid": None,
+                                    "end_event_uid": str(event["event_uid"]),
+                                    "quality": "observed_snapshot",
+                                }
+                            )
+                        elif open_interval is not None:
+                            open_interval["valid_to_ns"] = timestamp
+                            open_interval["end_event_uid"] = str(event["event_uid"])
+                            intervals.append(open_interval)
+                            open_interval = None
+            if open_interval is not None:
+                intervals.append(open_interval)
+            if not intervals and not saw_lifecycle_effect:
+                intervals.append(
+                    {
+                        "resource": identifier,
+                        "valid_from_ns": None,
+                        "valid_to_ns": None,
+                        "start_event_uid": None,
+                        "end_event_uid": None,
+                        "quality": "observed_snapshot",
+                    }
+                )
             self._lifecycle_cache[identifier] = intervals
             return intervals
 
@@ -198,8 +255,6 @@ class _ScaleTemporalIndex:
             current_state: dict[str, Any] = {}
             open_interval: dict[str, Any] | None = None
             for event in self._events_by_resource.get(identifier, ()):
-                if event.get("outcome") == "failure":
-                    continue
                 for effect in event.get("effects", ()):
                     if (
                         effect.get("resource_id") != identifier
@@ -210,19 +265,40 @@ class _ScaleTemporalIndex:
                     if open_interval is not None:
                         open_interval["valid_to_ns"] = timestamp
                         intervals.append(open_interval)
+                    operation = str(effect.get("effect_type", "")).casefold()
+                    if operation in {"delete", "remove"}:
+                        open_interval = None
+                        current_state = {}
+                        continue
                     current_state.update(effect.get("after") or {})
-                    status = (
-                        current_state.get("status")
-                        or current_state.get("oper_state")
-                        or current_state.get("program_state")
-                        or "unknown"
+                    # The fixture plug-in normalizes condition and class on the
+                    # effect.  The temporal core carries them without deriving
+                    # device meaning from arbitrary property names or text.
+                    previous_status = (
+                        open_interval.get("status", "unknown")
+                        if open_interval is not None
+                        else record.get("status", "unknown")
                     )
+                    previous_status_class = (
+                        open_interval.get("status_class", "unknown")
+                        if open_interval is not None
+                        else record.get(
+                            "condition_class",
+                            record.get("status_class", "unknown"),
+                        )
+                    )
+                    status = effect.get("condition", previous_status)
+                    declared_status_class = effect.get("condition_class")
+                    if declared_status_class is None:
+                        declared_status_class = effect.get(
+                            "status_class", previous_status_class
+                        )
                     open_interval = {
                         "resource": identifier,
                         "valid_from_ns": timestamp,
                         "valid_to_ns": None,
                         "status": status,
-                        "status_class": _status_class(status),
+                        "status_class": declared_status_class,
                         "properties": dict(current_state),
                         "start_event_uid": str(event["event_uid"]),
                         "quality": "exact",
@@ -231,14 +307,14 @@ class _ScaleTemporalIndex:
                 intervals.append(open_interval)
             if not intervals:
                 snapshot = dict(record.get("state", {}))
-                status = snapshot.get("status", "observed")
+                status = record.get("status", "unknown")
                 intervals.append(
                     {
                         "resource": identifier,
                         "valid_from_ns": None,
                         "valid_to_ns": None,
                         "status": status,
-                        "status_class": _status_class(status),
+                        "status_class": record.get("status_class", "unknown"),
                         "properties": snapshot,
                         "start_event_uid": None,
                         "quality": "observed_snapshot",
@@ -282,105 +358,6 @@ class _LazyIntervalMap(Mapping[str, list[dict[str, Any]]]):
         return self._builder(identifier)
 
 
-RESOURCE_TABLE_COLUMNS = (
-    "KIND",
-    "RESOURCE_ID",
-    "LAYER",
-    "VRF",
-    "SERVICE_ID",
-    "PARENT_ID",
-    "ES_ID",
-    "ESI",
-    "HOME_MODE",
-    "ROLE",
-    "MATCH",
-    "PACKET_ACTION",
-    "NEXT_HOP",
-    "ENCAP",
-    "ADMIN",
-    "OPER",
-    "DF_STATE",
-    "NEIGHBOR",
-)
-
-
-def _resource_record(values: tuple[str, ...]) -> dict[str, Any]:
-    (
-        kind,
-        resource_id,
-        layer,
-        vrf,
-        service_id,
-        parent_id,
-        es_id,
-        esi,
-        home_mode,
-        role,
-        match,
-        packet_action,
-        next_hop,
-        encapsulation,
-        admin_state,
-        oper_state,
-        df_state,
-        neighbor,
-    ) = values
-    state: dict[str, Any] = {}
-    if vrf:
-        state["vrf"] = vrf
-    if service_id:
-        state["service_id"] = service_id
-    if parent_id:
-        state["parent_id"] = parent_id
-    if es_id:
-        state["es_id"] = es_id
-    if esi:
-        state["esi"] = esi
-    if home_mode:
-        state["home_mode"] = home_mode
-    if role:
-        state["role"] = role
-    if match:
-        state["match"] = match
-    if packet_action:
-        state["packet_action"] = packet_action
-    if next_hop:
-        state["next_hop"] = next_hop
-    if encapsulation:
-        state["encapsulation"] = encapsulation
-    if admin_state:
-        state["admin_state"] = admin_state
-    if oper_state:
-        state["oper_state"] = oper_state
-    if df_state:
-        state["df_state"] = df_state
-    if neighbor:
-        state["neighbor"] = neighbor
-    status = oper_state or admin_state or "observed"
-    state["status"] = status
-    key: dict[str, str] = {}
-    if vrf:
-        key["vrf"] = vrf
-    if service_id:
-        key["service_id"] = service_id
-    if es_id:
-        key["es_id"] = es_id
-    if esi:
-        key["esi"] = esi
-    return {
-        "resource_id": resource_id,
-        "kind": kind,
-        "layer": layer,
-        "label": _label_from_id(resource_id),
-        "key": key,
-        "state": state,
-        "status": status,
-        "quality": "exact",
-        "plugin_defined": True,
-        "presentation_tags": [],
-    }
-
-
 @lru_cache(maxsize=64)
 def _event_display_name(event_name: str) -> str:
     return event_name.replace("_", " ").title()
@@ -404,13 +381,37 @@ def _compact_event(raw: dict[str, Any]) -> dict[str, Any]:
         state_changed = bool(
             effect.get("state_changed", raw_state_changed)
         )
+        condition_supplied = "condition" in effect or "status" in (
+            effect.get("after") or {}
+        )
+        condition = effect.get("condition")
+        if condition is None and condition_supplied:
+            # Legacy packed rows are normalized at this scale plug-in adapter
+            # boundary. The generic temporal index below never performs this
+            # vendor/fixture interpretation itself.
+            condition = (effect.get("after") or {}).get("status", "unknown")
+        class_supplied = (
+            "condition_class" in effect or "status_class" in effect
+        )
+        # ``condition_class`` is the public plug-in API spelling. Keep the
+        # fixture's older ``status_class`` spelling as a compatibility alias,
+        # with the public declaration taking precedence when both are present.
+        status_class = effect.get("condition_class")
+        if status_class is None:
+            status_class = effect.get("status_class")
+        if status_class is None and condition_supplied:
+            status_class = _status_class(condition)
         summary = {
             "resource_id": identifier,
             "kind": effect.get("kind"),
             "effect_type": effect.get("effect_type"),
             "state_changed": state_changed,
         }
-        if outcome != "failure" and state_changed and effect.get("after"):
+        if condition_supplied:
+            summary["condition"] = condition
+        if class_supplied or status_class is not None:
+            summary["status_class"] = status_class
+        if state_changed and effect.get("after"):
             summary["after"] = effect["after"]
         effect_summaries.append(summary)
         if identifier not in seen:
@@ -452,180 +453,6 @@ def _compact_event(raw: dict[str, Any]) -> dict[str, Any]:
         },
         "result": result,
     }
-
-
-def _icon_descriptor(
-    kind: str,
-    review_descriptors: dict[str, dict[str, Any]],
-) -> dict[str, Any]:
-    descriptor = dict(review_descriptors.get(kind, {}))
-    if not descriptor and kind == "EVPN_ES":
-        descriptor = dict(review_descriptors.get("EVPN_ROUTE", {}))
-    descriptor.update(
-        {
-            "kind": kind,
-            "display_name": kind.replace("_", " ").title(),
-            "plugin_defined": True,
-        }
-    )
-    descriptor.setdefault("display_name_fields", ["name", "id"])
-    descriptor.setdefault(
-        "default_table_fields",
-        ["status", "oper_state", "next_hop"],
-    )
-    descriptor.setdefault("condition_field", "status")
-    descriptor.setdefault("presentation_tags", [])
-    return descriptor
-
-
-def _relationship_descriptor(
-    relation_type: str,
-    review_descriptors: dict[str, dict[str, Any]],
-    structural: bool,
-) -> dict[str, Any]:
-    descriptor = dict(review_descriptors.get(relation_type, {}))
-    descriptor.update(
-        {
-            "relation_type": relation_type,
-            "label": relation_type.replace("_", " ").title(),
-            "directed": True,
-            "structural": bool(descriptor.get("structural", structural)),
-            "plugin_defined": True,
-        }
-    )
-    return descriptor
-
-
-def _scale_dashboards(event_count: int) -> list[dict[str, Any]]:
-    return [
-        {
-            "dashboard_id": "scale-overview",
-            "title": f"{event_count:,}-event scale overview",
-            "description": "Exact counts loaded from the packed normalized corpus.",
-            "default_open": True,
-            "default_expanded": True,
-            "collapsible": True,
-            "movable": True,
-            "plugin_defined": True,
-            "statistics": [
-                {
-                    "statistic_id": "scale-events",
-                    "label": "Matched events",
-                    "aggregation": "precomputed",
-                    "scale_metric": "matched_events",
-                },
-                {
-                    "statistic_id": "scale-resources",
-                    "label": "Resources",
-                    "aggregation": "precomputed",
-                    "scale_metric": "resources",
-                },
-                {
-                    "statistic_id": "scale-relationships",
-                    "label": "Temporal relationships",
-                    "aggregation": "precomputed",
-                    "scale_metric": "relationships",
-                },
-                {
-                    "statistic_id": "scale-failures",
-                    "label": "Failed updates",
-                    "aggregation": "precomputed",
-                    "scale_metric": "failures",
-                },
-            ],
-            "tables": [],
-        },
-        {
-            "dashboard_id": "forwarding-population",
-            "title": "Forwarding population",
-            "description": "Plug-in resource catalog, queried at the selected moment.",
-            "default_open": True,
-            "default_expanded": True,
-            "collapsible": True,
-            "movable": True,
-            "plugin_defined": True,
-            "statistics": [
-                {
-                    "statistic_id": f"kind-{kind.lower()}",
-                    "label": kind.replace("_", " ").title(),
-                    "aggregation": "precomputed",
-                    "scale_metric": f"by_kind.{kind}",
-                }
-                for kind in ("ETG", "ETE", "DTE", "EVPN_ES")
-            ],
-            "tables": [
-                {
-                    "table_id": "forwarding-sample",
-                    "title": "Current resource page",
-                    "resource_kinds": ["ETG", "ETE", "DTE", "EVPN_ES"],
-                    "sort_field": "kind",
-                    "sort_direction": "ascending",
-                    "max_rows": 40,
-                    "columns": [
-                        {
-                            "field": "label",
-                            "label": "Resource",
-                            "value_format": "resource",
-                        },
-                        {
-                            "field": "kind",
-                            "label": "Type",
-                            "value_format": "text",
-                        },
-                        {
-                            "field": "status",
-                            "label": "Status",
-                            "value_format": "status",
-                        },
-                        {
-                            "field": "state.next_hop",
-                            "label": "Next hop",
-                            "value_format": "text",
-                        },
-                    ],
-                }
-            ],
-        },
-        {
-            "dashboard_id": "event-phases",
-            "title": "Mass-operation phases",
-            "description": "Exact event counts for each generated phase.",
-            "default_open": False,
-            "default_expanded": True,
-            "collapsible": True,
-            "movable": True,
-            "plugin_defined": True,
-            "statistics": [
-                {
-                    "statistic_id": f"phase-{phase}",
-                    "label": phase.replace("_", " ").title(),
-                    "aggregation": "precomputed",
-                    "scale_metric": f"by_phase.{phase}",
-                }
-                for phase in (
-                    "single_home_create",
-                    "multihome_add",
-                    "mass_es_withdraw",
-                    "mass_es_restore",
-                    "next_hop_churn",
-                )
-            ],
-            "tables": [],
-        },
-    ]
-
-
-def _initial_resource_ids(
-    walkthrough: dict[str, Any],
-    resources_by_kind: dict[str, list[dict[str, Any]]],
-) -> list[str]:
-    identifiers: list[str] = []
-    for service in walkthrough.get("services", [])[:2]:
-        identifiers.extend(service.get("resource_ids", {}).values())
-    for kind in ("VIRTUAL_INTERFACE", "IP_ROUTING"):
-        if resources_by_kind.get(kind):
-            identifiers.append(resources_by_kind[kind][0]["resource_id"])
-    return list(dict.fromkeys(str(item) for item in identifiers if item))
 
 
 def load_scale_dataset(
@@ -766,13 +593,30 @@ def load_scale_dataset(
                     raise RuntimeError(
                         "packed resource table is missing a required column"
                     ) from error
+                json_column_indexes = {
+                    name: header.index(name)
+                    for name in RESOURCE_TABLE_JSON_COLUMNS
+                    if name in header
+                }
                 for line in source:
                     values = line.decode("utf-8").rstrip("\r\n").split("|")
                     if len(values) != len(header):
                         raise RuntimeError(
                             "packed resource table row has the wrong column count"
                         )
-                    record = _resource_record(project_columns(values))
+                    record = _resource_record(
+                        project_columns(values),
+                        key_json=(
+                            values[json_column_indexes["KEY_JSON"]]
+                            if "KEY_JSON" in json_column_indexes
+                            else ""
+                        ),
+                        state_json=(
+                            values[json_column_indexes["STATE_JSON"]]
+                            if "STATE_JSON" in json_column_indexes
+                            else ""
+                        ),
+                    )
                     resources.append(record)
                     resource_by_id[record["resource_id"]] = record
                     resources_by_kind[record["kind"]].append(record)
@@ -881,6 +725,21 @@ def load_scale_dataset(
     )
 
     initial_ids = _initial_resource_ids(walkthrough, resources_by_kind)
+    event_times: list[int] = []
+    failure_event_times: list[int] = []
+    event_times_by_type: defaultdict[str, list[int]] = defaultdict(list)
+    for event in events:
+        timestamp_ns = int(event["timestamp_ns"])
+        event_times.append(timestamp_ns)
+        if str(event.get("outcome", "")) == "failure":
+            failure_event_times.append(timestamp_ns)
+        event_type = str(
+            event.get("event_type")
+            or event.get("event_name")
+            or "unknown"
+        )
+        event_times_by_type[event_type].append(timestamp_ns)
+
     runtime = ScaleRuntime(
         resources=resources,
         resource_by_id=resource_by_id,
@@ -888,7 +747,14 @@ def load_scale_dataset(
         resource_counts={kind: len(items) for kind, items in resources_by_kind.items()},
         events=events,
         event_by_uid=event_by_uid,
-        event_times=[int(item["timestamp_ns"]) for item in events],
+        event_times=event_times,
+        failure_event_times=failure_event_times,
+        event_times_by_type=dict(event_times_by_type),
+        event_index_by_uid={
+            str(event.get("event_uid") or event.get("event_id")): index
+            for index, event in enumerate(events)
+            if event.get("event_uid") or event.get("event_id")
+        },
         events_by_resource=events_by_resource_index,
         lifecycle_by_resource=lifecycle_by_resource,
         state_by_resource=state_by_resource,
@@ -908,9 +774,17 @@ def load_scale_dataset(
             [],
         )
     }
+    scale_kind_descriptors = {
+        item["kind"]: item
+        for item in plugin_schema.get("resource_kinds", [])
+    }
     kinds = list(runtime.resource_counts)
     kind_descriptors = [
-        _icon_descriptor(kind, review_kind_descriptors)
+        _icon_descriptor(
+            kind,
+            review_kind_descriptors,
+            scale_kind_descriptors,
+        )
         for kind in kinds
     ]
     review_relationship_descriptors = {
@@ -946,7 +820,7 @@ def load_scale_dataset(
                 {
                     "status": "implemented-demo",
                     "detail": (
-                        "The server loads all 100K events/resources and the full "
+                        "The server loads the full 100K+-event corpus, resource catalog, and "
                         "temporal relationship corpus; browser DOM tables and lanes "
                         "remain bounded while counts and density use the full stream."
                     ),
@@ -954,6 +828,29 @@ def load_scale_dataset(
             )
 
     source_records = build_demo_source_records(events)
+    neighbor_resources = runtime.resources_by_kind.get("NEIGHBOR", [])
+    neighbors_by_protocol = Counter(
+        str(item.get("state", {}).get("protocol") or "unknown")
+        for item in neighbor_resources
+    )
+    neighbor_reachability = Counter(
+        str(item.get("state", {}).get("reachability") or "unknown")
+        for item in neighbor_resources
+    )
+    projection_capabilities = _scale_projection_capabilities(plugin_schema)
+    plugin_lane_presets = plugin_schema.get("record_lane_presets", [])
+    if not isinstance(plugin_lane_presets, list):
+        plugin_lane_presets = []
+    record_lane_presets = [
+        *RECORD_LANE_PRESETS,
+        *(dict(item) for item in plugin_lane_presets if isinstance(item, dict)),
+    ]
+    plugin_review_prompts = plugin_schema.get("review_prompts")
+    scale_review_prompts = (
+        [str(item) for item in plugin_review_prompts if str(item).strip()]
+        if isinstance(plugin_review_prompts, list)
+        else list(review_prompts)
+    )
     packed_scale = pack_manifest["scale"]
     metrics = {
         "events": len(events),
@@ -968,6 +865,8 @@ def load_scale_dataset(
         "failures": failure_count,
         "by_kind": runtime.resource_counts,
         "by_phase": dict(phase_counts),
+        "neighbors_by_protocol": dict(neighbors_by_protocol),
+        "neighbor_reachability": dict(neighbor_reachability),
     }
     demo = {
         "name": f"Router State Lab — {len(events):,} matched events",
@@ -999,6 +898,8 @@ def load_scale_dataset(
         "timeline_end_ns": str(scenario["capture_time_ns"]),
         "capture_ns": str(scenario["capture_time_ns"]),
         "initial_resource_ids": initial_ids,
+        "initial_focus_resource_id": walkthrough.get("initial_focus_resource_id"),
+        "projection_capabilities": projection_capabilities,
         "packed_event_count": int(packed_scale["events"]),
         "packed_resource_count": int(packed_scale["resources"]),
         "packed_container_count": len(pack_manifest["containers"]),
@@ -1036,7 +937,60 @@ def load_scale_dataset(
             "resources": ["data-bridge-layer/DTE/blue/dte-000000"],
         },
     ]
-    dashboards = _scale_dashboards(len(events))
+    if neighbor_resources:
+        first_neighbor = neighbor_resources[0]
+        first_neighbor_state = first_neighbor.get("state", {})
+        finding_resources = [str(first_neighbor["resource_id"])]
+        local_interface_id = first_neighbor_state.get("local_interface_id")
+        if local_interface_id in runtime.resource_by_id:
+            finding_resources.append(str(local_interface_id))
+        all_neighbors_reachable = (
+            neighbor_reachability.get("reachable", 0) == len(neighbor_resources)
+        )
+        findings.append(
+            {
+                "finding_id": "scale-neighbor-restore",
+                "rule_id": "scale.neighbor.restore-reachability.v1",
+                "result": "pass" if all_neighbors_reachable else "fail",
+                "summary": (
+                    f"All {len(neighbor_resources):,} plug-in Neighbor resources "
+                    "are reachable in the final restored snapshot."
+                    if all_neighbors_reachable
+                    else (
+                        f"Only {neighbor_reachability.get('reachable', 0):,} of "
+                        f"{len(neighbor_resources):,} plug-in Neighbor resources "
+                        "are reachable in the final restored snapshot."
+                    )
+                ),
+                "resources": finding_resources,
+                "semantic_owner": "plugin",
+            }
+        )
+    plugin_dashboards = plugin_schema.get("dashboards", [])
+    if not isinstance(plugin_dashboards, list):
+        plugin_dashboards = []
+    dashboards = [
+        *_scale_dashboards(len(events)),
+        *(dict(item) for item in plugin_dashboards if isinstance(item, dict)),
+    ]
+    consistency_counts = Counter(
+        str(item.get("result", "unknown")) for item in findings
+    )
+    resource_table_views = list(
+        plugin_schema.get("resource_table_views")
+        or _review_json(
+            review_payloads,
+            "resource-table-view-descriptors.json",
+            [],
+        )
+    )
+    search_identity = _history_search_identity(archive_path)
+    runtime.event_search = HistorySearchCorpus(
+        sidecar_path=_history_search_cache_path(archive_path, search_identity),
+        identity=search_identity,
+        expected_documents=len(events),
+    )
+
     dataset: dict[str, Any] = {
         "demo": demo,
         "scale": {
@@ -1055,7 +1009,11 @@ def load_scale_dataset(
                 "errors": 0,
                 "skipped": 0,
             },
-            "consistency": {"pass": len(findings), "fail": 0, "unknown": 0},
+            "consistency": {
+                "pass": consistency_counts.get("pass", 0),
+                "fail": consistency_counts.get("fail", 0),
+                "unknown": consistency_counts.get("unknown", 0),
+            },
         },
         "coverage": {
             "exact_outputs": len(events),
@@ -1067,17 +1025,23 @@ def load_scale_dataset(
         "resources": resources,
         "kind_descriptors": kind_descriptors,
         "dashboard_descriptors": dashboards,
+        "resource_table_view_descriptors": resource_table_views,
+        "source_record_group_descriptors": SOURCE_RECORD_GROUP_DESCRIPTORS,
         "source_record_descriptors": SOURCE_RECORD_DESCRIPTORS,
-        "record_lane_presets": RECORD_LANE_PRESETS,
+        "record_lane_presets": record_lane_presets,
         "relationship_descriptors": relationship_descriptors,
         "causal_link_descriptors": [],
         "schema": {
             "resource_kinds": kind_descriptors,
             "dashboards": dashboards,
+            "resource_table_views": resource_table_views,
+            "source_record_groups": SOURCE_RECORD_GROUP_DESCRIPTORS,
             "source_record_types": SOURCE_RECORD_DESCRIPTORS,
-            "record_lane_presets": RECORD_LANE_PRESETS,
+            "record_lane_presets": record_lane_presets,
             "relationship_types": relationship_descriptors,
             "causal_link_types": [],
+            "consistency_rules": plugin_schema.get("consistency_rules", []),
+            "projection_capabilities": projection_capabilities,
             "semantic_owner": "plugin",
             "core_semantics": (
                 "generic typed resources, temporal typed relationships, and "
@@ -1094,28 +1058,30 @@ def load_scale_dataset(
         "state_intervals": [],
         "findings": findings,
         "causal_links": [],
-        "route_scenarios": _review_jsonl(
-            review_payloads,
-            "route-scenarios.jsonl",
+        # The scale plug-in does not inherit route/topology objects from the
+        # unrelated browser-sized review projection. A plug-in must explicitly
+        # declare availability and provide scale-owned, catalog-valid payloads.
+        "route_scenarios": (
+            list(plugin_schema.get("route_scenarios", []))
+            if projection_capabilities["route_resolution"]["available"]
+            else []
         ),
-        "routes": {
-            "reconstructed_time": _review_json(
-                review_payloads,
-                "route-resolution.json",
-                {},
-            ),
-            "observed_capture_vector": _review_json(
-                review_payloads,
-                "route-resolution-observed.json",
-                {},
-            ),
-        },
-        "topology": {},
+        "routes": (
+            dict(plugin_schema.get("routes", {}))
+            if projection_capabilities["route_resolution"]["available"]
+            else {}
+        ),
+        "topology": (
+            dict(plugin_schema.get("topology", {}))
+            if projection_capabilities["underlay_topology"]["available"]
+            else {}
+        ),
+        "projection_capabilities": projection_capabilities,
         "manifest": normalized_manifest,
         "pack_manifest": pack_manifest,
         "inventory": inventory,
         "gaps": scale_gaps,
-        "review_prompts": review_prompts,
+        "review_prompts": scale_review_prompts,
         "presentation": {
             "layers": [
                 {

@@ -549,9 +549,9 @@ def _write_comprehensive_illustrative(
         resource("data-bridge-layer/FORWARDING_GROUP/fg-blue-east", "FORWARDING_GROUP", "Blue eastbound forwarding", {"status": "active", "direction": "eastbound", "selected_ete": "ete-srv6-p2"}, {"id": "fg-blue-east"}),
         resource("data-bridge-layer/ETG/blue/etg-evpn-east", "ETG", "EVPN east ETG", {"status": "programmed", "overlay_destination": "203.0.113.0/24", "encapsulation_actions": [{"operation": "push_vlan", "vlan": 60810}, {"operation": "push_mpls", "labels": [24001]}]}, {"vrf": "blue", "id": "etg-evpn-east"}),
         resource("data-bridge-layer/ETG/blue/etg-core-srv6", "ETG", "SRv6 core ETG", {"status": "programmed", "overlay_destination": "pe-b", "encapsulation_actions": [{"operation": "encap_ipv6"}, {"operation": "push_srv6", "sids": ["fc00:0:2:100::"]}]}, {"vrf": "blue", "id": "etg-core-srv6"}),
-        resource("data-bridge-layer/ETE/etg-evpn-east/ete-srmpls-p1", "ETE", "SR-MPLS path via P-1", {"status": "deleted", "path": "via-p1", "encapsulation": {"labels": [24001, 16011]}}, {"etg": "etg-evpn-east", "id": "ete-srmpls-p1"}),
-        resource("data-bridge-layer/ETE/etg-evpn-east/ete-srv6-p2", "ETE", "SRv6 path via P-2", {"status": "active", "path": "via-p2", "encapsulation": {"sids": ["fc00:0:2:100::"]}}, {"etg": "etg-evpn-east", "id": "ete-srv6-p2"}),
-        resource("data-bridge-layer/ETE/etg-core-srv6/ete-core-p2", "ETE", "Core path via P-2", {"status": "active", "path": "via-p2", "metric": 15}, {"etg": "etg-core-srv6", "id": "ete-core-p2"}),
+        resource("data-bridge-layer/ETE/etg-evpn-east/ete-srmpls-p1", "ETE", "SR-MPLS path via P-1", {"status": "deleted", "path": "via-p1", "encapsulation": {"labels": [24001, 16011]}}, {"parent_resource_id": "data-bridge-layer/ETG/blue/etg-evpn-east", "path_id": "ete-srmpls-p1"}),
+        resource("data-bridge-layer/ETE/etg-evpn-east/ete-srv6-p2", "ETE", "SRv6 path via P-2", {"status": "active", "path": "via-p2", "encapsulation": {"sids": ["fc00:0:2:100::"]}}, {"parent_resource_id": "data-bridge-layer/ETG/blue/etg-evpn-east", "path_id": "ete-srv6-p2"}),
+        resource("data-bridge-layer/ETE/etg-core-srv6/ete-core-p2", "ETE", "Core path via P-2", {"status": "active", "path": "via-p2", "metric": 15}, {"parent_resource_id": "data-bridge-layer/ETG/blue/etg-core-srv6", "path_id": "ete-core-p2"}),
         resource("data-bridge-layer/DTE/dte-mpls-16011", "DTE", "MPLS 16011 disposition", {"status": "programmed", "match": {"mpls_label": 16011}, "packet_action": {"operation": "pop"}, "next_hop_mode": "IP_ROUTING"}, {"id": "dte-mpls-16011"}),
         resource("data-bridge-layer/DTE/dte-srv6-dt4", "DTE", "SRv6 End.DT4 disposition", {"status": "programmed", "match": {"sid": "fc00:0:1:100::"}, "packet_action": {"operation": "remove_ipv6_and_srh"}, "next_hop_mode": "IP_ROUTING"}, {"id": "dte-srv6-dt4"}),
         resource("data-bridge-layer/VIRTUAL_INTERFACE/vi-p1", "VIRTUAL_INTERFACE", "Underlay path P-1", {"status": "up", "interface_class": "routed"}, {"id": "vi-p1"}),
@@ -565,10 +565,16 @@ def _write_comprehensive_illustrative(
     ]
 
     kinds = sorted({item["kind"] for item in resources})
+    key_fields_by_kind: dict[str, list[str]] = {kind: [] for kind in kinds}
+    for item in resources:
+        for key_field in item["key"]:
+            if key_field not in key_fields_by_kind[item["kind"]]:
+                key_fields_by_kind[item["kind"]].append(key_field)
     descriptors = [
         {
             "kind": kind,
             "display_name": kind.replace("_", " ").title(),
+            "key_fields": key_fields_by_kind[kind],
             "display_name_fields": ["name", "id"],
             "default_table_fields": (
                 ["medium", "status"]
@@ -1059,8 +1065,9 @@ def _write_comprehensive_illustrative(
     relation(etg, ete1, "owns", "lltng_etg_update", "ete_primary_delete")
     relation(etg, ete2, "owns", "ete_backup_add")
     relation(etg2, ete3, "owns", "lltng_etg_update")
-    relation(etg, etg2, "next_hop", "lltng_etg_update")
-    relation(etg2, ipr, "next_hop", "lltng_etg_update")
+    relation(ete1, etg2, "next_hop", "lltng_etg_update", "ete_primary_delete")
+    relation(ete2, etg2, "next_hop", "ete_backup_add")
+    relation(ete3, ipr, "next_hop", "lltng_etg_update")
     relation(dte1, etg, "next_hop", "dte_ingress_create", "dte_action_modify")
     relation(dte1, ipr, "next_hop", "dte_action_modify")
     relation("data-bridge-layer/DTE/dte-srv6-dt4", ipr, "next_hop")
@@ -1097,6 +1104,54 @@ def _write_comprehensive_illustrative(
             "plugin_defined": True,
         }
         for relation_type in sorted({item["relation_type"] for item in relationships})
+    ]
+    resource_table_views = [
+        {
+            "view_id": "etg-path-bundles",
+            "label": "ETG path bundles",
+            "description": (
+                "Each ETG is followed by its active ETE paths and each path's "
+                "time-valid next hop."
+            ),
+            "root_kinds": ["ETG"],
+            "levels": [
+                {
+                    "label": "ETE path",
+                    "relation_types": ["owns"],
+                    "target_kinds": ["ETE"],
+                    "direction": "outgoing",
+                },
+                {
+                    "label": "Next hop",
+                    "relation_types": ["next_hop"],
+                    "target_kinds": [],
+                    "direction": "outgoing",
+                },
+            ],
+            "columns": [
+                {
+                    "field": "state.overlay_destination",
+                    "label": "Overlay destination",
+                    "value_format": "text",
+                },
+                {
+                    "field": "state.path",
+                    "label": "Path",
+                    "value_format": "text",
+                },
+                {
+                    "field": "state.encapsulation",
+                    "label": "Encapsulation",
+                    "value_format": "auto",
+                },
+            ],
+            "default_selected": True,
+            "include_absent": False,
+            "default_expanded_depth": 2,
+            "max_roots": 100,
+            "max_children_per_node": 8,
+            "plugin_defined": True,
+        }
     ]
 
     mutations: list[dict[str, Any]] = []
@@ -1168,6 +1223,7 @@ def _write_comprehensive_illustrative(
     (illustrative / "resources.jsonl").write_bytes(_jsonl(resources))
     (illustrative / "kind-descriptors.json").write_text(json.dumps(descriptors, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     (illustrative / "dashboard-descriptors.json").write_text(json.dumps(dashboard_descriptors, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    (illustrative / "resource-table-view-descriptors.json").write_text(json.dumps(resource_table_views, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     (illustrative / "relationship-descriptors.json").write_text(json.dumps(relationship_descriptors, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     (illustrative / "causal-link-descriptors.json").write_text(json.dumps(causal_link_descriptors, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     (illustrative / "lifecycle-intervals.jsonl").write_bytes(_jsonl(lifecycle))

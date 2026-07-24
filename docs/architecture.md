@@ -97,6 +97,20 @@ states and causal links must be marked ambiguous. Use signed 64-bit nanoseconds;
 serialize them as decimal strings in JSON because JavaScript numbers cannot
 represent them exactly.
 
+Absolute external queries name their clock domain. The core maps that instant
+into every selected node independently through recorded transform segments and
+returns the resulting local/absolute uncertainty ranges. Equal raw values from
+different node clocks are never evidence of simultaneity. Under strict policy,
+a missing transform is `clock_unaligned`, and an uncertainty range crossing a
+state transition yields ambiguous alternatives rather than an arbitrary side.
+
+Relative queries are anchored to a scoped completeness watermark, not the
+greatest timestamp in a dump. The scope includes node, selected status
+perspective, and optional topology projection. An offset of zero means the
+latest completely reconstructed status for that exact scope; negative offsets
+select its past. Resolving this independently across nodes produces a capture
+vector, not necessarily one wall-clock instant.
+
 Events without a usable timestamp remain in an **unplaced events** collection
 with their source ordinal. They can be reached from resource history and source
 context, but must not be assigned a fabricated point on the global timeline.
@@ -134,9 +148,12 @@ Send only job IDs and artifact references through the queue, never dump bytes.
 1. **Receive**: spool the upload to quota-controlled storage and compute SHA-256.
 2. **Inventory**: walk archives without blindly extracting them; record logical
    path, parent archive, type, sizes, and content hash where practical.
-   Detect each compression/archive layer from content plus plugin hints, not the
-   suffix alone. A name such as `.zst.gz` may require gzip followed by Zstandard;
-   record the actual codec chain and cap its depth.
+   The core detects each compression/archive layer from observed content,
+   applies its allowlist and quotas, and records the actual outer-to-inner codec
+   chain. A plug-in may provide declarative artifact locators and role hints
+   after safe inventory, but it never chooses a decoder or authorizes
+   extraction. For example, `.zst.gz` is peeled as an outer gzip stream followed
+   by the observed Zstandard stream; the suffix is not trusted as evidence.
 3. **Probe/select**: run allowlisted plugin probes. If two plugins are plausible,
    persist candidates and pause for an explicit choice; never silently select the
    nearest software version. Record the chosen plugin ID/version/package hash and
@@ -158,7 +175,26 @@ Send only job IDs and artifact references through the queue, never dump bytes.
 Discover plugin bundles through Python entry points under
 `router_dump_analyzer.plugins`. The reference protocol is in
 `src/router_dump_analyzer/plugin_api.py`; operational rules are in
-`docs/plugin-contract.md`.
+`docs/plugin-contract.md`. First-time authors use
+`docs/plugin-author-quickstart.md` and the installable
+`examples/minimal_plugin/` before consulting the full normative contract.
+
+### Three-owner rule
+
+- **Core** owns trust boundaries and mechanics: safe artifact materialization,
+  canonical envelopes and identity, clock transforms, interval reconstruction,
+  persistence, budgets, APIs, orchestration, and generic rendering.
+- **Node/device plug-ins** own platform-, release-, layer-, and protocol-specific
+  meaning: parsing, typed keys, status normalization, mutations, local
+  correlations, forwarding/topology projections, and declarative presentation.
+- **Federation/linker plug-ins** own cross-node inference over bounded normalized
+  claims: peer/domain matching, corroboration, ambiguity policy, and inter-node
+  link semantics. They do not read raw node artifacts or replace node-local
+  state.
+
+The core must not branch on plug-in kind, relation, source-type, source-group,
+or key-field names. The detailed audit and migration ledger is in
+`docs/core-plugin-boundary-audit-2026-07-22.md`.
 
 A plugin bundle supplies:
 
@@ -167,10 +203,23 @@ A plugin bundle supplies:
 - Typed resource keys and display metadata.
 - Forward and reverse reducers.
 - Dynamic relationship and cross-layer correlation rules.
-- Clock anchors/alignment rules.
+- Raw clock domains, anchors, and device-specific anchor interpretation; the
+  core fits and validates transforms and resolves temporal selectors.
 - Consistency checks.
 - Projection into a canonical forwarding model.
-- Sensitive-field redaction and source-context policy.
+- Sensitive-field declarations for structured resource properties. The core
+  owns public source-record projections, authorization, and raw-context access;
+  the current protocol does not expose a plug-in source-context policy hook.
+
+The module-level entry-point target is an instance. Every plug-in has the
+required `describe`, `probe`, and `locate_inputs` hooks; standard
+`PluginCapability` values activate optional hooks. `InputSpec.parser_kind`
+selects status, CTF, or text-trace dispatch without interpreting the plug-in's
+opaque `role` or `parser_id`. `AnalyzerPluginBase` gives authors safe no-ops for
+undeclared capabilities and rejects declared behavior that was not implemented.
+Parser hooks emit `SourceRecordEmission` before the core assigns stable
+`SourceRecord` identity. The generic `router-dump-plugin-validate` command
+checks this cold-start contract before product-specific conformance runs.
 
 Plugins emit iterators/batches; they do not write the database. For production,
 use Arrow `RecordBatch` messages between the plugin worker and coordinator so
@@ -213,6 +262,13 @@ Each resource has:
 Never hash a display name such as `vrf:id:uuid` without type information.
 Integer `1`, string `"1"`, a UUID, and raw bytes are different key values.
 
+A child resource may have a compound key containing the canonical key parts or
+opaque ID of its parent plus a child-local part. For example, a plug-in may key a
+path by `(parent_resource_id, path_id)`. It remains a first-class resource with
+its own incarnation and intervals. The key is identity material, not an implied
+edge: the plug-in must separately emit the time-valid parent/child relationship,
+and the core never parses key fields to invent correlation.
+
 ### 5.2 State representation
 
 Use a small stable envelope rather than a universal EAV table:
@@ -226,6 +282,22 @@ Use a small stable envelope rather than a universal EAV table:
 
 A missing JSON key, an explicitly null value, and an unknown value are distinct.
 Avoid a global GIN index over every state document until a measured query needs it.
+Literal normalized-history search is now one such measured query at 125K-event
+scale. After plug-in sensitivity declarations are final, publication should
+materialize a revision-scoped, case-folded `safe_search_text` projection and
+index it with PostgreSQL `pg_trgm`; exact substring verification remains the
+core security boundary. Raw payloads and sensitive fields must never be placed
+in that index. The demo uses the same contract through a bounded immutable
+SQLite sidecar plus a bounded in-process result-posting cache; this keeps the
+large safe-text corpus out of private Python memory and allows restart reuse.
+The demo's optional external-content FTS5 trigram table supplies candidates only.
+Every candidate is joined back to the authoritative safe-text table and checked
+with exact literal substring semantics; short or parser-unsafe queries use the
+same exact table scan. SQLite builds without the trigram tokenizer persist a
+scan-only sidecar rather than changing results or reconstructing raw payloads.
+An ordered safe-projection digest, strict ordinal and size bounds, and a stored
+FTS vocabulary digest protect reopen reuse from stale document/index
+combinations; FTS5's full source-aware integrity check runs before publication.
 
 ### 5.3 Core tables
 
@@ -246,6 +318,8 @@ Avoid a global GIN index over every state document until a measured query needs 
 | `relationship_interval` | Time-varying typed edge with attributes, provenance, and quality. |
 | `reconciliation_finding` | Reconstructed-vs-observed differences and coverage gaps. |
 | `forwarding_interval` | Versioned canonical FIB/next-hop/failover/adjacency/tunnel projection. |
+| `reconstruction_watermark` | Latest complete local time per revision/node/status-perspective/topology-projection scope, with absolute mapping range and evidence. |
+| `topology_interval` | Plugin-projected, time-valid connectivity identity/status referencing canonical resources and relationships. |
 | `reconstruction_coverage` | Per plugin/resource/field/relation scope counts and reason-coded omissions. |
 | `analysis_diagnostic` | Origin/stage, structured code, severity, artifact locator, and safe message. |
 | `timeline_bucket` | Optional cached level-of-detail data after profiling proves a need. |
@@ -281,10 +355,13 @@ reconstruction proves a common instant. If no common instant is supported, an
 claim one point-in-time world.
 
 Every `ReadOnlyWorld` therefore exposes a `WorldBasis`: reconstructed requested
-and resolved time, or an observed capture vector with the relevant capture
-ranges. State views retain validity/capture ranges and evidence. Forwarding and
-consistency outputs inherit/reference that basis instead of compressing several
-observation times into one synthetic timestamp.
+and resolved time, an observed capture vector, an absolute-time mapping, or a
+relative capture vector with the relevant ranges. Multi-node bases contain one
+`ResolvedNodeBasis` per selected node, including clock domain, mapping method,
+uncertainty, evidence, quality, or an explicit unresolved reason. State views
+retain validity/capture ranges and evidence. Forwarding and consistency outputs
+inherit/reference that basis instead of compressing several observation times
+into one synthetic timestamp.
 
 ### 6.1 Preferred forward algorithm
 
@@ -342,24 +419,165 @@ A separate graph database is not recommended initially. Reconsider only after
 profiling proves that deep, arbitrary multi-hop traversal dominates and cannot be
 served from interval slices plus an in-memory graph.
 
+### 7.1 Topology projections and status perspectives
+
+Connectivity projection and operational status are separate axes. Plugins
+declare stable `TopologyProjectionDescriptor` IDs for their topology semantics
+and `StatusPerspectiveDescriptor` IDs for independent layer-local status views,
+such as control intent, programmed bridge state, or observed hardware. A
+projection advertises supported perspectives and an optional display default;
+the core validates the combination but never interprets the role as ground truth.
+For simple multi-source status, the descriptor also chooses a generic
+combination operator; the core executes that declaration but never chooses AND,
+OR, quorum, or required-source semantics on the plugin's behalf.
+
+The plugin materializes inferred topology as canonical resources and time-valid
+relationships/status with provenance, quality, evidence, and unknown fields.
+The core stores those intervals and serves historical slices. It does not infer
+that `depends_on` means connectivity, resolve proprietary peer matching, or map
+vendor status strings to usability. Conversely, a plugin does not align node
+clocks, choose a substitute perspective, page API results, or fabricate state
+outside its evidence range.
+
+The logical worker hook is
+`project_topology(TopologyProjectionRequest, ReadOnlyWorld)`. It streams one
+bounded envelope whose payload is a resource, endpoint, or link record. Endpoint
+references are exclusive unions of a canonical resource key and a declarative
+plugin match reference. A match carries a namespaced matcher ID, typed arguments,
+and plugin-resolved candidate keys; the core never implements the matcher.
+Every envelope repeats projection/perspective IDs and carries usability, source
+resource keys, tri-state existence, validity, provenance, quality, unknowns,
+and evidence. The
+coordinator validates declarations/references, enforces total record and byte
+budgets, materializes intervals, and exposes them through the revision API.
+
+An API query therefore names both `topology_projection_id` and
+`status_perspective_id`. The same topology identity can be evaluated against
+different layer status. A missing selected-layer value remains unknown without
+deleting the topology object or borrowing another layer's value. Reachability
+ground-truth policy remains a third route-analysis choice; it is not implied by
+the topology projection or its display default.
+
+Relative selectors resolve against the exact node/perspective/projection local
+watermark and do not require a wall-clock transform. The core requires a
+registered clock domain only for absolute selectors, preserves optional
+absolute uncertainty ranges, and keeps an ambiguous relationship as a possible
+link rather than promoting it to definite topology.
+
+### 7.2 Multi-node topology assemblies
+
+A multi-node result is an immutable **assembly** of existing analysis revisions,
+not a new synthetic node revision. Every member records its member ID, node ID,
+analysis revision, required/optional role, and the exact plug-in runs used for
+that query. Projection and perspective references are therefore qualified by a
+plug-in run; a coordinator never assumes that two devices use the same local
+descriptor IDs or even the same set of plug-ins.
+
+Resource references in an assembly are structured as
+`(member_id, revision_id, resource_id)`. This remains true when two device
+plug-ins emit byte-for-byte identical local keys. The core fans the query out to
+each member, resolves its chosen temporal basis, applies independent budgets,
+and merges bounded result pages. One unavailable or unsupported optional member
+produces reason-coded partial coverage instead of deleting the member or failing
+the other results.
+
+Local projection plug-ins may emit bounded connector claims. Each claim names a
+versioned claim contract, an opaque normalized value, its local endpoint, time
+validity, quality, and evidence. Exact equality is a core operation only for a
+claim contract that explicitly declares exact-token semantics. Rich peer
+matching, corroboration, aliases, one-sided observations, ambiguity, and
+cross-vendor policy belong to an allowlisted federation/linker plug-in. The
+linker receives bounded normalized claims rather than artifacts or database
+access and emits matched, ambiguous, unresolved, or conflicting candidate sets.
+
+Shared media use the same graph algebra. A plug-in projects a subnet or other
+connectivity domain as a `TopologyResourceRecord` vertex and projects every
+interface-to-domain attachment as an ordinary `TopologyLinkRecord`. The core
+orchestrates a selected federation/linker plug-in, then validates and renders
+its returned bipartite node/interface-to-segment view; the core does not decide
+that two non-exact claims identify one domain. It also does not expand a LAN
+with N attachments into N-squared pairwise links. This preserves multiple
+independent attachments from one node, as distinct from the physical members
+inside one plug-in-described LAG attachment.
+
+Only a declared, versioned exact-token matcher may be equality-grouped by the
+core. Every atom in a compound key is recursively type-tagged, JSON-safe, and
+assembly/matcher-version scoped. UUID, binary, numeric, and string atoms remain
+distinct. Stable attachment identity excludes ephemeral plug-in run IDs, which
+remain provenance only. Prefix parsing,
+VRF/VPN disambiguation, VLAN/LAG/subinterface membership, interface/neighbor/
+route corroboration, management or loopback exclusion, and external-network
+classification remain plug-in/linker responsibilities. One visible attachment
+is only single-sided under the selected query coverage; it is not automatically
+external. Every domain and attachment retains temporal existence, validity,
+quality, confidence, provenance, evidence, and unresolved semantics.
+Resource-table preview pagination is independent of the bounded topology claim
+projection and therefore cannot remove a subnet attachment.
+
+Legacy pairwise inter-node links remain a route-trace compatibility projection,
+not the physical shared-medium rendering. When segment records are present, the
+physical view suppresses those route-only links to avoid drawing both models at
+once. VPN domains carry a plug-in presentation plane and may be rendered in a
+separate logical view without changing the core storage model.
+
+The link-status UI may expose presentation-only element filters for subnets,
+VLANs, physical interfaces, LAGs, and subinterfaces. These filters operate on
+the plug-in-declared attachment model; the core never classifies a resource by
+parsing its key or display label. Hiding a layer contracts that part of the
+visual attachment chain without changing the reconstructed graph. In
+particular, a hidden subnet remains an internal junction so a multi-access
+network is not rewritten as misleading pairwise router links. Filter state is
+client presentation state and has no effect on stored identities, temporal
+existence, status, provenance, or topology-query results.
+
+Absolute assembly queries map one requested instant independently through every
+member clock. Relative queries resolve against the exact member/plug-in-run/
+projection/perspective watermark and return a capture vector with
+`simultaneity: not_implied`. A reconstruction context freezes those resolutions
+and selections for navigation. Core-generated navigation targets use that
+context to move from a fabric endpoint to the corresponding node resource and
+back without re-resolving a later watermark or accepting plug-in-supplied URLs.
+
+The browser route hierarchy mirrors that ownership. `/` is the primary
+multi-node topology entry point, `/topology` is a compatibility alias for that
+page, and core-generated topology actions open an assembly member in the
+individual-node workspace at `/node`. The node workspace carries its frozen
+context and exposes a return target to the primary topology page, so navigation
+does not silently reconstruct a different time or member selection.
+
 ## 8. Route and forwarding calculation
 
 The dependency graph is not a forwarding model. Each platform plugin projects
 state into a core-versioned, discriminated forwarding IR. Version 1 contains
 typed `VrfForwardingState`, `FibEntry`, `NextHopGroup`, `NextHop`,
 `FailoverGroup`, `Adjacency`, `TunnelAction`, and `InterfaceForwardingState`
-records. References use canonical
-typed resource keys, not display strings; every record preserves unresolved
-references, attributes, provenance, quality, and evidence.
+records. References use canonical typed resource keys, not display strings.
+Individual IR records preserve the unresolved references and attributes that
+their type declares; the enclosing `ForwardingMutation` carries provenance,
+quality, and evidence for the projected change.
 
-Projection is incremental. `project_forwarding(ir_version, changes=None, world)`
-streams an initial bootstrap as `upsert` mutations. Subsequent calls receive one bounded
-`ChangeSet` and emit only affected `upsert`/`delete` mutations with effective
-time and uncertainty. The core validates the IR version and references, then
-opens/closes `forwarding_interval` rows. Conformance tests periodically compare
-incremental output with a clean full projection so stale derived objects cannot
-accumulate silently. A plugin never performs LPM or returns a final route answer;
-those algorithms remain core-owned.
+A `ForwardingMember` may also carry bounded
+`ForwardingCandidateConstraint` values. Each constraint uses one opaque,
+plug-in-owned `ForwardingPolicyScope`, optional traffic-class applicability,
+and explanatory `ResolutionContribution` records. The core understands only
+the declared generic comparison operation (`exclude_exact_scope`) and compares
+the entire typed scope by equality. It does not parse ESI, bridge-domain,
+route-reflector, AS-path, VLAN, or vendor identifiers. This is the common
+ingress-dependent policy mechanism used by split-horizon and similar rules
+without putting protocol semantics in core. The projection or federation
+plug-in also declares whether the ingress-scope set is complete; an applicable
+non-match with incomplete evidence remains unknown rather than being permitted.
+
+Projection is incremental. `project_forwarding(request, world)` receives a
+`ForwardingProjectionRequest` containing the negotiated IR version, fully
+qualified `StatusPerspectiveRef`, optional bounded `ChangeSet`, and hard
+output/world-read budgets. A request without changes streams the initial
+bootstrap; later requests emit only affected `upsert`/`delete` mutations with
+effective time and uncertainty. The core validates the IR version and
+references, then opens/closes `forwarding_interval` rows. Conformance tests
+periodically compare incremental output with a clean full projection so stale
+derived objects cannot accumulate silently. A plug-in never performs LPM or
+returns a final route answer; those algorithms remain core-owned.
 
 Single-node route resolution at time `t` is:
 
@@ -368,11 +586,27 @@ Single-node route resolution at time `t` is:
 3. Apply the plugin-projected lexicographic `selection_rank` (lower wins), exact
    selected status when available, and explicit multipath grouping. Equal rank
    alone never invents ECMP.
-4. Recursively expand next-hop and ECMP groups.
-5. Evaluate failover/admin/operational predicates.
-6. Resolve tunnel and adjacency dependencies.
-7. Detect cycles and enforce a maximum expansion depth.
-8. Return every viable branch plus unresolved alternatives and an explanation tree.
+4. Evaluate each plug-in-declared ingress-dependent candidate constraint
+   against the request's typed traffic class and carried ingress policy scopes.
+   Preserve blocked, not-applicable, and unknown decisions instead of deleting
+   rejected candidates.
+5. Recursively expand next-hop and ECMP groups.
+6. Evaluate failover/admin/operational predicates.
+7. Resolve tunnel and adjacency dependencies.
+8. Detect cycles by exact `ForwardingTraversalStateKey` equality and enforce
+   the independent recursion and branch budgets.
+9. Return every viable branch plus rejected and unresolved alternatives and an
+   explanation tree.
+
+`ForwardingTraversalStateKey` includes member, status perspective, forwarding
+object and domain, ingress resource, lookup and packet context, active policy
+scopes, and `policy_scopes_complete`. Re-entering the same router is therefore
+not enough to prove a loop: a decapsulation, service-chain hairpin, or new
+lookup context may
+legitimately revisit it. When the complete key repeats, core returns a
+`ForwardingCycleReport` containing the first occurrence, the closing repeated
+occurrence, and the exact closed state sequence. The closing occurrence remains
+visible to callers; it is not deduplicated into the earlier node.
 
 The request selects an observed capture vector or reconstructed time. The
 response echoes that basis, resolved revision/time or capture ranges,
@@ -383,6 +617,107 @@ PostgreSQL `inet` plus an appropriate GiST/SP-GiST operator class can serve LPM;
 plugins may maintain an in-memory radix structure for batch calculations.
 `rustworkx` shortest-path algorithms are for the future multi-node topology
 analyzer, not a substitute for single-node FIB semantics.
+
+### 8.1 Cross-node multi-path route traces
+
+An end-to-end trace is a query over a frozen multi-node reconstruction context,
+not a new topology fact. The request identifies the ingress assembly member,
+VRF and destination, temporal basis or existing `context_id`, the per-member
+topology projection and status perspective, an explicit reachability
+ground-truth policy, a completeness policy (`strict` or `best_effort`), and
+bounds for hops, branches, local candidates, and boundary matches. Reusing a
+context is preferred because it fixes member revisions, plug-in runs, local
+watermarks or absolute mappings, and federation-linker selection.
+
+The visible topology projection is a display/query scope, not a ceiling on
+node-local route evidence. A resolver may require another projection owned by
+the same selected node plug-in set (for example EVPN control state while the
+map shows an underlay view). The core evaluates that auxiliary projection at
+the same member basis, records its separate evidence context, and keeps the
+original topology context authoritative.
+
+The core executes a bounded state machine:
+
+1. Resolve the immutable context and validate the selected ground-truth layer
+   for every participating member.
+2. Run the core LPM and forwarding traversal over the ingress plug-in's projected
+   IR, preserving the plug-in-owned candidate membership, group semantics,
+   candidate constraints, and human-readable resolution text at that node's
+   resolved basis.
+3. Preserve the plug-in's explicit path-group semantics: `single_active` has at
+   most one selected primary and separate standby candidates, whereas
+   `all_active` contains every explicitly declared ECMP member. Equal rank or
+   multiple viable candidates never invents ECMP.
+4. Ask the selected federation linker to match each egress claim to bounded
+   remote-ingress candidates. The core records matched, ambiguous, unresolved,
+   and conflicting boundaries without guessing one.
+5. Carry exact ingress policy scopes, their completeness, packet/lookup
+   context, and traffic class across each matched boundary. Scope contract IDs
+   are not globally interchangeable: the owning node or federation/linker
+   plug-in must explicitly preserve a compatible contract or project a mapped
+   remote scope. If it cannot, the receiving scope set is incomplete rather
+   than a guessed non-match. Continue local resolution on every `PERMITTED` or
+   `NOT_APPLICABLE` member; retain `BLOCKED` and `UNKNOWN` policy candidates
+   with their plug-in evidence.
+6. Detect an end-to-end loop only when the complete canonical traversal state
+   repeats, and enforce hop, recursion, branch, local-candidate, and boundary
+   budgets independently. Stop at the destination, a discard or policy-block
+   action, a cycle closure, or an incomplete boundary.
+7. Return stable ordered paths, rejected and unresolved alternatives, coverage, and
+   cross-perspective consistency findings; never collapse disagreements into a
+   single apparently exact answer.
+
+Every path has a stable `path_id`, a role (`primary`, `standby`, `ecmp`, or
+`alternative`), and `steps[]` in increasing `step_index`. Step identity is
+derived from the frozen context, branch, member, canonical resource references,
+and phase, rather than display text. The normalized phases are stable enough for
+clients to render and compare: local lookup, candidate selection, next-hop or
+failover evaluation, tunnel action, adjacency/egress, federation boundary, and
+remote ingress. Node plug-ins own each local step's `resolution_text`, local
+candidates, and mapping of proprietary status to selected/degraded/unusable/
+unknown. The core validates references and ordering, inserts orchestration
+envelopes, and never rewrites vendor meaning. The federation linker owns only
+boundary candidate matching and its evidence.
+
+For `single_active`, only the selected primary represents the forwarding path;
+standbys are reported for failover explanation and must not be rendered as
+concurrent traffic. If selection itself is uncertain, candidates are
+alternatives rather than an invented primary. For `all_active`, all members of
+an explicit multipath group are returned as concurrently eligible branches,
+with plug-in-projected weights or selection metadata preserved. The core does
+not infer load distribution from branch count.
+
+Layer comparisons resolve the same flow independently under each requested
+status perspective. They can therefore report different egress interfaces,
+next hops, destinations, encapsulations, failure predicates, or termination
+members. A consistency finding points to the first divergent stable step and
+retains both complete ordered paths. One perspective may be named ground truth
+for the query, but that choice is explicit policy and does not change the
+provenance or quality of another perspective.
+
+Under `strict`, a missing required member, unsupported perspective, unaligned
+clock, unknown required status, or ambiguous/unresolved boundary prevents a
+complete path. Partial prefixes may be returned for diagnosis, but `result`
+remains incomplete and no guessed continuation is emitted. Under
+`best_effort`, the core may explore bounded plug-in/linker candidates and return
+provisional paths with reason-coded assumptions. Their evidence, quality,
+unknown fields, and member-local observation times travel on every step and the
+aggregate path. A best-effort path may be cached or exported only with those
+semantics intact; it is never reused as ground-truth reachability merely because
+later orchestration produced a continuous line.
+
+In the topology UI, hover or keyboard focus on a resolution step highlights
+exactly one plug-in-selected topology node or link and dims the other route
+elements. Node and link chips in the ordered path rail expose the same
+bidirectional correlation; shared endpoint resources do not broaden the focus
+to adjacent steps. A bounded hover card shows
+role, result, selected ground-truth perspective, hop count, egress and
+encapsulation summary, first divergence, and uncertainty/coverage reasons.
+Single-active standby and all-active ECMP branches use distinguishable semantic
+styles in addition to color. Clicking pins path focus; selecting a step follows
+a core-generated link to the exact member resource in `/node`, carrying
+`context_id`, `path_id`, `branch_id`, and `step_id`. Returning restores the same
+topology path focus. Hover alone never changes time, selection, or context.
 
 ## 9. Timeline and dashboard
 
@@ -421,6 +756,17 @@ the current group. Hovering a mark shows a bounded summary; selection opens exac
 events and provides an explicit jump to the raw CTF/text source locator. A
 cluster summary exposes its count and a bounded preview, while the exact-event
 endpoint supplies a deterministic scrollable remainder.
+
+Log inclusion has one core-owned normalized-event stream plus zero or more
+plug-in-declared source-record presentation groups.
+`PluginSchema.source_record_groups` supplies opaque group IDs, labels,
+descriptions, and default inclusion state; each
+`SourceRecordTypeDescriptor.stream_group` references one declared group. The
+browser renders these descriptors generically and submits explicit source-type
+filters. A source-record group is only UI/query metadata: it is not a decoder
+stream, a clock domain, or a storage partition. Names such as `ctf` and
+`external` are demo plug-in vocabulary and must never be inferred by the core
+from a source type or label.
 
 ### 9.2 Browser implementation
 
@@ -471,8 +817,15 @@ The main dashboard should report both failures and coverage:
 It also provides one point-in-time table per plugin-declared resource kind.
 Columns come from generic presentation descriptors and include current status,
 status age, last event, failed updates, active correlations, quality, and
-evidence. A selected range highlights intersecting intervals/events and may show
-an endpoint state/correlation diff without changing the point-in-time cursor.
+evidence. A plug-in may additionally declare a bounded relationship-tree table:
+root kinds, ordered relationship hops, direction, optional target kinds, columns,
+and expansion limits. The core traverses only relationships and endpoint
+lifecycles active at the selected moment, so temporary children and paths appear
+only for their valid intervals. Every nested row is still the same independently
+addressable resource used by timeline lanes, events, and graph queries; visual
+nesting does not change storage ownership. A selected range highlights
+intersecting intervals/events and may show an endpoint state/correlation diff
+without changing the point-in-time cursor.
 
 Plugins can additionally compose modular dashboards from a small declarative
 widget vocabulary. Each descriptor chooses declared resource kinds, safe field
@@ -491,7 +844,29 @@ in a versioned core contract with validation and query budgets. This preserves a
 modular page without turning installed parser plugins into unrestricted frontend
 code.
 
-### 9.3 Why not a Python-only browser framework
+### 9.3 Frontend deployment boundary
+
+Browser source is a standalone distribution under `frontend/`; the Python
+source package contains backend and core logic only. A frontend-owned, versioned
+manifest maps public page routes to HTML files and declares the asset directory.
+The backend's generic host adapter validates that manifest, mounts only its
+assets, and can be disabled entirely for split-process development. It does not
+select page filenames, construct HTML, or expose the page directory below the
+asset mount.
+
+The integrated deployment remains same-origin because the browser clients use
+root-relative, revision-scoped API URLs. A dependency-free development server
+may host the pages separately when it reverse-proxies those paths to FastAPI.
+That proxy is deployment tooling, not a plugin surface. Plugins still contribute
+only validated data and presentation descriptors; they cannot ship executable
+browser code or templates.
+
+The source distribution and wheel must both include the frontend distribution.
+An explicit `ROUTER_DUMP_FRONTEND_DIR` can select another complete build, while
+`ROUTER_DUMP_SERVE_FRONTEND=0` or the demo's `--api-only` option leaves only the
+backend endpoints enabled.
+
+### 9.4 Why not a Python-only browser framework
 
 FastAPI, parsing, correlation, reconstruction, APIs, and route logic remain
 Python 3.12. A Trace Compass-like browser timeline with 100K items still needs
@@ -518,6 +893,12 @@ GET  /v1/revisions/{revision_id}/resources
 GET  /v1/revisions/{revision_id}/resources/{resource_id}
 GET  /v1/revisions/{revision_id}/resources/{resource_id}/history
 POST /v1/revisions/{revision_id}/state/query
+GET  /v1/revisions/{revision_id}/topology/providers
+POST /v1/revisions/{revision_id}/topology/query
+POST /v1/revisions/{revision_id}/topology/changes/query
+GET  /v1/topology-assemblies/{assembly_id}/capabilities
+POST /v1/topology-assemblies/{assembly_id}/query
+GET  /v1/topology-contexts/{context_id}/members/{member_id}
 POST /v1/revisions/{revision_id}/timeline/query
 GET  /v1/revisions/{revision_id}/timeline/clusters/{cluster_id}/events?cursor=
 POST /v1/revisions/{revision_id}/graph/query

@@ -20,9 +20,21 @@ test = ["httpx>=0.27,<1"]
 
 [project.scripts]
 router-dump-demo = "router_dump_analyzer.demo_app:main"
+router-dump-plugin-validate = "router_dump_analyzer.plugin_validation:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/router_dump_analyzer"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"frontend" = "router_dump_analyzer/frontend"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/frontend",
+  "/README.md",
+  "/pyproject.toml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

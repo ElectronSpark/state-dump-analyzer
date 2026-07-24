@@ -1,4 +1,4 @@
-"""Pack the 100K+ EVPN fixture into one deterministic nested router dump."""
+"""Pack the 100K+-event EVPN fixture into one deterministic router dump."""
 
 from __future__ import annotations
 
@@ -92,8 +92,8 @@ CONTAINERS = (
     ContainerDefinition(
         "underlay-agent",
         "Underlay and hardware agent",
-        "single-table",
-        ("VIRTUAL_INTERFACES",),
+        "multi-table",
+        ("VIRTUAL_INTERFACES", "NEIGHBORS"),
     ),
 )
 
@@ -213,6 +213,8 @@ def _resource_table_destination(
         return "evpn-control", "IP_ROUTING"
     if kind == "VIRTUAL_INTERFACE":
         return "underlay-agent", "VIRTUAL_INTERFACES"
+    if kind == "NEIGHBOR":
+        return "underlay-agent", "NEIGHBORS"
     if kind in {"ETG", "DTE", "ETE"}:
         index = _service_index(service_id)
         if index is None:
@@ -553,14 +555,15 @@ def build_packed_bundle(
 
         pack_manifest = {
             "generator": PACK_GENERATOR,
-            "format_version": 1,
+            "format_version": 2,
             "package_id": "router-state-lab-evpn-multihome-100k",
             "scenario_id": scenario["scenario_id"],
             "description": (
                 "One deterministic outer dump containing four nested container "
                 "packs, per-container CTF logs and heterogeneous status tables, "
-                "the complete 100K normalized scale corpus, and a browser-sized "
-                "review projection."
+                f"the complete {int(scenario['scale']['events']):,}-event / "
+                f"{int(scenario['scale']['resources']):,}-resource normalized "
+                "scale corpus, and a browser-sized review projection."
             ),
             "scale": scenario["scale"],
             "resource_counts": scenario["resource_counts"],
@@ -620,7 +623,7 @@ def build_packed_bundle(
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(
-        description="Build the one-file 100K+ Router State Lab packed fixture"
+        description="Build the one-file 100K+-event Router State Lab fixture"
     )
     parser.add_argument(
         "--output",
@@ -660,7 +663,7 @@ def main() -> None:
         "ascii",
         errors="backslashreplace",
     ).decode("ascii")
-    print(f"Generated packed 100K+ fixture: {console_path}")
+    print(f"Generated packed 100K+-event fixture: {console_path}")
 
 
 if __name__ == "__main__":

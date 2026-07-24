@@ -1,10 +1,30 @@
 # Plugin contract and lifecycle
 
-The core owns safety, lifecycle, canonical storage, temporal semantics, API, and
-UI. A plugin owns only facts that vary by software/platform version.
+There are three owners:
+
+- **Core** owns trust boundaries and mechanics: safe artifact materialization,
+  canonical envelopes and identity, clock transforms, interval reconstruction,
+  persistence, budgets, APIs, orchestration, and generic rendering.
+- **Node/device plug-ins** own platform-, release-, layer-, and
+  protocol-specific meaning: parsing, typed keys, status normalization,
+  mutations, local correlations, forwarding/topology projections, and
+  declarative presentation.
+- **Federation/linker plug-ins** own cross-node inference over bounded normalized
+  claims: peer/domain matching, corroboration, ambiguity policy, and inter-node
+  link semantics. They cannot read raw node artifacts or replace node-local
+  state.
+
+Core code never branches on plug-in kind, relation, source-type, source-group,
+or key-field names. The migration audit is recorded in
+`docs/core-plugin-boundary-audit-2026-07-22.md`.
 
 The executable reference types are in
 `src/router_dump_analyzer/plugin_api.py`.
+
+If this is your first plug-in, start with
+`docs/plugin-author-quickstart.md` and the runnable
+`examples/minimal_plugin/` package. This document is the normative reference,
+not the recommended reading order for a first implementation.
 
 ## 1. Packaging and discovery
 
@@ -16,12 +36,38 @@ point. A minimal declaration looks like:
 synthetic_router_2025 = "vendor_router_plugin:plugin"
 ```
 
-The loaded object implements `AnalyzerPlugin` and exposes a `PluginManifest`.
+The entry-point target is a module-level plug-in **instance**, not a class or
+factory. The loaded object implements `AnalyzerPlugin` and exposes a
+`PluginManifest`. New implementations should subclass `AnalyzerPluginBase`;
+it supplies safe empty behavior for undeclared optional capabilities and fails
+loudly when a declared capability's hook was not overridden.
+
+Install and validate a distribution in the same environment as the analyzer:
+
+```text
+python -m pip install -e .
+python -m pip install --no-deps -e examples/minimal_plugin
+router-dump-plugin-validate minimal_router --artifact examples/minimal_plugin/fixtures/minimal-status.jsonl --node-hint router-1 --metadata platform=minimal-router-os --metadata software_version=1
+```
+
+The validator checks entry-point construction, manifest/core compatibility,
+schema determinism, required hooks, capability overrides, empty-inventory
+robustness, and the representative inventory's explicit parser dispatch. It
+does not open the supplied artifact or run the parser. Product conformance still
+requires a plug-in-owned synthetic corpus and the tests in section 8.
+
 The server records distribution name/version/hash, manifest, plugin API version,
 configuration hash, and decoder version in the analysis revision.
 
 Do not use filename-based module discovery or import Python files found in the
 dump. The deployment owns an allowlist of installed plugin distributions.
+
+The executable v1 protocol does not inject runtime configuration into a plug-in.
+Do not invent a hidden environment-variable or global configuration channel.
+Package immutable defaults with the plug-in; any future configurable constructor
+or configuration object requires a versioned protocol addition. The
+`supported_software_versions` string is recorded for humans and reproducibility;
+the plug-in's `probe()` owns version interpretation and returns `match_kind`.
 
 ## 2. Capability boundary
 
@@ -29,14 +75,51 @@ dump. The deployment owns an allowlist of installed plugin distributions.
 |---|---|---|
 | Probe | Detect platform/version from safe inventory metadata and return a structured probe report. | Run every allowed probe with limits and resolve ambiguity explicitly. |
 | Locate | Select logical artifacts/parser roles or emit structured missing-input diagnostics. | Materialize only those artifacts into a private workspace. |
-| Status parse | Yield resource and relationship observations, scoped completeness markers, and precise evidence locators. | Batch validation, identity assignment, storage, diagnostics. |
-| Trace parse | Map dependency-free core CTF records or raw text into domain events. | Own `bt2`, normalize native messages, retain raw time/source order, enforce quotas, and persist decoder diagnostics. |
-| Source-record presentation | Declare source-type labels/colors and optional regex-lane presets; link decoded records to domain events when normalization succeeds. | Retain matched and unmatched timestamped records, assign stable IDs, validate regexes, page/query records, and implement timeline/log navigation. |
+| Status parse | Yield resource and relationship observations, scoped completeness markers, retained `SourceRecordEmission` values, and precise evidence locators. | Batch validation, source-record identity assignment, storage, diagnostics. |
+| Trace parse | Map dependency-free core CTF records or raw text into domain events and retained `SourceRecordEmission` values. | Own `bt2`, normalize native messages, retain raw time/source order, enforce quotas, and persist decoder diagnostics. |
+| Source-record presentation | Declare source-group metadata, source-type labels/colors/group membership, and optional regex-lane presets; link decoded records to domain events when normalization succeeds. | Validate group/type references, retain matched and unmatched timestamped records, assign stable IDs, validate regexes, page/query records, and implement generic timeline/log navigation. |
 | Reduce | Convert one event into all direct/derived state and edge changes. | Deterministic ordering, interval materialization, checkpointing. |
 | Revert | Invert an event when information permits. | Mark non-invertible state unknown and measure reconstruction coverage. |
 | Correlate | Query a bounded indexed reader and emit cross-layer edges, event causal links, and clock anchors. | Clamp windows/budgets, persist evidence/quality, and reject invalid references. |
 | Check | Return PASS/FAIL/UNKNOWN findings. | Execute rules at selected time/revision and aggregate dashboard results. |
 | Forwarding | Project bootstrap or bounded `ChangeSet` deltas into a negotiated typed forwarding IR. | Validate/version/store deltas; own LPM, recursive resolution, cycle/limit handling, and explanation API. |
+| Topology/status projection | Declare independently selectable status perspectives and named topology projections; materialize plugin-defined topology resources, relationships, and usability state. | Resolve temporal bases, validate projection/perspective combinations, query stored intervals, preserve unknowns, and expose bounded state/topology APIs. |
+| Cross-node federation | Match bounded normalized claims, preserve candidates, and emit matched, ambiguous, unresolved, or conflicting inter-node semantics. | Freeze each member basis, invoke the selected linker with budgets, validate/store its output, and never guess a non-exact match. |
+
+### Hook selection and input dispatch
+
+Every node/device plug-in implements `describe()`, `probe()`, and
+`locate_inputs()`. Optional behavior is advertised with the standard
+`PluginCapability` values:
+
+| Capability | Hook |
+|---|---|
+| `STATUS_PARSE` | `parse_status()` |
+| `CTF_PARSE` | `parse_ctf()` |
+| `TEXT_TRACE_PARSE` | `parse_text_trace()` |
+| `EVENT_REDUCTION` | `apply()` |
+| `EVENT_REVERSION` | `revert()` |
+| `CORRELATION` | `correlate()` |
+| `CONSISTENCY_CHECK` | `check_consistency()` |
+| `TOPOLOGY_PROJECTION` | `project_topology()` |
+| `FORWARDING_PROJECTION` | `project_forwarding()` |
+
+`PLUGIN_CAPABILITY_HOOKS` is the executable mapping used by validation. New
+plug-ins use the enum values rather than copying arbitrary capability strings.
+Custom opaque strings are retained only as compatibility extensions and do not
+activate core behavior.
+
+Every new `InputSpec` sets `parser_kind` explicitly:
+
+| `InputParserKind` | Core dispatch |
+|---|---|
+| `STATUS` | `parse_status(reader, spec)` |
+| `CTF` | `parse_ctf(spec, messages)` |
+| `TEXT_TRACE` | `parse_text_trace(reader, spec)` |
+
+`role` and `parser_id` remain opaque plug-in vocabulary; the core never parses
+them to choose a hook. `parser_kind=None` is a legacy compatibility shape and
+fails the default author validator.
 
 Plugins never receive application database credentials and never mutate core
 tables. They return records through a validated IPC/batch channel.
@@ -59,11 +142,14 @@ inside a human locator.
 
 The core may retain any timestamped decoder input as a generic `SourceRecord`,
 including CTF messages, syslog lines, agent callbacks, and records decoded from
-status text. A plug-in supplies the `source_type`, decoded record name/message,
-attributes, and an optional `matched_event_uid`. No match is also a first-class
-result: unmatched records remain queryable and can appear on dedicated timeline
-lanes. The core owns stable source-record IDs, timestamp normalization, storage,
-pagination, range membership, and source-to-domain links.
+status text. Parser hooks yield `SourceRecordEmission` with the plug-in-owned
+`source_type`, decoded record name/message, attributes, evidence, and optional
+`matched_event_uid`. The emission deliberately has no `source_record_uid`: the
+core validates it, assigns stable identity, and persists the resulting
+`SourceRecord`. No match is also a first-class result: unmatched records remain
+queryable and can appear on dedicated timeline lanes. The core owns stable
+source-record IDs, timestamp normalization, storage, pagination, range
+membership, and source-to-domain links.
 
 `PluginSchema.source_record_types` contains labels, descriptions, and safe
 colors. `PluginSchema.record_lane_presets` may provide useful source filters,
@@ -137,6 +223,58 @@ owner, direction, relation type, and capture interval; omission outside that
 scope proves nothing. The core stores observations separately from mutations and
 uses them as reconstruction constraints, never as a fabricated global snapshot.
 
+A node plug-in declares raw clock domains and emits anchors with the
+device-specific evidence needed to interpret them. It does not fit a hidden
+global offset, align nodes, or resolve an API selector. The core validates
+anchors, fits/version-controls transform segments, propagates uncertainty, and
+resolves every selected member independently. A federation/linker plug-in
+receives those frozen per-member bases and must preserve them.
+
+Absolute and relative external queries use core-owned temporal selector types:
+
+- `AbsoluteTimeSelector(time_ns, clock_domain, clock_policy)` asks the core to
+  map one absolute instant into each selected node's local clock domain.
+- `RelativeToWatermarkSelector(offset_ns, scope, clock_policy)` uses a zero or
+  negative offset from the latest complete `ReconstructionWatermark` for the
+  exact `WatermarkScope(node_id, status_perspective_id,
+  topology_projection_id)`.
+
+A watermark is not the greatest event timestamp. It means reconstruction is
+complete through that point for exactly the named node, status perspective, and
+optional topology projection. A control-plane watermark cannot anchor a
+hardware-perspective query, and an unrelated late log record cannot advance any
+status watermark. The core returns each node's `ResolvedNodeBasis`, including
+local and absolute uncertainty ranges, mapping method, evidence, quality, or an
+explicit reason such as `clock_unaligned`.
+
+The watermark's local time and clock domain are sufficient for a relative
+query. Absolute bounds are optional mapping metadata: a node with no wall-clock
+transform can still reconstruct `-5s` from its own exact scoped watermark. Only
+an absolute selector requires a registered transform from its named source
+clock domain.
+
+With `ClockAlignmentPolicy.STRICT`, missing clock transforms, gaps in transform
+coverage, and uncertainty that straddles a state transition remain unknown or
+ambiguous. The core never treats equal raw timestamps from different clock
+domains as equal instants, never drops uncertainty, and never silently falls
+back to a different node, layer, perspective, projection, or timestamp.
+`BEST_EFFORT` may use a recorded assumption, but the resolved basis must expose
+that method and degraded quality. A relative request over several nodes resolves
+to a `relative_capture_vector`; it does not claim a simultaneous wall-clock
+snapshot.
+
+### Normalized conditions and outcomes
+
+Device-specific status text is interpreted by the plug-in, not by the core.
+`DomainEvent.outcome` is the normalized `success`, `failure`, or `unknown`
+result. `SnapshotObservation` and `StateMutation` carry an optional normalized
+`condition` plus `ConditionClass` (`healthy`, `degraded`, `error`, `absent`, or
+`unknown`). A resource kind's `condition_field` tells generic tables and hovers
+which plug-in property is the human-readable condition. The core stores and
+renders these fields exactly; it does not search arbitrary `*status` fields,
+apply error-word regular expressions, or infer create/delete semantics from an
+action label. Missing normalization remains `unknown`.
+
 ### Relationships
 
 Use explicit types such as:
@@ -202,9 +340,203 @@ streaming scans with coordinator budgets. Reducers can therefore find reverse
 dependents and implement one-to-many fan-out without losing edge metadata or
 forcing a full-world list.
 
-Every world exposes an observed-capture-vector or reconstructed-time basis.
+Every world exposes its resolved `WorldBasis`: an observed capture vector,
+legacy reconstructed time, absolute-time mapping, or relative capture vector.
 Resource views retain validity/capture ranges and evidence, so findings and
 forwarding projection can preserve the actual observation anchors.
+
+### Status perspectives and topology projections
+
+`PluginSchema.status_perspectives` declares each independently reconstructed
+layer-local view. A `StatusPerspectiveDescriptor` has a stable ID, label,
+`layer_id`, and descriptive role (`intended`, `programmed`, `observed`, or
+`other`). Role is presentation and policy metadata only; the core does not rank
+roles or infer that observed hardware is ground truth.
+
+Every stored observation, mutation, resource view, and relationship view may
+carry a `StatusPerspectiveRef`. A plug-in may emit the local perspective ID;
+the core qualifies it with the selected plug-in instance and immutable schema
+digest when those identities are available. `ReadOnlyWorld.perspective_ref`
+therefore makes the selected view explicit to reducers and projectors without
+assuming that equal local IDs from different plug-ins are interchangeable.
+
+`PluginSchema.topology_projections` declares named plugin interpretations of
+which typed resources and time-valid relationships constitute connectivity.
+Every `TopologyProjectionDescriptor` lists its supported status perspective IDs
+and may name one display default. It also declares the generic status-source
+combination operator (`all_required_usable` or `any_declared_usable`) when the
+plugin delegates simple aggregation to the core; richer plugins may emit final
+usability directly. The schema rejects duplicate IDs, undeclared
+perspectives, and a default outside the supported set. The default is never an
+authorization to substitute it when an API caller explicitly selects another
+perspective.
+
+The coordinator calls
+`project_topology(TopologyProjectionRequest, ReadOnlyWorld)`. The request names
+the selected projection and status perspective, optional canonical seed
+resources, a hard `max_records` output bound, and a cumulative
+`max_world_reads` input bound. The world has already been resolved to the
+requested temporal basis and is wrapped by the coordinator to enforce that
+read budget. Output is a streaming iterable of
+`TopologyProjectionRecord` or diagnostics; it must stop at the request bound and
+must not scan outside coordinator-enforced world/query budgets.
+
+Each projection record repeats the selected IDs and contains exactly one typed
+payload:
+
+- `TopologyResourceRecord` references one canonical `ResourceKey` and optional
+  plugin role.
+- `TopologyEndpointRecord` assigns a stable endpoint ID to one
+  `TopologyEndpointReference`.
+- `TopologyLinkRecord` assigns a stable link ID and connects two endpoint
+  references, with explicit directionality.
+
+An endpoint reference contains exactly one canonical resource key or one
+`TopologyMatchReference`. A match reference has a namespaced matcher ID, bounded
+typed arguments, and zero or more plugin-resolved canonical candidates. The
+core treats matcher ID and arguments as declarative plugin data: it validates,
+stores, and returns them but never implements or guesses the matching rule.
+
+The common record envelope carries tri-state topology `exists` separately from
+`TopologyUsability` (`usable`, `unusable`,
+`degraded`, or `unknown`), source resource keys, plugin properties and field
+unknowns, validity, provenance, quality, and evidence. The core verifies that
+record projection/perspective IDs match the request and declared schema, checks
+canonical references and limits, then materializes/serves the intervals. A
+plugin must use `unknown` rather than omit a projected object merely because the
+selected status perspective has no answer.
+
+An ambiguous relationship boundary therefore produces `exists=None` and a
+possible link with unknown usability. It is never promoted to a definite link.
+
+#### Multi-access connectivity domains
+
+A shared subnet, broadcast domain, or other multi-access medium does not need a
+special core hyperedge. A topology plug-in or federation linker projects it as
+a canonical `TopologyResourceRecord` with a role such as
+`connectivity-domain`. Each participating interface, subinterface, LAG, or
+other plug-in-defined endpoint remains independently addressable and connects
+to that domain through an ordinary temporal `TopologyLinkRecord`. This avoids
+expanding one N-way medium into N-squared router-to-router links and preserves
+multiple attachments from the same node.
+
+The core validates, stores, pages, time-selects, and renders this bipartite
+resource/attachment graph. It may aggregate generic existence, usability,
+quality, provenance, evidence, and completeness, but it never derives a domain
+identity from a prefix or display label. Prefix reuse across VRFs, VLANs,
+tenants, sites, and VPNs makes such a merge unsafe.
+
+Exact opaque keys are recursively type-tagged and serialized into a JSON-safe
+normalized form. A UUID atom, its text form, a 16-byte atom, and a compound key
+containing any of them remain distinct. Stable attachment identity is derived
+from stable domain/member/revision/resource identity and an optional explicit
+plug-in attachment key; plug-in run IDs are provenance and never identity.
+Resource preview pagination is independent from bounded attachment evaluation.
+
+The executable typed contract represents this distinction with `KeyAtom`.
+Existing integer, string, byte, UUID, and compound `ResourceKey` values remain
+valid. A plug-in uses the standard `opaque_int`, `opaque_uint`, `ipv4`, `ipv6`,
+`uuid`, or `bytes` tag when a raw representation would otherwise alias another
+meaning, or a bounded `plugin:<plugin-id>:<local-tag>` for a plug-in-specific
+atom. The core validates tag syntax and the standard payload shape, preserves
+the tag for equality and serialization, and never derives resource semantics
+from it.
+
+Plug-ins own the domain key and all networking semantics: IP prefix and address
+interpretation; VRF or VPN scope; VLAN, LAG, subinterface, SVI, and physical
+member composition; neighbor/route/interface inference; management and
+loopback exclusion; and whether a one-sided domain is truly external. A domain
+with one returned attachment means only `single_sided_in_query_scope` unless a
+plug-in asserts `external` and the relevant projection coverage is complete.
+VPN domains belong to a separate projection or presentation plane so an
+overlay is not silently mixed with underlay adjacency.
+
+For a domain that the plug-in knows is safe to display inline when it has two
+participants, set `TopologyResourceRecord.presentation` to a
+`TopologyResourcePresentation` whose `two_participant_shape` is
+`TopologyTwoParticipantShape.COMPACT_EDGE`, and expose the equivalent
+`topology_presentation` metadata in normalized projections. This is a display
+preference, not a topology claim: the domain resource and every attachment
+link remain canonical, temporal, and independently inspectable. The plug-in
+should provide a human-readable reason plus its inference rule, confidence,
+evidence, and provenance.
+
+The core fails closed. It uses the compact line only for a conflict-free
+physical domain with complete returned current membership and exactly two
+distinct current participants. Otherwise it keeps the domain vertex. A
+filtered query that happens to show two members of a larger shared medium must
+therefore not acquire compact-edge semantics. The core validates cardinality
+and completeness and renders the generic shape, but never infers this choice
+from `/30`, an interface type, protocol, VLAN, VRF, address overlap, or a
+display name. `DOMAIN_NODE` is the default and is appropriate for shared media,
+VPNs, one-sided domains, and any uncertain projection.
+
+Pairwise inter-node links may remain as a compatibility projection for route
+segments. Links derived from a connectivity domain should retain references to
+that domain and the ingress/egress attachments that justify them. An
+independently derived route-only link instead declares its compatibility role
+and that it is not subnet-membership evidence; the physical view suppresses it
+when an explicit domain projection is available. Removing either compatibility
+form requires a versioned route schema that can name attachment transitions
+directly.
+
+#### Federating different node plug-in sets
+
+An assembly may contain nodes whose active plug-in sets, resource vocabularies,
+projection IDs, perspective IDs, and versions are completely different. The
+coordinator invokes each node against its own immutable revision and qualifies
+every semantic selection by the producing plug-in run. A plug-in must not rely
+on another node using the same local descriptor IDs. Identical local
+`ResourceKey` values remain distinct because assembly references also contain
+member and revision IDs.
+
+A local topology plug-in can export bounded endpoint claims. A claim contains a
+stable local endpoint reference, a namespaced and versioned claim-contract ID,
+an opaque canonical value, local/remote role, validity, quality, provenance,
+and evidence. The plug-in owns extraction and normalization. The core validates,
+indexes, pages, and transports claims but does not interpret an IP address,
+system ID, interface alias, label, SID, or proprietary peer key as a connection.
+The executable form is a node-local `ConnectorClaim`: its ordered
+`KeyValue` arguments use `KeyAtom` whenever a scalar representation would be
+ambiguous, and it deliberately has no remote-candidate field. The coordinator
+qualifies the local endpoint with `GlobalResourceRef` and wraps the pair as a
+`FederatedConnectorClaim`; member, immutable revision, and plug-in-instance
+scope therefore cannot be lost during assembly matching.
+
+Cross-node matching beyond an explicitly declared exact-token contract belongs
+to a separate allowlisted federation/linker plug-in. It declares the claim
+contracts it accepts and emits validated inter-node link records with candidate
+sets and a resolution of matched, ambiguous, unresolved, or conflict. Reciprocal
+evidence requirements, one-sided observations, alias rules, and link usability
+are linker semantics. The core preserves all candidates and never resolves
+ambiguity by picking the first match.
+`ConnectorMatchPolicyDescriptor` makes the boundary executable:
+`exact_token` authorizes only equality over the complete ordered typed argument
+tuple, while `linker` names the allowlisted `FederationLinkerPlugin`. Only the
+latter receives a bounded `FederationLinkRequest`. It returns bounded
+`FederationLinkResult` records and `FederationMatchCandidate` values; it cannot
+read node worlds, raw artifacts, or mutate a node-local claim.
+
+Multi-node watermark scope includes member ID, plug-in run, projection, and
+perspective. Relative assembly queries resolve those watermarks independently;
+they are capture vectors and do not imply a simultaneous network state. Missing
+or failed members remain reason-coded coverage records unless the request marked
+them required and explicitly demanded an all-or-nothing result.
+
+Topology objects remain ordinary canonical resources and relationships with
+validity intervals, provenance, quality, unknown fields, and evidence. Plugins
+own topology inference, peer matching, interface aliases, and the mapping of
+proprietary state to generic `usable`, `unusable`, `degraded`, or `unknown`
+projection values. The core owns storage, historical selection, pagination, and
+the response envelope. Missing selected-perspective status yields `unknown`; it
+does not remove an otherwise supported topology object. A dependency edge is
+not connectivity unless the selected plugin projection says it is.
+
+Topology projection and status perspective are independent request choices.
+For example, an IS-IS/LLDP-derived connectivity projection may be evaluated once
+with control intent and again with observed hardware status while retaining the
+same canonical topology identities. Reachability ground-truth policy is a third,
+separate route-tracing choice and must not be encoded into either descriptor.
 
 ### Provenance, quality, and coverage
 
@@ -221,9 +553,65 @@ record. APIs and exports preserve these values rather than flattening them.
 
 `describe()` returns resource/property/relation descriptors used for lane
 choosers, labels, filtering, redaction, and selective indexes. Plugins normalize
-raw states into core semantic fields such as admin/oper state, severity,
-provenance, and quality. The web theme maps those semantic values to accessible
-colors; plugins must not emit CSS or assume a particular color palette.
+raw states into their own declared properties plus the deliberately small core
+enums such as `ConditionClass`, `Outcome`, provenance, and quality. Names such
+as admin state, operational state, reachability, or programming state remain
+plug-in fields rather than universal core semantics. The web theme maps the
+normalized presentation class to accessible colors; plug-ins must not emit CSS
+or assume a particular color palette.
+
+`PluginSchema.source_record_groups` declares zero or more
+`SourceRecordGroupDescriptor` values. Each supplies an opaque plug-in-owned
+group ID plus safe label, description, and default inclusion state.
+`SourceRecordTypeDescriptor.stream_group` is a reference to one of those
+declared IDs, not a free-form core category. The core validates the reference;
+the browser renders generic controls and converts selected groups into explicit
+source-type filters.
+
+A source-record group is presentation/query metadata only. It is not a
+Babeltrace stream, clock domain, storage partition, or event semantic. For
+example, the demo plug-in may declare groups named `ctf` and `external`, but
+those are demo vocabulary, not core enums. The core never derives a group from
+`source_type`, a record label, or CTF knowledge.
+
+### Relationship-bundled resource-table views
+
+`PluginSchema.resource_table_views` lets a plug-in place related resources
+closer together without introducing a core domain hierarchy. A
+`ResourceTableViewDescriptor` declares root kinds and one to three
+`ResourceTableRelationLevelDescriptor` hops. Each hop supplies a label,
+declared relationship types, direction, and optional target-kind filter. The
+view also declares safe columns, default expansion depth, and hard root/child
+bounds.
+
+Resource-kind presentation remains declarative too. Nested rows use each
+referenced `ResourceKindDescriptor` for its type label, validated icon,
+presentation tags, key fields, and default state fields; a table view may
+override the shared columns with explicit field projections and value formats.
+For example, a plug-in can declare a Virtual Interface root, traverse one of its
+own adjacency relationship types to its own Neighbor kind, and choose which
+interface and neighbor fields to show. The core has no built-in interface,
+neighbor, or protocol kind names.
+
+The core validates those references, resolves the relationship path at the
+requested time, checks every endpoint lifecycle, and returns a bounded nested
+projection. It does not inspect resource names or key-field names. A temporary
+child is present only while both its lifecycle and the declared edge are active.
+A repeated child may appear beneath multiple roots as separate presentation
+occurrences while retaining one canonical identity and one timeline lane.
+
+A plug-in may use a compound child `ResourceKey`, such as
+`(("parent_resource_id", parent_id), ("path_id", path_id))`, and emit an
+exact `owns` relationship between the parent and child keys. The key keeps the
+child independently addressable; the relationship, not key parsing, controls
+grouping and temporal ownership.
+
+The packed scale-demo adapter additionally accepts optional `KEY_JSON` and
+`STATE_JSON` object columns in `resources.table.txt`. They overlay the legacy
+compatibility columns and preserve arbitrary plug-in-owned JSON values,
+including nested typed-key wrappers, numbers, booleans, and arrays. This is a
+demo transport detail rather than a domain schema: the plug-in still declares
+the meanings and presentation of those fields through `PluginSchema`.
 
 ### Dashboard descriptors
 
@@ -262,7 +650,10 @@ the descriptor defaults. A non-collapsible module must be expanded by default.
 
 For identical artifacts, configuration, and plugin build, output must be stable:
 
-- Stable event UID derived from source identity and ordinal/locator.
+- Stable event UID derived with
+  `derive_event_uid(plugin_id, parser_id, source_ref, local_discriminator)`.
+  The optional discriminator separates multiple domain events from one source
+  record without aliasing integers, strings, bytes, or UUIDs.
 - Stable canonical resource keys.
 - Stable record ordering within a source.
 - No wall-clock reads, network calls, random IDs, or hidden global state in parse/reduce.
@@ -290,6 +681,13 @@ output plus a stable diagnostic, never an apparently exact partial result.
 `world_at()` has its own cumulative budget and rejects timestamps outside the
 bound window; it never silently clamps to a different time.
 
+Topology projection follows the same streaming rules. `max_records` is a total
+coordinator-enforced budget across resource, endpoint, and link payloads, not a
+per-type allowance. Exceeding it produces a bounded diagnostic/partial result;
+it must not return an apparently complete topology. Match arguments, candidate
+sets, source-resource references, property depth, and serialized bytes have
+independent core caps.
+
 If a plugin needs Polars/Lark/TextFSM, those libraries remain in its worker image;
 they are not forced on every plugin.
 
@@ -314,7 +712,9 @@ not reimplemented differently by each plugin.
 ## 5. Version selection
 
 Probe results contain confidence and reasons, but confidence is not permission to
-guess. The core policy should be:
+guess. Each result also carries the plug-in-owned `match_kind` (`exact`,
+`compatible`, or `none`); the core does not parse or compare vendor software
+version strings. The core policy should be:
 
 1. One exact platform/version match: select it.
 2. Multiple exact matches: fail as ambiguous unless configuration resolves it.
@@ -326,9 +726,11 @@ version, distribution hash, and configuration hash. Selection and resume calls
 are idempotent; a stale or concurrent choice is rejected. Resuming validates the
 durable stage and does not reuse partial output created by another plugin build.
 
-Composition is useful: a family plugin may provide common archive/status parsing,
-while a release adapter overrides resource mappings or reducers. The final bundle
-still has one recorded, reproducible manifest/hash.
+Composition is useful: a family plug-in may provide common declarative artifact
+locators and status parsers, while a release adapter overrides resource mappings
+or reducers. Archive codec detection, traversal, extraction, and quota
+enforcement remain core operations; a plug-in never supplies an archive parser.
+The final bundle still has one recorded, reproducible manifest/hash.
 
 ## 6. Process and security model
 
@@ -347,10 +749,12 @@ Plugin execution is trusted code in a hostile-input boundary, so isolate it:
 Babeltrace and other multi-file readers. Neither returns an application or
 host-global path.
 
-Core materialization explicitly applies Python 3.12's `filter="data"` at every
-tar layer and then a stricter policy: regular files only; normalized relative
+Core materialization detects each codec layer from observed content, records the
+outer-to-inner chain, and explicitly applies Python 3.12's `filter="data"` at
+every tar layer before a stricter policy: regular files only; normalized relative
 paths; no links/devices/special members/collisions; and streaming quotas for
-members, depth, bytes, and ratios. Plugins may not open or extract an archive on
+members, depth, bytes, and ratios. Plug-in locator or role hints cannot select a
+codec or relax those checks. Plug-ins may not open or extract an archive on
 their own; they consume only validated artifact handles/private trees.
 
 ## 7. Forwarding IR
@@ -368,17 +772,175 @@ typed VRF key. Plugins normalize proprietary preference/tie rules into a
 lexicographic `selection_rank` (lower wins), exact selected state where known,
 and explicit multipath group; equal rank by itself does not imply ECMP.
 
-`project_forwarding(ir_version, changes=None, world)` is a deterministic
-streaming bootstrap. For later calls, `changes` is one bounded change set and the plugin yields only
-affected upserts/deletes. Batches follow the same backpressure and size rules as
-other outputs. Conformance compares a delta-maintained projection with a clean
-bootstrap, checks removal of stale objects, and rejects invalid references or IR
-versions.
+`project_forwarding(request, world)` is a deterministic streaming bootstrap.
+`ForwardingProjectionRequest` carries the negotiated IR version, one fully
+qualified `StatusPerspectiveRef`, an optional bounded `ChangeSet`, and hard
+`max_records`/`max_world_reads` budgets. For later calls, `changes` contains one
+bounded change set and the plugin yields only affected upserts/deletes. Batches
+follow the same backpressure and size rules as other outputs. Conformance
+compares a delta-maintained projection with a clean full projection, checks
+removal of stale objects, and rejects invalid references, perspectives, budget
+overruns, or IR versions.
+
+### Cross-node trace contribution contract
+
+A node plug-in contributes only node-local forwarding semantics through its
+projected IR. For a frozen `WorldBasis`, ingress VRF/destination, declared
+status perspective, and hard candidate/depth limits, the core performs LPM and
+traversal over that IR. The plug-in owns the explicit path-group mode, bounded
+candidate membership, and ordered local resolution metadata that traversal
+exposes; it does not return the final route answer. Each local step references
+canonical resources and has a normalized phase, plug-in-owned
+`resolution_text`, selected/degraded/unusable/unknown status semantics,
+provenance, quality, evidence, and unknown fields. The string is plain display
+text, not HTML, and may explain proprietary lookup, failover, label/SID/VLAN,
+encapsulation, or adjacency decisions. The core must preserve it rather than
+trying to derive an equivalent vendor explanation.
+
+`NextHopGroup.mode` uses `PathGroupMode` (`single_active`, `all_active`, or
+`unspecified`). Each `ForwardingMember` carries separate
+`ForwardingMemberActivity` and `ForwardingMemberSelection` values, so an active
+selection, a standby, an inactive candidate, and an unknown selection are not
+collapsed into one boolean. Groups and members may attach bounded
+`ResolutionContribution` records containing a normalized phase, plain plug-in
+text, canonical resource/topology references, quality, and evidence. These
+records explain node-local choices; they do not authorize a plug-in to traverse
+another member or choose a final end-to-end branch.
+
+Ingress-dependent candidate policy is also typed. A plug-in attaches
+`ForwardingCandidateConstraint` values to the affected `ForwardingMember`.
+For the v1 `EXCLUDE_EXACT_SCOPE` operation, each constraint declares:
+
+- a stable `constraint_id`;
+- one `ForwardingPolicyScope` whose `contract_id` and ordered typed
+  `arguments` define the plug-in-owned equality domain;
+- a `frozenset` of applicable traffic-class IDs, or an empty set for every
+  traffic class; and
+- bounded `ResolutionContribution` values explaining the device or protocol
+  rule and its evidence.
+
+The core may compare only complete `ForwardingPolicyScope` values for equality.
+It must not parse or normalize their arguments, infer prefix membership, or
+attach meaning to a contract ID. The plug-in therefore owns such details as an
+EVPN Ethernet Segment or split-horizon group, bridge domain/EVI, ESI-label and
+DF behavior for known-unicast or BUM traffic, and BGP learned-from,
+AS-path/originator/cluster-list, or site-of-origin policy. The core owns the
+generic verdict. The caller also declares whether the observed ingress-scope
+set is complete. An applicable exact ingress-scope match is `BLOCKED`, even
+when other scopes are unknown. An applicable non-match is `PERMITTED` only
+when the set is complete; an incomplete non-match is `UNKNOWN`. A known
+non-applicable traffic class is `NOT_APPLICABLE`, and an omitted traffic class
+needed to decide applicability is also `UNKNOWN`. `ForwardingPolicyDecision`
+validates that matrix and preserves the candidate, constraint, traffic class,
+ingress scopes, completeness, and plug-in explanation.
+
+For multiple constraints, aggregate precedence is `BLOCKED` over `UNKNOWN`,
+then `PERMITTED`, then `NOT_APPLICABLE`. A candidate with no constraints is
+`PERMITTED`. `NOT_APPLICABLE` means that rule does not govern the supplied
+traffic class; it is not a blocked path and does not by itself stop traversal.
+A blocked candidate remains in the bounded trace as an intentional policy
+exclusion; it is not silently removed or mislabeled as a failed physical link.
+The protocol-neutral core entry points are
+`evaluate_forwarding_constraint()` for one rule and
+`evaluate_forwarding_policy()` for the aggregate candidate verdict. A plug-in
+projects inputs to those functions; it must not manufacture its own core
+verdict.
+
+`FibEntry.presentations` and `TunnelAction.presentations` may carry bounded
+`RoutePresentationDescriptor` values when the plug-in needs to relate service
+intent or an encapsulation action to the graph. Each descriptor has a stable
+opaque `presentation_id`; an explicit `principal`, `overlay`, or `annotation`
+role; a `path`, `step`, `span`, or `resource` scope; and one safe core-rendered
+style primitive (`path`, `band`, `badge`, or `callout`). Its topology references
+are canonical `ResourceKey` values or declarative `TopologyMatchReference`
+values. The coordinator resolves a match only when its advertised contract has
+exact-token semantics; it never guesses from a prefix, label, VRF, VNI, VLAN,
+SID, or protocol name. Optional anchor resources and bounded plug-in-owned facts
+provide correlation and hover detail.
+
+These descriptors are presentation sidecars, not forwarding edges. They cannot
+change LPM, candidate selection, path ordering, reachability, or the physical
+L1-L3 principal path. The plug-in decides whether a fact represents a VPN,
+service overlay, label/SID action, VLAN attachment, or another proprietary
+concept. The core validates identity and references, preserves time and
+provenance from the owning forwarding record, and maps the declared style
+through its own accessible theme. Plug-ins cannot supply CSS, HTML, layout
+coordinates, or executable rendering behavior.
+
+A trace-capability declaration may name node-local projections required by the
+resolver in addition to the projection currently shown on the topology page.
+The core may invoke those projections only for the same selected member,
+plug-in set, and temporal basis; it exposes the auxiliary evidence context and
+does not replace the user's topology context. This lets a control-path
+alternative use control-state evidence without making it observed forwarding
+ground truth.
+
+Path-group mode is semantic output, not a UI guess:
+
+- `single_active` identifies at most one selected primary and may expose ordered
+  standby candidates. Standby means eligible after a failover predicate; it is
+  not currently forwarding. If the selected primary is unknown, the plug-in
+  returns alternatives with the uncertainty instead of choosing one.
+- `all_active` identifies an explicit ECMP/multipath group and its concurrently
+  eligible members, preserving weights and selection metadata when known.
+  Duplicate rank or multiple viable next hops alone is insufficient.
+
+The plug-in stops at a local egress connector claim. It must not identify a
+remote member, walk another node's state, align clocks, or assemble an
+end-to-end path. Inter-node candidate matching belongs exclusively to the
+selected federation/linker plug-in, which consumes bounded normalized boundary
+claims and returns matched, ambiguous, unresolved, or conflicting candidates
+with evidence. The core owns the immutable context, per-member temporal
+resolution, query budgets, branch expansion, loop detection, stable path/step
+ordering, cross-perspective comparison, coverage, and navigation links.
+
+For loop detection, a node plug-in canonicalizes the typed local context that
+it already owns; core records it as `ForwardingTraversalStateKey`. The key
+contains member, `StatusPerspectiveRef`, forwarding object and domain, ingress
+resource, typed lookup and packet contexts, the active
+`ForwardingPolicyScope` set, and `policy_scopes_complete`. Core detects a loop
+only when the complete frozen key repeats and returns a
+`ForwardingCycleReport` with the first index, repeated
+index, and closed key sequence. A repeated member name or router ID alone is
+not a cycle: decapsulation, a service-chain hairpin, or another lookup/packet
+context may legitimately revisit the same device. Plug-ins must not hide
+context in `resolution_text` merely to influence loop identity, and they must
+not declare a cycle themselves. Core exposes `detect_forwarding_cycle()` for an
+exact-repeat check and `evaluate_forwarding_traversal()` when independent hop
+and recursion budgets must also be classified. Exact repeats are checked before
+budget exhaustion at the same step, so a proven loop is not mislabeled as a
+limit.
+
+Status perspectives are resolved independently. A plug-in must not borrow a
+control-plane value to fill an unknown hardware value, and it must retain
+different local next hop, egress interface, destination, or encapsulation
+results for comparison. An explicit trace policy can name one advertised
+perspective as reachability ground truth, but neither a plug-in default nor an
+observed role implies that choice.
+
+Under strict completeness the core stops a branch at an unknown required local
+status or boundary. Under best-effort it may explore bounded candidates, but
+the plug-in/linker provenance, observation basis, assumptions, quality, and
+unknowns remain attached to every resulting step. Neither the core nor a later
+plug-in may promote a continuous best-effort branch into ground-truth topology
+or exact reachability. Conformance fixtures must cover single-active failover,
+all-active ECMP, an indeterminate primary, per-layer path disagreement,
+ambiguous/unresolved federation boundaries, and strict versus best-effort
+coverage.
 
 ## 8. Plugin conformance suite
 
 Every platform/version plugin should provide a redistributable synthetic corpus
 and run these tests:
+
+Start with the generic author check:
+
+```text
+router-dump-plugin-validate ENTRY_POINT --artifact REPRESENTATIVE_PATH --node-hint NODE --metadata platform=PLATFORM --metadata software_version=VERSION
+```
+
+This is a structural smoke test, not a substitute for the following
+device-semantic cases.
 
 ### Probe and input discovery
 
@@ -409,6 +971,12 @@ random event sequences.
 ### Clocks and correlation
 
 - Clock offset, drift, wrap, missing anchor, overlapping uncertainty.
+- Absolute strict queries resolve every node independently; an unaligned node is
+  unknown rather than compared by raw timestamp.
+- Relative queries use the selected perspective/projection watermark, not a
+  global event maximum or another layer's watermark.
+- A clock uncertainty range that crosses a resource or relationship transition
+  returns ambiguous alternatives rather than one arbitrarily chosen state.
 - One-to-many and many-to-one cross-layer correlation.
 - Same display name with distinct typed keys does not merge.
 - Weak correlation remains low-confidence/ambiguous.
@@ -420,8 +988,27 @@ random event sequences.
 - PASS, FAIL, and UNKNOWN for every rule.
 - Callback success with hardware mismatch is FAIL/UNKNOWN as specified, not PASS.
 - LPM, ECMP, failover, unresolved neighbor, recursive next hop, and cycle limit.
+- Exact recursive-state cycles and cross-node forwarding loops retain their
+  closing occurrence and terminate before a hop/recursion budget result.
+- A same-node revisit with a different lookup, packet, ingress, or policy-scope
+  context does not produce a false cycle; hop exhaustion remains a distinct
+  bounded result.
+- Ingress-dependent candidate constraints cover EVPN known-unicast and BUM
+  split horizon, BGP control-policy rejection, non-applicable traffic, and
+  unknown traffic or incomplete scope evidence without deleting rejected
+  candidates. A known-empty complete scope set remains distinct from an
+  incomplete set.
 - Every route result has a deterministic explanation tree and evidence links.
 - Applying forwarding deltas yields the same records as a clean full projection.
+- Switching status perspective retains topology identity while changing only
+  the selected perspective's status; missing status remains explicit unknown.
+- Historical topology snapshots and change streams respect resource, edge, and
+  endpoint validity intervals for both absolute and relative selectors.
+- Topology hooks reject undeclared projection/perspective pairs, duplicate or
+  over-budget records, invalid exact/match endpoint unions, and dangling
+  canonical resource keys.
+- Declarative match references round-trip without core interpretation and retain
+  all plugin-resolved candidates, source-resource keys, and evidence.
 
 The repository's `samples/` directory is a core smoke-test corpus. Real plugins
 need richer product-shaped synthetic generators, especially failure and clock-skew cases.
