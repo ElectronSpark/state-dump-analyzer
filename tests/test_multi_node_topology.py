@@ -9,9 +9,9 @@ from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
 
-from router_dump_analyzer.demo_app import app
-from router_dump_analyzer.demo_data import REVISION_ID
-from router_dump_analyzer.demo_multi_node_topology import (
+from router_dump_analyzer_demo.app import app
+from router_dump_analyzer_demo.data import REVISION_ID
+from router_dump_analyzer_demo.multi_node_topology import (
     MULTI_NODE_TOPOLOGY_ID,
     MultiNodeTopologyDemo,
 )
@@ -1172,7 +1172,7 @@ class MultiNodeTopologyTests(unittest.TestCase):
         self.assertIn("Multi-node topology", primary.text)
         self.assertEqual(primary.text, alias.text)
         self.assertIn("Synthetic review fixture", node.text)
-        self.assertIn("20260722-route-stacks-v23", primary.text)
+        self.assertIn("20260725-endpoint-selector-v30", primary.text)
         self.assertIn("control-plane only / not installed", primary.text)
         topology_script = self.client.get("/assets/topology.js")
         topology_styles = self.client.get("/assets/topology.css")
@@ -1403,7 +1403,7 @@ class MultiNodeTopologyTests(unittest.TestCase):
             "immutableSnapshot",
             "routeEndpointDisplayValue",
             "routeEndpointScopeIssue",
-            "endpointRepresentsRouter",
+            "sameCanonicalRouteEndpoint",
             "setAdvertisedSelectValue",
             "normalizedRelativeSeconds",
             "pathIsUsableActive",
@@ -1517,6 +1517,54 @@ class MultiNodeTopologyTests(unittest.TestCase):
         self.assertNotIn("memberships.flatMap(routeQualityClasses)", script.text)
         self.assertIn(
             ".mn-map-node.is-route-member.is-route-mixed",
+            styles.text,
+        )
+
+    def test_directional_asymmetry_is_pair_scoped_and_visible_on_the_map(self) -> None:
+        page = self.client.get("/")
+        script = self.client.get("/assets/topology.js")
+        styles = self.client.get("/assets/topology.css")
+
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual(script.status_code, 200)
+        self.assertEqual(styles.status_code, 200)
+        summary = javascript_function(script.text, "bidirectionalSummary")
+        sequence = javascript_function(script.text, "routeSequenceForDirection")
+        difference = javascript_function(script.text, "routeDirectionalDifference")
+        focused_map = javascript_function(script.text, "renderFocusedRouteMap")
+        edges = javascript_function(script.text, "renderEdges")
+        findings = javascript_function(script.text, "routeFindingsMarkup")
+
+        self.assertIn('code: "asymmetric"', summary)
+        self.assertIn('"bidirectionally_reachable"', summary)
+        self.assertIn('"not_comparable"', summary)
+        self.assertIn(
+            "Path shape is informational and does not make endpoint "
+            "reachability inconsistent.",
+            summary,
+        )
+        self.assertNotIn(
+            'label: "Asymmetric paths", detail: symmetry.state || '
+            '"Reachable directions use different paths", className: "is-inconsistent"',
+            summary,
+        )
+        self.assertIn("forward_node_sequence", sequence)
+        self.assertIn("reverse_node_sequence", sequence)
+        self.assertIn("path_relation", difference)
+        self.assertIn("currentOnlyNodeIds", difference)
+        self.assertIn("currentOnlyEdgeKeys", difference)
+        self.assertIn("both resolved", difference)
+        self.assertIn("renderRouteDirectionalDifference()", focused_map)
+        self.assertIn("is-direction-difference", focused_map)
+        self.assertIn("routeDirectionDifference", edges)
+        self.assertIn("is-direction-difference", edges)
+        self.assertIn("No path-local fault", findings)
+        self.assertIn("plug-in-provided active paths", findings)
+        self.assertIn('id="mn-route-direction-difference"', page.text)
+        self.assertIn(".mn-route-direction-difference", styles.text)
+        self.assertIn(".mn-route-edge.is-direction-difference", styles.text)
+        self.assertIn(
+            ".mn-map-node.is-route-member.is-direction-difference",
             styles.text,
         )
 

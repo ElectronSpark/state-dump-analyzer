@@ -6,11 +6,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_JS = ROOT / "frontend" / "assets" / "app.js"
+APP_JS = ROOT / "demo" / "frontend" / "assets" / "app.js"
 TEMPORAL_TOPOLOGY_PY = (
-    ROOT / "src" / "router_dump_analyzer" / "demo_temporal_topology.py"
+    ROOT / "demo" / "src" / "router_dump_analyzer_demo" / "temporal_topology.py"
 )
-DEMO_APP_PY = ROOT / "src" / "router_dump_analyzer" / "demo_app.py"
+DEMO_APP_PY = ROOT / "demo" / "src" / "router_dump_analyzer_demo" / "app.py"
 
 
 def javascript_function(source: str, name: str) -> str:

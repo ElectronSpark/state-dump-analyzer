@@ -50,6 +50,13 @@ python -m pip install --no-deps -e examples/minimal_plugin
 router-dump-plugin-validate minimal_router --artifact examples/minimal_plugin/fixtures/minimal-status.jsonl --node-hint router-1 --metadata platform=minimal-router-os --metadata software_version=1
 ```
 
+`python -m pip install -e .` installs the
+`router-dump-analyzer-core` distribution only. The reference FastAPI server,
+synthetic demo plug-ins, fixtures, and browser assets are a separate
+`router-dump-analyzer-demo` distribution and are not part of the plug-in
+runtime contract. A device plug-in must depend on the core distribution, never
+on the demo package.
+
 The validator checks entry-point construction, manifest/core compatibility,
 schema determinism, required hooks, capability overrides, empty-inventory
 robustness, and the representative inventory's explicit parser dispatch. It
@@ -103,6 +110,7 @@ Every node/device plug-in implements `describe()`, `probe()`, and
 | `CONSISTENCY_CHECK` | `check_consistency()` |
 | `TOPOLOGY_PROJECTION` | `project_topology()` |
 | `FORWARDING_PROJECTION` | `project_forwarding()` |
+| `FORWARDING_TRACE` | `resolve_forwarding_step()` |
 
 `PLUGIN_CAPABILITY_HOOKS` is the executable mapping used by validation. New
 plug-ins use the enum values rather than copying arbitrary capability strings.
@@ -144,12 +152,30 @@ The core may retain any timestamped decoder input as a generic `SourceRecord`,
 including CTF messages, syslog lines, agent callbacks, and records decoded from
 status text. Parser hooks yield `SourceRecordEmission` with the plug-in-owned
 `source_type`, decoded record name/message, attributes, evidence, and optional
-`matched_event_uid`. The emission deliberately has no `source_record_uid`: the
-core validates it, assigns stable identity, and persists the resulting
-`SourceRecord`. No match is also a first-class result: unmatched records remain
-queryable and can appear on dedicated timeline lanes. The core owns stable
-source-record IDs, timestamp normalization, storage, pagination, range
-membership, and source-to-domain links.
+`matched_event_uid` or plural `matched_event_uids`. The emission deliberately
+has no `source_record_uid`: the core validates it, assigns stable identity, and
+persists the resulting `SourceRecord`. No match is also a first-class result:
+unmatched records remain queryable and can appear on dedicated timeline lanes.
+The core owns stable source-record IDs, timestamp normalization, storage,
+pagination, range membership, and source-to-domain links.
+
+`SourceRecordEmission.copy_text` is an optional plug-in-materialized safe
+plain-text export of that source item. It is separate from the bounded
+human-readable `message`. The plug-in must redact it before emission because
+the core treats the content as opaque and exports it verbatim. It must be a
+string, contain no NUL, and contain at most 65,536 UTF-8 bytes. The core must
+not execute a plug-in formatter in the browser, infer text from a source type,
+or ship `copy_text` in ordinary virtual log, timeline, search, or bootstrap
+pages. An explicit selection projection validates the string, orders and
+deduplicates linked source records, and applies a maximum of 5,000 fragments
+and 1 MiB aggregate UTF-8 text. The hosting service authorizes that projection;
+the browser performs the Clipboard API write. Absence means that record is not
+copyable.
+
+`SourceRecordGroupDescriptor.copy_action_label` is optional presentation
+vocabulary of 1 to 80 characters. It may be used only when the copyable
+fragments resolve to one declared group. A selection spanning groups uses a
+core-owned generic label.
 
 `PluginSchema.source_record_types` contains labels, descriptions, and safe
 colors. `PluginSchema.record_lane_presets` may provide useful source filters,
@@ -563,6 +589,8 @@ or assume a particular color palette.
 `PluginSchema.source_record_groups` declares zero or more
 `SourceRecordGroupDescriptor` values. Each supplies an opaque plug-in-owned
 group ID plus safe label, description, and default inclusion state.
+It may also provide a safe `copy_action_label` for copyable records in that
+group; the label does not grant access or make every group record copyable.
 `SourceRecordTypeDescriptor.stream_group` is a reference to one of those
 declared IDs, not a free-form core category. The core validates the reference;
 the browser renders generic controls and converts selected groups into explicit
@@ -772,6 +800,16 @@ typed VRF key. Plugins normalize proprietary preference/tie rules into a
 lexicographic `selection_rank` (lower wins), exact selected state where known,
 and explicit multipath group; equal rank by itself does not imply ECMP.
 
+Persistent forwarding projection and trace-time packet evolution are separate
+capabilities. `FORWARDING_PROJECTION` describes the time-indexed forwarding
+objects above. A plug-in that also declares `FORWARDING_TRACE` implements
+`resolve_forwarding_step(request, world)` and answers one bounded, node-local
+`ForwardingStepRequest` with a `ForwardingStepResult` or diagnostic. The trace
+hook does not return an end-to-end path, inspect another member, or replace the
+projected FIB. Conversely, opaque `TunnelAction.parameters` in the persistent
+projection are not an executable packet transition unless the plug-in declares
+the corresponding trace-time before/after state.
+
 `project_forwarding(request, world)` is a deterministic streaming bootstrap.
 `ForwardingProjectionRequest` carries the negotiated IR version, one fully
 qualified `StatusPerspectiveRef`, an optional bounded `ChangeSet`, and hard
@@ -781,6 +819,101 @@ follow the same backpressure and size rules as other outputs. Conformance
 compares a delta-maintained projection with a clean full projection, checks
 removal of stale objects, and rejects invalid references, perspectives, budget
 overruns, or IR versions.
+
+### Packet state, transitions, and MTU
+
+`ForwardingPacketState` is the protocol-neutral packet snapshot used by the
+trace-time contract. Its `layers` are ordered outermost to innermost. Each
+`ForwardingPacketLayer` has a stable identity within the branch, one
+plug-in-owned `contract_id`, bounded typed fields, an optional declared byte
+size, and explicit completeness. A plug-in may use one layer per MPLS label, an
+SRH layer with an ordered SID field, an IP tunnel wrapper, a VPN context, or a
+proprietary layer. Core validates bounds and exact identity only. It never
+decides that a label is an SR-MPLS SID, infers PHP from a label value, parses a
+SID behavior, computes tunnel overhead, or assigns meaning to a VPN layer. The
+human `label` is presentation-only and is excluded from layer equality,
+hashing, packet continuity, and structural change detection.
+
+`ForwardingPacketTransition` records one node-local step with exact `before`
+and `after` snapshots, an opaque `action_contract_id`, plain display label,
+actor, contributions, and one normalized `ForwardingPacketDisposition`:
+`continue`, `deliver`, `drop`, `punt`, `replicate`, or `unknown`. This
+disposition is a trace result and is distinct from the forwarding-mutation
+operations above. The node plug-in owns the actual semantics: push, swap, pop,
+PHP or explicit-null behavior, SR segment processing, decapsulation and
+relookup, fragmentation or discard behavior, and the explanation/evidence for
+that decision. Core's `diff_forwarding_packet_states()` reports only added,
+removed, changed, and moved layer identities plus whether both packet
+identities were complete. `moved` means a relative reorder among retained
+layers, not the absolute index shift caused by adding or removing an outer
+wrapper.
+
+`evaluate_forwarding_packet_trace()` validates one bounded transition chain.
+Every complete transition's `before` state must equal the preceding `after`
+state. A complete mismatch is a contract error. An explicitly incomplete side
+retains the branch with `unknown_incomplete` continuity; core does not invent
+the missing transformation. `max_steps` is independent from the hop and
+recursion limits used by `evaluate_forwarding_traversal()`. Terminal
+`deliver`, `drop`, `punt`, and `unknown` dispositions stop the branch.
+`replicate` also stops the current linear branch with a typed branching
+request; an orchestrator may expand the declared copies within its candidate
+and branch budgets. A terminal disposition must be the final transition in the
+supplied linear chain; a suffix after it is a contract error. A chain ending
+only in `continue` is
+`continuation_required`, not delivered or resolved.
+
+Packet size comparison is exact-basis only. A plug-in may attach a
+`ForwardingSizeObservation` to the packet state and a
+`ForwardingMtuConstraint` to a transition. Both name an opaque
+`basis_contract_id`, such as a platform buffer length or L3 packet length.
+`evaluate_forwarding_mtu()` returns `fits` or `exceeds` only when both values
+are complete and the IDs are identical. Missing/incomplete evidence returns
+`unknown`; unequal basis IDs return `unknown_basis_mismatch`; no constraint
+returns `not_declared`. Core performs the integer comparison and reports the
+known excess bytes. Transition evaluation compares the declared `after` packet
+size with the transition's MTU constraint. The plug-in owns the measurement
+basis, effective MTU, encapsulation overhead, fragmentation rules, and
+resulting packet disposition.
+
+### Step requests and counterfactual steering
+
+`ForwardingStepRequest` fixes one step ID, member, qualified status
+perspective, forwarding object, current packet state, typed local lookup
+context, optional ingress resource, at most 64 steering rules, a bounded
+candidate limit, and the negotiated IR version. `ForwardingStepResult` must
+echo that step ID and supplies exactly one transition plus the selected
+candidate, next forwarding object/context, recursive/terminal flags, and
+quality. A `continue` transition is non-terminal and requires a next
+forwarding object. Every other disposition is terminal for the current linear
+branch and must not supply a next object or lookup context.
+`validate_forwarding_step_result()` verifies the result's exact request step
+and packet-before state. When an exact steering rule wins, it also verifies
+forced-rule provenance and any declared candidate, packet-after, disposition,
+or action-contract override. The node plug-in remains the sole interpreter of
+its forwarding object and action contracts.
+
+`ForwardingSteeringRule` is an explicit user override for one exact step. It
+may additionally require exact equality with `expected_before`; matching rules
+use highest priority and an equal-priority tie is a contract error. The rule
+may choose a candidate, replace the packet-after snapshot, or override the
+disposition. `apply_forwarding_steering_rule()` marks the resulting transition
+as `origin=user_forced`, records the actor and `forced_rule_id`, and
+`evaluate_forwarding_packet_transition()` reports it as counterfactual.
+The helper bounds its derived display label to the transition label limit; the
+full user reason remains part of the steering-rule input and must be retained
+by the coordinator when it is needed for review.
+User-forced output is an exploration result: it never replaces observed
+projection, becomes reachability ground truth, or silently changes a node
+plug-in transition. A device's own policy steering remains
+`origin=node_plugin` and must not claim a user `forced_rule_id`.
+
+These packet types and helpers are an implemented public boundary. The bundled
+multi-node demo has eight demo-provider scenarios whose declared transitions
+are evaluated by this boundary and serialized with their route steps. It still
+does not provide production-style discovery/orchestration that repeatedly
+invokes `resolve_forwarding_step()` across arbitrary installed members.
+Plug-in authors may implement and unit-test the hook, but must not assume every
+server path executes it until that orchestration is explicitly advertised.
 
 ### Cross-node trace contribution contract
 
@@ -893,6 +1026,51 @@ claims and returns matched, ambiguous, unresolved, or conflicting candidates
 with evidence. The core owns the immutable context, per-member temporal
 resolution, query budgets, branch expansion, loop detection, stable path/step
 ordering, cross-perspective comparison, coverage, and navigation links.
+When a packet state crosses a matched boundary, the linker may preserve an
+exact compatible packet/scope contract or explicitly map a contract it owns.
+It does not add, remove, reorder, or reinterpret packet layers as an implicit
+forwarding action. If it cannot preserve the contract, the receiving packet or
+scope evidence is incomplete rather than guessed.
+
+Traffic endpoint identity and traversal start are different concepts. A
+bidirectional trace keeps one immutable source/destination flow pair while the
+forward `ingress` or `trace_start` names only the member/resource where
+observation begins. A transit start does not make that member the packet source.
+Unless the request supplies an explicit return start, the reverse traversal
+starts from a time-valid attachment of the traffic destination and targets an
+exact attachment of the traffic source. It is never required to pass through or
+terminate at the forward start.
+For a bidirectional endpoint verdict, an explicit return start must resolve to
+an available destination attachment. A plug-in may expose an arbitrary
+mid-return observation as a single-direction diagnostic, but core must not
+treat that suffix as proof that the destination can reach the source.
+
+A node plug-in owns its normalized endpoint attachment declarations and the
+local, perspective-specific classification that a selected forwarding action
+delivers to or originates from one of those attachments. That classification
+must use canonical resource or typed declarative-match references, validity,
+quality, provenance, and evidence. It must not be hidden in
+`resolution_text`, inferred from a display prefix, or expanded into remote
+member knowledge. A federation/linker plug-in owns bounded cross-member
+attachment and boundary matching. Core preserves the immutable flow, swaps
+directional goals, selects or resolves traversal seeds, exact-matches a
+plug-in-declared terminal to the requested endpoint, aggregates multipath
+coverage, and produces the bidirectional endpoint-reachability verdict.
+Every plug-in-selected active branch participates in that aggregate. Mixed
+success/failure is `partial_active_reachability`; incomplete attachment or
+terminal evidence is unknown. Neither case is promoted to fully reachable.
+The protocol-neutral `evaluate_endpoint_reachability_pair()` helper performs
+that final classification only after exact typed directional terminal results
+are available; it does not parse endpoint values or manufacture attachment
+evidence.
+
+`path_relation` (`symmetric`, `asymmetric`, or `not_comparable`) describes
+node-sequence shape only. Core may compare sequences when both directions cover
+the same endpoint-to-endpoint span. It must return `not_comparable`
+when, for example, the forward trace starts at a transit observation point.
+Path relation never determines consistency: forward must reach the traffic
+destination and reverse must reach the traffic source. A complete path that
+only reaches the forward start fails the reverse endpoint goal.
 
 For loop detection, a node plug-in canonicalizes the typed local context that
 it already owns; core records it as `ForwardingTraversalStateKey`. The key
@@ -926,7 +1104,10 @@ plug-in may promote a continuous best-effort branch into ground-truth topology
 or exact reachability. Conformance fixtures must cover single-active failover,
 all-active ECMP, an indeterminate primary, per-layer path disagreement,
 ambiguous/unresolved federation boundaries, and strict versus best-effort
-coverage.
+coverage. They must also cover a transit forward start distinct from the
+traffic source, a successful return path that bypasses that start, a return path
+that reaches the start but not the source endpoint, and incomplete or
+multi-attachment endpoint evidence.
 
 ## 8. Plugin conformance suite
 
@@ -993,6 +1174,28 @@ random event sequences.
 - A same-node revisit with a different lookup, packet, ingress, or policy-scope
   context does not produce a false cycle; hop exhaustion remains a distinct
   bounded result.
+- Packet layers remain outermost-to-innermost, complete transitions preserve
+  exact before/after continuity, incomplete continuity remains unknown, and
+  the independent packet-step budget is enforced.
+- Packet-state conformance covers an MPLS/SR-MPLS push/swap/pop or PHP-shaped
+  transition, SRv6 or another ordered wrapper, decapsulation with an inner
+  layer retained, and a legitimate same-node revisit after packet-context
+  change. Protocol vocabulary and expected layer changes come from the fixture
+  plug-in, not core.
+- MTU tests cover `fits`, `exceeds`, missing/incomplete evidence, and unequal
+  basis contracts. A plug-in-declared drop or punt is tested separately from
+  core's arithmetic result.
+- User steering exact-matches the target step and optional packet snapshot,
+  rejects an equal-priority ambiguity, retains actor/rule provenance, and is
+  reported as counterfactual rather than observed reachability.
+- A trace beginning at a transit member preserves a different immutable traffic
+  source. Its successful return reaches the source endpoint without being
+  required to visit the forward start, and its path relation is
+  `not_comparable`.
+- Reaching the forward start without reaching the exact source endpoint remains
+  one-way or unreachable. Unknown, ambiguous, withdrawn, and multihomed
+  endpoint attachments retain bounded alternatives and coverage rather than a
+  guessed terminal.
 - Ingress-dependent candidate constraints cover EVPN known-unicast and BUM
   split horizon, BGP control-policy rejection, non-applicable traffic, and
   unknown traffic or incomplete scope evidence without deleting rejected

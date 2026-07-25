@@ -11,7 +11,7 @@
       content="Reconstruct a historical topology across router state revisions with heterogeneous device plug-ins."
     />
     <link rel="stylesheet" href="/assets/styles.css?v=20260721-multi-node-v1" />
-    <link rel="stylesheet" href="/assets/topology.css?v=20260722-route-stacks-v23" />
+    <link rel="stylesheet" href="/assets/topology.css?v=20260725-endpoint-selector-v30" />
   </head>
   <body class="mn-body">
     <div class="app-shell">
@@ -239,14 +239,20 @@
 
           <form id="mn-route-form" class="mn-route-form">
             <div class="mn-route-primary-controls">
-              <label class="mn-route-field-endpoint">
-                Source
-                <input id="mn-route-source" list="mn-route-sources" autocomplete="off" disabled />
-                <datalist id="mn-route-sources"></datalist>
-                <small>Ingress router, interface, address, or plug-in-owned endpoint</small>
+              <label id="mn-route-start-field" class="mn-route-field-endpoint mn-route-field-start" data-route-start-usage="used">
+                Start trace at
+                <input id="mn-route-start" list="mn-route-starts" autocomplete="off" aria-describedby="mn-route-start-help" disabled />
+                <datalist id="mn-route-starts"></datalist>
+                <small id="mn-route-start-help">Forward observation/lookup node; it may be a transit node</small>
               </label>
               <label class="mn-route-field-endpoint">
-                Destination
+                Traffic source
+                <input id="mn-route-source" list="mn-route-sources" autocomplete="off" disabled />
+                <datalist id="mn-route-sources"></datalist>
+                <small>The packet's source host, network, address, or plug-in endpoint</small>
+              </label>
+              <label class="mn-route-field-endpoint">
+                Traffic destination
                 <input id="mn-route-destination" list="mn-route-destinations" autocomplete="off" disabled />
                 <datalist id="mn-route-destinations"></datalist>
                 <small>A prefix, address, service, or plug-in-owned target</small>
@@ -268,6 +274,11 @@
               </label>
               <button id="mn-route-run" class="primary-action mn-route-run" type="submit" disabled>Trace route</button>
             </div>
+            <p class="mn-route-endpoint-rule">
+              Forward validation starts at the observation node and must reach the traffic destination.
+              Return validation starts at the destination side and must reach the traffic source; it does not
+              need to revisit the forward observation node.
+            </p>
 
             <details class="mn-route-advanced">
               <summary>
@@ -298,6 +309,13 @@
                   </select>
                   <small>Best effort may infer bounded links; strict stops at gaps</small>
                 </label>
+                <label>
+                  Steering profile
+                  <select id="mn-route-steering" disabled>
+                    <option value="">No steering override</option>
+                  </select>
+                  <small>Optional server-advertised counterfactual rules; observed state is not modified</small>
+                </label>
               </div>
             </details>
           </form>
@@ -313,14 +331,14 @@
               </div>
               <div id="mn-route-direction-tabs" class="mn-direction-tabs" role="tablist" aria-label="Traced route direction">
                 <button type="button" role="tab" data-route-direction="forward" aria-selected="true" disabled>
-                  <span>Forward</span><small>Source → destination</small><i data-direction-state="forward">not run</i>
+                  <span>Forward</span><small>Trace start → traffic destination</small><i data-direction-state="forward">not run</i>
                 </button>
                 <button type="button" role="tab" data-route-direction="reverse" aria-selected="false" disabled>
-                  <span>Return</span><small>Destination → source</small><i data-direction-state="reverse">not run</i>
+                  <span>Return</span><small>Destination side → traffic source</small><i data-direction-state="reverse">not run</i>
                 </button>
               </div>
             </div>
-            <p id="mn-route-map-note" class="mn-map-note">Trace a source and destination to focus one forwarding path.</p>
+            <p id="mn-route-map-note" class="mn-map-note">Choose a trace start and traffic endpoints to focus one forwarding path.</p>
             <div class="mn-route-view-toolbar">
               <div class="mn-route-view-toggle" role="group" aria-label="Route graph view">
                 <button type="button" data-route-graph-mode="all" aria-pressed="false">All paths</button>
@@ -333,6 +351,7 @@
                 <span class="is-cycle">loop / repeated state</span>
                 <span class="is-policy-blocked">policy / split horizon</span>
                 <span class="is-dead">dead / dropped</span>
+                <span class="is-direction-difference">direction difference</span>
                 <span class="is-context">VPN context</span>
               </div>
               <button type="button" id="mn-route-clear-path" class="mn-route-clear-path" hidden>Clear selected path</button>
@@ -345,6 +364,7 @@
                 <button type="button" data-graph-action="actual">1:1</button>
                 <button type="button" data-graph-action="fit">Fit</button>
               </div>
+              <div id="mn-route-direction-difference" class="mn-route-direction-difference" role="status" hidden></div>
               <div class="mn-graph-gesture-hint">Click graph to engage · drag nodes/background · two-finger pan · pinch or Ctrl+wheel to zoom · arrows pan · F fits</div>
               <svg id="mn-route-link-layer" role="group" aria-label="Selected directional route segments"></svg>
               <div id="mn-route-node-layer"></div>
@@ -355,7 +375,7 @@
 
           <div id="mn-route-result" class="mn-route-result" aria-live="polite">
             <div id="mn-route-empty" class="mn-route-empty">
-              <strong>Choose a source and destination.</strong>
+              <strong>Choose a trace start and traffic endpoints.</strong>
               <span>Then trace the route to compare forward, return, ECMP, standby, and inactive alternatives.</span>
             </div>
             <div id="mn-route-content" hidden>
@@ -370,6 +390,7 @@
                   <span class="is-cycle">loop-closing segment</span>
                   <span class="is-policy-blocked">policy / split-horizon stop</span>
                   <span class="is-inconsistent">inconsistent</span>
+                  <span class="is-direction-difference">direction difference</span>
                   <span class="is-inferred">inferred</span>
                   <span class="is-unresolved">unresolved</span>
                   <span class="is-service-overlay">service overlay (not a hop)</span>
@@ -394,6 +415,17 @@
                     <div id="mn-route-path-badges" class="mn-route-path-badges"></div>
                   </header>
                   <div id="mn-route-hopline" class="mn-route-hopline" aria-label="Selected route node and link sequence"></div>
+                  <section id="mn-route-packet-evolution" class="mn-route-packet-evolution" aria-labelledby="mn-route-packet-title" hidden>
+                    <div class="mn-route-packet-heading">
+                      <div>
+                        <span>PACKET STATE</span>
+                        <h4 id="mn-route-packet-title">Packet evolution</h4>
+                      </div>
+                      <small id="mn-route-packet-status"></small>
+                    </div>
+                    <ol id="mn-route-packet-rail" class="mn-route-packet-rail" aria-label="Ordered packet transitions"></ol>
+                    <article id="mn-route-packet-detail" class="mn-route-packet-detail" aria-live="polite" hidden></article>
+                  </section>
                   <div class="mn-route-steps-heading">
                     <h4>Resolution steps</h4>
                     <span>Hover a step to highlight its node or link on the route map.</span>
@@ -412,6 +444,7 @@
             </div>
           </div>
           </div>
+          <aside id="mn-route-packet-preview" class="mn-route-packet-preview" role="tooltip" hidden></aside>
         </section>
 
         <section class="section-wrap panel mn-route-table-panel" id="route-tables" aria-labelledby="mn-route-table-title">
@@ -536,6 +569,6 @@
     </div>
 
     <div class="toast" id="mn-toast" role="status" aria-live="polite"></div>
-    <script type="module" src="/assets/topology.js?v=20260722-route-stacks-v23"></script>
+    <script type="module" src="/assets/topology.js?v=20260725-endpoint-selector-v30"></script>
   </body>
 </html>

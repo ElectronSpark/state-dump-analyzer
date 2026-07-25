@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_JS = ROOT / "frontend" / "assets" / "app.js"
+APP_JS = ROOT / "demo" / "frontend" / "assets" / "app.js"
 
 
 def javascript_function(source: str, name: str) -> str:

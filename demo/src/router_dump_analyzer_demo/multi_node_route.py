@@ -17,24 +17,41 @@ import json
 from collections import deque
 from typing import Any
 
-from .demo_multi_node_topology import (
+from .multi_node_topology import (
     MULTI_NODE_TOPOLOGY_ID,
     MultiNodeTopologyDemo,
     MultiNodeTopologyRequestError,
 )
-from .route_trace_core import (
+from router_dump_analyzer.route_trace_core import (
+    EndpointReachabilityPairEvaluation,
     ForwardingPolicyEvaluation,
+    ForwardingPacketTraceEvaluation,
+    ForwardingPacketTransitionEvaluation,
     RouteTraceContractError,
+    evaluate_endpoint_reachability_pair,
+    evaluate_forwarding_packet_trace,
     evaluate_forwarding_policy,
     evaluate_forwarding_traversal,
 )
-from .plugin_api import (
+from router_dump_analyzer.plugin_api import (
+    Evidence,
     ForwardingCandidateConstraint,
+    ForwardingPacketLayer,
+    ForwardingPacketState,
     ForwardingPolicyScope,
     ForwardingPolicyVerdict,
     ForwardingTraversalStateKey,
     ResourceKey,
     StatusPerspectiveRef,
+    TopologyEndpointReference,
+)
+from router_dump_analyzer_demo_plugins.advanced_trace import (
+    ADVANCED_TRACE_SCENARIO_IDS,
+    ADVANCED_TRACE_SCENARIOS,
+    STEERING_PROFILES,
+    build_packet_transitions,
+    forced_node_sequence,
+    preferred_node_sequence,
 )
 
 
@@ -115,6 +132,25 @@ _SCENARIOS = (
         "supports_arbitrary_endpoints": True,
         "default_source": "source:pe-a-loopback",
         "default_destination": "destination:node-b-loopback",
+    },
+    {
+        "scenario_id": "transit-start-endpoint-reachability",
+        "label": "Transit observation with endpoint return validation",
+        "description": (
+            "The packet source is PE-A, but forward observation begins at P1. "
+            "Return traffic is validated from PE-B to the PE-A source endpoint "
+            "and is not required to revisit P1."
+        ),
+        "multipath_mode": "single_active",
+        "route_type": "ipv4_unicast",
+        "vrf_id": "default",
+        "vrf": "default",
+        "route_family": "ipv4_unicast",
+        "address_family": "ipv4",
+        "supports_explicit_start": True,
+        "default_source": "source:pe-a-loopback",
+        "default_destination": "destination:node-b-loopback",
+        "default_start": "start:transit-p-1",
     },
     {
         "scenario_id": "site-a-site-c-asymmetric",
@@ -325,6 +361,7 @@ _SCENARIOS = (
         "default_source": "source:node-d-loopback",
         "default_destination": "destination:node-b-loopback",
     },
+    *ADVANCED_TRACE_SCENARIOS,
 )
 
 
@@ -333,6 +370,9 @@ _SCENARIO_DESTINATION_IDS: dict[str, set[str]] = {
     "all-active-ecmp": {"destination:blue-service-prefix"},
     "cross-layer-inconsistent": {"destination:blue-service-prefix"},
     "incomplete-node-resolution": {"destination:blue-service-prefix"},
+    "transit-start-endpoint-reachability": {
+        "destination:node-b-loopback"
+    },
     "site-a-site-c-asymmetric": {
         "destination:node-a-loopback",
         "destination:node-c-loopback",
@@ -359,6 +399,10 @@ _SCENARIO_DESTINATION_IDS: dict[str, set[str]] = {
     "incomplete-intermediate-resolution": {
         "destination:node-b-loopback",
         "destination:node-d-loopback",
+    },
+    **{
+        scenario_id: {"destination:node-b-loopback"}
+        for scenario_id in ADVANCED_TRACE_SCENARIO_IDS
     },
 }
 
@@ -836,6 +880,52 @@ class MultiNodeRouteDemo:
         if router is None:
             raise MultiNodeRouteRequestError(f"unknown routed node: {node_id}")
         return router
+
+    @staticmethod
+    def _router_endpoint_id(node_id: str) -> str:
+        return f"endpoint:{node_id}:loopback"
+
+    @staticmethod
+    def _endpoint_attachment_id(
+        endpoint_id: str,
+        node_id: str,
+        resource_id: str,
+    ) -> str:
+        """Return the plug-in-declared identity of one endpoint attachment."""
+
+        material = json.dumps(
+            [endpoint_id, node_id, resource_id],
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        return "attachment1-" + hashlib.sha256(
+            material.encode("utf-8")
+        ).hexdigest()[:24]
+
+    @classmethod
+    def _endpoint_attachment(
+        cls,
+        *,
+        endpoint_id: str,
+        node_id: str,
+        member_id: str,
+        resource_id: str,
+    ) -> dict[str, Any]:
+        return {
+            "attachment_id": cls._endpoint_attachment_id(
+                endpoint_id,
+                node_id,
+                resource_id,
+            ),
+            "endpoint_id": endpoint_id,
+            "node_id": node_id,
+            "member_id": member_id,
+            "resource_id": resource_id,
+            "can_originate": True,
+            "can_terminate": True,
+            "state": "available",
+            "semantic_owner": "node_plugin",
+        }
 
     @staticmethod
     def _shortest_nodes(source_node_id: str, destination_node_id: str) -> list[str]:
@@ -1501,6 +1591,7 @@ class MultiNodeRouteDemo:
                 "vrf": "default",
                 "vrf_id": "default",
                 "resolution_mode": "best_effort",
+                "steering_profile_id": "observed",
                 "max_hops": 64,
                 "max_recursion": 16,
                 "source_id": "source:pe-a-loopback",
@@ -1508,18 +1599,40 @@ class MultiNodeRouteDemo:
                 "clock_policy": "best_effort",
                 "basis": {"kind": "relative_to_watermark", "offset_ns": "0"},
                 "source": {
+                    "endpoint_id": self._router_endpoint_id("node-a"),
                     "node_id": "node-a",
                     "resource_id": "node-a/LOOPBACK/lo0",
                 },
                 "destination": {
+                    "endpoint_id": "endpoint:blue-service-prefix",
                     "destination_id": "destination:blue-service-prefix",
                     "kind": "ip_prefix",
                     "value": "203.0.113.0/24",
                     "node_id": "node-b",
                 },
+                "flow": {
+                    "source": {
+                        "endpoint_id": self._router_endpoint_id("node-a"),
+                        "node_id": "node-a",
+                        "resource_id": "node-a/LOOPBACK/lo0",
+                    },
+                    "destination": {
+                        "endpoint_id": "endpoint:blue-service-prefix",
+                        "destination_id": "destination:blue-service-prefix",
+                        "kind": "ip_prefix",
+                        "value": "203.0.113.0/24",
+                        "node_id": "node-b",
+                    },
+                },
+                "ingress": {
+                    "start_id": "start:node-a",
+                    "node_id": "node-a",
+                    "member_id": "member:node-a",
+                },
             },
             "sources": [
                 {
+                    "endpoint_id": self._router_endpoint_id(item["node_id"]),
                     "source_id": item["source_id"],
                     "label": item["label"],
                     "node_id": item["node_id"],
@@ -1531,8 +1644,22 @@ class MultiNodeRouteDemo:
                 }
                 for item in _ROUTERS
             ],
+            "start_points": [
+                {
+                    "start_id": f"start:{item['node_id']}",
+                    "label": f"{item['label']} - trace observation",
+                    "node_id": item["node_id"],
+                    "member_id": f"member:{item['node_id']}",
+                    "resource_id": item["loopback_resource_id"],
+                    "site": item["site"],
+                    "role": item["role"],
+                    "semantic_role": "traversal_seed",
+                }
+                for item in _ROUTERS
+            ],
             "destinations": [
                 {
+                    "endpoint_id": "endpoint:blue-service-prefix",
                     "destination_id": "destination:blue-service-prefix",
                     "label": "Blue service · 203.0.113.0/24",
                     "kind": "ip_prefix",
@@ -1544,6 +1671,7 @@ class MultiNodeRouteDemo:
                     "route_participant": False,
                 },
                 {
+                    "endpoint_id": "endpoint:east-evpn-multihomed-service",
                     "destination_id": "destination:east-evpn-multihomed-service",
                     "label": "East EVPN multihomed service - ESI east / VLAN 320",
                     "kind": "evpn_ethernet_segment",
@@ -1561,6 +1689,7 @@ class MultiNodeRouteDemo:
                     "route_participant": False,
                 },
                 {
+                    "endpoint_id": "endpoint:eta-external-subnet",
                     "destination_id": "destination:eta-external-subnet",
                     "label": "PE-E external subnet - 203.0.113.0/24",
                     "kind": "ip_prefix",
@@ -1576,6 +1705,7 @@ class MultiNodeRouteDemo:
                 },
                 *[
                     {
+                        "endpoint_id": self._router_endpoint_id(item["node_id"]),
                         "destination_id": item["destination_id"],
                         "label": f"{item['label']} - {item['prefix']}",
                         "kind": "router_loopback",
@@ -1586,7 +1716,14 @@ class MultiNodeRouteDemo:
                         "site": item["site"],
                         "role": item["role"],
                         "route_participant": True,
-                        "supported_scenario_ids": ["router-to-router"],
+                        "supported_scenario_ids": [
+                            "router-to-router",
+                            *(
+                                sorted(ADVANCED_TRACE_SCENARIO_IDS)
+                                if item["node_id"] == "node-b"
+                                else []
+                            ),
+                        ],
                     }
                     for item in _ROUTERS
                 ],
@@ -1698,6 +1835,22 @@ class MultiNodeRouteDemo:
                 },
             ],
             "scenarios": [dict(item) for item in _SCENARIOS],
+            "packet_trace": {
+                "schema_version": "demo.forwarding-packet-trace.v1",
+                "layer_order": "outermost_to_innermost",
+                "maximum_layers": 256,
+                "maximum_transitions": 256,
+                "continuity_owner": "core",
+                "packet_action_owner": "node_plugins",
+                "mtu_semantics_owner": "node_plugins",
+                "mtu_comparison_owner": "core_exact_basis_only",
+                "federation_boundary_behavior": (
+                    "preserve_or_explicitly_map_packet_contract"
+                ),
+                "user_forced_results_are_counterfactual": True,
+                "steering_profiles": [dict(item) for item in STEERING_PROFILES],
+            },
+            "steering_profiles": [dict(item) for item in STEERING_PROFILES],
             "route_resolvers": [
                 {
                     "node_id": "node-a",
@@ -1793,6 +1946,18 @@ class MultiNodeRouteDemo:
             "federation_resolver": topology_capabilities["federation_plugin"],
             "request_contract": {
                 "scenario_id": "one advertised scenario_id",
+                "flow": (
+                    "immutable traffic source and destination endpoints; "
+                    "top-level source/destination remain compatibility aliases"
+                ),
+                "ingress": (
+                    "forward traversal/observation start, independent from the "
+                    "traffic source"
+                ),
+                "trace_starts": (
+                    "optional per-direction start points; reverse otherwise "
+                    "starts from a destination endpoint attachment"
+                ),
                 "resolution_mode": "strict or best_effort",
                 "resolution_policy": "compatibility alias for resolution_mode",
                 "completeness_policy": "documentation compatibility alias for resolution_mode",
@@ -1828,6 +1993,10 @@ class MultiNodeRouteDemo:
                 "node_queries": (
                     "optional heterogeneous per-node selections accepted by topology query"
                 ),
+                "bidirectional_criterion": (
+                    "forward reaches the traffic destination and reverse reaches "
+                    "the traffic source; reverse need not revisit forward ingress"
+                ),
             },
             "response_contract": {
                 "paths": "all candidate paths, never only the selected or active path",
@@ -1859,6 +2028,13 @@ class MultiNodeRouteDemo:
                     "ordered path-local router occurrences; repeated nodes are not deduplicated"
                 ),
                 "issues": "cross-layer, boundary, incompleteness, and inference findings",
+                "endpoint_reachability": (
+                    "typed terminal endpoint matching for each direction"
+                ),
+                "path_relation": (
+                    "symmetric, asymmetric, or not_comparable descriptive path "
+                    "shape; it does not determine consistency"
+                ),
             },
             "semantic_ownership": {
                 "core": [
@@ -1869,6 +2045,8 @@ class MultiNodeRouteDemo:
                     "exact typed policy comparison, decision validation, and "
                     "aggregate verdict handling",
                     "uncertainty, completeness, and best-effort evidence accounting",
+                    "immutable flow direction, endpoint-goal matching, and "
+                    "bidirectional reachability aggregation",
                 ],
                 "node_plugins": [
                     "local route resolution and candidate activity",
@@ -1877,6 +2055,7 @@ class MultiNodeRouteDemo:
                     "route-table keys, VRF/family semantics, preference, and next hops",
                     "policy constraints, scope construction/completeness, reasons, "
                     "and evidence",
+                    "endpoint attachment and local terminal/delivery classification",
                 ],
                 "federation_linker": [
                     "inter-node endpoint identity and boundary candidates"
@@ -2839,6 +3018,25 @@ class MultiNodeRouteDemo:
             raise MultiNodeRouteRequestError(
                 "resolution_mode must be strict or best_effort"
             )
+        steering_profile_id = str(
+            body.get("steering_profile_id", "observed")
+        )
+        advertised_steering_ids = {
+            str(item["profile_id"]) for item in STEERING_PROFILES
+        }
+        if steering_profile_id not in advertised_steering_ids:
+            raise MultiNodeRouteRequestError(
+                f"unknown steering_profile_id: {steering_profile_id}"
+            )
+        scenario_steering_ids = {
+            str(item)
+            for item in scenario.get("steering_profiles", ("observed",))
+        }
+        if steering_profile_id not in scenario_steering_ids:
+            raise MultiNodeRouteRequestError(
+                f"scenario {scenario_id} does not support steering profile "
+                f"{steering_profile_id}"
+            )
         direction = str(body.get("direction", "forward"))
         if direction not in {"forward", "reverse", "both"}:
             raise MultiNodeRouteRequestError(
@@ -2857,6 +3055,25 @@ class MultiNodeRouteDemo:
             maximum=64,
         )
         normalized_body = dict(body)
+        flow = self._optional_object(body, "flow")
+        for field in ("source", "destination"):
+            flow_endpoint = flow.get(field)
+            if flow_endpoint is not None and not isinstance(
+                flow_endpoint, (dict, str)
+            ):
+                raise MultiNodeRouteRequestError(
+                    f"flow.{field} must be an object or advertised value"
+                )
+            if (
+                flow_endpoint is not None
+                and field in normalized_body
+                and normalized_body[field] not in (None, {}, flow_endpoint)
+            ):
+                raise MultiNodeRouteRequestError(
+                    f"flow.{field} and top-level {field} disagree"
+                )
+            if flow_endpoint is not None:
+                normalized_body[field] = flow_endpoint
         for field in ("source", "destination"):
             endpoint = normalized_body.get(field)
             if endpoint is None:
@@ -2878,6 +3095,19 @@ class MultiNodeRouteDemo:
                 "destination_id",
                 referenced_row["trace_query"]["destination_id"],
             )
+            if not any(
+                normalized_body.get(field)
+                for field in ("ingress", "starting_point", "trace_starts")
+            ):
+                normalized_body["ingress"] = {
+                    "start_id": f"start:{referenced_row['node_id']}",
+                    "node_id": referenced_row["node_id"],
+                    "member_id": referenced_row["member_id"],
+                    "resource_id": self._router(
+                        referenced_row["node_id"]
+                    )["loopback_resource_id"],
+                    "derivation": "selected_route_table_row",
+                }
         if direction == "both":
             forward_request = dict(normalized_body)
             reverse_request = dict(normalized_body)
@@ -2938,26 +3168,42 @@ class MultiNodeRouteDemo:
                 }
             forward = self.trace(forward_request)
             reverse = self.trace(reverse_request)
+            self._validate_pair_reverse_start(
+                forward["flow"]["destination"],
+                reverse["trace_start"],
+            )
             return self._bidirectional_response(
                 scenario, route_type, resolution_mode, forward, reverse
             )
+        flow_source, flow_destination = self._resolve_endpoints(
+            normalized_body, scenario_id, "forward"
+        )
         source, destination = self._resolve_endpoints(
             normalized_body, scenario_id, direction
+        )
+        trace_start = self._resolve_trace_start(
+            normalized_body,
+            scenario,
+            direction,
+            flow_source if direction == "forward" else flow_destination,
+        )
+        target_endpoint = (
+            flow_destination if direction == "forward" else flow_source
         )
         vrf_node_ids = set(self._vrf(routing_context["vrf_id"])["node_ids"])
         outside_vrf = [
             endpoint["node_id"]
-            for endpoint in (source, destination)
+            for endpoint in (source, destination, trace_start)
             if endpoint["node_id"] not in vrf_node_ids
         ]
         if outside_vrf:
             raise MultiNodeRouteRequestError(
-                f"source and destination must belong to VRF "
+                f"source, destination, and trace start must belong to VRF "
                 f"{routing_context['vrf_id']}; outside scope: "
                 f"{sorted(set(outside_vrf))}"
             )
         self._validate_referenced_route_row(
-            referenced_row, source, destination, routing_context
+            referenced_row, trace_start, destination, routing_context
         )
         source_id = source["source_id"]
         destination_id = destination["destination_id"]
@@ -3057,9 +3303,12 @@ class MultiNodeRouteDemo:
 
         targets: dict[str, dict[str, Any]] = {}
         issues: list[dict[str, Any]] = []
-        if scenario_id == "router-to-router":
+        if scenario_id in {
+            "router-to-router",
+            "transit-start-endpoint-reachability",
+        }:
             selected_sequence = self._shortest_nodes(
-                source["node_id"], destination["node_id"]
+                trace_start["node_id"], destination["node_id"]
             )
             if (
                 referenced_row is not None
@@ -3185,7 +3434,10 @@ class MultiNodeRouteDemo:
                     alternative_state="selected_primary",
                 )
             ]
-            consistency_state = "asymmetric_reachable"
+            # This direction is internally consistent.  Forward/return path
+            # asymmetry is a pair-level comparison produced by
+            # _bidirectional_response(), not a fault on either valid path.
+            consistency_state = "consistent_with_selected_observations"
         elif scenario_id == "site-b-site-c-one-way" and direction == "reverse":
             paths = self._one_way_drop_paths(
                 resources, links, targets, issues, resolution_mode
@@ -3204,6 +3456,56 @@ class MultiNodeRouteDemo:
                     alternative_state="selected_primary",
                 )
             ]
+            consistency_state = "consistent_with_selected_observations"
+        elif scenario_id in ADVANCED_TRACE_SCENARIO_IDS:
+            packet_profile_id = str(scenario["packet_profile_id"])
+            node_sequence = (
+                forced_node_sequence(direction, steering_profile_id)
+                or preferred_node_sequence(packet_profile_id, direction)
+            )
+            paths = [
+                self._generic_path(
+                    node_sequence,
+                    route_type,
+                    resources,
+                    links,
+                    targets,
+                    active=True,
+                    primary=True,
+                    alternative_state="selected_primary",
+                )
+            ]
+            self._attach_packet_trace(
+                paths[0],
+                profile_id=packet_profile_id,
+                direction=direction,
+                steering_profile_id=steering_profile_id,
+                issues=issues,
+            )
+            consistency_state = (
+                "consistent_counterfactual_user_forced"
+                if steering_profile_id != "observed"
+                else "consistent_with_selected_observations"
+            )
+        elif direction == "reverse" and scenario_id != "connected-external-subnet":
+            paths = [
+                self._generic_path(
+                    self._shortest_nodes(
+                        trace_start["node_id"],
+                        destination["node_id"],
+                    ),
+                    route_type,
+                    resources,
+                    links,
+                    targets,
+                    active=True,
+                    primary=True,
+                    alternative_state="selected_primary",
+                )
+            ]
+            # The remaining scenario builders below model forward, plug-in-owned
+            # demonstrations.  Reverse traversal is rebuilt from its own start
+            # and endpoint goal instead of reusing their forward geometry.
             consistency_state = "consistent_with_selected_observations"
         elif scenario_id == "evpn-mh-all-active":
             paths = self._evpn_multihoming_paths(
@@ -3291,20 +3593,6 @@ class MultiNodeRouteDemo:
                 if resolution_mode == "best_effort"
                 else "incomplete"
             )
-        elif direction == "reverse":
-            paths = [
-                self._generic_path(
-                    self._shortest_nodes(source["node_id"], destination["node_id"]),
-                    route_type,
-                    resources,
-                    links,
-                    targets,
-                    active=True,
-                    primary=True,
-                    alternative_state="selected_primary",
-                )
-            ]
-            consistency_state = "asymmetric_reachable"
         elif scenario_id == "single-active-primary":
             paths = self._underlay_paths(
                 resources, links, targets, "single_active", issues
@@ -3330,6 +3618,12 @@ class MultiNodeRouteDemo:
                 f"scenario {scenario_id} is not executable for direction {direction}"
             )
 
+        self._declare_demo_terminal_evidence(paths, target_endpoint)
+        endpoint_reachability = self._annotate_endpoint_reachability(
+            paths,
+            target_endpoint,
+            trace_start,
+        )
         route_entry_refs = self._attach_route_entry_refs(
             paths,
             destination,
@@ -3366,10 +3660,14 @@ class MultiNodeRouteDemo:
             "route_evidence_context_id": route_evidence["context_id"],
             "scenario_id": scenario_id,
             "resolution_mode": resolution_mode,
+            "steering_profile_id": steering_profile_id,
             "direction": direction,
             "route_type": route_type,
             "max_hops": max_hops,
             "max_recursion": max_recursion,
+            "flow_source_endpoint_id": flow_source["endpoint_id"],
+            "flow_destination_endpoint_id": flow_destination["endpoint_id"],
+            "trace_start_node_id": trace_start["node_id"],
             "source_node_id": source["node_id"],
             "destination_node_id": destination["node_id"],
             "source_id": source_id,
@@ -3386,12 +3684,9 @@ class MultiNodeRouteDemo:
         exact = all(
             item["completeness"]["state"] == "complete" for item in paths
         )
-        reachable = any(
-            item["active"] and item["completeness"]["end_to_end_resolved"]
-            for item in paths
-        )
+        reachable = endpoint_reachability["reaches_target"] is True
         directional_pair = self._directional_pair(
-            scenario_id, direction, source, destination
+            scenario_id, direction, flow_source, flow_destination
         )
         counterpart_direction = (
             "reverse" if direction == "forward" else "forward"
@@ -3432,7 +3727,12 @@ class MultiNodeRouteDemo:
             "trace_id": trace_id,
             "trace_mode": "single_direction",
             "direction": direction,
-            "direction_id": f"direction:{source['node_id']}:{destination['node_id']}",
+            "steering_profile_id": steering_profile_id,
+            "counterfactual": steering_profile_id != "observed",
+            "direction_id": (
+                f"direction:{direction}:{trace_start['node_id']}:"
+                f"{target_endpoint['endpoint_id']}"
+            ),
             "route_type": route_type,
             "route_family": routing_context["route_family"],
             "address_family": routing_context["address_family"],
@@ -3441,6 +3741,19 @@ class MultiNodeRouteDemo:
             "routing_context": routing_context,
             "source": source,
             "destination": destination,
+            "flow": {
+                "source": flow_source,
+                "destination": flow_destination,
+            },
+            "traffic_endpoints": {
+                "source": flow_source,
+                "destination": flow_destination,
+            },
+            "trace_start": trace_start,
+            "starting_point": trace_start,
+            "target_endpoint": target_endpoint,
+            "goal_endpoint": target_endpoint,
+            "endpoint_reachability": endpoint_reachability,
             "directional_pair": directional_pair,
             "reachable": reachable,
             "context_id": snapshot["context_id"],
@@ -3474,6 +3787,7 @@ class MultiNodeRouteDemo:
                 "resolution_mode": resolution_mode,
                 "resolution_policy": resolution_mode,
                 "completeness_policy": resolution_mode,
+                "steering_profile_id": steering_profile_id,
                 "max_hops": max_hops,
                 "max_recursion": max_recursion,
                 "destination_id": destination_id,
@@ -3485,6 +3799,11 @@ class MultiNodeRouteDemo:
                 "basis": topology_request["basis"],
                 "source": source,
                 "destination": destination,
+                "flow": {
+                    "source": flow_source,
+                    "destination": flow_destination,
+                },
+                "trace_starts": {direction: trace_start},
             },
             "counterpart_request": {
                 "scenario_id": scenario_id,
@@ -3497,10 +3816,15 @@ class MultiNodeRouteDemo:
                 "vrf": counterpart_context["vrf_id"],
                 "vrf_id": counterpart_context["vrf_id"],
                 "resolution_mode": resolution_mode,
+                "steering_profile_id": steering_profile_id,
                 "max_hops": max_hops,
                 "max_recursion": max_recursion,
                 "basis": topology_request["basis"],
                 "clock_policy": topology_request["clock_policy"],
+                "flow": {
+                    "source": flow_source,
+                    "destination": flow_destination,
+                },
             },
             "resolution_mode": resolution_mode,
             "resolution_policy": resolution_mode,
@@ -3562,6 +3886,7 @@ class MultiNodeRouteDemo:
             "completeness": {
                 "end_to_end_resolved": all_end_to_end,
                 "reachable": reachable,
+                "endpoint_reachability_state": endpoint_reachability["state"],
                 "observationally_complete": exact,
                 "state": "complete" if exact else "partial",
                 "inferred_segment_count": sum(
@@ -3616,6 +3941,11 @@ class MultiNodeRouteDemo:
                 "route_table_rows_and_selection": "node_plugin",
                 "route_table_time_context_and_correlation": "core",
                 "time_path_join_and_uncertainty": "core",
+                "flow_endpoint_identity_and_direction_swap": "core",
+                "trace_start_selection": "caller_and_core",
+                "terminal_endpoint_classification": "node_plugin",
+                "terminal_endpoint_exact_match_and_pair_aggregation": "core",
+                "reverse_must_revisit_forward_start": False,
                 "core_does_not_interpret_route_resolution_text": True,
                 "core_does_not_infer_overlay_from_protocol_or_address_fields": True,
             },
@@ -3626,16 +3956,700 @@ class MultiNodeRouteDemo:
         }
 
     @staticmethod
+    def _attachment_identity(
+        attachment: dict[str, Any],
+        *,
+        label: str,
+    ) -> tuple[str, str, str, str]:
+        values = tuple(
+            attachment.get(field)
+            for field in (
+                "attachment_id",
+                "node_id",
+                "member_id",
+                "resource_id",
+            )
+        )
+        if any(not isinstance(value, str) or not value for value in values):
+            raise MultiNodeRouteRequestError(
+                f"{label} must declare non-empty attachment_id, node_id, "
+                "member_id, and resource_id"
+            )
+        return values  # type: ignore[return-value]
+
+    @staticmethod
+    def _packet_value_json(value: Any) -> Any:
+        """Serialize one already-validated opaque forwarding value for the demo."""
+
+        if isinstance(value, tuple):
+            return [
+                MultiNodeRouteDemo._packet_value_json(item) for item in value
+            ]
+        if isinstance(value, bytes):
+            return {"encoding": "hex", "value": value.hex()}
+        if isinstance(value, (str, int)) or value is None:
+            return value
+        return str(value)
+
+    @classmethod
+    def _packet_resource_key_json(
+        cls,
+        resource: ResourceKey,
+    ) -> dict[str, Any]:
+        """Preserve one typed resource identity without interpreting its parts."""
+
+        return {
+            "namespace": resource.namespace,
+            "node": resource.node,
+            "layer": resource.layer,
+            "kind": resource.kind,
+            "parts": [
+                {
+                    "name": name,
+                    "value": cls._packet_value_json(value),
+                }
+                for name, value in resource.parts
+            ],
+        }
+
+    @classmethod
+    def _packet_topology_reference_json(
+        cls,
+        reference: TopologyEndpointReference,
+    ) -> dict[str, Any]:
+        """Serialize the exact resource-or-matcher topology reference."""
+
+        if reference.resource is not None:
+            return {
+                "resource": cls._packet_resource_key_json(reference.resource),
+            }
+        assert reference.match is not None
+        return {
+            "match": {
+                "matcher_id": reference.match.matcher_id,
+                "arguments": {
+                    name: cls._packet_value_json(value)
+                    for name, value in reference.match.arguments.items()
+                },
+                "resolved_candidates": [
+                    cls._packet_resource_key_json(candidate)
+                    for candidate in reference.match.resolved_candidates
+                ],
+            },
+        }
+
+    @staticmethod
+    def _packet_evidence_json(evidence: Evidence) -> dict[str, Any]:
+        """Serialize retained evidence without exposing any undeclared payload."""
+
+        return {
+            "artifact_id": str(evidence.artifact_id),
+            "locator": evidence.locator,
+            "raw_timestamp_ns": evidence.raw_timestamp_ns,
+            "clock_domain": evidence.clock_domain,
+            "excerpt_sha256": evidence.excerpt_sha256,
+        }
+
+    @staticmethod
+    def _packet_boundary_continuity(
+        expected: ForwardingPacketState,
+        actual: ForwardingPacketState,
+    ) -> bool | None:
+        """Return exact boundary continuity, or unknown for incomplete identity."""
+
+        if not expected.identity_complete or not actual.identity_complete:
+            return None
+        return expected == actual
+
+    @classmethod
+    def _packet_layer_json(
+        cls,
+        layer: ForwardingPacketLayer,
+    ) -> dict[str, Any]:
+        return {
+            "layer_id": layer.layer_id,
+            "contract_id": layer.contract_id,
+            "label": layer.label,
+            "fields": {
+                name: cls._packet_value_json(value)
+                for name, value in layer.fields
+            },
+            "size_bytes": layer.size_bytes,
+            "complete": layer.complete,
+        }
+
+    @classmethod
+    def _packet_state_json(
+        cls,
+        state: ForwardingPacketState,
+    ) -> dict[str, Any]:
+        return {
+            "layers": [
+                cls._packet_layer_json(layer) for layer in state.layers
+            ],
+            "size": (
+                {
+                    "basis_contract_id": state.size.basis_contract_id,
+                    "size_bytes": state.size.size_bytes,
+                    "complete": state.size.complete,
+                }
+                if state.size is not None
+                else None
+            ),
+            "complete": state.complete,
+            "identity_complete": state.identity_complete,
+        }
+
+    @classmethod
+    def _packet_transition_json(
+        cls,
+        evaluation: ForwardingPacketTransitionEvaluation,
+        *,
+        segment: dict[str, Any],
+    ) -> dict[str, Any]:
+        transition = evaluation.transition
+        mtu_constraint = transition.mtu
+        return {
+            "transition": {
+                "transition_id": transition.transition_id,
+                "step_id": transition.step_id,
+                "before": cls._packet_state_json(transition.before),
+                "after": cls._packet_state_json(transition.after),
+                "action_contract_id": transition.action_contract_id,
+                "action_label": transition.action_label,
+                "disposition": transition.disposition.value,
+                "origin": transition.origin.value,
+                "actor_id": transition.actor_id,
+                "forced_rule_id": transition.forced_rule_id,
+                "mtu_constraint": (
+                    {
+                        "basis_contract_id": (
+                            mtu_constraint.basis_contract_id
+                        ),
+                        "limit_bytes": mtu_constraint.limit_bytes,
+                        "complete": mtu_constraint.complete,
+                        "resource": (
+                            cls._packet_resource_key_json(
+                                mtu_constraint.resource
+                            )
+                            if mtu_constraint.resource is not None
+                            else None
+                        ),
+                    }
+                    if mtu_constraint is not None
+                    else None
+                ),
+                "contributions": [
+                    {
+                        "phase": item.phase,
+                        "text": item.text,
+                        "quality": item.quality.value,
+                        "resource_references": [
+                            cls._packet_resource_key_json(reference)
+                            for reference in item.resource_references
+                        ],
+                        "topology_references": [
+                            cls._packet_topology_reference_json(reference)
+                            for reference in item.topology_references
+                        ],
+                        "evidence": [
+                            cls._packet_evidence_json(evidence)
+                            for evidence in item.evidence
+                        ],
+                    }
+                    for item in transition.contributions
+                ],
+            },
+            "diff": {
+                "added_layer_ids": list(evaluation.diff.added_layer_ids),
+                "removed_layer_ids": list(
+                    evaluation.diff.removed_layer_ids
+                ),
+                "changed_layer_ids": list(
+                    evaluation.diff.changed_layer_ids
+                ),
+                "moved_layer_ids": list(evaluation.diff.moved_layer_ids),
+                "complete": evaluation.diff.complete,
+            },
+            "mtu": {
+                "outcome": evaluation.mtu.outcome,
+                "size_bytes": evaluation.mtu.size_bytes,
+                "limit_bytes": evaluation.mtu.limit_bytes,
+                "excess_bytes": evaluation.mtu.excess_bytes,
+                "basis_contract_id": evaluation.mtu.basis_contract_id,
+            },
+            "counterfactual": evaluation.counterfactual,
+            "segment_id": segment["segment_id"],
+            "node_id": segment.get("node_id"),
+            "highlight_target_ids": list(
+                segment.get("highlight_target_ids", [])
+            ),
+            "interaction_target_ids": list(
+                segment.get("interaction_target_ids", [])
+            ),
+        }
+
+    @classmethod
+    def _attach_packet_trace(
+        cls,
+        path: dict[str, Any],
+        *,
+        profile_id: str,
+        direction: str,
+        steering_profile_id: str,
+        issues: list[dict[str, Any]],
+    ) -> None:
+        """Validate demo plug-in transitions and attach protocol-neutral JSON."""
+
+        local_segments = [
+            item
+            for item in sorted(
+                path["segments"], key=lambda candidate: candidate["ordinal"]
+            )
+            if item["segment_kind"] == "node_resolution"
+        ]
+        initial_state, transitions = build_packet_transitions(
+            profile_id=profile_id,
+            step_ids=[
+                str(item["segment_id"]) for item in local_segments
+            ],
+            node_ids=[str(item["node_id"]) for item in local_segments],
+            direction=direction,
+            steering_profile_id=steering_profile_id,
+        )
+        trace: ForwardingPacketTraceEvaluation = (
+            evaluate_forwarding_packet_trace(
+                initial_state,
+                transitions,
+                max_steps=256,
+            )
+        )
+        segment_by_id = {
+            str(item["segment_id"]): item for item in local_segments
+        }
+        serialized_transitions: list[dict[str, Any]] = []
+        expected_packet_state = initial_state
+        for evaluation in trace.transitions:
+            segment = segment_by_id[evaluation.transition.step_id]
+            serialized = cls._packet_transition_json(
+                evaluation,
+                segment=segment,
+            )
+            serialized["continuity_valid"] = (
+                cls._packet_boundary_continuity(
+                    expected_packet_state,
+                    evaluation.transition.before,
+                )
+            )
+            serialized_transitions.append(serialized)
+            segment["packet_transition"] = serialized
+            segment["route_resolution"]["packet_transition"] = serialized
+            expected_packet_state = evaluation.transition.after
+
+        counterfactual = any(
+            item.counterfactual for item in trace.transitions
+        )
+        path["packet_profile_id"] = profile_id
+        path["counterfactual"] = counterfactual
+        path["observed"] = not counterfactual
+        path["packet_trace"] = {
+            "schema_version": "demo.forwarding-packet-trace.v1",
+            "layer_order": "outermost_to_innermost",
+            "initial_state": cls._packet_state_json(initial_state),
+            "outcome": trace.outcome,
+            "stop_step": trace.stop_step,
+            "continuity": trace.continuity,
+            "continuity_complete": trace.continuity == "complete",
+            "terminal_disposition": (
+                trace.terminal_disposition.value
+                if trace.terminal_disposition is not None
+                else None
+            ),
+            "counterfactual": counterfactual,
+            "steering_profile_id": steering_profile_id,
+            "transitions": serialized_transitions,
+            "validation_owner": "core",
+            "semantics_owner": "node_plugins",
+        }
+
+        if trace.outcome != "drop" or not trace.transitions:
+            return
+        dropped = trace.transitions[-1]
+        terminal = segment_by_id[dropped.transition.step_id]
+        drop_index = path["segments"].index(terminal)
+        terminal.update(
+            {
+                "segment_kind": "packet_mtu_drop",
+                "active": False,
+                "confidence": 1.0,
+                "completeness": {
+                    "state": "terminal_drop",
+                    "end_to_end_resolved": False,
+                    "observed": True,
+                },
+            }
+        )
+        terminal["state"].update(
+            {
+                "active": False,
+                "selected_active_by_plugin": True,
+                "operational": "unusable",
+                "terminal": "mtu_exceeded",
+                "reason_code": "mtu_exceeded_after_encapsulation",
+                "terminal_disposition": "dropped",
+            }
+        )
+        terminal["route_resolution"]["phase"] = "packet_mtu_decision"
+        terminal["phase"] = "packet_mtu_decision"
+        path["segments"] = path["segments"][: drop_index + 1]
+        path["node_sequence"] = [
+            str(item["node_id"])
+            for item in path["segments"]
+            if item.get("node_id")
+            and item["segment_kind"] != "inter_node_boundary"
+        ]
+        issue_id = (
+            f"issue:packet-mtu:{direction}:{terminal['segment_id']}"
+        )
+        terminal["issue_refs"] = list(
+            dict.fromkeys([*terminal.get("issue_refs", []), issue_id])
+        )
+        path["issue_refs"] = list(
+            dict.fromkeys([*path.get("issue_refs", []), issue_id])
+        )
+        issues.append(
+            {
+                "issue_id": issue_id,
+                "category": "forwarding",
+                "severity": "error",
+                "summary": "Plug-in-declared MTU policy drops the packet",
+                "detail": (
+                    "Core confirmed that the plug-in-declared packet size "
+                    "exceeds an exactly comparable MTU. The node plug-in, not "
+                    "core, declared the DF/drop disposition."
+                ),
+                "path_refs": [path["path_id"]],
+                "segment_refs": [terminal["segment_id"]],
+                "interaction_target_ids": list(
+                    terminal.get("interaction_target_ids", [])
+                ),
+                "ownership": (
+                    "core_size_comparison_node_plugin_disposition"
+                ),
+            }
+        )
+        cls._refresh_path(path)
+
+    def _declare_demo_terminal_evidence(
+        self,
+        paths: list[dict[str, Any]],
+        target_endpoint: dict[str, Any],
+    ) -> None:
+        """Project demo plug-in delivery decisions before core exact matching.
+
+        This method stands in for the participating node plug-ins.  The core
+        annotator below consumes only this normalized declaration; it does not
+        infer endpoint delivery from a path's final node.
+        """
+
+        attachments_by_node = {
+            str(item["node_id"]): dict(item)
+            for item in target_endpoint.get("attachments", [])
+            if item.get("can_terminate", True)
+            and item.get("state") not in {"withdrawn", "unavailable"}
+            and item.get("node_id")
+        }
+        for path in paths:
+            sequence = [
+                str(item) for item in path.get("node_sequence", []) if item
+            ]
+            terminal_node_id = sequence[-1] if sequence else None
+            target_attachment = attachments_by_node.get(
+                str(terminal_node_id)
+            )
+            resolved = bool(
+                path.get("completeness", {}).get("end_to_end_resolved")
+            )
+            forwarding_capable = path.get("forwarding_capable", True) is not False
+            result = str(path.get("result", "unknown"))
+            if (
+                resolved
+                and forwarding_capable
+                and result == "resolved"
+                and target_attachment is not None
+            ):
+                declaration = {
+                    "classification": "delivered",
+                    "classification_complete": True,
+                    "endpoint_id": target_endpoint["endpoint_id"],
+                    "attachment": target_attachment,
+                }
+            elif (
+                resolved
+                and forwarding_capable
+                and result == "resolved"
+                and terminal_node_id is not None
+            ):
+                terminal_router = self._router(terminal_node_id)
+                terminal_endpoint_id = self._router_endpoint_id(
+                    terminal_node_id
+                )
+                declaration = {
+                    "classification": "delivered",
+                    "classification_complete": True,
+                    "endpoint_id": terminal_endpoint_id,
+                    "attachment": self._endpoint_attachment(
+                        endpoint_id=terminal_endpoint_id,
+                        node_id=terminal_node_id,
+                        member_id=f"member:{terminal_node_id}",
+                        resource_id=terminal_router["loopback_resource_id"],
+                    ),
+                }
+            elif result in {
+                "dropped",
+                "discarded",
+                "unusable",
+                "cycle",
+                "policy_blocked",
+                "hop_limit_exceeded",
+                "recursion_limit_exceeded",
+            } or not forwarding_capable:
+                declaration = {
+                    "classification": "not_delivered",
+                    "classification_complete": True,
+                    "endpoint_id": None,
+                    "attachment": None,
+                }
+            else:
+                declaration = {
+                    "classification": "unknown",
+                    "classification_complete": False,
+                    "endpoint_id": None,
+                    "attachment": None,
+                }
+            declaration.update(
+                {
+                    "terminal_node_id": terminal_node_id,
+                    "semantic_owner": "node_plugin",
+                    "evidence_kind": "normalized_terminal_attachment",
+                }
+            )
+            path["plugin_terminal"] = declaration
+
+    @classmethod
+    def _annotate_endpoint_reachability(
+        cls,
+        paths: list[dict[str, Any]],
+        target_endpoint: dict[str, Any],
+        trace_start: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Match plug-in-declared path terminals to the requested endpoint."""
+
+        target_endpoint_id = target_endpoint.get("endpoint_id")
+        if not isinstance(target_endpoint_id, str) or not target_endpoint_id:
+            raise MultiNodeRouteRequestError(
+                "target endpoint must declare a non-empty endpoint_id"
+            )
+        target_attachments = [
+            dict(item)
+            for item in target_endpoint.get("attachments", [])
+            if item.get("can_terminate", True)
+            and item.get("state") not in {"withdrawn", "unavailable"}
+        ]
+        target_attachment_identities = {
+            cls._attachment_identity(
+                item,
+                label="target endpoint attachment",
+            )
+            for item in target_attachments
+        }
+        attachments_complete = target_endpoint.get(
+            "attachments_complete", False
+        )
+        if not isinstance(attachments_complete, bool):
+            raise MultiNodeRouteRequestError(
+                "target endpoint attachments_complete must be a boolean"
+            )
+        active_branch_count = 0
+        reached_active_branch_count = 0
+        unresolved_active_branch_count = 0
+        failed_active_branch_count = 0
+        selected_results: list[bool | None] = []
+        for path in paths:
+            sequence = [
+                str(item) for item in path.get("node_sequence", []) if item
+            ]
+            if not sequence or sequence[0] != str(trace_start.get("node_id")):
+                raise MultiNodeRouteRequestError(
+                    "plug-in route path must begin at the declared trace_start"
+                )
+            terminal_node_id = sequence[-1] if sequence else None
+            end_to_end_resolved = bool(
+                path.get("completeness", {}).get("end_to_end_resolved")
+            )
+            declaration = path.get("plugin_terminal")
+            if not isinstance(declaration, dict):
+                raise MultiNodeRouteRequestError(
+                    "plug-in route path must declare plugin_terminal evidence"
+                )
+            classification = declaration.get("classification")
+            if classification not in {"delivered", "not_delivered", "unknown"}:
+                raise MultiNodeRouteRequestError(
+                    "plugin_terminal.classification must be delivered, "
+                    "not_delivered, or unknown"
+                )
+            classification_complete = declaration.get(
+                "classification_complete"
+            )
+            if not isinstance(classification_complete, bool):
+                raise MultiNodeRouteRequestError(
+                    "plugin_terminal.classification_complete must be a boolean"
+                )
+            terminal_attachment = declaration.get("attachment")
+            if terminal_attachment is not None and not isinstance(
+                terminal_attachment, dict
+            ):
+                raise MultiNodeRouteRequestError(
+                    "plugin_terminal.attachment must be an object or null"
+                )
+            terminal_attachment_identity = (
+                cls._attachment_identity(
+                    terminal_attachment,
+                    label="plug-in terminal attachment",
+                )
+                if terminal_attachment is not None
+                else None
+            )
+            endpoint_matches = (
+                declaration.get("endpoint_id") == target_endpoint_id
+            )
+            attachment_matches = (
+                terminal_attachment_identity
+                in target_attachment_identities
+                if terminal_attachment_identity is not None
+                else False
+            )
+            exact_match = endpoint_matches and attachment_matches
+            if classification == "delivered":
+                if exact_match and end_to_end_resolved:
+                    reaches_target: bool | None = True
+                elif classification_complete and attachments_complete:
+                    reaches_target = False
+                else:
+                    reaches_target = None
+            elif classification == "not_delivered":
+                reaches_target = False if classification_complete else None
+            else:
+                reaches_target = None
+            state = (
+                "reached"
+                if reaches_target is True
+                else "not_reached"
+                if reaches_target is False
+                else "unknown"
+            )
+            path["target_endpoint_id"] = target_endpoint_id
+            path["terminal_endpoint_id"] = declaration.get("endpoint_id")
+            path["terminal_reachability"] = {
+                "state": state,
+                "reached": reaches_target,
+                "target_endpoint_id": target_endpoint_id,
+                "terminal_endpoint_id": declaration.get("endpoint_id"),
+                "terminal_node_id": terminal_node_id,
+                "terminal_attachment": terminal_attachment,
+                "exact_endpoint_match": endpoint_matches,
+                "exact_attachment_match": attachment_matches,
+                "exact_match": exact_match,
+                "classification_complete": classification_complete,
+                "end_to_end_resolved": end_to_end_resolved,
+                "classification_owner": "node_plugin",
+                "exact_match_owner": "core",
+            }
+            selected_active = bool(
+                path.get(
+                    "selected_active_by_plugin",
+                    path.get("active"),
+                )
+            )
+            if selected_active:
+                active_branch_count += 1
+                selected_results.append(reaches_target)
+                if reaches_target is True:
+                    reached_active_branch_count += 1
+                elif reaches_target is None:
+                    unresolved_active_branch_count += 1
+                else:
+                    failed_active_branch_count += 1
+
+        no_selected_active_path = not selected_results
+        explicitly_nonforwarding = bool(paths) and all(
+            item["plugin_terminal"]["classification"] == "not_delivered"
+            and item["plugin_terminal"]["classification_complete"] is True
+            for item in paths
+        )
+        if no_selected_active_path and explicitly_nonforwarding:
+            state = "not_reached"
+            reaches_target: bool | None = False
+        elif no_selected_active_path:
+            # Standby, rejected, or merely retained candidates are not
+            # forwarding truth.  Do not promote the primary or first row.
+            state = "unknown_no_selected_active_path"
+            reaches_target = None
+        elif all(item is True for item in selected_results):
+            state = "reached"
+            reaches_target = True
+        elif any(item is None for item in selected_results):
+            state = "unknown"
+            reaches_target = None
+        elif any(item is True for item in selected_results):
+            state = "partial_active_reachability"
+            reaches_target = None
+        else:
+            state = "not_reached"
+            reaches_target = False
+        all_active_branches_reach: bool | None = (
+            None
+            if not selected_results or any(
+                item is None for item in selected_results
+            )
+            else all(item is True for item in selected_results)
+        )
+        return {
+            "state": state,
+            "reaches_target": reaches_target,
+            "target_endpoint_id": target_endpoint_id,
+            "target_attachment_ids": sorted(
+                item[0] for item in target_attachment_identities
+            ),
+            "target_attachment_node_ids": sorted(
+                item[1] for item in target_attachment_identities
+            ),
+            "attachments_complete": attachments_complete,
+            "trace_start_node_id": trace_start["node_id"],
+            "active_branch_count": active_branch_count,
+            "reached_active_branch_count": reached_active_branch_count,
+            "unresolved_active_branch_count": unresolved_active_branch_count,
+            "failed_active_branch_count": failed_active_branch_count,
+            "all_active_branches_reach": all_active_branches_reach,
+            "selection_complete": not no_selected_active_path
+            or explicitly_nonforwarding,
+            "no_selected_active_path": no_selected_active_path,
+            "criterion": "exact_normalized_endpoint_attachment",
+            "terminal_classification_owner": "node_plugin",
+            "aggregation_owner": "core",
+        }
+
+    @staticmethod
     def _validate_referenced_route_row(
         row: dict[str, Any] | None,
-        source: dict[str, Any],
+        trace_start: dict[str, Any],
         destination: dict[str, Any],
         routing_context: dict[str, Any],
     ) -> None:
         if row is None:
             return
         expected = {
-            "node_id": source["node_id"],
+            "node_id": trace_start["node_id"],
             "destination_node_id": destination["node_id"],
             "vrf_id": routing_context["vrf_id"],
             "route_family": routing_context["route_family"],
@@ -3650,7 +4664,7 @@ class MultiNodeRouteDemo:
         }
         if actual != expected:
             raise MultiNodeRouteRequestError(
-                "route_entry_ref does not match the requested source, destination, "
+                "route_entry_ref does not match the requested trace start, destination, "
                 "VRF, family, and route type"
             )
 
@@ -3968,22 +4982,275 @@ class MultiNodeRouteDemo:
                 )
         return list(all_refs.values())
 
+    def _resolve_trace_start(
+        self,
+        body: dict[str, Any],
+        scenario: dict[str, Any],
+        direction: str,
+        directional_source: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Resolve a traversal seed without changing the packet source.
+
+        ``ingress`` is the forward observation point.  The reverse direction
+        deliberately ignores it and defaults to the destination-side endpoint
+        attachment unless ``trace_starts.reverse``/``reverse_ingress`` is
+        explicitly supplied.
+        """
+
+        trace_starts = self._optional_object(body, "trace_starts")
+        candidates: list[tuple[str, Any]] = []
+        if trace_starts.get(direction) is not None:
+            candidates.append((f"trace_starts.{direction}", trace_starts[direction]))
+        if direction == "forward":
+            for field in ("ingress", "starting_point", "start"):
+                if body.get(field) is not None:
+                    candidates.append((field, body[field]))
+            if body.get("start_id") is not None:
+                candidates.append(("start_id", body["start_id"]))
+        elif body.get("reverse_ingress") is not None:
+            candidates.append(("reverse_ingress", body["reverse_ingress"]))
+        normalized_candidates = [
+            (
+                label,
+                {"start_id": value} if isinstance(value, str) else value,
+            )
+            for label, value in candidates
+        ]
+        if any(not isinstance(value, dict) for _label, value in normalized_candidates):
+            label = next(
+                label
+                for label, value in normalized_candidates
+                if not isinstance(value, dict)
+            )
+            raise MultiNodeRouteRequestError(f"{label} must be an object or start ID")
+        if len(normalized_candidates) > 1:
+            encoded = {
+                json.dumps(value, sort_keys=True, default=str)
+                for _label, value in normalized_candidates
+            }
+            if len(encoded) > 1:
+                raise MultiNodeRouteRequestError(
+                    "trace start selectors for the requested direction disagree"
+                )
+        request = (
+            dict(normalized_candidates[0][1])
+            if normalized_candidates
+            else {}
+        )
+        if (
+            not request
+            and direction == "forward"
+            and scenario.get("default_start")
+        ):
+            request = {"start_id": scenario["default_start"]}
+
+        derivation = str(
+            request.get("derivation")
+            or (
+                "explicit_observation"
+                if request
+                else "source_endpoint_attachment"
+                if direction == "forward"
+                else "destination_endpoint_attachment"
+            )
+        )
+        available_attachments = [
+            dict(item)
+            for item in directional_source.get("attachments", [])
+            if item.get("state") not in {"withdrawn", "unavailable"}
+            and item.get("can_originate", True)
+        ]
+        selected_attachment: dict[str, Any] | None = None
+        if not request:
+            router = self._router(str(directional_source["node_id"]))
+            matching_attachments = [
+                item
+                for item in available_attachments
+                if str(item.get("node_id")) == router["node_id"]
+            ]
+            if len(matching_attachments) == 1:
+                selected_attachment = matching_attachments[0]
+        else:
+            ingress_ref = request.get("ingress_resource_ref")
+            if ingress_ref is not None and not isinstance(ingress_ref, dict):
+                raise MultiNodeRouteRequestError(
+                    "ingress_resource_ref must be an object"
+                )
+            resource_id = request.get("resource_id") or (
+                ingress_ref.get("resource_id") if ingress_ref else None
+            )
+            start_id = request.get("start_id")
+            node_selectors = {
+                str(value)
+                for value in (
+                    request.get("node_id"),
+                    str(request["member_id"]).removeprefix("member:")
+                    if request.get("member_id")
+                    else None,
+                    str(start_id).removeprefix("start:")
+                    if start_id
+                    else None,
+                )
+                if value is not None
+            }
+            if resource_id is not None:
+                endpoint_attachment = next(
+                    (
+                        item
+                        for item in available_attachments
+                        if str(item.get("resource_id")) == str(resource_id)
+                    ),
+                    None,
+                )
+                resource_router = (
+                    self._router(str(endpoint_attachment["node_id"]))
+                    if endpoint_attachment is not None
+                    else next(
+                        (
+                            item
+                            for item in _ROUTERS
+                            if item["loopback_resource_id"]
+                            == str(resource_id)
+                        ),
+                        None,
+                    )
+                )
+                if resource_router is None:
+                    for boundary in _BOUNDARIES.values():
+                        node_id = next(
+                            (
+                                candidate_node_id
+                                for candidate_node_id, candidate_resource_id
+                                in boundary["resources"].items()
+                                if candidate_resource_id == str(resource_id)
+                            ),
+                            None,
+                        )
+                        if node_id:
+                            resource_router = self._router(node_id)
+                            break
+                if resource_router is None:
+                    raise MultiNodeRouteRequestError(
+                        f"unknown trace start resource_id: {resource_id}"
+                    )
+                node_selectors.add(resource_router["node_id"])
+            value = request.get("value") or request.get("label")
+            if value is not None:
+                normalized = str(value).strip().casefold()
+                matches = [
+                    item
+                    for item in _ROUTERS
+                    if normalized
+                    in {
+                        item["node_id"].casefold(),
+                        item["label"].casefold(),
+                        item["prefix"].casefold(),
+                        item["prefix"].split("/", 1)[0].casefold(),
+                    }
+                ]
+                if len(matches) != 1:
+                    raise MultiNodeRouteRequestError(
+                        f"unknown or ambiguous trace start value: {value}"
+                    )
+                node_selectors.add(matches[0]["node_id"])
+            if not node_selectors:
+                raise MultiNodeRouteRequestError(
+                    "trace start requires start_id, node_id, member_id, "
+                    "resource_id, or value"
+                )
+            if len(node_selectors) != 1:
+                raise MultiNodeRouteRequestError(
+                    "trace start identifiers disagree"
+                )
+            router = self._router(next(iter(node_selectors)))
+            matching_attachments = [
+                item
+                for item in available_attachments
+                if str(item.get("node_id")) == router["node_id"]
+                and (
+                    resource_id is None
+                    or str(item.get("resource_id")) == str(resource_id)
+                )
+            ]
+            if len(matching_attachments) == 1:
+                selected_attachment = matching_attachments[0]
+            elif len(matching_attachments) > 1:
+                raise MultiNodeRouteRequestError(
+                    "trace start matches multiple endpoint attachments; "
+                    "supply resource_id"
+                )
+
+        if (
+            router["node_id"] != directional_source["node_id"]
+            and not scenario.get("supports_explicit_start")
+            and not scenario.get("supports_arbitrary_endpoints")
+        ):
+            raise MultiNodeRouteRequestError(
+                f"scenario {scenario['scenario_id']} does not advertise a "
+                "transit trace start"
+            )
+        return {
+            "start_id": f"start:{router['node_id']}",
+            "node_id": router["node_id"],
+            "member_id": (
+                selected_attachment.get("member_id")
+                if selected_attachment is not None
+                else f"member:{router['node_id']}"
+            ),
+            "resource_id": (
+                selected_attachment.get("resource_id")
+                if selected_attachment is not None
+                else request.get("resource_id") or router["loopback_resource_id"]
+            ),
+            "attachment_id": (
+                selected_attachment.get("attachment_id")
+                if selected_attachment is not None
+                else None
+            ),
+            "label": router["label"],
+            "site": router["site"],
+            "role": router["role"],
+            "derivation": derivation,
+            "semantic_role": "traversal_seed",
+        }
+
     def _resolve_endpoints(
         self, body: dict[str, Any], scenario_id: str, direction: str
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         source_request = self._optional_object(body, "source")
         destination_request = self._optional_object(body, "destination")
         routers_by_source = {item["source_id"]: item for item in _ROUTERS}
+        routers_by_source.update(
+            {
+                self._router_endpoint_id(item["node_id"]): item
+                for item in _ROUTERS
+            }
+        )
         routers_by_destination = {
             item["destination_id"]: item for item in _ROUTERS
         }
+        routers_by_destination.update(
+            {
+                self._router_endpoint_id(item["node_id"]): item
+                for item in _ROUTERS
+            }
+        )
         routers_by_destination["destination:blue-service-prefix"] = self._router(
+            "node-b"
+        )
+        routers_by_destination["endpoint:blue-service-prefix"] = self._router(
             "node-b"
         )
         routers_by_destination[
             "destination:east-evpn-multihomed-service"
         ] = self._router("node-e")
+        routers_by_destination[
+            "endpoint:east-evpn-multihomed-service"
+        ] = self._router("node-e")
         routers_by_destination["destination:eta-external-subnet"] = self._router(
+            "node-e"
+        )
+        routers_by_destination["endpoint:eta-external-subnet"] = self._router(
             "node-e"
         )
         routers_by_resource = {
@@ -4059,7 +5326,11 @@ class MultiNodeRouteDemo:
                 )
             return candidates[0]
 
-        source_id = body.get("source_id") or source_request.get("source_id")
+        source_id = (
+            body.get("source_id")
+            or source_request.get("source_id")
+            or source_request.get("endpoint_id")
+        )
         source_node_id = source_request.get("node_id")
         source_value = body.get("source_value") or source_request.get("value")
         if source_value is not None:
@@ -4088,8 +5359,10 @@ class MultiNodeRouteDemo:
                 raise MultiNodeRouteRequestError("source_id and source.node_id disagree")
             source_node_id = source_router["node_id"]
 
-        destination_id = body.get("destination_id") or destination_request.get(
-            "destination_id"
+        destination_id = (
+            body.get("destination_id")
+            or destination_request.get("destination_id")
+            or destination_request.get("endpoint_id")
         )
         destination_node_id = destination_request.get("node_id")
         if destination_request.get("resource_id"):
@@ -4183,6 +5456,7 @@ class MultiNodeRouteDemo:
             "all-active-ecmp": ("node-a", "node-b"),
             "cross-layer-inconsistent": ("node-a", "node-b"),
             "incomplete-node-resolution": ("node-a", "node-b"),
+            "transit-start-endpoint-reachability": ("node-a", "node-b"),
             "site-a-site-c-asymmetric": ("node-a", "node-c"),
             "site-b-site-c-one-way": ("node-b", "node-c"),
             "evpn-mh-all-active": ("node-a", "node-e"),
@@ -4195,6 +5469,10 @@ class MultiNodeRouteDemo:
             "evpn-split-horizon-block": ("node-b", "node-e"),
             "connected-external-subnet": ("node-e", "node-e"),
             "incomplete-intermediate-resolution": ("node-d", "node-b"),
+            **{
+                scenario_id: ("node-a", "node-b")
+                for scenario_id in ADVANCED_TRACE_SCENARIO_IDS
+            },
         }
         if scenario_id in fixed_pairs:
             base_source, base_destination = fixed_pairs[scenario_id]
@@ -4226,6 +5504,7 @@ class MultiNodeRouteDemo:
         source_router = self._router(actual_source)
         destination_router = self._router(actual_destination)
         resolved_source = {
+            "endpoint_id": self._router_endpoint_id(source_router["node_id"]),
             "source_id": source_router["source_id"],
             "node_id": source_router["node_id"],
             "member_id": f"member:{source_router['node_id']}",
@@ -4259,6 +5538,24 @@ class MultiNodeRouteDemo:
             destination_is_east_evpn = False
             destination_is_external = False
         resolved_destination = {
+            "endpoint_id": (
+                "endpoint:east-evpn-multihomed-service"
+                if destination_is_east_evpn
+                else "endpoint:eta-external-subnet"
+                if destination_is_external
+                else "endpoint:blue-service-prefix"
+                if direction == "forward"
+                and (
+                    destination_is_blue_service
+                    or destination_id
+                    in {
+                        "destination:blue-service-prefix",
+                        "endpoint:blue-service-prefix",
+                    }
+                    or scenario_id in _BLUE_SERVICE_SCENARIOS
+                )
+                else self._router_endpoint_id(destination_router["node_id"])
+            ),
             "destination_id": (
                 "destination:east-evpn-multihomed-service"
                 if destination_is_east_evpn
@@ -4315,6 +5612,31 @@ class MultiNodeRouteDemo:
         }
         if destination_is_east_evpn:
             resolved_destination["terminating_node_ids"] = ["node-b", "node-e"]
+        resolved_destination["attachments"] = [
+            self._endpoint_attachment(
+                endpoint_id=resolved_destination["endpoint_id"],
+                node_id=node_id,
+                member_id=f"member:{node_id}",
+                resource_id=(
+                    f"{node_id}/ETHERNET_SEGMENT/esi-east"
+                    if destination_is_east_evpn
+                    else resolved_destination["resource_id"]
+                ),
+            )
+            for node_id in resolved_destination.get(
+                "terminating_node_ids", [resolved_destination["node_id"]]
+            )
+        ]
+        resolved_destination["attachments_complete"] = True
+        resolved_source["attachments"] = [
+            self._endpoint_attachment(
+                endpoint_id=resolved_source["endpoint_id"],
+                node_id=resolved_source["node_id"],
+                member_id=resolved_source["member_id"],
+                resource_id=resolved_source["resource_id"],
+            )
+        ]
+        resolved_source["attachments_complete"] = True
         return resolved_source, resolved_destination
 
     @staticmethod
@@ -4339,19 +5661,50 @@ class MultiNodeRouteDemo:
         if scenario_id in fixed:
             pair_id, base_source, base_destination = fixed[scenario_id]
         else:
-            base_source, base_destination = (
-                (destination["node_id"], source["node_id"])
-                if direction == "reverse"
-                else (source["node_id"], destination["node_id"])
+            base_source = source["node_id"]
+            base_destination = destination["node_id"]
+            pair_id = (
+                f"pair:{source.get('endpoint_id', base_source)}:"
+                f"{destination.get('endpoint_id', base_destination)}"
             )
-            pair_id = f"pair:{base_source}:{base_destination}"
         return {
             "pair_id": pair_id,
             "scenario_id": scenario_id,
             "base_source_node_id": base_source,
             "base_destination_node_id": base_destination,
+            "source_endpoint_id": source.get("endpoint_id"),
+            "destination_endpoint_id": destination.get("endpoint_id"),
             "requested_direction": direction,
         }
+
+    @classmethod
+    def _validate_pair_reverse_start(
+        cls,
+        flow_destination: dict[str, Any],
+        reverse_start: dict[str, Any],
+    ) -> None:
+        """Require a pair's return observation to start at its destination."""
+
+        allowed = {
+            cls._attachment_identity(
+                item,
+                label="traffic destination attachment",
+            )
+            for item in flow_destination.get("attachments", [])
+            if item.get("can_originate", True)
+            and item.get("state") not in {"withdrawn", "unavailable"}
+        }
+        observed = (
+            reverse_start.get("attachment_id"),
+            reverse_start.get("node_id"),
+            reverse_start.get("member_id"),
+            reverse_start.get("resource_id"),
+        )
+        if observed not in allowed:
+            raise MultiNodeRouteRequestError(
+                "bidirectional reverse trace start must resolve to an "
+                "available attachment of flow.destination"
+            )
 
     def _bidirectional_response(
         self,
@@ -4361,20 +5714,123 @@ class MultiNodeRouteDemo:
         forward: dict[str, Any],
         reverse: dict[str, Any],
     ) -> dict[str, Any]:
-        forward_sequence = forward["paths"][0].get("node_sequence", [])
-        reverse_sequence = reverse["paths"][0].get("node_sequence", [])
-        if forward["reachable"] and reverse["reachable"]:
-            comparison = (
-                "symmetric_reachable"
-                if forward_sequence == list(reversed(reverse_sequence))
-                else "asymmetric_reachable"
+        forward_active_paths = [
+            item for item in forward["paths"] if item.get("active")
+        ]
+        reverse_active_paths = [
+            item for item in reverse["paths"] if item.get("active")
+        ]
+        forward_path = (
+            forward_active_paths[0]
+            if forward_active_paths
+            else forward["paths"][0]
+        )
+        reverse_path = (
+            reverse_active_paths[0]
+            if reverse_active_paths
+            else reverse["paths"][0]
+        )
+        forward_start_attachment = (
+            forward["trace_start"].get("attachment_id"),
+            forward["trace_start"].get("node_id"),
+            forward["trace_start"].get("member_id"),
+            forward["trace_start"].get("resource_id"),
+        )
+        forward_source_attachments = {
+            self._attachment_identity(
+                item,
+                label="traffic source attachment",
             )
-        elif forward["reachable"] or reverse["reachable"]:
-            comparison = "one_way_reachable"
-        elif forward["complete"] and reverse["complete"]:
-            comparison = "both_unreachable"
-        else:
-            comparison = "unknown_incomplete"
+            for item in forward["flow"]["source"].get("attachments", [])
+            if item.get("can_originate", True)
+            and item.get("state") not in {"withdrawn", "unavailable"}
+        }
+        reverse_start_attachment = (
+            reverse["trace_start"].get("attachment_id"),
+            reverse["trace_start"].get("node_id"),
+            reverse["trace_start"].get("member_id"),
+            reverse["trace_start"].get("resource_id"),
+        )
+        reverse_destination_attachments = {
+            self._attachment_identity(
+                item,
+                label="traffic destination attachment",
+            )
+            for item in forward["flow"]["destination"].get(
+                "attachments", []
+            )
+            if item.get("can_originate", True)
+            and item.get("state") not in {"withdrawn", "unavailable"}
+        }
+        forward_sequence = list(forward_path.get("node_sequence", []))
+        reverse_sequence = list(reverse_path.get("node_sequence", []))
+        multipath = (
+            str(scenario.get("multipath_mode")) == "all_active"
+            or len(forward_active_paths) > 1
+            or len(reverse_active_paths) > 1
+        )
+
+        def directional_state(trace: dict[str, Any]) -> str:
+            state = str(
+                trace.get("endpoint_reachability", {}).get(
+                    "state", "unknown"
+                )
+            )
+            return (
+                state
+                if state
+                in {
+                    "reached",
+                    "not_reached",
+                    "unknown",
+                    "partial_active_reachability",
+                }
+                else "unknown"
+            )
+
+        evaluation: EndpointReachabilityPairEvaluation = (
+            evaluate_endpoint_reachability_pair(
+                forward_reaches_destination=forward.get(
+                    "endpoint_reachability", {}
+                ).get("reaches_target"),
+                reverse_reaches_source=reverse.get(
+                    "endpoint_reachability", {}
+                ).get("reaches_target"),
+                forward_complete=bool(forward["complete"]),
+                reverse_complete=bool(reverse["complete"]),
+                forward_node_sequence=tuple(forward_sequence),
+                reverse_node_sequence=tuple(reverse_sequence),
+                forward_start_node_id=forward["trace_start"]["node_id"],
+                traffic_source_node_id=forward["flow"]["source"]["node_id"],
+                forward_starts_at_source_endpoint=(
+                    forward_start_attachment in forward_source_attachments
+                ),
+                reverse_starts_at_destination_endpoint=(
+                    reverse_start_attachment
+                    in reverse_destination_attachments
+                ),
+                forward_reachability_state=directional_state(forward),
+                reverse_reachability_state=directional_state(reverse),
+                forward_branch_node_sequences=(
+                    tuple(
+                        tuple(str(node_id) for node_id in path["node_sequence"])
+                        for path in forward_active_paths
+                    )
+                    if multipath
+                    else None
+                ),
+                reverse_branch_node_sequences=(
+                    tuple(
+                        tuple(str(node_id) for node_id in path["node_sequence"])
+                        for path in reverse_active_paths
+                    )
+                    if multipath
+                    else None
+                ),
+                multipath=multipath,
+            )
+        )
+        comparison = evaluation.comparison_state
         issue_refs = list(
             dict.fromkeys(
                 item["issue_id"]
@@ -4388,6 +5844,25 @@ class MultiNodeRouteDemo:
                 for trace in (forward, reverse)
                 for item in trace.get("issues", [])
             }.values()
+        )
+        directional_consistent = all(
+            bool(trace.get("consistency", {}).get("consistent"))
+            for trace in (forward, reverse)
+        )
+        endpoint_consistent = evaluation.consistent
+        overall_consistent = directional_consistent and endpoint_consistent
+        directional_inconsistent_state = next(
+            (
+                str(trace.get("consistency", {}).get("state"))
+                for trace in (forward, reverse)
+                if not trace.get("consistency", {}).get("consistent")
+            ),
+            None,
+        )
+        overall_consistency_state = (
+            directional_inconsistent_state
+            if directional_inconsistent_state
+            else evaluation.endpoint_state
         )
         trace_id = "rtrace-pair1-" + hashlib.sha256(
             f"{forward['trace_id']}:{reverse['trace_id']}".encode("utf-8")
@@ -4413,31 +5888,94 @@ class MultiNodeRouteDemo:
                 },
                 "bidirectional_validation": {
                     "state": comparison,
-                    "forward_reachable": forward["reachable"],
-                    "reverse_reachable": reverse["reachable"],
-                    "one_way": comparison == "one_way_reachable",
-                    "symmetric_node_sequence": comparison == "symmetric_reachable",
+                    "criterion": "source_destination_endpoint_reachability",
+                    "endpoint_state": evaluation.endpoint_state,
+                    "consistent": evaluation.consistent,
+                    "forward_reaches_destination": (
+                        evaluation.forward_reaches_destination
+                    ),
+                    "reverse_reaches_source": evaluation.reverse_reaches_source,
+                    "forward_reachability_state": (
+                        evaluation.forward_reachability_state
+                    ),
+                    "reverse_reachability_state": (
+                        evaluation.reverse_reachability_state
+                    ),
+                    # Compatibility aliases are endpoint-goal results, not
+                    # merely continuous line/segment results.
+                    "forward_reachable": evaluation.forward_reaches_destination,
+                    "reverse_reachable": evaluation.reverse_reaches_source,
+                    "one_way": evaluation.endpoint_state
+                    == "one_way_reachable",
+                    "symmetric_node_sequence": evaluation.path_relation
+                    == "symmetric",
                     "forward_node_sequence": forward_sequence,
                     "reverse_node_sequence": reverse_sequence,
+                    "path_relation": {
+                        "state": evaluation.path_relation,
+                        "reason": evaluation.path_relation_reason,
+                        "basis": evaluation.path_relation_basis,
+                        "comparison_affects_consistency": False,
+                    },
+                    "forward_start": forward["trace_start"],
+                    "reverse_start": reverse["trace_start"],
+                    "reverse_must_visit_forward_start": (
+                        evaluation.reverse_must_visit_forward_start
+                    ),
+                    "reverse_visits_forward_start": (
+                        evaluation.reverse_visits_forward_start
+                    ),
                     "issue_refs": issue_refs,
                     "ownership": (
-                        "core compares plug-in-provided directional results; "
-                        "plugins own each next-hop decision"
+                        "core matches typed terminal endpoints and aggregates "
+                        "directional goals; plugins own each next-hop and local "
+                        "terminal classification"
                     ),
+                },
+                "endpoint_reachability": {
+                    "criterion": "source_destination_endpoint_reachability",
+                    "state": evaluation.endpoint_state,
+                    "consistent": evaluation.consistent,
+                    "forward_reaches_destination": (
+                        evaluation.forward_reaches_destination
+                    ),
+                    "reverse_reaches_source": evaluation.reverse_reaches_source,
+                    "forward_state": evaluation.forward_reachability_state,
+                    "reverse_state": evaluation.reverse_reachability_state,
+                    "flow": forward["flow"],
+                    "reverse_must_visit_forward_start": False,
+                },
+                "path_relation": {
+                    "state": evaluation.path_relation,
+                    "reason": evaluation.path_relation_reason,
+                    "basis": evaluation.path_relation_basis,
+                    "forward_node_sequence": forward_sequence,
+                    "reverse_node_sequence": reverse_sequence,
+                    "reverse_visits_forward_start": (
+                        evaluation.reverse_visits_forward_start
+                    ),
+                    "affects_consistency": False,
                 },
                 "issues": combined_issues,
                 "issue_index": {
                     item["issue_id"]: item for item in combined_issues
                 },
                 "consistency": {
-                    "state": comparison,
-                    "consistent": comparison
-                    in {"symmetric_reachable", "asymmetric_reachable"},
+                    "state": overall_consistency_state,
+                    "comparison_state": comparison,
+                    "endpoint_state": evaluation.endpoint_state,
+                    "criterion": (
+                        "directional_findings_and_source_destination_"
+                        "endpoint_reachability"
+                    ),
+                    "consistent": overall_consistent,
+                    "endpoint_consistent": endpoint_consistent,
+                    "directional_consistent": directional_consistent,
                     "issue_refs": issue_refs,
                     "directional": True,
                 },
                 "complete": forward["complete"] and reverse["complete"],
-                "reachable": forward["reachable"] and reverse["reachable"],
+                "reachable": evaluation.consistent,
                 "completeness": {
                     "state": (
                         "complete"
@@ -6883,6 +8421,7 @@ class MultiNodeRouteDemo:
             "path_id": path_id,
             "label": label,
             "perspective": perspective,
+            "selected_active_by_plugin": selected_active,
             "active": selected_active and all(item["active"] for item in segments),
             "primary": primary,
             "alternative_state": alternative_state,

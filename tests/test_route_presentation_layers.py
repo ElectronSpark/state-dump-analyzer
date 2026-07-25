@@ -11,12 +11,13 @@ from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "demo" / "src"))
 
-from router_dump_analyzer.demo_app import app
+from router_dump_analyzer_demo.app import app
 
 
 TOPOLOGY_JS = (
-    ROOT / "frontend" / "assets" / "topology.js"
+    ROOT / "demo" / "frontend" / "assets" / "topology.js"
 )
 EVPN_PEER_LINK_ID = (
     "demo.evpn-peer-key.exact.v1:evpn:blue:pe-pair:node-a:node-b"

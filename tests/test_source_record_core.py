@@ -7,13 +7,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "demo" / "src"))
 
 from router_dump_analyzer.source_record_core import (
     compile_record_pattern,
+    project_source_record_text_selection,
     query_source_records,
     record_lanes_for_window,
+    source_record_event_uids,
 )
-from router_dump_analyzer.demo_source_plugin import (
+from router_dump_analyzer_demo_plugins.source_records import (
     SOURCE_RECORD_DESCRIPTORS,
     SOURCE_RECORD_GROUP_DESCRIPTORS,
 )
@@ -27,6 +30,7 @@ RECORDS = [
         "source_name": "trace.ctf2",
         "record_name": "evpn_es_withdraw",
         "message": "mass withdraw for ESI 00:11",
+        "copy_text": "[100] evpn_es_withdraw { esi = 00:11 }",
         "matched_event_uid": None,
     },
     {
@@ -37,6 +41,7 @@ RECORDS = [
         "record_name": "restore",
         "message": "Ethernet segment restored",
         "matched_event_uid": "event-2",
+        "matched_event_uids": ["event-2", "event-2-companion"],
     },
 ]
 
@@ -65,6 +70,7 @@ class SourceRecordCoreTests(unittest.TestCase):
         self.assertEqual(descriptors["ctf"]["label"], "CTF records")
         self.assertEqual(descriptors["external"]["label"], "Non-CTF records")
         self.assertFalse(descriptors["ctf"]["default_included"])
+        self.assertEqual(descriptors["ctf"]["copy_action_label"], "Copy CTF text")
         self.assertEqual(groups["ctf"], "ctf")
         self.assertEqual(groups["syslog"], "external")
         self.assertEqual(groups["agent-event"], "external")
@@ -202,6 +208,7 @@ class SourceRecordCoreTests(unittest.TestCase):
             "record_name",
             "message",
             "matched_event_uid",
+            "matched_event_uids",
             "matched",
         }
         self.assertEqual(set(mark["record"]), projected_keys)
@@ -210,6 +217,57 @@ class SourceRecordCoreTests(unittest.TestCase):
         self.assertNotIn("plugin_private", mark)
         self.assertEqual(len(mark["message"]), 1_024)
         self.assertEqual(mark["record"]["layer"], "control-plane")
+
+    def test_copy_projection_is_plugin_owned_ordered_deduplicated_and_bounded(self) -> None:
+        records = [
+            RECORDS[0],
+            {
+                **RECORDS[1],
+                "copy_text": "[200] restore { esi = 00:11 }",
+            },
+        ]
+        result = project_source_record_text_selection(
+            records,
+            [
+                {"kind": "event", "uid": "event-2"},
+                {"kind": "source", "uid": "record-2"},
+                {"kind": "source", "uid": "record-1"},
+            ],
+        )
+
+        self.assertEqual(
+            [item["source_record_uid"] for item in result["items"]],
+            ["record-2", "record-1"],
+        )
+        self.assertEqual(result["item_count"], 2)
+        self.assertFalse(result["truncated"])
+        self.assertNotIn("message", result["items"][0])
+        self.assertEqual(
+            source_record_event_uids(RECORDS[1]),
+            ("event-2", "event-2-companion"),
+        )
+
+    def test_copy_projection_rejects_private_or_oversized_text_without_leaking(self) -> None:
+        result = project_source_record_text_selection(
+            [
+                {**RECORDS[0], "copy_text": "safe\x00private"},
+                {
+                    **RECORDS[1],
+                    "copy_text": "x" * 70_000,
+                },
+            ],
+            [
+                {"kind": "source", "uid": "record-1"},
+                {"kind": "source", "uid": "record-2"},
+            ],
+        )
+
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["omitted_count"], 2)
+        self.assertEqual(
+            [item["reason"] for item in result["omitted"]],
+            ["invalid_copy_text", "copy_text_too_large"],
+        )
 
     def test_regex_validation_rejects_unbounded_features(self) -> None:
         for pattern in ("(?=ESI)", r"(a+)++", r"(a+) +", r"(a+)\\1"):

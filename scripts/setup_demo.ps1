@@ -52,7 +52,10 @@ try {
         $runningDemo = Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" -ErrorAction SilentlyContinue |
             Where-Object {
                 $_.ExecutablePath -like "*\envs\$EnvironmentName\python.exe" -and
-                $_.CommandLine -like "*router-dump-demo*"
+                (
+                    $_.CommandLine -like "*router_dump_analyzer_demo.app*" -or
+                    $_.CommandLine -like "*router-dump-demo*"
+                )
             }
         if ($runningDemo) {
             $processIds = ($runningDemo | Select-Object -ExpandProperty ProcessId) -join ", "

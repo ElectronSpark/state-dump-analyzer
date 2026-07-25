@@ -7,13 +7,14 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from router_dump_analyzer import demo_app, demo_data
-from router_dump_analyzer.demo_data import REVISION_ID
+from router_dump_analyzer_demo import app as demo_app
+from router_dump_analyzer_demo import data as demo_data
+from router_dump_analyzer_demo.data import REVISION_ID
 from router_dump_analyzer.plugin_api import (
     ResourceTableRelationLevelDescriptor,
     ResourceTableViewDescriptor,
 )
-from router_dump_analyzer.scale_data import ScaleRuntime
+from router_dump_analyzer_demo.scale_data import ScaleRuntime
 
 
 def scale_dataset(

@@ -5,7 +5,9 @@
 Router State Lab is a runnable design and conformance demo for a temporal router
 dump analyzer. It turns heterogeneous status tables and logs into resources,
 events, relationships, topology, and route explanations that can be inspected at
-any point in a capture.
+any point in a capture. The protocol-neutral analyzer core is packaged
+separately from the demo server, synthetic demo plug-ins, and browser
+application.
 
 The repository includes a deterministic **125,000-event / 10,000-resource**
 scenario covering IS-IS, SR-MPLS, SRv6, EVPN multihoming, MPLS VPNs, failover,
@@ -42,8 +44,10 @@ Anaconda, then run these commands from PowerShell in the repository root:
 ```
 
 The setup script creates or updates the Python 3.12 environment and runs the
-test suite. The launcher generates the deterministic packed fixture when it is
-missing, starts the server, and opens `http://127.0.0.1:8765`.
+test suite. It installs the core and demo as separate editable distributions;
+installing the core alone does not install FastAPI, Uvicorn, demo plug-ins, or
+browser assets. The launcher generates the deterministic packed fixture when
+it is missing, starts the server, and opens `http://127.0.0.1:8765`.
 
 If port 8765 is occupied:
 
@@ -91,10 +95,15 @@ to open its node workspace with the same reconstruction context.
 
 ## What to try
 
-1. **Trace both directions.** Choose a source, destination, and VRF; then compare
-   forward and return paths. Switch between all candidates and a focused path to
-   inspect active, standby, dead, incomplete, and best-effort resolutions. The
-   review scenarios also include a recursive next-hop cycle, a cross-node
+1. **Trace both directions.** Choose the packet source, destination, VRF, and
+   optionally a different starting/observation node. Forward success means the
+   destination is reached; return success means the source is reached, even when
+   the return never revisits a transit starting node. Switch between all
+   candidates and a focused path to inspect active, standby, dead, incomplete,
+   and best-effort resolutions. If only some selected active branches reach the
+   endpoint, the result stays visibly partial instead of being called healthy.
+   The review scenarios also include endpoint
+   reachability from a transit start, a recursive next-hop cycle, a cross-node
    forwarding loop, and an EVPN split-horizon policy block; the last keeps the
    intentionally rejected candidate visible instead of calling it a dead link.
 2. **Explore the network model.** Toggle subnets, interfaces, subinterfaces,
@@ -104,8 +113,10 @@ to open its node workspace with the same reconstruction context.
    across the timeline to select a range. The resource state, relationships,
    findings, and normalized event list follow the selected time.
 4. **Follow causality.** Expand temporal correlations to see dependencies and
-   dependents. Ctrl-click between timeline events and normalized source records;
-   press **Esc** to clear the current event, moment, or range.
+   dependents. Ctrl-click a timeline mark to find its normalized log row; in the
+   log, use ordinary click/Ctrl-click/Shift-click/drag selection and
+   double-click or **Reveal in timeline** to navigate back. Press **Esc** to
+   clear the focused selection, event, moment, or range.
 5. **Inspect scale without losing detail.** Browse the virtualized 125K-event
    log, zoom-aware density lane, 10K-resource tables, unmatched-log lanes, route
    tables, neighbor data, and plug-in-defined dashboards.
@@ -135,6 +146,15 @@ packed dump.
 | Change waves | Single-home creation, multihome expansion, mass ES withdrawal and failover, mass restore, and distinct next-hop churn |
 | Failure cases | Recursive and cross-node loops, split-horizon policy exclusion, hop/recursion limits, dead candidates, stale FIB state, cross-layer mismatch, missing intermediate resolution, one-way forwarding, and clock uncertainty |
 
+The core also exposes a protocol-neutral, unit-tested packet-evolution IR for
+ordered opaque layers, exact before/after continuity, exact-basis MTU checks,
+bounded steps, and counterfactual user steering. Eight advanced route scenarios
+now pass demo-plug-in packet declarations through those core evaluators and
+show native IP, SR-MPLS/PHP, L3VPN labels, SRv6, IP-in-IP, nested VPN, MTU
+failure, and forced steering in the route view. This is still a demo-provider
+integration, not a production coordinator that discovers and invokes the
+trace-time hook at every installed node.
+
 The full corpus is indexed by default. Timeline, graph, event-log, and table
 queries are bounded or virtualized rather than sending the entire dataset to the
 browser. A content- and projection-keyed SQLite sidecar caches only client-safe
@@ -154,9 +174,9 @@ own device and protocol meaning.
 
 | Owner | Responsibilities |
 |---|---|
-| Core | Immutable revisions, safe archive inventory, source records, generic temporal storage, uncertainty, bounded queries, pagination, API contracts, LPM, bounded recursive/multipath traversal, exact typed policy comparison, cycle/limit handling, and reusable UI components |
-| Device plug-ins | Dump recognition, input parsing, resource types and keys, state transitions, relationships, forwarding-object projection, candidate rank/group semantics, typed policy scopes, topology classifications, consistency rules, route-resolution text, icons, and dashboard descriptors |
-| Federation/linker plug-ins | Matching endpoint claims and explaining inter-node connectivity without assuming every device uses the same plug-in |
+| Core | Immutable revisions, safe archive inventory, source records, generic temporal storage, uncertainty, bounded queries, pagination, API contracts, LPM, bounded recursive/multipath traversal, exact packet-state continuity and MTU arithmetic over matching declared bases, immutable flow direction, exact endpoint-goal and typed-policy comparison, bidirectional aggregation, cycle/limit handling, and reusable UI components |
+| Device plug-ins | Dump recognition, input parsing, resource types and keys, state transitions, relationships, forwarding-object projection, candidate rank/group semantics, packet-layer/action/overhead and disposition semantics, typed policy scopes, endpoint attachments and local terminal classification, topology classifications, consistency rules, route-resolution text, icons, and dashboard descriptors |
+| Federation/linker plug-ins | Matching endpoint and boundary claims between members, preserving or explicitly mapping compatible packet/scope contracts, and explaining inter-node connectivity without assuming every device uses the same plug-in |
 
 The core never turns missing evidence into invented state. If forward history,
 clock alignment, or cross-layer evidence is insufficient, the result remains
@@ -164,7 +184,9 @@ clock alignment, or cross-layer evidence is insufficient, the result remains
 
 See the [architecture](docs/architecture.md) for the complete ownership model,
 temporal algorithms, storage recommendation, security boundary, and delivery
-sequence.
+sequence. The [advanced route-trace audit](docs/advanced-route-trace-audit-2026-07-25.md)
+records the implemented packet boundary, scenario coverage, and remaining demo
+integration work.
 
 ## Build a device plug-in
 
@@ -199,7 +221,7 @@ With `router-dump-analyzer-demo` activated:
 
 ```powershell
 python -m unittest discover -s tests -v
-npm --prefix frontend run check
+npm --prefix demo/frontend run check
 ```
 
 The frontend check requires Node.js 18 or newer but installs no packages.
@@ -216,13 +238,13 @@ API:
 In another terminal:
 
 ```powershell
-npm --prefix frontend run check
-npm --prefix frontend run serve
+npm --prefix demo/frontend run check
+npm --prefix demo/frontend run serve
 ```
 
 Open `http://127.0.0.1:4173`. The development server proxies API and
 documentation requests to `http://127.0.0.1:8765`. See the
-[frontend guide](frontend/README.md) for details.
+[frontend guide](demo/frontend/README.md) for details.
 
 ### Regenerate fixtures
 
@@ -243,8 +265,10 @@ layout, public CTF source, and scenario phases.
 
 | Path | Contents |
 |---|---|
-| [`frontend/`](frontend) | HTML pages, JavaScript, CSS, page manifest, and dependency-free checks |
-| [`src/router_dump_analyzer/`](src/router_dump_analyzer) | FastAPI backend, temporal query engines, generic cores, plug-in API, and static-host adapter |
+| [`src/router_dump_analyzer/`](src/router_dump_analyzer) | Protocol-neutral core contracts, validators, query helpers, and route-policy evaluation |
+| [`demo/src/router_dump_analyzer_demo/`](demo/src/router_dump_analyzer_demo) | FastAPI demo server, fixture runtime, topology/route scenarios, and frontend host |
+| [`demo/src/router_dump_analyzer_demo_plugins/`](demo/src/router_dump_analyzer_demo_plugins) | Synthetic fixture semantics and presentation policy used only by the demo |
+| [`demo/frontend/`](demo/frontend) | HTML pages, JavaScript, CSS, page manifest, and dependency-free checks |
 | [`examples/minimal_plugin/`](examples/minimal_plugin) | Small installable reference plug-in with a golden fixture and tests |
 | [`samples/`](samples) | Public and generated sample inputs |
 | [`scripts/`](scripts) | Environment setup, launchers, fixture generators, and validators |
@@ -261,7 +285,7 @@ layout, public CTF source, and scenario phases.
 | [Plug-in contract and lifecycle](docs/plugin-contract.md) | Normative hooks, identity, provenance, topology, routes, and conformance |
 | [Public sample-input catalog](docs/public-sample-catalog.md) | Open-source traces and other useful test inputs |
 | [Sample input guide](samples/README.md) | Synthetic fixture contents and generation |
-| [Frontend guide](frontend/README.md) | Browser/backend boundary and split-process development |
+| [Frontend guide](demo/frontend/README.md) | Browser/backend boundary and split-process development |
 
 ## Current scope
 

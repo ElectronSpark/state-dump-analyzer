@@ -4,8 +4,8 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from router_dump_analyzer.demo_app import app
-from router_dump_analyzer.demo_data import REVISION_ID
+from router_dump_analyzer_demo.app import app
+from router_dump_analyzer_demo.data import REVISION_ID
 
 
 class DemoAppTests(unittest.TestCase):
@@ -28,8 +28,8 @@ class DemoAppTests(unittest.TestCase):
         self.assertIn("Router State Lab", page.text)
         self.assertIn("Synthetic review fixture", page.text)
         self.assertIn("no-store", page.headers["cache-control"])
-        self.assertIn("styles.css?v=20260721-combinatorial-audit-v1", page.text)
-        self.assertIn("app.js?v=20260722-scale-stream-v1", page.text)
+        self.assertIn("styles.css?v=20260724-event-selection-v2", page.text)
+        self.assertIn("app.js?v=20260724-lane-visibility-v4", page.text)
         self.assertIn('id="correlation-time"', page.text)
         self.assertIn('id="correlation-panel-toggle"', page.text)
         self.assertIn('aria-controls="dependency-graph-content"', page.text)

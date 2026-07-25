@@ -19,6 +19,9 @@ MAX_RECORD_LANE_MARKS = 5_000
 MAX_SOURCE_QUERY_LIMIT = 500
 MAX_PROJECTED_IDENTIFIER_LENGTH = 256
 MAX_PROJECTED_MESSAGE_LENGTH = 1_024
+MAX_COPY_TEXT_FRAGMENT_BYTES = 65_536
+MAX_COPY_TEXT_ITEMS = 5_000
+MAX_COPY_TEXT_TOTAL_BYTES = 1_048_576
 
 _LANE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _BACKREFERENCE_PATTERN = re.compile(r"\\[1-9]")
@@ -102,6 +105,28 @@ def _source_record_timestamp_ns(record: dict[str, Any]) -> int | None:
         ) from error
 
 
+def source_record_event_uids(record: dict[str, Any]) -> tuple[str, ...]:
+    """Return every normalized event linked by one retained source record.
+
+    ``matched_event_uid`` remains a compatibility alias. New plug-ins may use
+    ``matched_event_uids`` when one decoded input contributes to several
+    normalized events.
+    """
+
+    values: list[str] = []
+    plural = record.get("matched_event_uids")
+    if isinstance(plural, (list, tuple)):
+        values.extend(
+            str(value)
+            for value in plural
+            if value is not None and str(value)
+        )
+    singular = record.get("matched_event_uid")
+    if singular is not None and str(singular):
+        values.append(str(singular))
+    return tuple(dict.fromkeys(values))
+
+
 def _project_source_record_mark(
     record: dict[str, Any],
     *,
@@ -114,7 +139,8 @@ def _project_source_record_mark(
     exposes only its stable navigation/display envelope.
     """
 
-    matched_event_uid = record.get("matched_event_uid")
+    matched_event_uids = source_record_event_uids(record)
+    matched_event_uid = matched_event_uids[0] if matched_event_uids else None
     return {
         "source_record_uid": _bounded_text(
             record.get("source_record_uid"),
@@ -146,7 +172,166 @@ def _project_source_record_mark(
             if matched_event_uid
             else None
         ),
-        "matched": bool(matched_event_uid),
+        "matched_event_uids": [
+            _bounded_text(value, MAX_PROJECTED_IDENTIFIER_LENGTH)
+            for value in matched_event_uids
+        ],
+        "matched": bool(matched_event_uids),
+    }
+
+
+def project_source_record_for_log(record: dict[str, Any]) -> dict[str, Any]:
+    """Return the bounded source-record envelope used by virtual log rows.
+
+    Raw attributes and ``copy_text`` stay private. The latter is only exposed
+    through the explicit, quota-bound text projection below.
+    """
+
+    timestamp_ns = _source_record_timestamp_ns(record)
+    projection = _project_source_record_mark(
+        record,
+        timestamp_ns=timestamp_ns if timestamp_ns is not None else 0,
+    )
+    projection["timestamp_ns"] = (
+        str(timestamp_ns) if timestamp_ns is not None else None
+    )
+    return projection
+
+
+def _validated_copy_text(record: dict[str, Any]) -> tuple[str | None, str | None]:
+    if "copy_text" not in record or record.get("copy_text") is None:
+        return None, "copy_text_unavailable"
+    value = record.get("copy_text")
+    if not isinstance(value, str):
+        return None, "invalid_copy_text"
+    if "\x00" in value:
+        return None, "invalid_copy_text"
+    size = len(value.encode("utf-8"))
+    if size > MAX_COPY_TEXT_FRAGMENT_BYTES:
+        return None, "copy_text_too_large"
+    return value, None
+
+
+def project_source_record_text_selection(
+    records: Iterable[dict[str, Any]],
+    selection: Iterable[dict[str, Any]],
+    *,
+    max_items: int = MAX_COPY_TEXT_ITEMS,
+    max_total_bytes: int = MAX_COPY_TEXT_TOTAL_BYTES,
+) -> dict[str, Any]:
+    """Resolve a stable event/source selection to plug-in-supplied text.
+
+    The core owns ordering, deduplication and quotas. Plug-ins own eligibility
+    and the exact plain-text representation through ``copy_text``.
+    """
+
+    if max_items < 1 or max_items > MAX_COPY_TEXT_ITEMS:
+        raise ValueError(f"max_items must be between 1 and {MAX_COPY_TEXT_ITEMS}")
+    if max_total_bytes < 1 or max_total_bytes > MAX_COPY_TEXT_TOTAL_BYTES:
+        raise ValueError(
+            "max_total_bytes must be between 1 and "
+            f"{MAX_COPY_TEXT_TOTAL_BYTES}"
+        )
+
+    materialized = list(records)
+    by_uid: dict[str, dict[str, Any]] = {}
+    by_event: dict[str, list[dict[str, Any]]] = {}
+    for record in materialized:
+        uid = str(record.get("source_record_uid") or "")
+        if uid:
+            by_uid[uid] = record
+        for event_uid in source_record_event_uids(record):
+            by_event.setdefault(event_uid, []).append(record)
+
+    items: list[dict[str, Any]] = []
+    omitted: list[dict[str, str]] = []
+    seen_source_uids: set[str] = set()
+    total_bytes = 0
+    truncated = False
+
+    for raw in selection:
+        if not isinstance(raw, dict):
+            omitted.append(
+                {"selection_id": "invalid", "reason": "invalid_selection"}
+            )
+            continue
+        kind = str(raw.get("kind") or "")
+        uid = str(raw.get("uid") or "")
+        selection_id = f"{kind}:{uid}" if kind and uid else "invalid"
+        candidates = (
+            [by_uid[uid]]
+            if kind == "source" and uid in by_uid
+            else by_event.get(uid, [])
+            if kind == "event"
+            else []
+        )
+        copyable_for_selection = False
+        unavailable_reasons: list[str] = []
+        for record in candidates:
+            source_uid = str(record.get("source_record_uid") or "")
+            if not source_uid or source_uid in seen_source_uids:
+                continue
+            text, reason = _validated_copy_text(record)
+            if text is None:
+                if reason:
+                    unavailable_reasons.append(reason)
+                continue
+            encoded_size = len(text.encode("utf-8"))
+            if len(items) >= max_items or total_bytes + encoded_size > max_total_bytes:
+                truncated = True
+                break
+            seen_source_uids.add(source_uid)
+            total_bytes += encoded_size
+            copyable_for_selection = True
+            items.append(
+                {
+                    "selection_id": selection_id,
+                    "source_record_uid": _bounded_text(
+                        source_uid,
+                        MAX_PROJECTED_IDENTIFIER_LENGTH,
+                    ),
+                    "source_type": _bounded_text(
+                        record.get("source_type") or "unknown",
+                        MAX_PROJECTED_IDENTIFIER_LENGTH,
+                    ),
+                    "record_name": _bounded_text(
+                        record.get("record_name") or "record",
+                        MAX_PROJECTED_IDENTIFIER_LENGTH,
+                    ),
+                    "text": text,
+                }
+            )
+        if truncated:
+            break
+        if not candidates:
+            omitted.append(
+                {
+                    "selection_id": selection_id,
+                    "reason": "source_record_not_found",
+                }
+            )
+        elif not copyable_for_selection and not any(
+            str(candidate.get("source_record_uid") or "") in seen_source_uids
+            for candidate in candidates
+        ):
+            omitted.append(
+                {
+                    "selection_id": selection_id,
+                    "reason": (
+                        unavailable_reasons[0]
+                        if unavailable_reasons
+                        else "copy_text_unavailable"
+                    ),
+                }
+            )
+
+    return {
+        "items": items,
+        "item_count": len(items),
+        "total_bytes": total_bytes,
+        "omitted": omitted,
+        "omitted_count": len(omitted),
+        "truncated": truncated,
     }
 
 
@@ -280,7 +465,7 @@ def _record_matches(
     source_types = rule["source_types"]
     if source_types and str(record.get("source_type")) not in source_types:
         return False
-    if rule["unmatched_only"] and record.get("matched_event_uid"):
+    if rule["unmatched_only"] and source_record_event_uids(record):
         return False
     return compiled.search(source_record_haystack(record)) is not None
 
@@ -341,7 +526,7 @@ def query_source_records(
     for record in records:
         if source_types and str(record.get("source_type")) not in source_types:
             continue
-        is_matched = bool(record.get("matched_event_uid"))
+        is_matched = bool(source_record_event_uids(record))
         if matched is not None and is_matched is not matched:
             continue
         haystack = source_record_haystack(record)

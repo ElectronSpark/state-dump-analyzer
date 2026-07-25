@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from router_dump_analyzer.demo_app import app
-from router_dump_analyzer.demo_data import REVISION_ID
+from router_dump_analyzer_demo.app import app
+from router_dump_analyzer_demo.data import REVISION_ID
 
 
 class DashboardQueryApiTests(unittest.TestCase):
@@ -17,11 +17,11 @@ class DashboardQueryApiTests(unittest.TestCase):
             }
         }
         self.load_patch = patch(
-            "router_dump_analyzer.demo_app.load_demo_dataset",
+            "router_dump_analyzer_demo.app.load_demo_dataset",
             return_value=self.dataset,
         )
         self.query_patch = patch(
-            "router_dump_analyzer.demo_app.dashboard_query",
+            "router_dump_analyzer_demo.app.dashboard_query",
             return_value={
                 "revision_id": REVISION_ID,
                 "time_ns": "1759680005000000000",

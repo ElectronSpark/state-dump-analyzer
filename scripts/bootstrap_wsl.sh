@@ -104,4 +104,6 @@ print(assets[installer_name + ".sha256"])
 fi
 
 cd -- "${repository_root}"
+# The environment file installs the core and independently packaged demo;
+# setup_demo.sh also runs their combined conformance suite.
 CONDA_EXE="${conda_executable}" "${repository_root}/scripts/setup_demo.sh" "$@"

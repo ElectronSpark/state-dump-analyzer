@@ -666,6 +666,116 @@ affected candidate plus `policy_decisions[]`, with the plug-in constraint,
 ingress scopes, `ingress_scopes_complete`, traffic class, verdict, explanation,
 and evidence. Rejected candidates remain inspectable.
 
+### Trace-time packet IR
+
+The public Python plug-in boundary additionally defines one node-local packet
+step. This is not a promise that every HTTP route calls the hook. The advanced
+multi-node demo scenarios consume demo-provider transition declarations and
+the core evaluation helpers, while a future production coordinator may
+repeatedly invoke the already-defined `FORWARDING_TRACE` hook across installed
+members without changing its ownership:
+
+- `ForwardingStepRequest` supplies one stable step ID, member, qualified
+  perspective, forwarding object, current packet state, lookup/ingress context,
+  bounded steering rules, `max_candidates`, and the negotiated forwarding IR
+  version.
+- `ForwardingStepResult` echoes the step ID and supplies one
+  `ForwardingPacketTransition`, selected candidate, next local forwarding
+  object/context, recursive/terminal flags, and quality. `continue` is
+  non-terminal and requires a next object; every other disposition is terminal
+  for the current linear branch and has no next object/context.
+- `ForwardingPacketState.layers[]` is ordered outermost to innermost. Each
+  layer has a stable opaque ID, plug-in-owned contract ID and typed fields,
+  optional declared bytes, and completeness. Core treats the contract and
+  fields as exact opaque data. Its human label is presentation-only and is not
+  part of equality, hashing, continuity, or structural change detection.
+- A transition has exact `before` and `after` states, action contract and
+  display label, normalized disposition, origin, actor, optional MTU
+  constraint, optional forced-rule provenance, and bounded resolution
+  contributions.
+
+The normalized transition dispositions are `continue`, `deliver`, `drop`,
+`punt`, `replicate`, and `unknown`. A terminal or replicate disposition stops
+the current linear chain; a final `continue` yields
+`continuation_required`. These values do not tell core whether an opaque
+layer is MPLS, SRv6, VXLAN, IP-in-IP, a VPN, or proprietary state. The node
+plug-in declares that meaning and the resulting disposition. Core validates
+ordering and exact continuity, reports structural layer changes, stops on a
+terminal disposition, rejects any supplied transition suffix after that
+terminal result, and enforces a separate packet-step budget. Structural
+`moved` layers are relative reorders among retained layers; adding or removing
+an outer wrapper does not move all retained inner layers. The structural diff
+also declares whether both packet identities were complete.
+
+Coordinators validate hook output with
+`validate_forwarding_step_result(request, result)`. This checks the exact step
+and packet-before state and couples a selected user steering rule to its
+forced-rule provenance and declared candidate/packet/disposition overrides.
+
+Packet size and MTU fields are comparable only when their complete
+`basis_contract_id` values match exactly. The generic MTU result is
+`not_declared`, `unknown`, `unknown_basis_mismatch`, `fits`, or `exceeds`.
+Transition evaluation compares the `after` packet size with the transition's
+MTU constraint. `exceeds` reports integer excess bytes but does not itself
+imply drop, fragmentation, punt, or ICMP generation; those remain
+plug-in-declared device semantics.
+
+A user `ForwardingSteeringRule` targets one exact step and may require one
+exact packet-before state. It may select a candidate, replace the packet-after
+state, or override disposition. The resulting transition is
+`origin=user_forced`, contains actor/rule provenance, and is counterfactual.
+Observed device policy is `origin=node_plugin`. A counterfactual trace must not
+be returned as observed reachability or mutate the stored forwarding
+projection.
+
+The bundled advanced demo accepts an advertised `steering_profile_id` and
+returns its evaluated teaching payload under `paths[].packet_trace`. That
+object contains `initial_state`, `transitions[]`, `outcome`, `continuity`,
+terminal disposition, and an explicit `counterfactual` flag. Every transition
+keeps its stable `step_id` and `segment_id`, exact before/after states, core
+diff, core MTU result, plug-in action/disposition/actor, and forced-rule
+provenance. Packet layers are serialized in their declared order:
+
+```json
+{
+  "packet_trace": {
+    "layer_order": "outermost_to_innermost",
+    "outcome": "deliver",
+    "continuity": "complete",
+    "counterfactual": false,
+    "transitions": [
+      {
+        "transition": {
+          "step_id": "segment:route-path:source",
+          "action_contract_id": "vendor.example.packet-action.v1",
+          "action_label": "Plug-in-owned action",
+          "disposition": "continue",
+          "origin": "node_plugin",
+          "before": {"layers": [], "complete": true},
+          "after": {"layers": [], "complete": true}
+        },
+        "diff": {
+          "added_layer_ids": [],
+          "removed_layer_ids": [],
+          "changed_layer_ids": [],
+          "moved_layer_ids": []
+        },
+        "mtu": {"outcome": "not_declared"}
+      }
+    ]
+  }
+}
+```
+
+This JSON shape is a demo adapter over the public Python contracts. A browser
+renders only declared labels, fields, diffs, and outcomes; it does not infer
+protocol semantics from strings or contract IDs.
+
+At an inter-member boundary, the federation linker returns matched,
+ambiguous, unresolved, or conflicting connector candidates. It may preserve an
+exact compatible packet contract or perform an explicit linker-owned mapping;
+it must not silently push, pop, reorder, or reinterpret packet layers.
+
 ### 5.1 Cross-node multi-path trace
 
 The executable demo discovers and traces routes through independently
@@ -676,23 +786,47 @@ GET  /v1/topology-assemblies/demo.fabric.multi-node/routes/capabilities
 POST /v1/topology-assemblies/demo.fabric.multi-node/routes/trace
 ```
 
-The capabilities response advertises destinations, sources, route-resolver
-plug-ins, route-type/family/VRF facets, strict/best-effort modes, and bounded
-review scenarios. The heterogeneous demo covers connected and recursive-static
-routes, IPv4/IPv6 unicast, IS-IS, MPLS transport and L3VPN, SRv6, and EVPN type
-2/type 5 resolution. A demo request reuses the frozen topology context and may
-focus any returned path, including an inactive or retained dead one:
+The capabilities response advertises immutable traffic sources and
+destinations, independent trace start points, route-resolver plug-ins,
+route-type/family/VRF facets, strict/best-effort modes, and bounded review
+scenarios. It also advertises packet-trace bounds, layer order, ownership, and
+the steering profiles accepted by each scenario. The heterogeneous demo covers
+connected and recursive-static routes, IPv4/IPv6 unicast, IS-IS, MPLS transport
+and L3VPN, SRv6, and EVPN type 2/type 5 resolution. A demo request reuses the
+frozen topology context and may focus any returned path, including an inactive
+or retained dead one:
 
 ```json
 {
   "topology_context_id": "tctx1-2ebdfcbed0d01148d88e67d1",
-  "scenario_id": "single-active-primary",
-  "destination_id": "destination:blue-service-prefix",
+  "scenario_id": "transit-start-endpoint-reachability",
+  "direction": "both",
+  "flow": {
+    "source": {"endpoint_id": "endpoint:node-a:loopback"},
+    "destination": {"endpoint_id": "endpoint:node-b:loopback"}
+  },
+  "ingress": {"start_id": "start:transit-p-1"},
   "resolution_mode": "best_effort",
-  "focus_path_id": "route-path:underlay:pe-a-alternate",
   "basis": {"kind": "relative_to_watermark", "offset_ns": "0"}
 }
 ```
+
+`flow.source` and `flow.destination` identify one immutable traffic flow.
+Top-level `source`/`source_id` and `destination`/`destination_id` remain
+compatibility aliases, but they do not independently select the traversal seed.
+When no explicit forward start is supplied, core derives it from a declared
+source endpoint attachment. `ingress` selects the forward observation/start
+point and may therefore be a transit member or resource unrelated to the source
+endpoint's attachment. `trace_starts.forward` is the per-direction form of the
+same selection. An explicit
+`trace_starts.reverse` or `reverse_ingress` may select a known return
+observation point; otherwise the return trace starts from a plug-in-declared
+attachment of the traffic destination. It targets the exact traffic source
+endpoint and is never required to revisit the forward ingress.
+For a bidirectional endpoint-to-endpoint verdict, an explicit reverse start
+must itself resolve to an available attachment of `flow.destination`.
+An arbitrary mid-return observation can still be traced as a single direction,
+but it cannot prove reachability from the destination endpoint.
 
 The response returns a flat, ordered `paths[]` candidate set plus
 `multipath`, `focused_path_id`, `route_resolution_sequence[]`, `issues[]`,
@@ -704,6 +838,29 @@ and no fabricated singular primary; single-active scenarios may retain inactive
 eligible standby or withdrawn/dead candidates for inspection. Cross-layer
 scenarios preserve control-plane and observed-FIB disagreement as typed findings
 instead of rewriting one layer to agree with the other.
+
+Each directional response also returns the immutable `flow`, its
+`trace_start`, the direction's `goal_endpoint`, and `endpoint_reachability`.
+Each path's `terminal_reachability` identifies the requested and observed
+terminal endpoint, terminal member/attachment, exact-match result, completeness,
+and semantic ownership. The node plug-in classifies local delivery and supplies
+the normalized attachment evidence; the core validates exact identities and
+aggregates active branches. A directional result is `reached`, `not_reached`,
+`unknown`, or `partial_active_reachability`. The last state means at least one
+plug-in-selected active branch reaches the endpoint and at least one does not;
+core does not promote that multipath set to fully reachable. A continuous,
+complete path that ends at the forward ingress instead of the requested
+endpoint is `not_reached`.
+
+A bidirectional response classifies endpoint reachability as
+`bidirectionally_reachable`, `one_way_reachable`, `both_unreachable`, or
+`unknown_incomplete`. It is consistent only when the forward direction reaches
+`flow.destination` and the return direction reaches `flow.source`.
+`path_relation.state` is separately `symmetric`, `asymmetric`, or
+`not_comparable`. It describes node-sequence shape and never changes the
+endpoint-reachability verdict. In particular, a forward trace that begins
+inside the flow at a transit member cannot be meaningfully reversed and uses
+`not_comparable` with reason `forward_starts_inside_flow_path`.
 
 Every path may additionally carry ordered `node_occurrences[]`. Each occurrence
 has a stable `occurrence_id` separate from physical node identity, and segments
@@ -759,8 +916,21 @@ completeness policy explicit:
 ```json
 {
   "context_id": "tctx1-fabric-1759680005",
+  "flow": {
+    "source": {
+      "endpoint_id": "endpoint:site-a:2001-db8-10-10",
+      "kind": "ipv6",
+      "value": "2001:db8:10::10"
+    },
+    "destination": {
+      "endpoint_id": "endpoint:site-b:2001-db8-100-42",
+      "kind": "ipv6",
+      "value": "2001:db8:100::42"
+    }
+  },
   "ingress": {
     "member_id": "pe-a",
+    "start_id": "start:pe-a",
     "vrf_resource_ref": {
       "member_id": "pe-a",
       "revision_id": "rev-a-17",
@@ -770,7 +940,6 @@ completeness policy explicit:
     "policy_scopes": [],
     "policy_scopes_complete": false
   },
-  "destination": {"kind": "ipv6", "value": "2001:db8:100::42"},
   "ground_truth": {
     "policy": "selected_perspective",
     "perspective_by_member": {
@@ -788,6 +957,14 @@ completeness policy explicit:
   }
 }
 ```
+
+The `flow` survives direction changes unchanged. For the forward direction,
+`goal_endpoint` is `flow.destination`; for the return direction it is
+`flow.source`. `ingress` is only the forward traversal seed. The core obtains
+the default return seed from the destination's bounded, time-valid attachment
+candidates supplied through node and federation projections. Missing,
+ambiguous, or incomplete attachment evidence remains unknown under the selected
+completeness policy instead of being replaced by the forward ingress.
 
 Optional `comparison_views[]` entries each name a stable `view_id` and a
 `perspective_by_member` map, for example control-plane perspectives to compare
@@ -811,6 +988,23 @@ branch:
   "result": "resolved",
   "complete": true,
   "completeness_policy": "strict",
+  "flow": {
+    "source": {"endpoint_id": "endpoint:site-a:2001-db8-10-10"},
+    "destination": {"endpoint_id": "endpoint:site-b:2001-db8-100-42"}
+  },
+  "trace_start": {
+    "start_id": "start:pe-a",
+    "member_id": "pe-a",
+    "semantic_role": "traversal_seed"
+  },
+  "goal_endpoint": {
+    "endpoint_id": "endpoint:site-b:2001-db8-100-42"
+  },
+  "endpoint_reachability": {
+    "state": "reached",
+    "reaches_target": true,
+    "criterion": "exact_normalized_endpoint_attachment"
+  },
   "ground_truth": {
     "policy": "selected_perspective",
     "quality": "exact"
@@ -887,13 +1081,15 @@ references, and normalized phase, not to `resolution_text`. Normalized phases
 include `local_lookup`, `candidate_selection`, `next_hop`, `failover`,
 `tunnel_action`, `adjacency_egress`, `federation_boundary`, and
 `remote_ingress`. Node plug-ins own local `resolution_text`, local candidates,
-proprietary status interpretation, typed policy scopes/constraints, and the
-canonical local lookup/packet context. The core owns temporal/context
-resolution, exact constraint evaluation, budgets, branch expansion, exact
-canonical-state cycle detection, stable ordering, coverage, comparison, and
-navigation. The federation linker owns inter-node boundary matches and their
-candidate evidence; it does not reinterpret a node plug-in's split-horizon
-decision.
+proprietary status interpretation, typed policy scopes/constraints, the
+canonical local lookup/packet context, endpoint attachment declarations, and
+local terminal/delivery classification. The core owns temporal/context
+resolution, immutable flow direction, exact endpoint and constraint
+evaluation, budgets, branch expansion, exact canonical-state cycle detection,
+stable ordering, coverage, comparison, and navigation. The federation linker
+owns inter-node boundary and endpoint-attachment matches and their candidate
+evidence; it does not reinterpret a node plug-in's split-horizon or local
+delivery decision.
 
 `paths[].presentations[]` is the bounded, core-preserved form of the
 `RoutePresentationDescriptor` sidecars encountered while resolving the path.
@@ -1104,7 +1300,9 @@ POST /v1/revisions/rev-01/source-records/query
 ```
 
 Each result has a stable `source_record_uid`, timestamp, source type/name,
-record name, decoded message/attributes, and optional `matched_event_uid`.
+record name, decoded message/attributes, and optional `matched_event_uid` plus
+`matched_event_uids` for one-to-many normalization. A plug-in's private
+`copy_text` is deliberately absent from this ordinary query.
 Paging and ordering are core behavior. Source labels, decoding, normalization
 links, and recommended regex presets belong to the selected plug-in.
 
@@ -1128,8 +1326,10 @@ A timeline query may include up to eight `record_lane_rules`:
 ```
 
 The response's `record_lanes` are separate from canonical resource lanes. Marks
-carry `source_record_uid` and `matched_event_uid`, allowing deterministic
-timeline-to-log navigation even when the log uses virtual scrolling. The core
+carry `source_record_uid`, the compatible singular `matched_event_uid`, and
+plural `matched_event_uids`, allowing deterministic timeline-to-log navigation
+even when one retained input produced several events and the log uses virtual
+scrolling. The core
 limits pattern length and searched text, rejects lookarounds/backreferences and
 unsafe repeated quantifiers, and caps lane and mark counts.
 
@@ -1169,6 +1369,81 @@ range entries precede outside entries; every item has a stable zero-based
 insert their own group headers. Ordering, range partitioning, pagination,
 redaction-before-search, and locating are core responsibilities. Event,
 resource, layer, and source-type values remain plug-in vocabulary.
+
+Bulk log actions use query-scoped inclusive data-index ranges, not DOM rows or
+thousands of client-retained IDs:
+
+```http
+POST /v1/revisions/rev-01/event-log/selection
+```
+
+```json
+{
+  "include_normalized": true,
+  "source_types": ["ctf"],
+  "layers": ["control-plane"],
+  "search": "mass withdraw",
+  "selection_ranges": [
+    {"start": 120, "end": 132},
+    {"start": 140, "end": 140}
+  ]
+}
+```
+
+The endpoint accepts at most 128 ranges and 5,000 selected data rows. It resolves
+the same immutable revision/filter ordering and returns:
+
+```json
+{
+  "revision_id": "rev-01",
+  "selection_ranges": [{"start": 120, "end": 132}],
+  "selection_count": 13,
+  "items": [
+    {
+      "entry_id": "event:event-00120",
+      "display_index": 120,
+      "stream_kind": "event",
+      "uid": "event-00120",
+      "timestamp_ns": "1759680240120000000",
+      "resource_ids": ["node-a/data-bridge/ETG/42"],
+      "entry": {"event_uid": "event-00120", "event_type": "etg_modify"}
+    }
+  ],
+  "copy_action_label": "Copy CTF text",
+  "copy": {
+    "items": [
+      {
+        "selection_id": "event:event-00120",
+        "source_record_uid": "source-00120",
+        "source_type": "ctf",
+        "record_name": "etg_modify",
+        "text": "[1759680240120000000] etg_modify { id = 42 }"
+      }
+    ],
+    "item_count": 1,
+    "total_bytes": 55,
+    "omitted": [],
+    "omitted_count": 0,
+    "truncated": false
+  }
+}
+```
+
+Each `entry` is the same bounded/redacted projection used by the virtual log.
+The `copy.items` array is ordered and deduplicated across singular/plural
+source-to-event links. A fragment is a plug-in-supplied, already-redacted
+`copy_text` value; core treats its contents as opaque, rejects non-strings,
+NUL, and values over 65,536 UTF-8 bytes, and caps the response at 5,000
+fragments and 1 MiB total. `copy.omitted` reports a `selection_id` and reason
+such as `source_record_not_found`, `copy_text_unavailable`,
+`invalid_copy_text`, or `copy_text_too_large`.
+
+`copy_action_label` uses a plug-in label only when all copyable fragments
+resolve to one declared source group; mixed/unknown groups use
+`Copy plug-in text`. The hosting service authorizes the endpoint and the client
+performs the actual clipboard write. Hide/show and review-marker actions in the
+demo are browser-local presentation state; they do not mutate the immutable
+revision. Core never assumes that a source type or group named `ctf` exists.
 
 For immutable full-scale revisions, the core may build the literal-search
 corpus in the background after plug-in descriptors and sensitivity rules are

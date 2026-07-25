@@ -196,6 +196,37 @@ The core must not branch on plug-in kind, relation, source-type, source-group,
 or key-field names. The detailed audit and migration ledger is in
 `docs/core-plugin-boundary-audit-2026-07-22.md`.
 
+### Distribution dependency rule
+
+The executable repository keeps the protocol-neutral package and the review
+application in separate distributions:
+
+```text
+router-dump-analyzer-demo
+    -> router_dump_analyzer_demo_plugins
+    -> router-dump-analyzer-core
+
+router_dump_analyzer_demo_plugins
+    -> router-dump-analyzer-core
+
+router-dump-analyzer-core
+    -X-> demo application, demo plug-ins, FastAPI, Uvicorn, or browser assets
+```
+
+`src/router_dump_analyzer/` is the core source root. The FastAPI application,
+synthetic fixture runtime, and scenario builders live under
+`demo/src/router_dump_analyzer_demo/`; synthetic device/protocol vocabulary
+lives under `demo/src/router_dump_analyzer_demo_plugins/`. Mixed prototype
+coordinators remain on the demo side until their inputs and outputs become
+typed, protocol-neutral core contracts. A reusable-looking algorithm is not
+promoted merely because a demo currently exercises it.
+
+The core wheel therefore contains only `router_dump_analyzer`, publishes the
+plug-in validator but not the demo launcher, and has no web-framework runtime
+dependency. The demo wheel depends on the core, publishes `router-dump-demo`,
+and owns its web dependencies and frontend distribution. Static dependency
+tests reject reverse imports or accidental demo assets in the core package.
+
 A plugin bundle supplies:
 
 - Platform/version probe and input locators.
@@ -220,6 +251,15 @@ undeclared capabilities and rejects declared behavior that was not implemented.
 Parser hooks emit `SourceRecordEmission` before the core assigns stable
 `SourceRecord` identity. The generic `router-dump-plugin-validate` command
 checks this cold-start contract before product-specific conformance runs.
+An emission may carry plug-in-materialized `copy_text` and one or more matched
+event IDs. The plug-in must make copy text safe for verbatim export before
+emission because its contents are opaque to core. Copy text is stored as
+private source data and excluded from search, timeline, and bootstrap
+projections. A core-owned selection service resolves immutable event-log
+ranges to source links, validates type/NUL/size constraints, deduplicates, and
+applies byte/item budgets before returning requested plain-text fragments. The
+hosting service authorizes that endpoint; the browser owns selection gestures
+and the final clipboard write.
 
 Plugins emit iterators/batches; they do not write the database. For production,
 use Arrow `RecordBatch` messages between the plugin worker and coordinator so
@@ -606,7 +646,9 @@ lookup context may
 legitimately revisit it. When the complete key repeats, core returns a
 `ForwardingCycleReport` containing the first occurrence, the closing repeated
 occurrence, and the exact closed state sequence. The closing occurrence remains
-visible to callers; it is not deduplicated into the earlier node.
+visible to callers; it is not deduplicated into the earlier node. An
+incomplete policy-scope set, packet state, packet layer, or packet-size
+observation cannot prove a cycle.
 
 The request selects an observed capture vector or reconstructed time. The
 response echoes that basis, resolved revision/time or capture ranges,
@@ -618,16 +660,76 @@ plugins may maintain an in-memory radix structure for batch calculations.
 `rustworkx` shortest-path algorithms are for the future multi-node topology
 analyzer, not a substitute for single-node FIB semantics.
 
+### Packet evolution at one node
+
+Persistent forwarding records describe what the device has installed. A
+trace-time packet transition describes what one node-local resolver says
+happens to one packet at one step. These are intentionally different public
+contracts:
+
+1. A `ForwardingStepRequest` fixes the member, qualified perspective,
+   forwarding object, ingress and lookup context, bounded candidate count, and
+   current `ForwardingPacketState`.
+2. A plug-in with `FORWARDING_TRACE` implements
+   `resolve_forwarding_step()` and returns one `ForwardingStepResult`. It owns
+   the selected candidate, local action semantics, disposition, next local
+   object/context, explanation, and evidence.
+   A `continue` result is non-terminal and requires that next object; every
+   other disposition terminates the current linear branch and has no next
+   object/context.
+3. The result's `ForwardingPacketTransition` carries exact before/after packet
+   states. Packet layers are ordered outermost to innermost and use opaque
+   plug-in contract IDs. Core validates structure and reports identity-based
+   added/removed/changed/moved layers; it does not interpret MPLS, SR, VPN,
+   tunnel, or proprietary vocabulary. Human labels are presentation-only;
+   structural diffs compare relative retained-layer order and expose whether
+   both packet identities were complete.
+4. Core checks complete before/after continuity across the branch and enforces
+   an independent maximum step count. Incomplete identity makes continuity or
+   cycle evidence unknown rather than permitting a guessed transformation. A
+   coordinator calls `validate_forwarding_step_result()` to check the request
+   step, packet-before state, and any exact user steering/candidate coupling.
+5. A packet-size observation and MTU limit are compared only when both are
+   complete and use the exact same opaque basis contract. Core performs integer
+   arithmetic; the plug-in supplies the basis, overhead, effective limit, and
+   the resulting continue/drop/punt semantics.
+
+This representation naturally handles push, swap, PHP, explicit-null,
+decapsulation, nested tunnels, and VPN-over-transport without teaching core
+those protocols. For example, an outer layer may disappear while an inner VPN
+layer remains, and the same node may then be revisited with a different
+packet/lookup context without being a loop.
+
+User steering is a separate counterfactual path. A
+`ForwardingSteeringRule` exact-matches one step and optionally its packet-before
+snapshot. Core selects one highest-priority exact rule, rejects an
+equal-priority ambiguity, applies only its declared candidate/packet/disposition
+override, and marks the resulting transition `user_forced` with actor and rule
+provenance. A device's observed policy decision remains `node_plugin`.
+Counterfactual output may be compared or displayed, but cannot replace
+observed projection or serve as reachability ground truth.
+
+The packet IR, validation helpers, step request/result types, and optional hook
+are implemented in the core package. The bundled multi-node demo now evaluates
+demo-provider packet transitions for eight advanced scenarios and correlates
+them with route steps. It is not yet a production coordinator that discovers
+and invokes `resolve_forwarding_step()` at every installed member boundary.
+Architecture and examples must preserve that distinction until runtime
+orchestration is implemented.
+
 ### 8.1 Cross-node multi-path route traces
 
 An end-to-end trace is a query over a frozen multi-node reconstruction context,
-not a new topology fact. The request identifies the ingress assembly member,
-VRF and destination, temporal basis or existing `context_id`, the per-member
-topology projection and status perspective, an explicit reachability
-ground-truth policy, a completeness policy (`strict` or `best_effort`), and
-bounds for hops, branches, local candidates, and boundary matches. Reusing a
-context is preferred because it fixes member revisions, plug-in runs, local
-watermarks or absolute mappings, and federation-linker selection.
+not a new topology fact. The request identifies an immutable traffic source and
+destination, an independent forward traversal start/ingress, VRF, temporal
+basis or existing `context_id`, the per-member topology projection and status
+perspective, an explicit reachability ground-truth policy, a completeness
+policy (`strict` or `best_effort`), and bounds for hops, branches, local
+candidates, and boundary matches. The start may be a transit member where the
+packet was observed; it is not evidence that the traffic originated there.
+Reusing a context is preferred because it fixes member revisions, plug-in runs,
+local watermarks or absolute mappings, endpoint attachments, and
+federation-linker selection.
 
 The visible topology projection is a display/query scope, not a ceiling on
 node-local route evidence. A resolver may require another projection owned by
@@ -640,10 +742,11 @@ The core executes a bounded state machine:
 
 1. Resolve the immutable context and validate the selected ground-truth layer
    for every participating member.
-2. Run the core LPM and forwarding traversal over the ingress plug-in's projected
-   IR, preserving the plug-in-owned candidate membership, group semantics,
-   candidate constraints, and human-readable resolution text at that node's
-   resolved basis.
+2. Run the core LPM and forwarding traversal over the selected start member's
+   projected IR, preserving the immutable flow endpoints and the plug-in-owned
+   candidate membership, group semantics, candidate constraints, local terminal
+   classifications, and human-readable resolution text at that node's resolved
+   basis.
 3. Preserve the plug-in's explicit path-group semantics: `single_active` has at
    most one selected primary and separate standby candidates, whereas
    `all_active` contains every explicitly declared ECMP member. Equal rank or
@@ -659,13 +762,39 @@ The core executes a bounded state machine:
    than a guessed non-match. Continue local resolution on every `PERMITTED` or
    `NOT_APPLICABLE` member; retain `BLOCKED` and `UNKNOWN` policy candidates
    with their plug-in evidence.
+   The linker likewise preserves an exact compatible packet-state contract or
+   performs an explicitly declared mapping. It never adds, removes, reorders,
+   or interprets packet layers as a hidden forwarding action.
 6. Detect an end-to-end loop only when the complete canonical traversal state
    repeats, and enforce hop, recursion, branch, local-candidate, and boundary
-   budgets independently. Stop at the destination, a discard or policy-block
-   action, a cycle closure, or an incomplete boundary.
+   budgets independently. Stop when a plug-in-declared local terminal
+   classification exactly matches the direction's target endpoint attachment,
+   or at a discard or policy-block action, cycle closure, or incomplete
+   boundary. A resolved line ending at a different node is not endpoint
+   reachability.
 7. Return stable ordered paths, rejected and unresolved alternatives, coverage, and
    cross-perspective consistency findings; never collapse disagreements into a
    single apparently exact answer.
+
+For a bidirectional query, core keeps the flow pair immutable. The forward goal
+is the traffic destination. The return goal is the traffic source, and the
+default return traversal starts from a time-valid destination attachment
+declared by the participating plug-ins. It is not required to visit the forward
+start. An explicit return start is eligible for an endpoint-to-endpoint pair
+verdict only when it resolves to such a destination attachment; a mid-return
+observation is a directional trace and cannot prove the omitted prefix. Core
+classifies the pair with
+`evaluate_endpoint_reachability_pair()`: both directional goals must be reached
+for the pair to be consistent. Mirrored, asymmetric, and non-comparable node
+sequences are a separate `path_relation`; they are descriptive and do not
+change that verdict. A transit-start forward prefix and a full return path are
+`not_comparable`, because they cover different spans.
+
+For a plug-in-selected multipath set, core requires every selected active
+branch to reach the directional goal. A mixed success/failure set is
+`partial_active_reachability`, not a successful endpoint result. Unknown
+terminal or attachment evidence remains unknown instead of becoming a
+confirmed one-way failure.
 
 Every path has a stable `path_id`, a role (`primary`, `standby`, `ecmp`, or
 `alternative`), and `steps[]` in increasing `step_index`. Step identity is
@@ -675,9 +804,13 @@ clients to render and compare: local lookup, candidate selection, next-hop or
 failover evaluation, tunnel action, adjacency/egress, federation boundary, and
 remote ingress. Node plug-ins own each local step's `resolution_text`, local
 candidates, and mapping of proprietary status to selected/degraded/unusable/
-unknown. The core validates references and ordering, inserts orchestration
-envelopes, and never rewrites vendor meaning. The federation linker owns only
-boundary candidate matching and its evidence.
+unknown. The node plug-in also owns normalized endpoint attachment declarations
+and the local decision that a forwarding action delivered to one of them. The
+core validates references and ordering, inserts orchestration envelopes,
+exact-matches the declared terminal to the requested endpoint, and never
+rewrites vendor meaning. The federation linker owns inter-node boundary and
+endpoint-attachment candidate matching with evidence; it does not choose a
+node's route or infer delivery from display text.
 
 For `single_active`, only the selected primary represents the forwarding path;
 standbys are reported for failover explanation and must not be rendered as
@@ -695,6 +828,13 @@ retains both complete ordered paths. One perspective may be named ground truth
 for the query, but that choice is explicit policy and does not change the
 provenance or quality of another perspective.
 
+Directional endpoint reachability and cross-perspective consistency are
+orthogonal. `complete` means the retained observations and traversal are
+complete enough to classify; `reachable` requires an active branch whose
+plug-in-declared terminal exactly satisfies the directional endpoint goal.
+Likewise, forward/return path symmetry is never used as a proxy for
+reachability or consistency.
+
 Under `strict`, a missing required member, unsupported perspective, unaligned
 clock, unknown required status, or ambiguous/unresolved boundary prevents a
 complete path. Partial prefixes may be returned for diagnosis, but `result`
@@ -706,11 +846,13 @@ aggregate path. A best-effort path may be cached or exported only with those
 semantics intact; it is never reused as ground-truth reachability merely because
 later orchestration produced a continuous line.
 
-In the topology UI, hover or keyboard focus on a resolution step highlights
-exactly one plug-in-selected topology node or link and dims the other route
-elements. Node and link chips in the ordered path rail expose the same
-bidirectional correlation; shared endpoint resources do not broaden the focus
-to adjacent steps. A bounded hover card shows
+In the topology UI, packet source, destination, and trace start are distinct
+labels. A transit start is presented as an observation point, without drawing
+an invented source-to-start segment. Hover or keyboard focus on a resolution
+step highlights exactly one plug-in-selected topology node or link and dims the
+other route elements. Node and link chips in the ordered path rail expose the
+same bidirectional correlation; shared endpoint resources do not broaden the
+focus to adjacent steps. A bounded hover card shows
 role, result, selected ground-truth perspective, hop count, egress and
 encapsulation summary, first divergence, and uncertainty/coverage reasons.
 Single-active standby and all-active ECMP branches use distinguishable semantic
@@ -763,7 +905,10 @@ plug-in-declared source-record presentation groups.
 descriptions, and default inclusion state; each
 `SourceRecordTypeDescriptor.stream_group` references one declared group. The
 browser renders these descriptors generically and submits explicit source-type
-filters. A source-record group is only UI/query metadata: it is not a decoder
+filters. A group may also declare the safe label for a copy action, while each
+record's optional plug-in `copy_text` determines eligibility and content. A
+mixed-group selection uses the core's generic copy label. A source-record group
+is only UI/query metadata: it is not a decoder
 stream, a clock domain, or a storage partition. Names such as `ctf` and
 `external` are demo plug-in vocabulary and must never be inferred by the core
 from a source type or label.
@@ -846,13 +991,13 @@ code.
 
 ### 9.3 Frontend deployment boundary
 
-Browser source is a standalone distribution under `frontend/`; the Python
-source package contains backend and core logic only. A frontend-owned, versioned
-manifest maps public page routes to HTML files and declares the asset directory.
-The backend's generic host adapter validates that manifest, mounts only its
-assets, and can be disabled entirely for split-process development. It does not
-select page filenames, construct HTML, or expose the page directory below the
-asset mount.
+Browser source belongs to the demo distribution under `demo/frontend/`; the
+core source package and core wheel contain no backend application, page
+template, or browser asset. A frontend-owned, versioned manifest maps public
+page routes to HTML files and declares the asset directory. The demo backend's
+host adapter validates that manifest, mounts only its assets, and can be
+disabled entirely for split-process development. It does not select page
+filenames, construct HTML, or expose the page directory below the asset mount.
 
 The integrated deployment remains same-origin because the browser clients use
 root-relative, revision-scoped API URLs. A dependency-free development server
@@ -861,18 +1006,21 @@ That proxy is deployment tooling, not a plugin surface. Plugins still contribute
 only validated data and presentation descriptors; they cannot ship executable
 browser code or templates.
 
-The source distribution and wheel must both include the frontend distribution.
-An explicit `ROUTER_DUMP_FRONTEND_DIR` can select another complete build, while
+The **demo** source distribution and wheel must both include the frontend
+distribution; the core artifacts must not. An explicit
+`ROUTER_DUMP_FRONTEND_DIR` can select another complete build, while
 `ROUTER_DUMP_SERVE_FRONTEND=0` or the demo's `--api-only` option leaves only the
 backend endpoints enabled.
 
 ### 9.4 Why not a Python-only browser framework
 
-FastAPI, parsing, correlation, reconstruction, APIs, and route logic remain
-Python 3.12. A Trace Compass-like browser timeline with 100K items still needs
+Parsing, correlation, reconstruction, APIs, and route logic remain Python 3.12;
+the reference FastAPI host lives in the demo distribution rather than the core
+library. A Trace Compass-like browser timeline with 100K items still needs
 browser-native Canvas/WebGL code. Dash, Panel, or server-rendered templates can
 prototype dashboards, but they do not remove JavaScript and would make the
-custom lane interaction harder. Keep the TypeScript surface thin and domain-free.
+custom lane interaction harder. Keep the TypeScript surface thin and
+domain-free.
 
 ## 10. API surface
 

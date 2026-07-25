@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
-  "router-dump-analyzer-design>=0.1.0,<1",
+  "router-dump-analyzer-core>=0.1.0,<1",
 ]
 
 [project.entry-points."router_dump_analyzer.plugins"]

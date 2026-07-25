@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tomllib
 import unittest
+from dataclasses import asdict
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Sequence
@@ -31,8 +32,12 @@ from router_dump_analyzer.plugin_api import (  # noqa: E402
     PluginDiagnostic,
     ProbeMatchKind,
     SnapshotObservation,
+    SourceRecordEmission,
 )
 from router_dump_analyzer.plugin_validation import validate_plugin  # noqa: E402
+from router_dump_analyzer.source_record_core import (  # noqa: E402
+    project_source_record_text_selection,
+)
 
 
 ARTIFACT_ID = UUID("6e966ff4-49f2-41f4-8596-8cf18d3bb8eb")
@@ -96,6 +101,10 @@ class MinimalPluginTests(unittest.TestCase):
         self.assertEqual([item.kind for item in schema.resource_kinds], ["INTERFACE"])
         self.assertEqual(schema.resource_kinds[0].key_fields, ("ifindex",))
         self.assertEqual(schema.relationship_types, ())
+        self.assertEqual(
+            schema.source_record_groups[0].copy_action_label,
+            "Copy status rows",
+        )
 
     def test_fixture_parses_to_golden_observations(self) -> None:
         inventory = fixture_inventory()
@@ -142,6 +151,12 @@ class MinimalPluginTests(unittest.TestCase):
                 "locator": "line:2",
             },
         ]
+        observations = [
+            item for item in output if isinstance(item, SnapshotObservation)
+        ]
+        retained = [
+            item for item in output if isinstance(item, SourceRecordEmission)
+        ]
         actual = [
             {
                 "key": item.resource.parts,
@@ -151,12 +166,23 @@ class MinimalPluginTests(unittest.TestCase):
                 "condition_class": item.condition_class.value,
                 "locator": item.evidence.locator,
             }
-            for item in output
+            for item in observations
         ]
         self.assertEqual(actual, golden)
-        self.assertTrue(all(item.state.complete for item in output))
+        self.assertEqual(len(retained), 2)
+        self.assertTrue(retained[0].copy_text.startswith('{"kind":"interface"'))
+        persisted = {
+            **asdict(retained[0]),
+            "source_record_uid": "core-assigned-example-uid",
+        }
+        copied = project_source_record_text_selection(
+            [persisted],
+            [{"kind": "source", "uid": "core-assigned-example-uid"}],
+        )
+        self.assertEqual(copied["items"][0]["text"], retained[0].copy_text)
+        self.assertTrue(all(item.state.complete for item in observations))
         self.assertTrue(
-            all(item.evidence.clock_domain == DEVICE_CLOCK for item in output)
+            all(item.evidence.clock_domain == DEVICE_CLOCK for item in observations)
         )
 
     def test_missing_input_and_wrong_version_are_explicit(self) -> None:
@@ -196,11 +222,12 @@ class MinimalPluginTests(unittest.TestCase):
                 spec,
             )
         )
-        self.assertEqual(len(output), 2)
+        self.assertEqual(len(output), 3)
         self.assertIsInstance(output[0], PluginDiagnostic)
         self.assertEqual(output[0].severity, DiagnosticSeverity.ERROR)
         self.assertTrue(output[0].recoverable)
-        self.assertIsInstance(output[1], SnapshotObservation)
+        self.assertIsInstance(output[1], SourceRecordEmission)
+        self.assertIsInstance(output[2], SnapshotObservation)
 
     def test_validator_accepts_plugin_and_base_supplies_safe_noops(self) -> None:
         result = validate_plugin(plugin, inventory=fixture_inventory())

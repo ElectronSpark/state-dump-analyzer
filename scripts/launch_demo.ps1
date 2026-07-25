@@ -15,7 +15,7 @@ $MatchedEventTarget = 125000
 $ResourceTarget = 10000
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $FrontendRoot = if ([string]::IsNullOrWhiteSpace($FrontendDir)) {
-    Join-Path $RepositoryRoot "frontend"
+    Join-Path $RepositoryRoot "demo\frontend"
 }
 else {
     (Resolve-Path -LiteralPath $FrontendDir).Path
@@ -133,7 +133,7 @@ try {
     }
 
     $DemoArguments = @(
-        "-m", "router_dump_analyzer.demo_app",
+        "-m", "router_dump_analyzer_demo.app",
         "--host", $BindAddress,
         "--port", [string]$Port,
         "--frontend-dir", $FrontendRoot,
@@ -151,7 +151,7 @@ try {
     Write-Host "Loading at least $MatchedEventTarget matched events across $ResourceTarget resources."
     if ($ApiOnly) {
         Write-Host "Starting Router State Lab backend API at http://${BindAddress}:$Port"
-        Write-Host "Run 'npm --prefix frontend run serve -- --backend http://${BindAddress}:$Port' in another terminal for the split frontend."
+        Write-Host "Run 'npm --prefix demo/frontend run serve -- --backend http://${BindAddress}:$Port' in another terminal for the split frontend."
     }
     else {
         Write-Host "Starting Router State Lab at http://${BindAddress}:$Port"

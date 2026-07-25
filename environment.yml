@@ -6,3 +6,4 @@ dependencies:
   - pip>=24
   - pip:
       - -e .[test]
+      - -e ./demo[test]

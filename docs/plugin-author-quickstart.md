@@ -14,13 +14,17 @@ The example plug-in:
 2. is discoverable through `router_dump_analyzer.plugins`;
 3. recognizes one platform from a safe artifact inventory;
 4. selects one status file with explicit parser dispatch;
-5. converts each line into a typed resource observation with evidence; and
-6. passes the generic author validator and its own golden test.
+5. converts each line into a typed resource observation and a retained source
+   record with evidence;
+6. supplies a safe, optional plain-text copy projection for that source
+   record; and
+7. passes the generic author validator and its own golden test.
 
 This repository is still a design/conformance demo. The validator proves the
 plug-in-facing package and protocol shape; the main review server does not yet
 run arbitrary installed plug-ins through a production ingestion coordinator.
-Do not work around that by importing a plug-in directly from `demo_app.py`.
+Do not work around that by importing a plug-in directly from
+`router_dump_analyzer_demo.app`.
 
 ## 1. Run the known-good example
 
@@ -33,6 +37,10 @@ router-dump-plugin-validate --list
 router-dump-plugin-validate minimal_router --artifact examples/minimal_plugin/fixtures/minimal-status.jsonl --node-hint router-1 --metadata platform=minimal-router-os --metadata software_version=1
 python -m unittest discover -s examples/minimal_plugin/tests -v
 ```
+
+The first command installs only `router-dump-analyzer-core`. It does not install
+the review server or the synthetic demo plug-ins, and neither is required to
+author or validate a device plug-in.
 
 The validator must end with:
 
@@ -113,7 +121,9 @@ projection, and other semantic type that the plug-in may emit.
 
 For a first plug-in, declare one resource kind and no relationships. The example
 declares `INTERFACE`, its typed key field, safe properties, display fields, and
-normalized condition field.
+normalized condition field. It also declares one source-record group and one
+`SourceRecordTypeDescriptor(source_type="status-json")`; every emitted source
+type must appear in this static schema.
 
 Never return HTML, JavaScript, CSS, SQL, remote URLs, or layout coordinates.
 
@@ -156,7 +166,11 @@ the core performs safe materialization.
 `parse_status()` receives a quota-enforced `ArtifactReader`. Stream the file and
 yield typed outputs. Do not read an unbounded file into memory.
 
-The common status output is `SnapshotObservation`:
+The example yields two records for each accepted line. The first is a
+`SourceRecordEmission` that preserves the decoded input and evidence; the
+second is the typed `SnapshotObservation` that changes resource state.
+
+The state observation contains:
 
 - `resource`: canonical `ResourceKey`;
 - capture interval for this particular record;
@@ -164,8 +178,10 @@ The common status output is `SnapshotObservation`:
 - plug-in-normalized `condition` and `ConditionClass`;
 - `Provenance`, `Quality`, and `Evidence`.
 
-Malformed input yields a stable, namespaced `PluginDiagnostic`; it must not
-crash the entire parser.
+The source emission uses a short bounded `message` for generic hover surfaces
+and may use `copy_text` for an already-safe verbatim export. Malformed input
+yields a stable, namespaced `PluginDiagnostic`; it must not crash the entire
+parser.
 
 ## 4. Know which hooks are optional
 
@@ -241,15 +257,31 @@ Every output should point back to stable evidence such as `line:12`,
 
 Parser hooks may yield `SourceRecordEmission` for matched or unmatched input.
 The plug-in supplies decoded source semantics and an optional
-`matched_event_uid`. It does **not** assign `source_record_uid`; the core turns
-the emission into a persisted `SourceRecord` with stable identity.
+`matched_event_uid`. Use `matched_event_uids` when one decoded input contributes
+to several normalized events. It does **not** assign `source_record_uid`; the
+core turns the emission into a persisted `SourceRecord` with stable identity.
+
+Set `copy_text` only when the plug-in can provide a safe canonical plain-text
+form for an operator to copy. The plug-in must redact secrets before assigning
+it: core treats the string as opaque and will return it verbatim. This is not
+the short hover `message`, raw private payload, HTML, a template, or a browser
+callback. It must be a string, contain no NUL, and be at most 65,536 UTF-8
+bytes. The core keeps it out of ordinary log/timeline/bootstrap projections,
+resolves explicit immutable selections, and applies deduplication plus
+item/byte quotas. The host authorizes access to that endpoint; the browser owns
+selection gestures and the final Clipboard API call.
+
+A source-record group may set a 1-to-80-character `copy_action_label`, such as
+`Copy status rows`. A mixed-group selection uses a generic core label rather
+than choosing one plug-in label arbitrarily.
 
 For trace normalization:
 
 1. derive `DomainEvent.event_uid` with
    `derive_event_uid(plugin_id, parser_id, source_ref, local_discriminator)`;
 2. emit a `SourceRecordEmission` for retained input when requested;
-3. set its `matched_event_uid` when normalization succeeded; and
+3. set its `matched_event_uid` or `matched_event_uids` when normalization
+   succeeded; and
 4. keep unmatched records rather than inventing domain events.
 
 The helper uses a versioned, length-delimited SHA-256 encoding of the canonical
@@ -269,6 +301,7 @@ Put a decision in the node/device plug-in when it depends on:
 - vendor status normalization;
 - resource relationships or matching rules;
 - route-resolution text;
+- endpoint attachment or local delivery/termination meaning;
 - topology projection;
 - dashboards, table columns, labels, or icons.
 
@@ -278,10 +311,110 @@ Put mechanics in core when they apply identically to every plug-in:
 - canonical envelopes and key serialization;
 - clock fitting and temporal selector resolution;
 - interval persistence and pagination;
+- immutable flow direction, exact endpoint-goal matching, and bidirectional
+  reachability aggregation;
 - budgets, validation, authorization, and generic rendering.
 
 Cross-node matching that interprets normalized claims belongs to a separate
 federation/linker plug-in. A node plug-in stops at its local connector claim.
+
+### Route endpoints and trace starts
+
+This is optional advanced forwarding behavior; the minimal example does not
+implement it. Keep these identities separate:
+
+- the packet's immutable source and destination endpoints;
+- the forward trace start/ingress where observation begins; and
+- the target endpoint for the current direction.
+
+A start may be a transit router. Do not rewrite the packet source to that router
+and do not require return traffic to revisit it. The default reverse traversal
+starts from a declared destination attachment and targets the exact source
+endpoint. Core swaps those directional goals and aggregates the result.
+If a bidirectional request explicitly chooses a reverse start, it must be one
+of those destination attachments; an arbitrary return-side observation proves
+only the suffix it actually traverses.
+
+Your node plug-in declares normalized, time-valid endpoint attachments and
+classifies local delivery or origination using canonical resources or typed
+match references with provenance and evidence. It does not assemble a
+multi-node route. The federation/linker plug-in matches bounded attachment and
+boundary claims between members. Core exact-matches the declared terminal,
+retains attachment uncertainty and multipath coverage, and reports whether
+forward reached the destination and return reached the source. Its
+`evaluate_endpoint_reachability_pair()` helper classifies the pair after those
+typed directional endpoint results are known; it does not replace plug-in
+terminal evidence.
+All plug-in-selected active branches must reach before core reports a fully
+reachable direction. Mixed success/failure is
+`partial_active_reachability`, while incomplete evidence remains unknown.
+
+Node-sequence symmetry is only explanatory. A forward trace starting inside the
+flow and a full return trace have `path_relation=not_comparable`; that does not
+make a bidirectionally reachable flow inconsistent. Conversely, a complete
+return path that ends at the forward start but not the source endpoint is not
+successful. The executable endpoint-pair cases are in
+`tests/test_multi_node_route.py`.
+
+### Packet transformations and trace-time forwarding
+
+This is an optional advanced capability. Keep it separate from status parsing
+and follow this order:
+
+1. Implement and test `FORWARDING_PROJECTION` first so the plug-in exposes
+   stable canonical forwarding objects at a qualified perspective.
+2. Declare `FORWARDING_TRACE` only when
+   `resolve_forwarding_step(request, world)` returns a bounded,
+   node-local `ForwardingStepResult`. Do not return an end-to-end route or read
+   another assembly member.
+3. Represent the current packet with `ForwardingPacketState`. Put
+   `ForwardingPacketLayer` values outermost to innermost, give each layer a
+   stable identity within the branch, and use your own versioned contract ID
+   and typed fields. Core does not know what a label, SID, VNI, VPN, or
+   proprietary wrapper means. The layer `label` is presentation-only and is
+   excluded from equality, hashing, continuity, and structural change
+   detection.
+4. Return one `ForwardingPacketTransition` whose `before` matches the request
+   and whose `after` is the actual plug-in-declared result. Choose the
+   normalized disposition (`continue`, `deliver`, `drop`, `punt`, `replicate`,
+   or `unknown`) from device semantics and attach explanation/evidence. A
+   `continue` result is non-terminal and names its next forwarding object. Any
+   other disposition is terminal for that linear branch and supplies no next
+   object or lookup context.
+5. If size matters, declare both `ForwardingSizeObservation` and
+   `ForwardingMtuConstraint` using the same opaque `basis_contract_id`. Core
+   performs comparison only; your plug-in owns overhead, effective MTU,
+   fragmentation, PTB/ICMP behavior, and the final disposition.
+6. Have the coordinator call `validate_forwarding_step_result()` before
+   accepting the result. It checks the request step and packet-before state and
+   retains exact user steering rule/candidate coupling without interpreting
+   the candidate.
+7. Test complete continuity, incomplete packet size or policy-scope evidence,
+   exact cycle identity, and the independent step/hop/recursion budgets with
+   the helpers in `route_trace_core.py`.
+
+Do not encode push, swap, PHP, SR behavior, or decapsulation only in
+`action_label` or `resolution_text`; the before/after packet states are the
+machine-readable result. A removed outer layer with an inner layer retained is
+valid and lets core represent nested tunnels without protocol inference.
+Adding or removing that outer layer does not by itself mark every retained
+inner layer as moved; `moved` means relative order among retained layers
+changed. The structural diff's `complete` flag is false when either packet
+identity is incomplete, so an empty diff is not overstated as conclusive.
+
+`ForwardingSteeringRule` is user-supplied counterfactual input. Core
+exact-matches its target step and optional expected packet snapshot, resolves
+one highest-priority rule, and preserves actor/rule provenance. A forced
+transition must be `origin=user_forced` and must never replace observed
+reachability. Normal device policy remains `origin=node_plugin`.
+
+The public types and core helpers are executable and covered by
+`tests/test_packet_trace_core.py`. The bundled multi-node route demo also
+evaluates demo-provider transitions in eight advanced route scenarios; it is
+not yet a production coordinator that discovers and calls
+`resolve_forwarding_step()` for every installed node. See
+[Packet state, transitions, and MTU](plugin-contract.md#packet-state-transitions-and-mtu)
+for the normative rules.
 
 ### Forwarding loops and ingress-dependent policy
 
@@ -318,7 +451,9 @@ Keep a policy-blocked candidate in output with its explanation. It is an
 intentional exclusion, not a failed physical link. Test at least an exact
 scope match, a known non-match, an incomplete-scope non-match, a
 non-applicable class, an unknown class, an exact recursive or cross-node
-cycle, a legitimate changed-state revisit, and a separate hop-limit result.
+cycle, a legitimate changed-state revisit, a separate hop-limit result, a
+transit start distinct from the traffic source, and a return path that reaches
+the source without revisiting that start.
 The executable type cases are in `tests/test_plugin_api.py`; the core helper and
 end-to-end route cases are in `tests/test_multi_node_route.py`. The complete
 ownership and conformance rules are in the forwarding section of

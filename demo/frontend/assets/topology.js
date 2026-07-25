@@ -5,6 +5,14 @@ const RESOURCE_PREVIEW_LIMIT = 8;
 const MAX_ROUTE_PATHS = 64;
 const MAX_ROUTE_TABLE_ROWS = 1000;
 const ROUTE_TABLE_QUERY_LIMIT = 500;
+const MAX_PACKET_LAYERS = 256;
+const PACKET_SUMMARY_LAYER_LIMIT = 4;
+const PACKET_DETAIL_LAYER_LIMIT = 32;
+const PACKET_FIELD_PREVIEW_LIMIT = 12;
+const PACKET_VALUE_ITEM_LIMIT = 12;
+const PACKET_VALUE_DEPTH_LIMIT = 4;
+const PACKET_REFERENCE_PREVIEW_LIMIT = 6;
+const PACKET_EVIDENCE_PREVIEW_LIMIT = 6;
 const MAP_NODE_FALLBACK_WIDTH = 188;
 const MAP_NODE_FALLBACK_HEIGHT = 108;
 const MAP_COLUMN_PITCH = 235;
@@ -12,6 +20,10 @@ const MAP_ROW_PITCH = 165;
 const MAP_OUTER_PADDING = 90;
 const MAP_EDGE_CLEARANCE = 8;
 const MAP_EDGE_LANE_GAP = 18;
+const MAP_EDGE_BASE_BEND_MIN = 28;
+const MAP_EDGE_BASE_BEND_MAX = 72;
+const MAP_EDGE_BASE_BEND_RATIO = 0.16;
+const MAP_EDGE_MAX_BEND_RATIO = 0.22;
 const TOPOLOGY_ELEMENT_KEYS = Object.freeze(["subnets", "vlans", "interfaces", "subinterfaces", "lags", "external"]);
 const TOPOLOGY_ELEMENT_PRESETS = Object.freeze({
   compact: Object.freeze(["subnets", "interfaces"]),
@@ -77,6 +89,12 @@ const state = {
   routeHoverTokens: new Set(),
   routeHoverSource: "",
   routeHoverExact: false,
+  routePacketPreviewRef: "",
+  routePacketPinnedRef: "",
+  routePacketPreviewSource: "",
+  routePacketPreviewAnchor: null,
+  routePacketPinnedTrigger: null,
+  routePacketPreviewTimer: null,
   routeTableSnapshot: null,
   routeTablePending: false,
   routeTableError: "",
@@ -850,20 +868,52 @@ function normalizeQuery(raw, request, sourceMode) {
 
 function routeValueId(raw, fallback = "") {
   if (typeof raw === "string" || typeof raw === "number") return String(raw);
-  return String(raw?.scenario_id ?? raw?.source_id ?? raw?.destination_id ?? raw?.route_type ?? raw?.type_id ?? raw?.target_id ?? raw?.value ?? raw?.prefix ?? raw?.id ?? fallback);
+  return String(raw?.scenario_id ?? raw?.start_id ?? raw?.endpoint_id ?? raw?.source_id ?? raw?.destination_id ?? raw?.route_type ?? raw?.type_id ?? raw?.target_id ?? raw?.value ?? raw?.prefix ?? raw?.id ?? fallback);
 }
 
 function normalizeRouteEndpoint(raw, index, kind) {
   const endpoint = typeof raw === "object" ? raw : { value: String(raw) };
   const idField = kind === "source" ? "source_id" : "destination_id";
-  const endpointId = routeValueId(endpoint, `${kind}-${index + 1}`);
-  const value = String(endpoint?.value ?? endpoint?.prefix ?? endpoint?.address ?? endpoint?.label ?? endpointId);
+  const selectorId = String(
+    endpoint?.[idField]
+    ?? endpoint?.endpoint_id
+    ?? routeValueId(endpoint, `${kind}-${index + 1}`),
+  );
+  const canonicalEndpointId = String(endpoint?.endpoint_id ?? selectorId);
+  const value = String(endpoint?.value ?? endpoint?.prefix ?? endpoint?.address ?? endpoint?.label ?? selectorId);
   return {
     ...endpoint,
-    [idField]: endpointId,
+    endpoint_id: canonicalEndpointId,
+    [idField]: selectorId,
     value,
     label: endpoint?.label || endpoint?.display_name || value,
   };
+}
+
+function normalizeRouteStartPoint(raw, index) {
+  const point = typeof raw === "object" ? raw : { start_id: String(raw) };
+  const startId = String(point?.start_id ?? point?.id ?? point?.node_id ?? `start-${index + 1}`);
+  return {
+    ...point,
+    start_id: startId,
+    value: String(point?.value ?? point?.node_id ?? startId),
+    label: String(point?.label ?? point?.display_name ?? point?.node_id ?? startId),
+  };
+}
+
+function routeStartSelectorValue(raw) {
+  if (raw === undefined || raw === null) return "";
+  if (typeof raw !== "object") return String(raw);
+  return String(
+    raw.start_id
+    ?? raw.id
+    ?? raw.resource_id
+    ?? raw.member_id
+    ?? raw.node_id
+    ?? raw.value
+    ?? raw.label
+    ?? "",
+  );
 }
 
 function normalizeRouteCapabilities(raw) {
@@ -877,10 +927,12 @@ function normalizeRouteCapabilities(raw) {
       description: scenario?.description || scenario?.semantics || "Plug-in supplied route trace scenario",
     };
   });
-  const sources = firstArray(raw?.sources, raw?.route_sources, raw?.ingresses, raw?.source_examples)
+  const sources = firstArray(raw?.sources, raw?.route_sources, raw?.source_examples)
     .map((item, index) => normalizeRouteEndpoint(item, index, "source"));
   const destinations = firstArray(raw?.destinations, raw?.route_destinations, raw?.targets, raw?.destination_examples)
     .map((item, index) => normalizeRouteEndpoint(item, index, "destination"));
+  const startPoints = firstArray(raw?.start_points, raw?.observation_points, raw?.ingresses)
+    .map((item, index) => normalizeRouteStartPoint(item, index));
   const directionalPairs = firstArray(raw?.directional_pairs, raw?.route_pairs, raw?.endpoint_pairs).map((item, index) => ({
     ...(typeof item === "object" ? item : {}),
     pair_id: String(item?.pair_id ?? item?.id ?? `route-pair-${index + 1}`),
@@ -915,27 +967,61 @@ function normalizeRouteCapabilities(raw) {
   });
   const policies = firstArray(raw?.resolution_modes, raw?.resolution_policies, raw?.policies, raw?.missing_hop_policies)
     .map((item) => String(typeof item === "object" ? item?.mode ?? item?.policy ?? routeValueId(item) : item));
+  const steeringProfiles = firstArray(raw?.steering_profiles).map((item, index) => {
+    const profile = item && typeof item === "object" ? item : { profile_id: String(item ?? "") };
+    const profileId = String(profile?.profile_id ?? profile?.steering_profile_id ?? profile?.id ?? `steering-${index + 1}`);
+    return {
+      ...profile,
+      profile_id: profileId,
+      label: String(profile?.label ?? profile?.display_name ?? profileId),
+      description: String(profile?.description ?? profile?.reason ?? "Server-advertised counterfactual steering profile"),
+    };
+  });
   const defaults = raw?.default_request || raw?.defaults || {};
-  const defaultSource = defaults?.source;
-  const defaultDestination = defaults?.destination;
+  const defaultSource = defaults?.flow?.source ?? defaults?.source;
+  const defaultDestination = defaults?.flow?.destination ?? defaults?.destination;
+  const defaultStart = defaults?.trace_starts?.forward ?? defaults?.ingress ?? defaults?.starting_point;
   if (!sources.length && defaultSource) sources.push(normalizeRouteEndpoint(defaultSource, 0, "source"));
   if (!destinations.length && defaultDestination) destinations.push(normalizeRouteEndpoint(defaultDestination, 0, "destination"));
+  if (!startPoints.length) {
+    sources.filter((source) => source.node_id || source.member_id).forEach((source, index) => {
+      startPoints.push(normalizeRouteStartPoint({
+        start_id: `start:${source.node_id || source.member_id}`,
+        node_id: source.node_id,
+        member_id: source.member_id,
+        resource_id: source.resource_id,
+        label: `${source.label} - legacy source attachment`,
+        derivation: "legacy_source_attachment",
+      }, index));
+    });
+  }
   return {
     ...raw,
     scenarios: scenarios.length ? scenarios : [{ scenario_id: "default", label: "Default forwarding trace", description: "Default plug-in trace context" }],
     sources,
     destinations,
+    start_points: startPoints,
     directional_pairs: directionalPairs,
     route_types: routeTypes,
     vrfs,
     route_families: routeFamilies,
     policies: policies.length ? policies : ["best_effort", "strict"],
+    steering_profiles: steeringProfiles,
     default_scenario_id: String(raw?.default_scenario_id ?? defaults?.scenario_id ?? scenarios[0]?.scenario_id ?? "default"),
     default_source: String(raw?.default_source_id ?? raw?.default_source ?? defaults?.source_id
-      ?? defaultSource?.source_id ?? defaultSource?.value ?? defaultSource?.address ?? defaultSource ?? sources[0]?.source_id ?? sources[0]?.value ?? ""),
+      ?? defaultSource?.source_id ?? defaultSource?.endpoint_id ?? defaultSource?.value ?? defaultSource?.address ?? defaultSource ?? sources[0]?.source_id ?? sources[0]?.value ?? ""),
     default_destination: String(raw?.default_destination_id ?? raw?.default_destination ?? defaults?.destination_id
-      ?? defaultDestination?.value ?? defaultDestination?.prefix ?? defaultDestination?.address ?? defaultDestination ?? destinations[0]?.value ?? ""),
+      ?? defaultDestination?.destination_id ?? defaultDestination?.endpoint_id ?? defaultDestination?.value ?? defaultDestination?.prefix ?? defaultDestination?.address ?? defaultDestination ?? destinations[0]?.value ?? ""),
+    default_start: routeStartSelectorValue(
+      raw?.default_start_id
+      ?? raw?.default_start
+      ?? defaults?.start_id
+      ?? defaultStart
+      ?? startPoints[0]?.start_id
+      ?? "",
+    ),
     default_policy: String(raw?.default_resolution_policy ?? defaults?.resolution_mode ?? defaults?.resolution_policy ?? defaults?.policy ?? "best_effort"),
+    default_steering_profile: String(raw?.default_steering_profile_id ?? defaults?.steering_profile_id ?? ""),
     default_vrf: String(raw?.default_vrf_id ?? raw?.default_vrf ?? defaults?.vrf_id ?? defaults?.vrf ?? vrfs[0]?.vrf ?? "default"),
     default_route_family: String(raw?.default_route_family ?? defaults?.route_family ?? defaults?.address_family ?? routeFamilies[0]?.route_family ?? ""),
     default_route_type: String(raw?.default_route_type ?? defaults?.route_type ?? routeTypes[0]?.type_id ?? ""),
@@ -957,6 +1043,43 @@ function advertisedRouteFamily(value) {
 function advertisedVrf(value) {
   const requested = String(value || "");
   return state.routeCapabilities?.vrfs.find((item) => item.vrf === requested || item.vrf_id === requested) || null;
+}
+
+function steeringProfilesForScenario(scenario) {
+  const advertised = firstArray(state.routeCapabilities?.steering_profiles);
+  const declaredIds = firstArray(scenario?.steering_profiles).map((item) =>
+    String(typeof item === "object"
+      ? item?.profile_id ?? item?.steering_profile_id ?? item?.id ?? ""
+      : item)
+  ).filter(Boolean);
+  if (declaredIds.length) {
+    const allowed = new Set(declaredIds);
+    return advertised.filter((profile) => allowed.has(profile.profile_id));
+  }
+  const observedId = String(
+    state.routeCapabilities?.default_steering_profile || "observed"
+  );
+  return advertised.filter((profile) => profile.profile_id === observedId);
+}
+
+function renderRouteSteeringProfiles(scenario, requestedProfileId = "") {
+  const select = byId("mn-route-steering");
+  const profiles = steeringProfilesForScenario(scenario);
+  select.innerHTML = profiles.length
+    ? profiles.map((profile) =>
+      `<option value="${escapeHtml(profile.profile_id)}" title="${escapeHtml(profile.description)}">${escapeHtml(profile.label)}</option>`
+    ).join("")
+    : '<option value="">No steering override</option>';
+  const requested = String(requestedProfileId || "");
+  const fallback = String(
+    state.routeCapabilities?.default_steering_profile || ""
+  );
+  select.value = profiles.some((profile) => profile.profile_id === requested)
+    ? requested
+    : profiles.some((profile) => profile.profile_id === fallback)
+      ? fallback
+      : profiles[0]?.profile_id || "";
+  select.disabled = profiles.length <= 1;
 }
 
 function advertisedValues(values, fields = []) {
@@ -1767,6 +1890,235 @@ function normalizeRouteStep(raw, index, segments) {
   };
 }
 
+function normalizedPacketNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
+}
+
+function normalizePacketFields(raw) {
+  const entries = Array.isArray(raw)
+    ? raw.filter((entry) => Array.isArray(entry) && entry.length >= 2)
+    : raw && typeof raw === "object" ? Object.entries(raw) : [];
+  return entries.map(([name, value]) => ({
+    name: String(name),
+    value,
+  }));
+}
+
+function normalizePacketLayer(raw, index, stateId) {
+  const layer = raw && typeof raw === "object" ? raw : {};
+  const layerId = String(layer.layer_id ?? layer.id ?? `${stateId}:layer:${index + 1}`);
+  const contractId = String(layer.contract_id ?? "unknown");
+  const complete = explicitRouteBoolean(layer.complete);
+  return {
+    ...layer,
+    layer_id: layerId,
+    contract_id: contractId,
+    label: String(layer.label ?? layer.display_name ?? contractId),
+    fields: normalizePacketFields(layer.fields),
+    size_bytes: normalizedPacketNumber(layer.size_bytes),
+    complete: complete === null ? false : complete,
+  };
+}
+
+function normalizePacketSize(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const complete = explicitRouteBoolean(raw.complete);
+  return {
+    ...raw,
+    basis_contract_id: String(raw.basis_contract_id ?? "unknown"),
+    size_bytes: normalizedPacketNumber(raw.size_bytes),
+    complete: complete === null ? false : complete,
+  };
+}
+
+function normalizePacketState(raw, stateId) {
+  const packet = raw && typeof raw === "object" ? raw : {};
+  const complete = explicitRouteBoolean(packet.complete);
+  return {
+    ...packet,
+    layers: firstArray(packet.layers).slice(0, MAX_PACKET_LAYERS)
+      .map((layer, index) => normalizePacketLayer(layer, index, stateId)),
+    size: normalizePacketSize(packet.size),
+    complete: complete === null ? false : complete,
+  };
+}
+
+function normalizePacketContribution(raw, index) {
+  const contribution = raw && typeof raw === "object" ? raw : { text: String(raw ?? "") };
+  return {
+    ...contribution,
+    contribution_id: String(contribution.contribution_id ?? contribution.id ?? `contribution-${index + 1}`),
+    phase: String(contribution.phase ?? "resolution"),
+    text: String(contribution.text ?? contribution.description ?? contribution.message ?? ""),
+    quality: String(contribution.quality ?? "unknown"),
+    resource_references: firstArray(contribution.resource_references, contribution.resource_refs),
+    topology_references: firstArray(contribution.topology_references),
+    evidence: firstArray(contribution.evidence),
+  };
+}
+
+function packetResourceReferenceTokens(raw) {
+  const resource = raw?.resource ?? raw?.resource_ref ?? raw;
+  if (!resource || typeof resource !== "object") return [];
+  const typedResourceKey = resource.namespace && resource.node
+    && resource.layer && resource.kind;
+  const tokens = new Set(
+    typedResourceKey ? [] : refRouteTokens(refIdentity(resource))
+  );
+  const nodeId = resource.node ?? resource.node_id;
+  if (nodeId) tokens.add(`node:${nodeId}`);
+  return [...tokens];
+}
+
+function packetTopologyReferenceTokens(raw) {
+  const reference = raw && typeof raw === "object" ? raw : {};
+  if (reference.resource) return packetResourceReferenceTokens(reference.resource);
+  return firstArray(reference.match?.resolved_candidates)
+    .flatMap(packetResourceReferenceTokens);
+}
+
+function packetTransitionRef(pathId, stepId, transitionId) {
+  return JSON.stringify([String(pathId), String(stepId), String(transitionId)]);
+}
+
+function normalizePacketTransitionEvaluation(raw, index, pathId, steps, segments) {
+  const evaluation = raw && typeof raw === "object" ? raw : {};
+  const transitionRaw = evaluation.transition && typeof evaluation.transition === "object"
+    ? evaluation.transition : {};
+  const sourceStepId = String(transitionRaw.step_id ?? evaluation.step_id ?? `packet-step-${index + 1}`);
+  const transitionId = String(transitionRaw.transition_id ?? evaluation.transition_id ?? `${sourceStepId}:transition`);
+  const explicitSegmentId = String(
+    evaluation.segment_id ?? transitionRaw.segment_id ?? ""
+  );
+  const step = steps.find((candidate) =>
+    candidate.step_id === sourceStepId
+    || candidate.segment_id === sourceStepId
+    || (explicitSegmentId && candidate.segment_id === explicitSegmentId)
+  ) || null;
+  const stepId = String(step?.step_id || sourceStepId);
+  const segment = segments.find((candidate) =>
+    candidate.segment_id === explicitSegmentId
+    || candidate.segment_id === step?.segment_id
+    || candidate.segment_id === sourceStepId
+  ) || null;
+  const contributions = firstArray(transitionRaw.contributions, evaluation.contributions)
+    .map(normalizePacketContribution);
+  const contributionTokens = contributions.flatMap((contribution) =>
+    [
+      ...contribution.resource_references.flatMap(packetResourceReferenceTokens),
+      ...contribution.topology_references.flatMap(packetTopologyReferenceTokens),
+    ]
+  );
+  const contributionTargets = contributions.flatMap((contribution) =>
+    firstArray(contribution.highlight_target_ids, contribution.interaction_target_ids).map(String)
+  );
+  const explicitTargets = firstArray(
+    evaluation.highlight_target_ids,
+    transitionRaw.highlight_target_ids,
+  ).map(String);
+  const componentTokens = new Set([
+    ...(step?.component_tokens || []),
+    ...routeTokensFor(evaluation, segment),
+    ...routeTokensFor(transitionRaw, segment),
+    ...contributionTokens,
+    `packet-transition:${transitionId}`,
+    `packet-step:${stepId}`,
+    ...(sourceStepId === stepId ? [] : [`packet-step:${sourceStepId}`]),
+  ]);
+  const diffRaw = evaluation.diff && typeof evaluation.diff === "object" ? evaluation.diff : {};
+  const mtuRaw = evaluation.mtu && typeof evaluation.mtu === "object" ? evaluation.mtu : {};
+  const mtuConstraintRaw = transitionRaw.mtu_constraint
+    && typeof transitionRaw.mtu_constraint === "object"
+    ? transitionRaw.mtu_constraint : null;
+  const transition = {
+    ...transitionRaw,
+    transition_id: transitionId,
+    step_id: stepId,
+    before: normalizePacketState(transitionRaw.before, `${transitionId}:before`),
+    after: normalizePacketState(transitionRaw.after, `${transitionId}:after`),
+    action_contract_id: String(transitionRaw.action_contract_id ?? "unknown"),
+    action_label: String(transitionRaw.action_label ?? "Packet transition"),
+    disposition: firstRouteEnum(transitionRaw.disposition) || "unknown",
+    origin: firstRouteEnum(transitionRaw.origin) || "unknown",
+    actor_id: String(transitionRaw.actor_id ?? "unknown"),
+    forced_rule_id: transitionRaw.forced_rule_id === null || transitionRaw.forced_rule_id === undefined
+      ? null : String(transitionRaw.forced_rule_id),
+    mtu_constraint: mtuConstraintRaw ? {
+      ...mtuConstraintRaw,
+      basis_contract_id: String(mtuConstraintRaw.basis_contract_id ?? "unknown"),
+      limit_bytes: normalizedPacketNumber(mtuConstraintRaw.limit_bytes),
+      complete: explicitRouteBoolean(mtuConstraintRaw.complete) === true,
+      resource: mtuConstraintRaw.resource && typeof mtuConstraintRaw.resource === "object"
+        ? mtuConstraintRaw.resource : null,
+    } : null,
+    contributions,
+  };
+  return {
+    ...evaluation,
+    packet_ref: packetTransitionRef(pathId, stepId, transitionId),
+    path_id: pathId,
+    step_id: stepId,
+    source_step_id: sourceStepId,
+    segment_id: segment?.segment_id || explicitSegmentId || null,
+    transition,
+    diff: {
+      ...diffRaw,
+      added_layer_ids: firstArray(diffRaw.added_layer_ids).map(String),
+      removed_layer_ids: firstArray(diffRaw.removed_layer_ids).map(String),
+      changed_layer_ids: firstArray(diffRaw.changed_layer_ids).map(String),
+      moved_layer_ids: firstArray(diffRaw.moved_layer_ids).map(String),
+      complete: explicitRouteBoolean(diffRaw.complete),
+    },
+    mtu: {
+      ...mtuRaw,
+      outcome: firstRouteEnum(mtuRaw.outcome) || "not_declared",
+      size_bytes: normalizedPacketNumber(mtuRaw.size_bytes),
+      limit_bytes: normalizedPacketNumber(mtuRaw.limit_bytes),
+      excess_bytes: normalizedPacketNumber(mtuRaw.excess_bytes),
+      basis_contract_id: mtuRaw.basis_contract_id === null || mtuRaw.basis_contract_id === undefined
+        ? null : String(mtuRaw.basis_contract_id),
+    },
+    counterfactual: explicitRouteBoolean(evaluation.counterfactual) === true
+      || transition.origin === "user_forced",
+    continuity_valid: explicitRouteBoolean(evaluation.continuity_valid),
+    component_tokens: [...componentTokens],
+    highlight_target_ids: [...new Set([
+      ...explicitTargets,
+      ...contributionTargets,
+      ...(step?.highlight_target_ids || []),
+    ])],
+  };
+}
+
+function normalizePacketTrace(raw, pathId, steps, segments) {
+  if (!raw || typeof raw !== "object") return null;
+  const transitions = firstArray(raw.transitions).map((evaluation, index) =>
+    normalizePacketTransitionEvaluation(evaluation, index, pathId, steps, segments)
+  );
+  for (const evaluation of transitions) {
+    const step = steps.find((candidate) => candidate.step_id === evaluation.step_id);
+    if (step) {
+      step.packet_refs = [...new Set([...(step.packet_refs || []), evaluation.packet_ref])];
+    }
+    const segment = segments.find((candidate) => candidate.segment_id === evaluation.segment_id);
+    if (segment) {
+      segment.packet_refs = [...new Set([...(segment.packet_refs || []), evaluation.packet_ref])];
+    }
+  }
+  const continuityComplete = explicitRouteBoolean(raw.continuity_complete);
+  const counterfactual = explicitRouteBoolean(raw.counterfactual);
+  return {
+    ...raw,
+    initial_state: normalizePacketState(raw.initial_state, `${pathId}:initial`),
+    outcome: firstRouteEnum(raw.outcome) || "unknown",
+    continuity_complete: continuityComplete === null ? false : continuityComplete,
+    counterfactual: counterfactual === true || transitions.some((evaluation) => evaluation.counterfactual),
+    transitions,
+  };
+}
+
 function normalizeRoutePath(raw, index, nodes) {
   const pathId = String(raw?.path_id ?? raw?.route_id ?? raw?.id ?? `path-${index + 1}`);
   const segments = firstArray(raw?.segments, raw?.hops, raw?.edges).map((segment, segmentIndex) =>
@@ -1850,6 +2202,7 @@ function normalizeRoutePath(raw, index, nodes) {
         ?? ""),
     }
     : null;
+  const packetTrace = normalizePacketTrace(raw?.packet_trace, pathId, steps, segments);
   return {
     ...raw,
     path_id: pathId,
@@ -1872,6 +2225,7 @@ function normalizeRoutePath(raw, index, nodes) {
     policy_decisions: policyDecisions,
     graph_target_ids: graphTargetIds,
     presentation_layers: presentationLayers,
+    packet_trace: packetTrace,
     segments,
     steps,
   };
@@ -2174,7 +2528,9 @@ function routeEndpointDescriptor(kind) {
 function routeEndpointMatch(kind, rawValue) {
   const value = String(rawValue ?? "");
   const { values, idField } = routeEndpointDescriptor(kind);
-  const canonical = values.find((item) => item[idField] === value);
+  const canonical = values.find((item) =>
+    item[idField] === value || item.endpoint_id === value
+  );
   if (canonical) return canonical;
   const displayMatches = values.filter((item) => routeEndpointDisplayValue(kind, item) === value);
   if (displayMatches.length === 1) return displayMatches[0];
@@ -2238,11 +2594,128 @@ function selectedRouteEndpoint(kind) {
   return routeEndpointMatch(kind, input.value.trim());
 }
 
-function endpointRepresentsRouter(endpoint) {
-  if (!endpoint) return false;
-  if (endpoint.route_participant === true) return true;
-  if (endpoint.route_participant === false) return false;
-  return /router|loopback|device|node/i.test(`${endpoint.kind || ""} ${endpoint.role || ""}`);
+function routeStartMatch(rawValue) {
+  const value = String(rawValue ?? "");
+  const points = state.routeCapabilities?.start_points || [];
+  const exactIds = points.filter((item) => item.start_id === value);
+  if (exactIds.length === 1) return exactIds[0];
+  const matches = points.filter((item) =>
+    item.label === value
+    || item.value === value
+    || item.node_id === value
+    || item.member_id === value
+    || item.resource_id === value
+  );
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function advertisedRouteStart(raw, fallbackNodeId = "") {
+  const points = state.routeCapabilities?.start_points || [];
+  if (raw !== undefined && raw !== null && typeof raw !== "object") {
+    const direct = routeStartMatch(raw);
+    if (direct) return direct;
+  }
+  if (raw && typeof raw === "object") {
+    const startId = routeStartSelectorValue({ start_id: raw.start_id ?? raw.id });
+    if (startId) {
+      const exact = points.filter((item) => item.start_id === startId);
+      if (exact.length === 1) return exact[0];
+    }
+    const identities = ["resource_id", "member_id", "node_id"]
+      .filter((field) => raw[field] !== undefined && raw[field] !== null && String(raw[field]) !== "");
+    if (identities.length) {
+      const matches = points.filter((item) =>
+        identities.every((field) => String(item[field] ?? "") === String(raw[field]))
+      );
+      if (matches.length === 1) return matches[0];
+    }
+    const displayValue = raw.value ?? raw.label;
+    if (displayValue !== undefined) {
+      const displayMatch = routeStartMatch(displayValue);
+      if (displayMatch) return displayMatch;
+    }
+  }
+  if (fallbackNodeId) {
+    const nodeMatches = points.filter((item) => item.node_id === fallbackNodeId);
+    if (nodeMatches.length === 1) return nodeMatches[0];
+  }
+  return null;
+}
+
+function routeStartSeedValue(raw, fallbackNodeId = "") {
+  const advertised = advertisedRouteStart(raw, fallbackNodeId);
+  if (advertised) return advertised.start_id;
+  if (raw && typeof raw === "object") return routeStartSelectorValue(raw);
+  if (raw !== undefined && raw !== null) return String(raw);
+  return "";
+}
+
+function routeStartDisplayValue(point) {
+  if (!point) return "";
+  const label = String(point.label || point.node_id || point.start_id);
+  const duplicates = (state.routeCapabilities?.start_points || [])
+    .filter((item) => String(item.label || item.node_id || item.start_id) === label);
+  return duplicates.length > 1 ? `${label} (${point.start_id})` : label;
+}
+
+function setRouteStartInput(rawValue) {
+  const input = byId("mn-route-start");
+  const match = routeStartMatch(rawValue);
+  const display = match ? routeStartDisplayValue(match) : String(rawValue ?? "");
+  input.value = display;
+  if (match) {
+    input.dataset.startId = match.start_id;
+    input.dataset.startDisplay = display;
+  } else {
+    delete input.dataset.startId;
+    delete input.dataset.startDisplay;
+  }
+}
+
+function refreshRouteStartIdentity() {
+  setRouteStartInput(byId("mn-route-start").value.trim());
+}
+
+function selectedRouteStart() {
+  const input = byId("mn-route-start");
+  if (input.dataset.startId && input.value.trim() === input.dataset.startDisplay) {
+    return state.routeCapabilities?.start_points.find(
+      (item) => item.start_id === input.dataset.startId
+    ) || null;
+  }
+  return routeStartMatch(input.value.trim());
+}
+
+function routeStartRequestValue() {
+  const input = byId("mn-route-start");
+  if (input.dataset.startId && input.value.trim() === input.dataset.startDisplay) {
+    return input.dataset.startId;
+  }
+  return input.value.trim();
+}
+
+function sameCanonicalRouteEndpoint(source, destination) {
+  const sourceId = String(source?.endpoint_id ?? "");
+  const destinationId = String(destination?.endpoint_id ?? "");
+  return Boolean(sourceId && destinationId && sourceId === destinationId);
+}
+
+function routeUsesForwardStart() {
+  return byId("mn-route-validation")?.value !== "reverse";
+}
+
+function syncRouteStartControlState() {
+  const input = byId("mn-route-start");
+  const field = byId("mn-route-start-field");
+  const help = byId("mn-route-start-help");
+  if (!input || !field || !help) return;
+  const used = routeUsesForwardStart();
+  input.disabled = !state.routeCapabilities || !used;
+  field.classList.toggle("is-unused", !used);
+  field.setAttribute("data-route-start-usage", used ? "used" : "unused");
+  help.textContent = used
+    ? "Forward observation/lookup node; it may be a transit node"
+    : "Not used for return-only tracing; return starts at the destination side";
 }
 
 function routeEndpointScopeIssue(source, destination) {
@@ -2254,29 +2727,42 @@ function routeEndpointScopeIssue(source, destination) {
   return `The endpoint ${labels.join(" / ")} is outside the reconstructed device set. Select its device and reconstruct before tracing.`;
 }
 
+function routeStartScopeIssue(start) {
+  if (!start?.node_id && !start?.member_id) return "";
+  const selectedIds = new Set(selectedResultNodes()
+    .flatMap((node) => [node.node_id, node.member_id]).filter(Boolean));
+  if (selectedIds.has(start.node_id) || selectedIds.has(start.member_id)) return "";
+  return `The trace start ${start.label || start.node_id || start.member_id} is outside the reconstructed device set. Select its device and reconstruct before tracing.`;
+}
+
 function buildRouteTraceRequest() {
   if (!state.routeCapabilities) throw new Error(state.routeCapabilityError || "The route tracer is unavailable.");
   if (!state.query?.request) throw new Error("Reconstruct the topology before tracing a route.");
   const scenario = selectedRouteScenario();
   const sourceValue = byId("mn-route-source").value.trim();
   const destination = byId("mn-route-destination").value.trim();
+  const startValue = byId("mn-route-start").value.trim();
   const vrfValue = byId("mn-route-vrf").value.trim();
   const familyValue = byId("mn-route-family").value;
   const routeType = byId("mn-route-type").value;
+  const steeringProfileId = byId("mn-route-steering").value;
+  const requestedDirection = byId("mn-route-validation").value;
+  const direction = requestedDirection === "bidirectional" ? "both" : requestedDirection;
+  const usesForwardStart = direction !== "reverse";
   if (!scenario) throw new Error("Choose a route trace scenario.");
   if (!sourceValue) throw new Error("Choose a route source.");
   if (!destination) throw new Error("Enter a destination to trace.");
+  if (usesForwardStart && !startValue) throw new Error("Choose where forward tracing starts.");
   const sourceCapability = selectedRouteEndpoint("source");
   const destinationCapability = selectedRouteEndpoint("destination");
+  const startCapability = usesForwardStart ? selectedRouteStart() : null;
   const scopeIssue = routeEndpointScopeIssue(sourceCapability, destinationCapability);
   if (scopeIssue) throw new Error(scopeIssue);
-  if (sourceCapability?.node_id && destinationCapability?.node_id
-    && sourceCapability.node_id === destinationCapability.node_id
-    && endpointRepresentsRouter(destinationCapability)) {
-    throw new Error("Choose different source and destination routers for an end-to-end validation.");
+  const startScopeIssue = usesForwardStart ? routeStartScopeIssue(startCapability) : "";
+  if (startScopeIssue) throw new Error(startScopeIssue);
+  if (sameCanonicalRouteEndpoint(sourceCapability, destinationCapability)) {
+    throw new Error("Choose different traffic source and destination endpoints for an end-to-end validation.");
   }
-  const requestedDirection = byId("mn-route-validation").value;
-  const direction = requestedDirection === "bidirectional" ? "both" : requestedDirection;
   const familyCapability = state.routeCapabilities.route_families.find((family) =>
     family.route_family === familyValue || family.address_family === familyValue
   );
@@ -2297,6 +2783,10 @@ function buildRouteTraceRequest() {
     scenario_id: scenario.scenario_id,
     source: sourceCapability || { kind: "plugin_owned", value: sourceValue },
     destination: destinationCapability || { kind: destination.includes("/") ? "ip_prefix" : "plugin_owned", value: destination },
+    flow: {
+      source: sourceCapability || { kind: "plugin_owned", value: sourceValue },
+      destination: destinationCapability || { kind: destination.includes("/") ? "ip_prefix" : "plugin_owned", value: destination },
+    },
     direction,
     resolution_mode: byId("mn-route-policy").value,
     basis: state.query.request.basis,
@@ -2306,6 +2796,11 @@ function buildRouteTraceRequest() {
     include_route_resolution: true,
     max_paths: MAX_ROUTE_PATHS,
   };
+  if (usesForwardStart) {
+    const forwardStart = startCapability || { start_id: startValue, value: startValue };
+    request.ingress = forwardStart;
+    request.trace_starts = { forward: forwardStart };
+  }
   if (sourceCapability?.source_id) request.source_id = sourceCapability.source_id;
   if (destinationCapability?.destination_id) request.destination_id = destinationCapability.destination_id;
   if (vrfValue) {
@@ -2317,6 +2812,7 @@ function buildRouteTraceRequest() {
     request.address_family = familyCapability?.address_family || familyValue;
   }
   if (routeType) request.route_type = routeType;
+  if (steeringProfileId) request.steering_profile_id = steeringProfileId;
   if (state.focusedRouteEntryRef) {
     request.route_table_context_id = state.routeTableSnapshot?.route_table_context_id || null;
     request.route_entry_ref = state.focusedRouteEntryRef;
@@ -2823,6 +3319,537 @@ function bindRouteCorrelationElements(scope = document) {
   applyRouteHighlights();
 }
 
+function packetTransitionsForPath(path) {
+  return firstArray(path?.packet_trace?.transitions);
+}
+
+function routePacketEvaluationByRef(packetRef) {
+  if (!packetRef) return null;
+  for (const path of state.routeTrace?.paths || []) {
+    const evaluation = packetTransitionsForPath(path).find((item) => item.packet_ref === packetRef);
+    if (evaluation) return evaluation;
+  }
+  return null;
+}
+
+function routePacketPathForEvaluation(evaluation) {
+  return state.routeTrace?.paths.find((path) => path.path_id === evaluation?.path_id) || null;
+}
+
+function routePacketContext(evaluation) {
+  const path = routePacketPathForEvaluation(evaluation);
+  const step = path?.steps.find((candidate) => candidate.step_id === evaluation?.step_id) || null;
+  const segment = path?.segments.find((candidate) => candidate.segment_id === evaluation?.segment_id) || null;
+  const source = segment ? nodeLabelForRef(segment.source) : "";
+  const target = segment ? nodeLabelForRef(segment.target) : "";
+  const location = source && target && source !== target ? `${source} → ${target}` : source || target || `Step ${evaluation?.step_id || "unknown"}`;
+  return { path, step, segment, location };
+}
+
+function packetRefsAttribute(refs) {
+  return escapeHtml(JSON.stringify([...new Set(refs || [])]));
+}
+
+function readRoutePacketRefs(element) {
+  if (element?.dataset?.routePacketRef) return [element.dataset.routePacketRef];
+  try {
+    const refs = JSON.parse(element?.dataset?.routePacketRefs || "[]");
+    return Array.isArray(refs) ? refs.map(String) : [];
+  } catch (_error) {
+    return [];
+  }
+}
+
+function packetRefsForRouteNode(path, node) {
+  if (!path || !node) return [];
+  return packetTransitionsForPath(path).filter((evaluation) => {
+    const segment = path.segments.find((candidate) => candidate.segment_id === evaluation.segment_id);
+    if (!segment) return false;
+    if (node.route_occurrence_id) {
+      return [segment.source_occurrence_id, segment.target_occurrence_id].includes(node.route_occurrence_id);
+    }
+    return sameRouteRef(segment.source, node) || sameRouteRef(segment.target, node);
+  }).map((evaluation) => evaluation.packet_ref);
+}
+
+function packetValueText(value, depth = 0) {
+  if (value === null) return "null";
+  if (value === undefined) return "unknown";
+  if (typeof value !== "object") return String(value);
+  if (depth >= PACKET_VALUE_DEPTH_LIMIT) return "…";
+  if (Array.isArray(value)) {
+    const shown = value.slice(0, PACKET_VALUE_ITEM_LIMIT)
+      .map((item) => packetValueText(item, depth + 1));
+    if (value.length > PACKET_VALUE_ITEM_LIMIT) shown.push(`+${value.length - PACKET_VALUE_ITEM_LIMIT} more`);
+    return `[${shown.join(", ")}]`;
+  }
+  const entries = Object.entries(value);
+  const shown = entries.slice(0, PACKET_VALUE_ITEM_LIMIT)
+    .map(([key, item]) => `${key}=${packetValueText(item, depth + 1)}`);
+  if (entries.length > PACKET_VALUE_ITEM_LIMIT) shown.push(`+${entries.length - PACKET_VALUE_ITEM_LIMIT} more`);
+  return `{${shown.join(", ")}}`;
+}
+
+function packetResourceReferenceText(raw) {
+  const resource = raw?.resource ?? raw?.resource_ref ?? raw;
+  if (!resource || typeof resource !== "object") return String(resource ?? "unknown resource");
+  const typedResourceKey = resource.namespace && resource.node
+    && resource.layer && resource.kind;
+  if (typedResourceKey) {
+    const parts = Array.isArray(resource.parts)
+      ? resource.parts.map((part) => {
+        if (Array.isArray(part)) return `${part[0]}=${packetValueText(part[1])}`;
+        return `${part?.name ?? "part"}=${packetValueText(part?.value)}`;
+      })
+      : Object.entries(resource.parts || {}).map(([name, value]) =>
+        `${name}=${packetValueText(value)}`
+      );
+    return [
+      resource.node,
+      `${resource.namespace}/${resource.layer}/${resource.kind}`,
+      parts.join(", "),
+    ].filter(Boolean).join(" · ");
+  }
+  return String(
+    resource.label
+    ?? resource.display_name
+    ?? resource.resource_id
+    ?? resource.local_resource_id
+    ?? resource.node_id
+    ?? "unknown resource"
+  );
+}
+
+function packetTopologyReferenceText(raw) {
+  const reference = raw && typeof raw === "object" ? raw : {};
+  if (reference.resource) return packetResourceReferenceText(reference.resource);
+  const match = reference.match;
+  if (!match || typeof match !== "object") return "unknown topology reference";
+  const candidateCount = firstArray(match.resolved_candidates).length;
+  const suffix = candidateCount
+    ? ` · ${candidateCount} resolved candidate${candidateCount === 1 ? "" : "s"}`
+    : "";
+  return `${match.matcher_id || "plug-in matcher"} · ${packetValueText(match.arguments || {})}${suffix}`;
+}
+
+function packetEvidenceText(raw) {
+  const evidence = raw && typeof raw === "object" ? raw : {};
+  const artifact = evidence.artifact_id ? `artifact ${evidence.artifact_id}` : "artifact unknown";
+  const locator = evidence.locator ? ` · ${evidence.locator}` : "";
+  const clock = evidence.clock_domain ? ` · clock ${evidence.clock_domain}` : "";
+  return `${artifact}${locator}${clock}`;
+}
+
+function packetStateSummary(packet) {
+  const labels = firstArray(packet?.layers).slice(0, PACKET_SUMMARY_LAYER_LIMIT)
+    .map((layer) => layer.label);
+  if ((packet?.layers?.length || 0) > PACKET_SUMMARY_LAYER_LIMIT) {
+    labels.push(`+${packet.layers.length - PACKET_SUMMARY_LAYER_LIMIT} more`);
+  }
+  return labels.join(" › ") || "No declared layers";
+}
+
+function packetSizeLabel(packet) {
+  const size = packet?.size?.size_bytes;
+  return size === null || size === undefined ? "size unknown" : `${formatInteger(size)} B`;
+}
+
+function packetDiffCount(evaluation) {
+  const diff = evaluation?.diff || {};
+  const changed = firstArray(
+    diff.added_layer_ids,
+    diff.removed_layer_ids,
+    diff.changed_layer_ids,
+    diff.moved_layer_ids,
+  ).length;
+  if (changed) {
+    const summary = [
+      `+${diff.added_layer_ids?.length || 0}`,
+      `−${diff.removed_layer_ids?.length || 0}`,
+      `~${diff.changed_layer_ids?.length || 0}`,
+      `↕${diff.moved_layer_ids?.length || 0}`,
+    ].join(" ");
+    return diff.complete === true ? summary : `${summary} · partial diff`;
+  }
+  if (diff.complete === true) return "no declared layer change";
+  if (diff.complete === false) return "partial diff · no-change unproven";
+  return "diff completeness unknown";
+}
+
+function packetMtuLabel(mtu, compact = false) {
+  const outcome = normalizedRouteEnum(mtu?.outcome) || "not_declared";
+  if (outcome === "fits") {
+    return compact ? "MTU fits" : `${formatInteger(mtu.size_bytes)} B fits ${formatInteger(mtu.limit_bytes)} B MTU`;
+  }
+  if (outcome === "exceeds") {
+    return compact ? "MTU exceeded" : `${formatInteger(mtu.size_bytes)} B exceeds ${formatInteger(mtu.limit_bytes)} B MTU by ${formatInteger(mtu.excess_bytes)} B`;
+  }
+  if (outcome === "unknown_basis_mismatch") return "MTU basis differs";
+  if (outcome === "unknown") return "MTU comparison unknown";
+  return "MTU not declared";
+}
+
+function packetTransitionClasses(evaluation) {
+  const classes = [];
+  if (evaluation?.counterfactual) classes.push("is-counterfactual");
+  if (evaluation?.transition?.disposition === "drop") classes.push("is-drop");
+  if (evaluation?.transition?.disposition === "deliver") classes.push("is-deliver");
+  if (evaluation?.mtu?.outcome === "exceeds") classes.push("is-mtu-exceeds");
+  if (evaluation?.continuity_valid === false) classes.push("is-continuity-gap");
+  if (evaluation?.diff?.complete !== true) classes.push("is-incomplete");
+  if (evaluation?.transition?.before?.complete === false || evaluation?.transition?.after?.complete === false) {
+    classes.push("is-incomplete");
+  }
+  return classes;
+}
+
+function packetLayerClasses(evaluation, layerId, side) {
+  const diff = evaluation?.diff || {};
+  const classes = [];
+  if (side === "before" && diff.removed_layer_ids?.includes(layerId)) classes.push("is-removed");
+  if (side === "after" && diff.added_layer_ids?.includes(layerId)) classes.push("is-added");
+  if (diff.changed_layer_ids?.includes(layerId)) classes.push("is-changed");
+  if (diff.moved_layer_ids?.includes(layerId)) classes.push("is-moved");
+  return classes.join(" ");
+}
+
+function packetStateMarkup(evaluation, packet, side, title) {
+  const layers = firstArray(packet?.layers);
+  const visibleLayers = layers.slice(0, PACKET_DETAIL_LAYER_LIMIT);
+  const layerMarkup = visibleLayers.map((layer, index) => {
+    const visibleFields = layer.fields.slice(0, PACKET_FIELD_PREVIEW_LIMIT);
+    const fields = visibleFields.map((field) =>
+      `<div><dt>${escapeHtml(field.name)}</dt><dd><code>${escapeHtml(packetValueText(field.value))}</code></dd></div>`
+    ).join("");
+    const hiddenFields = layer.fields.length - visibleFields.length;
+    return `<li class="mn-route-packet-layer ${packetLayerClasses(evaluation, layer.layer_id, side)}${layer.complete ? "" : " is-incomplete"}" data-packet-layer-id="${escapeHtml(layer.layer_id)}">
+      <header><span>${index === 0 ? "OUTER" : index === layers.length - 1 ? "INNER" : index + 1}</span><strong>${escapeHtml(layer.label)}</strong>${layer.size_bytes === null ? "" : `<small>${formatInteger(layer.size_bytes)} B</small>`}</header>
+      <code class="mn-route-packet-contract">${escapeHtml(layer.contract_id)}</code>
+      ${fields ? `<dl>${fields}</dl>` : '<p>No declared fields</p>'}
+      ${hiddenFields > 0 ? `<small class="mn-route-packet-more">+${formatInteger(hiddenFields)} more fields</small>` : ""}
+      ${layer.complete ? "" : '<small class="mn-route-packet-incomplete">Layer snapshot is incomplete</small>'}
+    </li>`;
+  }).join("");
+  const hiddenLayers = layers.length - visibleLayers.length;
+  return `<section class="mn-route-packet-state is-${side}">
+    <header><div><span>${escapeHtml(title)}</span><strong>${escapeHtml(packetStateSummary(packet))}</strong></div><small>${escapeHtml(packetSizeLabel(packet))}</small></header>
+    <ol class="mn-route-packet-stack">${layerMarkup || '<li class="mn-route-packet-layer is-empty">No packet layers were declared.</li>'}</ol>
+    ${hiddenLayers > 0 ? `<p class="mn-route-packet-more">+${formatInteger(hiddenLayers)} additional layers omitted from this bounded browser view</p>` : ""}
+    ${packet?.complete ? "" : '<p class="mn-route-packet-incomplete">Packet snapshot is incomplete; an empty diff does not prove unchanged state.</p>'}
+  </section>`;
+}
+
+function packetDiffMarkup(evaluation) {
+  const diff = evaluation?.diff || {};
+  const rows = [
+    ["Added", diff.added_layer_ids],
+    ["Removed", diff.removed_layer_ids],
+    ["Changed", diff.changed_layer_ids],
+    ["Moved", diff.moved_layer_ids],
+  ].filter(([, ids]) => ids?.length);
+  const completeness = diff.complete === true
+    ? ""
+    : `<p class="mn-route-packet-incomplete">${diff.complete === false
+      ? "Structural diff is partial; omitted changes remain possible."
+      : "Structural diff completeness was not declared."}</p>`;
+  return `<section class="mn-route-packet-changes${diff.complete === true ? "" : " is-incomplete"}">
+    <header><span>STRUCTURAL DIFF</span><strong>${escapeHtml(packetDiffCount(evaluation))}</strong></header>
+    ${rows.length ? `<dl>${rows.map(([label, ids]) =>
+      `<div><dt>${escapeHtml(label)}</dt><dd>${ids.map((id) => `<code>${escapeHtml(id)}</code>`).join("")}</dd></div>`
+    ).join("")}</dl>` : `<p>${diff.complete === true
+      ? "No layer identity, ordering, or value changes were declared."
+      : "No structural difference was declared; an unchanged conclusion is not supported."}</p>`}
+    ${completeness}
+  </section>`;
+}
+
+function packetContributionsMarkup(evaluation) {
+  const contributions = evaluation?.transition?.contributions || [];
+  if (!contributions.length) return '<p class="mn-route-packet-no-evidence">No additional resolution contribution was returned.</p>';
+  return `<ol class="mn-route-packet-contributions">${contributions.map((contribution) => {
+    const references = [
+      ...contribution.resource_references.map(packetResourceReferenceText),
+      ...contribution.topology_references.map(packetTopologyReferenceText),
+    ];
+    const visibleReferences = references.slice(0, PACKET_REFERENCE_PREVIEW_LIMIT);
+    const hiddenReferences = references.length - visibleReferences.length;
+    const evidence = contribution.evidence.map(packetEvidenceText);
+    const visibleEvidence = evidence.slice(0, PACKET_EVIDENCE_PREVIEW_LIMIT);
+    const hiddenEvidence = evidence.length - visibleEvidence.length;
+    return `<li>
+      <span>${escapeHtml(titleCase(contribution.phase))}</span>
+      <p>${escapeHtml(contribution.text)}</p>
+      <small>${escapeHtml(`${titleCase(contribution.quality)} · ${references.length} reference${references.length === 1 ? "" : "s"} · ${evidence.length} evidence item${evidence.length === 1 ? "" : "s"}`)}</small>
+      ${visibleReferences.length ? `<div class="mn-route-packet-reference-list" aria-label="Contribution resource and topology references">${visibleReferences.map((reference) => `<code>${escapeHtml(reference)}</code>`).join("")}${hiddenReferences > 0 ? `<i>+${formatInteger(hiddenReferences)} more references</i>` : ""}</div>` : ""}
+      ${visibleEvidence.length ? `<div class="mn-route-packet-evidence-list" aria-label="Contribution evidence">${visibleEvidence.map((item) => `<code>${escapeHtml(item)}</code>`).join("")}${hiddenEvidence > 0 ? `<i>+${formatInteger(hiddenEvidence)} more evidence items</i>` : ""}</div>` : ""}
+    </li>`;
+  }).join("")}</ol>`;
+}
+
+function packetTransitionPreviewMarkup(evaluation) {
+  const context = routePacketContext(evaluation);
+  const transition = evaluation.transition;
+  return `<header><span>PACKET TRANSITION</span><strong>${escapeHtml(transition.action_label)}</strong><small>${escapeHtml(context.location)}</small></header>
+    <div class="mn-route-packet-preview-flow"><span>${escapeHtml(packetStateSummary(transition.before))}</span><b aria-hidden="true">→</b><span>${escapeHtml(packetStateSummary(transition.after))}</span></div>
+    <div class="mn-route-packet-preview-badges">
+      <span>${escapeHtml(`${packetSizeLabel(transition.before)} → ${packetSizeLabel(transition.after)}`)}</span>
+      <span>${escapeHtml(packetDiffCount(evaluation))}</span>
+      <span class="is-${safeClass(evaluation.mtu.outcome)}">${escapeHtml(packetMtuLabel(evaluation.mtu, true))}</span>
+      <span class="is-${safeClass(transition.disposition)}">${escapeHtml(titleCase(transition.disposition))}</span>
+      ${evaluation.counterfactual ? '<span class="is-counterfactual">USER-FORCED · COUNTERFACTUAL</span>' : ""}
+    </div>
+    <footer>Click or press Enter to pin complete before / change / after details.</footer>`;
+}
+
+function packetTransitionDetailMarkup(evaluation) {
+  const context = routePacketContext(evaluation);
+  const transition = evaluation.transition;
+  const mtuConstraint = transition.mtu_constraint;
+  const mtuResource = mtuConstraint?.resource
+    ? packetResourceReferenceText(mtuConstraint.resource) : "";
+  const mtuProvenance = mtuConstraint
+    ? `<span title="${escapeHtml(mtuResource || "No MTU resource reference was declared")}">${escapeHtml(`MTU basis: ${mtuConstraint.basis_contract_id}${mtuResource ? ` · ${mtuResource}` : ""}`)}</span>`
+    : "";
+  const forced = evaluation.counterfactual
+    ? `<p class="mn-route-packet-warning"><strong>User-forced counterfactual.</strong> This transition is trace input, not observed forwarding truth.${transition.forced_rule_id ? ` Rule ${escapeHtml(transition.forced_rule_id)}.` : ""}</p>`
+    : "";
+  return `<header class="mn-route-packet-detail-header">
+      <div><span>PINNED PACKET TRANSITION</span><h5>${escapeHtml(transition.action_label)}</h5><small>${escapeHtml(context.location)}</small></div>
+      <button type="button" data-route-packet-close aria-label="Close packet transition details">×</button>
+    </header>
+    ${forced}
+    <div class="mn-route-packet-detail-badges">
+      <span class="is-${safeClass(transition.disposition)}">${escapeHtml(`Disposition: ${titleCase(transition.disposition)}`)}</span>
+      <span class="is-${safeClass(evaluation.mtu.outcome)}">${escapeHtml(packetMtuLabel(evaluation.mtu))}</span>
+      ${mtuProvenance}
+      <span>${escapeHtml(evaluation.continuity_valid === false ? "Continuity gap" : evaluation.continuity_valid === true ? "Continuity validated" : "Continuity unknown")}</span>
+    </div>
+    <div class="mn-route-packet-state-grid">
+      ${packetStateMarkup(evaluation, transition.before, "before", "Before")}
+      ${packetDiffMarkup(evaluation)}
+      ${packetStateMarkup(evaluation, transition.after, "after", "After")}
+    </div>
+    <section class="mn-route-packet-evidence">
+      <header><span>PROVENANCE AND REASONS</span><strong>${escapeHtml(`Actor ${transition.actor_id}`)}</strong></header>
+      <code>${escapeHtml(transition.action_contract_id)}</code>
+      ${packetContributionsMarkup(evaluation)}
+    </section>`;
+}
+
+function applyRoutePacketFocus() {
+  const activeRef = state.routePacketPreviewRef || state.routePacketPinnedRef;
+  document.querySelectorAll("[data-route-packet-ref], [data-route-packet-refs]").forEach((element) => {
+    const refs = readRoutePacketRefs(element);
+    const focused = Boolean(activeRef && refs.includes(activeRef));
+    element.classList.toggle("is-packet-focus", focused);
+    element.classList.toggle("is-packet-pinned", focused && activeRef === state.routePacketPinnedRef);
+    if (element.dataset.routePacketRef) {
+      element.setAttribute("aria-pressed", String(element.dataset.routePacketRef === state.routePacketPinnedRef));
+    }
+  });
+}
+
+function positionRoutePacketPreview(anchor, point = null) {
+  const card = byId("mn-route-packet-preview");
+  if (!card || card.hidden || !anchor?.getBoundingClientRect) return;
+  const rect = anchor.getBoundingClientRect();
+  const width = Math.min(410, window.innerWidth - 24);
+  const height = Math.min(card.scrollHeight || 250, window.innerHeight - 24);
+  const anchorX = Number.isFinite(point?.clientX) ? point.clientX : rect.right;
+  const anchorY = Number.isFinite(point?.clientY) ? point.clientY : rect.top;
+  let left = anchorX + 14;
+  if (left + width > window.innerWidth - 12) left = anchorX - width - 14;
+  card.style.width = `${width}px`;
+  card.style.left = `${Math.max(12, Math.min(window.innerWidth - width - 12, left))}px`;
+  card.style.top = `${Math.max(12, Math.min(window.innerHeight - height - 12, anchorY - 18))}px`;
+}
+
+function showRoutePacketPreview(packetRef, anchor, point = null) {
+  const evaluation = routePacketEvaluationByRef(packetRef);
+  if (!evaluation) return;
+  clearTimeout(state.routePacketPreviewTimer);
+  state.routePacketPreviewRef = packetRef;
+  state.routePacketPreviewAnchor = anchor;
+  const source = `packet-preview:${packetRef}`;
+  state.routePacketPreviewSource = source;
+  const card = byId("mn-route-packet-preview");
+  if (card.parentElement !== document.body) document.body.append(card);
+  card.hidden = false;
+  card.innerHTML = packetTransitionPreviewMarkup(evaluation);
+  positionRoutePacketPreview(anchor, point);
+  setRouteHover(
+    evaluation.highlight_target_ids.length ? evaluation.highlight_target_ids : evaluation.component_tokens,
+    source,
+    Boolean(evaluation.highlight_target_ids.length),
+  );
+  applyRoutePacketFocus();
+}
+
+function clearRoutePacketPreview() {
+  clearTimeout(state.routePacketPreviewTimer);
+  state.routePacketPreviewTimer = null;
+  const source = state.routePacketPreviewSource;
+  state.routePacketPreviewRef = "";
+  state.routePacketPreviewSource = "";
+  state.routePacketPreviewAnchor = null;
+  const card = byId("mn-route-packet-preview");
+  if (card) {
+    card.hidden = true;
+    card.innerHTML = "";
+  }
+  const pinned = routePacketEvaluationByRef(state.routePacketPinnedRef);
+  if (pinned) {
+    setRouteHover(
+      pinned.highlight_target_ids.length ? pinned.highlight_target_ids : pinned.component_tokens,
+      `packet-pin:${pinned.packet_ref}`,
+      Boolean(pinned.highlight_target_ids.length),
+    );
+  } else {
+    clearRouteHover(source);
+  }
+  applyRoutePacketFocus();
+}
+
+function scheduleClearRoutePacketPreview(delay = 140) {
+  clearTimeout(state.routePacketPreviewTimer);
+  state.routePacketPreviewTimer = setTimeout(clearRoutePacketPreview, delay);
+}
+
+function renderRoutePacketDetail() {
+  const detail = byId("mn-route-packet-detail");
+  if (!detail) return;
+  const evaluation = routePacketEvaluationByRef(state.routePacketPinnedRef);
+  detail.hidden = !evaluation;
+  detail.innerHTML = evaluation ? packetTransitionDetailMarkup(evaluation) : "";
+  detail.querySelector("[data-route-packet-close]")?.addEventListener("click", () => {
+    clearRoutePacketSelection({ restoreFocus: true });
+  });
+}
+
+function selectRoutePacketTransition(packetRef, trigger = null) {
+  const evaluation = routePacketEvaluationByRef(packetRef);
+  if (!evaluation) return;
+  const toggledOff = state.routePacketPinnedRef === packetRef;
+  state.routePacketPinnedRef = toggledOff ? "" : packetRef;
+  state.routePacketPinnedTrigger = toggledOff ? null : trigger;
+  renderRoutePacketDetail();
+  if (!toggledOff && !state.routePacketPreviewRef) {
+    setRouteHover(
+      evaluation.highlight_target_ids.length ? evaluation.highlight_target_ids : evaluation.component_tokens,
+      `packet-pin:${packetRef}`,
+      Boolean(evaluation.highlight_target_ids.length),
+    );
+  }
+  if (toggledOff && !state.routePacketPreviewRef) clearRouteHover();
+  applyRoutePacketFocus();
+}
+
+function clearRoutePacketSelection(options = {}) {
+  const trigger = state.routePacketPinnedTrigger || state.routePacketPreviewAnchor;
+  clearTimeout(state.routePacketPreviewTimer);
+  state.routePacketPinnedRef = "";
+  state.routePacketPinnedTrigger = null;
+  clearRoutePacketPreview();
+  renderRoutePacketDetail();
+  clearRouteHover();
+  if (options.restoreFocus === true && trigger?.isConnected) trigger.focus({ preventScroll: true });
+}
+
+function renderRoutePacketEvolution(path) {
+  const section = byId("mn-route-packet-evolution");
+  const rail = byId("mn-route-packet-rail");
+  const status = byId("mn-route-packet-status");
+  if (!section || !rail || !status) return;
+  const transitions = packetTransitionsForPath(path);
+  section.hidden = !transitions.length;
+  if (!transitions.length) {
+    rail.innerHTML = "";
+    status.textContent = "";
+    byId("mn-route-packet-detail").hidden = true;
+    byId("mn-route-packet-detail").innerHTML = "";
+    return;
+  }
+  const validRefs = new Set(transitions.map((evaluation) => evaluation.packet_ref));
+  if (state.routePacketPinnedRef && !validRefs.has(state.routePacketPinnedRef)) {
+    state.routePacketPinnedRef = "";
+    state.routePacketPinnedTrigger = null;
+  }
+  if (state.routePacketPreviewRef && !validRefs.has(state.routePacketPreviewRef)) clearRoutePacketPreview();
+  const trace = path.packet_trace;
+  status.textContent = `${formatInteger(transitions.length)} transition${transitions.length === 1 ? "" : "s"} · ${titleCase(trace.outcome)} · continuity ${trace.continuity_complete ? "complete" : "incomplete"}${trace.counterfactual ? " · counterfactual" : ""}`;
+  rail.innerHTML = transitions.map((evaluation, index) => {
+    const context = routePacketContext(evaluation);
+    const transition = evaluation.transition;
+    return `<li><button type="button" class="mn-route-packet-chip ${packetTransitionClasses(evaluation).join(" ")}" data-route-kind="packet-transition" data-route-id="${escapeHtml(transition.transition_id)}" data-route-packet-ref="${escapeHtml(evaluation.packet_ref)}" data-route-tokens="${routeTokensAttribute(evaluation.component_tokens)}" data-route-focus-targets="${routeFocusTargetsAttribute(evaluation.highlight_target_ids)}" aria-pressed="${evaluation.packet_ref === state.routePacketPinnedRef}">
+      <span>${index + 1} · ${escapeHtml(context.location)}</span>
+      <strong>${escapeHtml(transition.action_label)}</strong>
+      <small>${escapeHtml(packetStateSummary(transition.after))}</small>
+      <i><b>${escapeHtml(`${packetSizeLabel(transition.before)} → ${packetSizeLabel(transition.after)}`)}</b><b>${escapeHtml(packetDiffCount(evaluation))}</b></i>
+      <em>${escapeHtml(titleCase(transition.disposition))}${evaluation.mtu.outcome === "not_declared" ? "" : ` · ${escapeHtml(packetMtuLabel(evaluation.mtu, true))}`}${evaluation.counterfactual ? " · USER-FORCED" : ""}</em>
+    </button></li>`;
+  }).join("");
+  renderRoutePacketDetail();
+  applyRoutePacketFocus();
+}
+
+function bindRoutePacketElements(scope) {
+  scope.querySelectorAll("[data-route-packet-ref]").forEach((element) => {
+    if (element.dataset.routePacketBound === "true") return;
+    element.dataset.routePacketBound = "true";
+    const packetRef = element.dataset.routePacketRef;
+    const enter = (event) => showRoutePacketPreview(packetRef, element, {
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+    element.addEventListener("pointerenter", enter);
+    element.addEventListener("pointerleave", () => scheduleClearRoutePacketPreview());
+    element.addEventListener("focus", () => showRoutePacketPreview(packetRef, element));
+    element.addEventListener("blur", () => scheduleClearRoutePacketPreview());
+    element.addEventListener("click", () => selectRoutePacketTransition(packetRef, element));
+    element.addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      const buttons = [...scope.querySelectorAll("[data-route-packet-ref]")];
+      const current = buttons.indexOf(element);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1
+        : (current + (event.key === "ArrowRight" ? 1 : -1) + buttons.length) % buttons.length;
+      event.preventDefault();
+      buttons[next]?.focus();
+    });
+  });
+}
+
+function bindRoutePacketGraphElements(scope) {
+  if (state.routeGraphMode !== "focused") return;
+  scope.querySelectorAll("[data-route-packet-refs]").forEach((element) => {
+    if (element.dataset.routePacketGraphBound === "true") return;
+    element.dataset.routePacketGraphBound = "true";
+    const refs = readRoutePacketRefs(element);
+    if (refs.length !== 1) return;
+    const packetRef = refs[0];
+    const enter = (event) => showRoutePacketPreview(packetRef, element, {
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+    element.addEventListener("pointerenter", enter);
+    element.addEventListener("pointerleave", () => scheduleClearRoutePacketPreview());
+    element.addEventListener("focus", () => showRoutePacketPreview(packetRef, element));
+    element.addEventListener("blur", () => scheduleClearRoutePacketPreview());
+    if (element.dataset.routeKind === "route-segment" && element.getAttribute("aria-hidden") !== "true") {
+      element.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        selectRoutePacketTransition(packetRef, element);
+      });
+      element.addEventListener("keydown", (event) => {
+        if (!["Enter", " "].includes(event.key)) return;
+        event.preventDefault();
+        selectRoutePacketTransition(packetRef, element);
+      });
+    }
+  });
+  applyRoutePacketFocus();
+}
+
 function renderSourceBanner() {
   const banner = byId("mn-source-banner");
   banner.className = "section-wrap mn-source-banner";
@@ -2974,12 +4001,14 @@ function renderControls() {
 function renderRouteControls() {
   const status = byId("mn-route-api-status");
   const scenarioSelect = byId("mn-route-scenario");
+  const startInput = byId("mn-route-start");
   const sourceInput = byId("mn-route-source");
   const destinationInput = byId("mn-route-destination");
   const vrfInput = byId("mn-route-vrf");
   const familySelect = byId("mn-route-family");
   const typeSelect = byId("mn-route-type");
   const policySelect = byId("mn-route-policy");
+  const steeringSelect = byId("mn-route-steering");
   const validationSelect = byId("mn-route-validation");
   const run = byId("mn-route-run");
   if (!state.routeCapabilities) {
@@ -2987,12 +4016,14 @@ function renderRouteControls() {
     status.classList.add("is-warning");
     scenarioSelect.innerHTML = '<option value="">Unavailable</option>';
     scenarioSelect.disabled = true;
+    startInput.disabled = true;
     sourceInput.disabled = true;
     destinationInput.disabled = true;
     vrfInput.disabled = true;
     familySelect.disabled = true;
     typeSelect.disabled = true;
     policySelect.disabled = true;
+    steeringSelect.disabled = true;
     validationSelect.disabled = true;
     run.disabled = true;
     byId("mn-route-empty").innerHTML = `<strong>Route tracing is not advertised by this assembly.</strong><span>${escapeHtml(state.routeCapabilityError || "The topology remains available without a route resolver.")}</span>`;
@@ -3008,6 +4039,9 @@ function renderRouteControls() {
   scenarioSelect.value = state.routeCapabilities.scenarios.some((scenario) => scenario.scenario_id === requestedScenario)
     ? requestedScenario : state.routeCapabilities.scenarios[0].scenario_id;
   const scenarioPair = directionalPairForScenario();
+  byId("mn-route-starts").innerHTML = state.routeCapabilities.start_points.map((point) =>
+    `<option value="${escapeHtml(routeStartDisplayValue(point))}">${escapeHtml(point.node_id || point.start_id)}</option>`
+  ).join("");
   byId("mn-route-sources").innerHTML = state.routeCapabilities.sources.map((source) =>
     `<option value="${escapeHtml(routeEndpointInputValue("source", source.source_id))}">${escapeHtml(source.resource_id || source.source_id)}</option>`
   ).join("");
@@ -3020,6 +4054,16 @@ function renderRouteControls() {
   setRouteEndpointInput("source", params.get("route_source") || scenarioPair?.forward?.source_id || state.routeCapabilities.default_source);
   setRouteEndpointInput("destination", params.get("route_destination") || scenarioPair?.forward?.destination_id || state.routeCapabilities.default_destination);
   const scenario = selectedRouteScenario();
+  const sourceStart = state.routeCapabilities.start_points.find(
+    (point) => point.node_id === selectedRouteEndpoint("source")?.node_id
+  );
+  const scenarioStart = routeStartSelectorValue(scenario?.default_start);
+  setRouteStartInput(
+    params.get("route_start")
+    || scenarioStart
+    || state.routeCapabilities.default_start
+    || sourceStart?.start_id
+  );
   familySelect.innerHTML = state.routeCapabilities.route_families.map((family) => {
     const suffix = [family.address_family, family.safi].filter(Boolean).join("/");
     return `<option value="${escapeHtml(family.route_family)}">${escapeHtml(`${family.label}${suffix && suffix !== family.route_family ? ` / ${suffix}` : ""}`)}</option>`;
@@ -3040,10 +4084,15 @@ function renderRouteControls() {
   });
   const requestedPolicy = params.get("route_policy") || state.routeCapabilities.default_policy;
   policySelect.value = state.routeCapabilities.policies.includes(requestedPolicy) ? requestedPolicy : "best_effort";
+  const requestedSteering = params.get("route_steering")
+    || scenario?.steering_profile_id
+    || state.routeCapabilities.default_steering_profile;
+  renderRouteSteeringProfiles(scenario, requestedSteering);
   const requestedValidation = params.get("route_direction") || "bidirectional";
   validationSelect.value = ["forward", "reverse", "bidirectional"].includes(requestedValidation)
     ? requestedValidation : requestedValidation === "both" ? "bidirectional" : "bidirectional";
   scenarioSelect.disabled = false;
+  startInput.disabled = false;
   sourceInput.disabled = false;
   destinationInput.disabled = false;
   vrfInput.disabled = false;
@@ -3052,6 +4101,7 @@ function renderRouteControls() {
   policySelect.disabled = false;
   validationSelect.disabled = false;
   run.disabled = false;
+  syncRouteStartControlState();
 }
 
 function routePathNodeRefs(path) {
@@ -3155,6 +4205,29 @@ function routeDirectionLabel(direction) {
   return direction === "reverse" ? "Return" : "Forward";
 }
 
+function routeFlowEndpointLabel(trace, side) {
+  const endpoint = trace?.flow?.[side] || trace?.traffic_endpoints?.[side] || trace?.request?.flow?.[side] || {};
+  const endpointId = String(endpoint.endpoint_id || endpoint.source_id || endpoint.destination_id || "");
+  const capabilities = side === "source"
+    ? state.routeCapabilities?.sources || []
+    : state.routeCapabilities?.destinations || [];
+  const capability = capabilities.find((item) =>
+    item.endpoint_id === endpointId
+    || item.source_id === endpointId
+    || item.destination_id === endpointId
+  ) || capabilities.find((item) => item.node_id && item.node_id === endpoint.node_id);
+  return capability?.label || endpoint.label || endpoint.value || endpoint.node_id || endpointId
+    || (side === "source" ? "traffic source" : "traffic destination");
+}
+
+function routeTraceStartLabel(trace) {
+  const start = trace?.trace_start || trace?.starting_point || trace?.request?.trace_starts?.[trace?.direction] || {};
+  const point = state.routeCapabilities?.start_points.find((item) =>
+    item.start_id === start.start_id || item.node_id === start.node_id || item.member_id === start.member_id
+  );
+  return point?.label || start.label || start.node_id || start.member_id || "trace start";
+}
+
 function renderDirectionTabs() {
   const container = byId("mn-route-direction-tabs");
   if (!container) return;
@@ -3162,12 +4235,21 @@ function renderDirectionTabs() {
     const direction = button.dataset.routeDirection;
     const trace = state.routeTraces[direction];
     const status = traceDirectionState(trace);
-    const source = routeEndpointLabel(trace, "source");
-    const destination = routeEndpointLabel(trace, "destination");
     button.disabled = !trace;
     button.setAttribute("aria-selected", String(direction === state.activeRouteDirection));
     button.querySelector("span").textContent = routeDirectionLabel(direction);
-    button.querySelector("small").textContent = trace ? `${source} → ${destination}` : direction === "forward" ? "Source → destination" : "Destination → source";
+    if (trace) {
+      const flowSource = routeFlowEndpointLabel(trace, "source");
+      const flowDestination = routeFlowEndpointLabel(trace, "destination");
+      const start = routeTraceStartLabel(trace);
+      button.querySelector("small").textContent = direction === "forward"
+        ? `${start} → ${flowDestination} (flow ${flowSource} → ${flowDestination})`
+        : `${start} → ${flowSource} (return target)`;
+    } else {
+      button.querySelector("small").textContent = direction === "forward"
+        ? "Trace start → traffic destination"
+        : "Destination side → traffic source";
+    }
     const indicator = button.querySelector("[data-direction-state]");
     indicator.textContent = status.label;
     indicator.className = status.className;
@@ -3177,6 +4259,7 @@ function renderDirectionTabs() {
 function selectRouteDirection(direction) {
   const trace = state.routeTraces[direction];
   if (!trace) return;
+  clearRoutePacketSelection();
   state.selectedRoutePathIds[state.activeRouteDirection] = state.selectedRoutePathId;
   state.activeRouteDirection = direction;
   state.routeTrace = trace;
@@ -3204,7 +4287,16 @@ function bidirectionalSummary() {
   }
   const forwardState = traceDirectionState(forward);
   const reverseState = traceDirectionState(reverse);
-  const symmetryState = normalizedRouteEnum(symmetry.state);
+  const endpointState = normalizedRouteEnum(
+    symmetry.endpoint_state
+    || state.routeBundle?.raw?.endpoint_reachability?.state
+    || state.routeBundle?.raw?.consistency?.state
+    || symmetry.state,
+  );
+  const pathRelation = normalizedRouteEnum(
+    symmetry?.path_relation?.state
+    || state.routeBundle?.raw?.path_relation?.state,
+  );
   const unavailableCodes = new Set([
     "dropped",
     "unresolved",
@@ -3214,23 +4306,128 @@ function bidirectionalSummary() {
   ]);
   const forwardUnavailable = forward.reachable === false || unavailableCodes.has(forwardState.code);
   const reverseUnavailable = reverse.reachable === false || unavailableCodes.has(reverseState.code);
-  const oneWayStates = new Set(["one_way", "one_way_failure", "directional_drop", "inconsistent_one_way_drop"]);
-  const asymmetricStates = new Set(["asymmetric", "asymmetric_reachable", "different_paths", "inconsistent"]);
-  const incompleteStates = new Set(["unknown", "incomplete", "partial", "not_compared"]);
-  const oneWay = symmetry.one_way === true || oneWayStates.has(symmetryState)
+  const oneWayStates = new Set(["one_way", "one_way_reachable", "one_way_failure", "directional_drop", "inconsistent_one_way_drop"]);
+  const incompleteStates = new Set([
+    "unknown",
+    "incomplete",
+    "partial",
+    "partial_active_reachability",
+    "partially_reachable",
+    "unknown_incomplete",
+    "unknown_reachability",
+    "indeterminate",
+    "not_compared",
+  ]);
+  const incompleteComparison = incompleteStates.has(endpointState)
+    || [forwardState.code, reverseState.code].some((code) => code === "unknown" || code === "best_effort");
+  if (incompleteComparison) {
+    return {
+      code: "incomplete",
+      label: "Endpoint validation incomplete",
+      detail: symmetry.endpoint_state || symmetry.state || "At least one endpoint goal is unresolved",
+      className: "is-unresolved",
+    };
+  }
+  const oneWay = symmetry.one_way === true || oneWayStates.has(endpointState)
     || forwardUnavailable !== reverseUnavailable;
   if (oneWay) return { code: "one_way", label: "One-way failure", detail: `${forwardState.label} forward · ${reverseState.label} return`, className: "is-inconsistent" };
-  if (forwardUnavailable && reverseUnavailable) {
+  if (endpointState === "both_unreachable" || (forwardUnavailable && reverseUnavailable)) {
     return { code: "both_unreachable", label: "Both directions fail", detail: `${forwardState.label} forward · ${reverseState.label} return`, className: "is-inconsistent" };
   }
-  if (incompleteStates.has(symmetryState)
-    || [forwardState.code, reverseState.code].some((code) => code === "unknown" || code === "best_effort")) {
-    return { code: "incomplete", label: "Comparison incomplete", detail: symmetry.state || "At least one direction is incomplete", className: "is-unresolved" };
+  if (endpointState === "bidirectionally_reachable" || (!forwardUnavailable && !reverseUnavailable)) {
+    if (pathRelation === "not_comparable") {
+      return {
+        code: "compared",
+        label: "Both traffic endpoints are reachable",
+        detail: "Return reaches the traffic source; it is not required to revisit the forward observation node.",
+        className: "is-good",
+      };
+    }
+    if (pathRelation === "asymmetric") {
+      return {
+        code: "asymmetric",
+        label: "Both endpoints reachable; paths differ",
+        detail: "Path shape is informational and does not make endpoint reachability inconsistent.",
+        className: "is-good",
+      };
+    }
   }
-  if (asymmetricStates.has(symmetryState)) {
-    return { code: "asymmetric", label: "Asymmetric paths", detail: symmetry.state || "Reachable directions use different paths", className: "is-inconsistent" };
+  return { code: "compared", label: "Both traffic endpoints are reachable", detail: `${forwardState.label} forward · ${reverseState.label} return`, className: "is-good" };
+}
+
+function routeSequenceForDirection(direction) {
+  const symmetry = state.routeBundle?.symmetry || {};
+  const declared = firstArray(
+    direction === "reverse" ? symmetry.reverse_node_sequence : symmetry.forward_node_sequence,
+  ).map(String).filter(Boolean);
+  if (declared.length) return declared;
+  const path = defaultRoutePath(state.routeTraces[direction]);
+  return routePathNodeRefs(path).map((ref) => String(ref?.node_id || "")).filter(Boolean);
+}
+
+function routeDirectionEdgeKey(left, right) {
+  return [String(left || ""), String(right || "")].sort().join("|");
+}
+
+function routeDirectionEdges(sequence) {
+  return new Set(sequence.slice(0, -1).map((nodeId, index) =>
+    routeDirectionEdgeKey(nodeId, sequence[index + 1])
+  ));
+}
+
+function routeSequenceLabel(sequence) {
+  return sequence.map((nodeId) => {
+    const node = selectedResultNodes().find((candidate) => candidate.node_id === nodeId);
+    return node?.label || nodeId;
+  }).join(" → ");
+}
+
+function routeDirectionalDifference() {
+  const relationState = normalizedRouteEnum(
+    state.routeBundle?.symmetry?.path_relation?.state
+    || state.routeBundle?.raw?.path_relation?.state
+    || state.routeBundle?.symmetry?.state,
+  );
+  if (!new Set(["asymmetric", "asymmetric_reachable", "different_paths"]).has(relationState)) return null;
+  const forwardSequence = routeSequenceForDirection("forward");
+  const reverseSequence = routeSequenceForDirection("reverse");
+  if (forwardSequence.length < 2 || reverseSequence.length < 2) return null;
+  const direction = state.activeRouteDirection === "reverse" ? "reverse" : "forward";
+  const oppositeDirection = direction === "reverse" ? "forward" : "reverse";
+  const currentSequence = direction === "reverse" ? reverseSequence : forwardSequence;
+  const oppositeSequence = direction === "reverse" ? forwardSequence : reverseSequence;
+  const oppositeNodes = new Set(oppositeSequence);
+  const oppositeEdges = routeDirectionEdges(oppositeSequence);
+  return {
+    direction,
+    oppositeDirection,
+    currentSequence,
+    oppositeSequence,
+    currentOnlyNodeIds: new Set(currentSequence.filter((nodeId) => !oppositeNodes.has(nodeId))),
+    currentOnlyEdgeKeys: new Set([...routeDirectionEdges(currentSequence)].filter((edgeKey) => !oppositeEdges.has(edgeKey))),
+    title: "Asymmetric paths — both resolved",
+    detail: `Forward: ${routeSequenceLabel(forwardSequence)} · Return: ${routeSequenceLabel(reverseSequence)}`,
+  };
+}
+
+function routePathMatchesDirectionalDifference(path, difference) {
+  if (!path || !difference) return false;
+  const sequence = routePathNodeRefs(path).map((ref) => String(ref?.node_id || "")).filter(Boolean);
+  return sequence.length === difference.currentSequence.length
+    && sequence.every((nodeId, index) => nodeId === difference.currentSequence[index]);
+}
+
+function renderRouteDirectionalDifference() {
+  const difference = routeDirectionalDifference();
+  const callout = byId("mn-route-direction-difference");
+  if (!callout) return difference;
+  callout.hidden = !difference;
+  if (!difference) {
+    callout.innerHTML = "";
+    return null;
   }
-  return { code: "compared", label: "Both directions checked", detail: `${forwardState.label} forward · ${reverseState.label} return`, className: "is-good" };
+  callout.innerHTML = `<strong>${escapeHtml(difference.title)}</strong><span>${escapeHtml(difference.detail)}</span><small>Amber marks a direction-only difference unless a stronger path-local fault style takes precedence.</small>`;
+  return difference;
 }
 
 function routeTraceOutcome(trace, directional) {
@@ -3280,7 +4477,7 @@ function routeTraceOutcome(trace, directional) {
     return { code: "incomplete", label: "Trace is incomplete", detail: "At least one node-local resolution step is missing, unresolved, or inferred.", className: "is-unresolved" };
   }
   if (directional.code === "asymmetric") {
-    return { code: "asymmetric", label: "Reachable, but asymmetric", detail: "Forward and return traffic use different forwarding contexts or paths.", className: "is-warning" };
+    return { code: "asymmetric", label: "Endpoints reachable; paths differ", detail: "Forward and return path shape differs, but both declared traffic endpoints are reachable.", className: "is-good" };
   }
   if (directionState.code === "unknown") {
     return { code: "unknown", label: "Forwarding state is unknown", detail: "The plug-in did not return enough normalized path state to classify this route.", className: "is-unresolved" };
@@ -3370,7 +4567,7 @@ function routeStepMarkup(step, index) {
   const textMarkup = step.parts.length
     ? step.parts.map((part, partIndex) => `<span class="mn-route-step-part ${step.parts.length > 1 && partIndex === 0 ? "is-context" : "is-explanation"}" tabindex="0" data-route-kind="resolution-part" data-route-id="${escapeHtml(part.part_id)}" data-route-tokens="${routeTokensAttribute(part.component_tokens)}" data-route-focus-targets="${routeFocusTargetsAttribute(part.highlight_target_ids)}">${escapeHtml(part.text)}</span>`).join("")
     : escapeHtml(step.text);
-  return `<li class="mn-route-step ${routeQualityClasses(step).join(" ")}" tabindex="0" data-route-kind="resolution-step" data-route-id="${escapeHtml(step.step_id)}" data-route-tokens="${routeTokensAttribute(step.component_tokens)}" data-route-focus-targets="${routeFocusTargetsAttribute(step.highlight_target_ids)}">
+  return `<li class="mn-route-step ${routeQualityClasses(step).join(" ")}" tabindex="0" data-route-kind="resolution-step" data-route-id="${escapeHtml(step.step_id)}" data-route-tokens="${routeTokensAttribute(step.component_tokens)}" data-route-focus-targets="${routeFocusTargetsAttribute(step.highlight_target_ids)}" data-route-packet-refs="${packetRefsAttribute(step.packet_refs)}">
     <span class="mn-route-step-index">${index + 1}</span>
     <div><p>${textMarkup}</p>${step.detail ? `<small>${escapeHtml(step.detail)}</small>` : ""}${provider ? `<code>${escapeHtml(`provided by ${provider}`)}</code>` : ""}</div>
   </li>`;
@@ -3414,12 +4611,18 @@ function routeDiagnosticItems(path) {
 
 function routeFindingsMarkup(trace, selectedPathId = "") {
   const relevantFindings = trace.findings.filter((finding) => !finding.path_ids.length || !selectedPathId || finding.path_ids.includes(selectedPathId));
-  return relevantFindings.map((finding) => {
+  const findingMarkup = relevantFindings.map((finding) => {
     const severityCode = normalizedRouteEnum(finding.severity);
     const severity = new Set(["error", "critical", "fatal"]).has(severityCode) ? "is-inconsistent"
       : new Set(["warning", "warn", "partial", "incomplete", "inferred"]).has(severityCode) ? "is-inferred" : "is-good";
     return `<article class="mn-route-finding ${severity}" data-route-kind="finding" data-route-id="${escapeHtml(finding.finding_id)}" data-route-tokens="${routeTokensAttribute(finding.component_tokens)}"><span>${escapeHtml(titleCase(finding.severity))}</span><strong>${escapeHtml(finding.title)}</strong><p>${escapeHtml(finding.message)}</p></article>`;
-  }).join("") || '<article class="mn-route-finding is-unresolved"><span>INFO</span><strong>No findings returned</strong><p>No finding record was supplied for this path.</p></article>';
+  }).join("");
+  if (findingMarkup) return findingMarkup;
+  const directionalDifference = routeDirectionalDifference();
+  if (directionalDifference) {
+    return `<article class="mn-route-finding is-inferred"><span>PAIR COMPARISON</span><strong>No path-local fault</strong><p>${escapeHtml(`${directionalDifference.detail}. The core compared the plug-in-provided active paths; each plug-in still owns its local next-hop decision.`)}</p></article>`;
+  }
+  return '<article class="mn-route-finding is-unresolved"><span>INFO</span><strong>No findings returned</strong><p>No finding record was supplied for this path.</p></article>';
 }
 
 function revealFocusedRouteEntry() {
@@ -3525,6 +4728,7 @@ function renderRouteTrace() {
   renderDirectionTabs();
   renderRouteSeed();
   updateRouteViewChrome();
+  renderRoutePacketEvolution(null);
   const empty = byId("mn-route-empty");
   const content = byId("mn-route-content");
   const mapPanel = document.querySelector(".mn-trace-map-panel");
@@ -3540,7 +4744,7 @@ function renderRouteTrace() {
     if (mapPanel) mapPanel.hidden = true;
     empty.hidden = false;
     content.hidden = true;
-    empty.innerHTML = '<strong>Choose a source and destination.</strong><span>Trace the route to compare forward, return, primary, and alternate paths.</span>';
+    empty.innerHTML = '<strong>Choose a trace start and traffic endpoints.</strong><span>Trace the route to compare forward, return, primary, and alternate paths.</span>';
     return;
   }
   if (!trace.paths.length) {
@@ -3561,7 +4765,7 @@ function renderRouteTrace() {
       <article><span>Trace evidence</span><strong class="${summaryClass}">${escapeHtml(titleCase(trace.completeness))}</strong><small>${escapeHtml(titleCase(trace.consistency))}</small></article>`;
     const comparison = byId("mn-direction-comparison");
     comparison.className = `mn-direction-comparison ${outcome.className}`;
-    comparison.innerHTML = `<span>Route outcome</span><div><strong>${escapeHtml(outcome.label)}</strong><small>${escapeHtml(`${routeEndpointLabel(state.routeTraces.forward || trace, "source")} ⇄ ${routeEndpointLabel(state.routeTraces.forward || trace, "destination")}`)}</small></div><div class="mn-route-outcome-detail"><strong>Forwarding result</strong><small>${escapeHtml(outcome.detail)}</small></div>`;
+    comparison.innerHTML = `<span>Route outcome</span><div><strong>${escapeHtml(outcome.label)}</strong><small>${escapeHtml(`${routeFlowEndpointLabel(state.routeTraces.forward || trace, "source")} ⇄ ${routeFlowEndpointLabel(state.routeTraces.forward || trace, "destination")}`)}</small></div><div class="mn-route-outcome-detail"><strong>Endpoint result</strong><small>${escapeHtml(outcome.detail)}</small></div>`;
     byId("mn-route-findings").innerHTML = routeFindingsMarkup(trace);
     bindRouteCorrelationElements(content);
     return;
@@ -3593,14 +4797,18 @@ function renderRouteTrace() {
   const pathEvidence = selectedPathEvidence(selected);
   const directional = bidirectionalSummary();
   const outcome = routeTraceOutcome(trace, directional);
-  const sourceLabel = routeEndpointLabel(trace, "source");
-  const destinationLabel = routeEndpointLabel(trace, "destination");
   const traceRequest = trace.request || {};
   const traceVrf = trace?.vrf ?? traceRequest?.vrf ?? traceRequest?.vrf_id ?? "default";
   const traceFamily = trace?.route_family ?? trace?.address_family ?? traceRequest?.route_family ?? traceRequest?.address_family ?? "plug-in default";
   const traceType = trace?.route_type ?? traceRequest?.route_type ?? "plug-in default";
+  const flowSourceLabel = routeFlowEndpointLabel(trace, "source");
+  const flowDestinationLabel = routeFlowEndpointLabel(trace, "destination");
+  const directionalFlowLabel = state.activeRouteDirection === "reverse"
+    ? `Return flow ${flowDestinationLabel} → ${flowSourceLabel}`
+    : `Forward flow ${flowSourceLabel} → ${flowDestinationLabel}`;
   byId("mn-route-summary").innerHTML = `
     <article><span>Routing context</span><strong>${escapeHtml(traceVrf)}</strong><small>${escapeHtml(`${traceFamily} · ${traceType}`)}</small></article>
+    <article><span>Directional goal</span><strong>${escapeHtml(`${routeTraceStartLabel(trace)} → ${state.activeRouteDirection === "reverse" ? flowSourceLabel : flowDestinationLabel}`)}</strong><small>${escapeHtml(directionalFlowLabel)}</small></article>
     <article><span>Path choices</span><strong>${formatInteger(activeCount)} active</strong><small>${alternativeCount} alternative · ${cycleCount} looped · ${policyBlockedCount} policy-blocked · ${unusableCount} unusable · ${controlPlaneOnlyCount} control-plane only · ${trace.paths.length} total</small></article>
     <article><span>Selected-path evidence</span><strong class="${pathEvidence.className}">${escapeHtml(pathEvidence.status)}</strong><small>${escapeHtml(pathEvidence.detail)}</small></article>`;
   const symmetryIssue = state.routeBundle?.symmetry?.issues?.[0];
@@ -3613,7 +4821,7 @@ function renderRouteTrace() {
       : directional.label === outcome.label ? "Forward / return" : directional.label;
   const evidenceMarkup = symmetryEvidence && symmetryEvidence !== outcome.detail
     ? `<span class="mn-route-specific-evidence">${escapeHtml(symmetryEvidence)}</span>` : "";
-  comparison.innerHTML = `<span>Route outcome</span><div><strong>${escapeHtml(outcome.label)}</strong><small>${escapeHtml(`${routeEndpointLabel(state.routeTraces.forward || trace, "source")} ⇄ ${routeEndpointLabel(state.routeTraces.forward || trace, "destination")}`)}</small></div><div class="mn-route-outcome-detail"><strong>${escapeHtml(comparisonLabel)}</strong><small>${escapeHtml(outcome.detail || directional.detail)}</small>${evidenceMarkup}</div>`;
+  comparison.innerHTML = `<span>Route outcome</span><div><strong>${escapeHtml(outcome.label)}</strong><small>${escapeHtml(`${routeFlowEndpointLabel(state.routeTraces.forward || trace, "source")} ⇄ ${routeFlowEndpointLabel(state.routeTraces.forward || trace, "destination")}`)}</small></div><div class="mn-route-outcome-detail"><strong>${escapeHtml(comparisonLabel)}</strong><small>${escapeHtml(outcome.detail || directional.detail)}</small>${evidenceMarkup}</div>`;
   const indexedPaths = trace.paths.map((path, index) => ({ path, index }));
   const activePaths = indexedPaths.filter(({ path }) => pathIsUsableActive(path));
   const controlPlaneOnlyPaths = indexedPaths.filter(({ path }) => pathIsControlPlaneOnly(path));
@@ -3649,7 +4857,13 @@ function renderRouteTrace() {
     const node = findNodeForRef(ref, selectedResultNodes());
     const tokens = [...refRouteTokens(ref), ...(node ? interactionTokensForNode(node) : [])];
     const focusTargets = node ? interactionFocusTargetsForNode(node) : [`node-member:${ref.member_id}`];
-    const nodeMarkup = `<button type="button" data-route-hop-node="${escapeHtml(node?.key || "")}" data-route-kind="hop-node" data-route-id="${escapeHtml(ref.member_id || ref.node_id)}" data-route-tokens="${routeTokensAttribute(tokens)}" data-route-focus-targets="${routeFocusTargetsAttribute(focusTargets)}">${escapeHtml(nodeLabelForRef(ref))}</button>`;
+    const nodePacketRefs = node
+      ? packetRefsForRouteNode(selected, node)
+      : packetTransitionsForPath(selected).filter((evaluation) => {
+        const segment = selected.segments.find((candidate) => candidate.segment_id === evaluation.segment_id);
+        return segment && (sameRouteRef(segment.source, ref) || sameRouteRef(segment.target, ref));
+      }).map((evaluation) => evaluation.packet_ref);
+    const nodeMarkup = `<button type="button" data-route-hop-node="${escapeHtml(node?.key || "")}" data-route-kind="hop-node" data-route-id="${escapeHtml(ref.member_id || ref.node_id)}" data-route-tokens="${routeTokensAttribute(tokens)}" data-route-focus-targets="${routeFocusTargetsAttribute(focusTargets)}" data-route-packet-refs="${packetRefsAttribute(nodePacketRefs)}">${escapeHtml(nodeLabelForRef(ref))}</button>`;
     const nextRef = nodeRefs[index + 1];
     if (!nextRef) return nodeMarkup;
     const boundary = selected.segments.find((segment) =>
@@ -3661,8 +4875,9 @@ function renderRouteTrace() {
     if (!boundary) return `${nodeMarkup}<span aria-hidden="true">→</span>`;
     usedBoundarySegments.add(boundary.segment_id);
     const linkLabel = `${nodeLabelForRef(ref)} to ${nodeLabelForRef(nextRef)} link`;
-    return `${nodeMarkup}<button type="button" class="mn-route-hop-link" aria-label="${escapeHtml(linkLabel)}" title="${escapeHtml(linkLabel)}" data-route-kind="hop-link" data-route-id="${escapeHtml(boundary.segment_id)}" data-route-focus-targets="${routeFocusTargetsAttribute(boundary.highlight_target_ids)}"><span aria-hidden="true">→</span></button>`;
+    return `${nodeMarkup}<button type="button" class="mn-route-hop-link" aria-label="${escapeHtml(linkLabel)}" title="${escapeHtml(linkLabel)}" data-route-kind="hop-link" data-route-id="${escapeHtml(boundary.segment_id)}" data-route-focus-targets="${routeFocusTargetsAttribute(boundary.highlight_target_ids)}" data-route-packet-refs="${packetRefsAttribute(boundary.packet_refs)}"><span aria-hidden="true">→</span></button>`;
   }).join("") || '<span class="mn-route-hop-missing">No node sequence resolved</span>';
+  renderRoutePacketEvolution(selected);
   const resolutionItems = [
     ...selected.steps,
     ...routeDiagnosticItems(selected),
@@ -3698,10 +4913,13 @@ function renderRouteTrace() {
     });
   });
   bindRouteCorrelationElements(byId("mn-route-content"));
+  bindRoutePacketGraphElements(byId("mn-route-content"));
+  bindRoutePacketElements(byId("mn-route-packet-evolution"));
 }
 
 function selectRoutePath(pathId) {
   if (!state.routeTrace?.paths.some((path) => path.path_id === pathId)) return;
+  clearRoutePacketSelection();
   clearRoutePathPreview();
   state.selectedRoutePathId = pathId;
   state.selectedRoutePathIds[state.activeRouteDirection] = pathId;
@@ -3717,6 +4935,7 @@ function selectRoutePath(pathId) {
 
 function clearSelectedRoutePath({ announce = true } = {}) {
   if (state.routeGraphMode !== "all" || !state.selectedRoutePathId) return;
+  clearRoutePacketSelection();
   state.selectedRoutePathId = "";
   state.selectedRoutePathIds[state.activeRouteDirection] = "";
   state.requestedRoutePathId = "";
@@ -3732,6 +4951,7 @@ function clearSelectedRoutePath({ announce = true } = {}) {
 
 function setRouteGraphMode(mode) {
   if (!['all', 'focused'].includes(mode)) return;
+  clearRoutePacketSelection();
   if (mode === "all") {
     state.routeGraphMode = "all";
     state.selectedRoutePathId = "";
@@ -4997,6 +6217,10 @@ function mapNodeMarkup(node, position, routePath = null, routeNodes = [], extraC
   const routeIndex = routeNodes.findIndex((candidate) => candidate.key === node.key);
   const isSource = routePath && routeIndex === 0;
   const isDestination = routePath && routeIndex === routeNodes.length - 1;
+  const startMarker = state.activeRouteDirection === "reverse"
+    ? "RETURN START"
+    : "TRACE START";
+  const endMarker = state.activeRouteDirection === "reverse" ? "SOURCE TARGET" : "DESTINATION";
   const controlPlaneOnly = pathIsControlPlaneOnly(routePath);
   const isInstallGate = Boolean(isSource && controlPlaneOnly);
   const routeMarker = isInstallGate
@@ -5006,15 +6230,21 @@ function mapNodeMarkup(node, position, routePath = null, routeNodes = [], extraC
       : `<b class="mn-route-node-marker">L3 · ${node.route_occurrence_id
         ? `visit ${Number(node.route_occurrence_index ?? routeIndex) + 1}` : "on path"}</b>`;
   const navigationKey = node.route_base_key || node.key;
+  const packetRefs = packetRefsForRouteNode(routePath, node);
   const globallySelected = options.showGlobalSelection !== false && state.focusedNodeKey === navigationKey;
-  return `<button class="mn-map-node${globallySelected ? " is-selected" : ""}${node.resources_available === false ? " is-incomplete" : ""}${routeMember ? ` is-route-member ${routeClasses.join(" ")}` : ""}${isSource ? " is-route-source" : ""}${isDestination ? " is-route-destination" : ""}${extraClass}" type="button" title="${escapeHtml(`${node.label} · hover for snapshot details; click to focus this node`)}" data-map-node="${escapeHtml(navigationKey)}" data-route-occurrence-id="${escapeHtml(node.route_occurrence_id || "")}" data-graph-position-key="node:${escapeHtml(node.key)}" data-route-kind="node" data-route-id="${escapeHtml(node.member_id)}" data-route-tokens="${routeTokensAttribute(tokens)}" data-route-focus-targets="${routeFocusTargetsAttribute(interactionFocusTargetsForNode(node))}" style="left:${position.x}px;top:${position.y}px">
+  const directionDifferenceLabel = String(options.directionDifferenceLabel || "");
+  const titleDetail = directionDifferenceLabel
+    ? `${node.label} · ${directionDifferenceLabel}; hover for snapshot details; click to focus this node`
+    : `${node.label} · hover for snapshot details; click to focus this node`;
+  return `<button class="mn-map-node${globallySelected ? " is-selected" : ""}${node.resources_available === false ? " is-incomplete" : ""}${routeMember ? ` is-route-member ${routeClasses.join(" ")}` : ""}${isSource ? " is-route-source" : ""}${isDestination ? " is-route-destination" : ""}${extraClass}" type="button" title="${escapeHtml(titleDetail)}" data-map-node="${escapeHtml(navigationKey)}" data-route-occurrence-id="${escapeHtml(node.route_occurrence_id || "")}" data-graph-position-key="node:${escapeHtml(node.key)}" data-route-kind="node" data-route-id="${escapeHtml(node.member_id)}" data-route-start-label="${escapeHtml(startMarker)}" data-route-end-label="${escapeHtml(endMarker)}" data-route-tokens="${routeTokensAttribute(tokens)}" data-route-focus-targets="${routeFocusTargetsAttribute(interactionFocusTargetsForNode(node))}" data-route-packet-refs="${packetRefsAttribute(packetRefs)}" style="left:${position.x}px;top:${position.y}px">
+    ${directionDifferenceLabel ? `<b class="mn-route-direction-badge">${escapeHtml(directionDifferenceLabel)}</b>` : ""}
     <header><span><strong>${escapeHtml(node.label)}</strong><small>${escapeHtml(`${node.site} · ${node.device_type}`)}</small></span><i class="mn-health-dot is-${health}" aria-label="${escapeHtml(health)}"></i></header>
     <code title="${escapeHtml(`${plan.plugin_set_id}@${plan.plugin_version || "?"}`)}">${escapeHtml(`${plan.plugin_set_id}@${plan.plugin_version || "?"}`)}</code>
     <footer><span>${escapeHtml(plan.projection_id)}</span><span>${routeMember ? routeMarker : escapeHtml(formatDurationNs(basis.uncertainty || 0))}</span></footer>
   </button>`;
 }
 
-function renderNodeGraph({ nodes, routePath = null, stageId, nodeLayerId, edgeLayerId, emptyId, showTopology, showRoute, minHeight, columnPitch, outerPadding, fallbackWidth, nodeClassFor = null }) {
+function renderNodeGraph({ nodes, routePath = null, stageId, nodeLayerId, edgeLayerId, emptyId, showTopology, showRoute, minHeight, columnPitch, outerPadding, fallbackWidth, nodeClassFor = null, nodeOptionsFor = null, routeDirectionDifference = null }) {
   const layer = byId(nodeLayerId);
   const empty = byId(emptyId);
   empty.hidden = Boolean(nodes.length);
@@ -5043,6 +6273,7 @@ function renderNodeGraph({ nodes, routePath = null, stageId, nodeLayerId, edgeLa
     routePath,
     routeNodes,
     nodeClassFor?.(node) || "",
+    nodeOptionsFor?.(node) || {},
   )).join("");
   layer.querySelectorAll("[data-map-node]").forEach((button) => button.addEventListener("click", () => {
     if (button.dataset.graphDragMoved === "true") return;
@@ -5056,10 +6287,17 @@ function renderNodeGraph({ nodes, routePath = null, stageId, nodeLayerId, edgeLa
   );
   const redraw = () => {
     nodes.forEach((node) => positions.set(node.key, stored.positions.get(`node:${node.key}`)));
-    renderEdges(nodes, positions, dimensions, nodeBoxes, { edgeLayerId, routePath, showTopology, showRoute });
+    renderEdges(nodes, positions, dimensions, nodeBoxes, {
+      edgeLayerId,
+      routePath,
+      showTopology,
+      showRoute,
+      routeDirectionDifference,
+    });
   };
   redraw();
   bindRouteCorrelationElements(byId(stageId));
+  if (stageId === "mn-route-map-stage") bindRoutePacketGraphElements(layer);
   setupGraphViewport({
     stageId,
     viewKey,
@@ -5172,7 +6410,15 @@ function renderConnectivityEdges(nodes, hubDomains, compactDecisions, positions,
   for (const { domain, member, node, key } of memberships) {
     const nodePoint = positions.get(node.key);
     const domainPoint = domainPositions.get(domain.network_id);
-    const geometry = curvedEdgeGeometry(nodePoint, domainPoint, nextEdgeLane(key, pairTotals, pairOrdinals), nodeBoxes.get(node.key), domainBoxes.get(domain.network_id));
+    const geometry = curvedEdgeGeometry(
+      nodePoint,
+      domainPoint,
+      nextEdgeLane(key, pairTotals, pairOrdinals),
+      nodeBoxes.get(node.key),
+      domainBoxes.get(domain.network_id),
+      node.key,
+      `network:${domain.network_id}`,
+    );
     const link = member.links?.[0] || null;
     const health = linkHealth({ status: member.status || link?.status || domain.status, resolution: member.resolution || link?.resolution || domain.resolution });
     const focused = focusKey === node.key;
@@ -5210,7 +6456,15 @@ function renderConnectivityEdges(nodes, hubDomains, compactDecisions, positions,
     if (participants.length !== 2) continue;
     const [left, right] = participants;
     const key = edgePairKey(left.node, right.node);
-    const geometry = curvedEdgeGeometry(positions.get(left.node.key), positions.get(right.node.key), nextEdgeLane(key, directTotals, directOrdinals), nodeBoxes.get(left.node.key), nodeBoxes.get(right.node.key));
+    const geometry = curvedEdgeGeometry(
+      positions.get(left.node.key),
+      positions.get(right.node.key),
+      nextEdgeLane(key, directTotals, directOrdinals),
+      nodeBoxes.get(left.node.key),
+      nodeBoxes.get(right.node.key),
+      left.node.key,
+      right.node.key,
+    );
     const health = linkHealth(domain);
     const focused = focusKey && [left.node.key, right.node.key].includes(focusKey);
     const muted = focusKey && !focused;
@@ -5244,7 +6498,15 @@ function renderConnectivityEdges(nodes, hubDomains, compactDecisions, positions,
     if (!source || !target || source.key === target.key) continue;
     state.topologyInspectorItems.set(`link:${link.link_id}`, topologyDirectLinkInspectorItem(link, source, target));
     const key = edgePairKey(source, target);
-    const geometry = curvedEdgeGeometry(positions.get(source.key), positions.get(target.key), nextEdgeLane(key, directTotals, directOrdinals), nodeBoxes.get(source.key), nodeBoxes.get(target.key));
+    const geometry = curvedEdgeGeometry(
+      positions.get(source.key),
+      positions.get(target.key),
+      nextEdgeLane(key, directTotals, directOrdinals),
+      nodeBoxes.get(source.key),
+      nodeBoxes.get(target.key),
+      source.key,
+      target.key,
+    );
     const health = linkHealth(link);
     const focused = focusKey && [source.key, target.key].includes(focusKey);
     const muted = focusKey && !focused;
@@ -5504,6 +6766,10 @@ function allPathNodeMarkup(node, position, paths) {
     : candidate?.route_occurrence_id === node.route_occurrence_id;
   const source = sequences.some((sequence) => occurrenceMatches(sequence[0]));
   const destination = sequences.some((sequence) => occurrenceMatches(sequence.at(-1)));
+  const startMarker = state.activeRouteDirection === "reverse"
+    ? "RETURN START"
+    : "TRACE START";
+  const endMarker = state.activeRouteDirection === "reverse" ? "SOURCE TARGET" : "DESTINATION";
   const installGateByPath = Object.fromEntries(memberships.map((path, index) => [
     path.path_id,
     Boolean(pathIsControlPlaneOnly(path) && occurrenceMatches(sequences[index][0])),
@@ -5522,7 +6788,7 @@ function allPathNodeMarkup(node, position, paths) {
       return `<button type="button" class="mn-route-node-path-chip ${routeQualityClasses(path).join(" ")}" data-route-node-path="${escapeHtml(path.path_id)}" data-route-path-id="${escapeHtml(path.path_id)}" aria-haspopup="dialog" aria-controls="mn-route-hover-card" aria-label="Select ${escapeHtml(path.label)} through ${escapeHtml(node.label)}" title="${escapeHtml(`${path.label}: ${pathStatusSummary(path)}`)}">P${index}</button>`;
     }).join("")}</div></div>`
     : `<label class="mn-route-node-paths mn-route-node-path-select"><span>${memberships.length} paths through node</span><select data-route-node-path-select aria-label="Select a path through ${escapeHtml(node.label)}"><option value="">Choose path…</option>${memberships.map((path) => `<option value="${escapeHtml(path.path_id)}">${escapeHtml(`${path.label} — ${pathStatusSummary(path)}`)}</option>`).join("")}</select></label>`;
-  return `<article class="mn-map-node mn-route-overview-node is-route-member ${pathClasses.join(" ")}${mixedQuality ? " is-route-mixed" : ""}${source ? " is-route-source" : ""}${destination ? " is-route-destination" : ""}" data-route-overview-node="${escapeHtml(node.key)}" data-route-occurrence-id="${escapeHtml(node.route_occurrence_id || "")}" data-graph-position-key="node:${escapeHtml(node.key)}" data-route-path-ids="${escapeHtml(JSON.stringify(pathIds))}" data-route-base-quality="${escapeHtml(JSON.stringify(pathClasses))}" data-route-quality-by-path="${escapeHtml(JSON.stringify(qualityByPath))}" data-route-mixed="${mixedQuality}" data-route-base-install-gate="${baseInstallGate}" data-route-install-gate-by-path="${escapeHtml(JSON.stringify(installGateByPath))}" data-route-kind="node" data-route-id="${escapeHtml(node.member_id)}" data-route-tokens="${routeTokensAttribute(tokens)}" data-route-focus-targets="${routeFocusTargetsAttribute(interactionFocusTargetsForNode(node))}" style="left:${position.x}px;top:${position.y}px">
+  return `<article class="mn-map-node mn-route-overview-node is-route-member ${pathClasses.join(" ")}${mixedQuality ? " is-route-mixed" : ""}${source ? " is-route-source" : ""}${destination ? " is-route-destination" : ""}" data-route-overview-node="${escapeHtml(node.key)}" data-route-occurrence-id="${escapeHtml(node.route_occurrence_id || "")}" data-graph-position-key="node:${escapeHtml(node.key)}" data-route-path-ids="${escapeHtml(JSON.stringify(pathIds))}" data-route-base-quality="${escapeHtml(JSON.stringify(pathClasses))}" data-route-quality-by-path="${escapeHtml(JSON.stringify(qualityByPath))}" data-route-mixed="${mixedQuality}" data-route-base-install-gate="${baseInstallGate}" data-route-install-gate-by-path="${escapeHtml(JSON.stringify(installGateByPath))}" data-route-kind="node" data-route-id="${escapeHtml(node.member_id)}" data-route-start-label="${escapeHtml(startMarker)}" data-route-end-label="${escapeHtml(endMarker)}" data-route-tokens="${routeTokensAttribute(tokens)}" data-route-focus-targets="${routeFocusTargetsAttribute(interactionFocusTargetsForNode(node))}" style="left:${position.x}px;top:${position.y}px">
     <button type="button" class="mn-route-overview-node-open" data-map-node="${escapeHtml(navigationKey)}" aria-label="Open ${escapeHtml(node.label)} node details, visit ${Number(node.route_occurrence_index ?? 0) + 1}">
       <header><span><strong>${escapeHtml(node.label)}</strong><small>${escapeHtml(`${node.site} · ${node.device_type}`)}</small></span><i class="mn-health-dot is-${nodeHealth(node)}" aria-label="${escapeHtml(nodeHealth(node))}"></i></header>
       <code title="${escapeHtml(`${plan.plugin_set_id}@${plan.plugin_version || "?"}`)}">${escapeHtml(`${plan.plugin_set_id}@${plan.plugin_version || "?"}`)}</code>
@@ -5945,6 +7211,8 @@ function renderAllPathEdges(paths, nodes, positions, dimensions, nodeBoxes) {
         nextEdgeLane(edge.pairKey, pairTotals, pairOrdinals),
         nodeBoxes.get(edge.sourceNode.key),
         nodeBoxes.get(edge.targetNode.key),
+        edge.sourceNode.key,
+        edge.targetNode.key,
       )
       : unresolvedStubGeometry(anchor, positions, dimensions, nodeBoxes, edge.segmentIndex + edge.pathIndex, !edge.sourceNode);
     const pathState = routeSegmentQualityState(edge.path, edge.segment, edge.segmentIndex);
@@ -6036,6 +7304,10 @@ function renderAllPathsRouteMap() {
   const controlPlaneOnlyPaths = paths.filter(pathIsControlPlaneOnly);
   const presentationCount = routePresentationGroups(paths, nodes).length;
   const graphSemantics = `Device cards are L3 resolution points and arrows are outer L1/L2 boundaries.${presentationCount ? ` ${presentationCount} tinted service context${presentationCount === 1 ? " is" : "s are"} an overlay, not a hop.` : ""}`;
+  const directionalDifference = routeDirectionalDifference();
+  const directionNote = directionalDifference
+    ? ` Active forward and return paths differ: ${directionalDifference.detail}.`
+    : "";
   const deadCount = paths.filter(pathIsDead).length;
   const cycleCount = paths.filter(routeValueIsCycle).length;
   const policyBlockedCount = paths.filter(routeValueIsPolicyBlocked).length;
@@ -6051,26 +7323,30 @@ function renderAllPathsRouteMap() {
     const prefix = controlPlaneOnlyPaths.length === paths.length
       ? "No executable forwarding path is installed for this direction."
       : `${controlPlaneOnlyPaths.length} candidate${controlPlaneOnlyPaths.length === 1 ? " is" : "s are"} control-plane only.`;
-    note.textContent = `${prefix} ${controlPlaneOnlyReason(state.routeTrace)} The dashed downstream chain shows control-plane resolution evidence, not a packet-forwarding path. ${graphSemantics} ${inactiveCount} other standby/inactive · ${cycleCount} looped · ${policyBlockedCount} policy-blocked · ${deadCount} dead/dropped retained.`;
+    note.textContent = `${prefix} ${controlPlaneOnlyReason(state.routeTrace)} The dashed downstream chain shows control-plane resolution evidence, not a packet-forwarding path. ${graphSemantics}${directionNote} ${inactiveCount} other standby/inactive · ${cycleCount} looped · ${policyBlockedCount} policy-blocked · ${deadCount} dead/dropped retained.`;
   } else {
-    note.textContent = `Hover or focus a path to preview its resolution; choose it from any segment or node to open details. ${graphSemantics} ${inactiveCount} standby/inactive · ${cycleCount} looped · ${policyBlockedCount} policy-blocked · ${deadCount} dead/dropped retained.`;
+    note.textContent = `Hover or focus a path to preview its resolution; choose it from any segment or node to open details. ${graphSemantics}${directionNote} ${inactiveCount} standby/inactive · ${cycleCount} looped · ${policyBlockedCount} policy-blocked · ${deadCount} dead/dropped retained.`;
   }
   applyOverviewPathEmphasis();
 }
 
 function renderFocusedRouteMap() {
+  const directionalDifference = renderRouteDirectionalDifference();
   if (state.routeGraphMode === "all") {
     renderAllPathsRouteMap();
     return;
   }
   const routePath = selectedRoutePath();
+  const pathDirectionalDifference = routePathMatchesDirectionalDifference(routePath, directionalDifference)
+    ? directionalDifference
+    : null;
   const nodes = routePath ? routeNodeSequence(routePath, selectedResultNodes()) : [];
   const title = byId("mn-route-map-title");
   const note = byId("mn-route-map-note");
   note.classList.toggle("is-control-plane-only", Boolean(routePath && pathIsControlPlaneOnly(routePath)));
   if (!routePath) {
     title.textContent = "No route focused";
-    note.textContent = "Trace a source and destination to isolate one forwarding path from the link topology.";
+    note.textContent = "Choose a trace start and traffic endpoints to isolate one forwarding path from the link topology.";
   } else if (pathIsControlPlaneOnly(routePath)) {
     const labels = routePathNodeRefs(routePath).map(nodeLabelForRef);
     title.textContent = `${routeDirectionLabel(state.activeRouteDirection)} · ${routePath.label}`;
@@ -6078,8 +7354,17 @@ function renderFocusedRouteMap() {
   } else {
     const labels = routePathNodeRefs(routePath).map(nodeLabelForRef);
     const presentationCount = routePresentationLayers(routePath, "overlay").length;
+    const flowSource = routeFlowEndpointLabel(state.routeTrace, "source");
+    const flowDestination = routeFlowEndpointLabel(state.routeTrace, "destination");
+    const start = routeTraceStartLabel(state.routeTrace);
+    const endpointContext = state.activeRouteDirection === "reverse"
+      ? ` Return flow ${flowDestination} → ${flowSource}; revisiting the forward observation node is not required.`
+      : ` Observed from ${start} for flow ${flowSource} → ${flowDestination}.`;
+    const directionNote = pathDirectionalDifference
+      ? ` Active forward and return paths differ: ${pathDirectionalDifference.detail}. Amber marks direction-only components when no stronger path-local fault takes precedence.`
+      : "";
     title.textContent = `${routeDirectionLabel(state.activeRouteDirection)} · ${routePath.label}`;
-    note.textContent = `${labels[0] || "unresolved source"} → ${labels.at(-1) || "unresolved destination"} · ${pathStatusSummary(routePath)}. Only the focused outer L1-L3 path is drawn.${presentationCount ? " The tinted service context is attached to it, not inserted as a hop." : ""}`;
+    note.textContent = `${labels[0] || "unresolved start"} → ${labels.at(-1) || "unresolved target"} · ${pathStatusSummary(routePath)}.${endpointContext} Only the focused outer L1-L3 path is drawn.${presentationCount ? " The tinted service context is attached to it, not inserted as a hop." : ""}${directionNote}`;
   }
   renderNodeGraph({
     nodes,
@@ -6094,6 +7379,13 @@ function renderFocusedRouteMap() {
     columnPitch: 285,
     outerPadding: 90,
     fallbackWidth: 760,
+    nodeClassFor: (node) => pathDirectionalDifference?.currentOnlyNodeIds.has(node.node_id)
+      ? " is-direction-difference"
+      : "",
+    nodeOptionsFor: (node) => pathDirectionalDifference?.currentOnlyNodeIds.has(node.node_id)
+      ? { directionDifferenceLabel: `${routeDirectionLabel(pathDirectionalDifference.direction)} only` }
+      : {},
+    routeDirectionDifference: pathDirectionalDifference,
   });
   if (routePath && !nodes.length) {
     const empty = byId("mn-route-map-empty");
@@ -6121,7 +7413,22 @@ function edgePairKey(sourceNode, targetNode) {
 function nextEdgeLane(pairKey, totals, ordinals) {
   const ordinal = ordinals.get(pairKey) || 0;
   ordinals.set(pairKey, ordinal + 1);
-  return (ordinal - ((totals.get(pairKey) || 1) - 1) / 2) * MAP_EDGE_LANE_GAP;
+  const total = totals.get(pairKey) || 1;
+  if (total === 1) return 1;
+  const band = Math.floor(ordinal / 2) + 1;
+  return ordinal % 2 === 0 ? band : -band;
+}
+
+function stableEdgeBendSign(pairKey) {
+  return (stableLayoutHash(pairKey) & 1) === 0 ? -1 : 1;
+}
+
+function baseEdgeBend(length) {
+  return Math.min(
+    MAP_EDGE_BASE_BEND_MAX,
+    Math.max(MAP_EDGE_BASE_BEND_MIN, length * MAP_EDGE_BASE_BEND_RATIO),
+    length * MAP_EDGE_MAX_BEND_RATIO,
+  );
 }
 
 function nodeBoundaryPoint(center, toward, box, clearance = MAP_EDGE_CLEARANCE) {
@@ -6136,13 +7443,33 @@ function nodeBoundaryPoint(center, toward, box, clearance = MAP_EDGE_CLEARANCE) 
   return { x: center.x + dx * scale, y: center.y + dy * scale };
 }
 
-function curvedEdgeGeometry(sourceCenter, targetCenter, laneOffset, sourceBox, targetBox) {
+function curvedEdgeGeometry(
+  sourceCenter,
+  targetCenter,
+  laneBand,
+  sourceBox,
+  targetBox,
+  sourceKey,
+  targetKey,
+) {
   const dx = targetCenter.x - sourceCenter.x;
   const dy = targetCenter.y - sourceCenter.y;
   const length = Math.max(1, Math.hypot(dx, dy));
+  const sourceToken = String(sourceKey || `${sourceCenter.x},${sourceCenter.y}`);
+  const targetToken = String(targetKey || `${targetCenter.x},${targetCenter.y}`);
+  const pairKey = [sourceToken, targetToken].sort().join("|");
+  // Define the bend in canonical endpoint order so reversing an edge keeps the
+  // same physical curve. Parallel edges alternate across the pair and move into
+  // wider bands, while even a singleton retains a visible base arc.
+  const orientation = sourceToken <= targetToken ? 1 : -1;
+  const normalizedLane = Number.isFinite(laneBand) && laneBand !== 0 ? laneBand : 1;
+  const curveOffset = stableEdgeBendSign(pairKey)
+    * Math.sign(normalizedLane)
+    * (baseEdgeBend(length) + (Math.abs(normalizedLane) - 1) * MAP_EDGE_LANE_GAP)
+    * orientation;
   const control = {
-    x: (sourceCenter.x + targetCenter.x) / 2 - (dy / length) * laneOffset,
-    y: (sourceCenter.y + targetCenter.y) / 2 + (dx / length) * laneOffset,
+    x: (sourceCenter.x + targetCenter.x) / 2 - (dy / length) * curveOffset,
+    y: (sourceCenter.y + targetCenter.y) / 2 + (dx / length) * curveOffset,
   };
   const source = nodeBoundaryPoint(sourceCenter, control, sourceBox);
   const target = nodeBoundaryPoint(targetCenter, control, targetBox);
@@ -6273,7 +7600,9 @@ function renderEdges(nodes, positions, dimensions, nodeBoxes, options = {}) {
       positions.get(targetNode.key),
       nextEdgeLane(pairKey, pairTotals, pairOrdinals),
       nodeBoxes.get(sourceNode.key),
-      nodeBoxes.get(targetNode.key)
+      nodeBoxes.get(targetNode.key),
+      sourceNode.key,
+      targetNode.key,
     );
     const health = linkHealth(link);
     const focused = state.focusedNodeKey && (sourceNode.key === state.focusedNodeKey || targetNode.key === state.focusedNodeKey);
@@ -6300,7 +7629,9 @@ function renderEdges(nodes, positions, dimensions, nodeBoxes, options = {}) {
         positions.get(targetNode.key),
         nextEdgeLane(pairKey, pairTotals, pairOrdinals),
         nodeBoxes.get(sourceNode.key),
-        nodeBoxes.get(targetNode.key)
+        nodeBoxes.get(targetNode.key),
+        sourceNode.key,
+        targetNode.key,
       )
       : unresolvedStubGeometry(
         sourceNode || targetNode,
@@ -6310,7 +7641,13 @@ function renderEdges(nodes, positions, dimensions, nodeBoxes, options = {}) {
         index,
         !sourceNode && Boolean(targetNode)
       );
-    const classes = routeQualityClasses(routeSegmentQualityState(routePath, segment, index)).join(" ");
+    const directionDifference = options.routeDirectionDifference;
+    const directionEdgeKey = routeDirectionEdgeKey(segment.source?.node_id, segment.target?.node_id);
+    const differsByDirection = Boolean(
+      directionDifference
+      && directionDifference.currentOnlyEdgeKeys.has(directionEdgeKey)
+    );
+    const classes = `${routeQualityClasses(routeSegmentQualityState(routePath, segment, index)).join(" ")}${differsByDirection ? " is-direction-difference" : ""}`;
     let edgeDisposition = terminal ? "terminal drop"
       : segment.unresolved || unresolvedEnd ? "unresolved gap" : "forwarding segment";
     if (cycleClosing) edgeDisposition = "loop-closing segment";
@@ -6318,12 +7655,15 @@ function renderEdges(nodes, positions, dimensions, nodeBoxes, options = {}) {
       edgeDisposition = pathUsesSplitHorizon(routePath)
         ? "blocked by split horizon" : "blocked by policy";
     }
-    const label = `${routePath.label}, segment ${index + 1}: ${nodeLabelForRef(segment.source)} to ${nodeLabelForRef(segment.target)}, ${edgeDisposition}; ${segment.status}; ${pathStatusSummary(routePath)}`;
+    const directionDetail = differsByDirection
+      ? `; this ${routeDirectionLabel(directionDifference.direction).toLowerCase()} hop differs from the active ${routeDirectionLabel(directionDifference.oppositeDirection).toLowerCase()} path`
+      : "";
+    const label = `${routePath.label}, segment ${index + 1}: ${nodeLabelForRef(segment.source)} to ${nodeLabelForRef(segment.target)}, ${edgeDisposition}; ${segment.status}; ${pathStatusSummary(routePath)}${directionDetail}`;
     const tokens = routeTokensAttribute(segment.component_tokens);
     const focusTargets = routeFocusTargetsAttribute(segment.highlight_target_ids);
     const sourceKey = sourceNode?.key || "";
     const targetKey = targetNode?.key || "";
-    const attributes = `data-route-kind="route-segment" data-route-id="${escapeHtml(segment.segment_id)}" data-route-path-id="${escapeHtml(routePath.path_id)}" data-route-tokens="${tokens}" data-route-focus-targets="${focusTargets}" data-source-node-key="${escapeHtml(sourceKey)}" data-target-node-key="${escapeHtml(targetKey)}"`;
+    const attributes = `data-route-kind="route-segment" data-route-id="${escapeHtml(segment.segment_id)}" data-route-path-id="${escapeHtml(routePath.path_id)}" data-route-tokens="${tokens}" data-route-focus-targets="${focusTargets}" data-route-packet-refs="${packetRefsAttribute(segment.packet_refs)}" data-source-node-key="${escapeHtml(sourceKey)}" data-target-node-key="${escapeHtml(targetKey)}"`;
     const terminalClass = terminal ? " mn-route-terminal-stub is-dead is-dropped"
       : cycleClosing ? " mn-route-cycle-closing is-cycle"
         : policyBlocked ? ` mn-route-policy-stop is-policy-blocked${pathUsesSplitHorizon(routePath) ? " is-split-horizon" : ""}`
@@ -6339,6 +7679,7 @@ function renderEdges(nodes, positions, dimensions, nodeBoxes, options = {}) {
   svg.innerHTML = paths.join("");
   bindRoutePresentationElements(svg);
   bindRouteCorrelationElements(svg);
+  bindRoutePacketGraphElements(svg);
 }
 
 function safeNavigationTarget(target) {
@@ -6814,19 +8155,50 @@ function ensureRouteSelectValue(select, value) {
   select.value = value;
 }
 
+function routeEndpointSeedValue(raw, kind) {
+  if (raw === undefined || raw === null) return "";
+  if (typeof raw !== "object") return String(raw);
+  const idField = kind === "source" ? "source_id" : "destination_id";
+  return String(
+    raw[idField]
+    ?? raw.endpoint_id
+    ?? raw.value
+    ?? raw.address
+    ?? raw.prefix
+    ?? raw.label
+    ?? "",
+  );
+}
+
 function useRouteTableEntry(entryId) {
   const entry = state.routeTableSnapshot?.items.find((item) => item.route_entry_id === entryId);
   if (!entry || !state.routeCapabilities) return;
   const query = entry.trace_query || {};
-  const sourceCapability = state.routeCapabilities.sources.find((source) => source.source_id === query.source_id)
-    || state.routeCapabilities.sources.find((source) => source.node_id === entry.node_id);
-  const source = query.source_id || entry?.source?.source_id || sourceCapability?.source_id || entry.node_id;
-  const destination = query.destination?.value || entry.destination?.value
+  const explicitFlowSource = query?.flow?.source;
+  const source = routeEndpointSeedValue(explicitFlowSource, "source")
+    || query.source_id || entry?.source?.source_id || "";
+  const explicitFlowDestination = query?.flow?.destination ?? query?.destination;
+  const destination = routeEndpointSeedValue(explicitFlowDestination, "destination")
+    || entry.destination?.value
     || query.destination_id || entry.destination?.destination_id || entry.prefix;
+  const startDescriptor = query?.trace_starts?.forward
+    ?? query?.ingress
+    ?? query?.starting_point
+    ?? null;
+  const start = routeStartSeedValue(startDescriptor, entry.node_id);
   if (query.scenario_id && state.routeCapabilities.scenarios.some((scenario) => scenario.scenario_id === query.scenario_id)) {
     byId("mn-route-scenario").value = query.scenario_id;
   }
-  setRouteEndpointInput("source", source);
+  const steeringScenario = selectedRouteScenario();
+  const steeringProfileId = String(
+    query.steering_profile_id
+    ?? steeringScenario?.steering_profile_id
+    ?? state.routeCapabilities.default_steering_profile
+    ?? "",
+  );
+  renderRouteSteeringProfiles(steeringScenario, steeringProfileId);
+  if (source) setRouteEndpointInput("source", source);
+  setRouteStartInput(start);
   setRouteEndpointInput("destination", destination);
   byId("mn-route-vrf").value = String(query.vrf ?? query.vrf_id ?? entry.vrf);
   ensureRouteSelectValue(byId("mn-route-family"), String(query.route_family ?? query.address_family ?? entry.route_family));
@@ -6845,6 +8217,7 @@ function useRouteTableEntry(entryId) {
 
 function invalidateRouteTraceResult() {
   cancelPendingRouteTrace();
+  clearRoutePacketSelection();
   state.routeBundle = null;
   state.routeTraces = { forward: null, reverse: null };
   state.routeTrace = null;
@@ -6942,12 +8315,16 @@ function syncUrl() {
   if (state.query?.context_id && !state.queryControlsDirty) url.searchParams.set("context_id", state.query.context_id); else url.searchParams.delete("context_id");
   if (state.routeCapabilities) {
     url.searchParams.set("route_scenario", byId("mn-route-scenario").value);
+    url.searchParams.set("route_start", routeStartRequestValue());
     url.searchParams.set("route_source", routeEndpointRequestValue("source"));
     url.searchParams.set("route_destination", routeEndpointRequestValue("destination"));
     url.searchParams.set("route_vrf", byId("mn-route-vrf").value.trim());
     url.searchParams.set("route_family", byId("mn-route-family").value);
     url.searchParams.set("route_type", byId("mn-route-type").value);
     url.searchParams.set("route_policy", byId("mn-route-policy").value);
+    const steeringProfileId = byId("mn-route-steering").value;
+    if (steeringProfileId) url.searchParams.set("route_steering", steeringProfileId);
+    else url.searchParams.delete("route_steering");
     url.searchParams.set("route_direction", byId("mn-route-validation").value);
     url.searchParams.set("route_focus_direction", state.activeRouteDirection);
     url.searchParams.set("route_view", state.routeGraphMode);
@@ -6978,6 +8355,7 @@ async function runRouteTrace(event) {
   const params = new URLSearchParams(location.search);
   const requestedPath = state.requestedRoutePathId || params.get("route_path");
   const requestedDirection = params.get("route_focus_direction");
+  clearRoutePacketSelection();
   state.routePending = true;
   clearRoutePathPreview();
   clearRouteHover();
@@ -7052,6 +8430,7 @@ async function runQuery(event) {
   if (state.query) state.requestedRoutePathId = "";
   state.selectedRoutePathIds = { forward: "", reverse: "" };
   state.selectedRoutePathId = "";
+  clearRoutePacketSelection();
   clearRoutePathPreview();
   clearRouteHover();
   state.routeTableSnapshot = null;
@@ -7105,8 +8484,9 @@ async function runQuery(event) {
   }
   if (succeeded && generation === state.topologyRequestGeneration && state.routeCapabilities && state.query?.nodes?.length) {
     const scopeIssue = routeEndpointScopeIssue(selectedRouteEndpoint("source"), selectedRouteEndpoint("destination"));
-    if (scopeIssue) {
-      byId("mn-route-error").textContent = `${scopeIssue} The topology was reconstructed successfully; route tracing is paused until the endpoints are in scope.`;
+    const startScopeIssue = routeUsesForwardStart() ? routeStartScopeIssue(selectedRouteStart()) : "";
+    if (scopeIssue || startScopeIssue) {
+      byId("mn-route-error").textContent = `${scopeIssue || startScopeIssue} The topology was reconstructed successfully; route tracing is paused until the requested flow and trace start are in scope.`;
     } else {
       await runRouteTrace();
     }
@@ -7143,6 +8523,14 @@ function bindControls() {
       ?? scenario?.default_destination ?? state.routeCapabilities.default_destination;
     if (source) setRouteEndpointInput("source", source);
     if (destination) setRouteEndpointInput("destination", destination);
+    const sourceStart = state.routeCapabilities.start_points.find(
+      (point) => point.node_id === selectedRouteEndpoint("source")?.node_id
+    );
+    setRouteStartInput(
+      routeStartSelectorValue(scenario?.default_start)
+      || state.routeCapabilities.default_start
+      || sourceStart?.start_id
+    );
     const vrf = scenario?.vrf ?? scenario?.vrf_id;
     const family = pair?.forward?.route_family ?? scenario?.route_family ?? scenario?.address_family;
     const routeType = pair?.forward?.route_type ?? scenario?.route_type;
@@ -7152,6 +8540,12 @@ function bindControls() {
       vrf: vrf || byId("mn-route-vrf").value,
       scenario,
     });
+    const steeringProfileId = String(
+      scenario?.steering_profile_id
+      ?? state.routeCapabilities.default_steering_profile
+      ?? "",
+    );
+    renderRouteSteeringProfiles(scenario, steeringProfileId);
     clearFocusedRouteEntry();
     invalidateRouteTraceResult();
     syncUrl();
@@ -7170,6 +8564,17 @@ function bindControls() {
       if (state.routeTrace || state.routeBundle || state.routePending) invalidateRouteTraceResult();
       syncUrl();
     });
+  });
+  byId("mn-route-start").addEventListener("input", () => {
+    if (state.focusedRouteEntryId) clearFocusedRouteEntry();
+    if (state.routeTrace || state.routeBundle || state.routePending) invalidateRouteTraceResult();
+    syncUrl();
+  });
+  byId("mn-route-start").addEventListener("change", () => {
+    refreshRouteStartIdentity();
+    clearFocusedRouteEntry();
+    if (state.routeTrace || state.routeBundle || state.routePending) invalidateRouteTraceResult();
+    syncUrl();
   });
   ["mn-route-vrf", "mn-route-family", "mn-route-type"].forEach((id) => {
     const control = byId(id);
@@ -7193,7 +8598,12 @@ function bindControls() {
     invalidateRouteTraceResult();
     syncUrl();
   });
+  byId("mn-route-steering").addEventListener("change", () => {
+    invalidateRouteTraceResult();
+    syncUrl();
+  });
   byId("mn-route-validation").addEventListener("change", () => {
+    syncRouteStartControlState();
     clearFocusedRouteEntry();
     invalidateRouteTraceResult();
     syncUrl();
@@ -7231,6 +8641,10 @@ function bindControls() {
   byId("mn-route-clear-path").addEventListener("click", () => clearSelectedRoutePath());
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
+    if (state.routePacketPinnedRef || state.routePacketPreviewRef) {
+      clearRoutePacketSelection({ restoreFocus: true });
+      return;
+    }
     if (state.topologyInspectorKey) {
       clearTopologyInspector({ restoreFocus: true });
       return;

@@ -46,6 +46,62 @@ class PluginAuthoringDocumentationTests(unittest.TestCase):
         self.assertIn("incomplete scope evidence", example)
         self.assertIn("docs/plugin-author-quickstart.md", example)
 
+    def test_forwarding_docs_keep_trace_start_distinct_from_flow_source(self) -> None:
+        quickstart = (ROOT / "docs" / "plugin-author-quickstart.md").read_text(
+            encoding="utf-8"
+        )
+        contract = (ROOT / "docs" / "plugin-contract.md").read_text(
+            encoding="utf-8"
+        )
+        architecture = (ROOT / "docs" / "architecture.md").read_text(
+            encoding="utf-8"
+        )
+        api_contract = (ROOT / "docs" / "api-contract.md").read_text(
+            encoding="utf-8"
+        )
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        for document in (quickstart, contract, architecture):
+            with self.subTest(document=document[:24]):
+                self.assertIn("evaluate_endpoint_reachability_pair()", document)
+        for document in (quickstart, contract, architecture, api_contract):
+            with self.subTest(path_relation_document=document[:24]):
+                self.assertIn("not_comparable", document)
+                self.assertIn("partial_active_reachability", document)
+        self.assertIn("destination attachment", quickstart)
+        self.assertIn("exact source", quickstart)
+        self.assertIn("endpoint", quickstart)
+        self.assertIn("federation/linker", contract)
+        self.assertIn("forward observation/start", api_contract)
+        self.assertIn("starting/observation node", readme)
+
+    def test_author_path_depends_on_core_without_demo_runtime(self) -> None:
+        quickstart = (ROOT / "docs" / "plugin-author-quickstart.md").read_text(
+            encoding="utf-8"
+        )
+        contract = (ROOT / "docs" / "plugin-contract.md").read_text(
+            encoding="utf-8"
+        )
+        example_readme = (
+            ROOT / "examples" / "minimal_plugin" / "README.md"
+        ).read_text(encoding="utf-8")
+        example_project = tomllib.loads(
+            (
+                ROOT / "examples" / "minimal_plugin" / "pyproject.toml"
+            ).read_text(encoding="utf-8")
+        )
+
+        self.assertIn("router-dump-analyzer-core", quickstart)
+        self.assertIn("router-dump-analyzer-core", contract)
+        self.assertIn("router-dump-analyzer-core", example_readme)
+        dependencies = tuple(example_project["project"]["dependencies"])
+        self.assertTrue(
+            any(item.startswith("router-dump-analyzer-core") for item in dependencies)
+        )
+        self.assertFalse(
+            any("router-dump-analyzer-demo" in item for item in dependencies)
+        )
+
     def test_validator_command_is_packaged(self) -> None:
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         self.assertEqual(

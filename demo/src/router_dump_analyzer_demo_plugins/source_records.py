@@ -16,6 +16,7 @@ SOURCE_RECORD_GROUP_DESCRIPTORS: list[dict[str, Any]] = [
         "label": "CTF records",
         "description": "Decoded trace records retained before normalization.",
         "default_included": False,
+        "copy_action_label": "Copy CTF text",
         "plugin_defined": True,
     },
     {
@@ -129,6 +130,67 @@ def _sample_indices(event_count: int, target: int = 1_250) -> list[int]:
     return [(slot * event_count) // count for slot in range(count)]
 
 
+def demo_ctf_copy_text(
+    event: dict[str, Any],
+    *,
+    sequence: int | None = None,
+) -> str:
+    """Return the demo plug-in's canonical plain-text CTF representation."""
+
+    event_uid = str(event.get("event_uid") or event.get("event_id") or "unknown")
+    timestamp_ns = int(event.get("timestamp_ns", 0))
+    event_name = str(
+        event.get("event_type")
+        or event.get("event_name")
+        or event.get("label")
+        or "event"
+    )
+    subject = _event_subject(event)
+    resource = str(
+        subject.get("raw_key")
+        or subject.get("resource_id")
+        or event.get("resource_id")
+        or (event.get("affected_resources") or ["unknown"])[0]
+    )
+    action = str(event.get("action") or event.get("operation") or "observe")
+    outcome = str(event.get("outcome") or "unknown")
+    ordinal = (
+        int(sequence)
+        if sequence is not None
+        else int(event.get("source_sequence", 0))
+    )
+    return (
+        f"[{timestamp_ns} ns] {event_name}: {{ event_uid = \"{event_uid}\", "
+        f"resource = \"{resource}\", action = \"{action}\", "
+        f"outcome = \"{outcome}\", sequence = {ordinal} }}"
+    )
+
+
+def lazy_demo_ctf_source_record(event: dict[str, Any]) -> dict[str, Any]:
+    """Materialize an on-demand copy projection without growing bootstrap JSON."""
+
+    event_uid = str(event.get("event_uid") or event.get("event_id") or "unknown")
+    subject = _event_subject(event)
+    return {
+        "source_record_uid": f"copy-ctf-{event_uid}",
+        "timestamp_ns": str(int(event.get("timestamp_ns", 0))),
+        "source_type": "ctf",
+        "source_name": "packed-ctf/on-demand",
+        "layer": str(subject.get("layer") or event.get("layer") or "unknown"),
+        "record_name": str(
+            event.get("event_type")
+            or event.get("event_name")
+            or event.get("label")
+            or "event"
+        ),
+        "message": "CTF text is available through the explicit copy action.",
+        "copy_text": demo_ctf_copy_text(event),
+        "matched_event_uid": event_uid,
+        "matched_event_uids": [event_uid],
+        "plugin_defined": True,
+    }
+
+
 def build_demo_source_records(
     events: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -190,8 +252,13 @@ def build_demo_source_records(
                     f"tracepoint={event_name} resource={resource} "
                     f"sequence={event_index} status=Ok"
                 ),
+                "copy_text": demo_ctf_copy_text(
+                    event,
+                    sequence=event_index,
+                ),
                 "attributes": {"sequence": event_index, "resource": resource},
                 "matched_event_uid": event_uid,
+                "matched_event_uids": [event_uid],
                 "matched": True,
                 "plugin_defined": True,
             }
@@ -207,6 +274,10 @@ def build_demo_source_records(
                 "layer": layer,
                 "record_name": ctf_name,
                 "message": f"{ctf_message}; stream_ordinal={event_index}",
+                "copy_text": (
+                    f"[{timestamp_ns + 200_000} ns] {ctf_name}: "
+                    f"{{ stream_ordinal = {event_index}, matched = false }}"
+                ),
                 "attributes": {"stream_ordinal": event_index},
                 "matched_event_uid": None,
                 "matched": False,

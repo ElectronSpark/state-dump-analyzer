@@ -18,12 +18,12 @@ For split-process development, start the backend without integrated pages:
 Then, in a second terminal, run the dependency-free Node development server:
 
 ```powershell
-npm --prefix frontend run serve
+npm --prefix demo/frontend run serve
 ```
 
 Open `http://127.0.0.1:4173`. The frontend server proxies the API paths declared
 in the manifest to `http://127.0.0.1:8765`, avoiding browser CORS differences
 between integrated and split-process operation.
 
-Use `npm --prefix frontend run check` to validate the manifest, local asset
+Use `npm --prefix demo/frontend run check` to validate the manifest, local asset
 references, and JavaScript syntax without installing packages.

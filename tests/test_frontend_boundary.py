@@ -8,7 +8,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import patch
 
-from router_dump_analyzer.frontend_host import (
+from router_dump_analyzer_demo.frontend_host import (
     FRONTEND_DIR_ENV,
     FrontendBundleError,
     FrontendHost,
@@ -17,8 +17,8 @@ from router_dump_analyzer.frontend_host import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FRONTEND_ROOT = ROOT / "frontend"
-PYTHON_PACKAGE = ROOT / "src" / "router_dump_analyzer"
+FRONTEND_ROOT = ROOT / "demo" / "frontend"
+PYTHON_PACKAGE = ROOT / "demo" / "src" / "router_dump_analyzer_demo"
 
 
 class _PageContractParser(HTMLParser):

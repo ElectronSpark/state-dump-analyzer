@@ -38,6 +38,9 @@ from router_dump_analyzer.plugin_api import (
     ResourceKindDescriptor,
     ResourceKey,
     SnapshotObservation,
+    SourceRecordEmission,
+    SourceRecordGroupDescriptor,
+    SourceRecordTypeDescriptor,
     StatusParseOutput,
 )
 
@@ -96,6 +99,23 @@ def _interface_schema() -> PluginSchema:
             ),
         ),
         relationship_types=(),
+        source_record_groups=(
+            SourceRecordGroupDescriptor(
+                group_id="status-input",
+                label="Status input",
+                description="Decoded status rows retained beside normalized state.",
+                copy_action_label="Copy status rows",
+            ),
+        ),
+        source_record_types=(
+            SourceRecordTypeDescriptor(
+                source_type="status-json",
+                label="Status JSON",
+                description="Validated JSONL input retained by the example plug-in.",
+                color="#66b8ff",
+                stream_group="status-input",
+            ),
+        ),
     )
 
 
@@ -270,6 +290,18 @@ class MinimalRouterPlugin(AnalyzerPluginBase):
                     "oper_status": oper_status,
                     "description": description,
                 }
+                yield SourceRecordEmission(
+                    timestamp_ns=timestamp_ns,
+                    timestamp_uncertainty_ns=0,
+                    source_type="status-json",
+                    source_name=STATUS_FILENAME,
+                    record_name="interface_status",
+                    message=f"{name}: admin={admin_status}, oper={oper_status}",
+                    layer=spec.layer,
+                    copy_text=raw.decode("utf-8"),
+                    attributes={"line_number": line_number},
+                    evidence=(evidence,),
+                )
                 yield SnapshotObservation(
                     resource=resource,
                     observed_at_min_ns=timestamp_ns,

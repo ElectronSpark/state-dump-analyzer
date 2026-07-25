@@ -7,13 +7,13 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from router_dump_analyzer import demo_app
-from router_dump_analyzer.demo_data import REVISION_ID
+from router_dump_analyzer_demo import app as demo_app
+from router_dump_analyzer_demo.data import REVISION_ID
 
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_JS = ROOT / "frontend" / "assets" / "app.js"
-STYLES_CSS = ROOT / "frontend" / "assets" / "styles.css"
+APP_JS = ROOT / "demo" / "frontend" / "assets" / "app.js"
+STYLES_CSS = ROOT / "demo" / "frontend" / "assets" / "styles.css"
 
 
 def javascript_function(source: str, name: str) -> str:
@@ -125,7 +125,9 @@ class TimelineClusterDetailFrontendTests(unittest.TestCase):
         self.assertIn("end_ns: cluster.endNs.toString()", request)
         self.assertIn("limit: CLUSTER_DETAIL_PAGE_SIZE", request)
         self.assertIn("requestId !== cluster.detailRequestId", request)
-        self.assertIn("new Set([...cluster.eventUids", request)
+        self.assertIn("new Set([", request)
+        self.assertIn("cluster.eventUids.filter", request)
+        self.assertIn("state.hiddenTimelineEntryIds.has", request)
         self.assertIn("payload.next_offset", request)
         self.assertIn("Boolean(payload.truncated)", request)
 

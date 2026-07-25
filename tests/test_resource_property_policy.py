@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from router_dump_analyzer.demo_data import (
+from router_dump_analyzer_demo.data import (
     _redact_resource_view,
     _resource_search_text,
     redact_event_for_client,

@@ -10,6 +10,8 @@ const EVENT_LOG_OVERSCAN = 10;
 const EVENT_LOG_PAGE_SIZE = 120;
 const EVENT_LOG_PAGE_CACHE_LIMIT = 12;
 const EVENT_LOG_FILTER_DELAY_MS = 220;
+const MAX_EVENT_LOG_SELECTION_RANGES = 128;
+const MAX_EVENT_LOG_SELECTION_ITEMS = 5000;
 const DENSITY_PAGE_CACHE_LIMIT = 12;
 const MAX_RESOURCE_ROWS = 500;
 const MAX_LANE_PICKER_ROWS = 300;
@@ -49,6 +51,8 @@ const state = {
   includedSourceRecordGroups: new Set(),
   eventLogRows: [],
   eventLogIndexById: new Map(),
+  eventLogSelectableCount: 0,
+  eventLogVirtualIndexBySelectionIndex: [],
   eventLogRenderFrame: null,
   eventLogFilterTimer: null,
   eventLogServerKey: null,
@@ -61,6 +65,19 @@ const state = {
   eventLogServerSummary: null,
   eventLogServerError: null,
   eventLogLocateRequestId: 0,
+  eventLogSelectionRanges: [],
+  eventLogSelectionQueryKey: null,
+  eventLogSelectionAnchor: null,
+  eventLogSelectionFocus: null,
+  eventLogSelectionRequestId: 0,
+  eventLogSelectionCache: null,
+  eventLogDrag: null,
+  eventLogSuppressClickUntil: 0,
+  eventLogHoverModels: new Map(),
+  timelineEntryProjections: new Map(),
+  hiddenTimelineEntryIds: new Set(),
+  hiddenEventProjectionsByResource: new Map(),
+  markedTimelineEntryIds: new Set(),
   customRecordLaneSequence: 0,
   layerMeta: new Map(),
   activeLayers: new Set(),
@@ -87,6 +104,7 @@ const state = {
   resourceTableSelectionReady: false,
   laneMode: "all",
   explicitLaneIds: new Set(),
+  hiddenTimelineResourceIds: new Set(),
   laneFilterText: "",
   graph: null,
   graphShowFull: false,
@@ -652,6 +670,14 @@ function sourceRecordTime(record) {
   return toNs(record?.time_ns ?? record?.timestamp_ns, state.viewStartNs);
 }
 
+function sourceRecordMatchedEventUids(record) {
+  const plural = Array.isArray(record?.matched_event_uids)
+    ? record.matched_event_uids.map(String).filter(Boolean)
+    : [];
+  const singular = record?.matched_event_uid ? [String(record.matched_event_uid)] : [];
+  return [...new Set([...plural, ...singular])];
+}
+
 function sourceTypeDescriptor(sourceType) {
   return state.sourceRecordTypes.get(String(sourceType || "unknown")) || {
     source_type: String(sourceType || "unknown"),
@@ -1060,6 +1086,11 @@ function normalizeCluster(raw, lane) {
 function normalizeSourceMark(raw, lane) {
   const uid = String(raw?.source_record_uid || raw?.record?.source_record_uid || "");
   const record = raw?.record || state.sourceRecordByUid.get(uid) || raw || {};
+  const matchedEventUids = sourceRecordMatchedEventUids({
+    ...record,
+    matched_event_uid: raw?.matched_event_uid ?? record.matched_event_uid,
+    matched_event_uids: raw?.matched_event_uids ?? record.matched_event_uids,
+  });
   if (uid && !state.sourceRecordByUid.has(uid)) state.sourceRecordByUid.set(uid, record);
   return {
     kind: "source-record",
@@ -1069,7 +1100,8 @@ function normalizeSourceMark(raw, lane) {
     recordName: String(raw?.record_name || record.record_name || "record"),
     sourceName: String(raw?.source_name || record.source_name || "source"),
     message: String(raw?.message || record.message || ""),
-    matchedEventUid: raw?.matched_event_uid || record.matched_event_uid || null,
+    matchedEventUid: matchedEventUids[0] || null,
+    matchedEventUids,
     record,
     lane,
   };
@@ -1180,10 +1212,65 @@ function timelineExpansionNoticeHtml(trackWidth = state.trackWidth) {
   </div>`;
 }
 
+function rebuildHiddenEventProjectionIndex() {
+  const index = new Map();
+  for (const entryId of state.hiddenTimelineEntryIds) {
+    if (!entryId.startsWith("event:")) continue;
+    const projection = state.timelineEntryProjections.get(entryId);
+    if (!projection) continue;
+    projection.resourceIds.forEach((resourceId) => {
+      if (!index.has(resourceId)) index.set(resourceId, []);
+      index.get(resourceId).push(projection);
+    });
+  }
+  state.hiddenEventProjectionsByResource = index;
+}
+
+function hiddenEventProjectionsForLane(lane) {
+  return state.hiddenEventProjectionsByResource.get(lane.resourceId) || [];
+}
+
+function adjustedTimelineCluster(cluster, lane) {
+  const hidden = new Map();
+  hiddenEventProjectionsForLane(lane).forEach((projection) => {
+    if (projection.timeNs >= cluster.startNs && projection.timeNs <= cluster.endNs) {
+      hidden.set(projection.uid, projection);
+    }
+  });
+  cluster.eventUids.forEach((uid) => {
+    const entryId = normalizedLogEntryId(uid);
+    if (state.hiddenTimelineEntryIds.has(entryId)) {
+      hidden.set(uid, state.timelineEntryProjections.get(entryId));
+    }
+  });
+  if (!hidden.size) return cluster;
+  const items = cluster.items.filter((mark) => !hidden.has(mark.eventUid));
+  const eventUids = cluster.eventUids.filter((uid) => !hidden.has(uid));
+  const hiddenFailures = [...hidden.values()].filter(
+    (projection) => projection?.entry && eventFailed(projection.entry),
+  ).length;
+  return {
+    ...cluster,
+    count: Math.max(0, cluster.count - hidden.size),
+    detailTotal: Math.max(0, Number(cluster.detailTotal ?? cluster.count) - hidden.size),
+    failureCount: Math.max(0, cluster.failureCount - hiddenFailures),
+    items,
+    eventUids,
+    hiddenCount: hidden.size,
+  };
+}
+
 function buildClientGlyphs(lane) {
+  const visibleMarks = lane.marks.filter(
+    (mark) => !state.hiddenTimelineEntryIds.has(normalizedLogEntryId(mark.eventUid)),
+  );
   if (lane.clusters.length) {
     const collapsed = new Set(lane.clusters.flatMap((cluster) => cluster.eventUids));
-    return [...lane.clusters, ...lane.marks.filter((mark) => !collapsed.has(mark.eventUid))]
+    return [
+      ...lane.clusters.map((cluster) => adjustedTimelineCluster(cluster, lane))
+        .filter((cluster) => cluster.count > 0),
+      ...visibleMarks.filter((mark) => !collapsed.has(mark.eventUid)),
+    ]
       .sort((a, b) => ((a.timeNs || a.startNs) < (b.timeNs || b.startNs) ? -1 : 1));
   }
   // Cluster by a stable screen-space distance. Because trackWidth grows with
@@ -1204,7 +1291,7 @@ function buildClientGlyphs(lane) {
     } else result.push(...group);
     group = [];
   };
-  for (const mark of lane.marks) {
+  for (const mark of visibleMarks) {
     if (!group.length || timelinePercent(mark.timeNs) - timelinePercent(group.at(-1).timeNs) <= threshold) group.push(mark);
     else {
       flush();
@@ -1238,7 +1325,14 @@ function intersectsRange(start, end) {
   return toNs(start) < bounds[1] && toNs(end) > bounds[0];
 }
 
+function resourceHiddenFromTimeline(resourceId) {
+  resourceId = canonicalResourceId(resourceId);
+  return Boolean(resourceId && state.hiddenTimelineResourceIds.has(resourceId));
+}
+
 function laneSelectedByMode(resourceId) {
+  resourceId = canonicalResourceId(resourceId);
+  if (!resourceId || resourceHiddenFromTimeline(resourceId)) return false;
   if (state.laneMode === "all") return true;
   if (state.laneMode === "selected") return resourceId === state.selectedResourceId;
   if (state.laneMode === "correlated") {
@@ -1311,7 +1405,12 @@ function relationshipGroupsForResource(resourceId, ancestry = new Set()) {
     .forEach((edge) => {
       const otherId = edge.source === resourceId ? edge.target : edge.source;
       const otherLane = state.laneByResource.get(otherId);
-      if (ancestry.has(otherId) || !otherLane || !state.activeLayers.has(otherLane.layer)) return;
+      if (
+        ancestry.has(otherId)
+        || resourceHiddenFromTimeline(otherId)
+        || !otherLane
+        || !state.activeLayers.has(otherLane.layer)
+      ) return;
       // One tree row represents one relationship identity across time.
       // Its changing validity intervals are rendered as multiple ribbons;
       // interval IDs must not duplicate the same child lane.
@@ -1383,7 +1482,12 @@ function relationshipRibbonsForLane(lane, instance) {
 }
 
 function combinedAssociationLane(trackWidth = state.trackWidth) {
-  if (state.correlationTimelineView !== "combined" || !state.selectedResourceId || !state.correlationTimelineExpanded) return "";
+  if (
+    state.correlationTimelineView !== "combined"
+    || !state.selectedResourceId
+    || resourceHiddenFromTimeline(state.selectedResourceId)
+    || !state.correlationTimelineExpanded
+  ) return "";
   const spans = temporalRelationshipSpans()
     .filter((edge) => edge.source === state.selectedResourceId || edge.target === state.selectedResourceId)
     .map((edge) => ({
@@ -1393,7 +1497,10 @@ function combinedAssociationLane(trackWidth = state.trackWidth) {
       otherId: edge.source === state.selectedResourceId ? edge.target : edge.source,
       direction: edge.source === state.selectedResourceId ? "outgoing" : "incoming",
     }))
-    .filter((edge) => edge.endNs > edge.startNs)
+    .filter((edge) => (
+      edge.endNs > edge.startNs
+      && !resourceHiddenFromTimeline(edge.otherId)
+    ))
     .sort((a, b) => a.startNs < b.startNs ? -1 : a.startNs > b.startNs ? 1 : a.otherId.localeCompare(b.otherId));
   const bounds = rangeBounds();
   const rangeBand = bounds
@@ -1710,7 +1817,9 @@ function buildSourceGlyphs(lane) {
     }
     group = [];
   };
-  for (const mark of lane.marks) {
+  for (const mark of lane.marks.filter(
+    (item) => !state.hiddenTimelineEntryIds.has(sourceLogEntryId(item.sourceRecordUid)),
+  )) {
     const prior = group.at(-1);
     const pixelGap = prior
       ? Math.abs(ratioBetween(mark.timeNs) - ratioBetween(prior.timeNs)) * state.trackWidth
@@ -1778,13 +1887,109 @@ function sourceRecordLanesHtml(trackWidth = state.trackWidth) {
   }).join("");
 }
 
+function annotationProjectionLabel(projection) {
+  const entry = projection.entry || {};
+  return projection.streamKind === "source"
+    ? String(entry.record_name || "source record")
+    : String(entry.event_type || entry.label || "event");
+}
+
+function buildAnnotationGlyphs(projections) {
+  const result = [];
+  let group = [];
+  const flush = () => {
+    if (group.length >= 3) {
+      result.push({
+        kind: "annotation-cluster",
+        items: group,
+        startNs: group[0].timeNs,
+        endNs: group.at(-1).timeNs,
+      });
+    } else {
+      result.push(...group);
+    }
+    group = [];
+  };
+  projections.forEach((projection) => {
+    const prior = group.at(-1);
+    const pixelGap = prior
+      ? Math.abs(ratioBetween(projection.timeNs) - ratioBetween(prior.timeNs))
+        * state.trackWidth
+      : Number.POSITIVE_INFINITY;
+    if (!group.length || (pixelGap <= 10 && group.length < 64)) group.push(projection);
+    else {
+      flush();
+      group.push(projection);
+    }
+  });
+  flush();
+  return result;
+}
+
+function annotationClusterHoverHtml(items) {
+  return `<div class="hover-heading"><div><span>REVIEW MARKERS</span><strong>${items.length.toLocaleString()} marked items</strong></div><button class="hover-close" type="button" aria-label="Close">x</button></div>
+    <div class="cluster-window">${items.slice(0, 200).map((projection) => `<button type="button" class="cluster-event${state.hiddenTimelineEntryIds.has(projection.entryId) ? " timeline-hidden" : ""}" data-annotation-entry-id="${escapeHtml(projection.entryId)}"><span>${escapeHtml(formatOffset(projection.timeNs))}</span><strong>${escapeHtml(annotationProjectionLabel(projection))}</strong><small>${escapeHtml(projection.entryId)}${state.hiddenTimelineEntryIds.has(projection.entryId) ? " / underlying mark hidden" : ""}</small></button>`).join("")}${items.length > 200 ? `<p class="cluster-detail-state">${(items.length - 200).toLocaleString()} additional markers are collapsed.</p>` : ""}</div>`;
+}
+
+function reviewMarkerLaneHtml(trackWidth = state.trackWidth) {
+  const marked = [...state.markedTimelineEntryIds]
+    .map((entryId) => state.timelineEntryProjections.get(entryId))
+    .filter(Boolean)
+    .sort((left, right) => (
+      left.timeNs < right.timeNs ? -1 : left.timeNs > right.timeNs ? 1 : left.entryId.localeCompare(right.entryId)
+    ));
+  if (!marked.length) return "";
+  const glyphs = buildAnnotationGlyphs(marked).map((glyph, index) => {
+    if (glyph.kind === "annotation-cluster") {
+      const key = `annotation-cluster:${index}:${glyph.startNs}`;
+      const last = glyph.items[glyph.items.length - 1];
+      const hiddenInCluster = glyph.items.filter(
+        (projection) => state.hiddenTimelineEntryIds.has(projection.entryId),
+      ).length;
+      const lastJump = last?.streamKind === "source"
+        ? `data-last-source-record-uid="${escapeHtml(last.uid)}"`
+        : last
+          ? `data-last-event-uid="${escapeHtml(last.uid)}"`
+          : "";
+      state.hoverModels.set(key, {
+        type: "annotation-cluster",
+        items: glyph.items,
+      });
+      const time = glyph.startNs + (glyph.endNs - glyph.startNs) / 2n;
+      return `<button class="review-marker cluster${hiddenInCluster ? " has-hidden" : ""}" type="button" data-hover-key="${escapeHtml(key)}" ${lastJump} style="left:${timelinePercent(time)}%" aria-label="${glyph.items.length} review markers${hiddenInCluster ? `; ${hiddenInCluster} underlying marks hidden` : ""}"><span>${glyph.items.length}</span></button>`;
+    }
+    const key = `review-marker:${glyph.entryId}`;
+    const jump = glyph.streamKind === "source"
+      ? `data-source-record-uid="${escapeHtml(glyph.uid)}"`
+      : `data-event-uid="${escapeHtml(glyph.uid)}"`;
+    state.hoverModels.set(key, eventLogHoverModel(glyph.entry));
+    const hiddenClass = state.hiddenTimelineEntryIds.has(glyph.entryId)
+      ? " underlying-hidden"
+      : "";
+    return `<button class="review-marker ${glyph.streamKind}${hiddenClass}" type="button" data-hover-key="${escapeHtml(key)}" data-log-entry-id="${escapeHtml(glyph.entryId)}" ${jump} style="left:${timelinePercent(glyph.timeNs)}%" aria-label="${escapeHtml(`Marked ${annotationProjectionLabel(glyph)} at ${formatOffset(glyph.timeNs)}${hiddenClass ? "; underlying mark hidden" : ""}`)}"><span aria-hidden="true">&#9733;</span></button>`;
+  }).join("");
+  const hiddenCount = marked.filter(
+    (projection) => state.hiddenTimelineEntryIds.has(projection.entryId),
+  ).length;
+  const markerCountCopy = `${marked.length.toLocaleString()} marked`
+    + (hiddenCount ? ` / ${hiddenCount.toLocaleString()} hidden` : "");
+  return `<div class="timeline-row review-marker-row" style="grid-template-columns:${LANE_WIDTH}px ${trackWidth}px;--layer-color:var(--amber)">
+    <div class="lane-label review-marker-lane-label"><span class="review-marker-icon" aria-hidden="true">&#9733;</span><span class="lane-copy"><strong>Review markers</strong><span class="lane-meta"><span class="lane-type">${markerCountCopy}</span></span></span></div>
+    <div class="lane-track review-marker-track">${glyphs}</div>
+  </div>`;
+}
+
 function renderTimeline() {
   const content = byId("timeline-content");
   if (!content) return;
   const regularVisible = visibleTimelineLanes();
-  const selectedLane = state.laneByResource.get(state.selectedResourceId);
-  const visible = state.correlationTimelineView === "combined" && selectedLane
-    ? [{ lane: selectedLane, key: `root:${selectedLane.resourceId}`, depth: 0, parentResourceId: null, relationship: null, hasChildren: relationshipGroupsForResource(selectedLane.resourceId, new Set([selectedLane.resourceId])).length > 0 }]
+  const selectedLane = resourceHiddenFromTimeline(state.selectedResourceId)
+    ? null
+    : state.laneByResource.get(state.selectedResourceId);
+  const visible = state.correlationTimelineView === "combined"
+    ? selectedLane
+      ? [{ lane: selectedLane, key: `root:${selectedLane.resourceId}`, depth: 0, parentResourceId: null, relationship: null, hasChildren: relationshipGroupsForResource(selectedLane.resourceId, new Set([selectedLane.resourceId])).length > 0 }]
+      : []
     : timelineTreeInstances(regularVisible);
   const trackWidth = Math.round(900 * state.zoom);
   state.trackWidth = trackWidth;
@@ -1793,11 +1998,13 @@ function renderTimeline() {
   byId("timeline-frame").querySelector(".timeline-sticky").style.gridTemplateColumns = `${LANE_WIDTH}px ${trackWidth}px`;
   renderRuler();
   state.hoverModels.clear();
+  rebuildHiddenEventProjectionIndex();
   const densityLane = eventDensityLane(trackWidth);
   const expansionNotice = timelineExpansionNoticeHtml(trackWidth);
   const sourceLanes = sourceRecordLanesHtml(trackWidth);
+  const reviewMarkers = reviewMarkerLaneHtml(trackWidth);
 
-  content.innerHTML = expansionNotice + densityLane + sourceLanes + visible.map((instance) => {
+  content.innerHTML = expansionNotice + densityLane + reviewMarkers + sourceLanes + visible.map((instance) => {
     const lane = instance.lane;
     const compact = lane.tags.has("compact") || lane.tags.has("connector");
     const kindLabel = humanResourceType(lane.kind);
@@ -1851,20 +2058,23 @@ function renderTimeline() {
       : "";
     const customIcon = resourceIconMarkup(lane.resource, lane.kind, "lane-resource-icon");
     return `<div class="timeline-row${compact ? " compact" : ""}${selectedResource ? " selected-resource" : ""}${correlatedResource ? " correlated-resource" : ""}${instance.depth ? " tree-child" : " tree-root"}" style="grid-template-columns:${LANE_WIDTH}px ${trackWidth}px;--layer-color:${layerColor(lane.layer)};--tree-indent:${instance.depth * 14}px;--tree-branch:${Math.max(0, instance.depth - 1) * 14 + 17}px" data-resource-id="${escapeHtml(lane.resourceId)}" data-tree-key="${escapeHtml(instance.key)}"${instance.parentResourceId ? ` data-parent-resource-id="${escapeHtml(instance.parentResourceId)}"` : ""}${instance.relationship ? ` data-relationship-type="${escapeHtml(instance.relationship.type)}"` : ""}>
-      <button class="lane-label" type="button" data-resource-id="${escapeHtml(lane.resourceId)}" data-tree-key="${escapeHtml(instance.key)}" ${instance.hasChildren ? `data-tree-expandable aria-expanded="${expanded}"` : ""}>
+      <div class="resource-lane-label-shell">
+        <button class="lane-close" type="button" data-lane-close-resource-id="${escapeHtml(lane.resourceId)}" aria-label="${escapeHtml(`Hide ${lane.label} from Resource timeline`)}" title="Hide from Resource timeline"><span aria-hidden="true">&times;</span></button>
+        <button class="lane-label" type="button" data-resource-id="${escapeHtml(lane.resourceId)}" data-tree-key="${escapeHtml(instance.key)}" ${instance.hasChildren ? `data-tree-expandable aria-expanded="${expanded}"` : ""}>
         ${treeGuides}
         <span class="lane-tree-toggle" aria-hidden="true"></span>
         ${customIcon || '<span class="lane-dot" aria-hidden="true"></span>'}
         <span class="lane-copy" title="${escapeHtml(`${lane.label} / ${kindLabel} / ${layerLabel}`)}"><strong>${escapeHtml(lane.label)}</strong><span class="lane-meta">${instance.relationship ? `<span class="lane-relation ${relationDirection}">${relationshipDirectionSymbol(instance.relationship.type, relationDirection)} ${escapeHtml(relationshipDisplayLabel(instance.relationship.type))}</span><span class="lane-separator" aria-hidden="true">·</span>` : ""}<span class="lane-type" title="Resource type: ${escapeHtml(kindLabel)}">${escapeHtml(kindLabel)}</span><span class="lane-separator" aria-hidden="true">·</span><span class="lane-layer">${escapeHtml(layerLabel)}</span></span></span>
         ${instance.truncatedChildren ? `<span class="tree-depth-note" title="${instance.omittedChildCount} deeper relationship branches omitted">+${instance.omittedChildCount} deeper</span>` : ""}
         ${compact ? '<span class="compact-tag">connector</span>' : ""}
-      </button>
+        </button>
+      </div>
       <div class="lane-track" data-resource-id="${escapeHtml(lane.resourceId)}">${rangeBand}${lifecycle}${statuses}${relationshipRibbons}${glyphs}</div>
     </div>`;
   }).join("") + combinedAssociationLane(trackWidth);
 
   if (!visible.length) {
-    content.innerHTML = `${densityLane}${sourceLanes}<div class="timeline-empty" style="width:${LANE_WIDTH + trackWidth}px"><strong>No resource lanes selected</strong><span>Source-record lanes remain visible. Open Lanes to add resource timelines.</span></div>`;
+    content.innerHTML = `${densityLane}${reviewMarkers}${sourceLanes}<div class="timeline-empty" style="width:${LANE_WIDTH + trackWidth}px"><strong>No resource lanes selected</strong><span>Source-record and review-marker lanes remain visible. Open Lanes to add resource timelines.</span></div>`;
   }
 
   const cursor = document.createElement("div");
@@ -1937,7 +2147,18 @@ function updateTimelineHoverFromPointer(event) {
 }
 
 function bindTimelineInteractions() {
-  document.querySelectorAll(".lane-label[data-resource-id]").forEach((button) => {
+  const timeline = byId("timeline-content");
+  if (!timeline) return;
+  timeline.querySelectorAll("[data-lane-close-resource-id]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      closeHover();
+      closeCorrelationHover();
+      setExplicitLaneVisibility(button.dataset.laneCloseResourceId, false);
+    });
+  });
+  timeline.querySelectorAll(".lane-label[data-resource-id]").forEach((button) => {
     button.addEventListener("click", (event) => {
       if (event.ctrlKey || event.metaKey) {
         selectResource(button.dataset.resourceId);
@@ -1954,7 +2175,7 @@ function bindTimelineInteractions() {
       rerenderTimelinePreservingScroll();
     });
   });
-  document.querySelectorAll(".event-mark[data-event-uid]").forEach((mark) => {
+  timeline.querySelectorAll(".event-mark[data-event-uid]").forEach((mark) => {
     mark.addEventListener("click", (event) => {
       event.stopPropagation();
       if (performance.now() < state.suppressTimelineClickUntil) return;
@@ -1967,12 +2188,12 @@ function bindTimelineInteractions() {
         return;
       }
       selectEvent(eventUid, true, resourceId);
-      const replacement = [...document.querySelectorAll(".event-mark[data-event-uid]")]
+      const replacement = [...timeline.querySelectorAll(".event-mark[data-event-uid]")]
         .find((item) => item.dataset.eventUid === eventUid && item.closest(".lane-track")?.dataset.resourceId === resourceId);
       showHover(key, replacement || mark, true);
     });
   });
-  document.querySelectorAll(".event-mark[data-cluster-id]").forEach((mark) => {
+  timeline.querySelectorAll(".event-mark[data-cluster-id]").forEach((mark) => {
     mark.addEventListener("click", (event) => {
       event.stopPropagation();
       if (performance.now() < state.suppressTimelineClickUntil) return;
@@ -1984,7 +2205,7 @@ function bindTimelineInteractions() {
       showHover(mark.dataset.hoverKey, mark, true);
     });
   });
-  document.querySelectorAll(".source-record-mark[data-source-record-uid]").forEach((mark) => {
+  timeline.querySelectorAll(".source-record-mark[data-source-record-uid]").forEach((mark) => {
     mark.addEventListener("click", (event) => {
       event.stopPropagation();
       if (performance.now() < state.suppressTimelineClickUntil) return;
@@ -1998,7 +2219,7 @@ function bindTimelineInteractions() {
       showHover(mark.dataset.hoverKey, mark, true);
     });
   });
-  document.querySelectorAll(".source-record-mark[data-source-cluster-id]").forEach((mark) => {
+  timeline.querySelectorAll(".source-record-mark[data-source-cluster-id]").forEach((mark) => {
     mark.addEventListener("click", (event) => {
       event.stopPropagation();
       if (performance.now() < state.suppressTimelineClickUntil) return;
@@ -2010,7 +2231,26 @@ function bindTimelineInteractions() {
       showHover(mark.dataset.hoverKey, mark, true);
     });
   });
-  document.querySelectorAll("[data-hover-key]").forEach((element) => bindHoverTarget(element));
+  timeline.querySelectorAll(".review-marker[data-hover-key]").forEach((mark) => {
+    mark.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (performance.now() < state.suppressTimelineClickUntil) return;
+      const entryId = mark.dataset.logEntryId;
+      const hoverKey = mark.dataset.hoverKey;
+      if (entryId) {
+        const projection = state.timelineEntryProjections.get(entryId);
+        if (projection?.streamKind === "source") selectSourceRecord(projection.uid, true);
+        else if (projection) selectEvent(projection.uid, true);
+      }
+      const replacement = entryId
+        ? timeline.querySelector(
+          `.review-marker[data-log-entry-id="${CSS.escape(entryId)}"]`,
+        )
+        : mark;
+      showHover(hoverKey, replacement || mark, true);
+    });
+  });
+  timeline.querySelectorAll("[data-hover-key]").forEach((element) => bindHoverTarget(element));
 }
 
 function timelinePointerDown(event) {
@@ -2020,7 +2260,7 @@ function timelinePointerDown(event) {
   const handle = event.target.closest("[data-range-handle]");
   const track = event.target.closest(".lane-track");
   if ((!track && !handle) || !content.contains(track || handle)) return;
-  const mark = event.target.closest(".event-mark, .source-record-mark");
+  const mark = event.target.closest(".event-mark, .source-record-mark, .review-marker");
   if ((event.ctrlKey || event.metaKey) && mark) {
     const eventUid = mark.dataset.eventUid || mark.dataset.lastEventUid;
     const sourceRecordId = mark.dataset.sourceRecordUid || mark.dataset.lastSourceRecordUid;
@@ -2672,6 +2912,7 @@ async function jumpToTimelineEvent(eventUid) {
   if (!event) return;
   let lane = eventLaneFor(eventUid);
   const resourceId = lane?.resourceId || eventResourceRefs(event)[0] || null;
+  if (resourceId) state.hiddenTimelineResourceIds.delete(resourceId);
   if (isScaleMode() && resourceId && !lane) {
     state.laneMode = "custom";
     if (state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) state.explicitLaneIds.delete(state.explicitLaneIds.values().next().value);
@@ -2714,7 +2955,9 @@ async function jumpToTimelineEvent(eventUid) {
 }
 
 async function jumpToTimelineResource(resourceId) {
+  resourceId = canonicalResourceId(resourceId);
   if (!resourceId) return;
+  state.hiddenTimelineResourceIds.delete(resourceId);
   if (isScaleMode() && !state.laneByResource.has(resourceId)) {
     state.laneMode = "custom";
     if (state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) state.explicitLaneIds.delete(state.explicitLaneIds.values().next().value);
@@ -2818,20 +3061,23 @@ function renderEventInspector(event) {
 
 function renderSourceRecordInspector(record) {
   const descriptor = sourceTypeDescriptor(record.source_type);
-  const linked = record.matched_event_uid
-    ? state.eventByUid.get(String(record.matched_event_uid))
+  const matchedEventUids = sourceRecordMatchedEventUids(record);
+  const linked = matchedEventUids.length
+    ? state.eventByUid.get(matchedEventUids[0])
     : null;
   byId("selected-event-title").textContent = titleCase(record.record_name || "source record");
   byId("selected-event-summary").textContent = descriptor.label + " / "
     + String(record.source_name || "source") + " / "
-    + (record.matched_event_uid ? "linked to normalized event" : "unmatched");
+    + (matchedEventUids.length ? "linked to normalized event" : "unmatched");
   const fields = [
     ["Time", formatOffset(sourceRecordTime(record)) + " (" + sourceRecordTime(record) + " ns)"],
     ["Source type", descriptor.label],
     ["Source", record.source_name || "unknown"],
     ["Layer", humanLayer(record.layer || "unknown")],
-    ["Normalization", record.matched_event_uid ? "matched" : "unmatched"],
-    ["Linked event", linked ? String(linked.event_type || record.matched_event_uid) : record.matched_event_uid || "none"],
+    ["Normalization", matchedEventUids.length ? "matched" : "unmatched"],
+    ["Linked events", linked && matchedEventUids.length === 1
+      ? String(linked.event_type || matchedEventUids[0])
+      : matchedEventUids.join(", ") || "none"],
     ["Message", record.message || ""],
     ["Attributes", formatValue(record.attributes || {})],
   ];
@@ -2866,13 +3112,19 @@ function scheduleHoverClose() {
   state.hoverCloseTimer = window.setTimeout(closeHover, HOVER_CLOSE_GRACE_MS);
 }
 
-function eventHoverHtml(mark, lane) {
+function eventHoverHtml(mark, lane, occurrenceLanes = [lane]) {
   const event = mark.event || {};
   const condition = resourceEffectCondition(mark.effect, lane.resourceId);
   const effectState = resourceEffectState(mark.effect);
   const result = mark.failure && mark.stateChanged === false
     ? "No mutation; status unchanged"
     : condition ?? eventStatus(event, lane.resourceId);
+  const occurrences = (occurrenceLanes || []).filter(Boolean);
+  const occurrenceDetail = occurrences.length > 1
+    ? `<dt>Timeline occurrences</dt><dd>${occurrences.length} resource lanes<small>${escapeHtml(occurrences.map((item) => item.label).join(", "))}</small></dd>`
+    : occurrences.length
+      ? ""
+      : "<dt>Timeline</dt><dd>Not in the loaded lanes<small>Use Reveal in timeline to load its resource lane.</small></dd>";
   return `<div class="hover-heading"><div><span>${mark.failure ? "FAILED EVENT" : "EVENT"}</span><strong>${escapeHtml(mark.label)}</strong></div><button class="hover-close" type="button" aria-label="Close">x</button></div>
     <dl class="hover-facts">
       <dt>When</dt><dd>${escapeHtml(formatOffset(mark.timeNs))}<small>${mark.timeNs} ns</small></dd>
@@ -2881,6 +3133,7 @@ function eventHoverHtml(mark, lane) {
       <dt>Outcome</dt><dd class="${eventOutcomeCssClass({ outcome: mark.outcome })}">${escapeHtml(mark.outcome)}</dd>
       <dt>Result</dt><dd>${escapeHtml(formatValue(result))}${effectState === null || effectState === undefined ? "" : `<small>${escapeHtml(formatValue(effectState))}</small>`}</dd>
       <dt>Duration</dt><dd>${escapeHtml(formatDuration(mark.durationToNextChangeNs))}<small>until next accepted state change</small></dd>
+      ${occurrenceDetail}
     </dl>`;
 }
 
@@ -2905,7 +3158,7 @@ function clusterHoverHtml(cluster, lane) {
   } else if (cluster.detailTruncated && cluster.serverBacked && !isTopologyNodeSnapshot()) {
     detailControl = '<button class="cluster-load-more" type="button" data-cluster-detail-offset="0">Load exact events</button>';
   }
-  return `<div class="hover-heading"><div><span>COLLAPSED EVENTS</span><strong>${total} events${cluster.failureCount ? ` / ${cluster.failureCount} failed` : ""}</strong>${progress}</div><button class="hover-close" type="button" aria-label="Close">x</button></div>
+  return `<div class="hover-heading"><div><span>COLLAPSED EVENTS</span><strong>${total} events${cluster.failureCount ? ` / ${cluster.failureCount} failed` : ""}${cluster.hiddenCount ? ` / ${cluster.hiddenCount} hidden` : ""}</strong>${progress}</div><button class="hover-close" type="button" aria-label="Close">x</button></div>
     <div class="cluster-window">${items.map((mark) => `<button type="button" class="cluster-event${mark.failure ? " failed" : ""}${inSelectedRange(mark.timeNs) ? " in-range" : ""}" data-cluster-event-uid="${escapeHtml(mark.eventUid)}"><span>${escapeHtml(formatOffset(mark.timeNs))}</span><strong>${escapeHtml(mark.label)}</strong><small>${escapeHtml(`${mark.action} / ${mark.failure ? "failed" : mark.outcome}${rangeBounds() ? (inSelectedRange(mark.timeNs) ? " / in selected range" : " / outside selected range") : ""}`)}</small></button>`).join("") || '<p class="empty-cluster">No event detail was returned for this cluster.</p>'}${detailControl}</div>`;
 }
 
@@ -2951,7 +3204,11 @@ function requestClusterDetail(key, cluster, lane, requestedOffset = 0) {
   }).then((payload) => {
     if (requestId !== cluster.detailRequestId) return false;
     if (!payload || !Array.isArray(payload.items)) throw new Error("Cluster detail response is missing items");
-    const page = payload.items.map((item) => normalizeMark(item, lane));
+    const page = payload.items
+      .map((item) => normalizeMark(item, lane))
+      .filter((mark) => (
+        !state.hiddenTimelineEntryIds.has(normalizedLogEntryId(mark.eventUid))
+      ));
     const merged = offset === 0 ? page : [...cluster.detailItems, ...page];
     const seen = new Set();
     cluster.detailItems = merged.filter((mark) => {
@@ -2959,9 +3216,18 @@ function requestClusterDetail(key, cluster, lane, requestedOffset = 0) {
       seen.add(mark.eventUid);
       return true;
     });
-    cluster.eventUids = [...new Set([...cluster.eventUids, ...cluster.detailItems.map((mark) => mark.eventUid)])];
+    cluster.eventUids = [...new Set([
+      ...cluster.eventUids.filter(
+        (uid) => !state.hiddenTimelineEntryIds.has(normalizedLogEntryId(uid)),
+      ),
+      ...cluster.detailItems.map((mark) => mark.eventUid),
+    ])];
     cluster.detailHydrated = true;
-    cluster.detailTotal = Number(payload.total_count ?? cluster.detailTotal ?? cluster.count);
+    cluster.detailTotal = Math.max(
+      0,
+      Number(payload.total_count ?? cluster.detailTotal ?? cluster.count)
+        - Number(cluster.hiddenCount || 0),
+    );
     cluster.detailNextOffset = payload.next_offset === null || payload.next_offset === undefined
       ? null
       : Number(payload.next_offset);
@@ -2982,13 +3248,17 @@ function requestClusterDetail(key, cluster, lane, requestedOffset = 0) {
 function sourceRecordHoverHtml(mark) {
   const record = mark.record || {};
   const descriptor = sourceTypeDescriptor(mark.sourceType || record.source_type);
-  return `<div class="hover-heading"><div><span>${mark.matchedEventUid ? "MATCHED SOURCE RECORD" : "UNMATCHED SOURCE RECORD"}</span><strong>${escapeHtml(mark.recordName)}</strong></div><button class="hover-close" type="button" aria-label="Close">x</button></div>
+  const matchedEventUids = mark.matchedEventUids?.length
+    ? mark.matchedEventUids
+    : sourceRecordMatchedEventUids(record);
+  const matched = matchedEventUids.length > 0;
+  return `<div class="hover-heading"><div><span>${matched ? "MATCHED SOURCE RECORD" : "UNMATCHED SOURCE RECORD"}</span><strong>${escapeHtml(mark.recordName)}</strong></div><button class="hover-close" type="button" aria-label="Close">x</button></div>
     <dl class="hover-facts">
       <dt>When</dt><dd>${escapeHtml(formatOffset(mark.timeNs))}<small>${mark.timeNs} ns</small></dd>
       <dt>Source</dt><dd>${escapeHtml(descriptor.label)}<small>${escapeHtml(mark.sourceName)}</small></dd>
       <dt>Layer</dt><dd>${escapeHtml(humanLayer(record.layer || "unknown"))}</dd>
-      <dt>Normalization</dt><dd class="${mark.matchedEventUid ? "success-text" : "failure-text"}">${mark.matchedEventUid ? "matched" : "unmatched"}</dd>
-      <dt>Linked event</dt><dd>${escapeHtml(mark.matchedEventUid || "none")}</dd>
+      <dt>Normalization</dt><dd class="${matched ? "success-text" : "failure-text"}">${matched ? "matched" : "unmatched"}</dd>
+      <dt>Linked events</dt><dd>${escapeHtml(matchedEventUids.length ? matchedEventUids.join(", ") : "none")}</dd>
       <dt>Message</dt><dd>${escapeHtml(mark.message || "No decoded message")}</dd>
     </dl>`;
 }
@@ -3059,6 +3329,19 @@ function bindHoverCardActions(card, model, key) {
       selectSourceRecord(button.dataset.clusterSourceRecordUid, true);
     });
   });
+  card.querySelectorAll("[data-annotation-entry-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const projection = state.timelineEntryProjections.get(
+        button.dataset.annotationEntryId,
+      );
+      if (!projection) return;
+      if (projection.streamKind === "source") {
+        selectSourceRecord(projection.uid, true);
+      } else {
+        selectEvent(projection.uid, true);
+      }
+    });
+  });
   if (model.type === "cluster") {
     card.querySelector("[data-cluster-detail-offset]")?.addEventListener("click", (event) => {
       event.preventDefault();
@@ -3069,7 +3352,8 @@ function bindHoverCardActions(card, model, key) {
 }
 
 function showHover(key, anchor, pin) {
-  const model = state.hoverModels.get(key);
+  if (!pin && state.hoverPinned) return;
+  const model = state.hoverModels.get(key) || state.eventLogHoverModels.get(key);
   if (!model) return;
   window.clearTimeout(state.hoverOpenTimer);
   window.clearTimeout(state.hoverCloseTimer);
@@ -3078,13 +3362,15 @@ function showHover(key, anchor, pin) {
   const card = byId("timeline-hover");
   card.classList.toggle("pinned", state.hoverPinned);
   card.innerHTML = model.type === "event"
-    ? eventHoverHtml(model.mark, model.lane)
+    ? eventHoverHtml(model.mark, model.lane, model.occurrenceLanes)
     : model.type === "cluster"
       ? clusterHoverHtml(model.cluster, model.lane)
       : model.type === "source-record"
         ? sourceRecordHoverHtml(model.mark)
-        : model.type === "source-cluster"
+      : model.type === "source-cluster"
           ? sourceClusterHoverHtml(model.cluster)
+        : model.type === "annotation-cluster"
+          ? annotationClusterHoverHtml(model.items)
       : model.type === "relationship"
         ? relationshipHoverHtml(model.edge, model.otherId, model.relativeToId)
         : model.type === "density"
@@ -3336,6 +3622,11 @@ function clearTimelineSelection({ announce = true } = {}) {
 function handleEscapeKey(event) {
   if (event.key !== "Escape" || event.repeat || event.isComposing) return;
   closeCorrelationHover();
+  if (state.eventLogDrag) {
+    event.preventDefault();
+    finishEventLogDrag(null, true);
+    return;
+  }
   const reviewOpen = byId("review-drawer").classList.contains("open");
   if (reviewOpen) {
     event.preventDefault();
@@ -3354,6 +3645,17 @@ function handleEscapeKey(event) {
     event.preventDefault();
     picker.hidden = true;
     byId("lane-picker-toggle").setAttribute("aria-expanded", "false");
+    return;
+  }
+  if (
+    eventLogSelectionCount()
+    && (
+      document.activeElement?.closest?.("#event-log")
+      || document.activeElement?.closest?.("#event-selection-toolbar")
+    )
+  ) {
+    event.preventDefault();
+    clearEventLogSelection({ announce: true });
     return;
   }
   if (clearTimelineSelection()) event.preventDefault();
@@ -3379,6 +3681,12 @@ async function requestTimeline() {
   }
   const selectedRange = rangeBounds();
   const scaleResourceIds = scaleTimelineResourceIds();
+  const selectedRelationshipRoot = canonicalResourceId(state.selectedResourceId);
+  const relationshipHistoryRoots = isScaleMode()
+    && selectedRelationshipRoot
+    && !resourceHiddenFromTimeline(selectedRelationshipRoot)
+    ? [selectedRelationshipRoot]
+    : undefined;
   try {
     const payload = await api(revisionPath("timeline/query"), {
       method: "POST",
@@ -3404,9 +3712,8 @@ async function requestTimeline() {
           end_ns: selectedRange[1].toString(),
         } : null,
         resource_ids: isScaleMode() ? scaleResourceIds : undefined,
-        relationship_history_roots: isScaleMode() && state.selectedResourceId
-          ? [state.selectedResourceId]
-          : undefined,
+        relationship_history_roots: relationshipHistoryRoots,
+        selected_event_uid: state.selectedEventUid || undefined,
         allow_empty: isScaleMode() && state.laneMode === "custom" && scaleResourceIds.length === 0,
       }),
     });
@@ -5606,6 +5913,7 @@ function setLaneMode(mode) {
     showToast("Select a resource first.");
     return;
   }
+  if (mode !== "custom") state.hiddenTimelineResourceIds.clear();
   state.laneMode = mode;
   if (mode === "all") {
     state.explicitLaneIds = new Set(isScaleMode() ? initialScaleLaneIds() : state.lanes.map((lane) => lane.resourceId));
@@ -5620,19 +5928,25 @@ function setLaneMode(mode) {
 }
 
 function setExplicitLaneVisibility(resourceId, visible) {
+  resourceId = canonicalResourceId(resourceId);
+  if (!resourceId) return false;
   if (state.laneMode !== "custom") state.explicitLaneIds = currentModeLaneIds();
-  state.laneMode = "custom";
   if (isScaleMode() && visible && !state.explicitLaneIds.has(resourceId) && state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) {
     showToast(`A full-scale timeline can show up to ${MAX_SCALE_TIMELINE_LANES} lanes at once.`);
-    return;
+    return false;
   }
-  if (visible) state.explicitLaneIds.add(resourceId);
-  else state.explicitLaneIds.delete(resourceId);
-  if (isScaleMode()) refreshScaleTimeline();
-  else {
-    renderTimeline();
-    renderResourceTables();
+  state.laneMode = "custom";
+  if (visible) {
+    state.hiddenTimelineResourceIds.delete(resourceId);
+    state.explicitLaneIds.add(resourceId);
+  } else {
+    state.hiddenTimelineResourceIds.add(resourceId);
+    state.explicitLaneIds.delete(resourceId);
   }
+  renderTimeline();
+  renderResourceTables();
+  if (isScaleMode()) void refreshScaleTimeline();
+  return true;
 }
 
 function validateRecordLanePattern(pattern) {
@@ -5749,7 +6063,10 @@ function renderLanePicker() {
   const list = byId("lane-picker-list");
   if (!list) return;
   const visibleCount = visibleTimelineLanes().length;
-  const combined = state.correlationTimelineView === "combined" && state.selectedResourceId;
+  const combinedMode = state.correlationTimelineView === "combined";
+  const combined = combinedMode
+    && state.selectedResourceId
+    && !resourceHiddenFromTimeline(state.selectedResourceId);
   const hasCombinedAssociationLane = Boolean(
     combined
     && state.correlationTimelineExpanded
@@ -5759,11 +6076,13 @@ function renderLanePicker() {
   );
   const combinedLaneCount = combined ? 1 + Number(hasCombinedAssociationLane) : 0;
   const catalog = isScaleMode() ? state.resourceCatalogLanes : state.lanes;
-  byId("visible-lane-count").textContent = (combined ? `${combinedLaneCount} combined` : `${visibleCount} / ${catalog.length.toLocaleString()}`)
+  byId("visible-lane-count").textContent = (combinedMode ? `${combinedLaneCount} combined` : `${visibleCount} / ${catalog.length.toLocaleString()}`)
     + " · " + state.recordLaneRules.length + " logs";
   byId("lane-picker-toggle").disabled = false;
-  byId("lane-picker-toggle").title = combined
-    ? "Switch to Separate to choose canonical lanes"
+  byId("lane-picker-toggle").title = combinedMode
+    ? combined
+      ? "Switch to Separate to choose canonical lanes"
+      : "The focused combined resource is hidden. Restore it in Resource tables or switch to Separate."
     : state.correlatedResourceIds.size
       ? `${state.correlatedResourceIds.size} resources correlate with the selected resource at ${formatOffset(state.cursorNs)}`
       : "Choose which canonical resource lanes to display";
@@ -6801,6 +7120,119 @@ function logEntryTime(entry) {
   return isSourceLogEntry(entry) ? sourceRecordTime(entry) : eventTime(entry);
 }
 
+function normalizeEventLogSelectionRanges(ranges) {
+  const normalized = (ranges || [])
+    .map((range) => {
+      const start = Math.max(0, Math.trunc(Number(range?.[0] ?? range?.start)));
+      const end = Math.max(0, Math.trunc(Number(range?.[1] ?? range?.end)));
+      return start <= end ? [start, end] : [end, start];
+    })
+    .filter(([start, end]) => Number.isSafeInteger(start) && Number.isSafeInteger(end))
+    .sort((left, right) => left[0] - right[0] || left[1] - right[1]);
+  const merged = [];
+  normalized.forEach(([start, end]) => {
+    const prior = merged.at(-1);
+    if (!prior || start > prior[1] + 1) merged.push([start, end]);
+    else prior[1] = Math.max(prior[1], end);
+  });
+  return merged;
+}
+
+function eventLogSelectionCount(ranges = state.eventLogSelectionRanges) {
+  return ranges.reduce((total, [start, end]) => total + end - start + 1, 0);
+}
+
+function eventLogSelectionIncludes(index, ranges = state.eventLogSelectionRanges) {
+  const value = Number(index);
+  if (!Number.isSafeInteger(value) || index === null || index === "") return false;
+  return ranges.some(([start, end]) => value >= start && value <= end);
+}
+
+function addEventLogSelectionRange(ranges, start, end) {
+  return normalizeEventLogSelectionRanges([...(ranges || []), [start, end]]);
+}
+
+function removeEventLogSelectionRange(ranges, start, end) {
+  const low = Math.min(start, end);
+  const high = Math.max(start, end);
+  const result = [];
+  for (const [rangeStart, rangeEnd] of ranges || []) {
+    if (rangeEnd < low || rangeStart > high) {
+      result.push([rangeStart, rangeEnd]);
+      continue;
+    }
+    if (rangeStart < low) result.push([rangeStart, low - 1]);
+    if (rangeEnd > high) result.push([high + 1, rangeEnd]);
+  }
+  return normalizeEventLogSelectionRanges(result);
+}
+
+function eventLogSelectionSignature() {
+  return JSON.stringify({
+    query: state.eventLogSelectionQueryKey,
+    ranges: state.eventLogSelectionRanges,
+  });
+}
+
+function clearEventLogSelection({ render = true, announce = false } = {}) {
+  const count = eventLogSelectionCount();
+  finishEventLogDrag(null, false);
+  state.eventLogSelectionRanges = [];
+  state.eventLogSelectionAnchor = null;
+  state.eventLogSelectionFocus = null;
+  state.eventLogSelectionCache = null;
+  state.eventLogSelectionRequestId += 1;
+  if (render) {
+    renderEventLogSelectionToolbar();
+    renderEventTableWindow();
+  }
+  if (announce && count) showToast("Event-log selection cleared.");
+  return Boolean(count);
+}
+
+function setEventLogSelectionRanges(ranges, {
+  anchor = state.eventLogSelectionAnchor,
+  focus = state.eventLogSelectionFocus,
+  render = true,
+} = {}) {
+  state.eventLogSelectionRanges = normalizeEventLogSelectionRanges(ranges);
+  state.eventLogSelectionAnchor = Number.isSafeInteger(Number(anchor)) ? Number(anchor) : null;
+  state.eventLogSelectionFocus = Number.isSafeInteger(Number(focus)) ? Number(focus) : null;
+  state.eventLogSelectionCache = null;
+  state.eventLogSelectionRequestId += 1;
+  if (render) {
+    renderEventLogSelectionToolbar();
+    renderEventTableWindow();
+  }
+}
+
+function applyEventLogSelectionGesture(index, {
+  additive = false,
+  extend = false,
+  toggle = false,
+  render = true,
+} = {}) {
+  const target = Math.max(0, Math.trunc(Number(index)));
+  const anchor = extend && state.eventLogSelectionAnchor !== null
+    ? state.eventLogSelectionAnchor
+    : target;
+  let ranges = additive ? state.eventLogSelectionRanges : [];
+  if (toggle) {
+    ranges = eventLogSelectionIncludes(target, ranges)
+      ? removeEventLogSelectionRange(ranges, target, target)
+      : addEventLogSelectionRange(ranges, target, target);
+  } else {
+    ranges = addEventLogSelectionRange(ranges, anchor, target);
+  }
+  setEventLogSelectionRanges(ranges, {
+    anchor: extend && state.eventLogSelectionAnchor !== null
+      ? state.eventLogSelectionAnchor
+      : target,
+    focus: target,
+    render,
+  });
+}
+
 function mergeLogEntries(events, sourceRecords) {
   const normalized = state.eventLogInclude.normalized ? events : [];
   const retained = sourceRecords;
@@ -6839,24 +7271,87 @@ function renderEventLayerFilter() {
   select.value = state.layerMeta.has(selected) ? selected : "";
 }
 
-function renderEventRow(event, rangeMembership = null) {
+function eventLogHoverModel(entry) {
+  if (isSourceLogEntry(entry)) {
+    const uid = sourceRecordUid(entry);
+    const lane = sourceRecordLaneFor(uid) || {
+      laneId: `log-source:${uid}`,
+      label: sourceTypeDescriptor(entry.source_type).label,
+      marks: [],
+    };
+    return {
+      type: "source-record",
+      mark: normalizeSourceMark(entry, lane),
+      lane,
+    };
+  }
+  const uid = String(entry?.event_uid || entry?.event_id || "");
+  const occurrenceLanes = state.lanes.filter(
+    (lane) => lane.marks.some((mark) => mark.eventUid === uid),
+  );
+  const resourceId = eventResourceRefs(entry)[0] || "unresolved";
+  const record = state.resourceById.get(resourceId);
+  const lane = occurrenceLanes[0] || {
+    laneId: `log-event:${uid}`,
+    resourceId,
+    resource: record,
+    layer: eventSubject(entry).layer || resourceLayer(record, resourceId),
+    kind: resourceKind(record, resourceId),
+    label: record ? resourceLabel(record, resourceId) : resourceId,
+    marks: [],
+    lifecycle: [],
+    statuses: [],
+    clusters: [],
+  };
+  return {
+    type: "event",
+    mark: normalizeMark(entry, lane),
+    lane,
+    occurrenceLanes,
+  };
+}
+
+function registerVisibleEventLogHoverModels() {
+  state.eventLogHoverModels.clear();
+  byId("event-table-body")?.querySelectorAll("tr[data-log-entry-id]").forEach((row) => {
+    const entry = row.dataset.sourceRecordUid
+      ? state.sourceRecordByUid.get(row.dataset.sourceRecordUid)
+      : state.eventByUid.get(row.dataset.eventUid);
+    if (!entry) return;
+    state.eventLogHoverModels.set(row.dataset.hoverKey, eventLogHoverModel(entry));
+    bindHoverTarget(row);
+  });
+}
+
+function renderEventRow(event, rangeMembership = null, selectionIndex = null) {
   const subject = eventSubject(event);
   const subjectKey = subject.raw_key ?? eventResourceRefs(event)[0] ?? "unknown";
   const uid = String(event.event_uid || event.event_id);
+  const entryId = normalizedLogEntryId(uid);
   const classes = ["event-row"];
-  if (uid === state.selectedEventUid) classes.push("selected");
+  if (uid === state.selectedEventUid) classes.push("active");
+  if (eventLogSelectionIncludes(selectionIndex)) classes.push("batch-selected");
+  if (state.hiddenTimelineEntryIds.has(entryId)) classes.push("timeline-hidden");
+  if (state.markedTimelineEntryIds.has(entryId)) classes.push("timeline-marked");
   if (rangeMembership === "inside") classes.push("range-included");
-  return `<tr data-log-entry-id="${escapeHtml(normalizedLogEntryId(uid))}" data-event-uid="${escapeHtml(uid)}" data-range-membership="${rangeMembership || "none"}" class="${classes.join(" ")}" tabindex="0"><td>${escapeHtml(formatOffset(eventTime(event)))}</td><td><span class="log-stream-kind normalized">Normalized</span><small>${escapeHtml(humanLayer(subject.layer))}</small></td><td><code>${escapeHtml(event.event_type || event.label)}</code></td><td><code>${escapeHtml(formatValue(subjectKey))}</code></td><td>${escapeHtml(event.action || event.operation || "observe")}</td><td><span class="outcome ${eventFailed(event) ? "failure" : "success"}">${eventFailed(event) ? "failure" : escapeHtml(event.outcome || "success")}</span></td></tr>`;
+  const selected = eventLogSelectionIncludes(selectionIndex);
+  return `<tr data-log-entry-id="${escapeHtml(entryId)}" data-event-uid="${escapeHtml(uid)}" data-selection-index="${selectionIndex}" data-hover-key="${escapeHtml(`log:${entryId}`)}" data-range-membership="${rangeMembership || "none"}" class="${classes.join(" ")}" tabindex="${state.eventLogSelectionFocus === selectionIndex ? "0" : "-1"}" aria-selected="${selected}" aria-rowindex="${Number(selectionIndex) + 2}"><td>${escapeHtml(formatOffset(eventTime(event)))}</td><td><span class="log-stream-kind normalized">Normalized</span><small>${escapeHtml(humanLayer(subject.layer))}</small></td><td><code>${escapeHtml(event.event_type || event.label)}</code></td><td><code>${escapeHtml(formatValue(subjectKey))}</code></td><td>${escapeHtml(event.action || event.operation || "observe")}</td><td><span class="outcome ${eventFailed(event) ? "failure" : "success"}">${eventFailed(event) ? "failure" : escapeHtml(event.outcome || "success")}</span></td></tr>`;
 }
 
-function renderSourceRecordRow(record, rangeMembership = null) {
+function renderSourceRecordRow(record, rangeMembership = null, selectionIndex = null) {
   const uid = sourceRecordUid(record);
+  const entryId = sourceLogEntryId(uid);
   const descriptor = sourceTypeDescriptor(record.source_type);
   const classes = ["event-row", "source-log-row"];
-  if (uid === state.selectedSourceRecordUid) classes.push("selected");
+  if (uid === state.selectedSourceRecordUid) classes.push("active");
+  if (eventLogSelectionIncludes(selectionIndex)) classes.push("batch-selected");
+  if (state.hiddenTimelineEntryIds.has(entryId)) classes.push("timeline-hidden");
+  if (state.markedTimelineEntryIds.has(entryId)) classes.push("timeline-marked");
   if (rangeMembership === "inside") classes.push("range-included");
-  const matched = Boolean(record.matched_event_uid);
-  return `<tr data-log-entry-id="${escapeHtml(sourceLogEntryId(uid))}" data-source-record-uid="${escapeHtml(uid)}" data-range-membership="${rangeMembership || "none"}" class="${classes.join(" ")}" tabindex="0" style="--source-color:${escapeHtml(descriptor.color || stableColor(record.source_type))}"><td>${escapeHtml(formatOffset(sourceRecordTime(record)))}</td><td><span class="log-stream-kind source">${escapeHtml(descriptor.label)}</span><small>${escapeHtml(humanLayer(record.layer || "unknown"))}</small></td><td><code>${escapeHtml(record.record_name || "record")}</code><small>${escapeHtml(record.source_name || "source")}</small></td><td class="source-message" title="${escapeHtml(record.message || "")}">${escapeHtml(record.message || "No decoded message")}</td><td><span class="source-match ${matched ? "matched" : "unmatched"}">${matched ? "matched" : "unmatched"}</span>${matched ? `<small>${escapeHtml(record.matched_event_uid)}</small>` : ""}</td><td><span class="outcome ${matched ? "success" : "unmatched"}">${escapeHtml(record.source_type || "source")}</span></td></tr>`;
+  const matchedEventUids = sourceRecordMatchedEventUids(record);
+  const matched = matchedEventUids.length > 0;
+  const selected = eventLogSelectionIncludes(selectionIndex);
+  return `<tr data-log-entry-id="${escapeHtml(entryId)}" data-source-record-uid="${escapeHtml(uid)}" data-selection-index="${selectionIndex}" data-hover-key="${escapeHtml(`log:${entryId}`)}" data-range-membership="${rangeMembership || "none"}" class="${classes.join(" ")}" tabindex="${state.eventLogSelectionFocus === selectionIndex ? "0" : "-1"}" aria-selected="${selected}" aria-rowindex="${Number(selectionIndex) + 2}" style="--source-color:${escapeHtml(descriptor.color || stableColor(record.source_type))}"><td>${escapeHtml(formatOffset(sourceRecordTime(record)))}</td><td><span class="log-stream-kind source">${escapeHtml(descriptor.label)}</span><small>${escapeHtml(humanLayer(record.layer || "unknown"))}</small></td><td><code>${escapeHtml(record.record_name || "record")}</code><small>${escapeHtml(record.source_name || "source")}</small></td><td class="source-message">${escapeHtml(record.message || "No decoded message")}</td><td><span class="source-match ${matched ? "matched" : "unmatched"}">${matched ? "matched" : "unmatched"}</span>${matched ? `<small>${escapeHtml(matchedEventUids.join(", "))}</small>` : ""}</td><td><span class="outcome ${matched ? "success" : "unmatched"}">${escapeHtml(record.source_type || "source")}</span></td></tr>`;
 }
 
 function renderEventGroup(kind, title, detail) {
@@ -6910,6 +7405,21 @@ function serverEventLogQueryKey() {
   delete body.offset;
   delete body.limit;
   return JSON.stringify(body);
+}
+
+function bindEventLogSelectionToQuery(queryKey) {
+  if (state.eventLogSelectionQueryKey === queryKey) return false;
+  const hadSelection = eventLogSelectionCount() > 0;
+  finishEventLogDrag(null, false);
+  state.eventLogSelectionQueryKey = queryKey;
+  state.eventLogSelectionRanges = [];
+  state.eventLogSelectionAnchor = null;
+  state.eventLogSelectionFocus = null;
+  state.eventLogSelectionCache = null;
+  state.eventLogSelectionRequestId += 1;
+  renderEventLogSelectionToolbar();
+  if (hadSelection) showToast("Event-log selection cleared because the stream order changed.");
+  return hadSelection;
 }
 
 function serverEventLogLayout() {
@@ -7021,6 +7531,8 @@ function rebuildServerEventLogIndex() {
 
 function setServerEventLogRows() {
   const layout = serverEventLogLayout();
+  state.eventLogSelectableCount = Number(layout.totalCount || 0);
+  state.eventLogVirtualIndexBySelectionIndex = [];
   state.eventLogRows = virtualEventLogRows(layout.length, serverEventLogRowAt);
   rebuildServerEventLogIndex();
   const status = byId("event-log-status");
@@ -7034,26 +7546,33 @@ function setServerEventLogRows() {
 
 function registerServerEventLogItem(raw, fallbackIndex) {
   const streamKind = String(raw?.stream_kind || "event");
-  const entry = raw?.entry || raw?.event || raw?.record || {};
+  const suppliedEntry = raw?.entry || raw?.event || raw?.record || {};
   const dataIndex = Math.max(0, Number(raw?.display_index ?? fallbackIndex));
   const membership = raw?.membership === "inside" || raw?.in_selected_range === true
     ? "inside"
     : raw?.membership === "outside" || raw?.in_selected_range === false ? "outside" : null;
-  if (streamKind === "source" || entry.source_record_uid !== undefined) {
-    const uid = sourceRecordUid(entry) || String(raw?.uid || "");
+  let entry = suppliedEntry;
+  if (streamKind === "source" || suppliedEntry.source_record_uid !== undefined) {
+    const uid = sourceRecordUid(suppliedEntry) || String(raw?.uid || "");
+    entry = { ...suppliedEntry, source_record_uid: uid };
     if (uid && (!state.sourceRecordByUid.has(uid) || state.eventLogOwnedSources.has(uid))) {
       state.sourceRecordByUid.set(uid, entry);
       state.eventLogOwnedSources.set(uid, entry);
     }
   } else {
-    const uid = String(entry.event_uid || entry.event_id || raw?.uid || "");
+    const uid = String(suppliedEntry.event_uid || suppliedEntry.event_id || raw?.uid || "");
+    entry = { ...suppliedEntry, event_uid: uid };
     if (uid && (!state.eventByUid.has(uid) || state.eventLogOwnedEvents.has(uid))) {
-      const normalized = { ...entry, event_uid: uid };
-      state.eventByUid.set(uid, normalized);
-      state.eventLogOwnedEvents.set(uid, normalized);
+      state.eventByUid.set(uid, entry);
+      state.eventLogOwnedEvents.set(uid, entry);
     }
   }
-  state.eventLogServerItems.set(dataIndex, { kind: "entry", entry, membership });
+  state.eventLogServerItems.set(dataIndex, {
+    kind: "entry",
+    entry,
+    membership,
+    selectionIndex: dataIndex,
+  });
   return dataIndex;
 }
 
@@ -7081,6 +7600,7 @@ function pruneServerEventLogOwnedCaches() {
     if (loadedEvents.has(uid)
       || timelineEvents.has(uid)
       || uid === state.selectedEventUid
+      || state.timelineEntryProjections.has(normalizedLogEntryId(uid))
       || state.eventDetailByUid.has(uid)
       || state.eventDetailRequests.has(uid)) continue;
     if (state.eventByUid.get(uid) === owned) state.eventByUid.delete(uid);
@@ -7089,7 +7609,8 @@ function pruneServerEventLogOwnedCaches() {
   for (const [uid, owned] of state.eventLogOwnedSources) {
     if (loadedSources.has(uid)
       || timelineSources.has(uid)
-      || uid === state.selectedSourceRecordUid) continue;
+      || uid === state.selectedSourceRecordUid
+      || state.timelineEntryProjections.has(sourceLogEntryId(uid))) continue;
     if (state.sourceRecordByUid.get(uid) === owned) state.sourceRecordByUid.delete(uid);
     state.eventLogOwnedSources.delete(uid);
   }
@@ -7180,6 +7701,7 @@ function ensureServerEventLogPages(startRow, endRow) {
 
 function prepareServerEventLogQuery({ resetScroll = false, requestFirstPage = true } = {}) {
   const key = serverEventLogQueryKey();
+  bindEventLogSelectionToQuery(key);
   const changed = key !== state.eventLogServerKey;
   if (changed) {
     state.eventLogServerKey = key;
@@ -7203,9 +7725,12 @@ function rebuildEventLogRows({ resetScroll = false } = {}) {
     prepareServerEventLogQuery({ resetScroll });
     return;
   }
+  bindEventLogSelectionToQuery(serverEventLogQueryKey());
   const events = state.eventLogInclude.normalized ? filteredEvents() : [];
   const sourceRecords = filteredSourceRecords();
   const entries = mergeLogEntries(events, sourceRecords);
+  state.eventLogSelectableCount = entries.length;
+  state.eventLogVirtualIndexBySelectionIndex = [];
   const bounds = rangeBounds();
   const historyStreamsNotSupplied = Boolean(
     isTopologyNodeSnapshot()
@@ -7230,12 +7755,18 @@ function rebuildEventLogRows({ resetScroll = false } = {}) {
     };
     entries.forEach((entry, index) => {
       state.eventLogIndexById.set(logEntryId(entry), index + 1);
+      state.eventLogVirtualIndexBySelectionIndex[index] = index + 1;
     });
     state.eventLogRows = virtualEventLogRows(
       entries.length + 1,
       (index) => index === 0
         ? group
-        : { kind: "entry", entry: entries[index - 1], membership: null },
+        : {
+          kind: "entry",
+          entry: entries[index - 1],
+          membership: null,
+          selectionIndex: index - 1,
+        },
     );
   } else {
     const included = [];
@@ -7262,14 +7793,21 @@ function rebuildEventLogRows({ resetScroll = false } = {}) {
     };
     included.forEach((entry, index) => {
       state.eventLogIndexById.set(logEntryId(entry), index + 1);
+      state.eventLogVirtualIndexBySelectionIndex[index] = index + 1;
     });
     excluded.forEach((entry, index) => {
       state.eventLogIndexById.set(logEntryId(entry), outsideGroupIndex + index + 1);
+      state.eventLogVirtualIndexBySelectionIndex[included.length + index] = outsideGroupIndex + index + 1;
     });
     state.eventLogRows = virtualEventLogRows(totalRows, (index) => {
       if (index === 0) return selectedGroup;
       if (included.length && index <= included.length) {
-        return { kind: "entry", entry: included[index - 1], membership: "inside" };
+        return {
+          kind: "entry",
+          entry: included[index - 1],
+          membership: "inside",
+          selectionIndex: index - 1,
+        };
       }
       if (!included.length && index === 1) {
         return {
@@ -7282,6 +7820,7 @@ function rebuildEventLogRows({ resetScroll = false } = {}) {
         kind: "entry",
         entry: excluded[index - outsideGroupIndex - 1],
         membership: "outside",
+        selectionIndex: included.length + index - outsideGroupIndex - 1,
       };
     });
   }
@@ -7303,52 +7842,226 @@ function renderEventLogRow(row) {
     return `<tr class="event-range-empty"><td colspan="6">${escapeHtml(row.message)}</td></tr>`;
   }
   return isSourceLogEntry(row.entry)
-    ? renderSourceRecordRow(row.entry, row.membership)
-    : renderEventRow(row.entry, row.membership);
+    ? renderSourceRecordRow(row.entry, row.membership, row.selectionIndex)
+    : renderEventRow(row.entry, row.membership, row.selectionIndex);
+}
+
+function focusEventLogEntry(row, moveCursor = false) {
+  if (row.dataset.sourceRecordUid) {
+    selectSourceRecord(row.dataset.sourceRecordUid, moveCursor);
+  } else if (row.dataset.eventUid) {
+    selectEvent(row.dataset.eventUid, moveCursor);
+  }
+}
+
+function revealEventLogEntry(row) {
+  if (row.dataset.sourceRecordUid) {
+    jumpSourceRecordToTimeline(row.dataset.sourceRecordUid);
+  } else if (row.dataset.eventUid) {
+    jumpToTimelineEvent(row.dataset.eventUid);
+  }
+}
+
+function visibleEventLogRowAtPoint(clientX, clientY) {
+  const direct = document.elementFromPoint(clientX, clientY)
+    ?.closest?.("tr[data-selection-index]");
+  if (direct) return direct;
+  const rows = [...byId("event-table-body").querySelectorAll("tr[data-selection-index]")];
+  return rows.find((row) => {
+    const rect = row.getBoundingClientRect();
+    return clientY >= rect.top && clientY <= rect.bottom;
+  }) || (clientY < byId("event-log-scroll").getBoundingClientRect().top
+    ? rows[0]
+    : rows.at(-1));
+}
+
+function eventLogDragRanges(drag, targetIndex) {
+  const anchor = drag.extend && drag.anchor !== null ? drag.anchor : drag.startIndex;
+  const base = drag.additive ? drag.baseRanges : [];
+  return addEventLogSelectionRange(base, anchor, targetIndex);
+}
+
+function runEventLogDragAutoScroll() {
+  const drag = state.eventLogDrag;
+  if (!drag?.active) return;
+  const host = byId("event-log-scroll");
+  const rect = host.getBoundingClientRect();
+  const edge = 34;
+  const distance = drag.lastClientY < rect.top + edge
+    ? drag.lastClientY - (rect.top + edge)
+    : drag.lastClientY > rect.bottom - edge
+      ? drag.lastClientY - (rect.bottom - edge)
+      : 0;
+  if (distance) {
+    host.scrollTop += Math.sign(distance) * Math.max(5, Math.min(24, Math.abs(distance)));
+    renderEventTableWindow();
+    const row = visibleEventLogRowAtPoint(drag.lastClientX, drag.lastClientY);
+    const index = Number(row?.dataset.selectionIndex);
+    if (Number.isSafeInteger(index) && index !== drag.lastIndex) {
+      drag.lastIndex = index;
+      setEventLogSelectionRanges(eventLogDragRanges(drag, index), {
+        anchor: drag.extend && drag.anchor !== null ? drag.anchor : drag.startIndex,
+        focus: index,
+        render: true,
+      });
+    }
+  }
+  drag.animationFrame = window.requestAnimationFrame(runEventLogDragAutoScroll);
+}
+
+function eventLogPointerDown(event) {
+  if (event.pointerType === "touch" || event.button !== 0 || !event.isPrimary) return;
+  const row = event.target.closest("tr[data-selection-index]");
+  if (!row || event.target.closest("button, a, input, select, textarea")) return;
+  const startIndex = Number(row.dataset.selectionIndex);
+  if (!Number.isSafeInteger(startIndex)) return;
+  const host = byId("event-log-scroll");
+  state.eventLogDrag = {
+    pointerId: event.pointerId,
+    startIndex,
+    lastIndex: startIndex,
+    anchor: state.eventLogSelectionAnchor,
+    baseFocus: state.eventLogSelectionFocus,
+    baseRanges: state.eventLogSelectionRanges.map((range) => [...range]),
+    additive: event.ctrlKey || event.metaKey,
+    extend: event.shiftKey,
+    startX: event.clientX,
+    startY: event.clientY,
+    lastClientX: event.clientX,
+    lastClientY: event.clientY,
+    active: false,
+    animationFrame: null,
+  };
+  host.setPointerCapture?.(event.pointerId);
+}
+
+function eventLogPointerMove(event) {
+  const drag = state.eventLogDrag;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  drag.lastClientX = event.clientX;
+  drag.lastClientY = event.clientY;
+  if (!drag.active && Math.hypot(
+    event.clientX - drag.startX,
+    event.clientY - drag.startY,
+  ) < 5) return;
+  if (!drag.active) {
+    drag.active = true;
+    byId("event-log-scroll").classList.add("is-selecting");
+    setEventLogSelectionRanges(eventLogDragRanges(drag, drag.startIndex), {
+      anchor: drag.extend && drag.anchor !== null ? drag.anchor : drag.startIndex,
+      focus: drag.startIndex,
+      render: true,
+    });
+    drag.animationFrame = window.requestAnimationFrame(runEventLogDragAutoScroll);
+  }
+  event.preventDefault();
+  const row = visibleEventLogRowAtPoint(event.clientX, event.clientY);
+  const index = Number(row?.dataset.selectionIndex);
+  if (!Number.isSafeInteger(index) || index === drag.lastIndex) return;
+  drag.lastIndex = index;
+  setEventLogSelectionRanges(eventLogDragRanges(drag, index), {
+    anchor: drag.extend && drag.anchor !== null ? drag.anchor : drag.startIndex,
+    focus: index,
+    render: true,
+  });
+}
+
+function finishEventLogDrag(event = null, cancelled = false) {
+  const drag = state.eventLogDrag;
+  if (!drag) return false;
+  if (event && event.pointerId !== undefined && event.pointerId !== drag.pointerId) return false;
+  const host = byId("event-log-scroll");
+  if (drag.animationFrame !== null) window.cancelAnimationFrame(drag.animationFrame);
+  state.eventLogDrag = null;
+  if (host?.hasPointerCapture?.(drag.pointerId)) host.releasePointerCapture(drag.pointerId);
+  host?.classList.remove("is-selecting");
+  if (drag.active) {
+    state.eventLogSuppressClickUntil = performance.now() + 280;
+    if (cancelled) {
+      setEventLogSelectionRanges(drag.baseRanges, {
+        anchor: drag.anchor,
+        focus: drag.baseFocus,
+        render: true,
+      });
+    } else {
+      renderEventLogSelectionToolbar();
+    }
+  }
+  return drag.active;
 }
 
 function bindVisibleEventLogRows() {
   const body = byId("event-table-body");
-  body.querySelectorAll("tr[data-event-uid]").forEach((row) => {
-    const choose = () => selectEvent(row.dataset.eventUid, true);
+  body.querySelectorAll("tr[data-selection-index]").forEach((row) => {
+    const selectionIndex = Number(row.dataset.selectionIndex);
     row.addEventListener("click", (event) => {
-      if (event.ctrlKey || event.metaKey) {
+      if (performance.now() < state.eventLogSuppressClickUntil) {
         event.preventDefault();
-        jumpToTimelineEvent(row.dataset.eventUid);
         return;
       }
-      choose();
+      const additive = event.ctrlKey || event.metaKey;
+      const extend = event.shiftKey;
+      applyEventLogSelectionGesture(selectionIndex, {
+        additive,
+        extend,
+        toggle: additive && !extend,
+        render: false,
+      });
+      if (!additive && !extend) focusEventLogEntry(row, true);
+      else {
+        renderEventLogSelectionToolbar();
+        renderEventTableWindow();
+      }
+    });
+    row.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      revealEventLogEntry(row);
     });
     row.addEventListener("keydown", (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        event.preventDefault();
+        revealEventLogEntry(row);
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const maximum = Math.max(0, state.eventLogSelectableCount - 1);
+        const next = Math.max(
+          0,
+          Math.min(maximum, selectionIndex + (event.key === "ArrowDown" ? 1 : -1)),
+        );
+        applyEventLogSelectionGesture(next, {
+          additive: event.ctrlKey || event.metaKey,
+          extend: event.shiftKey,
+          toggle: false,
+        });
+        focusEventLogSelectionIndex(next);
+        return;
+      }
+      if (event.key === " " && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        applyEventLogSelectionGesture(selectionIndex, {
+          additive: true,
+          toggle: true,
+        });
+        return;
+      }
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
-        choose();
+        applyEventLogSelectionGesture(selectionIndex);
+        focusEventLogEntry(row, true);
       }
     });
   });
-  body.querySelectorAll("tr[data-source-record-uid]").forEach((row) => {
-    const choose = () => selectSourceRecord(row.dataset.sourceRecordUid, true);
-    row.addEventListener("click", (event) => {
-      if (event.ctrlKey || event.metaKey) {
-        event.preventDefault();
-        jumpSourceRecordToTimeline(row.dataset.sourceRecordUid);
-        return;
-      }
-      choose();
-    });
-    row.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        choose();
-      }
-    });
-  });
+  registerVisibleEventLogHoverModels();
 }
 
 function renderEventTableWindow() {
   const scroll = byId("event-log-scroll");
   const body = byId("event-table-body");
   if (!scroll || !body) return;
+  if (state.hoverKey?.startsWith("log:") && !state.hoverPinned) closeHover();
+  state.eventLogHoverModels.clear();
   const total = state.eventLogRows.length;
   const visibleRows = Math.max(1, Math.ceil(scroll.clientHeight / EVENT_LOG_ROW_HEIGHT));
   const start = Math.max(0, Math.floor(scroll.scrollTop / EVENT_LOG_ROW_HEIGHT) - EVENT_LOG_OVERSCAN);
@@ -7365,12 +8078,244 @@ function renderEventTableWindow() {
   body.innerHTML = topSpacer
     + state.eventLogRows.slice(start, end).map(renderEventLogRow).join("")
     + bottomSpacer;
+  const table = body.closest("table");
+  if (table) {
+    table.setAttribute("aria-multiselectable", "true");
+    table.setAttribute("aria-rowcount", String(
+      Math.max(1, Number(state.eventLogServerSummary?.totalCount || total)) + 1,
+    ));
+  }
+  const focusedRow = state.eventLogSelectionFocus === null
+    ? null
+    : body.querySelector(
+      `tr[data-selection-index="${state.eventLogSelectionFocus}"]`,
+    );
+  if (!focusedRow) {
+    body.querySelector("tr[data-selection-index]")?.setAttribute("tabindex", "0");
+  }
   bindVisibleEventLogRows();
 }
 
 function renderEventTable(options = {}) {
   rebuildEventLogRows(options);
   renderEventTableWindow();
+  renderEventLogSelectionToolbar();
+}
+
+function eventLogCopyActionLabel() {
+  const cached = state.eventLogSelectionCache;
+  return cached?.signature === eventLogSelectionSignature()
+    && cached.payload?.copy_action_label
+    ? String(cached.payload.copy_action_label)
+    : "Copy plug-in text";
+}
+
+function renderEventLogSelectionToolbar() {
+  const toolbar = byId("event-selection-toolbar");
+  if (!toolbar) return;
+  const count = eventLogSelectionCount();
+  const rangeCount = state.eventLogSelectionRanges.length;
+  const overLimit = count > MAX_EVENT_LOG_SELECTION_ITEMS
+    || rangeCount > MAX_EVENT_LOG_SELECTION_RANGES;
+  toolbar.hidden = count === 0;
+  byId("event-selection-count").textContent = count
+    ? `${count.toLocaleString()} selected`
+    : "No rows selected";
+  byId("event-selection-copy").textContent = eventLogCopyActionLabel();
+  toolbar.querySelectorAll("button").forEach((button) => {
+    const isClear = button.id === "event-selection-clear";
+    button.disabled = count === 0 || (overLimit && !isClear);
+    button.title = overLimit && !isClear
+      ? `Actions support at most ${MAX_EVENT_LOG_SELECTION_ITEMS.toLocaleString()} rows across ${MAX_EVENT_LOG_SELECTION_RANGES} ranges.`
+      : "";
+  });
+  if (count) {
+    const detail = `${rangeCount} contiguous ${rangeCount === 1 ? "range" : "ranges"} in this filtered stream`;
+    byId("event-selection-detail").textContent = overLimit
+      ? `${detail}; narrow the selection to ${MAX_EVENT_LOG_SELECTION_ITEMS.toLocaleString()} rows / ${MAX_EVENT_LOG_SELECTION_RANGES} ranges for actions`
+      : detail;
+  } else {
+    byId("event-selection-detail").textContent = "";
+  }
+}
+
+function eventLogSelectionRequestBody() {
+  const body = serverEventLogRequestBody(0);
+  delete body.offset;
+  delete body.limit;
+  delete body.locate;
+  return {
+    ...body,
+    selection_ranges: state.eventLogSelectionRanges.map(([start, end]) => ({
+      start,
+      end,
+    })),
+  };
+}
+
+function rememberTimelineEntryProjection(item) {
+  const kind = String(item.stream_kind || "event");
+  const uid = String(item.uid || "");
+  const entryId = String(item.entry_id || `${kind}:${uid}`);
+  const entry = item.entry && typeof item.entry === "object"
+    ? item.entry
+    : {};
+  const normalizedEntry = kind === "source"
+    ? { ...entry, source_record_uid: sourceRecordUid(entry) || uid }
+    : { ...entry, event_uid: String(entry.event_uid || entry.event_id || uid) };
+  if (kind === "source") {
+    if (!state.sourceRecordByUid.has(uid)) {
+      state.sourceRecordByUid.set(uid, normalizedEntry);
+      state.eventLogOwnedSources.set(uid, normalizedEntry);
+    }
+  } else {
+    if (!state.eventByUid.has(uid)) {
+      state.eventByUid.set(uid, normalizedEntry);
+      state.eventLogOwnedEvents.set(uid, normalizedEntry);
+    }
+  }
+  const projection = {
+    entryId,
+    streamKind: kind,
+    uid,
+    timeNs: toNs(item.timestamp_ns, logEntryTime(normalizedEntry)),
+    resourceIds: (item.resource_ids || []).map(String),
+    entry: normalizedEntry,
+  };
+  state.timelineEntryProjections.set(entryId, projection);
+  return projection;
+}
+
+function forgetTimelineEntryProjection(entryId) {
+  if (
+    state.hiddenTimelineEntryIds.has(entryId)
+    || state.markedTimelineEntryIds.has(entryId)
+  ) return;
+  state.timelineEntryProjections.delete(entryId);
+}
+
+async function resolveEventLogSelection() {
+  const count = eventLogSelectionCount();
+  if (!count) throw new Error("Select at least one event-log row.");
+  if (
+    count > MAX_EVENT_LOG_SELECTION_ITEMS
+    || state.eventLogSelectionRanges.length > MAX_EVENT_LOG_SELECTION_RANGES
+  ) {
+    throw new Error(
+      `Actions support at most ${MAX_EVENT_LOG_SELECTION_ITEMS.toLocaleString()} rows across ${MAX_EVENT_LOG_SELECTION_RANGES} ranges.`,
+    );
+  }
+  const signature = eventLogSelectionSignature();
+  if (state.eventLogSelectionCache?.signature === signature) {
+    return state.eventLogSelectionCache.payload;
+  }
+  const requestId = ++state.eventLogSelectionRequestId;
+  const payload = await api(revisionPath("event-log/selection"), {
+    method: "POST",
+    body: JSON.stringify(eventLogSelectionRequestBody()),
+  });
+  if (
+    requestId !== state.eventLogSelectionRequestId
+    || signature !== eventLogSelectionSignature()
+  ) {
+    throw new Error("The event-log selection changed while the action was resolving.");
+  }
+  state.eventLogSelectionCache = { signature, payload };
+  if (payload.copy_action_label) {
+    const copyButton = byId("event-selection-copy");
+    if (copyButton) copyButton.textContent = String(payload.copy_action_label);
+  }
+  return payload;
+}
+
+async function writeClipboardText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (_error) {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
+}
+
+async function copyEventLogSelectionText() {
+  try {
+    const payload = await resolveEventLogSelection();
+    const copy = payload.copy || {};
+    const fragments = (copy.items || []).map((item) => String(item.text || ""));
+    if (!fragments.length) {
+      showToast("The selected rows have no plug-in text projection.");
+      return;
+    }
+    await writeClipboardText(fragments.join("\n"));
+    const suffix = copy.omitted_count
+      ? `; ${Number(copy.omitted_count).toLocaleString()} unavailable`
+      : copy.truncated ? "; bounded by the copy quota" : "";
+    showToast(`Copied ${fragments.length.toLocaleString()} plug-in text ${fragments.length === 1 ? "item" : "items"}${suffix}.`);
+  } catch (error) {
+    showToast("Could not copy selection: " + error.message);
+  }
+}
+
+async function applyEventLogTimelineAction(action) {
+  try {
+    const payload = await resolveEventLogSelection();
+    const items = payload.items || [];
+    items.forEach((item) => {
+      const entryId = String(
+        item.entry_id || `${String(item.stream_kind || "event")}:${String(item.uid || "")}`,
+      );
+      if (action === "hide") {
+        const projection = rememberTimelineEntryProjection(item);
+        state.hiddenTimelineEntryIds.add(projection.entryId);
+      }
+      if (action === "show") state.hiddenTimelineEntryIds.delete(entryId);
+      if (action === "mark") {
+        const projection = rememberTimelineEntryProjection(item);
+        state.markedTimelineEntryIds.add(projection.entryId);
+      }
+      if (action === "unmark") state.markedTimelineEntryIds.delete(entryId);
+      forgetTimelineEntryProjection(entryId);
+    });
+    pruneServerEventLogOwnedCaches();
+    rerenderTimelinePreservingScroll();
+    renderEventTableWindow();
+    const verb = {
+      hide: "Hidden",
+      show: "Shown",
+      mark: "Marked",
+      unmark: "Unmarked",
+    }[action];
+    showToast(`${verb} ${items.length.toLocaleString()} selected ${items.length === 1 ? "item" : "items"} in the timeline.`);
+  } catch (error) {
+    showToast("Could not update timeline items: " + error.message);
+  }
+}
+
+async function revealFocusedEventLogSelection() {
+  try {
+    const payload = await resolveEventLogSelection();
+    const focus = state.eventLogSelectionFocus;
+    const item = (payload.items || []).find(
+      (candidate) => Number(candidate.display_index) === focus,
+    ) || payload.items?.[0];
+    if (!item) return;
+    const projection = rememberTimelineEntryProjection(item);
+    if (projection.streamKind === "source") {
+      await jumpSourceRecordToTimeline(projection.uid);
+    } else {
+      await jumpToTimelineEvent(projection.uid);
+    }
+    forgetTimelineEntryProjection(projection.entryId);
+    pruneServerEventLogOwnedCaches();
+  } catch (error) {
+    showToast("Could not reveal selection: " + error.message);
+  }
 }
 
 function scheduleEventLogWindow() {
@@ -7418,6 +8363,26 @@ function focusServerEventLogTarget(entryId, virtualIndex) {
     row.focus({ preventScroll: true });
     navigationPulse(row);
   }));
+}
+
+function focusEventLogSelectionIndex(selectionIndex) {
+  const maximum = Math.max(0, state.eventLogSelectableCount - 1);
+  const index = Math.max(0, Math.min(maximum, Math.trunc(Number(selectionIndex))));
+  const scroll = byId("event-log-scroll");
+  const virtualIndex = usesServerWindowedHistory()
+    ? serverEventLogVirtualRowForDataIndex(index)
+    : state.eventLogVirtualIndexBySelectionIndex[index] ?? index + 1;
+  scroll.scrollTop = Math.max(
+    0,
+    virtualIndex * EVENT_LOG_ROW_HEIGHT
+      - (scroll.clientHeight - EVENT_LOG_ROW_HEIGHT) / 2,
+  );
+  renderEventTableWindow();
+  window.requestAnimationFrame(() => {
+    const row = byId("event-table-body")
+      .querySelector(`tr[data-selection-index="${index}"]`);
+    row?.focus({ preventScroll: true });
+  });
 }
 
 async function locateServerEventLogEntry(entryId) {
@@ -7573,6 +8538,7 @@ function resetTimelineView() {
   state.laneMode = isScaleMode() ? "custom" : "all";
   state.correlationTimelineExpanded = true;
   state.expandedTimelineTreeKeys.clear();
+  state.hiddenTimelineResourceIds.clear();
   state.explicitLaneIds = new Set(isScaleMode() ? initialScaleLaneIds() : state.lanes.map((lane) => lane.resourceId));
   state.activeLayers = new Set(state.layerMeta.keys());
   byId("timeline-zoom").value = "1";
@@ -7623,7 +8589,10 @@ function bindControls() {
   timelineContent.addEventListener("pointercancel", (event) => finishTimelinePointer(event, true));
   timelineContent.addEventListener("lostpointercapture", (event) => finishTimelinePointer(event, true));
   timelineContent.addEventListener("keydown", timelineHandleKeyDown);
-  window.addEventListener("blur", () => finishTimelinePointer(null, true));
+  window.addEventListener("blur", () => {
+    finishTimelinePointer(null, true);
+    finishEventLogDrag(null, true);
+  });
   window.addEventListener("resize", () => {
     window.clearTimeout(bindControls.graphResizeTimer);
     bindControls.graphResizeTimer = window.setTimeout(() => {
@@ -7702,7 +8671,13 @@ function bindControls() {
       EVENT_LOG_FILTER_DELAY_MS,
     );
   });
-  byId("event-log-scroll").addEventListener("scroll", scheduleEventLogWindow, { passive: true });
+  const eventLogScroll = byId("event-log-scroll");
+  eventLogScroll.addEventListener("scroll", scheduleEventLogWindow, { passive: true });
+  eventLogScroll.addEventListener("pointerdown", eventLogPointerDown);
+  eventLogScroll.addEventListener("pointermove", eventLogPointerMove);
+  eventLogScroll.addEventListener("pointerup", (event) => finishEventLogDrag(event, false));
+  eventLogScroll.addEventListener("pointercancel", (event) => finishEventLogDrag(event, true));
+  eventLogScroll.addEventListener("lostpointercapture", (event) => finishEventLogDrag(event, true));
   byId("event-include-normalized").addEventListener("change", (event) => {
     state.eventLogInclude.normalized = event.target.checked;
     renderEventTable({ resetScroll: true });
@@ -7714,6 +8689,13 @@ function bindControls() {
     else state.includedSourceRecordGroups.delete(groupId);
     renderEventTable({ resetScroll: true });
   });
+  byId("event-selection-reveal").addEventListener("click", revealFocusedEventLogSelection);
+  byId("event-selection-copy").addEventListener("click", copyEventLogSelectionText);
+  byId("event-selection-hide").addEventListener("click", () => applyEventLogTimelineAction("hide"));
+  byId("event-selection-show").addEventListener("click", () => applyEventLogTimelineAction("show"));
+  byId("event-selection-mark").addEventListener("click", () => applyEventLogTimelineAction("mark"));
+  byId("event-selection-unmark").addEventListener("click", () => applyEventLogTimelineAction("unmark"));
+  byId("event-selection-clear").addEventListener("click", () => clearEventLogSelection({ announce: true }));
   ["open-review", "open-review-footer"].forEach((id) => byId(id).addEventListener("click", openReview));
   byId("close-review").addEventListener("click", closeReview); byId("drawer-scrim").addEventListener("click", closeReview);
   ["copy-review", "copy-review-top"].forEach((id) => byId(id).addEventListener("click", copyReview));

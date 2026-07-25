@@ -18,14 +18,15 @@ from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
-from .dashboard_core import evaluate_dashboards
-from .demo_fixture_plugin import (
+from router_dump_analyzer.dashboard_core import evaluate_dashboards
+from router_dump_analyzer.source_record_core import project_source_record_for_log
+from router_dump_analyzer_demo_plugins.fixture import (
     fixture_causal_link_descriptor as _causal_link_descriptor,
     fixture_kind_descriptor as _kind_descriptor,
     fixture_relationship_descriptor as _relationship_descriptor,
     fixture_resource_label as _label_from_id,
 )
-from .demo_source_plugin import (
+from router_dump_analyzer_demo_plugins.source_records import (
     RECORD_LANE_PRESETS,
     SOURCE_RECORD_GROUP_DESCRIPTORS,
     SOURCE_RECORD_DESCRIPTORS,
@@ -77,7 +78,7 @@ def _configured_demo_archive() -> Path | None:
 
 
 def repository_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[3]
 
 
 def _read_json(path: Path) -> Any:
@@ -589,6 +590,10 @@ def client_demo_dataset() -> dict[str, Any]:
         client["events"] = [
             redact_event_for_client(item, dataset)
             for item in dataset.get("events", [])
+        ]
+        client["source_records"] = [
+            project_source_record_for_log(item)
+            for item in dataset.get("source_records", [])
         ]
         return client
     client = {key: value for key, value in dataset.items() if not key.startswith("_")}

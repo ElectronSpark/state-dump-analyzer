@@ -24,7 +24,7 @@ from typing import Any
 
 from pydantic_core import from_json
 
-from .demo_scale_plugin import (
+from router_dump_analyzer_demo_plugins.scale import (
     RESOURCE_TABLE_COLUMNS,
     RESOURCE_TABLE_JSON_COLUMNS,
     scale_condition_class as _status_class,
@@ -35,13 +35,13 @@ from .demo_scale_plugin import (
     scale_relationship_descriptor as _relationship_descriptor,
     scale_resource_record as _resource_record,
 )
-from .demo_source_plugin import (
+from router_dump_analyzer_demo_plugins.source_records import (
     RECORD_LANE_PRESETS,
     SOURCE_RECORD_GROUP_DESCRIPTORS,
     SOURCE_RECORD_DESCRIPTORS,
     build_demo_source_records,
 )
-from .history_search_core import HistorySearchCorpus
+from router_dump_analyzer.history_search_core import HistorySearchCorpus
 
 PACK_ROOT = "router-state-lab-100k"
 SCALE_PREFIX = f"{PACK_ROOT}/normalized-scale"

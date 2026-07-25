@@ -19,7 +19,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import Response
 from starlette.middleware.gzip import GZipMiddleware
 
-from .demo_data import (
+from .data import (
     REVISION_ID,
     _event_redaction_policy,
     _redact_resource_view,
@@ -38,23 +38,29 @@ from .demo_data import (
     resources_at,
     scale_runtime,
 )
-from .source_record_core import (
+from router_dump_analyzer.source_record_core import (
+    project_source_record_for_log,
+    project_source_record_text_selection,
     query_source_records,
     record_lanes_for_window,
+    source_record_event_uids,
     source_record_haystack,
 )
-from .history_search_core import HistorySearchCapacityError
+from router_dump_analyzer.history_search_core import HistorySearchCapacityError
+from router_dump_analyzer_demo_plugins.source_records import (
+    lazy_demo_ctf_source_record,
+)
 from .frontend_host import frontend_host
-from .demo_temporal_topology import (
+from .temporal_topology import (
     TemporalTopologyDemo,
     TemporalTopologyRequestError,
 )
-from .demo_multi_node_topology import (
+from .multi_node_topology import (
     MULTI_NODE_TOPOLOGY_ID,
     MultiNodeTopologyDemo,
     MultiNodeTopologyRequestError,
 )
-from .demo_multi_node_route import MultiNodeRouteDemo
+from .multi_node_route import MultiNodeRouteDemo
 
 MAX_CORRELATION_NODES = 500
 MAX_TIMELINE_RESOURCE_LANES = 100
@@ -68,6 +74,8 @@ MAX_EVENT_LOG_FILTER_VALUES = 64
 MAX_EVENT_LOG_FILTER_LENGTH = 128
 MAX_EVENT_LOG_SEARCH_LENGTH = 256
 MAX_EVENT_LOG_UID_LENGTH = 256
+MAX_EVENT_LOG_SELECTION_RANGES = 128
+MAX_EVENT_LOG_SELECTION_ITEMS = 5_000
 
 
 def _body_integer(
@@ -2317,7 +2325,7 @@ def event_log_query(
         safe_entry = (
             redact_event_for_client(entry, dataset, policy=policy)
             if stream_kind == "event"
-            else dict(entry)
+            else project_source_record_for_log(entry)
         )
         items.append(
             {
@@ -2398,6 +2406,14 @@ def source_records_query(
         )
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    result["items"] = [
+        {
+            key: value
+            for key, value in item.items()
+            if key != "copy_text"
+        }
+        for item in result.get("items", [])
+    ]
     return {
         "revision_id": revision_id,
         **result,
@@ -2411,6 +2427,15 @@ def _event_resource_ids(event: dict[str, Any]) -> list[str]:
         for identifier in event.get("affected_resources", [])
         if identifier
     ]
+    for identifier in (
+        event.get("resource_id"),
+        event.get("resource_uid"),
+        (event.get("subject") or {}).get("resource_id")
+        if isinstance(event.get("subject"), dict)
+        else None,
+    ):
+        if identifier:
+            identifiers.append(str(identifier))
     identifiers.extend(
         effect["resource_id"]
         for effect in event.get("effects", [])
@@ -2422,6 +2447,207 @@ def _event_resource_ids(event: dict[str, Any]) -> list[str]:
         if subject.get("resource_id")
     )
     return list(dict.fromkeys(identifiers))
+
+
+def _event_log_selection_ranges(
+    body: dict[str, Any],
+) -> list[tuple[int, int]]:
+    raw_ranges = body.get("selection_ranges")
+    if not isinstance(raw_ranges, list) or not raw_ranges:
+        raise HTTPException(
+            status_code=422,
+            detail="selection_ranges must be a non-empty array",
+        )
+    if len(raw_ranges) > MAX_EVENT_LOG_SELECTION_RANGES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "selection_ranges must contain at most "
+                f"{MAX_EVENT_LOG_SELECTION_RANGES} ranges"
+            ),
+        )
+    parsed: list[tuple[int, int]] = []
+    for raw in raw_ranges:
+        if not isinstance(raw, dict):
+            raise HTTPException(
+                status_code=422,
+                detail="each selection range must be an object",
+            )
+        start = _body_integer(raw, "start", 0, minimum=0)
+        end = _body_integer(raw, "end", 0, minimum=0)
+        if end < start:
+            raise HTTPException(
+                status_code=422,
+                detail="selection range end must be >= start",
+            )
+        parsed.append((start, end))
+
+    merged: list[list[int]] = []
+    for start, end in sorted(parsed):
+        if not merged or start > merged[-1][1] + 1:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(merged[-1][1], end)
+    total = sum(end - start + 1 for start, end in merged)
+    if total > MAX_EVENT_LOG_SELECTION_ITEMS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "selection contains "
+                f"{total:,} rows; actions support at most "
+                f"{MAX_EVENT_LOG_SELECTION_ITEMS:,} at once"
+            ),
+        )
+    return [(start, end) for start, end in merged]
+
+
+@app.post("/v1/revisions/{revision_id}/event-log/selection")
+def event_log_selection(
+    revision_id: str,
+    body: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    """Resolve query-scoped row ranges for safe bulk UI actions.
+
+    The core owns immutable revision ordering, bounds, redaction and copy
+    quotas. The device plug-in owns each source record's optional ``copy_text``
+    and the source-to-normalized-event links.
+    """
+
+    _require_revision(revision_id)
+    ranges = _event_log_selection_ranges(body)
+    query_fields = {
+        key: body[key]
+        for key in (
+            "include_normalized",
+            "source_types",
+            "layers",
+            "search",
+            "start_ns",
+            "end_ns",
+        )
+        if key in body
+    }
+    selected_items: list[dict[str, Any]] = []
+    selection_refs: list[dict[str, str]] = []
+    for range_start, range_end in ranges:
+        offset = range_start
+        while offset <= range_end:
+            limit = min(MAX_EVENT_LOG_LIMIT, range_end - offset + 1)
+            payload = event_log_query(
+                revision_id,
+                {
+                    **query_fields,
+                    "offset": offset,
+                    "limit": limit,
+                },
+            )
+            page = payload.get("items", [])
+            if not page:
+                break
+            for item in page:
+                kind = str(item.get("stream_kind") or "event")
+                uid = str(item.get("uid") or "")
+                entry = item.get("entry") if isinstance(item.get("entry"), dict) else {}
+                selection_refs.append({"kind": kind, "uid": uid})
+                selected_items.append(
+                    {
+                        "entry_id": f"{kind}:{uid}",
+                        "display_index": int(item.get("display_index", 0)),
+                        "stream_kind": kind,
+                        "uid": uid,
+                        "timestamp_ns": str(item.get("timestamp_ns", "0")),
+                        "resource_ids": (
+                            _event_resource_ids(entry)
+                            if kind == "event"
+                            else []
+                        ),
+                        "entry": entry,
+                    }
+                )
+            offset += len(page)
+            if len(page) < limit:
+                break
+
+    dataset = load_demo_dataset()
+    source_records = list(dataset.get("source_records", []))
+    copy_linked_events = {
+        event_uid
+        for record in source_records
+        if record.get("copy_text") is not None
+        for event_uid in source_record_event_uids(record)
+    }
+    runtime = scale_runtime(dataset)
+    event_lookup = (
+        runtime.event_by_uid
+        if runtime is not None
+        else {
+            str(event.get("event_uid") or event.get("event_id")): event
+            for event in dataset.get("events", [])
+        }
+    )
+    for reference in selection_refs:
+        if reference["kind"] != "event":
+            continue
+        event_uid = reference["uid"]
+        if event_uid in copy_linked_events:
+            continue
+        event = event_lookup.get(event_uid)
+        if event is None:
+            continue
+        source_records.append(lazy_demo_ctf_source_record(event))
+        copy_linked_events.add(event_uid)
+
+    copy_projection = project_source_record_text_selection(
+        source_records,
+        selection_refs,
+    )
+    source_group_by_type = {
+        str(descriptor.get("source_type")): str(descriptor.get("stream_group"))
+        for descriptor in dataset.get("source_record_descriptors", [])
+        if (
+            isinstance(descriptor, dict)
+            and descriptor.get("source_type")
+            and descriptor.get("stream_group")
+        )
+    }
+    copy_label_by_group = {
+        str(group.get("group_id")): str(group.get("copy_action_label"))
+        for group in dataset.get("source_record_group_descriptors", [])
+        if (
+            isinstance(group, dict)
+            and group.get("group_id")
+            and group.get("copy_action_label")
+        )
+    }
+    selected_copy_labels = {
+        copy_label_by_group[group_id]
+        for item in copy_projection.get("items", [])
+        if (
+            (group_id := source_group_by_type.get(str(item.get("source_type"))))
+            and group_id in copy_label_by_group
+        )
+    }
+    if (
+        not selected_copy_labels
+        and copy_projection.get("items")
+        and len(copy_label_by_group) == 1
+    ):
+        selected_copy_labels = set(copy_label_by_group.values())
+    copy_action_label = (
+        next(iter(selected_copy_labels))
+        if len(selected_copy_labels) == 1
+        else "Copy plug-in text"
+    )
+    return {
+        "revision_id": revision_id,
+        "selection_ranges": [
+            {"start": start, "end": end} for start, end in ranges
+        ],
+        "selection_count": len(selected_items),
+        "items": selected_items,
+        "copy_action_label": copy_action_label,
+        "copy": copy_projection,
+    }
 
 
 def _interval_duration(start: Any, end: Any) -> str | None:

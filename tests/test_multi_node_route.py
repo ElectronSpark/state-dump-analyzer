@@ -4,9 +4,9 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from router_dump_analyzer.demo_app import app
-from router_dump_analyzer.demo_multi_node_route import MultiNodeRouteDemo
-from router_dump_analyzer.demo_multi_node_topology import MULTI_NODE_TOPOLOGY_ID
+from router_dump_analyzer_demo.app import app
+from router_dump_analyzer_demo.multi_node_route import MultiNodeRouteDemo
+from router_dump_analyzer_demo.multi_node_topology import MULTI_NODE_TOPOLOGY_ID
 from router_dump_analyzer.plugin_api import (
     ForwardingCandidateConstraint,
     ForwardingPolicyScope,
@@ -18,6 +18,7 @@ from router_dump_analyzer.plugin_api import (
 from router_dump_analyzer.route_trace_core import (
     RouteTraceContractError,
     detect_forwarding_cycle,
+    evaluate_endpoint_reachability_pair,
     evaluate_forwarding_constraint,
     evaluate_forwarding_policy,
     evaluate_forwarding_traversal,
@@ -199,6 +200,63 @@ class RouteTraceCoreCompletenessTests(unittest.TestCase):
         self.assertEqual(evaluation.stop_step, 1)
         self.assertIsNotNone(evaluation.cycle)
 
+    def test_transit_observation_uses_endpoint_reachability_not_path_reversal(
+        self,
+    ) -> None:
+        evaluation = evaluate_endpoint_reachability_pair(
+            forward_reaches_destination=True,
+            reverse_reaches_source=True,
+            forward_complete=True,
+            reverse_complete=True,
+            forward_node_sequence=("transit-p-1", "node-b"),
+            reverse_node_sequence=("node-b", "transit-p-2", "node-a"),
+            forward_start_node_id="transit-p-1",
+            traffic_source_node_id="node-a",
+        )
+
+        self.assertEqual(evaluation.endpoint_state, "bidirectionally_reachable")
+        self.assertEqual(evaluation.comparison_state, "bidirectionally_reachable")
+        self.assertTrue(evaluation.consistent)
+        self.assertEqual(evaluation.path_relation, "not_comparable")
+        self.assertEqual(
+            evaluation.path_relation_reason,
+            "forward_starts_inside_flow_path",
+        )
+        self.assertFalse(evaluation.reverse_must_visit_forward_start)
+        self.assertFalse(evaluation.reverse_visits_forward_start)
+
+    def test_reaching_forward_start_does_not_substitute_for_source_endpoint(
+        self,
+    ) -> None:
+        evaluation = evaluate_endpoint_reachability_pair(
+            forward_reaches_destination=True,
+            reverse_reaches_source=False,
+            forward_complete=True,
+            reverse_complete=True,
+            forward_node_sequence=("transit-p-1", "node-b"),
+            reverse_node_sequence=("node-b", "transit-p-1"),
+            forward_start_node_id="transit-p-1",
+            traffic_source_node_id="node-a",
+        )
+
+        self.assertEqual(evaluation.endpoint_state, "one_way_reachable")
+        self.assertFalse(evaluation.consistent)
+        self.assertTrue(evaluation.reverse_visits_forward_start)
+
+    def test_unknown_direction_is_not_collapsed_into_one_way_reachability(
+        self,
+    ) -> None:
+        evaluation = evaluate_endpoint_reachability_pair(
+            forward_reaches_destination=True,
+            reverse_reaches_source=None,
+            forward_complete=True,
+            reverse_complete=False,
+        )
+
+        self.assertEqual(evaluation.endpoint_state, "unknown_incomplete")
+        self.assertIsNone(evaluation.reverse_reaches_source)
+        self.assertFalse(evaluation.consistent)
+
     def test_empty_policy_validates_every_input_before_permission(self) -> None:
         permitted = evaluate_forwarding_policy(
             candidate=self.candidate,
@@ -290,6 +348,140 @@ class MultiNodeRouteTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         cls.client_context.__exit__(None, None, None)
+
+    @staticmethod
+    def _endpoint_fixture(
+        endpoint_id: str,
+        *,
+        node_id: str = "node-b",
+        resource_id: str = "node-b/LOOPBACK/1",
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        attachment = MultiNodeRouteDemo._endpoint_attachment(
+            endpoint_id=endpoint_id,
+            node_id=node_id,
+            member_id=f"member:{node_id}",
+            resource_id=resource_id,
+        )
+        endpoint = {
+            "endpoint_id": endpoint_id,
+            "attachments": [attachment],
+            "attachments_complete": True,
+        }
+        return endpoint, attachment
+
+    @staticmethod
+    def _terminal_path(
+        *,
+        attachment: dict[str, object] | None,
+        endpoint_id: str | None,
+        classification: str,
+        complete: bool = True,
+        selected: bool = True,
+        sequence: tuple[str, ...] = ("node-a", "node-b"),
+    ) -> dict[str, object]:
+        return {
+            "node_sequence": list(sequence),
+            "active": selected,
+            "selected_active_by_plugin": selected,
+            "primary": selected,
+            "completeness": {"end_to_end_resolved": complete},
+            "plugin_terminal": {
+                "classification": classification,
+                "classification_complete": classification != "unknown",
+                "endpoint_id": endpoint_id,
+                "attachment": attachment,
+            },
+        }
+
+    def test_exact_terminal_match_rejects_a_different_endpoint_on_same_node(
+        self,
+    ) -> None:
+        target, _target_attachment = self._endpoint_fixture(
+            "endpoint:target"
+        )
+        _other, other_attachment = self._endpoint_fixture(
+            "endpoint:other"
+        )
+        path = self._terminal_path(
+            attachment=other_attachment,
+            endpoint_id="endpoint:other",
+            classification="delivered",
+        )
+
+        result = MultiNodeRouteDemo._annotate_endpoint_reachability(
+            [path],
+            target,
+            {"node_id": "node-a"},
+        )
+
+        self.assertFalse(result["reaches_target"])
+        terminal = path["terminal_reachability"]
+        self.assertFalse(terminal["exact_endpoint_match"])
+        self.assertFalse(terminal["exact_attachment_match"])
+        self.assertEqual(path["terminal_endpoint_id"], "endpoint:other")
+
+    def test_partial_selected_active_set_is_not_fully_reachable(self) -> None:
+        target, attachment = self._endpoint_fixture("endpoint:target")
+        reached = self._terminal_path(
+            attachment=attachment,
+            endpoint_id="endpoint:target",
+            classification="delivered",
+        )
+        failed = self._terminal_path(
+            attachment=None,
+            endpoint_id=None,
+            classification="not_delivered",
+        )
+
+        result = MultiNodeRouteDemo._annotate_endpoint_reachability(
+            [reached, failed],
+            target,
+            {"node_id": "node-a"},
+        )
+
+        self.assertEqual(result["state"], "partial_active_reachability")
+        self.assertIsNone(result["reaches_target"])
+        self.assertFalse(result["all_active_branches_reach"])
+        self.assertEqual(result["reached_active_branch_count"], 1)
+        self.assertEqual(result["failed_active_branch_count"], 1)
+
+    def test_path_must_begin_at_declared_trace_start(self) -> None:
+        target, attachment = self._endpoint_fixture("endpoint:target")
+        path = self._terminal_path(
+            attachment=attachment,
+            endpoint_id="endpoint:target",
+            classification="delivered",
+            sequence=("transit-p-1", "node-b"),
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "begin at the declared trace_start",
+        ):
+            MultiNodeRouteDemo._annotate_endpoint_reachability(
+                [path],
+                target,
+                {"node_id": "node-a"},
+            )
+
+    def test_bidirectional_pair_rejects_reverse_start_outside_destination(
+        self,
+    ) -> None:
+        response = self.client.post(
+            "/v1/topologies/routes/trace",
+            json={
+                "scenario_id": "transit-start-endpoint-reachability",
+                "direction": "both",
+                "ingress": {"start_id": "start:transit-p-1"},
+                "reverse_ingress": {"start_id": "start:transit-p-1"},
+            },
+        )
+
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn(
+            "reverse trace start must resolve",
+            response.text,
+        )
 
     def test_boundary_link_selection_never_falls_back_to_an_unrelated_candidate(
         self,
@@ -748,6 +940,7 @@ class MultiNodeRouteTests(unittest.TestCase):
                 "cross-layer-inconsistent",
                 "incomplete-node-resolution",
                 "router-to-router",
+                "transit-start-endpoint-reachability",
                 "site-a-site-c-asymmetric",
                 "site-b-site-c-one-way",
                 "evpn-mh-all-active",
@@ -783,6 +976,18 @@ class MultiNodeRouteTests(unittest.TestCase):
         self.assertEqual(model["reachable_directed_pair_count"], 42)
         self.assertEqual(len(payload["route_catalog"]), 42)
         self.assertGreaterEqual(len(payload["route_types"]), 11)
+        self.assertEqual(len(payload["start_points"]), 7)
+        self.assertIn(
+            "start:transit-p-1",
+            {item["start_id"] for item in payload["start_points"]},
+        )
+        self.assertIn("flow", payload["request_contract"])
+        self.assertIn("ingress", payload["request_contract"])
+        self.assertEqual(
+            payload["request_contract"]["bidirectional_criterion"],
+            "forward reaches the traffic destination and reverse reaches "
+            "the traffic source; reverse need not revisit forward ingress",
+        )
 
     def test_route_table_capabilities_are_descriptors_not_timeless_rows(self) -> None:
         payload = self.client.get("/v1/topologies/routes/capabilities").json()
@@ -2022,6 +2227,144 @@ class MultiNodeRouteTests(unittest.TestCase):
         )
         self.assertIn("inference", best_middle)
 
+    def test_default_bidirectional_asymmetry_is_not_a_directional_fault(self) -> None:
+        response = self.client.post(
+            "/v1/topologies/routes/trace",
+            json={
+                "scenario_id": "single-active-primary",
+                "direction": "both",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(
+            payload["bidirectional_validation"]["state"],
+            "asymmetric_reachable",
+        )
+        self.assertTrue(payload["consistency"]["consistent"])
+        self.assertEqual(
+            payload["traces"]["forward"]["paths"][0]["node_sequence"],
+            ["node-a", "transit-p-1", "node-b"],
+        )
+        self.assertEqual(
+            payload["traces"]["reverse"]["paths"][0]["node_sequence"],
+            ["node-b", "transit-p-2", "node-a"],
+        )
+        for direction in ("forward", "reverse"):
+            trace = payload["traces"][direction]
+            self.assertTrue(trace["consistency"]["consistent"])
+            self.assertEqual(
+                trace["consistency"]["state"],
+                "consistent_with_selected_observations",
+            )
+            self.assertEqual(trace["consistency"]["issue_refs"], [])
+            self.assertEqual(trace["issues"], [])
+
+    def test_transit_start_pair_is_validated_against_traffic_endpoints(
+        self,
+    ) -> None:
+        response = self.client.post(
+            "/v1/topologies/routes/trace",
+            json={
+                "scenario_id": "transit-start-endpoint-reachability",
+                "direction": "both",
+                "flow": {
+                    "source": {"endpoint_id": "endpoint:node-a:loopback"},
+                    "destination": {"endpoint_id": "endpoint:node-b:loopback"},
+                },
+                "ingress": {"start_id": "start:transit-p-1"},
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        forward = payload["traces"]["forward"]
+        reverse = payload["traces"]["reverse"]
+        self.assertEqual(
+            forward["flow"]["source"]["endpoint_id"],
+            "endpoint:node-a:loopback",
+        )
+        self.assertEqual(
+            forward["flow"]["destination"]["endpoint_id"],
+            "endpoint:node-b:loopback",
+        )
+        self.assertEqual(forward["trace_start"]["node_id"], "transit-p-1")
+        self.assertEqual(
+            forward["paths"][0]["node_sequence"],
+            ["transit-p-1", "node-b"],
+        )
+        self.assertTrue(
+            forward["endpoint_reachability"]["reaches_target"]
+        )
+        self.assertEqual(reverse["trace_start"]["node_id"], "node-b")
+        self.assertEqual(
+            reverse["paths"][0]["node_sequence"],
+            ["node-b", "transit-p-2", "node-a"],
+        )
+        self.assertNotIn(
+            "transit-p-1", reverse["paths"][0]["node_sequence"]
+        )
+        self.assertTrue(
+            reverse["endpoint_reachability"]["reaches_target"]
+        )
+        validation = payload["bidirectional_validation"]
+        self.assertEqual(
+            validation["criterion"],
+            "source_destination_endpoint_reachability",
+        )
+        self.assertEqual(
+            validation["endpoint_state"],
+            "bidirectionally_reachable",
+        )
+        self.assertTrue(validation["consistent"])
+        self.assertTrue(validation["forward_reaches_destination"])
+        self.assertTrue(validation["reverse_reaches_source"])
+        self.assertEqual(
+            validation["path_relation"]["state"], "not_comparable"
+        )
+        self.assertFalse(validation["reverse_must_visit_forward_start"])
+        self.assertFalse(validation["reverse_visits_forward_start"])
+        self.assertTrue(payload["consistency"]["consistent"])
+
+    def test_same_router_non_source_attachment_is_not_full_endpoint_span(
+        self,
+    ) -> None:
+        response = self.client.post(
+            "/v1/topologies/routes/trace",
+            json={
+                "scenario_id": "transit-start-endpoint-reachability",
+                "direction": "both",
+                "flow": {
+                    "source": {"endpoint_id": "endpoint:node-a:loopback"},
+                    "destination": {
+                        "endpoint_id": "endpoint:node-b:loopback"
+                    },
+                },
+                "ingress": {
+                    "node_id": "node-a",
+                    "resource_id": "node-a/INTERFACE/xe-0-0-0",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        validation = payload["bidirectional_validation"]
+        self.assertEqual(
+            payload["traces"]["forward"]["trace_start"]["node_id"],
+            "node-a",
+        )
+        self.assertEqual(
+            validation["path_relation"]["state"],
+            "not_comparable",
+        )
+        self.assertEqual(
+            validation["path_relation"]["reason"],
+            "forward_starts_inside_flow_path",
+        )
+        self.assertTrue(validation["consistent"])
+
     def test_bidirectional_asymmetric_pair_is_reachable_both_ways(self) -> None:
         response = self.client.post(
             "/v1/topologies/routes/trace",
@@ -2043,6 +2386,13 @@ class MultiNodeRouteTests(unittest.TestCase):
         reverse = payload["traces"]["reverse"]
         self.assertTrue(forward["reachable"])
         self.assertTrue(reverse["reachable"])
+        for trace in (forward, reverse):
+            self.assertTrue(trace["consistency"]["consistent"])
+            self.assertEqual(
+                trace["consistency"]["state"],
+                "consistent_with_selected_observations",
+            )
+            self.assertEqual(trace["consistency"]["issue_refs"], [])
         self.assertEqual(
             forward["paths"][0]["node_sequence"],
             ["node-a", "transit-p-2", "node-c"],
@@ -2141,6 +2491,33 @@ class MultiNodeRouteTests(unittest.TestCase):
         self.assertIn("issue:boundary-path-disagreement", issue_ids)
         for path in payload["paths"]:
             self.assertTrue(set(path["issue_refs"]) <= issue_ids)
+
+    def test_bidirectional_endpoint_reachability_does_not_hide_cross_layer_issues(
+        self,
+    ) -> None:
+        response = self.client.post(
+            "/v1/topologies/routes/trace",
+            json={
+                "scenario_id": "cross-layer-inconsistent",
+                "direction": "both",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(
+            payload["endpoint_reachability"]["state"],
+            "bidirectionally_reachable",
+        )
+        self.assertTrue(payload["endpoint_reachability"]["consistent"])
+        self.assertEqual(payload["consistency"]["state"], "inconsistent")
+        self.assertFalse(payload["consistency"]["consistent"])
+        self.assertTrue(payload["consistency"]["endpoint_consistent"])
+        self.assertFalse(payload["consistency"]["directional_consistent"])
+        self.assertIn(
+            "issue:cross-layer-egress-mismatch",
+            payload["consistency"]["issue_refs"],
+        )
 
     def test_underlay_only_topology_scope_does_not_fabricate_missing_outer_hop(self) -> None:
         node_queries = [

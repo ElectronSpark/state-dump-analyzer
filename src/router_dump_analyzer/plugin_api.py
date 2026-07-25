@@ -166,6 +166,7 @@ class PluginCapability(StrEnum):
     CONSISTENCY_CHECK = "consistency_check"
     TOPOLOGY_PROJECTION = "topology_projection"
     FORWARDING_PROJECTION = "forwarding_projection"
+    FORWARDING_TRACE = "forwarding_trace"
 
 
 class InputParserKind(StrEnum):
@@ -194,6 +195,7 @@ PLUGIN_CAPABILITY_HOOKS: Mapping[PluginCapability, tuple[str, ...]] = (
             PluginCapability.CONSISTENCY_CHECK: ("check_consistency",),
             PluginCapability.TOPOLOGY_PROJECTION: ("project_topology",),
             PluginCapability.FORWARDING_PROJECTION: ("project_forwarding",),
+            PluginCapability.FORWARDING_TRACE: ("resolve_forwarding_step",),
         }
     )
 )
@@ -291,6 +293,28 @@ class ForwardingPolicyVerdict(StrEnum):
     BLOCKED = "blocked"
     NOT_APPLICABLE = "not_applicable"
     UNKNOWN = "unknown"
+
+
+class ForwardingPacketDisposition(StrEnum):
+    """Protocol-neutral result declared by a node plug-in for one packet step."""
+
+    CONTINUE = "continue"
+    DELIVER = "deliver"
+    DROP = "drop"
+    PUNT = "punt"
+    REPLICATE = "replicate"
+    UNKNOWN = "unknown"
+
+
+class ForwardingTransitionOrigin(StrEnum):
+    """Who selected a packet transition.
+
+    A user-forced result is counterfactual trace input.  It never replaces the
+    observed forwarding projection or becomes reachability ground truth.
+    """
+
+    NODE_PLUGIN = "node_plugin"
+    USER_FORCED = "user_forced"
 
 
 class ConnectorMatchPolicyKind(StrEnum):
@@ -989,12 +1013,15 @@ class SourceRecordGroupDescriptor:
     from source-record types and renders the supplied label and description.
     A source type that declares no group remains valid; presentation surfaces
     may expose it through an implicit group scoped to that source type.
+    ``copy_action_label`` is optional presentation copy for the bounded export
+    action; mixed-group selections fall back to a core-owned generic label.
     """
 
     group_id: str
     label: str
     description: str = ""
     default_included: bool = False
+    copy_action_label: str | None = None
 
     def __post_init__(self) -> None:
         _validate_dashboard_id(self.group_id, "source record group_id")
@@ -1004,6 +1031,12 @@ class SourceRecordGroupDescriptor:
             raise ValueError("source record group description must be at most 500 characters")
         if not isinstance(self.default_included, bool):
             raise ValueError("source record group default_included must be a boolean")
+        if self.copy_action_label is not None and (
+            not self.copy_action_label or len(self.copy_action_label) > 80
+        ):
+            raise ValueError(
+                "source record group copy_action_label must contain 1 to 80 characters"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1488,8 +1521,9 @@ class SourceRecord:
 
     The core assigns and indexes the source record identifier and owns
     timestamps and pagination. Plug-ins assign source type semantics, decode
-    the message, and may link it to a normalized domain event without
-    discarding unmatched input.
+    the message, may supply already-safe plain text for explicit copying, and
+    may link it to one or more normalized domain events without discarding
+    unmatched input. New code should construct this public record by keyword.
     """
 
     source_record_uid: bytes
@@ -1503,6 +1537,8 @@ class SourceRecord:
     attributes: Properties = field(default_factory=dict)
     matched_event_uid: bytes | None = None
     evidence: tuple[Evidence, ...] = ()
+    copy_text: str | None = None
+    matched_event_uids: tuple[bytes, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1511,7 +1547,10 @@ class SourceRecordEmission:
 
     Parser hooks yield this value for both matched and unmatched input.  The
     core validates it, assigns ``SourceRecord.source_record_uid``, persists the
-    resulting ``SourceRecord``, and indexes any ``matched_event_uid`` link.
+    resulting ``SourceRecord``, and indexes the union of singular and plural
+    event links. ``copy_text`` must already be safe for verbatim export; it is
+    validated and exposed only by an explicit bounded selection request. New
+    code should construct this public emission by keyword.
     """
 
     timestamp_ns: int | None
@@ -1524,6 +1563,8 @@ class SourceRecordEmission:
     attributes: Properties = field(default_factory=dict)
     matched_event_uid: bytes | None = None
     evidence: tuple[Evidence, ...] = ()
+    copy_text: str | None = None
+    matched_event_uids: tuple[bytes, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -3035,6 +3076,515 @@ def _validate_forwarding_parts(
 
 
 @dataclass(frozen=True, slots=True)
+class ForwardingSizeObservation:
+    """One plug-in-declared packet size using an opaque measurement basis.
+
+    Examples of basis contracts include a wire length, an L3 packet length, or
+    a platform buffer length.  The core compares a size with an MTU only when
+    both values use the exact same ``basis_contract_id``.
+    """
+
+    basis_contract_id: str
+    size_bytes: int
+    complete: bool = True
+
+    def __post_init__(self) -> None:
+        _validate_dashboard_id(
+            self.basis_contract_id,
+            "forwarding size basis_contract_id",
+        )
+        if (
+            not isinstance(self.size_bytes, int)
+            or isinstance(self.size_bytes, bool)
+            or not 0 <= self.size_bytes <= 2**63 - 1
+        ):
+            raise ValueError(
+                "forwarding size_bytes must be a non-negative 64-bit integer"
+            )
+        if not isinstance(self.complete, bool):
+            raise ValueError("forwarding size completeness must be a boolean")
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardingMtuConstraint:
+    """One egress size limit whose interpretation remains plug-in-owned."""
+
+    basis_contract_id: str
+    limit_bytes: int
+    resource: ResourceKey | None = None
+    complete: bool = True
+
+    def __post_init__(self) -> None:
+        _validate_dashboard_id(
+            self.basis_contract_id,
+            "forwarding MTU basis_contract_id",
+        )
+        if (
+            not isinstance(self.limit_bytes, int)
+            or isinstance(self.limit_bytes, bool)
+            or not 1 <= self.limit_bytes <= 2**63 - 1
+        ):
+            raise ValueError(
+                "forwarding MTU limit_bytes must be a positive 64-bit integer"
+            )
+        if self.resource is not None and not isinstance(self.resource, ResourceKey):
+            raise ValueError("forwarding MTU resource must be a ResourceKey or None")
+        if not isinstance(self.complete, bool):
+            raise ValueError("forwarding MTU completeness must be a boolean")
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardingPacketLayer:
+    """One ordered, plug-in-owned packet layer.
+
+    Layers are carried outermost to innermost.  A plug-in may represent each
+    MPLS label as a layer, an SRH as a layer whose fields contain an ordered SID
+    tuple, or any proprietary wrapper using its own ``contract_id``.  Core
+    validates bounds and exact identity but never interprets the vocabulary.
+    """
+
+    layer_id: str
+    contract_id: str
+    label: str = field(compare=False, hash=False)
+    fields: tuple[tuple[str, KeyValue], ...] = ()
+    size_bytes: int | None = None
+    complete: bool = True
+
+    def __post_init__(self) -> None:
+        _validate_opaque_id(self.layer_id, "forwarding packet layer_id")
+        _validate_dashboard_id(
+            self.contract_id,
+            "forwarding packet layer contract_id",
+        )
+        if (
+            not isinstance(self.label, str)
+            or not self.label
+            or len(self.label) > 120
+            or any(
+                ord(character) < 32 and character not in "\t\r\n"
+                for character in self.label
+            )
+        ):
+            raise ValueError(
+                "forwarding packet layer label must contain 1 to 120 "
+                "plain-text characters"
+            )
+        _validate_forwarding_parts(
+            self.fields,
+            "forwarding packet layer fields",
+            require_nonempty=False,
+        )
+        object.__setattr__(
+            self,
+            "fields",
+            tuple(sorted(self.fields, key=lambda item: item[0])),
+        )
+        if self.size_bytes is not None and (
+            not isinstance(self.size_bytes, int)
+            or isinstance(self.size_bytes, bool)
+            or not 0 <= self.size_bytes <= 2**31 - 1
+        ):
+            raise ValueError(
+                "forwarding packet layer size_bytes must be a non-negative "
+                "32-bit integer or None"
+            )
+        if not isinstance(self.complete, bool):
+            raise ValueError(
+                "forwarding packet layer completeness must be a boolean"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardingPacketState:
+    """A bounded packet snapshot carried outermost to innermost."""
+
+    layers: tuple[ForwardingPacketLayer, ...]
+    size: ForwardingSizeObservation | None = None
+    complete: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.layers, tuple):
+            raise ValueError("forwarding packet layers must be a tuple")
+        if len(self.layers) > 256:
+            raise ValueError("forwarding packet states support at most 256 layers")
+        if any(
+            not isinstance(layer, ForwardingPacketLayer)
+            for layer in self.layers
+        ):
+            raise ValueError(
+                "forwarding packet states require ForwardingPacketLayer values"
+            )
+        layer_ids = [layer.layer_id for layer in self.layers]
+        if len(layer_ids) != len(set(layer_ids)):
+            raise ValueError(
+                "forwarding packet layer identifiers must be unique within a state"
+            )
+        if self.size is not None and not isinstance(
+            self.size,
+            ForwardingSizeObservation,
+        ):
+            raise ValueError(
+                "forwarding packet size must be a ForwardingSizeObservation or None"
+            )
+        if not isinstance(self.complete, bool):
+            raise ValueError("forwarding packet state completeness must be a boolean")
+
+    @property
+    def identity_complete(self) -> bool:
+        """Whether exact equality is conclusive enough for loop detection."""
+
+        return (
+            self.complete
+            and all(layer.complete for layer in self.layers)
+            and (self.size is None or self.size.complete)
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardingPacketTransition:
+    """A node plug-in's declarative before/after packet result for one step."""
+
+    transition_id: str
+    step_id: str
+    before: ForwardingPacketState
+    after: ForwardingPacketState
+    action_contract_id: str
+    action_label: str
+    disposition: ForwardingPacketDisposition
+    origin: ForwardingTransitionOrigin
+    actor_id: str
+    mtu: ForwardingMtuConstraint | None = None
+    forced_rule_id: str | None = None
+    contributions: tuple[ResolutionContribution, ...] = ()
+
+    def __post_init__(self) -> None:
+        _validate_opaque_id(
+            self.transition_id,
+            "forwarding packet transition_id",
+        )
+        _validate_opaque_id(self.step_id, "forwarding packet transition step_id")
+        if not isinstance(self.before, ForwardingPacketState) or not isinstance(
+            self.after,
+            ForwardingPacketState,
+        ):
+            raise ValueError(
+                "forwarding packet transitions require before and after "
+                "ForwardingPacketState values"
+            )
+        _validate_dashboard_id(
+            self.action_contract_id,
+            "forwarding packet action_contract_id",
+        )
+        if (
+            not isinstance(self.action_label, str)
+            or not self.action_label
+            or len(self.action_label) > 160
+        ):
+            raise ValueError(
+                "forwarding packet action_label must contain 1 to 160 characters"
+            )
+        try:
+            object.__setattr__(
+                self,
+                "disposition",
+                ForwardingPacketDisposition(self.disposition),
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "unsupported forwarding packet disposition"
+            ) from error
+        try:
+            origin = ForwardingTransitionOrigin(self.origin)
+            object.__setattr__(self, "origin", origin)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "unsupported forwarding packet transition origin"
+            ) from error
+        _validate_opaque_id(self.actor_id, "forwarding packet transition actor_id")
+        if self.mtu is not None and not isinstance(
+            self.mtu,
+            ForwardingMtuConstraint,
+        ):
+            raise ValueError(
+                "forwarding packet transition MTU must be a "
+                "ForwardingMtuConstraint or None"
+            )
+        if origin is ForwardingTransitionOrigin.USER_FORCED:
+            if self.forced_rule_id is None:
+                raise ValueError(
+                    "user-forced packet transitions require forced_rule_id"
+                )
+        elif self.forced_rule_id is not None:
+            raise ValueError(
+                "node plug-in packet transitions must not claim forced_rule_id"
+            )
+        if self.forced_rule_id is not None:
+            _validate_opaque_id(
+                self.forced_rule_id,
+                "forwarding packet transition forced_rule_id",
+            )
+        if not isinstance(self.contributions, tuple):
+            raise ValueError(
+                "forwarding packet transition contributions must be a tuple"
+            )
+        if len(self.contributions) > 64:
+            raise ValueError(
+                "forwarding packet transitions support at most 64 contributions"
+            )
+        if any(
+            not isinstance(contribution, ResolutionContribution)
+            for contribution in self.contributions
+        ):
+            raise ValueError(
+                "forwarding packet transition contributions must be "
+                "ResolutionContribution values"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardingSteeringRule:
+    """A bounded user override targeted at one exact trace step.
+
+    Core exact-matches the step and optional expected packet snapshot.  The node
+    plug-in remains responsible for accepting the selected candidate or packet
+    state as meaningful on that device.
+    """
+
+    rule_id: str
+    target_step_id: str
+    action_contract_id: str
+    reason: str
+    priority: int = 0
+    expected_before: ForwardingPacketState | None = None
+    selected_candidate: ResourceKey | None = None
+    packet_after: ForwardingPacketState | None = None
+    disposition: ForwardingPacketDisposition | None = None
+
+    def __post_init__(self) -> None:
+        _validate_opaque_id(self.rule_id, "forwarding steering rule_id")
+        _validate_opaque_id(
+            self.target_step_id,
+            "forwarding steering target_step_id",
+        )
+        _validate_dashboard_id(
+            self.action_contract_id,
+            "forwarding steering action_contract_id",
+        )
+        if (
+            not isinstance(self.reason, str)
+            or not self.reason
+            or len(self.reason) > 500
+        ):
+            raise ValueError(
+                "forwarding steering reason must contain 1 to 500 characters"
+            )
+        if (
+            not isinstance(self.priority, int)
+            or isinstance(self.priority, bool)
+            or not 0 <= self.priority <= 2**31 - 1
+        ):
+            raise ValueError(
+                "forwarding steering priority must be a non-negative "
+                "32-bit integer"
+            )
+        if self.expected_before is not None and not isinstance(
+            self.expected_before,
+            ForwardingPacketState,
+        ):
+            raise ValueError(
+                "forwarding steering expected_before must be a "
+                "ForwardingPacketState or None"
+            )
+        if self.selected_candidate is not None and not isinstance(
+            self.selected_candidate,
+            ResourceKey,
+        ):
+            raise ValueError(
+                "forwarding steering selected_candidate must be a "
+                "ResourceKey or None"
+            )
+        if self.packet_after is not None and not isinstance(
+            self.packet_after,
+            ForwardingPacketState,
+        ):
+            raise ValueError(
+                "forwarding steering packet_after must be a "
+                "ForwardingPacketState or None"
+            )
+        if self.disposition is not None:
+            try:
+                object.__setattr__(
+                    self,
+                    "disposition",
+                    ForwardingPacketDisposition(self.disposition),
+                )
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    "unsupported forwarding steering disposition"
+                ) from error
+        if (
+            self.selected_candidate is None
+            and self.packet_after is None
+            and self.disposition is None
+        ):
+            raise ValueError(
+                "forwarding steering rules require a candidate, packet, or "
+                "disposition override"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardingStepRequest:
+    """One node-local, trace-time forwarding question."""
+
+    step_id: str
+    member_id: str
+    status_perspective: StatusPerspectiveRef
+    forwarding_object: ResourceKey
+    packet_state: ForwardingPacketState
+    lookup_context: tuple[tuple[str, KeyValue], ...] = ()
+    ingress_resource: ResourceKey | None = None
+    steering_rules: tuple[ForwardingSteeringRule, ...] = ()
+    max_candidates: int = 64
+    ir_version: str = FORWARDING_IR_VERSION
+
+    def __post_init__(self) -> None:
+        _validate_opaque_id(self.step_id, "forwarding step request step_id")
+        _validate_opaque_id(self.member_id, "forwarding step request member_id")
+        if not isinstance(self.status_perspective, StatusPerspectiveRef):
+            raise ValueError(
+                "forwarding step request status_perspective must be a "
+                "StatusPerspectiveRef"
+            )
+        if not isinstance(self.forwarding_object, ResourceKey):
+            raise ValueError(
+                "forwarding step request forwarding_object must be a ResourceKey"
+            )
+        if not isinstance(self.packet_state, ForwardingPacketState):
+            raise ValueError(
+                "forwarding step request packet_state must be a "
+                "ForwardingPacketState"
+            )
+        _validate_forwarding_parts(
+            self.lookup_context,
+            "forwarding step request lookup_context",
+            require_nonempty=False,
+        )
+        if self.ingress_resource is not None and not isinstance(
+            self.ingress_resource,
+            ResourceKey,
+        ):
+            raise ValueError(
+                "forwarding step request ingress_resource must be a "
+                "ResourceKey or None"
+            )
+        if not isinstance(self.steering_rules, tuple) or any(
+            not isinstance(rule, ForwardingSteeringRule)
+            for rule in self.steering_rules
+        ):
+            raise ValueError(
+                "forwarding step request steering_rules must contain "
+                "ForwardingSteeringRule values"
+            )
+        if len(self.steering_rules) > 64:
+            raise ValueError(
+                "forwarding step requests support at most 64 steering rules"
+            )
+        if (
+            not isinstance(self.max_candidates, int)
+            or isinstance(self.max_candidates, bool)
+            or not 1 <= self.max_candidates <= 4_096
+        ):
+            raise ValueError(
+                "forwarding step request max_candidates must be between 1 and 4096"
+            )
+        _validate_opaque_id(
+            self.ir_version,
+            "forwarding step request ir_version",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardingStepResult:
+    """One node plug-in's bounded answer to a forwarding step request."""
+
+    step_id: str
+    transition: ForwardingPacketTransition
+    selected_candidate: ResourceKey | None
+    next_forwarding_object: ResourceKey | None
+    next_lookup_context: tuple[tuple[str, KeyValue], ...] = ()
+    recursive: bool = False
+    terminal: bool = False
+    quality: Quality = Quality.EXACT
+
+    def __post_init__(self) -> None:
+        _validate_opaque_id(self.step_id, "forwarding step result step_id")
+        if not isinstance(self.transition, ForwardingPacketTransition):
+            raise ValueError(
+                "forwarding step result transition must be a "
+                "ForwardingPacketTransition"
+            )
+        if self.transition.step_id != self.step_id:
+            raise ValueError(
+                "forwarding step result transition step_id does not match"
+            )
+        for label, resource in (
+            ("selected_candidate", self.selected_candidate),
+            ("next_forwarding_object", self.next_forwarding_object),
+        ):
+            if resource is not None and not isinstance(resource, ResourceKey):
+                raise ValueError(
+                    f"forwarding step result {label} must be a ResourceKey or None"
+                )
+        _validate_forwarding_parts(
+            self.next_lookup_context,
+            "forwarding step result next_lookup_context",
+            require_nonempty=False,
+        )
+        if not isinstance(self.recursive, bool) or not isinstance(
+            self.terminal,
+            bool,
+        ):
+            raise ValueError(
+                "forwarding step result recursive and terminal must be booleans"
+            )
+        try:
+            object.__setattr__(self, "quality", Quality(self.quality))
+        except (TypeError, ValueError) as error:
+            raise ValueError("unsupported forwarding step result quality") from error
+        if self.recursive and self.terminal:
+            raise ValueError(
+                "forwarding step result cannot be both recursive and terminal"
+            )
+        disposition = self.transition.disposition
+        if disposition is ForwardingPacketDisposition.CONTINUE:
+            if self.terminal:
+                raise ValueError(
+                    "a continue forwarding step result must not be terminal"
+                )
+            if self.next_forwarding_object is None:
+                raise ValueError(
+                    "a continue forwarding step result requires a next "
+                    "forwarding object"
+                )
+        else:
+            if not self.terminal:
+                raise ValueError(
+                    "a non-continue forwarding step result must be terminal"
+                )
+            if self.next_forwarding_object is not None:
+                raise ValueError(
+                    "a terminal forwarding step result must not provide a next "
+                    "forwarding object"
+                )
+            if self.next_lookup_context:
+                raise ValueError(
+                    "a terminal forwarding step result must not provide next "
+                    "lookup context"
+                )
+
+
+@dataclass(frozen=True, slots=True)
 class ForwardingPolicyScope:
     """One plug-in-owned scope that the core may compare only by equality.
 
@@ -3266,10 +3816,10 @@ class ForwardingTraversalStateKey:
 
     A node/member revisit alone is never sufficient.  The key also carries the
     selected perspective, forwarding object and domain, ingress resource,
-    opaque lookup and packet contexts, active policy scopes, and whether that
-    scope set is complete.  Plug-ins canonicalize the typed context tuples; the
-    core compares the frozen values exactly and does not interpret protocol
-    fields.
+    opaque lookup and legacy packet contexts, an optional structured packet
+    snapshot, active policy scopes, and whether that scope set is complete.
+    Plug-ins canonicalize the typed values; the core compares complete frozen
+    values exactly and does not interpret protocol fields.
     """
 
     member_id: str
@@ -3279,6 +3829,7 @@ class ForwardingTraversalStateKey:
     ingress_resource: ResourceKey | None = None
     lookup_context: tuple[tuple[str, KeyValue], ...] = ()
     packet_context: tuple[tuple[str, KeyValue], ...] = ()
+    packet_state: ForwardingPacketState | None = None
     policy_scopes: frozenset[ForwardingPolicyScope] = frozenset()
     policy_scopes_complete: bool = True
 
@@ -3314,6 +3865,14 @@ class ForwardingTraversalStateKey:
             "forwarding traversal packet_context",
             require_nonempty=False,
         )
+        if self.packet_state is not None and not isinstance(
+            self.packet_state,
+            ForwardingPacketState,
+        ):
+            raise ValueError(
+                "forwarding traversal packet_state must be a "
+                "ForwardingPacketState or None"
+            )
         if not isinstance(self.policy_scopes, frozenset):
             raise ValueError(
                 "forwarding traversal policy_scopes must be a frozenset"
@@ -3857,6 +4416,19 @@ class AnalyzerPluginBase:
         )
         return ()
 
+    def resolve_forwarding_step(
+        self,
+        request: ForwardingStepRequest,
+        world: ReadOnlyWorld,
+    ) -> ForwardingStepResult | PluginDiagnostic:
+        self._require_capability_override(
+            PluginCapability.FORWARDING_TRACE,
+            "resolve_forwarding_step",
+        )
+        raise NotImplementedError(
+            "resolve_forwarding_step() is unavailable without forwarding_trace"
+        )
+
 
 class AnalyzerPlugin(Protocol):
     """Platform/version plugin discovered through Python entry points."""
@@ -3922,3 +4494,9 @@ class AnalyzerPlugin(Protocol):
         request: ForwardingProjectionRequest,
         world: ReadOnlyWorld,
     ) -> Iterable[ForwardingMutation | PluginDiagnostic]: ...
+
+    def resolve_forwarding_step(
+        self,
+        request: ForwardingStepRequest,
+        world: ReadOnlyWorld,
+    ) -> ForwardingStepResult | PluginDiagnostic: ...

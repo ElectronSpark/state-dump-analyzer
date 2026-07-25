@@ -19,7 +19,7 @@ Usage: ./scripts/launch_demo.sh [options]
 Options:
   --host ADDRESS       Bind address (default: 127.0.0.1)
   --port PORT          TCP port (default: 8765)
-  --frontend-dir PATH  Frontend distribution (default: <repository>/frontend)
+  --frontend-dir PATH  Frontend distribution (default: <repository>/demo/frontend)
   --api-only           Disable integrated pages for split-process development
   --open-browser       Ask the demo process to open the browser
   --no-browser         Keep browser launch disabled (the WSL default)
@@ -120,7 +120,7 @@ fi
 # This packed archive is the single, hard-coded demo input requested for review.
 fixture_argument="samples/generated-scale/router-state-lab-100k.tgz"
 fixture_archive="${repository_root}/${fixture_argument}"
-frontend_root="${frontend_root:-${repository_root}/frontend}"
+frontend_root="${frontend_root:-${repository_root}/demo/frontend}"
 scale_scenario="${repository_root}/samples/generated-scale/scenario.json"
 review_manifest="${repository_root}/samples/generated/unpacked/node-a/manifest.json"
 review_resources="${repository_root}/samples/generated/illustrative/resources.jsonl"
@@ -181,7 +181,7 @@ if [[ "${rebuild_fixture}" == true || "${scale_rebuilt}" == true || "${pack_read
 fi
 
 demo_arguments=(
-    -m router_dump_analyzer.demo_app
+    -m router_dump_analyzer_demo.app
     --host "${bind_address}"
     --port "${port}"
     --frontend-dir "${frontend_root}"
@@ -207,7 +207,7 @@ fi
 if [[ "${api_only}" == true ]]; then
     printf 'Starting Router State Lab backend API at http://%s:%s\n' \
         "${bind_address}" "${port}"
-    printf "Run 'npm --prefix frontend run serve -- --backend http://%s:%s' in another terminal for the split frontend.\n" \
+    printf "Run 'npm --prefix demo/frontend run serve -- --backend http://%s:%s' in another terminal for the split frontend.\n" \
         "${bind_address}" "${port}"
 else
     printf 'Starting Router State Lab at http://%s:%s\n' "${bind_address}" "${port}"

@@ -6,8 +6,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_JS = ROOT / "frontend" / "assets" / "app.js"
-INDEX_HTML = ROOT / "frontend" / "pages" / "node.html"
+APP_JS = ROOT / "demo" / "frontend" / "assets" / "app.js"
+INDEX_HTML = ROOT / "demo" / "frontend" / "pages" / "node.html"
 
 
 def javascript_function(source: str, name: str) -> str:
@@ -153,6 +153,121 @@ class ScaleHistoryFrontendTests(unittest.TestCase):
             initialize.index("await requestFailureIncidentPreview()"),
             initialize.index("renderIncidentSummary()"),
         )
+
+    def test_event_log_selection_uses_query_scoped_ranges_and_common_gestures(self) -> None:
+        normalize = javascript_function(
+            self.script,
+            "normalizeEventLogSelectionRanges",
+        )
+        gesture = javascript_function(
+            self.script,
+            "applyEventLogSelectionGesture",
+        )
+        bind = javascript_function(self.script, "bindVisibleEventLogRows")
+        query_binding = javascript_function(
+            self.script,
+            "bindEventLogSelectionToQuery",
+        )
+        render_table = javascript_function(self.script, "renderEventTable")
+
+        self.assertIn("start > prior[1] + 1", normalize)
+        self.assertIn("eventLogSelectionIncludes(target, ranges)", gesture)
+        self.assertIn("removeEventLogSelectionRange", gesture)
+        self.assertIn("toggle: additive && !extend", bind)
+        self.assertIn("event.shiftKey", bind)
+        self.assertIn('event.key === "ArrowDown"', bind)
+        self.assertIn("revealEventLogEntry(row)", bind)
+        self.assertIn("state.eventLogSelectionRanges = []", query_binding)
+        self.assertLess(
+            query_binding.index("finishEventLogDrag(null, false)"),
+            query_binding.index("state.eventLogSelectionRanges = []"),
+        )
+        self.assertIn("stream order changed", query_binding)
+        self.assertIn("renderEventLogSelectionToolbar()", render_table)
+
+    def test_event_log_drag_is_host_captured_and_touch_scroll_safe(self) -> None:
+        down = javascript_function(self.script, "eventLogPointerDown")
+        move = javascript_function(self.script, "eventLogPointerMove")
+        finish = javascript_function(self.script, "finishEventLogDrag")
+        controls = javascript_function(self.script, "bindControls")
+
+        self.assertIn('event.pointerType === "touch"', down)
+        self.assertIn("setPointerCapture", down)
+        self.assertIn("Math.hypot", move)
+        self.assertIn("visibleEventLogRowAtPoint", move)
+        self.assertIn("releasePointerCapture", finish)
+        self.assertIn("cancelAnimationFrame", finish)
+        self.assertIn("baseFocus", down)
+        self.assertIn("focus: drag.baseFocus", finish)
+        self.assertIn("eventLogPointerDown", controls)
+        self.assertIn("lostpointercapture", controls)
+
+    def test_event_log_hover_registry_survives_timeline_rerenders(self) -> None:
+        register = javascript_function(
+            self.script,
+            "registerVisibleEventLogHoverModels",
+        )
+        show = javascript_function(self.script, "showHover")
+        render_timeline = javascript_function(self.script, "renderTimeline")
+        source_row = javascript_function(self.script, "renderSourceRecordRow")
+        source_hover = javascript_function(self.script, "sourceRecordHoverHtml")
+        hover_model = javascript_function(self.script, "eventLogHoverModel")
+        bind_timeline = javascript_function(self.script, "bindTimelineInteractions")
+
+        self.assertIn("state.eventLogHoverModels.clear()", register)
+        self.assertIn("eventLogHoverModel(entry)", register)
+        self.assertIn("bindHoverTarget(row)", register)
+        self.assertIn("state.eventLogHoverModels.get(key)", show)
+        self.assertIn("if (!pin && state.hoverPinned) return", show)
+        self.assertIn("state.hoverModels.clear()", render_timeline)
+        self.assertNotIn('title="${escapeHtml(record.message', source_row)
+        self.assertIn("matchedEventUids.length > 0", source_hover)
+        self.assertIn("resource: record", hover_model)
+        self.assertNotIn("\n    resource,\n", hover_model)
+        self.assertIn('const timeline = byId("timeline-content")', bind_timeline)
+        self.assertNotIn('document.querySelectorAll("[data-hover-key]")', bind_timeline)
+
+    def test_selected_log_actions_use_server_projection_and_marker_lane(self) -> None:
+        request = javascript_function(self.script, "resolveEventLogSelection")
+        action = javascript_function(
+            self.script,
+            "applyEventLogTimelineAction",
+        )
+        markers = javascript_function(self.script, "reviewMarkerLaneHtml")
+        timeline = javascript_function(self.script, "requestTimeline")
+        copy_label = javascript_function(self.script, "eventLogCopyActionLabel")
+        timeline_pointer = javascript_function(self.script, "timelinePointerDown")
+        timeline_bindings = javascript_function(
+            self.script,
+            "bindTimelineInteractions",
+        )
+
+        self.assertIn('revisionPath("event-log/selection")', request)
+        self.assertIn("MAX_EVENT_LOG_SELECTION_ITEMS", request)
+        self.assertNotIn("forEach(rememberTimelineEntryProjection)", request)
+        self.assertIn("selection_ranges", self.script)
+        self.assertNotIn('"ctf"', request.lower())
+        self.assertIn("state.hiddenTimelineEntryIds", action)
+        self.assertIn("state.markedTimelineEntryIds", action)
+        self.assertIn("state.timelineEntryProjections", markers)
+        self.assertIn("annotation-cluster", markers)
+        self.assertIn("underlying-hidden", markers)
+        self.assertIn("selected_event_uid: state.selectedEventUid", timeline)
+        self.assertIn("state.eventLogSelectionCache", copy_label)
+        self.assertIn("eventLogSelectionSignature()", copy_label)
+        self.assertIn(".review-marker", timeline_pointer)
+        self.assertIn(".review-marker[data-hover-key]", timeline_bindings)
+        for identifier in (
+            "event-selection-toolbar",
+            "event-selection-reveal",
+            "event-selection-copy",
+            "event-selection-hide",
+            "event-selection-show",
+            "event-selection-mark",
+            "event-selection-unmark",
+        ):
+            self.assertIn(f'id="{identifier}"', self.index)
+        self.assertIn("Ctrl/Command-click to toggle", self.index)
 
 
 if __name__ == "__main__":

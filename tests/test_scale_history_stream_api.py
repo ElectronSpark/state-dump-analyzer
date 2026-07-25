@@ -9,10 +9,11 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from router_dump_analyzer import demo_app, demo_data
-from router_dump_analyzer.demo_data import REVISION_ID
+from router_dump_analyzer_demo import app as demo_app
+from router_dump_analyzer_demo import data as demo_data
+from router_dump_analyzer_demo.data import REVISION_ID
 from router_dump_analyzer.history_search_core import HistorySearchCorpus
-from router_dump_analyzer.scale_data import ScaleRuntime
+from router_dump_analyzer_demo.scale_data import ScaleRuntime
 
 
 def _runtime(
@@ -109,6 +110,9 @@ def _dataset(*, scale: bool = False) -> dict:
             "layer": "layer-a",
             "record_name": "trace-a",
             "message": "retained ctf record",
+            "copy_text": "[150] trace-a { peer = \"peer-a\" }",
+            "matched_event_uid": "event-a",
+            "matched_event_uids": ["event-a"],
         },
         {
             "source_record_uid": "source-b",
@@ -135,6 +139,13 @@ def _dataset(*, scale: bool = False) -> dict:
         "source_record_descriptors": [
             {"source_type": "ctf", "label": "CTF"},
             {"source_type": "syslog", "label": "Syslog"},
+        ],
+        "source_record_group_descriptors": [
+            {
+                "group_id": "ctf",
+                "label": "CTF records",
+                "copy_action_label": "Copy fixture text",
+            }
         ],
         "kind_descriptors": [
             {
@@ -187,11 +198,14 @@ class ScaleHistoryBootstrapTests(unittest.TestCase):
             client = demo_data.client_demo_dataset()
 
         self.assertEqual(len(client["events"]), 3)
-        self.assertEqual(client["source_records"], dataset["source_records"])
+        self.assertEqual(len(client["source_records"]), 2)
+        self.assertNotIn("copy_text", client["source_records"][0])
+        self.assertNotIn("attributes", client["source_records"][0])
         self.assertNotIn("history_transport", client)
         serialized = json.dumps(client)
         self.assertNotIn("event-secret", serialized)
         self.assertNotIn("state-secret", serialized)
+        self.assertNotIn("[150] trace-a", serialized)
 
 
 class ScaleHistoryApiTests(unittest.TestCase):
@@ -355,6 +369,53 @@ class ScaleHistoryApiTests(unittest.TestCase):
         )
         self.assertEqual(no_streams.status_code, 200)
         self.assertEqual(no_streams.json()["total_count"], 0)
+
+    def test_event_log_selection_resolves_ranges_and_safe_plugin_copy_text(self) -> None:
+        endpoint = f"/v1/revisions/{REVISION_ID}/event-log/selection"
+        dataset = _dataset()
+        with patch.object(demo_app, "load_demo_dataset", return_value=dataset):
+            response = self.client.post(
+                endpoint,
+                json={
+                    "include_normalized": True,
+                    "source_types": ["ctf", "syslog"],
+                    "selection_ranges": [{"start": 0, "end": 2}],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["selection_count"], 3)
+        self.assertEqual(
+            [item["entry_id"] for item in payload["items"]],
+            ["event:event-a", "source:source-a", "event:event-c"],
+        )
+        self.assertEqual(payload["copy_action_label"], "Copy fixture text")
+        self.assertEqual(
+            [item["source_record_uid"] for item in payload["copy"]["items"]],
+            ["source-a", "copy-ctf-event-c"],
+        )
+        serialized_items = json.dumps(payload["items"])
+        self.assertNotIn("copy_text", serialized_items)
+        self.assertNotIn("key-secret", serialized_items)
+        self.assertNotIn("state-secret", serialized_items)
+
+    def test_event_log_selection_rejects_unbounded_ranges(self) -> None:
+        endpoint = f"/v1/revisions/{REVISION_ID}/event-log/selection"
+        with patch.object(demo_app, "load_demo_dataset", return_value=_dataset()):
+            response = self.client.post(
+                endpoint,
+                json={
+                    "selection_ranges": [
+                        {
+                            "start": 0,
+                            "end": demo_app.MAX_EVENT_LOG_SELECTION_ITEMS,
+                        }
+                    ]
+                },
+            )
+
+        self.assertEqual(response.status_code, 422)
 
     def test_scale_event_only_pages_use_timestamp_index_without_full_merge(self) -> None:
         response = self._post(

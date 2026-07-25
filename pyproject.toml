@@ -3,35 +3,27 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "router-dump-analyzer-design"
+name = "router-dump-analyzer-core"
 version = "0.1.0"
-description = "Reference contracts and synthetic fixtures for a temporal router dump analyzer"
+description = "Core contracts and generic engines for a temporal router dump analyzer"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "Router Dump Analyzer design team" }]
-dependencies = [
-  "fastapi>=0.115,<1",
-  "uvicorn>=0.30,<1",
-]
+dependencies = []
 
 [project.optional-dependencies]
-test = ["httpx>=0.27,<1"]
+test = []
 
 [project.scripts]
-router-dump-demo = "router_dump_analyzer.demo_app:main"
 router-dump-plugin-validate = "router_dump_analyzer.plugin_validation:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/router_dump_analyzer"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"frontend" = "router_dump_analyzer/frontend"
-
 [tool.hatch.build.targets.sdist]
 include = [
   "/src",
-  "/frontend",
   "/README.md",
   "/pyproject.toml",
 ]

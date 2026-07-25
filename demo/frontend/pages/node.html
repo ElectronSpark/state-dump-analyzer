@@ -10,7 +10,7 @@
       name="description"
       content="Interactive review demo for a temporal router dump analyzer."
     />
-    <link rel="stylesheet" href="/assets/styles.css?v=20260721-combinatorial-audit-v1" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260724-event-selection-v2" />
   </head>
   <body>
     <div class="app-shell">
@@ -458,7 +458,7 @@
             <div>
               <p class="eyebrow">TRACE VIEW</p>
               <h2>Normalized event log</h2>
-              <p>Scroll the complete normalized stream, and optionally merge retained CTF or external records. Ctrl-click any row or timeline mark to jump across views.</p>
+              <p>Scroll the complete normalized stream and optionally merge plug-in-declared retained sources. Click to select one row, Ctrl/Command-click to toggle, Shift-click to extend, or drag across rows. Double-click or use Reveal in timeline to navigate; Ctrl/Command-click timeline marks still jumps back here.</p>
             </div>
             <div class="log-filters">
               <label>
@@ -479,8 +479,23 @@
             <span id="event-source-group-controls" class="source-record-group-controls"></span>
             <output id="event-log-status" aria-live="polite">Preparing stream…</output>
           </div>
+          <div class="event-selection-toolbar" id="event-selection-toolbar" role="toolbar" aria-label="Selected event-log row actions" hidden>
+            <div class="event-selection-summary">
+              <strong id="event-selection-count">No rows selected</strong>
+              <span id="event-selection-detail"></span>
+            </div>
+            <div class="event-selection-actions">
+              <button id="event-selection-reveal" type="button">Reveal in timeline</button>
+              <button id="event-selection-copy" type="button">Copy plug-in text</button>
+              <button id="event-selection-hide" type="button">Hide marks</button>
+              <button id="event-selection-show" type="button">Show marks</button>
+              <button id="event-selection-mark" type="button">Add review marker</button>
+              <button id="event-selection-unmark" type="button">Remove marker</button>
+              <button id="event-selection-clear" type="button">Clear selection</button>
+            </div>
+          </div>
           <div class="table-wrap event-log-scroll" id="event-log-scroll" tabindex="0" aria-label="Scrollable normalized and source event log">
-            <table>
+            <table aria-multiselectable="true">
               <thead>
                 <tr>
                   <th>Offset</th>
@@ -546,6 +561,6 @@
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <div class="timeline-hover" id="timeline-hover" role="dialog" aria-label="Timeline details" hidden></div>
 
-    <script type="module" src="/assets/app.js?v=20260722-scale-stream-v1"></script>
+    <script type="module" src="/assets/app.js?v=20260724-lane-visibility-v4"></script>
   </body>
 </html>

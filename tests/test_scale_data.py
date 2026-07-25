@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from router_dump_analyzer.scale_data import (
+from router_dump_analyzer_demo.scale_data import (
     _LazyIntervalMap,
     _ScaleTemporalIndex,
     _compact_event,
@@ -13,7 +13,7 @@ from router_dump_analyzer.scale_data import (
     _scale_projection_capabilities,
     _status_class,
 )
-from router_dump_analyzer.demo_temporal_topology import build_demo_plugin_contract
+from router_dump_analyzer_demo.temporal_topology import build_demo_plugin_contract
 from scripts.generate_scale_fixtures import _plugin_schema
 
 

@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from router_dump_analyzer import demo_app
-from router_dump_analyzer.demo_data import REVISION_ID
+from router_dump_analyzer_demo import app as demo_app
+from router_dump_analyzer_demo.data import REVISION_ID
 
 
 class EventQueryRedactionTests(unittest.TestCase):

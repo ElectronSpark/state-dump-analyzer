@@ -28,7 +28,7 @@ from scripts.generate_scale_fixtures import (
 )
 from scripts.validate_scale_archive import archive_matches
 from scripts.fetch_babeltrace_sample import FILES as CTF_FILES, fetch
-from router_dump_analyzer.demo_data import (
+from router_dump_analyzer_demo.data import (
     configure_demo_archive,
     configure_demo_scale,
     load_demo_dataset,

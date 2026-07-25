@@ -4,7 +4,7 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from router_dump_analyzer.demo_app import app
+from router_dump_analyzer_demo.app import app
 
 
 class MultiNodeRouteRegressionTests(unittest.TestCase):
@@ -77,6 +77,12 @@ class MultiNodeRouteRegressionTests(unittest.TestCase):
         self.assertEqual(reverse["route_type"], counterpart["route_type"])
         self.assertEqual(reverse["route_family"], counterpart["route_family"])
         self.assertEqual(reverse["vrf_id"], counterpart["vrf_id"])
+        self.assertTrue(reverse["consistency"]["consistent"])
+        self.assertEqual(
+            reverse["consistency"]["state"],
+            "consistent_with_selected_observations",
+        )
+        self.assertEqual(reverse["consistency"]["issue_refs"], [])
         self.assertTrue(
             all(
                 path["route_type"] == counterpart["route_type"]
@@ -111,6 +117,28 @@ class MultiNodeRouteRegressionTests(unittest.TestCase):
                     "vrf_id",
                 ):
                     self.assertEqual(payload[field], counterpart[field])
+
+    def test_every_scenario_has_direction_correct_bidirectional_paths(self) -> None:
+        scenarios = self.client.get(
+            "/v1/topologies/routes/capabilities"
+        ).json()["scenarios"]
+        for scenario in scenarios:
+            with self.subTest(scenario_id=scenario["scenario_id"]):
+                response = self.client.post(
+                    "/v1/topologies/routes/trace",
+                    json={
+                        "scenario_id": scenario["scenario_id"],
+                        "direction": "both",
+                    },
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                for trace in response.json()["traces"].values():
+                    start_node_id = trace["trace_start"]["node_id"]
+                    for path in trace["paths"]:
+                        self.assertEqual(
+                            path["node_sequence"][0],
+                            start_node_id,
+                        )
 
     def test_router_to_router_ui_defaults_are_router_endpoints(self) -> None:
         capabilities = self.client.get(

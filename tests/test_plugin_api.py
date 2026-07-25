@@ -272,6 +272,18 @@ class PluginApiTests(unittest.TestCase):
             PLUGIN_CAPABILITY_HOOKS[PluginCapability.EVENT_REDUCTION],
             ("apply",),
         )
+        self.assertEqual(
+            PLUGIN_CAPABILITY_HOOKS[PluginCapability.FORWARDING_TRACE],
+            ("resolve_forwarding_step",),
+        )
+        self.assertEqual(
+            tuple(
+                inspect.signature(
+                    AnalyzerPlugin.resolve_forwarding_step
+                ).parameters
+            ),
+            ("self", "request", "world"),
+        )
         self.assertEqual(set(INPUT_PARSER_HOOKS), set(InputParserKind))
         self.assertEqual(INPUT_PARSER_HOOKS[InputParserKind.CTF], "parse_ctf")
         self.assertEqual(
@@ -324,6 +336,11 @@ class PluginApiTests(unittest.TestCase):
 
         self.assertIn(SourceRecordEmission, typing.get_args(status_output.__value__))
         self.assertIn(SourceRecordEmission, typing.get_args(trace_output.__value__))
+        source_fields = {
+            field.name for field in dataclass_fields(SourceRecordEmission)
+        }
+        self.assertIn("copy_text", source_fields)
+        self.assertIn("matched_event_uids", source_fields)
 
     def test_plugin_base_noops_only_for_undeclared_capabilities(self) -> None:
         def manifest_with(
@@ -1220,6 +1237,7 @@ class PluginApiTests(unittest.TestCase):
             label="External records",
             description="Records retained outside the normalized event stream.",
             default_included=True,
+            copy_action_label="Copy vendor text",
         )
         source_type = SourceRecordTypeDescriptor(
             source_type="vendor-syslog",
@@ -1245,12 +1263,22 @@ class PluginApiTests(unittest.TestCase):
         )
         self.assertTrue(schema.record_lane_presets[0].default_enabled)
         self.assertTrue(schema.source_record_groups[0].default_included)
+        self.assertEqual(
+            schema.source_record_groups[0].copy_action_label,
+            "Copy vendor text",
+        )
         self.assertEqual(schema.source_record_types[0].stream_group, "external")
         with self.assertRaisesRegex(ValueError, "default_included must be a boolean"):
             SourceRecordGroupDescriptor(
                 group_id="invalid-default",
                 label="Invalid default",
                 default_included=1,  # type: ignore[arg-type]
+            )
+        with self.assertRaisesRegex(ValueError, "copy_action_label"):
+            SourceRecordGroupDescriptor(
+                group_id="invalid-copy-label",
+                label="Invalid copy label",
+                copy_action_label="",
             )
         self.assertIsNone(
             SourceRecordTypeDescriptor(

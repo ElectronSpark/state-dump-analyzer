@@ -2,8 +2,8 @@
 
 The core owns literal search over the client-safe projection. Plug-ins still
 own the vocabulary and sensitivity declarations used to create that
-projection. The demo can persist the safe corpus in a SQLite sidecar so later
-launches avoid both a large private-memory copy and a repeated rebuild.
+projection. A host can persist the safe corpus in a SQLite sidecar so later
+queries avoid both a large private-memory copy and a repeated rebuild.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from uuid import uuid4
 
 
 class HistorySearchCapacityError(RuntimeError):
-    """The exact demo corpus exceeded its configured safety bound."""
+    """The exact history corpus exceeded its configured safety bound."""
 
 
 class _SidecarUnavailable(RuntimeError):
@@ -39,7 +39,7 @@ class HistorySearchCorpus:
     invoking the document builder.
 
     Production storage can implement the same contract with PostgreSQL
-    ``pg_trgm``. SQLite is deliberately a local demo serving cache and never
+    ``pg_trgm``. SQLite is deliberately a local serving cache and never
     receives raw plug-in payloads.
     """
 

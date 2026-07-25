@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from router_dump_analyzer.demo_data import _overlaps_range
-from router_dump_analyzer.demo_app import _overlaps_window
+from router_dump_analyzer_demo.data import _overlaps_range
+from router_dump_analyzer_demo.app import _overlaps_window
 
 
 class TemporalBoundaryTests(unittest.TestCase):

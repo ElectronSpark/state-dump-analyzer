@@ -9,15 +9,16 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "demo" / "src"))
 
-from router_dump_analyzer import demo_app
-from router_dump_analyzer.demo_data import REVISION_ID
-from router_dump_analyzer.scale_data import ScaleRuntime
+from router_dump_analyzer_demo import app as demo_app
+from router_dump_analyzer_demo.data import REVISION_ID
+from router_dump_analyzer_demo.scale_data import ScaleRuntime
 from router_dump_analyzer.source_record_core import record_lanes_for_window
 
 
-APP_JS = ROOT / "frontend" / "assets" / "app.js"
-STYLES_CSS = ROOT / "frontend" / "assets" / "styles.css"
+APP_JS = ROOT / "demo" / "frontend" / "assets" / "app.js"
+STYLES_CSS = ROOT / "demo" / "frontend" / "assets" / "styles.css"
 
 
 def javascript_function(source: str, name: str) -> str:
@@ -219,6 +220,22 @@ class NodeWorkspaceRegressionTests(unittest.TestCase):
             function[catch_index:],
         )
 
+    def test_hidden_selected_resource_is_not_reintroduced_as_relationship_root(self) -> None:
+        function = javascript_function(self.script, "requestTimeline")
+
+        self.assertIn(
+            "const selectedRelationshipRoot = canonicalResourceId(state.selectedResourceId)",
+            function,
+        )
+        self.assertIn(
+            "!resourceHiddenFromTimeline(selectedRelationshipRoot)",
+            function,
+        )
+        self.assertIn(
+            "relationship_history_roots: relationshipHistoryRoots",
+            function,
+        )
+
     def test_event_clustering_and_density_resolution_follow_unbounded_zoom(self) -> None:
         clustering = javascript_function(self.script, "buildClientGlyphs")
         density = javascript_function(self.script, "eventDensityLane")
@@ -319,7 +336,7 @@ class NodeWorkspaceRegressionTests(unittest.TestCase):
     def test_keyboard_space_activation_prevents_page_scrolling(self) -> None:
         patterns = [
             r'if \(event\.key !== "Enter" && event\.key !== " "\) return;\s*event\.preventDefault\(\);\s*choose\(\);',
-            r'if \(event\.key === "Enter" \|\| event\.key === " "\) \{\s*event\.preventDefault\(\);\s*choose\(\);',
+            r'if \(event\.target !== row \|\| \(event\.key !== "Enter" && event\.key !== " "\)\) return;\s*event\.preventDefault\(\);\s*closeCorrelationHover\(\);\s*selectResource\(row\.dataset\.resourceId\);',
         ]
         for pattern in patterns:
             with self.subTest(pattern=pattern):
