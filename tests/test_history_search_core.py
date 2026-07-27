@@ -346,6 +346,62 @@ class HistorySearchCorpusTests(unittest.TestCase):
             self.assertEqual(list(corpus.query("peer%_1", lambda: documents)), [5])
             corpus.close()
 
+    def test_nul_documents_bypass_fts_candidates_portably(self) -> None:
+        import sqlite3
+
+        with TemporaryDirectory() as directory:
+            sidecar = Path(directory) / "history-search.sqlite3"
+            documents = (
+                "ordinary after-marker",
+                "prefix\0after-marker only-in-nul-document",
+                "unrelated",
+            )
+            corpus = HistorySearchCorpus(
+                sidecar_path=sidecar,
+                identity="revision-nul-portability",
+                expected_documents=len(documents),
+            )
+            self.assertEqual(
+                list(corpus.query("only-in-nul-document", lambda: documents)),
+                [1],
+            )
+            backend = corpus.candidate_backend
+            corpus.close()
+
+            connection = sqlite3.connect(sidecar)
+            try:
+                if backend == "fts5-trigram":
+                    self.assertEqual(
+                        connection.execute(
+                            """
+                            SELECT ordinal
+                            FROM documents_fts_exceptions
+                            ORDER BY ordinal
+                            """
+                        ).fetchall(),
+                        [(1,)],
+                    )
+            finally:
+                connection.close()
+
+            reopened = HistorySearchCorpus(
+                sidecar_path=sidecar,
+                identity="revision-nul-portability",
+                expected_documents=len(documents),
+            )
+            self.assertEqual(
+                list(
+                    reopened.query(
+                        "only-in-nul-document",
+                        lambda: (_ for _ in ()).throw(
+                            AssertionError("valid NUL sidecar must be reused")
+                        ),
+                    )
+                ),
+                [1],
+            )
+            reopened.close()
+
     def test_missing_fts_table_forces_atomic_rebuild(self) -> None:
         with TemporaryDirectory() as directory:
             sidecar = Path(directory) / "history-search.sqlite3"

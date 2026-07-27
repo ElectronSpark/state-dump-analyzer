@@ -1,0 +1,184 @@
+name: CI
+
+"on":
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python 3.12 / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            demo/pyproject.toml
+
+      - name: Install core, web/test extras, and demo
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test,web]" -e "./demo"
+
+      - name: Compile Python sources and tests
+        run: >-
+          python -m compileall -q
+          src
+          demo/rsl_demo_plugin
+          demo/rsl_demo_generator
+          tests
+          demo/tests
+
+      - name: Lint Python syntax and undefined names
+        run: >-
+          python -m ruff check
+          --select E9,F63,F7,F82
+          src
+          demo
+          state-dump-generator/src
+          tests
+          demo/tests
+          state-dump-generator/tests
+
+      - name: Type-check the typed core boundary
+        run: >-
+          python -m mypy
+          --python-version 3.12
+          --ignore-missing-imports
+          --check-untyped-defs
+          src/router_dump_analyzer/canonical.py
+          src/router_dump_analyzer/route_trace_core.py
+          src/router_dump_analyzer/topology_core.py
+
+      - name: Run core repository test suite
+        run: python -m unittest discover -s tests -v
+
+      - name: Run demo plug-in test suite
+        run: python -m unittest discover -s demo/tests -v
+
+  state-dump-generator:
+    name: State-dump generator / Python 3.12 / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: state-dump-generator/pyproject.toml
+
+      - name: Install standalone generator
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./state-dump-generator"
+
+      - name: Compile generator sources and tests
+        run: >-
+          python -m compileall -q
+          state-dump-generator/src
+          state-dump-generator/tests
+
+      - name: Run standalone generator test suite
+        run: python -m unittest discover -s state-dump-generator/tests -v
+
+  frontend:
+    name: Frontend check / Node 22 LTS / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+
+      - name: Run frontend checks
+        working-directory: frontend
+        run: npm run check
+
+  distributions:
+    name: Distribution and launcher checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check launcher syntax
+        run: |
+          bash -n scripts/bootstrap_wsl.sh scripts/setup_demo.sh scripts/launch_demo.sh
+          sh -n state-dump-generator/launch.sh
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build frontend
+        run: python -m pip install --upgrade "build>=1.2,<2"
+
+      - name: Build all distributions
+        run: |
+          python -m build --outdir "${RUNNER_TEMP}/core-dist" .
+          python -m build --outdir "${RUNNER_TEMP}/demo-dist" demo
+          python -m build --outdir "${RUNNER_TEMP}/generator-dist" state-dump-generator
+
+      - name: Install built wheels together
+        run: >-
+          python -m pip install
+          "${RUNNER_TEMP}"/core-dist/*.whl
+          "${RUNNER_TEMP}"/demo-dist/*.whl
+          "${RUNNER_TEMP}"/generator-dist/*.whl
+
+      - name: Smoke-test installed distributions
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -c "import router_dump_analyzer, rsl_demo_plugin, rsl_demo_generator, state_dump_generator"
+          python -c "from importlib.metadata import entry_points; eps=entry_points(group='router_dump_analyzer.plugins'); assert any(ep.name == 'demo_router' and ep.value == 'rsl_demo_plugin:plugin' for ep in eps)"
+          python -c "from importlib.resources import files; assert (files('router_dump_analyzer') / 'frontend' / 'frontend-manifest.json').is_file(); assert (files('rsl_demo_plugin') / 'fixtures' / 'minimal-status.jsonl').is_file(); assert (files('rsl_demo_generator') / 'router-state-lab-default.scenario.json').is_file()"
+          router-dump-analyzer --help
+          state-dump-generator --help
+          python -m rsl_demo_generator --help

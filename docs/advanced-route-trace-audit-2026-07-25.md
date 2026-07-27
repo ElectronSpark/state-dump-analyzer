@@ -17,7 +17,7 @@ conflated:
    generated demo's versioned coverage registry.
 
 For this 2026-07-25 audit, **all demo cases** meant exactly every entry then in
-`generator.catalog.COVERAGE_CASES`. The inspected
+`rsl_demo_generator.catalog.COVERAGE_CASES`. The inspected
 registry contained 35 cases. It was not shorthand for every possible protocol,
 vendor, release, packet shape, or deployment policy.
 

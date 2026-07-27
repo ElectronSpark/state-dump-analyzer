@@ -9,12 +9,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
 
-from plugin.archive import (
+from rsl_demo_plugin.archive import (
     HIGH_FANOUT_RELATIONSHIPS_MEMBER_NAME,
     MANIFEST_MEMBER_NAME,
     RELATIONSHIP_MUTATIONS_MEMBER_NAME,
 )
-from plugin import GENERATED_PROJECTION_POLICY
+from rsl_demo_plugin import GENERATED_PROJECTION_POLICY
 from .scenario_source import load_default_scenario_source
 
 
@@ -2132,6 +2132,54 @@ def _relationship_mutation_lines(
         )
 
 
+_INTEGER_RESOURCE_PROPERTIES = frozenset(
+    {
+        "generation",
+        "hold_time_seconds",
+        "hold_timer",
+        "neighbor_count",
+        "vlan_id",
+    }
+)
+_STRUCTURED_RESOURCE_PROPERTIES = frozenset({"encapsulation"})
+
+
+def _public_resource_properties(*names: str) -> list[dict[str, object]]:
+    """Declare the demo plug-in fields that may cross the client boundary."""
+
+    return [
+        {
+            "name": name,
+            "label": name.replace("_", " ").title(),
+            "value_type": (
+                "integer"
+                if name in _INTEGER_RESOURCE_PROPERTIES
+                else "object"
+                if name in _STRUCTURED_RESOURCE_PROPERTIES
+                else "string"
+            ),
+            "searchable": name not in _STRUCTURED_RESOURCE_PROPERTIES,
+            "indexed": name
+            in {
+                "adjacency_state",
+                "interface_name",
+                "next_hop",
+                "oper_state",
+                "peer_address",
+                "peer_name",
+                "protocol",
+                "reachability",
+                "service_id",
+                "status",
+                "vrf",
+            },
+            "sensitive": False,
+            "client_visible": True,
+        }
+        for name in names
+    ]
+
+
 def _plugin_schema() -> dict[str, object]:
     return {
         "semantic_owner": "plugin",
@@ -2288,6 +2336,23 @@ def _plugin_schema() -> dict[str, object]:
                 "kind": "ETG",
                 "layer": "data-bridge-layer",
                 "key_fields": ["vrf", "service_id"],
+                "properties": _public_resource_properties(
+                    "status",
+                    "status_class",
+                    "admin_state",
+                    "oper_state",
+                    "role",
+                    "vrf",
+                    "service_id",
+                    "es_id",
+                    "esi",
+                    "df_state",
+                    "home_mode",
+                    "match",
+                    "next_hop",
+                    "overlay_destination",
+                    "encapsulation",
+                ),
                 "display_name_fields": ["service_id", "overlay_destination"],
                 "default_table_fields": [
                     "status",
@@ -2301,6 +2366,25 @@ def _plugin_schema() -> dict[str, object]:
                 "kind": "ETE",
                 "layer": "data-bridge-layer",
                 "key_fields": ["parent_resource_id", "path_id"],
+                "properties": _public_resource_properties(
+                    "status",
+                    "status_class",
+                    "admin_state",
+                    "oper_state",
+                    "role",
+                    "vrf",
+                    "service_id",
+                    "es_id",
+                    "esi",
+                    "df_state",
+                    "home_mode",
+                    "parent_id",
+                    "parent_resource_id",
+                    "path_id",
+                    "neighbor",
+                    "next_hop",
+                    "encapsulation",
+                ),
                 "display_name_fields": ["path_id", "neighbor"],
                 "default_table_fields": [
                     "status",
@@ -2314,6 +2398,21 @@ def _plugin_schema() -> dict[str, object]:
                 "kind": "DTE",
                 "layer": "data-bridge-layer",
                 "key_fields": ["vrf", "service_id"],
+                "properties": _public_resource_properties(
+                    "status",
+                    "status_class",
+                    "admin_state",
+                    "oper_state",
+                    "role",
+                    "vrf",
+                    "service_id",
+                    "es_id",
+                    "esi",
+                    "home_mode",
+                    "match",
+                    "next_hop",
+                    "packet_action",
+                ),
                 "display_name_fields": ["service_id"],
                 "default_table_fields": [
                     "status",
@@ -2326,6 +2425,21 @@ def _plugin_schema() -> dict[str, object]:
                 "kind": "EVPN_ES",
                 "layer": "control-plane",
                 "key_fields": ["vrf", "esi"],
+                "properties": _public_resource_properties(
+                    "status",
+                    "status_class",
+                    "admin_state",
+                    "oper_state",
+                    "role",
+                    "vrf",
+                    "es_id",
+                    "esi",
+                    "df_state",
+                    "home_mode",
+                    "next_hop",
+                    "virtual_interface_id",
+                    "reason",
+                ),
                 "display_name_fields": ["esi"],
                 "default_table_fields": ["status", "esi", "reason"],
                 "condition_field": "status",
@@ -2334,6 +2448,31 @@ def _plugin_schema() -> dict[str, object]:
                 "kind": "VIRTUAL_INTERFACE",
                 "layer": "data-bridge-layer",
                 "key_fields": ["vrf", "interface_name"],
+                "properties": _public_resource_properties(
+                    "status",
+                    "status_class",
+                    "admin_state",
+                    "admin_status",
+                    "oper_state",
+                    "oper_status",
+                    "role",
+                    "vrf",
+                    "interface_name",
+                    "interface_class",
+                    "attachment_kind",
+                    "classification",
+                    "segment_key",
+                    "subnet_prefix",
+                    "lag_id",
+                    "member_interface",
+                    "neighbor_count",
+                    "vlan_id",
+                    "es_id",
+                    "esi",
+                    "df_state",
+                    "home_mode",
+                    "reason",
+                ),
                 "display_name_fields": ["interface_name", "es_id"],
                 "default_table_fields": [
                     "status",
@@ -2356,50 +2495,22 @@ def _plugin_schema() -> dict[str, object]:
                     "protocol",
                     "peer_identity",
                 ],
-                "properties": [
-                    {
-                        "name": "protocol",
-                        "label": "Protocol",
-                        "value_type": "string",
-                        "searchable": True,
-                        "indexed": True,
-                    },
-                    {
-                        "name": "peer_name",
-                        "label": "Peer",
-                        "value_type": "string",
-                        "searchable": True,
-                        "indexed": True,
-                    },
-                    {
-                        "name": "peer_address",
-                        "label": "Peer address",
-                        "value_type": "ip_address",
-                        "searchable": True,
-                        "indexed": True,
-                    },
-                    {
-                        "name": "local_interface_id",
-                        "label": "Local interface resource",
-                        "value_type": "resource_reference",
-                        "searchable": True,
-                        "indexed": True,
-                    },
-                    {
-                        "name": "reachability",
-                        "label": "Reachability",
-                        "value_type": "string",
-                        "searchable": True,
-                        "indexed": True,
-                    },
-                    {
-                        "name": "resolution_basis",
-                        "label": "How calculated",
-                        "value_type": "string",
-                        "searchable": True,
-                        "indexed": False,
-                    },
-                ],
+                "properties": _public_resource_properties(
+                    "status",
+                    "status_class",
+                    "protocol",
+                    "peer_identity",
+                    "peer_name",
+                    "peer_address",
+                    "source",
+                    "local_interface",
+                    "local_interface_id",
+                    "member_interface",
+                    "adjacency_state",
+                    "hold_time_seconds",
+                    "reachability",
+                    "resolution_basis",
+                ),
                 "default_timeline_fields": [
                     "status",
                     "reachability",
@@ -2429,9 +2540,74 @@ def _plugin_schema() -> dict[str, object]:
                 "kind": "IP_ROUTING",
                 "layer": "control-plane",
                 "key_fields": ["vrf"],
+                "properties": _public_resource_properties(
+                    "status",
+                    "status_class",
+                    "admin_state",
+                    "oper_state",
+                    "role",
+                    "vrf",
+                    "match",
+                    "neighbor",
+                ),
                 "display_name_fields": ["vrf", "match"],
                 "default_table_fields": ["status", "match", "neighbor"],
                 "condition_field": "status",
+            },
+            {
+                "kind": "IP_ROUTE",
+                "label": "IP route",
+                "display_name": "IP routes",
+                "layer": "control-plane",
+                "key_fields": ["vrf"],
+                "properties": _public_resource_properties(
+                    "status",
+                    "status_class",
+                    "oper_state",
+                    "vrf",
+                    "protocol",
+                    "next_hop",
+                    "interface",
+                    "reason",
+                    "generation",
+                    "attempted_next_hop",
+                    "error",
+                ),
+                "display_name_fields": ["vrf", "next_hop"],
+                "default_table_fields": [
+                    "status",
+                    "vrf",
+                    "protocol",
+                    "next_hop",
+                    "interface",
+                ],
+                "condition_field": "status",
+                "presentation_tags": ["route", "control-plane"],
+            },
+            {
+                "kind": "ADJACENCY",
+                "label": "Protocol adjacency",
+                "display_name": "Protocol adjacencies",
+                "layer": "control-plane",
+                "key_fields": ["interface", "protocol"],
+                "properties": _public_resource_properties(
+                    "status",
+                    "status_class",
+                    "oper_state",
+                    "interface",
+                    "protocol",
+                    "hold_timer",
+                    "reason",
+                ),
+                "display_name_fields": ["protocol", "interface"],
+                "default_table_fields": [
+                    "status",
+                    "protocol",
+                    "interface",
+                    "oper_state",
+                ],
+                "condition_field": "status",
+                "presentation_tags": ["adjacency", "control-plane"],
             },
         ],
         "relationship_types": [

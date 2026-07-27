@@ -9,14 +9,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from plugin import (
+from rsl_demo_plugin import (
     GENERATED_PROJECTION_POLICY,
     GENERATED_TOPOLOGY_FEDERATION_PLUGIN_ID,
     GENERATED_TOPOLOGY_PROFILE,
     GENERATED_TOPOLOGY_SEGMENT_MATCHER_ID,
     TopologyProfileSpec,
 )
-from plugin.scenario_registry import (
+from rsl_demo_plugin.scenario_registry import (
     ROUTE_INVENTORY_CONTEXTS,
     ROUTE_PROTOCOL_BY_TYPE,
     SCENARIO_BY_ID,

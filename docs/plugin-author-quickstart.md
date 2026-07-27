@@ -35,7 +35,7 @@ From the repository root, using Python 3.12 in the analyzer environment:
 python -m pip install -e .
 python -m pip install -e demo
 router-dump-plugin-validate --list
-python -X utf8 -m generator --verify-conformance-fixture demo/fixtures/minimal-status.jsonl
+python -X utf8 -m rsl_demo_generator --verify-conformance-fixture demo/fixtures/minimal-status.jsonl
 router-dump-plugin-validate demo_router --artifact demo/fixtures/minimal-status.jsonl --node-hint router-1 --metadata platform=demo-router-os --metadata software_version=1
 python -m unittest discover -s demo/tests -v
 ```
@@ -76,7 +76,7 @@ has been generated, use either discovery mode:
 ```text
 python -m pip install -e ".[web]"
 router-dump-analyzer --plugin demo_router --input demo/fixtures/router-state-lab-demo.tgz --no-browser
-python -m router_dump_analyzer --plugin-module plugin --input demo/fixtures/router-state-lab-demo.tgz --no-browser
+python -m router_dump_analyzer --plugin-module rsl_demo_plugin --input demo/fixtures/router-state-lab-demo.tgz --no-browser
 ```
 
 `--plugin` selects an installed entry-point name.
@@ -88,22 +88,22 @@ large assembly when it is absent.
 
 The runnable teaching slice is kept beside the real demo so there is only one
 example implementation:
-`demo/plugin/__init__.py`.
+`demo/rsl_demo_plugin/__init__.py`.
 
 ```text
 demo/
 |-- pyproject.toml
 |-- fixtures/
 |   `-- minimal-status.jsonl
-|-- plugin/
+|-- rsl_demo_plugin/
 |   `-- __init__.py
-|-- generator/
+|-- rsl_demo_generator/
 |   `-- __init__.py
 `-- tests/
     `-- test_plugin.py
 ```
 
-Copy the parser/schema portion of `plugin/__init__.py`, its
+Copy the parser/schema portion of `rsl_demo_plugin/__init__.py`, its
 `CONFORMANCE_STATUS_RECORDS` plus renderer, its golden test, and the entry-point
 declaration into a new independently installable `src/`-layout distribution.
 Rename the distribution, import package, entry-point name, plug-in ID, platform
@@ -178,6 +178,15 @@ declares `INTERFACE`, its typed key field, safe properties, display fields, and
 normalized condition field. It also declares one source-record group and one
 `SourceRecordTypeDescriptor(source_type="status-json")`; every emitted source
 type must appear in this static schema.
+
+Every browser-visible state/key field must have a `PropertyDescriptor`.
+Undeclared fields are server-side only and are removed from resource
+projections and search text. Set `client_visible=False` for a declared property
+that reducers or server-side analysis need but the browser must not receive;
+set `sensitive=True` for secret material. Either setting also prevents that
+property from becoming a search oracle or a public `condition_field` value.
+`client_visible` defaults to `True` for compatibility, so the declaration
+itself is the allowlist.
 
 Never return HTML, JavaScript, CSS, SQL, remote URLs, or layout coordinates.
 The core owns the generic browser pages, widgets, interaction logic, and
@@ -316,7 +325,7 @@ class MyRuntimeCapability:
 
 This is only the capability wrapper; `open_my_non_web_session()` represents
 the plug-in's tested session constructor. The complete executable reference is
-[`demo/plugin/session.py`](../demo/plugin/session.py),
+[`demo/rsl_demo_plugin/session.py`](../demo/rsl_demo_plugin/session.py),
 covered by
 [`demo/tests/test_runtime.py`](../demo/tests/test_runtime.py).
 
@@ -406,6 +415,13 @@ A native `UUID`, UUID text, UUID bytes, IPv6 bytes, an integer, and a string sta
 distinct. Compound child keys are encouraged when identity is scoped by a
 parent, such as `(etg_id, path_id)` for an ETE.
 
+`ResourceKey.parts` must be a non-empty tuple of at most 32 unique
+`(name, value)` pairs. Names are bounded dotted field paths. Values may contain
+only `int`, `str`, `bytes`, `UUID`, `KeyAtom`, or nested tuples of those types;
+tuple nesting, item counts, integer bit length, and text/byte length are
+bounded by the core. Floats, mappings, lists, booleans, and arbitrary Python
+objects are rejected before storage or federation.
+
 Never:
 
 - join key parts into an ambiguous display string;
@@ -444,6 +460,14 @@ selection gestures and the final Clipboard API call.
 A source-record group may set a 1-to-80-character `copy_action_label`, such as
 `Copy status rows`. A mixed-group selection uses a generic core label rather
 than choosing one plug-in label arbitrarily.
+
+`RecordLanePreset.pattern` uses the same deterministic subset as a user-created
+record lane: top-level alternatives composed of literals, character classes,
+dot, anchors, and at most one `*`, `+`, or `?` quantified atom per alternative.
+Groups, counted repetition, lookaround, backreferences, ambiguous/nested
+repetition, and unsupported escapes are rejected. Prefer simple patterns such
+as `ESI|mass withdraw`, `^BGP`, or `error.*peer`; the core applies the same
+pattern, haystack, lane, and result bounds at runtime.
 
 For trace normalization:
 

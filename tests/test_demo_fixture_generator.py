@@ -14,7 +14,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from generator import (
+from rsl_demo_generator import (
     ASSEMBLY_FORMAT_VERSION,
     ASSEMBLY_ROOT,
     COVERAGE_CASES,
@@ -32,12 +32,12 @@ from generator import (
     probe_demo_fixture_for_launch,
     validate_demo_fixture,
 )
-from generator import catalog as generator_catalog
-from generator._archive import (
+from rsl_demo_generator import catalog as generator_catalog
+from rsl_demo_generator._archive import (
     write_deterministic_tgz,
     validate_archive_name,
 )
-from generator.assembly import (
+from rsl_demo_generator.assembly import (
     _case_candidate_paths,
     _compact_json_line,
     _GENERATED_JSONL_REWRITE_PLANS,
@@ -50,25 +50,25 @@ from generator.assembly import (
     _transform_value,
     _validate_projection_member,
 )
-from generator import _scale as scale_generator
-from plugin import (
+from rsl_demo_generator import _scale as scale_generator
+from rsl_demo_plugin import (
     GENERATED_PROJECTION_POLICY,
     PLUGIN_ID,
     PLUGIN_VERSION,
     plugin,
     render_conformance_status_fixture,
 )
-from plugin.scale_data import load_scale_dataset
+from rsl_demo_plugin.scale_data import load_scale_dataset
 from router_dump_analyzer import multi_node_route
-from plugin.advanced_trace import ADVANCED_TRACE_SCENARIOS
-from plugin.scenario_registry import (
+from rsl_demo_plugin.advanced_trace import ADVANCED_TRACE_SCENARIOS
+from rsl_demo_plugin.scenario_registry import (
     PACKET_TRACE_SCENARIOS,
     ROUTE_INVENTORY_CONTEXTS,
     ROUTE_PROTOCOL_BY_TYPE,
     ROUTE_TRACE_SCENARIOS,
     SCENARIO_BY_ID,
 )
-from plugin.route_policy import DEMO_ROUTE_POLICY
+from rsl_demo_plugin.route_policy import DEMO_ROUTE_POLICY
 
 
 NODE_PACK_ROOT = "router-state-lab-100k"
@@ -261,7 +261,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
     def test_launch_preflight_does_not_decode_nested_node_packs(self) -> None:
         archive = self.root / "launch-ready-opaque-packs.tgz"
         _write_outer_members(archive, _launch_ready_outer_members())
-        from generator import __main__ as generator_main
+        from rsl_demo_generator import __main__ as generator_main
 
         with mock.patch.object(
             generator_main,
@@ -275,7 +275,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
         validate.assert_not_called()
 
     def test_launch_preflight_cli_rejects_conflicting_operations(self) -> None:
-        from generator import __main__ as generator_main
+        from rsl_demo_generator import __main__ as generator_main
 
         archive = self.root / "launch-ready-cli-conflict.tgz"
         operations = (
@@ -294,7 +294,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
                 self.assertEqual(raised.exception.code, 2)
 
     def test_ensure_cli_path_only_returns_selected_archive(self) -> None:
-        from generator import __main__ as generator_main
+        from rsl_demo_generator import __main__ as generator_main
 
         preferred = self.root / "ensure-cli-unowned.tgz"
         preferred.write_bytes(b"preserve me")
@@ -404,7 +404,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
             probe_demo_fixture_for_launch(archive)
 
     def test_launch_preflight_uses_a_fresh_source_descriptor(self) -> None:
-        from generator import assembly
+        from rsl_demo_generator import assembly
 
         archive = self.root / "fresh-source-preflight.tgz"
         _write_outer_members(archive, _launch_ready_outer_members())
@@ -449,7 +449,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
     def test_launch_preflight_rejects_names_and_sizes_before_payloads(
         self,
     ) -> None:
-        from generator import assembly
+        from rsl_demo_generator import assembly
 
         cases = (
             (
@@ -479,7 +479,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
     def test_launch_preflight_enforces_cumulative_uncompressed_limit(
         self,
     ) -> None:
-        from generator import assembly
+        from rsl_demo_generator import assembly
 
         archive = self.root / "cumulative-bound.tgz"
         _write_outer_members(archive, _launch_ready_outer_members())
@@ -492,7 +492,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
                 probe_demo_fixture_for_launch(archive)
 
     def test_ensure_reuses_a_valid_preferred_archive(self) -> None:
-        from generator import assembly
+        from rsl_demo_generator import assembly
 
         preferred = self.root / "ensure-reuse.tgz"
         _write_outer_members(preferred, _launch_ready_outer_members())
@@ -508,7 +508,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
         build.assert_not_called()
 
     def test_ensure_generates_a_missing_preferred_archive(self) -> None:
-        from generator import assembly
+        from rsl_demo_generator import assembly
 
         preferred = self.root / "ensure-missing.tgz"
         self.assertFalse(preferred.exists())
@@ -526,7 +526,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
         probe_demo_fixture_for_launch(preferred)
 
     def test_ensure_rebuilds_owned_same_size_corruption_in_place(self) -> None:
-        from generator import assembly
+        from rsl_demo_generator import assembly
 
         preferred = self.root / "ensure-owned-corrupt.tgz"
         members = _launch_ready_outer_members()
@@ -554,7 +554,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
     def test_build_refuses_publication_when_source_changes_during_build(
         self,
     ) -> None:
-        from generator import assembly
+        from rsl_demo_generator import assembly
 
         output = self.root / "source-changed-during-build.tgz"
         current = _loaded_source_scenario_descriptor()
@@ -605,7 +605,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
     def test_ensure_preserves_unowned_preferred_and_uses_recovery(
         self,
     ) -> None:
-        from generator import assembly
+        from rsl_demo_generator import assembly
 
         preferred = self.root / "ensure-unowned.tgz"
         original = b"customer-owned bytes must remain unchanged"
@@ -627,7 +627,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
     def test_ensure_preserves_preferred_symlink_and_uses_recovery(
         self,
     ) -> None:
-        from generator import assembly
+        from rsl_demo_generator import assembly
 
         target = self.root / "ensure-symlink-target.tgz"
         target.write_bytes(b"customer target")
@@ -652,7 +652,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
         self.assertTrue(report.preserved_preferred)
 
     def test_ensure_fails_closed_for_an_unsafe_recovery_path(self) -> None:
-        from generator import assembly
+        from rsl_demo_generator import assembly
 
         preferred = self.root / "ensure-both-unowned.tgz"
         recovery = self.root / "ensure-both-unowned.generated.tgz"
@@ -687,7 +687,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
         self.assertTrue(output.is_symlink())
 
     def test_build_runs_lexical_symlink_guard_before_resolution(self) -> None:
-        from generator import assembly
+        from rsl_demo_generator import assembly
 
         lexical_output = mock.MagicMock(spec=Path)
         lexical_output.is_symlink.return_value = True
@@ -744,7 +744,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
                             )
 
     def test_multi_node_build_generates_one_shared_scale_template(self) -> None:
-        from generator import assembly
+        from rsl_demo_generator import assembly
 
         output = self.root / "one-template.tgz"
         config = AssemblyConfig(
@@ -2406,8 +2406,8 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
                 self.assertEqual(output.read_bytes(), original)
 
     def test_generate_cli_reuses_its_internal_validation_report(self) -> None:
-        from generator import __main__ as generator_cli
-        from generator import assembly
+        from rsl_demo_generator import __main__ as generator_cli
+        from rsl_demo_generator import assembly
 
         output = self.root / "cli-single-validation.tgz"
         with mock.patch.object(
@@ -2442,7 +2442,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
     def test_generator_cli_owns_the_small_parser_conformance_vector(
         self,
     ) -> None:
-        from generator import __main__ as generator_cli
+        from rsl_demo_generator import __main__ as generator_cli
 
         fixture = self.root / "generated-minimal-status.jsonl"
         self.assertEqual(
@@ -2487,7 +2487,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
         )
 
     def test_bulk_stages_use_system_temp_and_publication_is_clean(self) -> None:
-        from generator import assembly
+        from rsl_demo_generator import assembly
 
         output = self.root / "system-temp-stage.tgz"
         real_mkdtemp = tempfile.mkdtemp
@@ -2518,7 +2518,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
         )
 
     def test_deep_validation_reads_every_tar_stream_forward_only(self) -> None:
-        from generator import assembly
+        from rsl_demo_generator import assembly
 
         real_open = tarfile.open
         modes: list[str] = []
@@ -2587,7 +2587,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
             [
                 sys.executable,
                 "-m",
-                "generator",
+                "rsl_demo_generator",
                 "--validate",
                 str(self.first),
                 "--deep-validate",
@@ -2622,9 +2622,10 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         for launcher in (powershell, shell):
             self.assertIn(
-                "generator",
+                "rsl_demo_generator",
                 launcher,
             )
+            self.assertNotIn("-m generator", launcher)
             self.assertIn("demo_router", launcher)
             self.assertNotIn("--plugin-module", launcher)
             self.assertNotIn("router_dump_analyzer_demo.plugin", launcher)

@@ -19,8 +19,8 @@ CORE_SOURCE = ROOT / "src" / "router_dump_analyzer"
 CORE_WEB = CORE_SOURCE / "web"
 CORE_FRONTEND = ROOT / "frontend"
 DEMO_ROOT = ROOT / "demo"
-DEMO_PLUGIN = DEMO_ROOT / "plugin"
-DEMO_GENERATOR = DEMO_ROOT / "generator"
+DEMO_PLUGIN = DEMO_ROOT / "rsl_demo_plugin"
+DEMO_GENERATOR = DEMO_ROOT / "rsl_demo_generator"
 DEMO_PACKAGES = (DEMO_PLUGIN, DEMO_GENERATOR)
 SCENARIO_GENERATOR_ROOT = ROOT / "state-dump-generator"
 SCENARIO_GENERATOR_SOURCE = (
@@ -31,6 +31,8 @@ DEMO_IMPORT_ROOTS = frozenset(
     {
         "plugin",
         "generator",
+        "rsl_demo_plugin",
+        "rsl_demo_generator",
         "router_dump_analyzer_demo",
         "router_dump_analyzer_demo_plugins",
         "router_dump_analyzer_demo_plugin",
@@ -383,8 +385,8 @@ class PackageBoundaryTests(unittest.TestCase):
         self.assertEqual(
             set(project["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]),
             {
-                "plugin",
-                "generator",
+                "rsl_demo_plugin",
+                "rsl_demo_generator",
             },
         )
         self.assertEqual(
@@ -397,7 +399,7 @@ class PackageBoundaryTests(unittest.TestCase):
                 "router_dump_analyzer.plugins"
             ],
             {
-                "demo_router": "plugin:plugin"
+                "demo_router": "rsl_demo_plugin:plugin"
             },
             "the one demo distribution must install exactly one example plug-in",
         )
@@ -414,10 +416,10 @@ class PackageBoundaryTests(unittest.TestCase):
             force_include,
             {
                 "fixtures/minimal-status.jsonl": (
-                    "plugin/fixtures/minimal-status.jsonl"
+                    "rsl_demo_plugin/fixtures/minimal-status.jsonl"
                 ),
                 "router-state-lab-default.scenario.json": (
-                    "generator/router-state-lab-default.scenario.json"
+                    "rsl_demo_generator/router-state-lab-default.scenario.json"
                 ),
             },
             "the demo wheel may package its conformance fixture and canonical "
@@ -440,6 +442,8 @@ class PackageBoundaryTests(unittest.TestCase):
             "demo packages must live directly under demo/, without a src wrapper",
         )
         for retired_package in (
+            "plugin",
+            "generator",
             "router_dump_analyzer_demo",
             "router_dump_analyzer_demo_plugins",
             "router_dump_analyzer_demo_plugin",
@@ -480,6 +484,7 @@ class PackageBoundaryTests(unittest.TestCase):
                 absolute_root = _absolute_import_root(import_name)
                 if absolute_root in {
                     "generator",
+                    "rsl_demo_generator",
                     "router_dump_analyzer_demo",
                     "router_dump_analyzer_demo_plugins",
                     "router_dump_analyzer_demo_generator",
@@ -553,10 +558,12 @@ class PackageBoundaryTests(unittest.TestCase):
 
             import importlib.util
 
-            import generator
-            import generator.__main__
+            import rsl_demo_generator
+            import rsl_demo_generator.__main__
 
             for retired_name in (
+                "plugin",
+                "generator",
                 "router_dump_analyzer_demo",
                 "router_dump_analyzer_demo_plugins",
                 "router_dump_analyzer_demo_plugin",

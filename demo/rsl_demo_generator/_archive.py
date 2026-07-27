@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from plugin.archive import (
+from rsl_demo_plugin.archive import (
     normalize_archive_member_name as validate_archive_name,
 )
 

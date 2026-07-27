@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .archive import ArchiveProjectionError, write_assembly
+from .path_safety import resolve_output_file
 from .server import (
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -93,10 +94,8 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _write_new(output: Path, *, force: bool) -> int:
-    destination = output.expanduser().resolve()
+    destination = resolve_output_file(output, label="new project output")
     if destination.exists():
-        if destination.is_symlink() or not destination.is_file():
-            raise ValueError("new project output must be a regular file")
         if not force:
             raise ValueError(f"project already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)

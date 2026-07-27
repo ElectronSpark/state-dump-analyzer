@@ -28,7 +28,7 @@ class PluginAuthoringDocumentationTests(unittest.TestCase):
             "python -m pip install -e demo",
             "router-dump-plugin-validate demo_router",
             "--artifact demo/fixtures/minimal-status.jsonl",
-            "demo/plugin/__init__.py",
+            "demo/rsl_demo_plugin/__init__.py",
             "declarative domain presentation",
         ):
             with self.subTest(required=required):
@@ -91,7 +91,7 @@ class PluginAuthoringDocumentationTests(unittest.TestCase):
         plugin_source = (
             ROOT
             / "demo"
-            / "plugin"
+            / "rsl_demo_plugin"
             / "__init__.py"
         ).read_text(encoding="utf-8")
 
@@ -113,7 +113,7 @@ class PluginAuthoringDocumentationTests(unittest.TestCase):
             (
                 ROOT
                 / "demo"
-                / "plugin"
+                / "rsl_demo_plugin"
                 / "__init__.py"
             ).is_file()
         )
@@ -132,7 +132,7 @@ class PluginAuthoringDocumentationTests(unittest.TestCase):
             (
                 ROOT
                 / "demo"
-                / "generator"
+                / "rsl_demo_generator"
                 / "__init__.py"
             ).is_file()
         )
@@ -145,7 +145,7 @@ class PluginAuthoringDocumentationTests(unittest.TestCase):
             project["project"]["entry-points"]["router_dump_analyzer.plugins"][
                 "demo_router"
             ],
-            "plugin:plugin",
+            "rsl_demo_plugin:plugin",
         )
 
     def test_frontend_ownership_is_core_and_plugin_presentation_is_declarative(

@@ -8,15 +8,15 @@ import unittest
 from importlib.metadata import entry_points
 from pathlib import Path
 
-from plugin.assembly_store import DemoAssemblyStore
-from generator import (
+from rsl_demo_plugin.assembly_store import DemoAssemblyStore
+from rsl_demo_generator import (
     ASSEMBLY_ROOT,
     DEMO_NODES,
     AssemblyConfig,
     build_demo_fixture,
 )
-from generator._scale import _plugin_schema
-from plugin import (
+from rsl_demo_generator._scale import _plugin_schema
+from rsl_demo_plugin import (
     GENERATED_PROJECTION_POLICY,
     PLUGIN_ENTRY_POINT_NAME,
 )
@@ -67,7 +67,7 @@ class DemoPluginSemanticContractTests(unittest.TestCase):
     def test_installed_entry_point_exposes_the_offline_capability(self) -> None:
         self.assertEqual(
             self.entry_point.value,
-            "plugin:plugin",
+            "rsl_demo_plugin:plugin",
         )
         self.assertIs(
             self.installed_plugin.generated_projection_policy,

@@ -9,6 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+from .boundary import private_identifier_paths
 from .model import (
     ScenarioDocument,
     ScenarioValidationError,
@@ -152,10 +153,12 @@ def _event_properties(event: Mapping[str, Any]) -> dict[str, Any]:
 def _attachment_resource_id(attachment: Mapping[str, Any]) -> str:
     """Return one stable, node-local identity for a physical attachment."""
 
-    declared = attachment.get(
-        "resource_id",
-        attachment.get("local_resource_id"),
-    )
+    observation = attachment.get("node_local_observation", {})
+    if not isinstance(observation, Mapping):
+        raise ScenarioValidationError(
+            "attachment.node_local_observation must be an object"
+        )
+    declared = observation.get("resource_id")
     if declared is not None and str(declared):
         return str(declared)
     port_id = str(attachment["port_id"])
@@ -184,10 +187,11 @@ def _observation_outcome(
     outcomes = propagation.get("outcomes", {})
     if isinstance(outcomes, Mapping) and node_id in outcomes:
         return str(outcomes[node_id])
+    parent_outcome = str(event.get("outcome", "success")).casefold()
     intended = str(
         propagation.get(
             "outcome",
-            propagation.get("intended_outcome", "success"),
+            propagation.get("intended_outcome", parent_outcome),
         )
     ).casefold()
     if intended == "partial":
@@ -207,7 +211,12 @@ def _observation_outcome(
         return "failed"
     if intended in {"stale", "suppressed", "dropped"}:
         return intended
-    return "success"
+    if intended in {"ok", "success", "succeeded"}:
+        return "success"
+    # Unknown parent outcomes are not proof that a propagated update applied.
+    # Authors can explicitly override them per target through
+    # ``propagation.outcomes`` or ``propagation.outcome``.
+    return intended
 
 
 def _target_node_ids(
@@ -283,12 +292,24 @@ def _physical_observations(
         else:
             port_id = str(attachment["port_id"])
             resource_id = _attachment_resource_id(attachment)
+            local_observation = attachment.get(
+                "node_local_observation",
+                {},
+            )
+            if not isinstance(local_observation, Mapping):
+                raise ScenarioValidationError(
+                    "attachment.node_local_observation must be an object"
+                )
             properties = {
                 "admin_status": "up",
                 "oper_status": requested_state,
-                **deepcopy(dict(attachment.get("properties", {}))),
+                **deepcopy(
+                    dict(local_observation.get("properties", {}))
+                ),
             }
-            resource_type = "interface"
+            resource_type = str(
+                local_observation.get("resource_type", "interface")
+            )
         outcome = (
             "failed"
             if mode == "failed"
@@ -525,17 +546,32 @@ def _initial_state(
                 continue
             port_id = str(attachment["port_id"])
             resource_id = _attachment_resource_id(attachment)
+            local_observation = attachment.get(
+                "node_local_observation",
+                {},
+            )
+            if not isinstance(local_observation, Mapping):
+                raise ScenarioValidationError(
+                    "attachment.node_local_observation must be an object"
+                )
             observed_state = str(
-                attachment.get("observed_state", physical_state)
+                local_observation.get(
+                    "observed_state",
+                    physical_state,
+                )
             )
             resources[resource_id] = {
                 "resource_id": resource_id,
-                "resource_type": "interface",
+                "resource_type": str(
+                    local_observation.get("resource_type", "interface")
+                ),
                 "status": observed_state,
                 "properties": {
                     "admin_status": "up",
                     "oper_status": observed_state,
-                    **deepcopy(dict(attachment.get("properties", {}))),
+                    **deepcopy(
+                        dict(local_observation.get("properties", {}))
+                    ),
                 },
                 "updated_at_ns": 0,
             }
@@ -584,7 +620,7 @@ def _log_record(
     return {
         "event_id": observation.stable_id,
         "timestamp_ns": observation.timestamp_ns + clock_offset_ns,
-        "absolute_timestamp_ns": observation.timestamp_ns,
+        "source_sequence": observation.order,
         "resource_id": observation.resource_id,
         "resource_type": observation.resource_type,
         "operation": observation.operation,
@@ -803,7 +839,17 @@ def reconstruct_scenario(
                 )
             )
         final_state = sorted(
-            state.values(),
+            (
+                {
+                    **deepcopy(record),
+                    # Every exported node timestamp uses that node's wall
+                    # clock. The private simulation timeline never enters a
+                    # generated dump as an absolute-time oracle.
+                    "updated_at_ns": int(record.get("updated_at_ns", 0))
+                    + clock_offset_ns,
+                }
+                for record in state.values()
+            ),
             key=lambda item: str(item["resource_id"]),
         )
         result[node_id] = {
@@ -812,6 +858,23 @@ def reconstruct_scenario(
             "final_state": final_state,
             "logs": logs,
         }
+    private_medium_ids = frozenset(
+        str(medium["medium_id"]) for medium in document.media
+    )
+    for node_id, plan in result.items():
+        leaked_path = next(
+            private_identifier_paths(
+                plan,
+                private_medium_ids,
+                location=f"node_plans.{node_id}",
+            ),
+            None,
+        )
+        if leaked_path is not None:
+            raise ScenarioValidationError(
+                f"{leaked_path} copies a private physical medium identifier "
+                "into a node-local observation"
+            )
     return {
         "at_time_ns": reconstruction_time_ns,
         "capture_time_ns": document.capture_time_ns,

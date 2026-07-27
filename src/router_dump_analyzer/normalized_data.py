@@ -22,6 +22,147 @@ from .source_record_core import project_source_record_for_log
 MAX_RESOURCE_TABLE_TRAVERSAL_NODES = 5_000
 MAX_RESOURCE_PAGE_SIZE = 1_000
 MAX_RANGE_DETAILS = 500
+_CSS_COLOR_PALETTE = (
+    "#52e0c4",
+    "#a58bff",
+    "#f5b85b",
+    "#66b8ff",
+    "#ff8eb5",
+    "#9bd66f",
+    "#df9dff",
+)
+_CLIENT_DATASET_FIELDS = frozenset(
+    {
+        "causal_link_descriptors",
+        "causal_links",
+        "coverage",
+        "dashboard_descriptors",
+        "demo",
+        "event_count",
+        "events",
+        "findings",
+        "gaps",
+        "inventory",
+        "kind_descriptors",
+        "layers",
+        "lifecycle_intervals",
+        "node_id",
+        "node_snapshot",
+        "nodes",
+        "presentation",
+        "record_lane_presets",
+        "relationship_descriptors",
+        "relationship_intervals",
+        "relationship_mutations",
+        "relationship_type_descriptors",
+        "relationships",
+        "resource_table_view_descriptors",
+        "resources",
+        "review_prompts",
+        "scale",
+        "schema",
+        "source_record_descriptors",
+        "source_record_group_descriptors",
+        "source_records",
+        "state_intervals",
+        "summary",
+        "timeline",
+        "topology_capabilities",
+        "topology_defaults",
+        "topology_nodes",
+    }
+)
+_CLIENT_DEMO_FIELDS = frozenset(
+    {
+        "assembly_id",
+        "capabilities",
+        "capture_ns",
+        "disclosure",
+        "event_count",
+        "failure_event_count",
+        "fixture",
+        "history_mode",
+        "initial_focus_resource_id",
+        "initial_resource_ids",
+        "label",
+        "large_dataset",
+        "matched_event_count",
+        "mode",
+        "name",
+        "node",
+        "node_id",
+        "node_label",
+        "packed_event_count",
+        "packed_container_count",
+        "packed_resource_count",
+        "packed_scenario_id",
+        "projection_capabilities",
+        "relationship_count",
+        "relationship_mutation_count",
+        "resource_count",
+        "revision_id",
+        "scale_mode",
+        "scenario",
+        "scope",
+        "source_record_count",
+        "time_bounds",
+        "timeline_end_ns",
+        "timeline_start_ns",
+        "unmatched_source_record_count",
+        "workspace_kind",
+    }
+)
+_CLIENT_PRESENTATION_COLOR_ROOTS = frozenset(
+    {
+        "causal_link_descriptors",
+        "dashboard_descriptors",
+        "kind_descriptors",
+        "layers",
+        "presentation",
+        "record_lane_presets",
+        "relationship_descriptors",
+        "relationship_type_descriptors",
+        "resource_table_view_descriptors",
+        "source_record_descriptors",
+        "source_record_group_descriptors",
+    }
+)
+_CLIENT_SCHEMA_PRESENTATION_FIELDS = frozenset(
+    {
+        "causal_link_types",
+        "dashboards",
+        "record_lane_presets",
+        "relationship_types",
+        "resource_kinds",
+        "resource_table_views",
+        "source_record_groups",
+        "source_record_types",
+    }
+)
+_CLIENT_RESOURCE_ENVELOPE_FIELDS = frozenset(
+    {
+        "canonical_resource_id",
+        "condition",
+        "condition_class",
+        "evidence",
+        "exists",
+        "incarnation",
+        "kind",
+        "label",
+        "layer",
+        "presentation_tags",
+        "provenance",
+        "quality",
+        "resource_id",
+        "resource_uid",
+        "source_event_uid",
+        "status",
+        "status_class",
+        "unknown_fields",
+        "valid_from_ns",
+        "valid_to_ns",
+    }
+)
 
 
 @runtime_checkable
@@ -205,17 +346,17 @@ def descriptor_property_rules(
     }
 
 
-def _without_sensitive_fields(
-    value: Any,
-    sensitive_fields: set[str],
-) -> Any:
-    if not isinstance(value, Mapping) or not sensitive_fields:
-        return value
-    return {
-        key: nested
-        for key, nested in value.items()
-        if str(key) not in sensitive_fields
-    }
+def descriptor_sensitive_condition(
+    descriptor: Mapping[str, Any] | None,
+) -> bool:
+    if not descriptor or not descriptor.get("condition_field"):
+        return False
+    condition = str(descriptor["condition_field"])
+    rule = descriptor_property_rules(descriptor).get(condition, {})
+    return bool(
+        rule.get("sensitive")
+        or rule.get("client_visible", True) is False
+    )
 
 
 def redact_sensitive_tree(value: Any, sensitive_fields: set[str]) -> Any:
@@ -240,40 +381,149 @@ def redact_sensitive_tree(value: Any, sensitive_fields: set[str]) -> Any:
     return value
 
 
+def _project_declared_fields(
+    value: Any,
+    field_names: set[str],
+) -> dict[str, Any]:
+    """Project a mapping through descriptor-declared dotted field paths."""
+
+    if not isinstance(value, Mapping) or not field_names:
+        return {}
+    result: dict[str, Any] = {}
+    for raw_key, nested in value.items():
+        key = str(raw_key)
+        if key in field_names:
+            result[raw_key] = nested
+            continue
+        descendants = {
+            field[len(key) + 1 :]
+            for field in field_names
+            if field.startswith(f"{key}.")
+        }
+        if descendants and isinstance(nested, Mapping):
+            projected = _project_declared_fields(nested, descendants)
+            if projected:
+                result[raw_key] = projected
+    return result
+
+
+def _client_visible_property_names(
+    descriptor: Mapping[str, Any],
+) -> set[str]:
+    return {
+        name
+        for name, rule in descriptor_property_rules(descriptor).items()
+        if not bool(rule.get("sensitive"))
+        and rule.get("client_visible", True) is not False
+    }
+
+
 def redact_resource_view(
     view: Mapping[str, Any],
     descriptor: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
+    if descriptor is None:
+        # Legacy/ad-hoc callers may reach the generic redactor before dataset
+        # conformance validation.  Preserve only the core envelope instead of
+        # returning an undeclared plug-in payload unchanged.
+        record = view.get("resource")
+        source = record if isinstance(record, Mapping) else view
+        safe_record = {
+            key: source[key]
+            for key in (
+                "resource_id",
+                "canonical_resource_id",
+                "resource_uid",
+                "kind",
+                "layer",
+                "label",
+                "presentation_tags",
+            )
+            if key in source
+        }
+        return {
+            **{
+                key: view[key]
+                for key in (
+                    "resource_id",
+                    "kind",
+                    "layer",
+                    "label",
+                    "exists",
+                    "valid_from_ns",
+                    "valid_to_ns",
+                    "source_event_uid",
+                    "quality",
+                )
+                if key in view
+            },
+            "status": "unknown" if view.get("exists") else "absent",
+            "status_class": "unknown",
+            "state": {},
+            "key": {},
+            **({"resource": safe_record} if isinstance(record, Mapping) else {}),
+        }
     rules = descriptor_property_rules(descriptor)
     sensitive = {
         name for name, rule in rules.items() if bool(rule.get("sensitive"))
     }
-    projected = dict(view)
-    if not sensitive:
-        return projected
-    projected["state"] = _without_sensitive_fields(
-        projected.get("state", {}),
+    visible_properties = _client_visible_property_names(descriptor)
+    visible_key_fields = {
+        str(name)
+        for name in descriptor.get("key_fields", ())
+        if isinstance(name, str)
+    } | visible_properties
+    projected = {
+        key: nested
+        for key, nested in view.items()
+        if str(key) in _CLIENT_RESOURCE_ENVELOPE_FIELDS
+    }
+    if descriptor_sensitive_condition(descriptor) and "status" in projected:
+        projected["status"] = "unknown"
+    projected["state"] = redact_sensitive_tree(
+        _project_declared_fields(
+            view.get("state", {}),
+            visible_properties,
+        ),
         sensitive,
     )
-    projected["key"] = _without_sensitive_fields(
-        projected.get("key", {}),
-        sensitive,
-    )
-    record = projected.get("resource")
-    if isinstance(record, Mapping):
+    if "key" in view:
+        projected["key"] = redact_sensitive_tree(
+            _project_declared_fields(
+                view.get("key", {}),
+                visible_key_fields,
+            ),
+            sensitive,
+        )
+    raw_record = view.get("resource")
+    if isinstance(raw_record, Mapping):
         safe_record = {
             key: nested
-            for key, nested in record.items()
-            if str(key) not in sensitive
+            for key, nested in raw_record.items()
+            if str(key) in _CLIENT_RESOURCE_ENVELOPE_FIELDS
         }
-        safe_record["state"] = _without_sensitive_fields(
-            record.get("state", {}),
+        safe_record["state"] = redact_sensitive_tree(
+            _project_declared_fields(
+                raw_record.get("state", {}),
+                visible_properties,
+            ),
             sensitive,
         )
-        safe_record["key"] = _without_sensitive_fields(
-            record.get("key", {}),
+        safe_record["key"] = redact_sensitive_tree(
+            _project_declared_fields(
+                raw_record.get("key", {}),
+                visible_key_fields,
+            ),
             sensitive,
         )
+        for name in visible_properties:
+            if "." not in name and name in raw_record:
+                safe_record[name] = redact_sensitive_tree(
+                    raw_record[name],
+                    sensitive,
+                )
+        if descriptor_sensitive_condition(descriptor) and "status" in safe_record:
+            safe_record["status"] = "unknown"
         projected["resource"] = safe_record
     return projected
 
@@ -294,6 +544,107 @@ def redact_resource_for_client(
     safe_record["state"] = projected.get("state", {})
     safe_record["key"] = projected.get("key", {})
     return safe_record
+
+
+def _safe_css_color(value: Any, identity: str) -> str:
+    candidate = str(value or "")
+    if (
+        len(candidate) == 7
+        and candidate.startswith("#")
+        and all(char in "0123456789abcdefABCDEF" for char in candidate[1:])
+    ):
+        return candidate
+    digest = sha256(identity.encode("utf-8", errors="replace")).digest()
+    return _CSS_COLOR_PALETTE[digest[0] % len(_CSS_COLOR_PALETTE)]
+
+
+def _sanitize_client_presentation(
+    value: Any,
+    *,
+    path: tuple[str, ...] = (),
+) -> Any:
+    """Copy a public payload while constraining CSS presentation primitives."""
+
+    if isinstance(value, Mapping):
+        identity = next(
+            (
+                str(value[field])
+                for field in (
+                    "id",
+                    "layer",
+                    "kind",
+                    "source_type",
+                    "relation_type",
+                    "label",
+                )
+                if value.get(field) is not None
+            ),
+            "/".join(path) or "unknown",
+        )
+        presentation_context = bool(path) and (
+            path[0] in _CLIENT_PRESENTATION_COLOR_ROOTS
+            or (
+                len(path) > 1
+                and path[0] == "schema"
+                and path[1] in _CLIENT_SCHEMA_PRESENTATION_FIELDS
+            )
+        )
+        return {
+            key: (
+                _safe_css_color(nested, identity)
+                if str(key) == "color" and presentation_context
+                else _sanitize_client_presentation(
+                    nested,
+                    path=(*path, str(key)),
+                )
+            )
+            for key, nested in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _sanitize_client_presentation(item, path=(*path, str(index)))
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            _sanitize_client_presentation(item, path=(*path, str(index)))
+            for index, item in enumerate(value)
+        )
+    return value
+
+
+def _client_dataset_envelope(
+    dataset: Mapping[str, Any],
+    sensitive_fields: set[str],
+    *,
+    omit_fields: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """Build the explicit public bootstrap envelope.
+
+    Normalized adapters may retain private caches and format-specific metadata
+    beside the public model.  The browser bootstrap must never become an
+    accidental serialization of those adapter internals.
+    """
+
+    client = {
+        key: redact_sensitive_tree(value, sensitive_fields)
+        for key, value in dataset.items()
+        if str(key) in _CLIENT_DATASET_FIELDS
+        and str(key) not in omit_fields
+    }
+    demo = client.get("demo")
+    if isinstance(demo, Mapping):
+        client["demo"] = {
+            key: value
+            for key, value in demo.items()
+            if str(key) in _CLIENT_DEMO_FIELDS
+        }
+    scale = client.get("scale")
+    if isinstance(scale, Mapping):
+        client["scale"] = {
+            "metrics": scale.get("metrics", {}),
+        }
+    return _sanitize_client_presentation(client)
 
 
 type EventRedactionPolicy = tuple[
@@ -323,6 +674,7 @@ def event_redaction_policy(
             name
             for name, rule in descriptor_property_rules(descriptor).items()
             if bool(rule.get("sensitive"))
+            or rule.get("client_visible", True) is False
         )
         sensitive_by_kind[str(descriptor["kind"])] = sensitive
         all_sensitive.update(sensitive)
@@ -387,9 +739,9 @@ def redact_event_for_client(
     sensitive_by_kind, kind_by_id, all_sensitive = (
         policy or event_redaction_policy(dataset, runtime)
     )
+    kinds = _event_resource_kinds(event, kind_by_id)
     if not all_sensitive:
         return dict(event)
-    kinds = _event_resource_kinds(event, kind_by_id)
     sensitive: set[str] = set()
     for kind in kinds:
         sensitive.update(sensitive_by_kind.get(kind, ()))
@@ -413,6 +765,16 @@ def resource_search_text(
     sensitive = {
         name for name, rule in rules.items() if bool(rule.get("sensitive"))
     }
+    visible = _client_visible_property_names(descriptor or {})
+    visible_key_fields = visible | {
+        str(name)
+        for name in (
+            descriptor.get("key_fields", ())
+            if descriptor
+            else ()
+        )
+        if isinstance(name, str)
+    }
     values: list[Any] = [
         view.get("resource_id", resource_id(record)),
         view.get("label", record.get("label", "")),
@@ -427,12 +789,17 @@ def resource_search_text(
         values.extend(
             nested
             for name, nested in key.items()
-            if str(name) not in sensitive
+            if str(name) in visible_key_fields
+            and str(name) not in sensitive
         )
     state = view.get("state") or {}
     if rules:
         for name, rule in rules.items():
-            if rule.get("sensitive") or not rule.get("searchable"):
+            if (
+                rule.get("sensitive")
+                or rule.get("client_visible", True) is False
+                or not rule.get("searchable")
+            ):
                 continue
             if isinstance(state, Mapping) and name in state:
                 values.append(state[name])
@@ -449,8 +816,6 @@ def resource_search_text(
                 values.append(state[name])
             elif isinstance(key, Mapping) and name in key:
                 values.append(key[name])
-    else:
-        values.append(state)
     return " ".join(
         json.dumps(value, sort_keys=True, ensure_ascii=False)
         if isinstance(value, (Mapping, list, tuple))
@@ -590,12 +955,41 @@ class NormalizedDataService:
             for item in dataset.get("kind_descriptors", [])
             if isinstance(item, Mapping) and item.get("kind")
         }
+        resource_records = (
+            runtime.resources
+            if runtime is not None
+            else dataset.get("resources", [])
+        )
+        for record in resource_records:
+            if not isinstance(record, Mapping):
+                continue
+            self._required_descriptor(
+                descriptors,
+                str(record.get("kind", "UNKNOWN")),
+            )
+        _, _, all_sensitive = self.event_redaction_policy(dataset)
+        projected_stream_fields = {
+            "events",
+            "resources",
+            "source_records",
+            "state_intervals",
+        }
+        server_windowed_fields = {
+            "causal_links",
+            "lifecycle_intervals",
+            "relationship_intervals",
+            "relationship_mutations",
+            "relationships",
+        }
+        client = _client_dataset_envelope(
+            dataset,
+            set(all_sensitive),
+            omit_fields=frozenset(
+                projected_stream_fields
+                | (server_windowed_fields if runtime is not None else set())
+            ),
+        )
         if runtime is None:
-            client = {
-                key: value
-                for key, value in dataset.items()
-                if not str(key).startswith("_")
-            }
             client["resources"] = [
                 redact_resource_for_client(
                     record,
@@ -609,6 +1003,15 @@ class NormalizedDataService:
                 for item in dataset.get("events", [])
                 if isinstance(item, Mapping)
             ]
+            client["state_intervals"] = [
+                self.redact_state_interval_for_client(
+                    str(item.get("resource", "")),
+                    item,
+                    dataset,
+                )
+                for item in dataset.get("state_intervals", [])
+                if isinstance(item, Mapping)
+            ]
             client["source_records"] = [
                 project_source_record_for_log(dict(item))
                 for item in dataset.get("source_records", [])
@@ -616,11 +1019,6 @@ class NormalizedDataService:
             ]
             history_mode = "embedded-history"
         else:
-            client = {
-                key: value
-                for key, value in dataset.items()
-                if not str(key).startswith("_")
-            }
             client["resources"] = [
                 {
                     "resource_id": resource_id(item),
@@ -637,6 +1035,9 @@ class NormalizedDataService:
             ]
             client["events"] = []
             client["source_records"] = []
+            client["state_intervals"] = []
+            for field in server_windowed_fields:
+                client[field] = []
             history_mode = "server-windowed"
 
         selected_revision = self.current_revision_id(dataset)
@@ -677,7 +1078,9 @@ class NormalizedDataService:
             )
         )
         client["route_resolution"] = self.route_resolution_capability(dataset)
-        return client
+        return _sanitize_client_presentation(
+            redact_sensitive_tree(client, set(all_sensitive))
+        )
 
     def _descriptors(
         self,
@@ -752,16 +1155,22 @@ class NormalizedDataService:
             if record is not None
             else None
         )
+        condition_is_sensitive = descriptor_sensitive_condition(descriptor)
         condition = (
             str(descriptor["condition_field"])
             if descriptor and descriptor.get("condition_field")
+            and not condition_is_sensitive
             else None
         )
         if not exists:
             status = status_class = "absent"
         else:
             status = (
-                (state_interval or {}).get("status")
+                (
+                    (state_interval or {}).get("status")
+                    if not condition_is_sensitive
+                    else None
+                )
                 or (state.get(condition) if condition else None)
                 or "unknown"
             )
@@ -924,12 +1333,19 @@ class NormalizedDataService:
             )
         )
         kind = str(record.get("kind", "UNKNOWN")) if record else "UNKNOWN"
-        descriptor = self._descriptors(active).get(kind)
-        projected = dict(interval)
+        descriptor = self._required_descriptor(self._descriptors(active), kind)
+        sensitive = {
+            name
+            for name, rule in descriptor_property_rules(descriptor).items()
+            if bool(rule.get("sensitive"))
+        }
+        projected = redact_sensitive_tree(interval, sensitive)
         projected["properties"] = redact_resource_view(
             {"state": dict(interval.get("properties", {}))},
             descriptor,
         ).get("state", {})
+        if descriptor_sensitive_condition(descriptor):
+            projected["status"] = "unknown"
         return projected
 
     def _resource_table_view_at(
@@ -1559,11 +1975,21 @@ class NormalizedDataService:
     ) -> dict[str, Any]:
         dataset = self.load_dataset()
         selected = self.events_in_range(start_ns, end_ns)
+        policy = self.event_redaction_policy(dataset)
+        projected_selected = [
+            self.redact_event_for_client(
+                item,
+                dataset,
+                policy=policy,
+            )
+            for item in selected
+        ]
+        all_sensitive = set(policy[2])
         runtime = self.history_runtime(dataset)
         if runtime is not None:
             affected_ids = {
                 str(identifier)
-                for event in selected
+                for event in projected_selected
                 for identifier in event.get("affected_resources", [])
                 if identifier
             }
@@ -1624,23 +2050,20 @@ class NormalizedDataService:
                 "event_count": len(selected),
                 "failure_count": sum(
                     item.get("outcome") == "failure"
-                    for item in selected
+                    for item in projected_selected
                 ),
-                "events": [
-                    self.redact_event_for_client(item, dataset)
-                    for item in selected[:MAX_RANGE_DETAILS]
-                ],
+                "events": projected_selected[:MAX_RANGE_DETAILS],
                 "counts": {
                     "by_outcome": dict(
                         Counter(
                             item.get("outcome", "unknown")
-                            for item in selected
+                            for item in projected_selected
                         )
                     ),
                     "by_action": dict(
                         Counter(
                             item.get("action", "unknown")
-                            for item in selected
+                            for item in projected_selected
                         )
                     ),
                 },
@@ -1661,13 +2084,16 @@ class NormalizedDataService:
                 ),
                 "relationship_change_count": len(mutations),
                 "relationship_changes": [
-                    {
-                        **item,
-                        "event_uid": item.get("cause_event_uid"),
-                        "descriptor": descriptors.get(
-                            str(item.get("relation_type"))
-                        ),
-                    }
+                    redact_sensitive_tree(
+                        {
+                            **item,
+                            "event_uid": item.get("cause_event_uid"),
+                            "descriptor": descriptors.get(
+                                str(item.get("relation_type"))
+                            ),
+                        },
+                        all_sensitive,
+                    )
                     for item in mutations[:MAX_RANGE_DETAILS]
                 ],
                 "truncated": {
@@ -1689,12 +2115,12 @@ class NormalizedDataService:
 
         affected_ids = {
             str(effect["resource_id"])
-            for event in selected
+            for event in projected_selected
             for effect in event.get("effects", [])
             if effect.get("resource_id")
         } | {
             str(subject["resource_id"])
-            for event in selected
+            for event in projected_selected
             for subject in event.get("subjects", [])
             if subject.get("resource_id")
         }
@@ -1730,18 +2156,21 @@ class NormalizedDataService:
                 None,
             )
             relationship_changes.append(
-                {
-                    **mutation,
-                    "relationship_id": (
-                        interval.get("relationship_id")
-                        if interval
-                        else None
-                    ),
-                    "event_uid": mutation.get("cause_event_uid"),
-                    "descriptor": descriptor_by_type.get(
-                        str(mutation["relation_type"])
-                    ),
-                }
+                redact_sensitive_tree(
+                    {
+                        **mutation,
+                        "relationship_id": (
+                            interval.get("relationship_id")
+                            if interval
+                            else None
+                        ),
+                        "event_uid": mutation.get("cause_event_uid"),
+                        "descriptor": descriptor_by_type.get(
+                            str(mutation["relation_type"])
+                        ),
+                    },
+                    all_sensitive,
+                )
             )
             affected_ids.update(
                 (str(mutation["source"]), str(mutation["target"]))
@@ -1783,21 +2212,22 @@ class NormalizedDataService:
             "start_ns": str(start_ns),
             "end_ns": str(end_ns),
             "event_count": len(selected),
-            "events": [
-                self.redact_event_for_client(item, dataset)
-                for item in selected
-            ],
+            "failure_count": sum(
+                item.get("outcome") == "failure"
+                for item in projected_selected
+            ),
+            "events": projected_selected,
             "counts": {
                 "by_outcome": dict(
                     Counter(
                         item.get("outcome", "unknown")
-                        for item in selected
+                        for item in projected_selected
                     )
                 ),
                 "by_action": dict(
                     Counter(
                         item.get("action", "unknown")
-                        for item in selected
+                        for item in projected_selected
                     )
                 ),
             },

@@ -65,6 +65,18 @@ class ServerTests(unittest.TestCase):
             urlopen(self.base_url + "/%2e%2e/pyproject.toml", timeout=3)
         self.assertEqual(caught.exception.code, 404)
 
+    def test_static_asset_symlinks_are_not_followed(self) -> None:
+        outside = self.web_root.parent / "outside.js"
+        outside.write_text("secret", encoding="utf-8")
+        linked = self.web_root / "linked.js"
+        try:
+            linked.symlink_to(outside)
+        except OSError as error:
+            self.skipTest(f"symbolic links are unavailable: {error}")
+        with self.assertRaises(HTTPError) as caught:
+            urlopen(self.base_url + "/linked.js", timeout=3)
+        self.assertEqual(caught.exception.code, 404)
+
     def test_new_validate_preview_and_generate_contract(self) -> None:
         with patch(
             "state_dump_generator.server.new_document",
@@ -254,6 +266,34 @@ class ServerTests(unittest.TestCase):
                 urlopen(request, timeout=3)
         self.assertEqual(caught.exception.code, 422)
         self.assertFalse(json.load(caught.exception)["ok"])
+
+    def test_rejected_post_closes_before_unread_body_can_desynchronize(self) -> None:
+        host, port = self.server.server_address
+        with socket.create_connection((host, port), timeout=3) as client:
+            client.settimeout(3)
+            client.sendall(
+                (
+                    "POST /api/not-a-route HTTP/1.1\r\n"
+                    f"Host: {host}:{port}\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Content-Length: 4\r\n"
+                    "\r\n"
+                    "JUNK"
+                    "GET /api/health HTTP/1.1\r\n"
+                    f"Host: {host}:{port}\r\n"
+                    "\r\n"
+                ).encode("ascii")
+            )
+            chunks: list[bytes] = []
+            while True:
+                block = client.recv(4096)
+                if not block:
+                    break
+                chunks.append(block)
+        response = b"".join(chunks)
+        self.assertEqual(response.count(b"HTTP/1.1"), 1)
+        self.assertIn(b"404 Not Found", response)
+        self.assertNotIn(b'"service":"state-dump-generator"', response)
 
     def test_non_loopback_bind_is_rejected(self) -> None:
         for host in ("0.0.0.0", "::", "192.0.2.1"):

@@ -78,8 +78,8 @@ GENERATED_SCHEMA_CONTRACT_VERSION = 1
 # separately below because it changes from the standalone scale tree to the
 # fully materialized multi-node archive.
 GENERATED_SCHEMA_BODY_SHA256 = (
-    "71514c43ae92e123f2d588fe986f32a5e"
-    "2d18b9385787973c859cb89d85ed4a2"
+    "a4ce55e49b792f8cba87bfb020bfa1c5"
+    "6aaac7f01dd4ec7b98324991ab919110"
 )
 
 
@@ -1323,6 +1323,7 @@ def _interface_schema() -> PluginSchema:
                         label="Description",
                         value_type="string",
                         searchable=True,
+                        client_visible=True,
                     ),
                 ),
                 default_timeline_fields=("admin_status", "oper_status"),

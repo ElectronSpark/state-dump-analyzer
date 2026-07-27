@@ -11,15 +11,15 @@ from fastapi.testclient import TestClient
 
 from router_dump_analyzer.multi_node_topology import MultiNodeTopologyService
 from router_dump_analyzer.web import runtime_api
-from generator import (
+from rsl_demo_generator import (
     COVERAGE_CASES,
     DEMO_NODES,
     AssemblyConfig,
     build_demo_fixture,
 )
-from generator.catalog import DEFAULT_SCENARIO_SOURCE
-from generator.assembly import _source_resource_id
-from plugin.topology_contract import (
+from rsl_demo_generator.catalog import DEFAULT_SCENARIO_SOURCE
+from rsl_demo_generator.assembly import _source_resource_id
+from rsl_demo_plugin.topology_contract import (
     build_topology_contract,
     build_topology_metadata,
     build_topology_profiles,
@@ -188,6 +188,13 @@ class GeneratedAssemblyApiIntegrationTests(unittest.TestCase):
         restored = state(270_000_000_000)
         self.assertTrue(restored["exists"])
         self.assertEqual(restored["state"]["next_hop"], "10.64.0.2")
+        self.assertTrue(
+            {
+                "source_resource_id",
+                "source_scenario_id",
+                "updated_at_ns",
+            }.isdisjoint(restored["state"])
+        )
 
     def test_saved_local_observations_drive_past_topology(self) -> None:
         source = DEFAULT_SCENARIO_SOURCE

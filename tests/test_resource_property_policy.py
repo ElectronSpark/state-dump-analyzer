@@ -36,6 +36,13 @@ class ResourcePropertyPolicyTests(unittest.TestCase):
                     "searchable": False,
                 },
                 {
+                    "name": "server_only_note",
+                    "label": "Server-only note",
+                    "value_type": "string",
+                    "searchable": True,
+                    "client_visible": False,
+                },
+                {
                     "name": "auth_secret",
                     "label": "Authentication secret",
                     "value_type": "string",
@@ -53,9 +60,12 @@ class ResourcePropertyPolicyTests(unittest.TestCase):
             "state": {
                 "oper_state": "up",
                 "diagnostic_blob": "do-not-index",
+                "server_only_note": "server-only-value",
+                "undeclared": "undeclared-value",
                 "auth_secret": "state-secret",
             },
             "auth_secret": "record-secret",
+            "undeclared": "top-level-undeclared",
         }
         self.view = {
             "resource_id": self.record["resource_id"],
@@ -90,6 +100,9 @@ class ResourcePropertyPolicyTests(unittest.TestCase):
         self.assertNotIn("auth_secret", redacted["resource"]["key"])
         self.assertNotIn("auth_secret", redacted["resource"]["state"])
         self.assertEqual("do-not-index", redacted["state"]["diagnostic_blob"])
+        self.assertNotIn("server_only_note", redacted["state"])
+        self.assertNotIn("undeclared", redacted["state"])
+        self.assertNotIn("undeclared", redacted["resource"])
 
     def test_client_resource_projection_uses_the_shared_redaction_path(self) -> None:
         redacted = redact_resource_for_client(self.record, self.descriptor)
@@ -100,6 +113,30 @@ class ResourcePropertyPolicyTests(unittest.TestCase):
         self.assertNotIn("auth_secret", redacted)
         self.assertNotIn("auth_secret", redacted["key"])
         self.assertNotIn("auth_secret", redacted["state"])
+        self.assertNotIn("server_only_note", redacted["state"])
+        self.assertNotIn("undeclared", redacted["state"])
+        self.assertNotIn("undeclared", redacted)
+
+    def test_non_client_visible_properties_are_not_search_oracles(self) -> None:
+        searchable = resource_search_text(
+            self.record,
+            self.view,
+            self.descriptor,
+        )
+
+        self.assertNotIn("server-only-value", searchable)
+        self.assertNotIn("undeclared-value", searchable)
+
+    def test_missing_descriptor_fails_closed_for_state_search(self) -> None:
+        searchable = resource_search_text(
+            self.record,
+            self.view,
+            None,
+        )
+
+        self.assertNotIn("state-secret", searchable)
+        self.assertNotIn("do-not-index", searchable)
+        self.assertNotIn("undeclared-value", searchable)
 
     def test_legacy_typed_keys_do_not_collapse_to_display_strings(self) -> None:
         integer_id = resource_id(

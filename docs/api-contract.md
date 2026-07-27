@@ -15,7 +15,9 @@ translated directly into Pydantic models/OpenAPI components.
   complete ID when placing it in a revision-scoped URL and must not split it
   into path components. Servers expose path-aware
   `/v1/revisions/{revision_id}/...` routes so the decoded ID reaches revision
-  lookup unchanged.
+  lookup unchanged. The server binds revision-local data only after the router
+  has parsed that path parameter; raw-path prefix matching is forbidden because
+  overlapping IDs such as `a` and `a/inventory` are both valid.
 - Nanosecond timestamps, counters that may exceed JavaScript's safe integer, and
   numeric key parts are decimal strings in JSON. Small counts and page sizes are
   ordinary JSON integers.
@@ -530,6 +532,12 @@ changes. Every change carries its node-local effective range, normalized
 absolute range when supported, uncertainty, before/after value, cause/evidence,
 provenance, and quality. Pagination is revision/query-bound; replaying all pages
 must produce the same snapshot as `topology/query` at the end basis.
+Changes at the same effective timestamp are ordered by
+`source_sequence` and then their stable event/change identifier. A modify after
+a delete does not recreate a resource. For a multi-node basis with non-zero
+clock uncertainty, the coordinator evaluates every state boundary inside the
+mapped interval; a transition-crossing interval returns the possible states
+with `quality: "ambiguous"` rather than silently choosing the center sample.
 
 An unsupported projection/perspective combination returns `422`. A selected
 node whose clock cannot be aligned under strict policy remains in the response
@@ -1015,7 +1023,10 @@ The capabilities response advertises immutable traffic sources and
 destinations, independent trace start points, route-resolver plug-ins,
 route-type/family/VRF facets, strict/best-effort modes, and bounded review
 scenarios. It also advertises packet-trace bounds, layer order, ownership, and
-the steering profiles accepted by each scenario. The heterogeneous demo covers
+the steering profiles accepted by each scenario. `limits.max_candidate_paths`
+and `limits.max_segments_per_path` are enforced before path materialization;
+core-derived hop and recursion positions are checked against any plug-in
+declarations. The heterogeneous demo covers
 connected and recursive-static routes, IPv4/IPv6 unicast, IS-IS, MPLS transport
 and L3VPN, SRv6, and EVPN type 2/type 5 resolution. A demo request reuses the
 frozen topology context and may focus any returned path, including an inactive
@@ -1076,6 +1087,14 @@ plug-in-selected active branch reaches the endpoint and at least one does not;
 core does not promote that multipath set to fully reachable. A continuous,
 complete path that ends at the forward ingress instead of the requested
 endpoint is `not_reached`.
+
+Each endpoint attachment carries a time-valid `state` of `available`,
+`unavailable`, or `withdrawn` plus `can_terminate`. Withdrawn and unavailable
+attachments remain inspectable evidence but cannot terminate a successful
+trace. Every route candidate declares its VRF/routing scope explicitly; the
+core does not supply an implicit `"default"` value or parse destination CIDR
+text to invent endpoint aliases. A proven exact-state cycle is a terminal
+`cycle` result with `end_to_end_resolved: false`, never a resolved path.
 
 A bidirectional response classifies endpoint reachability as
 `bidirectionally_reachable`, `one_way_reachable`, `both_unreachable`, or
@@ -1502,8 +1521,9 @@ exact time envelope needed by the runnable demo's expansion endpoint:
 }
 ```
 
-Expansion is offset-paginated in deterministic `(timestamp_ns, event_uid)`
-order. The canonical `resource_id` is the returned lane resource, and
+Expansion is offset-paginated in deterministic
+`(timestamp_ns, source_sequence, event_uid)` order. The canonical `resource_id`
+is the returned lane resource, and
 `start_ns`/`end_ns` are the returned cluster envelope. `limit` is bounded to
 1..200. Because these bounds identify point events rather than a state-validity
 interval, event instants equal to either envelope boundary are included. These
@@ -1606,8 +1626,11 @@ carry `source_record_uid`, the compatible singular `matched_event_uid`, and
 plural `matched_event_uids`, allowing deterministic timeline-to-log navigation
 even when one retained input produced several events and the log uses virtual
 scrolling. The core
-limits pattern length and searched text, rejects lookarounds/backreferences and
-unsafe repeated quantifiers, and caps lane and mark counts.
+limits pattern length and searched text and accepts only top-level alternatives
+of literals, character classes, dot, anchors, and at most one `*`, `+`, or `?`
+quantified atom per alternative. Groups, counted repetition, lookaround,
+backreferences, unsupported escapes, and ambiguous/nested repetition are
+rejected with no unsafe fallback. Lane and mark counts are capped.
 
 ### Windowed scale history
 
@@ -1743,10 +1766,14 @@ the revision database and may implement literal candidates with PostgreSQL
 The demo may add an external-content, case-sensitive FTS5 trigram candidate index to
 that sidecar. Its metadata records whether the revision uses `fts5-trigram` or
 `sqlite-scan`; ordered safe-text digest, ordinal/size bounds, and a deterministic
-FTS vocabulary digest are checked before reuse, after a full source-aware FTS
-integrity check at publication. `MATCH` never defines the result: every
-candidate still passes a parameterized `instr(safe_text, search)` check, while
-empty, short, and parser-rejected needles take the exact scan
+candidate digest are checked before reuse, after a full source-aware FTS
+integrity check at publication. The digest covers both the FTS vocabulary and a
+small exception table for safe documents containing NUL. Those exception
+ordinals are unioned into every FTS candidate set because older SQLite trigram
+tokenizers may truncate text at NUL. `MATCH` never defines the result: every
+candidate and exception still passes a parameterized
+`instr(safe_text, search)` check, while empty, short, and parser-rejected needles
+take the exact scan
 path. `/health` exposes the non-sensitive serving state as
 `history_search_backend` without disclosing the cache path or revision identity.
 
@@ -1793,6 +1820,11 @@ POST /v1/revisions/rev-01/resources/query
 Every item includes its canonical resource ID, descriptor kind, existence and
 status at the requested time, active typed relationships, last accepted change,
 failed events that did not change state, provenance, quality, and evidence.
+Resource `state` and typed `key` objects are allowlist projections: only fields
+declared by that kind's `PropertyDescriptor` (or explicit `key_fields`) may
+appear. `sensitive`, `client_visible: false`, and undeclared fields are omitted
+recursively and cannot contribute to public search text. If such a property is
+the kind's `condition_field`, returned status is `unknown`.
 Connector-like presentation comes from descriptor tags and never from a core
 check for a resource name. An optional descriptor `icon` carries validated SVG
 path geometry (`path`, four-number `view_box`, `render_mode`, and

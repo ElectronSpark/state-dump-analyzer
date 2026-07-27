@@ -164,7 +164,7 @@ filler or plug-in projections. To generate and launch the comprehensive demo,
 use its separate materializer and core launcher:
 
 ```powershell
-python -X utf8 -m generator `
+python -X utf8 -m rsl_demo_generator `
   --output .\demo\fixtures\router-state-lab-demo.tgz
 .\scripts\launch_demo.cmd -NoBrowser
 ```
@@ -197,6 +197,46 @@ are:
 Every event has stable identity so it can be edited or removed without
 rewriting unrelated history. The saved project is the source of truth for
 regeneration; do not send it to the analyzer as though it were a router dump.
+
+### Attachment export boundary
+
+An attachment can hold private editor metadata and separately declare the
+node-local evidence that may enter its router's dump:
+
+```json
+{
+  "node_id": "r1",
+  "port_id": "xe-0/0/0",
+  "properties": {
+    "canvas_note": "authoring-only",
+    "supposed_failure_domain": "west"
+  },
+  "node_local_observation": {
+    "resource_id": "interface:r1-xe-0/0/0.310",
+    "resource_type": "virtual-interface",
+    "observed_state": "up",
+    "properties": {
+      "interface_name": "xe-0/0/0.310",
+      "subnet_prefix": "192.0.2.0/31",
+      "vlan_id": 310
+    }
+  }
+}
+```
+
+Only `node_local_observation` is eligible for interface snapshot and propagated
+physical-observation records. Attachment-level `properties` stay in the saved
+authoring project and private preview; the simulator never copies them into a
+node dump when the explicit envelope is present. The envelope is neutral
+generator JSON and does not depend on analyzer or plug-in types.
+
+Existing schema-v1 saves remain compatible. When an attachment has no
+`node_local_observation`, the loader performs a one-way normalization of the
+legacy `resource_id` / `local_resource_id`, `observed_state`, and `properties`
+fields into the canonical envelope. Saving the normalized document writes the
+explicit envelope, so subsequent edits have an unambiguous projection boundary.
+Forbidden authoring keys and any exact private medium ID are rejected inside
+the export envelope even when nested under an otherwise harmless key.
 
 ## Best-effort propagation
 
@@ -254,9 +294,32 @@ logs/history.jsonl
 past status. The text status file is convenient for inspecting or adapting the
 output; JSON Lines preserves structured values.
 
-The archive writer rejects forbidden authoring/oracle keys recursively before
-serializing output. It also produces stable ordering, timestamps, ownership
-metadata, and gzip headers so identical projects generate identical bytes.
+Every exported timestamp uses the node's own clock domain: `captured_at_ns`,
+history `timestamp_ns`, and final-state `updated_at_ns` all include that node's
+configured offset. The private editor timeline is not exported as an absolute
+clock oracle. History rows also carry `source_sequence`, which preserves the
+author-defined order of changes that share one local timestamp.
+
+The archive boundary rejects forbidden authoring/oracle keys recursively and
+also rejects a private physical-medium identifier if it is copied into an
+export-eligible node-local value under an otherwise harmless key. A generated
+dump therefore contains only the attachment evidence declared in
+`node_local_observation`, such as an interface, VLAN, or subnet observation,
+but not attachment-level authoring metadata or the editor's physical medium
+identity. The writer produces stable ordering, ownership metadata, and gzip
+headers so identical projects generate identical bytes.
+
+Automatic propagation inherits a failed, stale, suppressed, or dropped parent
+outcome unless the author explicitly overrides the outcome for a target. This
+prevents a failed initiating update from silently becoming a successful remote
+state change. The editor remains a scheduling aid rather than a protocol
+emulator.
+
+Project inputs, static assets, and output targets are checked lexically before
+path resolution; symbolic-link and junction traversal is refused at those file
+boundaries. The local HTTP editor bounds body reads and closes a connection
+when rejecting a POST before consuming its body, so HTTP/1.1 keep-alive cannot
+reinterpret unread bytes as another request.
 
 ## Independence and integration
 

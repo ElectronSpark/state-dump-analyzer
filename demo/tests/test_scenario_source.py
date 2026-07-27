@@ -16,12 +16,12 @@ REPOSITORY_ROOT = DEMO_ROOT.parent
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 sys.path.insert(0, str(DEMO_ROOT))
 
-from generator.catalog import (  # noqa: E402
+from rsl_demo_generator.catalog import (  # noqa: E402
     DEFAULT_SCENARIO_SOURCE,
     DEMO_LINKS,
     DEMO_NODES,
 )
-from generator.scenario_source import (  # noqa: E402
+from rsl_demo_generator.scenario_source import (  # noqa: E402
     DEFAULT_SCENARIO_PATH,
     SCENARIO_SCHEMA_ID,
     ScenarioSourceError,
@@ -210,7 +210,7 @@ class DemoScenarioSourceTests(unittest.TestCase):
         ]["force-include"]
         self.assertEqual(
             force_include["router-state-lab-default.scenario.json"],
-            "generator/router-state-lab-default.scenario.json",
+            "rsl_demo_generator/router-state-lab-default.scenario.json",
         )
         self.assertIn(
             "/router-state-lab-default.scenario.json",

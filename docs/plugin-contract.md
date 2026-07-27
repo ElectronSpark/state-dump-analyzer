@@ -23,7 +23,7 @@ The executable reference types are in
 
 If this is your first plug-in, start with
 `docs/plugin-author-quickstart.md` and the runnable
-`demo/plugin/__init__.py` teaching slice. This document is
+`demo/rsl_demo_plugin/__init__.py` teaching slice. This document is
 the normative reference, not the recommended reading order for a first
 implementation.
 
@@ -160,7 +160,7 @@ results.
 A runtime must not return or register FastAPI, `APIRouter`, middleware, routes,
 templates, HTML, JavaScript, or CSS. Failure to expose a runtime is a core
 application selection error, not an `AnalyzerPlugin` conformance error. The
-installable example in `demo/plugin/session.py` and its
+installable example in `demo/rsl_demo_plugin/session.py` and its
 tests exercise this complete boundary.
 
 ## 2. Capability boundary
@@ -272,11 +272,27 @@ rules, but the core applies the same pattern-length, feature, lane-count,
 haystack, and result-size limits to plug-in presets and user-created rules.
 Plug-ins never provide executable browser matching code.
 
+The supported record-pattern grammar is intentionally smaller than Python
+regular expressions: each top-level alternative consists of literals,
+character classes, dot, start/end anchors, and no more than one `*`, `+`, or
+`?` quantified atom. Groups, counted repetition, lookaround, backreferences,
+unsupported escapes, empty alternatives, and ambiguous or nested repetition
+are invalid. Presets are validated when the schema is built and again through
+the same runtime compiler used for request-authored lanes; there is no
+backtracking-regex fallback.
+
 ## 3. Required semantics
 
 ### Resource keys
 
 - Keys are typed and ordered, not colon-joined display strings.
+- `ResourceKey.parts` is a non-empty tuple of at most 32 unique named parts.
+  Part names and values are bounded; nested tuples have bounded depth and
+  cardinality, integers have a bit-length ceiling, and text/bytes have a length
+  ceiling.
+- Values are limited to `int`, `str`, `bytes`, `UUID`, `KeyAtom`, and nested
+  tuples of those types. Floats, lists, mappings, and arbitrary objects are
+  invalid rather than coerced.
 - Boolean key parts are forbidden because Python otherwise conflates `True` and
   integer `1`; encode such a discriminator as an explicitly tagged string/int.
 - The same logical key after a confirmed delete/recreate may be a new incarnation.
@@ -382,6 +398,12 @@ back to a different node, layer, perspective, projection, or timestamp.
 that method and degraded quality. A relative request over several nodes resolves
 to a `relative_capture_vector`; it does not claim a simultaneous wall-clock
 snapshot.
+
+Multi-node reconstruction evaluates the complete mapped uncertainty interval,
+including every resource/lifecycle boundary inside it. It must not evaluate
+only the interval center. If the window admits more than one state, the result
+is ambiguous and carries the possible states; a stable but non-zero window is
+best-effort rather than exact.
 
 ### Normalized conditions and outcomes
 
@@ -535,6 +557,11 @@ explicitly. When `exists` is omitted, the core recognizes the generic
 non-existence; an explicit boolean always takes precedence over that inference.
 A change with `state_changed: false` is a complete no-op for existence, status,
 and state, even if it describes a failed delete or carries proposed values.
+Replay order is `(time_ns, source_sequence, event_uid/change_id)`.
+`source_sequence` is therefore required whenever one producer can emit several
+changes at the same timestamp. A modify after deletion may update latent state
+for later inspection/recreation, but it does not make the resource exist; only
+an explicit `exists: true` or generic `create`/`add` operation can do that.
 
 The enclosing `valid_from_ns`/`valid_to_ns` interval remains authoritative and
 half-open. No lifecycle change can make the resource exist before
@@ -721,7 +748,25 @@ enums such as `ConditionClass`, `Outcome`, provenance, and quality. Names such
 as admin state, operational state, reachability, or programming state remain
 plug-in fields rather than universal core semantics. The web theme maps the
 normalized presentation class to accessible colors; plug-ins must not emit CSS
-or assume a particular color palette.
+or assume a particular color palette. Any descriptor field named `color` is
+transported only as a validated six-digit `#RRGGBB` value; an invalid value is
+replaced by a deterministic core palette color at both the server and browser
+boundary.
+
+Every resource kind referenced by a public resource, interval, or event must
+have a descriptor in that immutable plug-in schema. Public projection fails
+closed for an undeclared kind; it does not guess an empty property policy.
+Fields declared `sensitive` are removed recursively from resource state, typed
+keys, intervals, events, summaries, search documents, and the browser bootstrap
+envelope. Each non-sensitive property is browser-visible only when its
+`PropertyDescriptor.client_visible` value is true; undeclared and
+`client_visible: false` resource fields are omitted and excluded from search.
+If `condition_field` names a sensitive or non-client-visible property, the core
+reports the generic condition as `unknown` rather than copying that value into
+`status`.
+Bootstrap serialization uses a core-owned allowlist of normalized model and
+workspace fields, so plug-in caches or parser-private dataset keys cannot become
+client data merely because they lack a leading underscore.
 
 `PluginSchema.source_record_groups` declares zero or more
 `SourceRecordGroupDescriptor` values. Each supplies an opaque plug-in-owned
@@ -1126,6 +1171,11 @@ For the v1 `EXCLUDE_EXACT_SCOPE` operation, each constraint declares:
 - bounded `ResolutionContribution` values explaining the device or protocol
   rule and its evidence.
 
+The JSON transport for `ForwardingPolicyScope.arguments` is an ordered array of
+`{"name": ..., "value": ...}` objects. A JSON mapping is rejected because map
+iteration order is not part of the plug-in equality contract. Argument names
+must be unique and typed values retain their exact scalar/container identity.
+
 The core may compare only complete `ForwardingPolicyScope` values for equality.
 It must not parse or normalize their arguments, infer prefix membership, or
 attach meaning to a contract ID. The plug-in therefore owns such details as an
@@ -1246,6 +1296,14 @@ Path relation never determines consistency: forward must reach the traffic
 destination and reverse must reach the traffic source. A complete path that
 only reaches the forward start fails the reverse endpoint goal.
 
+Every route/coverage record declares its routing context, including the VRF or
+equivalent plug-in-owned scope, explicitly. The core does not invent a
+`default` VRF, parse a prefix to manufacture endpoint aliases, or derive
+attachment availability from display text. Plug-ins declare aliases and
+time-valid endpoint attachments. Attachments may remain visible as
+`available`, `unavailable`, or `withdrawn`; only an available attachment may
+terminate a successful endpoint trace.
+
 For loop detection, a node plug-in canonicalizes the typed local context that
 it already owns; core records it as `ForwardingTraversalStateKey`. The key
 contains member, `StatusPerspectiveRef`, forwarding object and domain, ingress
@@ -1261,7 +1319,11 @@ not declare a cycle themselves. Core exposes `detect_forwarding_cycle()` for an
 exact-repeat check and `evaluate_forwarding_traversal()` when independent hop
 and recursion budgets must also be classified. Exact repeats are checked before
 budget exhaustion at the same step, so a proven loop is not mislabeled as a
-limit.
+limit. A proven repeat is terminal: the core truncates the executable path at
+the closing state and cannot subsequently classify that branch as resolved or
+target-reaching. Candidate count, segments per path, hop count, and recursion
+depth are core-enforced limits; plug-in-supplied counters are consistency
+evidence and cannot expand those budgets.
 
 Status perspectives are resolved independently. A plug-in must not borrow a
 control-plane value to fill an unknown hardware value, and it must retain

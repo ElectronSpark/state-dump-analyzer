@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 import unittest
 
-from plugin import data as demo_data
+from rsl_demo_plugin import data as demo_data
 
 
 class DemoDataSourceTests(unittest.TestCase):

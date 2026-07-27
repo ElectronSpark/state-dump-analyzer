@@ -53,8 +53,44 @@ def forbidden_authoring_paths(
             )
 
 
+def private_identifier_paths(
+    value: Any,
+    private_ids: frozenset[str],
+    *,
+    location: str = "$",
+) -> Iterator[str]:
+    """Yield paths whose string value equals one private authoring identifier.
+
+    Key-name filtering is not sufficient for a projection boundary.  An
+    author can accidentally place a physical-medium ID under an innocuous key
+    such as ``local_hint``.  Callers apply this check only to values that are
+    actually eligible for node-local export; authoring-only metadata is outside
+    that projection and may legitimately retain the private identifier.
+    """
+
+    if isinstance(value, str):
+        if value in private_ids:
+            yield location
+        return
+    if isinstance(value, Mapping):
+        for raw_key, item in value.items():
+            yield from private_identifier_paths(
+                item,
+                private_ids,
+                location=f"{location}.{raw_key}",
+            )
+    elif isinstance(value, list | tuple):
+        for index, item in enumerate(value):
+            yield from private_identifier_paths(
+                item,
+                private_ids,
+                location=f"{location}[{index}]",
+            )
+
+
 __all__ = [
     "FORBIDDEN_AUTHORING_KEYS",
     "forbidden_authoring_paths",
     "normalized_key",
+    "private_identifier_paths",
 ]

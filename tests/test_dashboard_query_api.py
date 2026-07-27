@@ -6,7 +6,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from tests.support.generated_demo import generated_demo_application
-from plugin.data import REVISION_ID
+from rsl_demo_plugin.data import REVISION_ID
 
 
 class DashboardQueryApiTests(unittest.TestCase):

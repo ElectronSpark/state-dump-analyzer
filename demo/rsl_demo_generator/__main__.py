@@ -18,7 +18,7 @@ from . import (
     validate_demo_fixture,
 )
 from .assembly import _build_demo_fixture_with_report
-from plugin import render_conformance_status_fixture
+from rsl_demo_plugin import render_conformance_status_fixture
 
 
 def _parser() -> argparse.ArgumentParser:

@@ -26,12 +26,10 @@ MAX_COPY_TEXT_ITEMS = 5_000
 MAX_COPY_TEXT_TOTAL_BYTES = 1_048_576
 
 _LANE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
-_BACKREFERENCE_PATTERN = re.compile(r"\\[1-9]")
-_NESTED_QUANTIFIER_PATTERN = re.compile(
-    r"\([^)]*[*+{][^)]*\)\s*(?:[*+]|\{\d+(?:,\d*)?\})"
-)
-_STACKED_QUANTIFIER_PATTERN = re.compile(
-    r"(?:[*+]|\{\d+(?:,\d*)?\})\s*(?:[*+]|\{\d+(?:,\d*)?\})"
+_SAFE_RECORD_ESCAPES = frozenset(
+    "AbBdDsSwWZ"
+    "fnrtv"
+    "\\.^$*+?{}[]()|-"
 )
 
 
@@ -349,17 +347,143 @@ def source_record_haystack(record: dict[str, Any]) -> str:
     ]
 
 
+def _validate_safe_record_pattern(value: str) -> None:
+    """Validate the bounded, non-ambiguous regex subset used for records.
+
+    Python's backtracking engine has no execution deadline.  Merely rejecting
+    a few familiar nested-quantifier spellings is not sufficient because
+    equivalent catastrophic expressions can be written with ambiguous
+    alternation.  The public record-search contract therefore accepts only
+    top-level alternatives made from literals, character classes, ``.``,
+    anchors, and at most one ``*``, ``+`` or ``?`` quantified atom per
+    alternative.  Groups and counted repetition are deliberately unsupported.
+
+    With no groups and at most one repeated fixed-width atom in each branch,
+    matching has no combinatorial choice tree.  Pattern and haystack bounds
+    then provide a deterministic request-work ceiling while retaining the
+    common ``foo|bar``, ``prefix.*suffix`` and ``[A-Z]+`` use cases.
+    """
+
+    escaped = False
+    in_class = False
+    class_has_content = False
+    atom_available = False
+    branch_has_content = False
+    branch_ended = False
+    quantifier_count = 0
+
+    for index, character in enumerate(value):
+        if escaped:
+            if character not in _SAFE_RECORD_ESCAPES:
+                raise ValueError(
+                    "record lane pattern contains an unsupported escape"
+                )
+            escaped = False
+            if in_class:
+                class_has_content = True
+            else:
+                if branch_ended:
+                    raise ValueError(
+                        "record lane end anchor must terminate its alternative"
+                    )
+                atom_available = True
+                branch_has_content = True
+            continue
+
+        if character == "\\":
+            escaped = True
+            continue
+
+        if in_class:
+            if character == "]":
+                if not class_has_content:
+                    raise ValueError(
+                        "record lane character classes must not be empty"
+                    )
+                in_class = False
+                atom_available = True
+                branch_has_content = True
+            else:
+                class_has_content = True
+            continue
+
+        if branch_ended and character != "|":
+            raise ValueError(
+                "record lane end anchor must terminate its alternative"
+            )
+        if character == "[":
+            in_class = True
+            class_has_content = False
+            continue
+        if character in "()":
+            raise ValueError(
+                "record lane patterns do not support groups; "
+                "use top-level alternatives"
+            )
+        if character in "{}":
+            raise ValueError(
+                "record lane patterns do not support counted repetition"
+            )
+        if character in "*+?":
+            if not atom_available:
+                raise ValueError(
+                    "record lane quantifiers must follow one fixed-width atom"
+                )
+            quantifier_count += 1
+            if quantifier_count > 1:
+                raise ValueError(
+                    "record lane alternatives support at most one "
+                    "quantified atom"
+                )
+            atom_available = False
+            branch_has_content = True
+            continue
+        if character == "|":
+            if not branch_has_content:
+                raise ValueError(
+                    "record lane pattern alternatives must not be empty"
+                )
+            atom_available = False
+            branch_has_content = False
+            branch_ended = False
+            quantifier_count = 0
+            continue
+        if character == "^":
+            if branch_has_content:
+                raise ValueError(
+                    "record lane start anchor must begin its alternative"
+                )
+            branch_has_content = True
+            atom_available = False
+            continue
+        if character == "$":
+            next_character = value[index + 1] if index + 1 < len(value) else None
+            if next_character not in (None, "|"):
+                raise ValueError(
+                    "record lane end anchor must terminate its alternative"
+                )
+            branch_has_content = True
+            atom_available = False
+            branch_ended = True
+            continue
+
+        atom_available = True
+        branch_has_content = True
+
+    if escaped:
+        raise ValueError("record lane pattern must not end with an escape")
+    if in_class:
+        raise ValueError("record lane pattern has an unterminated character class")
+    if not branch_has_content:
+        raise ValueError("record lane pattern alternatives must not be empty")
+
+
 def compile_record_pattern(
     pattern: Any,
     *,
     case_sensitive: bool = False,
 ) -> re.Pattern[str]:
-    """Compile the intentionally small regex subset exposed by the core.
-
-    Input length and searched text are bounded.  Lookarounds/extensions,
-    backreferences, and common nested/stacked repetition forms are rejected so
-    a UI-created lane cannot turn one timeline query into unbounded regex work.
-    """
+    """Compile the deterministic regex subset exposed by the core."""
 
     if not isinstance(pattern, str):
         raise ValueError("record lane pattern must be a string")
@@ -372,14 +496,7 @@ def compile_record_pattern(
         raise ValueError(
             f"record lane pattern must be at most {MAX_RECORD_PATTERN_LENGTH} characters"
         )
-    if "(?" in value:
-        raise ValueError("record lane patterns do not support regex extensions")
-    if _BACKREFERENCE_PATTERN.search(value):
-        raise ValueError("record lane patterns do not support backreferences")
-    if _NESTED_QUANTIFIER_PATTERN.search(value) or _STACKED_QUANTIFIER_PATTERN.search(
-        value
-    ):
-        raise ValueError("record lane pattern contains unsafe repeated quantifiers")
+    _validate_safe_record_pattern(value)
     try:
         return re.compile(value, 0 if case_sensitive else re.IGNORECASE)
     except re.error as error:

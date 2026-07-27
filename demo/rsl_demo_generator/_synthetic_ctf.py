@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import struct
 
-from plugin.archive import (
+from rsl_demo_plugin.archive import (
     CTF_METADATA_MEMBER,
     CTF_STREAM_MEMBER,
 )

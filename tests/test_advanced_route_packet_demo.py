@@ -11,7 +11,7 @@ from tests.support.generated_demo import (
 )
 
 from router_dump_analyzer.multi_node_route import MultiNodeRouteService
-from plugin.advanced_trace import (
+from rsl_demo_plugin.advanced_trace import (
     ADVANCED_TRACE_SCENARIOS,
 )
 from router_dump_analyzer.plugin_api import (
@@ -498,7 +498,10 @@ class AdvancedRoutePacketDemoTests(unittest.TestCase):
             final_outer = self._packet_layer(advanced, "outer-ipv6")
             self.assertEqual(outer["fields"]["source"], source)
             self.assertEqual(outer["fields"]["destination"], sid_list[0])
-            self.assertEqual(srh["fields"]["sid_list"], sid_list)
+            self.assertEqual(
+                srh["fields"]["sid_list"],
+                {"type": "tuple", "items": sid_list},
+            )
             self.assertEqual(
                 final_outer["fields"]["destination"], sid_list[1]
             )

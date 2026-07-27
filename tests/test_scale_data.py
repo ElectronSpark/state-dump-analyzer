@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from collections import defaultdict
 
-from plugin.scale_data import (
+from rsl_demo_plugin.scale_data import (
     _LazyIntervalMap,
     _ScaleTemporalIndex,
     _add_history_only_resources,
@@ -15,10 +15,10 @@ from plugin.scale_data import (
     _scale_projection_capabilities,
     _status_class,
 )
-from plugin.temporal_contract import (
+from rsl_demo_plugin.temporal_contract import (
     build_demo_plugin_contract,
 )
-from generator._scale import _plugin_schema
+from rsl_demo_generator._scale import _plugin_schema
 
 
 RESOURCE_ID = "data-bridge-layer/DTE/blue/dte-000001"
@@ -383,6 +383,8 @@ class ScaleKindDescriptorTests(unittest.TestCase):
                 "NEIGHBOR",
                 "VIRTUAL_INTERFACE",
                 "IP_ROUTING",
+                "IP_ROUTE",
+                "ADJACENCY",
             },
         )
         for descriptor in descriptors:
@@ -390,8 +392,36 @@ class ScaleKindDescriptorTests(unittest.TestCase):
                 self.assertTrue(descriptor["key_fields"])
                 self.assertTrue(descriptor["display_name_fields"])
                 self.assertTrue(descriptor["default_table_fields"])
+                self.assertTrue(descriptor["properties"])
                 self.assertEqual(descriptor["condition_field"], "status")
                 self.assertIn("status", descriptor["default_table_fields"])
+                declared = {
+                    item["name"] for item in descriptor["properties"]
+                } | set(descriptor["key_fields"])
+                presented = {
+                    *descriptor.get("display_name_fields", ()),
+                    *descriptor.get("default_table_fields", ()),
+                    *descriptor.get("default_timeline_fields", ()),
+                    descriptor["condition_field"],
+                }
+                self.assertLessEqual(presented, declared)
+
+    def test_generated_schema_keeps_fixture_metadata_server_side(self) -> None:
+        descriptors = _plugin_schema()["resource_kinds"]
+        declared = {
+            item["name"]
+            for descriptor in descriptors
+            for item in descriptor["properties"]
+        }
+
+        self.assertIn("next_hop", declared)
+        self.assertTrue(
+            {
+                "source_resource_id",
+                "source_scenario_id",
+                "updated_at_ns",
+            }.isdisjoint(declared)
+        )
 
 
 class ScaleProjectionCapabilityTests(unittest.TestCase):

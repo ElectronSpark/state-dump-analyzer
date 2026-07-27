@@ -423,6 +423,40 @@ class PluginApiTests(unittest.TestCase):
                 parts=(("flag", True),),  # type: ignore[arg-type]
             )
 
+    def test_resource_keys_enforce_the_bounded_typed_key_contract(self) -> None:
+        invalid_values = (
+            1.5,
+            ["not", "a", "key"],
+            {"not": "a key"},
+        )
+        for value in invalid_values:
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "KeyValue"):
+                    ResourceKey(
+                        namespace="test",
+                        node="node-a",
+                        layer="control-plane",
+                        kind="opaque",
+                        parts=(("id", value),),  # type: ignore[arg-type]
+                    )
+
+        with self.assertRaisesRegex(ValueError, "requires 1 to 32"):
+            ResourceKey(
+                namespace="test",
+                node="node-a",
+                layer="control-plane",
+                kind="opaque",
+                parts=(),
+            )
+        with self.assertRaisesRegex(ValueError, "without whitespace"):
+            ResourceKey(
+                namespace="test",
+                node="node a",
+                layer="control-plane",
+                kind="opaque",
+                parts=(("id", 1),),
+            )
+
     def test_key_atoms_disambiguate_shared_scalar_representations(self) -> None:
         sixteen_bytes = bytes.fromhex("20010db8000000000000000000000001")
         atoms = {
@@ -634,6 +668,16 @@ class PluginApiTests(unittest.TestCase):
                 "Status",
                 "string",
                 searchable=1,  # type: ignore[arg-type]
+            )
+        with self.assertRaisesRegex(
+            ValueError,
+            "client_visible must be a boolean",
+        ):
+            PropertyDescriptor(
+                "status",
+                "Status",
+                "string",
+                client_visible=1,  # type: ignore[arg-type]
             )
         with self.assertRaisesRegex(ValueError, "SVG path geometry"):
             ResourceIconDescriptor(path="<svg onload=alert(1)>")
@@ -1330,6 +1374,12 @@ class PluginApiTests(unittest.TestCase):
                 lane_id="invalid.extension",
                 label="Invalid",
                 pattern="(?=ESI)",
+            )
+        with self.assertRaisesRegex(ValueError, "unsupported regex"):
+            RecordLanePreset(
+                lane_id="invalid.ambiguous-repeat",
+                label="Invalid repeat",
+                pattern=r"(a|a)+z",
             )
 
     def test_forwarding_groups_declare_mode_member_state_and_explanations(self) -> None:

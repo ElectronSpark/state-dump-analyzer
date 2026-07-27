@@ -182,7 +182,7 @@ Discover plugin bundles through Python entry points under
 `src/router_dump_analyzer/plugin_api.py`; operational rules are in
 `docs/plugin-contract.md`. First-time authors use
 `docs/plugin-author-quickstart.md` and the installable example in
-`demo/plugin/__init__.py` before consulting the full
+`demo/rsl_demo_plugin/__init__.py` before consulting the full
 normative contract.
 
 ### Three-owner rule
@@ -201,6 +201,35 @@ normative contract.
 The core must not branch on plug-in kind, relation, source-type, source-group,
 or key-field names. The detailed audit and migration ledger is in
 `docs/core-plugin-boundary-audit-2026-07-22.md`.
+
+#### Executable ownership guard
+
+The three-owner rule is enforced by
+`tests/test_node_semantic_boundaries.py`, not only by review. The guard parses
+every Python module under `src/router_dump_analyzer/` and rejects executable
+string literals or import paths containing the maintained high-signal set of
+demo, device, vendor, and protocol vocabulary. Contract docstrings may explain
+such protocols, and one exact capability-response sentence may enumerate
+examples while declaring that they belong to the plug-in; neither exception
+authorizes a core branch. Adding a new domain token requires moving the
+interpretation to a node or federation plug-in rather than extending a core
+switch.
+
+Two compatibility exceptions remain executable and deliberately bounded:
+
+- `normalized_data.py` still admits the exact `demo` bootstrap namespace at
+  three allowlisted syntax sites while the public envelope is migrated to
+  capability-named projections. No other core file or scope may use that
+  fixture name.
+- `multi_node_route.py` still adapts the legacy generated-projection mapping.
+  Its exact `_generated_` identifier names, per-name reference ceilings, source
+  file, and total executable `generated`-literal ceiling are recorded in the
+  test. The allowance may shrink, but any new identifier, another file, or
+  reference growth fails CI.
+
+These are migration budgets, not extension points. New route input must enter
+through typed, protocol-neutral projection contracts; completing that migration
+deletes the allowlist instead of transferring it to another module.
 
 ### Distribution and executable ownership
 
@@ -229,13 +258,16 @@ into the core wheel and source distribution. FastAPI and Uvicorn remain behind
 the core's optional `web` extra so contract-only and parser-only use does not
 install a server stack.
 
-`demo/plugin/` contains the example plug-in, its
+`demo/rsl_demo_plugin/` contains the example plug-in, its
 device/protocol and generated-projection policy, and a non-web input/session
 adapter for the generated archive. The sibling
-`demo/generator/` contains the dedicated fixture
+`demo/rsl_demo_generator/` contains the dedicated fixture
 generator and imports the plug-in package explicitly. The demo
 depends on the core base distribution without the `web` extra. It publishes
 only the `demo_router` plug-in entry point and no application executable.
+Its Python import roots are the collision-resistant `rsl_demo_plugin` and
+`rsl_demo_generator`; the distribution must not claim generic top-level
+`plugin` or `generator` namespaces.
 
 The core dynamically loads a module-level plug-in instance either from an
 installed `router_dump_analyzer.plugins` entry point (`--plugin NAME`) or a

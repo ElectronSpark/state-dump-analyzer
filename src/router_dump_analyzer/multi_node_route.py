@@ -16,6 +16,7 @@ import json
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Mapping
 
+from .canonical import CanonicalValueError, packet_value_json
 from .multi_node_topology import (
     MultiNodeTopologyService,
     MultiNodeTopologyRequestError,
@@ -44,6 +45,7 @@ from router_dump_analyzer.plugin_api import (
     ForwardingPolicyScope,
     ForwardingPolicyVerdict,
     ForwardingTraversalStateKey,
+    KeyAtom,
     ResourceKey,
     StatusPerspectiveRef,
     TopologyEndpointReference,
@@ -89,6 +91,9 @@ class RouteServicePolicy:
 
 class MultiNodeRouteService:
     """Compose plug-in-owned local decisions into bounded cross-node paths."""
+
+    MAX_CANDIDATE_PATHS = 64
+    MAX_SEGMENTS_PER_PATH = 128
 
     def __init__(
         self,
@@ -385,7 +390,13 @@ class MultiNodeRouteService:
                 semantics,
                 "forward",
             )
-            vrf = str(case.get("vrf") or "default")
+            declared_vrf = case.get("vrf") or case.get("vrf_id")
+            if not isinstance(declared_vrf, str) or not declared_vrf:
+                raise MultiNodeRouteRequestError(
+                    "generated coverage must declare its VRF explicitly "
+                    f"for {scenario_id}"
+                )
+            vrf = declared_vrf
             generated_context = {
                 "route_type": str(case.get("route_type") or ""),
                 "route_family": str(case.get("route_family") or ""),
@@ -593,6 +604,20 @@ class MultiNodeRouteService:
             raise MultiNodeRouteRequestError(
                 f"generated coverage case {scenario_id} has no "
                 f"{direction} candidate paths"
+            )
+        if len(directional_paths) > self.MAX_CANDIDATE_PATHS:
+            raise MultiNodeRouteRequestError(
+                f"generated coverage case {scenario_id} exceeds the "
+                f"{self.MAX_CANDIDATE_PATHS}-candidate trace limit"
+            )
+        if any(
+            2 * len(item["node_sequence"]) - 1
+            > self.MAX_SEGMENTS_PER_PATH
+            for item in directional_paths
+        ):
+            raise MultiNodeRouteRequestError(
+                f"generated coverage case {scenario_id} exceeds the "
+                f"{self.MAX_SEGMENTS_PER_PATH}-segment path limit"
             )
         involved_nodes = coverage.get("involved_nodes")
         if (
@@ -1939,12 +1964,7 @@ class MultiNodeRouteService:
         """Decode an opaque plug-in scope for exact core comparison."""
 
         raw_arguments = declaration.get("arguments")
-        if isinstance(raw_arguments, Mapping):
-            arguments = tuple(
-                (str(name), value)
-                for name, value in raw_arguments.items()
-            )
-        elif isinstance(raw_arguments, list):
+        if isinstance(raw_arguments, list):
             parsed: list[tuple[str, Any]] = []
             for item in raw_arguments:
                 if (
@@ -1960,7 +1980,8 @@ class MultiNodeRouteService:
             arguments = tuple(parsed)
         else:
             raise MultiNodeRouteRequestError(
-                f"{label} must declare scope arguments"
+                f"{label} must declare ordered scope arguments as a "
+                "list of name/value objects"
             )
         contract_id = declaration.get("contract_id")
         if not isinstance(contract_id, str) or not contract_id:
@@ -2221,19 +2242,35 @@ class MultiNodeRouteService:
                     parts=(("canonical_state", cycle_key),),
                 ),
             )
-            hop_index = declaration.get("hop_index", visit_index)
-            recursion_depth = declaration.get("recursion_depth", 0)
+            hop_index = visit_index
+            recursion_depth = (
+                recursion_depths[-1] + 1
+                if visit_index > 0
+                and node_sequence[visit_index - 1] == node_id
+                else 0
+            )
+            declared_hop_index = declaration.get("hop_index")
+            declared_recursion_depth = declaration.get(
+                "recursion_depth"
+            )
             if (
-                not isinstance(hop_index, int)
-                or isinstance(hop_index, bool)
-                or hop_index < 0
-                or not isinstance(recursion_depth, int)
-                or isinstance(recursion_depth, bool)
-                or recursion_depth < 0
+                declared_hop_index is not None
+                and (
+                    not isinstance(declared_hop_index, int)
+                    or isinstance(declared_hop_index, bool)
+                    or declared_hop_index != hop_index
+                )
+            ) or (
+                declared_recursion_depth is not None
+                and (
+                    not isinstance(declared_recursion_depth, int)
+                    or isinstance(declared_recursion_depth, bool)
+                    or declared_recursion_depth != recursion_depth
+                )
             ):
                 raise MultiNodeRouteRequestError(
-                    "candidate traversal budgets must be non-negative "
-                    "integers"
+                    "candidate traversal counters disagree with the "
+                    "core-derived hop or recursion position"
                 )
             occurrence_id = (
                 f"{path['path_id']}:node-occurrence:{visit_index + 1}"
@@ -2259,11 +2296,17 @@ class MultiNodeRouteService:
             occurrences.append(occurrence)
 
         terminal_semantics = candidate.get("terminal_semantics", {})
-        cycle_reason = str(
+        declared_cycle_reason = (
             terminal_semantics.get("reason_code")
             if isinstance(terminal_semantics, Mapping)
-            else ""
-        ) or "forwarding_cycle"
+            else None
+        )
+        cycle_reason = (
+            declared_cycle_reason.strip()
+            if isinstance(declared_cycle_reason, str)
+            and declared_cycle_reason.strip()
+            else "forwarding_cycle"
+        )
         try:
             evaluation = evaluate_forwarding_traversal(
                 tuple(typed_states),
@@ -2330,7 +2373,41 @@ class MultiNodeRouteService:
             }
             terminal = local_by_visit.get(closing_step)
             if terminal is not None:
-                terminal["state"]["operational"] = "loop_detected"
+                terminal["segment_kind"] = "cycle_detection"
+                terminal["active"] = False
+                terminal["state"].update(
+                    {
+                        "active": False,
+                        "operational": "loop_detected",
+                        "terminal": "cycle",
+                        "terminal_disposition": "cycle",
+                        "reason_code": cycle_reason,
+                        "core_terminal_classification": (
+                            "exact_typed_state_cycle"
+                        ),
+                    }
+                )
+                terminal["completeness"] = {
+                    "state": "terminal_observed",
+                    "end_to_end_resolved": False,
+                    "observed": True,
+                }
+                stop_ordinal = int(terminal["ordinal"])
+                path["declared_node_sequence"] = list(
+                    path.get("node_sequence", [])
+                )
+                path["declared_node_occurrences"] = list(occurrences)
+                path["node_sequence"] = list(
+                    path["declared_node_sequence"][: closing_step + 1]
+                )
+                path["node_occurrences"] = list(
+                    occurrences[: closing_step + 1]
+                )
+                path["segments"] = [
+                    segment
+                    for segment in path.get("segments", [])
+                    if int(segment["ordinal"]) <= stop_ordinal
+                ]
         elif evaluation.budget_kind is not None:
             path.pop("cycle", None)
             path["resolution_budget"] = {
@@ -2681,13 +2758,10 @@ class MultiNodeRouteService:
         """
 
         routed_nodes = self._generated_routed_nodes()
-        inventory_by_node = {
-            str(row["node_id"]): row
-            for row in self._generated_route_rows
-            if row.get("node_id")
-            and not row.get("scenario_id")
-            and str(row.get("destination", "")).startswith("loopback:")
-        }
+        inventory_by_node: dict[str, dict[str, Any]] = {}
+        for row in self._generated_route_rows:
+            if row.get("node_id") and not row.get("scenario_id"):
+                inventory_by_node.setdefault(str(row["node_id"]), row)
         result: dict[str, dict[str, Any]] = {}
         for node in routed_nodes:
             node_id = str(node["node_id"])
@@ -2696,6 +2770,17 @@ class MultiNodeRouteService:
                 str(item)
                 for item in inventory.get("evidence_resource_ids", [])
                 if item
+            ]
+            if not evidence_ids:
+                raise MultiNodeRouteRequestError(
+                    "routed node projection lacks a plug-in-declared "
+                    f"endpoint resource identity: {node_id}"
+                )
+            declared_values = [
+                str(alias)
+                for alias, alias_node_id
+                in self.policy.router_value_aliases.items()
+                if alias_node_id == node_id
             ]
             role = next(
                 (
@@ -2712,13 +2797,11 @@ class MultiNodeRouteService:
                 "label": str(node.get("label") or node_id),
                 "site": str(node.get("site") or "unspecified"),
                 "role": role,
-                "loopback_resource_id": (
-                    evidence_ids[0]
-                    if evidence_ids
-                    else f"{node_id}/control-plane/IP_ROUTING/default"
-                ),
+                "loopback_resource_id": evidence_ids[0],
                 "prefix": str(
-                    inventory.get("destination") or f"loopback:{node_id}"
+                    declared_values[0]
+                    if declared_values
+                    else node_id
                 ),
                 "descriptor_source": "generated_plugin_projection",
             }
@@ -2747,22 +2830,90 @@ class MultiNodeRouteService:
         self,
         scenario_id: str,
     ) -> list[str]:
-        """Project destination attachments from declared forward candidates."""
+        """Return every declared destination attachment node."""
+
+        return [
+            str(item["node_id"])
+            for item in self._generated_destination_attachment_specs(
+                scenario_id
+            )
+        ]
+
+    def _generated_destination_attachment_specs(
+        self,
+        scenario_id: str,
+    ) -> list[dict[str, Any]]:
+        """Project typed attachment availability from forward candidates."""
 
         coverage = self._generated_coverage_by_id.get(scenario_id, {})
-        return list(
-            dict.fromkeys(
-                str(node_sequence[-1])
-                for candidate in coverage.get("candidate_paths", [])
-                if isinstance(candidate, dict)
-                and candidate.get("direction") == "forward"
-                and isinstance(
+        by_node: dict[str, dict[str, Any]] = {}
+        state_rank = {"withdrawn": 0, "unavailable": 1, "available": 2}
+        for candidate in coverage.get("candidate_paths", []):
+            if (
+                not isinstance(candidate, dict)
+                or candidate.get("direction") != "forward"
+                or not isinstance(
                     node_sequence := candidate.get("node_sequence"),
                     list,
                 )
-                and node_sequence
+                or not node_sequence
+            ):
+                continue
+            node_id = str(node_sequence[-1])
+            terminal = candidate.get("terminal_semantics")
+            disposition = (
+                str(terminal.get("disposition") or "")
+                if isinstance(terminal, Mapping)
+                else ""
             )
-        )
+            declared_state = candidate.get(
+                "terminal_attachment_state"
+            )
+            if declared_state is not None and declared_state not in {
+                "available",
+                "withdrawn",
+                "unavailable",
+            }:
+                raise MultiNodeRouteRequestError(
+                    "terminal_attachment_state must be available, "
+                    "withdrawn, or unavailable"
+                )
+            alternative_state = str(
+                candidate.get("alternative_state") or ""
+            )
+            state = (
+                str(declared_state)
+                if declared_state is not None
+                else "withdrawn"
+                if alternative_state == "withdrawn_dead"
+                or disposition == "withdrawn"
+                else "unavailable"
+                if alternative_state in {
+                    "ineligible_dead",
+                    "unavailable",
+                }
+                else "available"
+            )
+            current = by_node.get(node_id)
+            candidate_id = str(candidate.get("candidate_id") or "")
+            if current is None:
+                by_node[node_id] = {
+                    "node_id": node_id,
+                    "state": state,
+                    "candidate_ids": (
+                        [candidate_id] if candidate_id else []
+                    ),
+                }
+                continue
+            if candidate_id:
+                current["candidate_ids"] = list(
+                    dict.fromkeys(
+                        [*current["candidate_ids"], candidate_id]
+                    )
+                )
+            if state_rank[state] > state_rank[str(current["state"])]:
+                current["state"] = state
+        return list(by_node.values())
 
     def _router(self, node_id: str) -> dict[str, Any]:
         router = self._routers_by_id.get(node_id)
@@ -2787,7 +2938,13 @@ class MultiNodeRouteService:
         """
 
         paths: list[dict[str, Any]] = []
-        for candidate in projection["candidate_paths"]:
+        candidates = projection["candidate_paths"]
+        if len(candidates) > self.MAX_CANDIDATE_PATHS:
+            raise MultiNodeRouteRequestError(
+                "route projection exceeds the advertised "
+                f"{self.MAX_CANDIDATE_PATHS}-candidate limit"
+            )
+        for candidate in candidates:
             node_sequence = [
                 str(item) for item in candidate["node_sequence"]
             ]
@@ -2811,8 +2968,13 @@ class MultiNodeRouteService:
                     allow_repeated_nodes=(
                         len(set(node_sequence)) != len(node_sequence)
                     ),
-                )
+            )
             path["path_id"] = str(candidate["path_id"])
+            if len(path.get("segments", [])) > self.MAX_SEGMENTS_PER_PATH:
+                raise MultiNodeRouteRequestError(
+                    f"route path {path['path_id']} exceeds the advertised "
+                    f"{self.MAX_SEGMENTS_PER_PATH}-segment limit"
+                )
             paths.append(path)
         return paths
 
@@ -2870,6 +3032,11 @@ class MultiNodeRouteService:
                 f"{source_node_id} -> {destination_node_id} in "
                 f"{context}"
             )
+        if len(source_rows) > self.MAX_CANDIDATE_PATHS:
+            raise MultiNodeRouteRequestError(
+                "generated route inventory exceeds the advertised "
+                f"{self.MAX_CANDIDATE_PATHS}-candidate limit"
+            )
         trace_scenario_ids = {
             str(row["trace_scenario_id"]) for row in source_rows
         }
@@ -2879,6 +3046,15 @@ class MultiNodeRouteService:
                 "scenario executors"
             )
         trace_scenario_id = next(iter(trace_scenario_ids))
+        trace_semantics = self.policy.scenarios.get(
+            trace_scenario_id,
+            {},
+        )
+        multipath_mode = trace_semantics.get("multipath_mode")
+        if multipath_mode not in {"single_active", "all_active"}:
+            raise MultiNodeRouteRequestError(
+                "the selected route executor must declare multipath_mode"
+            )
         path_ids = [str(row.get("path_id") or "") for row in source_rows]
         if any(not path_id for path_id in path_ids) or len(
             set(path_ids)
@@ -2897,6 +3073,30 @@ class MultiNodeRouteService:
                 str(row.get("decision") or "") == "active",
             )
         ]
+        if len(selected_rows) > 1 and multipath_mode != "all_active":
+            raise MultiNodeRouteRequestError(
+                "multiple selected route rows require an explicit "
+                "all_active multipath mode"
+            )
+        declared_groups = {
+            str(row["multipath_group"])
+            for row in selected_rows
+            if row.get("multipath_group") is not None
+        }
+        if len(declared_groups) > 1:
+            raise MultiNodeRouteRequestError(
+                "selected all-active route rows disagree on "
+                "multipath_group"
+            )
+        multipath_group = (
+            next(iter(declared_groups))
+            if declared_groups
+            else (
+                f"scenario:{trace_scenario_id}"
+                if multipath_mode == "all_active"
+                else None
+            )
+        )
         candidate_paths: list[dict[str, Any]] = []
         forwarding_by_node: dict[str, dict[str, Any]] = {}
         involved_node_ids: list[str] = []
@@ -2913,6 +3113,8 @@ class MultiNodeRouteService:
                 or not node_sequence
                 or node_sequence[0] != source_node_id
                 or node_sequence[-1] != destination_node_id
+                or 2 * len(node_sequence) - 1
+                > self.MAX_SEGMENTS_PER_PATH
             ):
                 raise MultiNodeRouteRequestError(
                     "generated inventory route has an invalid identity or "
@@ -2963,7 +3165,7 @@ class MultiNodeRouteService:
                 "forwarding_capable",
                 selected,
             )
-            if selected and len(selected_rows) > 1:
+            if selected and multipath_mode == "all_active":
                 primary = False
                 alternative_state = "ecmp_member"
             elif selected:
@@ -2998,6 +3200,10 @@ class MultiNodeRouteService:
                 "primary": primary,
                 "alternative_state": alternative_state,
                 "forwarding_capable": forwarding_capable,
+                "multipath_mode": multipath_mode,
+                "multipath_group": (
+                    multipath_group if selected else None
+                ),
                 "resolution_layers": [
                     str(item)
                     for item in source_row.get(
@@ -3192,7 +3398,15 @@ class MultiNodeRouteService:
         node_id: str,
         member_id: str,
         resource_id: str,
+        state: str = "available",
+        candidate_ids: list[str] | None = None,
     ) -> dict[str, Any]:
+        if state not in {"available", "withdrawn", "unavailable"}:
+            raise MultiNodeRouteRequestError(
+                "endpoint attachment state must be available, withdrawn, "
+                "or unavailable"
+            )
+        available = state == "available"
         return {
             "attachment_id": cls._endpoint_attachment_id(
                 endpoint_id,
@@ -3203,9 +3417,10 @@ class MultiNodeRouteService:
             "node_id": node_id,
             "member_id": member_id,
             "resource_id": resource_id,
-            "can_originate": True,
-            "can_terminate": True,
-            "state": "available",
+            "can_originate": available,
+            "can_terminate": available,
+            "state": state,
+            "candidate_ids": list(candidate_ids or []),
             "semantic_owner": "node_plugin",
         }
 
@@ -3439,7 +3654,10 @@ class MultiNodeRouteService:
         node_id = str(row.get("node_id") or "")
         route_type = str(row.get("route_type") or "")
         route_family = str(row.get("route_family") or "")
-        vrf_id = str(row.get("vrf") or row.get("vrf_id") or "default")
+        declared_vrf = row.get("vrf") or row.get("vrf_id")
+        if not isinstance(declared_vrf, str) or not declared_vrf:
+            return None
+        vrf_id = declared_vrf
         known_route_types = {
             str(item["route_type"]) for item in self._route_types
         }
@@ -4158,10 +4376,8 @@ class MultiNodeRouteService:
                     "address_family": str(
                         default_scenario.get("address_family") or ""
                     ),
-                    "vrf": str(default_scenario.get("vrf") or "default"),
-                    "vrf_id": str(
-                        default_scenario.get("vrf_id") or "default"
-                    ),
+                    "vrf": str(default_scenario["vrf"]),
+                    "vrf_id": str(default_scenario["vrf_id"]),
                     "source_id": source_id,
                     "destination_id": destination_id,
                     "source": source,
@@ -4391,8 +4607,8 @@ class MultiNodeRouteService:
                 ],
             },
             "limits": {
-                "max_candidate_paths": 64,
-                "max_segments_per_path": 128,
+                "max_candidate_paths": self.MAX_CANDIDATE_PATHS,
+                "max_segments_per_path": self.MAX_SEGMENTS_PER_PATH,
                 "default_max_hops": 64,
                 "maximum_max_hops": 128,
                 "default_max_recursion": 16,
@@ -6153,16 +6369,10 @@ class MultiNodeRouteService:
     def _packet_value_json(value: Any) -> Any:
         """Serialize one already-validated opaque forwarding value."""
 
-        if isinstance(value, tuple):
-            return [
-                MultiNodeRouteService._packet_value_json(item)
-                for item in value
-            ]
-        if isinstance(value, bytes):
-            return {"encoding": "hex", "value": value.hex()}
-        if isinstance(value, (str, int)) or value is None:
-            return value
-        return str(value)
+        try:
+            return packet_value_json(value, key_atom_type=KeyAtom)
+        except CanonicalValueError as error:
+            raise MultiNodeRouteRequestError(str(error)) from error
 
     @classmethod
     def _packet_resource_key_json(
@@ -6583,6 +6793,11 @@ class MultiNodeRouteService:
         infer endpoint delivery from a path's final node.
         """
 
+        declared_attachments_by_node = {
+            str(item["node_id"]): dict(item)
+            for item in target_endpoint.get("attachments", [])
+            if item.get("node_id")
+        }
         attachments_by_node = {
             str(item["node_id"]): dict(item)
             for item in target_endpoint.get("attachments", [])
@@ -6596,6 +6811,9 @@ class MultiNodeRouteService:
             ]
             terminal_node_id = sequence[-1] if sequence else None
             target_attachment = attachments_by_node.get(
+                str(terminal_node_id)
+            )
+            declared_attachment = declared_attachments_by_node.get(
                 str(terminal_node_id)
             )
             resolved = bool(
@@ -6619,22 +6837,18 @@ class MultiNodeRouteService:
                 resolved
                 and forwarding_capable
                 and result == "resolved"
-                and terminal_node_id is not None
-            ):
-                terminal_router = self._router(terminal_node_id)
-                terminal_endpoint_id = self._router_endpoint_id(
-                    terminal_node_id
+                and declared_attachment is not None
+                and (
+                    declared_attachment.get("can_terminate") is False
+                    or declared_attachment.get("state")
+                    in {"withdrawn", "unavailable"}
                 )
+            ):
                 declaration = {
-                    "classification": "delivered",
+                    "classification": "not_delivered",
                     "classification_complete": True,
-                    "endpoint_id": terminal_endpoint_id,
-                    "attachment": self._endpoint_attachment(
-                        endpoint_id=terminal_endpoint_id,
-                        node_id=terminal_node_id,
-                        member_id=f"member:{terminal_node_id}",
-                        resource_id=terminal_router["loopback_resource_id"],
-                    ),
+                    "endpoint_id": target_endpoint["endpoint_id"],
+                    "attachment": declared_attachment,
                 }
             elif result in {
                 "dropped",
@@ -6645,6 +6859,18 @@ class MultiNodeRouteService:
                 "hop_limit_exceeded",
                 "recursion_limit_exceeded",
             } or not forwarding_capable:
+                declaration = {
+                    "classification": "not_delivered",
+                    "classification_complete": True,
+                    "endpoint_id": None,
+                    "attachment": None,
+                }
+            elif (
+                resolved
+                and forwarding_capable
+                and result == "resolved"
+                and target_endpoint.get("attachments_complete") is True
+            ):
                 declaration = {
                     "classification": "not_delivered",
                     "classification_complete": True,
@@ -7006,7 +7232,14 @@ class MultiNodeRouteService:
             service = route_profile.get("service_presentation")
             encapsulation = dict(path.get("encapsulation") or {})
             if isinstance(service, Mapping):
-                vrf_id = str(routing_context.get("vrf_id") or routing_context.get("vrf") or "default")
+                declared_vrf = routing_context.get(
+                    "vrf_id"
+                ) or routing_context.get("vrf")
+                vrf_id = (
+                    str(declared_vrf)
+                    if declared_vrf is not None
+                    else None
+                )
                 facts: dict[str, Any] = {
                     "routing_context": vrf_id,
                     "route_family": routing_context.get("route_family"),
@@ -7436,7 +7669,6 @@ class MultiNodeRouteService:
                         item["node_id"].casefold(),
                         item["label"].casefold(),
                         item["prefix"].casefold(),
-                        item["prefix"].split("/", 1)[0].casefold(),
                     }
                 ]
                 if len(matches) != 1:
@@ -7613,7 +7845,6 @@ class MultiNodeRouteService:
                     item["node_id"].casefold(),
                     item["label"].casefold(),
                     item["prefix"].casefold(),
-                    item["prefix"].split("/", 1)[0].casefold(),
                 }
             ]
             alias_node_id = self.policy.router_value_aliases.get(normalized)
@@ -7865,32 +8096,51 @@ class MultiNodeRouteService:
             "site": destination_router["site"],
             "role": destination_router["role"],
         }
+        attachment_specs: list[dict[str, Any]]
         if (
             use_presented_endpoint
             and endpoint_profile.get("multi_attachment")
         ):
-            resolved_destination["terminating_node_ids"] = (
-                self._generated_destination_attachment_node_ids(
-                    scenario_id
-                )
+            attachment_specs = (
+                self._generated_destination_attachment_specs(scenario_id)
             )
+            resolved_destination["terminating_node_ids"] = [
+                str(item["node_id"]) for item in attachment_specs
+            ]
+        else:
+            attachment_specs = [
+                {
+                    "node_id": resolved_destination["node_id"],
+                    "state": "available",
+                    "candidate_ids": [],
+                }
+            ]
         resolved_destination["attachments"] = [
             self._endpoint_attachment(
                 endpoint_id=resolved_destination["endpoint_id"],
-                node_id=node_id,
-                member_id=f"member:{node_id}",
+                node_id=str(spec["node_id"]),
+                member_id=f"member:{spec['node_id']}",
                 resource_id=(
-                    self._scenario_resource_id(scenario_id, node_id)
+                    self._scenario_resource_id(
+                        scenario_id,
+                        str(spec["node_id"]),
+                    )
                     if use_presented_endpoint
                     and endpoint_profile.get("multi_attachment")
                     else resolved_destination["resource_id"]
                 ),
+                state=str(spec["state"]),
+                candidate_ids=[
+                    str(item) for item in spec["candidate_ids"]
+                ],
             )
-            for node_id in resolved_destination.get(
-                "terminating_node_ids", [resolved_destination["node_id"]]
-            )
+            for spec in attachment_specs
         ]
         resolved_destination["attachments_complete"] = True
+        resolved_destination["available_attachments_complete"] = all(
+            item["state"] == "available"
+            for item in resolved_destination["attachments"]
+        )
         resolved_source["attachments"] = [
             self._endpoint_attachment(
                 endpoint_id=resolved_source["endpoint_id"],
@@ -9008,8 +9258,15 @@ class MultiNodeRouteService:
         )
         if terminal_segment is not None:
             terminal_state = terminal_segment["state"]
-            terminal_reason = str(
-                terminal_state.get("reason_code") or terminal_state["terminal"]
+            raw_terminal_reason = (
+                terminal_state.get("reason_code")
+                or terminal_state.get("terminal")
+            )
+            terminal_reason = (
+                raw_terminal_reason.strip()
+                if isinstance(raw_terminal_reason, str)
+                and raw_terminal_reason.strip()
+                else "terminal_unusable"
             )
             declared_disposition = str(
                 terminal_state.get("terminal_disposition") or "unusable"

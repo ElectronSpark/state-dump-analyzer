@@ -8,7 +8,7 @@ from unittest.mock import patch
 from fastapi import HTTPException
 
 from router_dump_analyzer.web import runtime_api as demo_app
-from plugin.data import REVISION_ID
+from rsl_demo_plugin.data import REVISION_ID
 from tests.support.generated_demo import generated_demo_runtime_session
 
 

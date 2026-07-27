@@ -16,8 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Mapping
 
-import plugin as demo_plugin_package
-from plugin.archive import (
+import rsl_demo_plugin as demo_plugin_package
+from rsl_demo_plugin.archive import (
     ASSEMBLY_COVERAGE_MEMBER,
     ASSEMBLY_GENERATOR,
     ASSEMBLY_MANIFEST_MEMBER,
@@ -32,14 +32,14 @@ from plugin.archive import (
     NORMALIZED_SCALE_PREFIX,
     RELATIONSHIP_MUTATIONS_MEMBER_NAME,
 )
-from plugin import (
+from rsl_demo_plugin import (
     GENERATED_ASSEMBLY_FORMAT_VERSION,
     GENERATED_COVERAGE_FORMAT_VERSION,
     GENERATED_COVERAGE_REGISTRY_ID,
     GENERATED_PROJECTION_POLICY,
     plugin as example_router_plugin,
 )
-from plugin.scenario_registry import (
+from rsl_demo_plugin.scenario_registry import (
     ROUTE_PROTOCOL_BY_TYPE,
     ROUTE_RESOLUTION_LAYERS_BY_TYPE,
     scenario_semantics,
@@ -1741,11 +1741,11 @@ def _candidate_policy_decisions(
         return []
     scope = {
         "contract_id": "demo.evpn.split-horizon.v1",
-        "arguments": {
-            "ethernet_segment": "esi-east",
-            "evi": 320,
-            "direction": direction,
-        },
+        "arguments": [
+            {"name": "ethernet_segment", "value": "esi-east"},
+            {"name": "evi", "value": 320},
+            {"name": "direction", "value": direction},
+        ],
     }
     terminal_node_id = spec.sequence[-1]
     return [

@@ -19,6 +19,35 @@ from .frontend_host import FrontendHost
 
 
 Lifespan = Callable[[FastAPI], AbstractAsyncContextManager[Any]]
+_FRONTEND_CONTENT_SECURITY_POLICY = "; ".join(
+    (
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data:",
+        "font-src 'self'",
+        "connect-src 'self'",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "frame-ancestors 'none'",
+        "form-action 'self'",
+        "worker-src 'none'",
+    )
+)
+_API_DOCS_CONTENT_SECURITY_POLICY = "; ".join(
+    (
+        "default-src 'self'",
+        (
+            "script-src 'self' 'unsafe-inline' "
+            "https://cdn.jsdelivr.net https://cdn.redoc.ly"
+        ),
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+        "img-src 'self' data: https://fastapi.tiangolo.com",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "frame-ancestors 'none'",
+    )
+)
 
 
 def create_web_app(
@@ -50,6 +79,17 @@ def create_web_app(
     @application.middleware("http")
     async def disable_core_asset_cache(request: Request, call_next):
         response = await call_next(request)
+        response.headers["Content-Security-Policy"] = (
+            _API_DOCS_CONTENT_SECURITY_POLICY
+            if request.url.path in {"/docs", "/redoc"}
+            else _FRONTEND_CONTENT_SECURITY_POLICY
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = (
+            "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+        )
         if host.owns_request_path(request.url.path):
             response.headers["Cache-Control"] = (
                 "no-store, no-cache, must-revalidate, max-age=0"

@@ -17,6 +17,11 @@ from types import MappingProxyType
 from typing import BinaryIO, Iterable, Mapping, Protocol, Sequence
 from uuid import UUID
 
+from .canonical import (
+    MAX_TYPED_ATOM_PAYLOAD_UNITS,
+    validate_named_typed_parts,
+)
+
 
 CORE_PLUGIN_API_VERSION = "1.0"
 FORWARDING_IR_VERSION = "1.0"
@@ -36,7 +41,7 @@ _PLUGIN_KEY_ATOM_TAG_PATTERN = re.compile(
     r"[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"
 )
 _KEY_ATOM_MAX_TAG_LENGTH = 128
-_KEY_ATOM_MAX_PAYLOAD_LENGTH = 4096
+_KEY_ATOM_MAX_PAYLOAD_LENGTH = MAX_TYPED_ATOM_PAYLOAD_UNITS
 
 
 @dataclass(frozen=True, slots=True)
@@ -621,6 +626,7 @@ class PropertyDescriptor:
     searchable: bool = False
     indexed: bool = False
     sensitive: bool = False
+    client_visible: bool = True
 
     def __post_init__(self) -> None:
         _validate_dashboard_field(self.name, "property name")
@@ -631,6 +637,7 @@ class PropertyDescriptor:
             ("searchable", self.searchable),
             ("indexed", self.indexed),
             ("sensitive", self.sensitive),
+            ("client_visible", self.client_visible),
         ):
             if not isinstance(value, bool):
                 raise ValueError(f"property {field_name} must be a boolean")
@@ -1244,14 +1251,20 @@ class RecordLanePreset:
         _validate_dashboard_id(self.lane_id, "record lane_id")
         if not self.label or len(self.label) > 120:
             raise ValueError("record lane label must contain 1 to 120 characters")
-        if not self.pattern or len(self.pattern) > 160:
-            raise ValueError("record lane pattern must contain 1 to 160 characters")
-        if "(?" in self.pattern or re.search(r"\\[1-9]", self.pattern):
-            raise ValueError("record lane pattern uses unsupported regex features")
+        # Presets and runtime-authored lanes intentionally share one bounded
+        # regex contract. A plug-in must not be able to register a pattern
+        # that the public request path would reject (or execute unsafely).
+        from .source_record_core import compile_record_pattern
+
         try:
-            re.compile(self.pattern)
-        except re.error as error:
-            raise ValueError(f"invalid record lane pattern: {error.msg}") from error
+            compile_record_pattern(
+                self.pattern,
+                case_sensitive=self.case_sensitive,
+            )
+        except ValueError as error:
+            raise ValueError(
+                f"invalid record lane pattern: unsupported regex: {error}"
+            ) from error
         if len(self.description) > 500:
             raise ValueError("record lane description must be at most 500 characters")
 
@@ -1491,19 +1504,18 @@ class ResourceKey:
     parts: tuple[tuple[str, KeyValue], ...]
 
     def __post_init__(self) -> None:
-        names = tuple(name for name, _value in self.parts)
-        if len(set(names)) != len(names):
-            raise ValueError("resource key part names must be unique")
-
-        def reject_boolean(value: KeyValue) -> None:
-            if isinstance(value, bool):
-                raise ValueError("Boolean resource-key parts are forbidden; use a tagged integer or string")
-            if isinstance(value, tuple):
-                for item in value:
-                    reject_boolean(item)
-
-        for _name, value in self.parts:
-            reject_boolean(value)
+        for field_name, value in (
+            ("namespace", self.namespace),
+            ("node", self.node),
+            ("layer", self.layer),
+            ("kind", self.kind),
+        ):
+            _validate_opaque_id(value, f"resource key {field_name}")
+        _validate_forwarding_parts(
+            self.parts,
+            "resource key parts",
+            require_nonempty=True,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -3003,44 +3015,6 @@ class ResolutionContribution:
             raise ValueError("resolution evidence must contain Evidence values")
 
 
-def _forwarding_value_units(
-    value: KeyValue,
-    label: str,
-    depth: int = 0,
-) -> int:
-    """Validate a bounded, exactly comparable forwarding value."""
-
-    if depth > 4:
-        raise ValueError(f"{label} supports at most four tuple levels")
-    if isinstance(value, bool):
-        raise ValueError(f"Boolean {label} values are forbidden")
-    if isinstance(value, KeyAtom):
-        payload = value.value
-        if isinstance(payload, int) and payload.bit_length() > 4_096:
-            raise ValueError(f"{label} integer values exceed 4096 bits")
-        return 1
-    if isinstance(value, int):
-        if value.bit_length() > 4_096:
-            raise ValueError(f"{label} integer values exceed 4096 bits")
-        return 1
-    if isinstance(value, (str, bytes)):
-        if len(value) > _KEY_ATOM_MAX_PAYLOAD_LENGTH:
-            raise ValueError(f"{label} values exceed 4096 units")
-        return 1
-    if isinstance(value, UUID):
-        return 1
-    if isinstance(value, tuple):
-        if len(value) > 32:
-            raise ValueError(f"{label} tuples support at most 32 values")
-        return 1 + sum(
-            _forwarding_value_units(item, label, depth + 1)
-            for item in value
-        )
-    raise ValueError(
-        f"{label} must use KeyValue scalars, KeyAtom, or tuples"
-    )
-
-
 def _validate_forwarding_parts(
     parts: tuple[tuple[str, KeyValue], ...],
     label: str,
@@ -3049,30 +3023,13 @@ def _validate_forwarding_parts(
 ) -> None:
     """Validate canonical plug-in-owned exact-match parts."""
 
-    if not isinstance(parts, tuple):
-        raise ValueError(f"{label} must be a tuple")
-    minimum = 1 if require_nonempty else 0
-    if not minimum <= len(parts) <= 32:
-        if require_nonempty:
-            raise ValueError(f"{label} requires 1 to 32 typed parts")
-        raise ValueError(f"{label} supports at most 32 typed parts")
-    names: list[str] = []
-    total_units = 0
-    for part in parts:
-        if (
-            not isinstance(part, tuple)
-            or len(part) != 2
-            or not isinstance(part[0], str)
-        ):
-            raise ValueError(f"{label} must contain (name, KeyValue) pairs")
-        name, value = part
-        _validate_dashboard_field(name, f"{label} name")
-        names.append(name)
-        total_units += _forwarding_value_units(value, label)
-    if len(names) != len(set(names)):
-        raise ValueError(f"{label} names must be unique")
-    if total_units > 1_024:
-        raise ValueError(f"{label} supports at most 1024 typed value units")
+    validate_named_typed_parts(
+        parts,
+        label,
+        key_atom_type=KeyAtom,
+        validate_name=_validate_dashboard_field,
+        require_nonempty=require_nonempty,
+    )
 
 
 @dataclass(frozen=True, slots=True)

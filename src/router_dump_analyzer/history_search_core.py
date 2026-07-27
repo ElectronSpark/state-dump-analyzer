@@ -43,7 +43,7 @@ class HistorySearchCorpus:
     receives raw plug-in payloads.
     """
 
-    _FORMAT_VERSION = "history-search-sqlite-v5"
+    _FORMAT_VERSION = "history-search-sqlite-v6"
     _INSERT_BATCH_SIZE = 512
     _FTS5_BACKEND = "fts5-trigram"
     _SCAN_BACKEND = "sqlite-scan"
@@ -318,12 +318,21 @@ class HistorySearchCorpus:
                     WHERE type = 'table' AND name = 'documents_fts_vocab'
                     """
                 ).fetchone()
+                exception_schema = connection.execute(
+                    """
+                    SELECT sql
+                    FROM sqlite_master
+                    WHERE type = 'table'
+                      AND name = 'documents_fts_exceptions'
+                    """
+                ).fetchone()
                 if (
                     vocab_schema is None
                     or "fts5vocab(documents_fts,'row')"
                     not in "".join(str(vocab_schema[0]).lower().split())
+                    or exception_schema is None
                     or not compare_digest(
-                        self._fts5_vocabulary_digest(connection),
+                        self._fts5_candidate_digest(connection),
                         str(candidate_digest),
                     )
                 ):
@@ -433,8 +442,17 @@ class HistorySearchCorpus:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE documents_fts_exceptions (
+                    ordinal INTEGER PRIMARY KEY
+                        REFERENCES documents(ordinal)
+                )
+                """
+            )
             documents_digest = sha256()
             batch: list[tuple[int, str]] = []
+            exception_batch: list[tuple[int]] = []
             for item in self._bounded_documents(documents):
                 try:
                     encoded = item[1].encode("utf-8")
@@ -452,16 +470,39 @@ class HistorySearchCorpus:
                     encoded,
                 )
                 batch.append(item)
+                if "\0" in item[1]:
+                    # Some SQLite/FTS5 builds truncate text at NUL while the
+                    # ordinary TEXT column and Python input retain it. Those
+                    # documents must bypass the candidate accelerator and
+                    # receive the same exact ``instr`` recheck.
+                    exception_batch.append((item[0],))
                 if len(batch) >= self._INSERT_BATCH_SIZE:
                     connection.executemany(
                         "INSERT INTO documents(ordinal, safe_text) VALUES (?, ?)",
                         batch,
                     )
                     batch.clear()
+                if len(exception_batch) >= self._INSERT_BATCH_SIZE:
+                    connection.executemany(
+                        """
+                        INSERT INTO documents_fts_exceptions(ordinal)
+                        VALUES (?)
+                        """,
+                        exception_batch,
+                    )
+                    exception_batch.clear()
             if batch:
                 connection.executemany(
                     "INSERT INTO documents(ordinal, safe_text) VALUES (?, ?)",
                     batch,
+                )
+            if exception_batch:
+                connection.executemany(
+                    """
+                    INSERT INTO documents_fts_exceptions(ordinal)
+                    VALUES (?)
+                    """,
+                    exception_batch,
                 )
             # Persist the exact corpus first.  The FTS table is only a candidate
             # accelerator, so a SQLite build without FTS5/trigram support still
@@ -614,11 +655,12 @@ class HistorySearchCorpus:
             )
             """
         )
-        return self._fts5_vocabulary_digest(connection)
+        return self._fts5_candidate_digest(connection)
 
     @staticmethod
-    def _fts5_vocabulary_digest(connection: sqlite3.Connection) -> str:
+    def _fts5_candidate_digest(connection: sqlite3.Connection) -> str:
         digest = sha256()
+        digest.update(b"fts5-vocabulary\0")
         for term, document_count, total_count in connection.execute(
             """
             SELECT term, doc, cnt
@@ -637,6 +679,15 @@ class HistorySearchCorpus:
                     signed=False,
                 )
             )
+        digest.update(b"nul-exception-ordinals\0")
+        for (ordinal,) in connection.execute(
+            """
+            SELECT ordinal
+            FROM documents_fts_exceptions
+            ORDER BY ordinal
+            """
+        ):
+            digest.update(int(ordinal).to_bytes(8, "big", signed=False))
         return digest.hexdigest()
 
     def ensure(self, documents: Callable[[], Iterable[str]]) -> None:
@@ -730,14 +781,22 @@ class HistorySearchCorpus:
                     rows = connection.execute(
                         """
                         SELECT documents.ordinal
-                        FROM documents_fts
-                        JOIN documents
-                          ON documents.ordinal = documents_fts.rowid
-                        WHERE documents_fts MATCH ?
-                          AND instr(documents.safe_text, ?) > 0
+                        FROM documents
+                        WHERE instr(documents.safe_text, ?) > 0
+                          AND (
+                            documents.ordinal IN (
+                              SELECT rowid
+                              FROM documents_fts
+                              WHERE documents_fts MATCH ?
+                            )
+                            OR documents.ordinal IN (
+                              SELECT ordinal
+                              FROM documents_fts_exceptions
+                            )
+                          )
                         ORDER BY documents.ordinal
                         """,
-                        (candidate, needle),
+                        (needle, candidate),
                     )
                     return array("I", (int(row[0]) for row in rows))
                 except sqlite3.OperationalError:

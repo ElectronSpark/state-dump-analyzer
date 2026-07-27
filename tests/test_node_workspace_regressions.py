@@ -12,8 +12,8 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "demo"))
 
 from router_dump_analyzer.web import runtime_api
-from plugin.data import REVISION_ID
-from plugin.scale_data import ScaleRuntime
+from rsl_demo_plugin.data import REVISION_ID
+from rsl_demo_plugin.scale_data import ScaleRuntime
 from router_dump_analyzer.source_record_core import record_lanes_for_window
 from tests.support.generated_demo import (
     configure_generated_demo_for_tests,

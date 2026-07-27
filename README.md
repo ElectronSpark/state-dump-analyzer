@@ -108,7 +108,7 @@ For source-tree development, the same loader can address the module directly:
 
 ```powershell
 python -m router_dump_analyzer `
-  --plugin-module plugin `
+  --plugin-module rsl_demo_plugin `
   --input demo/fixtures/router-state-lab-demo.tgz `
   --no-browser
 ```
@@ -236,9 +236,9 @@ separate demo materializer to add deterministic scale data and plug-in
 projections, verify the source and materializer fingerprints, and launch it:
 
 ```powershell
-python -X utf8 -m generator `
+python -X utf8 -m rsl_demo_generator `
   --output .\demo\fixtures\router-state-lab-demo.tgz
-python -X utf8 -m generator `
+python -X utf8 -m rsl_demo_generator `
   --check-launchable .\demo\fixtures\router-state-lab-demo.tgz
 .\scripts\launch_demo.cmd -NoBrowser
 ```
@@ -332,12 +332,19 @@ a runtime dependency.
 With `router-dump-analyzer-demo` activated:
 
 ```powershell
+python -m ruff check --select E9,F63,F7,F82 src demo state-dump-generator/src tests demo/tests state-dump-generator/tests
+python -m mypy --python-version 3.12 --ignore-missing-imports --check-untyped-defs src/router_dump_analyzer/canonical.py src/router_dump_analyzer/route_trace_core.py src/router_dump_analyzer/topology_core.py
 python -m unittest discover -s tests -v
 python -m unittest discover -s demo/tests -v
+python -m unittest discover -s state-dump-generator/tests -v
 npm --prefix frontend run check
 ```
 
-The frontend check requires Node.js 18 or newer but installs no packages.
+The frontend check requires Node.js 18 or newer but installs no packages. CI
+runs the same gates on Windows and Linux with Python 3.12 and Node 22. An
+additional Linux job syntax-checks the shell launchers, builds all three
+distributions through their source archives, installs the wheels together,
+and verifies their entry points and packaged resources.
 
 ### Develop frontend and backend separately
 
@@ -380,9 +387,9 @@ the demo guide owns the current projection and evidence contract.
 | Path | Contents |
 |---|---|
 | [`src/router_dump_analyzer/`](src/router_dump_analyzer) | Protocol-neutral core contracts and engines, the only CLI/FastAPI application and routes, runtime lifecycle, plug-in loaders, and frontend host |
-| [`demo/plugin/`](demo/plugin) | The standalone example plug-in: parser and presentation policy, non-web fixture input/session providers, and topology/route fixture policy; no executable or web application |
+| [`demo/rsl_demo_plugin/`](demo/rsl_demo_plugin) | The standalone example plug-in: parser and presentation policy, non-web fixture input/session providers, and topology/route fixture policy; no executable or web application |
 | [`demo/router-state-lab-default.scenario.json`](demo/router-state-lab-default.scenario.json) | Canonical human-authored scenario save consumed by future demo generations |
-| [`demo/generator/`](demo/generator) | The separate standard-library scenario adapter and scalable mock-dump materializer, with an explicit one-way dependency on the example plug-in's declared fixture semantics |
+| [`demo/rsl_demo_generator/`](demo/rsl_demo_generator) | The separate standard-library scenario adapter and scalable mock-dump materializer, with an explicit one-way dependency on the example plug-in's declared fixture semantics |
 | [`frontend/`](frontend) | Core-owned HTML pages, JavaScript, CSS, page manifest, and dependency-free checks |
 | [`demo/fixtures/`](demo/fixtures) | Small plug-in conformance fixtures; the full mock dumps remain generator-owned |
 | [`samples/`](samples) | Public decoder inputs and fixture documentation |
@@ -399,6 +406,7 @@ the demo guide owns the current projection and evidence contract.
 | [Plug-in author quickstart](docs/plugin-author-quickstart.md) | A linear, copy-paste path to a first plug-in |
 | [Plug-in contract and lifecycle](docs/plugin-contract.md) | Normative hooks, identity, provenance, topology, routes, and conformance |
 | [Public sample-input catalog](docs/public-sample-catalog.md) | Open-source traces and other useful test inputs |
+| [Comprehensive audit — 2026-07-26](docs/comprehensive-audit-2026-07-26.md) | Security, correctness, ownership remediation, validation, and deferred structural work |
 | [Sample input guide](samples/README.md) | Synthetic fixture contents and generation |
 | [Frontend guide](frontend/README.md) | Browser/backend boundary and split-process development |
 

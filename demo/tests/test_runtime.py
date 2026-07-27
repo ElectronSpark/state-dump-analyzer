@@ -22,10 +22,10 @@ from router_dump_analyzer.runtime import (  # noqa: E402
 from router_dump_analyzer.normalized_data import (  # noqa: E402
     NormalizedDataService,
 )
-from plugin import data  # noqa: E402
-from plugin import session as runtime_module  # noqa: E402
-from plugin import plugin  # noqa: E402
-from plugin.session import (  # noqa: E402
+from rsl_demo_plugin import data  # noqa: E402
+from rsl_demo_plugin import session as runtime_module  # noqa: E402
+from rsl_demo_plugin import plugin  # noqa: E402
+from rsl_demo_plugin.session import (  # noqa: E402
     DemoDataPolicy,
     DemoDatasetSource,
 )

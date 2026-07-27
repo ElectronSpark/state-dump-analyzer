@@ -535,12 +535,25 @@ function stableColor(key) {
   return PALETTE[hash % PALETTE.length];
 }
 
+function safePresentationColor(value, identity = "unknown") {
+  return typeof value === "string" && /^#[0-9A-Fa-f]{6}$/.test(value)
+    ? value
+    : stableColor(identity);
+}
+
 function layerConfig(layer) {
-  const key = layer || "unknown";
+  const key = String(layer || "unknown");
   if (!state.layerMeta.has(key)) {
     state.layerMeta.set(key, { label: titleCase(key), color: stableColor(key) });
   }
-  return state.layerMeta.get(key);
+  const configured = state.layerMeta.get(key) || {};
+  return {
+    ...configured,
+    label: typeof configured.label === "string" && configured.label
+      ? configured.label
+      : titleCase(key),
+    color: safePresentationColor(configured.color, key),
+  };
 }
 
 function humanLayer(layer) {
@@ -683,10 +696,15 @@ function sourceRecordMatchedEventUids(record) {
 }
 
 function sourceTypeDescriptor(sourceType) {
-  return state.sourceRecordTypes.get(String(sourceType || "unknown")) || {
+  const key = String(sourceType || "unknown");
+  const descriptor = state.sourceRecordTypes.get(key) || {
     source_type: String(sourceType || "unknown"),
     label: titleCase(sourceType || "unknown"),
     color: stableColor(sourceType || "unknown"),
+  };
+  return {
+    ...descriptor,
+    color: safePresentationColor(descriptor.color, key),
   };
 }
 
@@ -9007,8 +9025,26 @@ function bindControls() {
 
 function discoverPresentation() {
   const descriptors = state.dataset.presentation?.layers || state.dataset.layers || [];
-  if (Array.isArray(descriptors)) descriptors.forEach((item) => state.layerMeta.set(item.id || item.layer, { label: item.label || titleCase(item.id || item.layer), color: item.color || stableColor(item.id || item.layer) }));
-  else Object.entries(descriptors).forEach(([key, item]) => state.layerMeta.set(key, { label: item.label || titleCase(key), color: item.color || stableColor(key) }));
+  if (Array.isArray(descriptors)) {
+    descriptors
+      .filter((item) => item && typeof item === "object")
+      .forEach((item) => {
+        const key = String(item.id || item.layer || "unknown");
+        state.layerMeta.set(key, {
+          label: typeof item.label === "string" && item.label ? item.label : titleCase(key),
+          color: safePresentationColor(item.color, key),
+        });
+      });
+  } else if (descriptors && typeof descriptors === "object") {
+    Object.entries(descriptors).forEach(([rawKey, rawItem]) => {
+      const key = String(rawKey || "unknown");
+      const item = rawItem && typeof rawItem === "object" ? rawItem : {};
+      state.layerMeta.set(key, {
+        label: typeof item.label === "string" && item.label ? item.label : titleCase(key),
+        color: safePresentationColor(item.color, key),
+      });
+    });
+  }
   const layers = new Set(state.layerMeta.keys());
   if (!isScaleMode()) {
     (state.dataset.resources || []).forEach((item) => layers.add(resourceLayer(item, resourceIdOf(item))));

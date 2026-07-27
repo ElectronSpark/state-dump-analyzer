@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import unittest
+from uuid import UUID
 
 from fastapi.testclient import TestClient
 
@@ -11,12 +13,13 @@ from tests.support.generated_demo import (
 )
 
 from router_dump_analyzer.multi_node_route import MultiNodeRouteService
-from plugin.topology_contract import DEMO_TOPOLOGY_ID
+from rsl_demo_plugin.topology_contract import DEMO_TOPOLOGY_ID
 from router_dump_analyzer.plugin_api import (
     ForwardingCandidateConstraint,
     ForwardingPolicyScope,
     ForwardingPolicyVerdict,
     ForwardingTraversalStateKey,
+    KeyAtom,
     ResourceKey,
     StatusPerspectiveRef,
 )
@@ -55,6 +58,95 @@ class RouteTraceCoreCompletenessTests(unittest.TestCase):
             candidate_scope=self.scope,
             traffic_classes=frozenset({"ethernet.bum"}),
         )
+
+    def test_packet_json_preserves_opaque_atom_and_container_types(self) -> None:
+        identifier = UUID("7ff7d7dc-88c7-44df-8578-72b049c22500")
+        value = (
+            identifier,
+            str(identifier),
+            KeyAtom("uuid", identifier.bytes),
+            identifier.bytes,
+        )
+
+        encoded = MultiNodeRouteService._packet_value_json(value)
+
+        self.assertEqual(encoded["type"], "tuple")
+        self.assertEqual(encoded["items"][0]["type"], "uuid")
+        self.assertEqual(encoded["items"][1], str(identifier))
+        self.assertEqual(encoded["items"][2]["type"], "key_atom")
+        self.assertEqual(encoded["items"][2]["type_tag"], "uuid")
+        self.assertEqual(
+            encoded["items"][2]["value"]["type"],
+            "bytes",
+        )
+        self.assertEqual(encoded["items"][3]["type"], "bytes")
+
+    def test_policy_scope_requires_ordered_wire_arguments(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "ordered scope arguments",
+        ):
+            MultiNodeRouteService._declared_policy_scope(
+                {
+                    "contract_id": "example.scope.v1",
+                    "arguments": {"first": 1, "second": 2},
+                },
+                label="test scope",
+            )
+
+        scope = MultiNodeRouteService._declared_policy_scope(
+            {
+                "contract_id": "example.scope.v1",
+                "arguments": [
+                    {"name": "second", "value": 2},
+                    {"name": "first", "value": 1},
+                ],
+            },
+            label="test scope",
+        )
+        self.assertEqual(
+            scope.arguments,
+            (("second", 2), ("first", 1)),
+        )
+
+    def test_route_table_row_without_vrf_is_not_assigned_default(self) -> None:
+        service = object.__new__(MultiNodeRouteService)
+        self.assertIsNone(
+            service._generated_route_table_entry(
+                {
+                    "table_visible": True,
+                    "node_id": "node-a",
+                    "route_type": "ip",
+                    "route_family": "ipv4_unicast",
+                }
+            )
+        )
+
+    def test_candidate_limit_is_enforced_before_materialization(self) -> None:
+        service = object.__new__(MultiNodeRouteService)
+        projection = {
+            "candidate_paths": [
+                {
+                    "candidate_id": f"candidate:{index}",
+                    "path_id": f"path:{index}",
+                    "node_sequence": ["node-a"],
+                    "selected_active": False,
+                    "primary": False,
+                    "alternative_state": "inactive_candidate",
+                }
+                for index in range(
+                    MultiNodeRouteService.MAX_CANDIDATE_PATHS + 1
+                )
+            ]
+        }
+        with self.assertRaisesRegex(ValueError, "candidate limit"):
+            service._generic_paths_from_generated_candidates(
+                projection,
+                "ip",
+                {},
+                {},
+                {},
+            )
 
     def test_incomplete_ingress_scope_set_is_unknown_unless_exact_match_exists(
         self,
@@ -863,6 +955,78 @@ class MultiNodeRouteTests(unittest.TestCase):
             limited_path["segments"][-1]["state"]["operational"],
             "budget_exhausted",
         )
+
+    def test_core_cycle_detection_is_terminal_without_plugin_loop_disposition(
+        self,
+    ) -> None:
+        response = self.client.post(
+            "/v1/topologies/routes/trace",
+            json={"scenario_id": "recursive-resolution-cycle"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        path = copy.deepcopy(payload["paths"][0])
+        candidate = next(
+            item
+            for item in payload["generated_projection"]["candidate_paths"]
+            if item["candidate_id"] == path["generated_candidate_id"]
+        )
+        for segment in path["segments"]:
+            state = segment["state"]
+            state.pop("terminal", None)
+            state.pop("terminal_disposition", None)
+            state["operational"] = "usable"
+            segment["active"] = True
+            segment["completeness"] = {
+                "state": "complete",
+                "end_to_end_resolved": True,
+                "observed": True,
+            }
+        path["active"] = True
+
+        MultiNodeRouteService._project_candidate_traversal(
+            path,
+            candidate,
+            max_hops=64,
+            max_recursion=16,
+        )
+        MultiNodeRouteService._refresh_path(path)
+
+        self.assertEqual(path["result"], "cycle")
+        self.assertFalse(path["completeness"]["end_to_end_resolved"])
+        self.assertFalse(path["active"])
+        self.assertEqual(
+            path["segments"][-1]["state"]["terminal_disposition"],
+            "cycle",
+        )
+        self.assertEqual(
+            path["terminal_reason"],
+            "recursive_resolution_cycle",
+        )
+
+    def test_plugin_traversal_counters_cannot_bypass_core_budgets(self) -> None:
+        response = self.client.post(
+            "/v1/topologies/routes/trace",
+            json={"scenario_id": "recursive-resolution-cycle"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        path = copy.deepcopy(payload["paths"][0])
+        candidate = copy.deepcopy(
+            payload["generated_projection"]["candidate_paths"][0]
+        )
+        candidate["traversal_states"][1]["hop_index"] = 0
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "core-derived hop or recursion",
+        ):
+            MultiNodeRouteService._project_candidate_traversal(
+                path,
+                candidate,
+                max_hops=64,
+                max_recursion=16,
+            )
 
     def test_cross_node_loop_retains_repeated_occurrence_and_closing_link(
         self,
@@ -2274,6 +2438,14 @@ class MultiNodeRouteTests(unittest.TestCase):
         self.assertEqual(dead["result"], "unusable")
         self.assertEqual(dead["eligibility"], "ineligible_dead")
         self.assertEqual(dead["terminal_reason"], "evpn_es_withdrawn")
+        attachments = {
+            item["node_id"]: item
+            for item in payload["flow"]["destination"]["attachments"]
+        }
+        self.assertEqual(attachments["node-b"]["state"], "withdrawn")
+        self.assertFalse(attachments["node-b"]["can_terminate"])
+        self.assertEqual(attachments["node-e"]["state"], "available")
+        self.assertTrue(attachments["node-e"]["can_terminate"])
         self.assertTrue(selected["active"])
         focused = self.client.post(
             "/v1/topologies/routes/trace",

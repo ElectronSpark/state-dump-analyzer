@@ -25,7 +25,7 @@ from router_dump_analyzer.plugin_api import (  # noqa: E402
     SourceRecordEmission,
 )
 from router_dump_analyzer.plugin_validation import validate_plugin  # noqa: E402
-from plugin import (  # noqa: E402
+from rsl_demo_plugin import (  # noqa: E402
     DEVICE_CLOCK,
     PARSER_ID,
     PLATFORM_ID,

@@ -30,7 +30,7 @@ class DistributionOwnershipTests(unittest.TestCase):
             demo["project"]["entry-points"],
             {
                 "router_dump_analyzer.plugins": {
-                    "demo_router": "plugin:plugin"
+                    "demo_router": "rsl_demo_plugin:plugin"
                 }
             },
         )
@@ -38,8 +38,8 @@ class DistributionOwnershipTests(unittest.TestCase):
     def test_demo_distribution_contains_no_web_application_module(self) -> None:
         source_root = ROOT / "demo"
         packages = (
-            source_root / "plugin",
-            source_root / "generator",
+            source_root / "rsl_demo_plugin",
+            source_root / "rsl_demo_generator",
         )
         self.assertFalse((source_root / "src").exists())
         self.assertTrue(all(package.is_dir() for package in packages))
@@ -62,7 +62,7 @@ class DistributionOwnershipTests(unittest.TestCase):
         ]
         self.assertEqual(
             force_include["fixtures/minimal-status.jsonl"],
-            "plugin/fixtures/minimal-status.jsonl",
+            "rsl_demo_plugin/fixtures/minimal-status.jsonl",
         )
         self.assertTrue(
             (ROOT / "demo" / "fixtures" / "minimal-status.jsonl").is_file()

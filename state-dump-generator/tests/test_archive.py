@@ -5,6 +5,7 @@ import gzip
 import io
 import json
 import tarfile
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -16,6 +17,7 @@ from state_dump_generator.archive import (
     compile_and_build,
     deterministic_tgz_bytes,
     validate_member_name,
+    write_assembly,
 )
 from state_dump_generator.simulation import reconstruct_scenario
 
@@ -131,6 +133,29 @@ class ArchiveTests(unittest.TestCase):
             ["a-1", "a-2"],
         )
 
+    def test_history_preserves_source_order_within_one_timestamp(self) -> None:
+        plan = _plans()["node-a"]
+        assert isinstance(plan, dict)
+        plan["logs"] = [
+            {
+                "event_id": "lexically-first",
+                "timestamp_ns": 120,
+                "source_sequence": 20,
+            },
+            {
+                "event_id": "lexically-last",
+                "timestamp_ns": 120,
+                "source_sequence": 10,
+            },
+        ]
+        content = build_node_dump_bytes(plan)
+        history = _members(content)["logs/history.jsonl"].decode("utf-8")
+        events = [json.loads(line) for line in history.splitlines()]
+        self.assertEqual(
+            [event["event_id"] for event in events],
+            ["lexically-last", "lexically-first"],
+        )
+
     def test_authoring_truth_is_rejected_recursively(self) -> None:
         plan = _plans()["node-a"]
         assert isinstance(plan, dict)
@@ -150,6 +175,53 @@ class ArchiveTests(unittest.TestCase):
                     validate_member_name(unsafe)
         with self.assertRaises(ArchiveProjectionError):
             deterministic_tgz_bytes({"../escape": b"bad"})
+
+    def test_output_symlinks_are_rejected_before_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            real = root / "real.tgz"
+            real.write_bytes(b"existing")
+            linked = root / "linked.tgz"
+            try:
+                linked.symlink_to(real)
+            except OSError as error:
+                self.skipTest(f"symbolic links are unavailable: {error}")
+            with self.assertRaisesRegex(ArchiveProjectionError, "link"):
+                write_assembly(
+                    {
+                        "schema_version": 1,
+                        "scenario_id": "symlink-output",
+                        "name": "Symlink output",
+                        "capture_time_ns": 1,
+                        "nodes": [{"node_id": "r1", "kind": "router"}],
+                        "media": [],
+                        "events": [],
+                    },
+                    linked,
+                )
+            self.assertEqual(real.read_bytes(), b"existing")
+
+    def test_broken_output_symlink_is_rejected_before_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            linked = root / "broken-output.tgz"
+            try:
+                linked.symlink_to(root / "missing-target.tgz")
+            except OSError as error:
+                self.skipTest(f"symbolic links are unavailable: {error}")
+            with self.assertRaisesRegex(ArchiveProjectionError, "link"):
+                write_assembly(
+                    {
+                        "schema_version": 1,
+                        "scenario_id": "broken-symlink-output",
+                        "name": "Broken symlink output",
+                        "capture_time_ns": 1,
+                        "nodes": [{"node_id": "r1", "kind": "router"}],
+                        "media": [],
+                        "events": [],
+                    },
+                    linked,
+                )
 
     def test_project_has_no_runtime_dependencies_or_analyzer_imports(self) -> None:
         project = tomllib.loads(
@@ -268,6 +340,34 @@ class ArchiveTests(unittest.TestCase):
         )
         self.assertNotIn(private_medium_id.encode("utf-8"), nested_bytes)
         self.assertIn(b"interface:xe0", nested_bytes)
+
+    def test_private_medium_id_cannot_hide_in_attachment_property_values(self) -> None:
+        private_medium_id = "private-property-wire"
+        scenario = {
+            "schema_version": 1,
+            "scenario_id": "private-property-regression",
+            "name": "Private property regression",
+            "capture_time_ns": 1,
+            "nodes": [{"node_id": "r1", "kind": "router"}],
+            "media": [
+                {
+                    "medium_id": private_medium_id,
+                    "state": "up",
+                    "attachments": [
+                        {
+                            "node_id": "r1",
+                            "port_id": "xe0",
+                            "properties": {
+                                "apparently_safe_key": private_medium_id,
+                            },
+                        }
+                    ],
+                }
+            ],
+            "events": [],
+        }
+        with self.assertRaisesRegex(ValueError, "private physical medium"):
+            compile_and_build(scenario)
 
     def test_reconstruction_private_truth_is_never_projected_into_archive(self) -> None:
         private_medium_id = "private-reconstruction-wire"

@@ -10,12 +10,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from plugin.assembly_store import (
+from rsl_demo_plugin.assembly_store import (
     DemoAssemblyError,
     DemoAssemblyStore,
 )
-from plugin import GENERATED_PROJECTION_POLICY
-from plugin import (
+from rsl_demo_plugin import GENERATED_PROJECTION_POLICY
+from rsl_demo_plugin import (
     GENERATED_ASSEMBLY_FORMAT_VERSION,
     GENERATED_COVERAGE_FORMAT_VERSION,
 )
@@ -266,7 +266,7 @@ class DemoAssemblyStoreTests(unittest.TestCase):
             node_archive = Path(directory) / "node-a.tgz"
             node_archive.write_bytes(_node_archive_bytes("node-a"))
             with patch(
-                "plugin.assembly_store.tarfile.open",
+                "rsl_demo_plugin.assembly_store.tarfile.open",
                 wraps=tarfile.open,
             ) as opened:
                 projection = DemoAssemblyStore._read_plugin_projection(

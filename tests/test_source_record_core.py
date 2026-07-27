@@ -16,7 +16,7 @@ from router_dump_analyzer.source_record_core import (
     record_lanes_for_window,
     source_record_event_uids,
 )
-from plugin.source_records import (
+from rsl_demo_plugin.source_records import (
     SOURCE_RECORD_DESCRIPTORS,
     SOURCE_RECORD_GROUP_DESCRIPTORS,
 )
@@ -270,9 +270,52 @@ class SourceRecordCoreTests(unittest.TestCase):
         )
 
     def test_regex_validation_rejects_unbounded_features(self) -> None:
-        for pattern in ("(?=ESI)", r"(a+)++", r"(a+) +", r"(a+)\\1"):
+        for pattern in (
+            "(?=ESI)",
+            r"(a+)++",
+            r"(a+) +",
+            r"(a+)\\1",
+            r"(a|aa)+b",
+            r"(a|a)+z",
+            r"(\w|\w)+z",
+            r"a*a*b",
+            r"a{1,3}",
+        ):
             with self.subTest(pattern=pattern), self.assertRaises(ValueError):
                 compile_record_pattern(pattern)
+
+    def test_regex_validation_accepts_linear_record_search_forms(self) -> None:
+        cases = {
+            "ESI|ethernet segment": ("ethernet segment withdrawn", True),
+            r"^neighbor.*down$": ("neighbor xe-0/0/0 down", True),
+            r"[A-Z]+": ("prefix ESI suffix", True),
+            r"peer\+adjacency": ("peer+adjacency", True),
+            r"\d+": ("metric 42", True),
+            r"failure|failed|down": ("status failed", True),
+            r"^up$": ("backup", False),
+        }
+        for pattern, (text, expected) in cases.items():
+            with self.subTest(pattern=pattern):
+                compiled = compile_record_pattern(pattern)
+                self.assertEqual(compiled.search(text) is not None, expected)
+
+    def test_source_query_and_timeline_lane_share_safe_regex_contract(self) -> None:
+        unsafe = r"(a|aa)+b"
+        with self.assertRaisesRegex(ValueError, "do not support groups"):
+            query_source_records(RECORDS, {"pattern": unsafe})
+        with self.assertRaisesRegex(ValueError, "do not support groups"):
+            record_lanes_for_window(
+                RECORDS,
+                [
+                    {
+                        "lane_id": "unsafe",
+                        "label": "Unsafe",
+                        "pattern": unsafe,
+                    }
+                ],
+                start_ns=0,
+                end_ns=300,
+            )
 
     def test_lane_rules_reject_coerced_request_shapes(self) -> None:
         base = {

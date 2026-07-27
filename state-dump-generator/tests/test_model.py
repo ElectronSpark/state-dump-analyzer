@@ -60,6 +60,10 @@ class ScenarioModelTests(unittest.TestCase):
         value["media"][0]["attachments"][0]["local_resource_id"] = (  # type: ignore[index]
             "port-resource:r1-xe0"
         )
+        value["media"][0]["attachments"][0]["properties"] = {  # type: ignore[index]
+            "subnet_prefix": "192.0.2.0/31",
+            "vlan_id": 310,
+        }
         value["links"] = value.pop("media")
         value["timeline"] = value.pop("events")
         document = scenario_from_dict(value)
@@ -67,6 +71,49 @@ class ScenarioModelTests(unittest.TestCase):
         self.assertEqual(
             document.media[0]["attachments"][0]["resource_id"],
             "port-resource:r1-xe0",
+        )
+        self.assertEqual(
+            document.media[0]["attachments"][0][
+                "node_local_observation"
+            ],
+            {
+                "resource_id": "port-resource:r1-xe0",
+                "resource_type": "interface",
+                "properties": {
+                    "subnet_prefix": "192.0.2.0/31",
+                    "vlan_id": 310,
+                },
+            },
+        )
+        self.assertTrue(validate_scenario(document)["ok"])
+
+    def test_explicit_attachment_export_keeps_authoring_metadata_private(self) -> None:
+        value = scenario()
+        attachment = value["media"][0]["attachments"][0]  # type: ignore[index]
+        attachment["properties"] = {
+            "canvas_note": "only the scenario editor needs this",
+            "apparently_safe_key": "wire-1",
+        }
+        attachment["node_local_observation"] = {
+            "resource_id": "interface:r1-core",
+            "resource_type": "virtual-interface",
+            "observed_state": "up",
+            "properties": {
+                "interface_name": "xe-0/0/0.310",
+                "subnet_prefix": "192.0.2.0/31",
+                "vlan_id": 310,
+            },
+        }
+
+        document = scenario_from_dict(value)
+        normalized = document.media[0]["attachments"][0]
+        self.assertEqual(
+            normalized["properties"]["apparently_safe_key"],
+            "wire-1",
+        )
+        self.assertEqual(
+            normalized["node_local_observation"]["properties"]["vlan_id"],
+            310,
         )
         self.assertTrue(validate_scenario(document)["ok"])
 

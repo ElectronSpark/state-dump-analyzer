@@ -8,9 +8,9 @@ from bisect import bisect_left, bisect_right
 from collections import Counter
 from contextlib import AbstractContextManager
 from contextvars import copy_context
-from typing import Any
+from typing import Any, AsyncIterator
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 
 from router_dump_analyzer.source_record_core import (
@@ -223,7 +223,31 @@ def _body_boolean(body: dict[str, Any], field: str, default: bool = False) -> bo
     return raw
 
 
-api_router = APIRouter()
+async def _bind_request_revision_scope(
+    request: Request,
+) -> AsyncIterator[None]:
+    """Bind the exact revision parsed by Starlette for this API operation.
+
+    Revision identifiers intentionally may contain ``/``.  Request middleware
+    runs before routing and therefore cannot safely distinguish an identifier
+    such as ``a/inventory`` from revision ``a`` followed by the ``inventory``
+    operation.  A router dependency runs after path matching, so the
+    ``revision_id`` below is the same value injected into the endpoint.
+    """
+
+    parsed_revision_id = request.path_params.get("revision_id")
+    if parsed_revision_id is None:
+        yield
+        return
+    revision_id = str(parsed_revision_id)
+    _require_revision(revision_id)
+    with revision_scope(revision_id):
+        yield
+
+
+api_router = APIRouter(
+    dependencies=[Depends(_bind_request_revision_scope)],
+)
 
 
 def _require_revision_store():
@@ -3898,34 +3922,6 @@ def inventory(revision_id: str) -> dict[str, Any]:
     return load_dataset()["inventory"]
 
 
-def request_revision_scope(path: str) -> AbstractContextManager[Any] | None:
-    """Return a scope for the revision embedded in one core API path."""
-
-    store = revision_store()
-    prefix = "/v1/revisions/"
-    if store is None or not path.startswith(prefix):
-        return None
-    tail = path[len(prefix) :]
-    revision_id = next(
-        (
-            candidate
-            for candidate in sorted(
-                (
-                    descriptor.revision_id
-                    for descriptor in store.assembly.revisions
-                ),
-                key=len,
-                reverse=True,
-            )
-            if tail == candidate or tail.startswith(f"{candidate}/")
-        ),
-        None,
-    )
-    if revision_id is None:
-        return None
-    return revision_scope(revision_id)
-
-
 def reset_runtime_api_caches() -> None:
     """Clear projections only for the active application session."""
 
@@ -3955,7 +3951,6 @@ def start_runtime_warmup() -> threading.Thread | None:
 
 __all__ = [
     "api_router",
-    "request_revision_scope",
     "reset_runtime_api_caches",
     "start_runtime_warmup",
 ]

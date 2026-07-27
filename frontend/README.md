@@ -31,4 +31,6 @@ in the manifest to `http://127.0.0.1:8765`, avoiding browser CORS differences
 between integrated and split-process operation.
 
 Use `npm --prefix frontend run check` to validate the manifest, local asset
-references, and JavaScript syntax without installing packages.
+references, JavaScript syntax, single-source frontend boundary, and the
+framework-free helper tests under `frontend/tests/`, without installing
+packages.

@@ -21,7 +21,10 @@ from router_dump_analyzer.web.frontend_host import (
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_ROOT = ROOT / "frontend"
 DEMO_ROOT = ROOT / "demo"
-DEMO_PYTHON_ROOTS = (DEMO_ROOT / "plugin", DEMO_ROOT / "generator")
+DEMO_PYTHON_ROOTS = (
+    DEMO_ROOT / "rsl_demo_plugin",
+    DEMO_ROOT / "rsl_demo_generator",
+)
 MODULE_REFERENCE = re.compile(
     r'(?:^|\n)\s*(?:import|export)\s+'
     r'(?:[^"\';`]*?\s+from\s+)?["\']([^"\']+)["\']',

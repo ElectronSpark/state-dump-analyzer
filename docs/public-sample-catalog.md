@@ -5,7 +5,7 @@ the primary product smoke input. One generator produces its outer multi-node
 assembly and the node packs used by both fabric and single-node views:
 
 ```powershell
-python -m generator --output demo/fixtures/router-state-lab-demo.tgz
+python -m rsl_demo_generator --output demo/fixtures/router-state-lab-demo.tgz
 ```
 
 The sources below broaden individual decoder, parser, and archive-safety tests

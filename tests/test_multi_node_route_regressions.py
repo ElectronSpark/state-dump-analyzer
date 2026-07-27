@@ -12,15 +12,15 @@ from tests.support.generated_demo import (
     query_all_route_table_rows,
 )
 
-import generator as generated_fixture
-from generator import COVERAGE_CASES, DEMO_NODES
+import rsl_demo_generator as generated_fixture
+from rsl_demo_generator import COVERAGE_CASES, DEMO_NODES
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOTS = (
     ROOT / "src",
-    ROOT / "demo" / "plugin",
-    ROOT / "demo" / "generator",
+    ROOT / "demo" / "rsl_demo_plugin",
+    ROOT / "demo" / "rsl_demo_generator",
 )
 GENERATOR_ROOT = Path(generated_fixture.__file__).resolve().parent
 

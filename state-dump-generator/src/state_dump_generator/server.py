@@ -20,6 +20,12 @@ from .archive import (
     ArchiveProjectionError,
     compile_and_build,
 )
+from .path_safety import (
+    lexical_absolute,
+    path_has_link_component,
+    resolve_regular_directory,
+    resolve_regular_file,
+)
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -102,9 +108,10 @@ def _document_from_mapping(payload: Mapping[str, Any]) -> Any:
 def load_document(path: Path | str) -> Any:
     """Load one saved authoring project."""
 
-    source = Path(path).expanduser().resolve()
-    if source.is_symlink() or not source.is_file():
-        raise ScenarioRequestError("scenario project must be a regular file")
+    try:
+        source = resolve_regular_file(path, label="scenario project")
+    except ValueError as error:
+        raise ScenarioRequestError(str(error)) from error
     from . import model
 
     loader = getattr(model, "load_scenario", None)
@@ -358,7 +365,10 @@ class ScenarioEditorServer(ThreadingHTTPServer):
             address_version = 4
         if address_version == 6:
             self.address_family = socket.AF_INET6
-        self.web_root = web_root.resolve()
+        self.web_root = resolve_regular_directory(
+            web_root,
+            label="web asset root",
+        )
         super().__init__(server_address, ScenarioEditorHandler)
 
 
@@ -367,6 +377,13 @@ class ScenarioEditorHandler(BaseHTTPRequestHandler):
 
     server: ScenarioEditorServer
     protocol_version = "HTTP/1.1"
+
+    def setup(self) -> None:
+        super().setup()
+        # A local editor still accepts input from a browser-facing socket.
+        # Bound every request-body read so a partial client cannot retain a
+        # worker indefinitely.
+        self.connection.settimeout(10.0)
 
     def log_message(self, format: str, *args: Any) -> None:
         # Keep the CLI useful without emitting a line for every static asset.
@@ -436,6 +453,9 @@ class ScenarioEditorHandler(BaseHTTPRequestHandler):
         host = self.headers.get("Host", "")
         if host and _host_header_is_local(host):
             return True
+        # The request body has not been consumed. HTTP/1.1 reuse would parse
+        # those bytes as the next request, so reject-and-close atomically.
+        self.close_connection = True
         self._send_json(
             HTTPStatus.FORBIDDEN,
             {"ok": False, "error": "local Host header required"},
@@ -445,19 +465,28 @@ class ScenarioEditorHandler(BaseHTTPRequestHandler):
     def _read_json(self) -> Any:
         content_type = self.headers.get("Content-Type", "")
         if content_type.split(";", 1)[0].strip().lower() != "application/json":
+            self.close_connection = True
             raise ScenarioRequestError("Content-Type must be application/json")
         raw_length = self.headers.get("Content-Length")
         if raw_length is None:
+            self.close_connection = True
             raise ScenarioRequestError("Content-Length is required")
         try:
             length = int(raw_length)
         except ValueError as error:
+            self.close_connection = True
             raise ScenarioRequestError("invalid Content-Length") from error
         if length < 0 or length > MAX_REQUEST_BYTES:
+            self.close_connection = True
             raise ScenarioRequestError(
                 f"request exceeds the {MAX_REQUEST_BYTES}-byte limit"
             )
         content = self.rfile.read(length)
+        if len(content) != length:
+            self.close_connection = True
+            raise ScenarioRequestError(
+                f"incomplete request body: expected {length} bytes, received {len(content)}"
+            )
         try:
             return json.loads(content)
         except (UnicodeError, json.JSONDecodeError) as error:
@@ -474,12 +503,17 @@ class ScenarioEditorHandler(BaseHTTPRequestHandler):
             or any(part in {"", ".", ".."} for part in path.parts)
         ):
             return None
-        candidate = self.server.web_root.joinpath(*path.parts).resolve()
+        lexical_candidate = lexical_absolute(
+            self.server.web_root.joinpath(*path.parts)
+        )
+        if path_has_link_component(lexical_candidate):
+            return None
+        candidate = lexical_candidate.resolve()
         try:
             candidate.relative_to(self.server.web_root)
         except ValueError:
             return None
-        if candidate.is_symlink() or not candidate.is_file():
+        if not candidate.is_file():
             return None
         return candidate
 
@@ -552,6 +586,9 @@ class ScenarioEditorHandler(BaseHTTPRequestHandler):
                 "/api/scenario/preview",
                 "/api/scenario/generate",
             }:
+                # No body was consumed, so this connection cannot safely be
+                # reused even when a client pipelined another request.
+                self.close_connection = True
                 self._send_json(
                     HTTPStatus.NOT_FOUND,
                     {"ok": False, "error": "not found"},
@@ -606,6 +643,10 @@ class ScenarioEditorHandler(BaseHTTPRequestHandler):
             TypeError,
             ValueError,
         ) as error:
+            # Some failures happen before the declared body is consumed. A
+            # conservative close prevents request-smuggling/desynchronization
+            # while keeping successful HTTP/1.1 requests reusable.
+            self.close_connection = True
             self._send_json(
                 HTTPStatus.BAD_REQUEST,
                 {"ok": False, "error": str(error)},

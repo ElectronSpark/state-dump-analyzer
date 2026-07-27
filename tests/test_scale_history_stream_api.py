@@ -10,10 +10,10 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from router_dump_analyzer.web import runtime_api as demo_app
-from plugin import data as demo_data
-from plugin.data import REVISION_ID
+from rsl_demo_plugin import data as demo_data
+from rsl_demo_plugin.data import REVISION_ID
 from router_dump_analyzer.history_search_core import HistorySearchCorpus
-from plugin.scale_data import ScaleRuntime
+from rsl_demo_plugin.scale_data import ScaleRuntime
 from tests.support.generated_demo import generated_demo_application
 from tests.support.normalized_data import static_data_service
 

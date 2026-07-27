@@ -24,12 +24,29 @@ class CoreWebAppTests(unittest.TestCase):
 
         application = create_web_app(api_router=router, host=host)
         client = TestClient(application)
-        self.assertEqual(client.get("/v1/runtime").json(), {"owner": "injected"})
-        self.assertEqual(client.get("/").status_code, 200)
+        api_response = client.get("/v1/runtime")
+        page_response = client.get("/")
+        self.assertEqual(api_response.json(), {"owner": "injected"})
+        self.assertEqual(page_response.status_code, 200)
         self.assertEqual(
             client.get("/assets/styles.css").headers["cache-control"],
             "no-store, no-cache, must-revalidate, max-age=0",
         )
+        for response in (api_response, page_response):
+            self.assertEqual(
+                response.headers["x-content-type-options"],
+                "nosniff",
+            )
+            self.assertEqual(response.headers["x-frame-options"], "DENY")
+            self.assertEqual(
+                response.headers["referrer-policy"],
+                "no-referrer",
+            )
+        policy = page_response.headers["content-security-policy"]
+        self.assertIn("script-src 'self'", policy)
+        self.assertNotIn("script-src 'self' 'unsafe-inline'", policy)
+        self.assertIn("object-src 'none'", policy)
+        self.assertIn("frame-ancestors 'none'", policy)
 
 
 if __name__ == "__main__":

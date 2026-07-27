@@ -13,14 +13,18 @@ not safe JavaScript numbers.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
-import uuid
 from itertools import combinations
 from typing import Any
 from urllib.parse import quote, urlencode
 
+from router_dump_analyzer.canonical import (
+    CanonicalValueError,
+    canonical_opaque_value,
+    opaque_value_json,
+)
+from router_dump_analyzer.plugin_api import KeyAtom
 from router_dump_analyzer.value_core import parse_decimal_integer
 
 
@@ -36,58 +40,17 @@ def _normalize_opaque_key(value: Any) -> dict[str, Any]:
     and binary bytes never alias a string that happens to look like ``repr``.
     """
 
-    if value is None:
-        return {"type": "null", "value": None}
-    if isinstance(value, bool):
-        return {"type": "boolean", "value": value}
-    if isinstance(value, int):
-        return {"type": "integer", "value": str(value)}
-    if isinstance(value, float):
-        return {"type": "number", "encoding": "python-float-hex", "value": value.hex()}
-    if isinstance(value, uuid.UUID):
-        return {"type": "uuid", "encoding": "rfc4122", "value": str(value)}
-    if isinstance(value, str):
-        return {"type": "string", "value": value}
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        payload = bytes(value)
-        return {
-            "type": "bytes",
-            "encoding": "base64",
-            "length": len(payload),
-            "value": base64.b64encode(payload).decode("ascii"),
-        }
-    if isinstance(value, tuple):
-        return {
-            "type": "tuple",
-            "items": [_normalize_opaque_key(item) for item in value],
-        }
-    if isinstance(value, list):
-        return {
-            "type": "list",
-            "items": [_normalize_opaque_key(item) for item in value],
-        }
-    if isinstance(value, dict):
-        entries = [
-            {
-                "key": _normalize_opaque_key(key),
-                "value": _normalize_opaque_key(item),
-            }
-            for key, item in value.items()
-        ]
-        entries.sort(
-            key=lambda entry: json.dumps(
-                entry["key"], sort_keys=True, separators=(",", ":")
-            )
-        )
-        return {"type": "mapping", "entries": entries}
-    raise MultiNodeTopologyRequestError(
-        f"opaque matcher key contains unsupported type {type(value).__name__}"
-    )
+    try:
+        return opaque_value_json(value, key_atom_type=KeyAtom)
+    except CanonicalValueError as error:
+        raise MultiNodeTopologyRequestError(str(error)) from error
 
 
 def _canonical_opaque_key(value: Any) -> tuple[dict[str, Any], str]:
-    normalized = _normalize_opaque_key(value)
-    return normalized, json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    try:
+        return canonical_opaque_value(value, key_atom_type=KeyAtom)
+    except CanonicalValueError as error:
+        raise MultiNodeTopologyRequestError(str(error)) from error
 
 
 def _integer_ns(value: Any, field: str) -> int:
@@ -178,7 +141,12 @@ def _status_at(
     status = str(resource.get("initial_status", "unknown"))
     state = dict(resource.get("initial_state") or {})
     for change in sorted(
-        resource.get("changes", []), key=lambda item: int(item["time_ns"])
+        resource.get("changes", []),
+        key=lambda item: (
+            int(item["time_ns"]),
+            int(item.get("source_sequence", 0)),
+            str(item.get("event_uid") or item.get("change_id") or ""),
+        ),
     ):
         if timestamp_ns < int(change["time_ns"]):
             break
@@ -197,6 +165,103 @@ def _status_at(
         state.update(change.get("state") or {})
     exists = valid_at_timestamp and lifecycle_exists
     return exists, status if exists else "absent", state
+
+
+def _status_window_at(
+    resource: dict[str, Any],
+    *,
+    center_ns: int,
+    minimum_ns: int,
+    maximum_ns: int,
+) -> dict[str, Any]:
+    """Evaluate every state boundary inside one mapped clock interval.
+
+    A bounded clock mapping represents a set of possible absolute instants,
+    not merely its center. Sampling both sides of each resource transition
+    preserves the same uncertainty semantics as the single-node temporal
+    query service.
+    """
+
+    sample_times = {minimum_ns, center_ns, maximum_ns}
+    for change in resource.get("changes", []):
+        change_time = int(change["time_ns"])
+        if minimum_ns <= change_time <= maximum_ns:
+            sample_times.add(change_time)
+            if change_time > minimum_ns:
+                sample_times.add(change_time - 1)
+    for boundary_name in ("valid_from_ns", "valid_to_ns"):
+        boundary = resource.get(boundary_name)
+        if boundary is None:
+            continue
+        boundary_time = int(boundary)
+        if minimum_ns <= boundary_time <= maximum_ns:
+            sample_times.add(boundary_time)
+            if boundary_time > minimum_ns:
+                sample_times.add(boundary_time - 1)
+
+    samples = [
+        (sampled_at, _status_at(resource, sampled_at))
+        for sampled_at in sorted(sample_times)
+    ]
+    unique: dict[str, tuple[int, tuple[bool, str, dict[str, Any]]]] = {}
+    for sampled_at, view in samples:
+        signature = json.dumps(
+            {
+                "exists": view[0],
+                "status": view[1],
+                "state": view[2],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        unique[signature] = (sampled_at, view)
+
+    center = _status_at(resource, center_ns)
+    if len(unique) == 1:
+        return {
+            "exists": center[0],
+            "status": center[1],
+            "state": center[2],
+            "quality": (
+                "exact"
+                if minimum_ns == maximum_ns
+                else "best_effort"
+            ),
+            "temporal_resolution": (
+                "exact"
+                if minimum_ns == maximum_ns
+                else "stable_within_clock_window"
+            ),
+            "possible_states": [],
+            "unknown_fields": [],
+        }
+    return {
+        "exists": None,
+        "status": "ambiguous",
+        "state": None,
+        "quality": "ambiguous",
+        "temporal_resolution": "ambiguous",
+        "possible_states": [
+            {
+                "sampled_at_ns": str(sampled_at),
+                "exists": view[0],
+                "status": view[1],
+                "state": view[2],
+            }
+            for sampled_at, view in sorted(unique.values())
+        ],
+        "unknown_fields": [
+            {
+                "name": "*",
+                "reason_code": "clock_window_crosses_state_transition",
+                "message": (
+                    "More than one state is possible inside the mapped "
+                    "clock interval."
+                ),
+            }
+        ],
+    }
 
 
 class MultiNodeTopologyService:
@@ -1273,6 +1338,8 @@ class MultiNodeTopologyService:
         context_id: str,
     ) -> dict[str, Any]:
         timestamp_ns = int(resolved_time["query_time_ns"])
+        minimum_ns = int(resolved_time["absolute_min_ns"])
+        maximum_ns = int(resolved_time["absolute_max_ns"])
         all_resources = list(projection.get("resources", []))
         resources: list[dict[str, Any]] = []
         state_by_id: dict[str, dict[str, Any]] = {}
@@ -1281,14 +1348,22 @@ class MultiNodeTopologyService:
         # coordinator-bounded projection so lowering a table/page budget cannot
         # silently remove topology edges.
         for resource_index, item in enumerate(all_resources):
-            exists, status, state = _status_at(item, timestamp_ns)
+            temporal_state = _status_window_at(
+                item,
+                center_ns=timestamp_ns,
+                minimum_ns=minimum_ns,
+                maximum_ns=maximum_ns,
+            )
+            exists = temporal_state["exists"]
+            status = temporal_state["status"]
+            state = temporal_state["state"]
             usable_statuses = set(projection.get("usable_statuses", []))
             unusable_statuses = set(projection.get("unusable_statuses", []))
             status_class = (
                 "usable"
-                if status in usable_statuses
+                if exists is True and status in usable_statuses
                 else "unusable"
-                if status in unusable_statuses
+                if exists is True and status in unusable_statuses
                 else "unknown"
             )
             record = {
@@ -1311,11 +1386,12 @@ class MultiNodeTopologyService:
                 "properties": item.get("properties", {}),
                 "status_perspective_id": perspective_id,
                 "basis_time_ns": str(timestamp_ns),
-                "quality": (
-                    "exact"
-                    if resolved_time["resolution"] == "exact"
-                    else "best_effort"
-                ),
+                "quality": temporal_state["quality"],
+                "temporal_resolution": temporal_state[
+                    "temporal_resolution"
+                ],
+                "possible_states": temporal_state["possible_states"],
+                "unknown_fields": temporal_state["unknown_fields"],
                 "provenance": "plugin_projection",
                 "plugin_provenance": self._plugin_provenance(
                     plugin, plugin_set_id

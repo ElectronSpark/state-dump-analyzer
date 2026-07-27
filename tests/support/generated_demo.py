@@ -20,12 +20,12 @@ from router_dump_analyzer.runtime import (
 )
 from router_dump_analyzer.normalized_data import NormalizedDataService
 from router_dump_analyzer.web.runtime_context import activate_runtime_session
-from generator import (
+from rsl_demo_generator import (
     DEMO_NODES,
     AssemblyConfig,
     build_demo_fixture,
 )
-from plugin import plugin as demo_plugin
+from rsl_demo_plugin import plugin as demo_plugin
 
 
 _LOCK = Lock()

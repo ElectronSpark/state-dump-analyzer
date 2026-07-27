@@ -133,7 +133,7 @@ fi
 printf '%s\n' \
     '[fixture] Ensuring the canonical full-scale multi-node assembly...'
 ensure_arguments=(
-    -m generator
+    -m rsl_demo_generator
     --ensure-launchable "${fixture_archive}"
     --path-only
 )
@@ -160,7 +160,7 @@ printf '[fixture] Launch input ready in %d s: %s\n' \
 if [[ "${validate_fixture}" == true ]]; then
     printf '%s\n' '[fixture] Validating the existing generated assembly...'
     validation_started="${SECONDS}"
-    "${analyzer_python}" -m generator \
+    "${analyzer_python}" -m rsl_demo_generator \
         --validate "${selected_fixture}"
     printf '[fixture] Validation finished in %d s.\n' \
         "$((SECONDS - validation_started))"

@@ -70,7 +70,7 @@ try {
         "[fixture] Ensuring the canonical full-scale multi-node assembly..."
     )
     $EnsureArguments = @(
-        "-m", "generator",
+        "-m", "rsl_demo_generator",
         "--ensure-launchable", $FixtureAssemblyArgument,
         "--path-only"
     )
@@ -103,7 +103,7 @@ try {
         Write-Host "[fixture] Validating the existing generated assembly..."
         $ValidationTimer = [System.Diagnostics.Stopwatch]::StartNew()
         & $AnalyzerPython @(
-            "-m", "generator",
+            "-m", "rsl_demo_generator",
             "--validate", $SelectedFixture
         )
         if ($LASTEXITCODE -ne 0) {

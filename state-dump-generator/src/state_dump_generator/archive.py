@@ -23,6 +23,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .boundary import forbidden_authoring_paths
+from .path_safety import resolve_output_file
 
 
 ASSEMBLY_SCHEMA = "state-dump-assembly/v1"
@@ -241,6 +242,18 @@ def _timestamp(record: Mapping[str, Any]) -> int:
     return 0
 
 
+def _source_sequence(record: Mapping[str, Any]) -> int:
+    """Return the producer-declared order within one timestamp."""
+
+    value = record.get("source_sequence", record.get("order", 0))
+    if isinstance(value, bool):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _record_identity(record: Mapping[str, Any]) -> str:
     for name in ("event_id", "resource_id", "id", "key"):
         value = record.get(name)
@@ -294,6 +307,7 @@ def _normalize_plan(plan_value: Any, node_id_hint: str | None) -> dict[str, Any]
     log_records.sort(
         key=lambda item: (
             _timestamp(item),
+            _source_sequence(item),
             _record_identity(item),
             _stable_sort_key(item),
         )
@@ -489,11 +503,10 @@ def compile_and_build(document: Any) -> bytes:
 def write_assembly(document: Any, output: Path | str) -> Path:
     """Compile *document* and atomically write an assembly TGZ."""
 
-    destination = Path(output).expanduser().resolve()
-    if destination.exists() and destination.is_symlink():
-        raise ArchiveProjectionError("assembly output cannot be a symlink")
-    if destination.exists() and not destination.is_file():
-        raise ArchiveProjectionError("assembly output must be a regular file")
+    try:
+        destination = resolve_output_file(output, label="assembly output")
+    except ValueError as error:
+        raise ArchiveProjectionError(str(error)) from error
     destination.parent.mkdir(parents=True, exist_ok=True)
     content = compile_and_build(document)
     descriptor, temporary_name = tempfile.mkstemp(

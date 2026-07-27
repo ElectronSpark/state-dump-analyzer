@@ -94,7 +94,7 @@ class TemporalTopologyService:
     def __init__(
         self,
         dataset: dict[str, Any],
-        state_reader: StateReader,
+        state_reader: StateReader | None,
         relationship_reader: RelationshipReader,
         *,
         contract: dict[str, Any],
@@ -157,6 +157,7 @@ class TemporalTopologyService:
                 dataset.get("relationship_mutations", []),
                 key=lambda item: (
                     int(item["effective_time_ns"]),
+                    int(item.get("source_sequence", 0)),
                     str(item.get("mutation_id", "")),
                 ),
             )
@@ -1392,18 +1393,28 @@ class TemporalTopologyService:
                         "state_changed": True,
                     }
                 ]
-            for effect in effects:
+            for effect_index, effect in enumerate(effects):
+                source_sequence = int(event.get("source_sequence", 0))
+                event_uid = str(event.get("event_uid") or "")
                 entries.append(
                     {
                         "timestamp_ns": int(event["timestamp_ns"]),
-                        "event_uid": event.get("event_uid"),
+                        "source_sequence": source_sequence,
+                        "event_uid": event_uid,
+                        "effect_index": effect_index,
+                        "order_key": (
+                            int(event["timestamp_ns"]),
+                            source_sequence,
+                            event_uid,
+                            effect_index,
+                        ),
                         "operation": str(
                             effect.get("effect_type", event.get("action", "modify"))
                         ).casefold(),
                         "after": dict(effect.get("after") or {}),
                     }
                 )
-        entries.sort(key=lambda item: (item["timestamp_ns"], str(item["event_uid"])))
+        entries.sort(key=lambda item: item["order_key"])
         self._perspective_event_cache[cache_key] = entries
         return entries
 
@@ -1413,6 +1424,8 @@ class TemporalTopologyService:
         perspective: dict[str, Any],
         timestamp_ns: int,
         entries: list[dict[str, Any]],
+        *,
+        through_order: tuple[int, int, str, int] | None = None,
     ) -> dict[str, Any]:
         resource_id = str(record["resource_id"])
         native = str(record.get("layer", "unknown")) == perspective["layer"]
@@ -1420,23 +1433,47 @@ class TemporalTopologyService:
             self.state_reader(
                 resource_id, self.timeline_start_ns
             )
-            if native
+            if native and self.state_reader is not None
             else None
         )
-        state = dict((initial or {}).get("state") or record.get("state") or {})
-        exists: bool | None = (initial or {}).get("exists") if native else None
+        initial_observed = (
+            isinstance(initial, dict)
+            and isinstance(initial.get("exists"), bool)
+        )
+        state = (
+            dict(initial.get("state") or {})
+            if initial_observed and isinstance(initial, dict)
+            else {}
+        )
+        exists: bool | None = (
+            initial.get("exists")
+            if initial_observed and isinstance(initial, dict)
+            else None
+        )
         creation_operations = {"create", "add", "insert"}
         deletion_operations = {"delete", "remove"}
         if entries and entries[0]["operation"] in creation_operations:
             state = {}
             exists = False
-        valid_from = (initial or {}).get("valid_from_ns") if native else None
+        valid_from = (
+            initial.get("valid_from_ns")
+            if initial_observed and isinstance(initial, dict)
+            else None
+        )
         valid_to = None
-        source_event_uid = (initial or {}).get("source_event_uid") if native else None
-        observed = native
+        source_event_uid = (
+            initial.get("source_event_uid")
+            if initial_observed and isinstance(initial, dict)
+            else None
+        )
+        observed = initial_observed
+        applied_entries = 0
         for entry in entries:
             entry_time = int(entry["timestamp_ns"])
-            if entry_time > timestamp_ns:
+            entry_order = tuple(entry["order_key"])
+            if entry_time > timestamp_ns or (
+                through_order is not None and entry_order > through_order
+            ):
                 valid_to = str(entry_time)
                 break
             operation = entry["operation"]
@@ -1445,12 +1482,14 @@ class TemporalTopologyService:
                 exists = True
             elif operation in deletion_operations:
                 exists = False
-            else:
-                exists = True
+            # A modify/update after a delete intentionally retains latent
+            # state but must not recreate lifecycle existence. Only an
+            # explicit create/add/insert operation reopens the resource.
             state.update(entry["after"])
             valid_from = str(entry_time)
             source_event_uid = entry.get("event_uid")
             observed = True
+            applied_entries += 1
         if not observed:
             return {
                 "exists": None,
@@ -1479,6 +1518,9 @@ class TemporalTopologyService:
             )
         normalized_status = status.casefold()
         status_class = (
+            "unknown"
+            if exists is None
+            else
             "healthy"
             if normalized_status in set(perspective["usable_statuses"])
             else "error"
@@ -1493,8 +1535,25 @@ class TemporalTopologyService:
             "valid_from_ns": valid_from,
             "valid_to_ns": valid_to,
             "source_event_uid": source_event_uid,
-            "quality": "exact" if entries else (initial or {}).get("quality", "observed_snapshot"),
-            "unknown_fields": [],
+            "quality": (
+                "exact"
+                if applied_entries and exists is not None
+                else "partial"
+                if applied_entries
+                else initial.get("quality", "observed_snapshot")
+                if initial_observed and isinstance(initial, dict)
+                else "unknown"
+            ),
+            "unknown_fields": (
+                []
+                if exists is not None
+                else [
+                    {
+                        "name": "exists",
+                        "reason_code": "lifecycle_evidence_missing",
+                    }
+                ]
+            ),
         }
 
     @staticmethod
@@ -1991,11 +2050,13 @@ class TemporalTopologyService:
             for index in range(event_left, event_right):
                 event = self._events[index]
                 timestamp = int(event["timestamp_ns"])
+                source_sequence = int(event.get("source_sequence", 0))
+                event_uid = str(event.get("event_uid") or "")
                 order_key = (
                     timestamp,
                     0,
-                    index,
-                    str(event.get("event_uid", "")),
+                    source_sequence,
+                    event_uid,
                 )
                 if after is not None and order_key <= after:
                     continue
@@ -2017,10 +2078,28 @@ class TemporalTopologyService:
                         resource_id, perspective
                     )
                     before = self._perspective_state_at(
-                        record, perspective, timestamp - 1, status_events
+                        record,
+                        perspective,
+                        timestamp,
+                        status_events,
+                        through_order=(
+                            timestamp,
+                            source_sequence,
+                            event_uid,
+                            -1,
+                        ),
                     )
                     after_state = self._perspective_state_at(
-                        record, perspective, timestamp, status_events
+                        record,
+                        perspective,
+                        timestamp,
+                        status_events,
+                        through_order=(
+                            timestamp,
+                            source_sequence,
+                            event_uid,
+                            2**31 - 1,
+                        ),
                     )
                     state_changes.append(
                         {
@@ -2071,6 +2150,9 @@ class TemporalTopologyService:
             for index in range(mutation_left, mutation_right):
                 mutation = self._mutations[index]
                 timestamp = int(mutation["effective_time_ns"])
+                source_sequence = int(
+                    mutation.get("source_sequence", index)
+                )
                 relation_type = mutation.get(
                     "relation_type", mutation.get("type")
                 )
@@ -2080,7 +2162,12 @@ class TemporalTopologyService:
                     f"{mutation.get('target')}:{timestamp}:"
                     f"{mutation.get('operation')}"
                 )
-                order_key = (timestamp, 1, index, mutation_id)
+                order_key = (
+                    timestamp,
+                    1,
+                    source_sequence,
+                    mutation_id,
+                )
                 if after is not None and order_key <= after:
                     continue
                 if relation_types and relation_type not in relation_types:

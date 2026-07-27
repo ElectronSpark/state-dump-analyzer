@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .boundary import forbidden_authoring_paths
+from .boundary import forbidden_authoring_paths, private_identifier_paths
+from .path_safety import resolve_regular_file
 
 
 SCHEMA_VERSION = 1
@@ -145,6 +146,12 @@ def _attachment(
             "node_id": _identifier(value, f"{label}.node_id"),
             "port_id": default_port,
             "resource_id": f"interface:{default_port}",
+            "properties": {},
+            "node_local_observation": {
+                "resource_id": f"interface:{default_port}",
+                "resource_type": "interface",
+                "properties": {},
+            },
         }
     item = _mapping(value, label)
     node_id = _identifier(
@@ -174,11 +181,55 @@ def _attachment(
     properties = item.get("properties", {})
     if not isinstance(properties, Mapping):
         raise ScenarioValidationError(f"{label}.properties must be an object")
+    raw_observation = item.get("node_local_observation")
+    if "node_local_observation" in item:
+        observation = _mapping(
+            raw_observation,
+            f"{label}.node_local_observation",
+        )
+        observation_properties = observation.get("properties", {})
+        if not isinstance(observation_properties, Mapping):
+            raise ScenarioValidationError(
+                f"{label}.node_local_observation.properties must be an object"
+            )
+    else:
+        # Schema-v1 originally treated attachment.properties as node-local
+        # interface evidence.  Normalize that legacy shape into the explicit
+        # export envelope so old saved projects keep their exact output while
+        # newly authored projects can keep arbitrary metadata private.
+        observation = {}
+        observation_properties = properties
+    raw_observation_resource_id = observation.get(
+        "resource_id",
+        observation.get("local_resource_id", resource_id),
+    )
+    observation_resource_id = _identifier(
+        raw_observation_resource_id,
+        f"{label}.node_local_observation.resource_id",
+    )
+    observation_resource_type = str(
+        observation.get(
+            "resource_type",
+            observation.get("type", "interface"),
+        )
+    ).strip() or "interface"
+    node_local_observation = {
+        "resource_id": observation_resource_id,
+        "resource_type": observation_resource_type,
+        "properties": _detached(dict(observation_properties)),
+    }
+    observation_status = observation.get(
+        "observed_state",
+        observation.get("status", item.get("observed_state")),
+    )
+    if observation_status is not None:
+        node_local_observation["observed_state"] = str(observation_status)
     result = {
         "node_id": node_id,
         "port_id": port_id,
         "resource_id": resource_id,
         "properties": _detached(dict(properties)),
+        "node_local_observation": node_local_observation,
     }
     if "observed_state" in item:
         result["observed_state"] = str(item["observed_state"])
@@ -431,9 +482,10 @@ def _propagation_horizon_ns(value: Any) -> int:
 
 
 def load_scenario(path: Path | str) -> ScenarioDocument:
-    source = Path(path).expanduser().resolve()
-    if source.is_symlink() or not source.is_file():
-        raise ScenarioValidationError("scenario project must be a regular file")
+    try:
+        source = resolve_regular_file(path, label="scenario project")
+    except ValueError as error:
+        raise ScenarioValidationError(str(error)) from error
     try:
         value = json.loads(source.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
@@ -577,12 +629,13 @@ def validate_scenario(value: ScenarioDocument | Mapping[str, Any]) -> dict[str, 
                     )
                 )
             seen_attachments.add(key)
+            node_local_observation = attachment["node_local_observation"]
             first_forbidden = next(
                 forbidden_authoring_paths(
-                    attachment.get("properties", {}),
+                    node_local_observation,
                     location=(
                         f"media[{medium_index}].attachments"
-                        f"[{attachment_index}].properties"
+                        f"[{attachment_index}].node_local_observation"
                     ),
                 ),
                 None,
@@ -593,6 +646,25 @@ def validate_scenario(value: ScenarioDocument | Mapping[str, Any]) -> dict[str, 
                     _issue(
                         path,
                         f"field {forbidden_key!r} is private authoring truth and cannot enter a node dump",
+                    )
+                )
+            private_value_path = next(
+                private_identifier_paths(
+                    node_local_observation,
+                    frozenset(medium_ids),
+                    location=(
+                        f"media[{medium_index}].attachments"
+                        f"[{attachment_index}].node_local_observation"
+                    ),
+                ),
+                None,
+            )
+            if private_value_path is not None:
+                errors.append(
+                    _issue(
+                        private_value_path,
+                        "node-local observation copies a private physical "
+                        "medium identifier",
                     )
                 )
     event_ids = [str(event["event_id"]) for event in document.events]

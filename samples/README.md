@@ -49,12 +49,12 @@ repository's normal demo setup, use the separate demo materializer for the
 scalable fixture:
 
 ```powershell
-python -X utf8 -m generator --write-conformance-fixture demo/fixtures/minimal-status.jsonl
-python -X utf8 -m generator --verify-conformance-fixture demo/fixtures/minimal-status.jsonl
-python -X utf8 -m generator --output demo/fixtures/router-state-lab-demo.tgz
-python -X utf8 -m generator --check-launchable demo/fixtures/router-state-lab-demo.tgz
-python -X utf8 -m generator --ensure-launchable demo/fixtures/router-state-lab-demo.tgz
-python -X utf8 -m generator --validate demo/fixtures/router-state-lab-demo.tgz --deep-validate
+python -X utf8 -m rsl_demo_generator --write-conformance-fixture demo/fixtures/minimal-status.jsonl
+python -X utf8 -m rsl_demo_generator --verify-conformance-fixture demo/fixtures/minimal-status.jsonl
+python -X utf8 -m rsl_demo_generator --output demo/fixtures/router-state-lab-demo.tgz
+python -X utf8 -m rsl_demo_generator --check-launchable demo/fixtures/router-state-lab-demo.tgz
+python -X utf8 -m rsl_demo_generator --ensure-launchable demo/fixtures/router-state-lab-demo.tgz
+python -X utf8 -m rsl_demo_generator --validate demo/fixtures/router-state-lab-demo.tgz --deep-validate
 ```
 
 The generator belongs to the example plug-in distribution and does not start a
@@ -66,7 +66,7 @@ router-dump-analyzer --plugin demo_router --input demo/fixtures/router-state-lab
 ```
 
 For a source checkout, the equivalent direct target is
-`--plugin-module plugin`; the module loader defaults
+`--plugin-module rsl_demo_plugin`; the module loader defaults
 to the `plugin` attribute.
 
 The demo generator is deterministic: archive member names, ordering, metadata,

@@ -205,11 +205,151 @@ class SimulationTests(unittest.TestCase):
             stale_observation["node_plans"]["r2"]["logs"][-1]["state_changed"]
         )
 
+    def test_explicit_attachment_projection_excludes_authoring_metadata(self) -> None:
+        value = base_scenario()
+        attachment = value["media"][0]["attachments"][0]  # type: ignore[index]
+        attachment["properties"] = {
+            "layout_group": "private-editor-group",
+            # A private ID is allowed in authoring-only metadata because the
+            # explicit projection envelope prevents it from crossing.
+            "apparently_safe_key": "private-wire",
+        }
+        attachment["node_local_observation"] = {
+            "resource_id": "interface:r1-uplink.310",
+            "resource_type": "virtual-interface",
+            "properties": {
+                "interface_name": "xe0.310",
+                "subnet_prefix": "192.0.2.0/31",
+                "vlan_id": 310,
+            },
+        }
+        value["events"] = [
+            {
+                "event_id": "physical-down",
+                "timestamp_ns": 5_000_000_000,
+                "kind": "link-state",
+                "target_id": "private-wire",
+                "status": "down",
+                "propagation": {
+                    "mode": "best-effort",
+                    "delay_ms": 1,
+                    "targets": ["r1"],
+                    "outcomes": {"r1": "success"},
+                },
+            }
+        ]
+
+        plan = reconstruct_scenario(
+            value,
+            at_time_ns=5_010_000_000,
+        )["node_plans"]["r1"]
+        interface = next(
+            item
+            for item in plan["final_state"]
+            if item["resource_id"] == "interface:r1-uplink.310"
+        )
+        self.assertEqual(interface["resource_type"], "virtual-interface")
+        self.assertEqual(
+            interface["properties"],
+            {
+                "admin_status": "up",
+                "oper_status": "down",
+                "interface_name": "xe0.310",
+                "subnet_prefix": "192.0.2.0/31",
+                "vlan_id": 310,
+            },
+        )
+        self.assertEqual(
+            plan["logs"][-1]["properties"]["subnet_prefix"],
+            "192.0.2.0/31",
+        )
+        serialized = repr(plan)
+        self.assertNotIn("layout_group", serialized)
+        self.assertNotIn("private-editor-group", serialized)
+        self.assertNotIn("private-wire", serialized)
+
+    def test_private_medium_id_is_rejected_inside_explicit_local_evidence(self) -> None:
+        value = base_scenario()
+        attachment = value["media"][0]["attachments"][0]  # type: ignore[index]
+        attachment["properties"] = {
+            "apparently_safe_key": "authoring-only-value",
+        }
+        attachment["node_local_observation"] = {
+            "resource_id": "interface:r1-uplink",
+            "properties": {
+                "apparently_safe_key": "private-wire",
+            },
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "private physical medium identifier",
+        ):
+            compile_scenario(value)
+
     def test_final_compile_is_the_final_reconstruction_node_plan(self) -> None:
         value = base_scenario()
         self.assertEqual(
             compile_scenario(value),
             reconstruct_scenario(value)["node_plans"],
+        )
+
+    def test_exported_timestamps_share_the_node_clock_domain(self) -> None:
+        value = base_scenario()
+        value["events"] = [
+            {
+                "event_id": "local-change",
+                "timestamp_ns": 1_000_000_000,
+                "order": 17,
+                "kind": "status",
+                "node_id": "r1",
+                "resource_id": "route:clock-probe",
+                "resource_type": "route",
+                "status": "installed",
+            }
+        ]
+
+        plan = reconstruct_scenario(value, at_time_ns=1_000_000_000)[
+            "node_plans"
+        ]["r1"]
+        event = plan["logs"][-1]
+        resource = next(
+            item
+            for item in plan["final_state"]
+            if item["resource_id"] == "route:clock-probe"
+        )
+        self.assertEqual(plan["captured_at_ns"], 999_000_000)
+        self.assertEqual(event["timestamp_ns"], 999_000_000)
+        self.assertEqual(event["source_sequence"], 17)
+        self.assertNotIn("absolute_timestamp_ns", event)
+        self.assertEqual(resource["updated_at_ns"], 999_000_000)
+
+    def test_failed_parent_does_not_default_to_successful_propagation(self) -> None:
+        value = base_scenario()
+        value["events"] = [
+            {
+                "event_id": "failed-parent",
+                "timestamp_ns": 1_000_000_000,
+                "kind": "status",
+                "node_id": "r1",
+                "resource_id": "route:propagation-probe",
+                "resource_type": "route",
+                "status": "installed",
+                "outcome": "failed",
+                "propagation": {
+                    "mode": "best-effort",
+                    "delay_ms": 1,
+                },
+            }
+        ]
+
+        result = reconstruct_scenario(value, at_time_ns=1_100_000_000)
+        remote = result["node_plans"]["r2"]
+        self.assertEqual(remote["logs"][-1]["outcome"], "failed")
+        self.assertFalse(remote["logs"][-1]["state_changed"])
+        self.assertNotIn(
+            "route:propagation-probe",
+            {item["resource_id"] for item in remote["final_state"]},
         )
 
     def test_as_of_time_must_be_inside_the_saved_capture(self) -> None:

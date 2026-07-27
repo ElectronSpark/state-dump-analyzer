@@ -16,22 +16,22 @@ dependencies = [
 ]
 
 [project.entry-points."router_dump_analyzer.plugins"]
-demo_router = "plugin:plugin"
+demo_router = "rsl_demo_plugin:plugin"
 
 [tool.hatch.build.targets.wheel]
 packages = [
-  "plugin",
-  "generator",
+  "rsl_demo_plugin",
+  "rsl_demo_generator",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
-"fixtures/minimal-status.jsonl" = "plugin/fixtures/minimal-status.jsonl"
-"router-state-lab-default.scenario.json" = "generator/router-state-lab-default.scenario.json"
+"fixtures/minimal-status.jsonl" = "rsl_demo_plugin/fixtures/minimal-status.jsonl"
+"router-state-lab-default.scenario.json" = "rsl_demo_generator/router-state-lab-default.scenario.json"
 
 [tool.hatch.build.targets.sdist]
 include = [
-  "/plugin",
-  "/generator",
+  "/rsl_demo_plugin",
+  "/rsl_demo_generator",
   "/fixtures/minimal-status.jsonl",
   "/router-state-lab-default.scenario.json",
   "/README.md",

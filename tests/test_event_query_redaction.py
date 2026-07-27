@@ -14,7 +14,7 @@ from tests.support.generated_demo import (
 configure_generated_demo_for_tests()
 
 from router_dump_analyzer.web import runtime_api
-from plugin.data import REVISION_ID
+from rsl_demo_plugin.data import REVISION_ID
 
 
 class EventQueryRedactionTests(unittest.TestCase):

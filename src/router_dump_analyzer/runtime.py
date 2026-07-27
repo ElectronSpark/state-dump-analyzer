@@ -257,7 +257,6 @@ def create_runtime_application(
     from .web.frontend_host import FrontendHost
     from .web.runtime_api import (
         api_router,
-        request_revision_scope,
         reset_runtime_api_caches,
         start_runtime_warmup,
     )
@@ -315,11 +314,10 @@ def create_runtime_application(
         if session is None:
             return await call_next(http_request)
         with activate_runtime_session(session):
-            scope = request_revision_scope(http_request.url.path)
-            if scope is None:
-                return await call_next(http_request)
-            with scope:
-                return await call_next(http_request)
+            # Revision selection is intentionally bound by an APIRouter
+            # dependency after Starlette has parsed ``revision_id``.  Raw-path
+            # middleware cannot disambiguate slash-containing revision IDs.
+            return await call_next(http_request)
 
     return application
 

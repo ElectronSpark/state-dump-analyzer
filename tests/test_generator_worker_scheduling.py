@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from generator import assembly
+from rsl_demo_generator import assembly
 
 
 class GeneratorWorkerSchedulingTests(unittest.TestCase):

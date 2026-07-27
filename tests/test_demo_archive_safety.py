@@ -3,14 +3,14 @@ from __future__ import annotations
 import unittest
 from pathlib import PurePosixPath
 
-from plugin.archive import normalize_archive_member_name
-from plugin.assembly_store import (
+from rsl_demo_plugin.archive import normalize_archive_member_name
+from rsl_demo_plugin.assembly_store import (
     DemoAssemblyError,
     _safe_member_name as validate_assembly_member_name,
 )
-from generator import assembly as generator_assembly
-from generator._archive import validate_archive_name
-from plugin.scale_data import _safe_archive_member_name
+from rsl_demo_generator import assembly as generator_assembly
+from rsl_demo_generator._archive import validate_archive_name
+from rsl_demo_plugin.scale_data import _safe_archive_member_name
 
 
 class DemoArchiveSafetyTests(unittest.TestCase):

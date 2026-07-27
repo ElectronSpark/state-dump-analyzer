@@ -12,6 +12,11 @@ contains:
   and
 - plug-in-owned conformance fixtures and tests.
 
+The distribution uses the collision-resistant import packages
+`rsl_demo_plugin` and `rsl_demo_generator`. It deliberately does not publish
+generic top-level packages named `plugin` or `generator`, which are likely to
+collide with unrelated dependencies in a shared Python environment.
+
 The only `router-dump-analyzer` executable, FastAPI application, routes,
 lifecycle, generic query services, and frontend belong to
 `router-dump-analyzer-core`. The demo depends on the core base package without
@@ -52,7 +57,7 @@ changing ownership:
 
 ```powershell
 python -m router_dump_analyzer `
-  --plugin-module plugin `
+  --plugin-module rsl_demo_plugin `
   --input demo/fixtures/router-state-lab-demo.tgz `
   --no-browser
 ```
@@ -68,7 +73,7 @@ generator-owned scenario phases.
 ## Validate the example plug-in
 
 The teaching implementation is
-[`plugin/__init__.py`](plugin/__init__.py).
+[`rsl_demo_plugin/__init__.py`](rsl_demo_plugin/__init__.py).
 It recognizes `minimal-status.jsonl` and maps each accepted row to a typed
 `INTERFACE` snapshot plus a retained source record.
 
@@ -165,9 +170,9 @@ Click **Open** in the studio and select the canonical JSON to preview or edit
 it. After saving, generate and verify the full demo assembly, then launch it:
 
 ```powershell
-python -X utf8 -m generator `
+python -X utf8 -m rsl_demo_generator `
   --output .\demo\fixtures\router-state-lab-demo.tgz
-python -X utf8 -m generator `
+python -X utf8 -m rsl_demo_generator `
   --check-launchable .\demo\fixtures\router-state-lab-demo.tgz
 .\scripts\launch_demo.cmd -NoBrowser
 ```

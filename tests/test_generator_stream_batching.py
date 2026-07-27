@@ -8,9 +8,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from generator import _node_pack
-from generator import assembly
-from generator.catalog import DEMO_NODES
+from rsl_demo_generator import _node_pack
+from rsl_demo_generator import assembly
+from rsl_demo_generator.catalog import DEMO_NODES
 
 
 class GeneratorStreamBatchingTests(unittest.TestCase):

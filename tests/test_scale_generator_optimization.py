@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from generator import _scale
+from rsl_demo_generator import _scale
 
 
 class ScaleGeneratorOptimizationTests(unittest.TestCase):

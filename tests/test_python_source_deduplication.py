@@ -15,8 +15,8 @@ from typing import Iterator
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION_ROOTS = (
     ROOT / "src" / "router_dump_analyzer",
-    ROOT / "demo" / "plugin",
-    ROOT / "demo" / "generator",
+    ROOT / "demo" / "rsl_demo_plugin",
+    ROOT / "demo" / "rsl_demo_generator",
     ROOT / "scripts",
 )
 MINIMUM_CLONE_TOKENS = 80

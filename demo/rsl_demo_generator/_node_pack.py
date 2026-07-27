@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from plugin.archive import (
+from rsl_demo_plugin.archive import (
     CTF_METADATA_MEMBER,
     CTF_STREAM_MEMBER,
     HIGH_FANOUT_RELATIONSHIPS_MEMBER_NAME,

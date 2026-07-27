@@ -20,6 +20,8 @@ web = [
 test = [
   "fastapi>=0.115,<1",
   "httpx>=0.27,<1",
+  "mypy>=1.15,<2",
+  "ruff>=0.12,<1",
 ]
 
 [project.scripts]

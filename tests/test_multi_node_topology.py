@@ -17,14 +17,15 @@ from tests.support.generated_demo import (
 )
 configure_generated_demo_for_tests()
 
-from plugin.data import (
+from rsl_demo_plugin.data import (
     REVISION_ID,
 )
 from router_dump_analyzer.multi_node_topology import (
     MultiNodeTopologyService,
     _status_at,
+    _status_window_at,
 )
-from plugin.topology_contract import DEMO_TOPOLOGY_ID
+from rsl_demo_plugin.topology_contract import DEMO_TOPOLOGY_ID
 
 _RUNTIME_SESSION = None
 
@@ -160,6 +161,64 @@ class TopologyStatusReplayTests(unittest.TestCase):
         self.assertEqual(
             _status_at(resource, 250),
             (True, "up", {"generation": 1}),
+        )
+
+    def test_bounded_clock_window_surfaces_a_crossed_transition(self) -> None:
+        resource = {
+            "initial_status": "up",
+            "initial_state": {"generation": 1},
+            "changes": [
+                {
+                    "time_ns": "200",
+                    "source_sequence": 1,
+                    "status": "down",
+                    "state": {"reason": "carrier-loss"},
+                }
+            ],
+        }
+
+        result = _status_window_at(
+            resource,
+            center_ns=200,
+            minimum_ns=190,
+            maximum_ns=210,
+        )
+
+        self.assertIsNone(result["exists"])
+        self.assertEqual(result["status"], "ambiguous")
+        self.assertEqual(result["quality"], "ambiguous")
+        self.assertEqual(result["temporal_resolution"], "ambiguous")
+        self.assertEqual(
+            {item["status"] for item in result["possible_states"]},
+            {"up", "down"},
+        )
+        self.assertEqual(
+            result["unknown_fields"][0]["reason_code"],
+            "clock_window_crosses_state_transition",
+        )
+
+    def test_bounded_clock_window_reports_stable_state_when_no_boundary_crosses(
+        self,
+    ) -> None:
+        resource = {
+            "initial_status": "up",
+            "initial_state": {"generation": 1},
+            "changes": [{"time_ns": "500", "status": "down"}],
+        }
+
+        result = _status_window_at(
+            resource,
+            center_ns=200,
+            minimum_ns=190,
+            maximum_ns=210,
+        )
+
+        self.assertTrue(result["exists"])
+        self.assertEqual(result["status"], "up")
+        self.assertEqual(result["quality"], "best_effort")
+        self.assertEqual(
+            result["temporal_resolution"],
+            "stable_within_clock_window",
         )
 
 
