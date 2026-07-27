@@ -14,8 +14,11 @@ import json
 import shutil
 import tarfile
 import tempfile
+import weakref
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from threading import RLock
 from typing import Any, Callable, Mapping
 
 from router_dump_analyzer.revision_store import (
@@ -49,6 +52,52 @@ class DemoAssemblyError(RuntimeError):
 
 
 DatasetLoader = Callable[[Path, str], dict[str, Any]]
+
+
+@dataclass(slots=True)
+class _DatasetEntry:
+    """One materialized revision and the leases that keep it usable."""
+
+    revision_id: str
+    dataset: dict[str, Any]
+    lease_count: int = 0
+    closed: bool = False
+
+
+class _LeasedDataset(dict[str, Any]):
+    """A shallow dataset view that keeps its private runtime alive.
+
+    The public normalized mapping remains an ordinary ``dict`` to callers.
+    Only the top-level container is copied; large normalized collections and
+    the search runtime stay shared with the bounded store entry.
+    """
+
+    def __init__(
+        self,
+        source: Mapping[str, Any],
+        *,
+        release: Callable[[], None],
+        retain: Callable[[], "_LeasedDataset"],
+    ) -> None:
+        super().__init__(source)
+        self._retain = retain
+        self._finalizer = weakref.finalize(self, release)
+
+    def release(self) -> None:
+        """Release this view now instead of waiting for garbage collection."""
+
+        self._finalizer()
+
+    def copy(self) -> "_LeasedDataset":
+        """Return another independently leased shallow view."""
+
+        return self._retain()
+
+    def __enter__(self) -> "_LeasedDataset":
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        self.release()
 
 
 def _safe_member_name(name: str) -> PurePosixPath:
@@ -119,8 +168,11 @@ class DemoAssemblyStore:
         self._node_archive_paths: dict[str, Path] = {}
         self._revisions_by_id: dict[str, RevisionDescriptor] = {}
         self._revisions_by_node: dict[str, RevisionDescriptor] = {}
-        self._datasets: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._datasets: OrderedDict[str, _DatasetEntry] = OrderedDict()
         self._projections_by_node: dict[str, dict[str, Any]] = {}
+        self._lock = RLock()
+        self._closed = False
+        self._temporary_directory_cleaned = False
         self.coverage: dict[str, Any] = {}
         self.manifest: dict[str, Any] = {}
         try:
@@ -478,61 +530,135 @@ class DemoAssemblyStore:
         return self._projections_by_node[node_id]
 
     def dataset_for_revision(self, revision_id: str) -> Mapping[str, Any]:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("demo assembly store is closed")
+            entry = self._datasets.pop(revision_id, None)
+            if entry is None:
+                entry = self._load_entry_locked(revision_id)
+            self._datasets[revision_id] = entry
+            entry.lease_count += 1
+            leased = self._lease_view_locked(entry)
+            self._trim_cache_locked()
+            return leased
+
+    def _load_entry_locked(self, revision_id: str) -> _DatasetEntry:
         descriptor = self.revision(revision_id)
-        cached = self._datasets.pop(revision_id, None)
-        if cached is not None:
-            self._datasets[revision_id] = cached
-            return cached
         dataset = self._dataset_loader(
             self._node_archive_paths[revision_id],
             revision_id,
         )
-        demo = dataset.get("demo")
-        if not isinstance(demo, dict):
-            raise DemoAssemblyError(
-                f"node dataset lacks demo metadata: {descriptor.node_id}"
-            )
-        loaded_revision = str(demo.get("revision_id", ""))
-        loaded_node = str(demo.get("node", ""))
-        loaded_events = int(demo.get("event_count", -1))
-        loaded_resources = int(demo.get("resource_count", -1))
-        if loaded_revision != revision_id:
-            raise DemoAssemblyError(
-                f"node dataset revision mismatch: {descriptor.node_id}"
-            )
-        if loaded_node != descriptor.node_id:
-            raise DemoAssemblyError(
-                f"node dataset identity mismatch: {descriptor.node_id}"
-            )
-        if (
-            loaded_events != descriptor.event_count
-            or loaded_resources != descriptor.resource_count
-        ):
-            raise DemoAssemblyError(
-                f"node dataset inventory mismatch: {descriptor.node_id}"
-            )
-        demo["fixture_materialization"] = {
-            "mode": "generator_synthesized_normalized_fixture",
-            **GENERATED_PROJECTION_POLICY.runtime_load_descriptor(),
-        }
-        self._datasets[revision_id] = dataset
+        try:
+            demo = dataset.get("demo")
+            if not isinstance(demo, dict):
+                raise DemoAssemblyError(
+                    f"node dataset lacks demo metadata: {descriptor.node_id}"
+                )
+            loaded_revision = str(demo.get("revision_id", ""))
+            loaded_node = str(demo.get("node", ""))
+            loaded_events = int(demo.get("event_count", -1))
+            loaded_resources = int(demo.get("resource_count", -1))
+            if loaded_revision != revision_id:
+                raise DemoAssemblyError(
+                    f"node dataset revision mismatch: {descriptor.node_id}"
+                )
+            if loaded_node != descriptor.node_id:
+                raise DemoAssemblyError(
+                    f"node dataset identity mismatch: {descriptor.node_id}"
+                )
+            if (
+                loaded_events != descriptor.event_count
+                or loaded_resources != descriptor.resource_count
+            ):
+                raise DemoAssemblyError(
+                    f"node dataset inventory mismatch: {descriptor.node_id}"
+                )
+            demo["fixture_materialization"] = {
+                "mode": "generator_synthesized_normalized_fixture",
+                **GENERATED_PROJECTION_POLICY.runtime_load_descriptor(),
+            }
+            return _DatasetEntry(revision_id=revision_id, dataset=dataset)
+        except BaseException:
+            self._close_runtime(dataset)
+            raise
+
+    def _lease_view_locked(self, entry: _DatasetEntry) -> _LeasedDataset:
+        return _LeasedDataset(
+            entry.dataset,
+            release=lambda: self._release_entry(entry),
+            retain=lambda: self._retain_entry(entry),
+        )
+
+    def _retain_entry(self, entry: _DatasetEntry) -> _LeasedDataset:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("demo assembly store is closed")
+            if entry.closed:
+                raise RuntimeError("demo dataset generation is closed")
+            entry.lease_count += 1
+            return self._lease_view_locked(entry)
+
+    def _release_entry(self, entry: _DatasetEntry) -> None:
+        with self._lock:
+            if entry.lease_count < 1:
+                return
+            entry.lease_count -= 1
+            if self._closed:
+                if entry.lease_count == 0:
+                    active = self._datasets.get(entry.revision_id)
+                    if active is entry:
+                        del self._datasets[entry.revision_id]
+                    self._close_entry_locked(entry)
+                self._finish_close_locked()
+                return
+            self._trim_cache_locked()
+
+    @staticmethod
+    def _close_runtime(dataset: Mapping[str, Any]) -> None:
+        runtime = dataset.get("_scale_runtime")
+        if isinstance(runtime, ScaleRuntime):
+            runtime.event_search.close()
+
+    def _close_entry_locked(self, entry: _DatasetEntry) -> None:
+        if entry.closed:
+            return
+        entry.closed = True
+        self._close_runtime(entry.dataset)
+
+    def _trim_cache_locked(self) -> None:
         while len(self._datasets) > self.cache_size:
-            _evicted_revision, evicted = self._datasets.popitem(last=False)
-            runtime = evicted.get("_scale_runtime")
-            if isinstance(runtime, ScaleRuntime):
-                runtime.event_search.close()
-        return dataset
+            evicted_revision: str | None = None
+            for candidate_revision, entry in self._datasets.items():
+                if entry.lease_count == 0:
+                    evicted_revision = candidate_revision
+                    break
+            if evicted_revision is None:
+                # Live callers own the excess generations. They are trimmed as
+                # soon as their shallow leased views are released.
+                return
+            evicted = self._datasets.pop(evicted_revision)
+            self._close_entry_locked(evicted)
 
     def loaded_revision_ids(self) -> tuple[str, ...]:
-        return tuple(self._datasets)
+        with self._lock:
+            return tuple(self._datasets)
 
     def close(self) -> None:
-        while self._datasets:
-            _revision_id, dataset = self._datasets.popitem(last=False)
-            runtime = dataset.get("_scale_runtime")
-            if isinstance(runtime, ScaleRuntime):
-                runtime.event_search.close()
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            for revision_id, entry in tuple(self._datasets.items()):
+                if entry.lease_count == 0:
+                    del self._datasets[revision_id]
+                    self._close_entry_locked(entry)
+            self._finish_close_locked()
+
+    def _finish_close_locked(self) -> None:
+        if self._temporary_directory_cleaned or self._datasets:
+            return
         self._temporary_directory.cleanup()
+        self._temporary_directory_cleaned = True
 
     def __enter__(self) -> "DemoAssemblyStore":
         return self

@@ -51,10 +51,12 @@ const TOPOLOGY_ELEMENT_PRESETS = Object.freeze({
 const NORMALIZED_HEALTH_PRESENTATION = new Map([
   ["healthy", "good"],
   ["good", "good"],
+  ["usable", "good"],
   ["degraded", "warning"],
   ["warning", "warning"],
   ["absent", "warning"],
   ["unknown", "warning"],
+  ["unusable", "error"],
   ["error", "error"],
 ]);
 
@@ -2979,11 +2981,12 @@ function basisForNode(node) {
   };
 }
 
-function declaredHealthPresentation(value) {
+function declaredHealthPresentation(value, { includeStatus = false } = {}) {
   const declared = firstDeclaredString(
     value?.condition_class,
     value?.status_class,
     value?.health_class,
+    includeStatus ? value?.status : null,
   );
   if (!declared) return null;
   return NORMALIZED_HEALTH_PRESENTATION.get(normalizedRouteEnum(declared)) || "warning";
@@ -3009,7 +3012,11 @@ function nodeHealth(node) {
 }
 
 function linkHealth(link) {
-  return declaredHealthPresentation(link) || "warning";
+  // Connectivity-domain payloads may carry the normalized health vocabulary
+  // in `status` rather than a `*_class` transport field.  Only consume status
+  // values that the shared vocabulary recognizes; all other values remain
+  // explicitly uncertain.
+  return declaredHealthPresentation(link, { includeStatus: true }) || "warning";
 }
 
 function selectedResultNodes() {
@@ -8764,6 +8771,8 @@ function routeEndpointSeedValue(raw, kind) {
   return String(
     raw[idField]
     ?? raw.endpoint_id
+    ?? raw.resource_id
+    ?? raw.node_id
     ?? raw.value
     ?? raw.address
     ?? raw.prefix
@@ -8776,13 +8785,15 @@ function useRouteTableEntry(entryId) {
   const entry = state.routeTableSnapshot?.items.find((item) => item.route_entry_id === entryId);
   if (!entry || entry.traceable !== true || !state.routeCapabilities) return;
   const query = entry.trace_query || {};
-  const explicitFlowSource = query?.flow?.source;
+  const explicitFlowSource = query?.flow?.source ?? query?.source;
   const source = routeEndpointSeedValue(explicitFlowSource, "source")
     || query.source_id || entry?.source?.source_id || "";
   const explicitFlowDestination = query?.flow?.destination ?? query?.destination;
   const destination = routeEndpointSeedValue(explicitFlowDestination, "destination")
+    || query.destination_id
+    || entry.destination?.destination_id
     || entry.destination?.value
-    || query.destination_id || entry.destination?.destination_id || entry.prefix;
+    || entry.prefix;
   const startDescriptor = query?.trace_starts?.forward
     ?? query?.ingress
     ?? query?.starting_point
@@ -8799,7 +8810,10 @@ function useRouteTableEntry(entryId) {
     ?? "",
   );
   renderRouteSteeringProfiles(steeringScenario, steeringProfileId);
-  if (source) setRouteEndpointInput("source", source);
+  // Always replace every seeded field.  Leaving an empty plug-in field alone
+  // would silently retain the previous route's endpoint and trace a different
+  // flow from the row the operator selected.
+  setRouteEndpointInput("source", source);
   setRouteStartInput(start);
   setRouteEndpointInput("destination", destination);
   byId("mn-route-vrf").value = String(query.vrf ?? query.vrf_id ?? entry.vrf);

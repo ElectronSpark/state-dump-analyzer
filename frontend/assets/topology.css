@@ -3136,6 +3136,10 @@
   margin-top: 12px;
 }
 
+.mn-route-workbench > * {
+  min-width: 0;
+}
+
 .mn-route-workbench.is-overview-only {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -3248,6 +3252,12 @@
 .mn-route-workbench .mn-route-summary-row {
   align-items: stretch;
   flex-direction: column;
+}
+
+.mn-route-workbench .mn-route-summary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
+  min-width: 0;
 }
 
 .mn-route-workbench .mn-route-legend {
@@ -3743,11 +3753,13 @@
 }
 
 .mn-route-result {
+  min-width: 0;
   margin-top: 10px;
   border: 1px solid var(--line-soft);
   border-radius: 13px;
   background: linear-gradient(150deg, rgba(12, 28, 40, 0.86), rgba(7, 19, 28, 0.78));
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .mn-route-empty {

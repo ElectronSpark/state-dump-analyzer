@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import gzip
 import hashlib
 import io
@@ -14,6 +15,7 @@ from rsl_demo_plugin.assembly_store import (
     DemoAssemblyError,
     DemoAssemblyStore,
 )
+from rsl_demo_plugin.scale_data import ScaleRuntime
 from rsl_demo_plugin import GENERATED_PROJECTION_POLICY
 from rsl_demo_plugin import (
     GENERATED_ASSEMBLY_FORMAT_VERSION,
@@ -260,6 +262,36 @@ def _forwarding_row_with_topology_reference(
     }
 
 
+class _CloseCountingSearch:
+    def __init__(self) -> None:
+        self.close_count = 0
+
+    def close(self) -> None:
+        self.close_count += 1
+
+
+def _scale_runtime(search: _CloseCountingSearch) -> ScaleRuntime:
+    return ScaleRuntime(
+        resources=[],
+        resource_by_id={},
+        resources_by_kind={},
+        resource_counts={},
+        events=[],
+        event_by_uid={},
+        event_times=[],
+        events_by_resource={},
+        lifecycle_by_resource={},
+        state_by_resource={},
+        relationships=[],
+        relationships_by_endpoint={},
+        mutations=[],
+        mutation_times=[],
+        mutations_by_endpoint={},
+        initial_resource_ids=[],
+        event_search=search,
+    )
+
+
 class DemoAssemblyStoreTests(unittest.TestCase):
     def test_projection_reader_uses_one_streaming_pass(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -428,15 +460,76 @@ class DemoAssemblyStoreTests(unittest.TestCase):
                 self.assertEqual(store.default_revision_id, "revision:node-a")
                 by_node = store.dataset_for_node("node-a")
                 by_revision = store.dataset_for_revision("revision:node-a")
-                self.assertIs(by_node, by_revision)
+                self.assertIs(by_node["demo"], by_revision["demo"])
                 self.assertEqual(len(calls), 1)
-                store.dataset_for_node("node-b")
+                by_node.release()
+                by_revision.release()
+                node_b = store.dataset_for_node("node-b")
                 self.assertEqual(
                     store.loaded_revision_ids(),
                     ("revision:node-b",),
                 )
-                store.dataset_for_node("node-a")
+                node_b.release()
+                reopened = store.dataset_for_node("node-a")
                 self.assertEqual(len(calls), 3)
+                reopened.release()
+
+    def test_live_leases_survive_eviction_and_revisits_close_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "demo.tgz"
+            _write_assembly(archive)
+            searches: dict[str, list[_CloseCountingSearch]] = {}
+
+            def load(path: Path, revision_id: str) -> dict[str, object]:
+                path.read_bytes()
+                node_id = revision_id.removeprefix("revision:")
+                search = _CloseCountingSearch()
+                searches.setdefault(revision_id, []).append(search)
+                return {
+                    "demo": {
+                        "node": node_id,
+                        "revision_id": revision_id,
+                        "event_count": 3,
+                        "resource_count": 2,
+                    },
+                    "_scale_runtime": _scale_runtime(search),
+                }
+
+            store = DemoAssemblyStore(
+                archive,
+                cache_size=1,
+                dataset_loader=load,
+            )
+            node_a = store.dataset_for_node("node-a")
+            node_b = store.dataset_for_node("node-b")
+
+            self.assertEqual(
+                store.loaded_revision_ids(),
+                ("revision:node-a", "revision:node-b"),
+            )
+            self.assertEqual(searches["revision:node-a"][0].close_count, 0)
+            self.assertEqual(searches["revision:node-b"][0].close_count, 0)
+
+            del node_b
+            gc.collect()
+            self.assertEqual(
+                store.loaded_revision_ids(),
+                ("revision:node-a",),
+            )
+            self.assertEqual(searches["revision:node-b"][0].close_count, 1)
+            self.assertEqual(searches["revision:node-a"][0].close_count, 0)
+
+            revisited_b = store.dataset_for_node("node-b")
+            self.assertEqual(len(searches["revision:node-b"]), 2)
+            self.assertEqual(searches["revision:node-a"][0].close_count, 0)
+            node_a.release()
+            self.assertEqual(searches["revision:node-a"][0].close_count, 1)
+
+            store.close()
+            store.close()
+            self.assertEqual(searches["revision:node-b"][1].close_count, 0)
+            revisited_b.release()
+            self.assertEqual(searches["revision:node-b"][1].close_count, 1)
 
     def test_manifest_inventory_is_available_without_loading_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

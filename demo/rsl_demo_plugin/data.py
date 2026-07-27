@@ -180,10 +180,10 @@ def load_demo_dataset(
     store = current_revision_store()
     selected_revision = revision_id or _active_revision_id.get()
     if node_id is not None:
-        return dict(store.dataset_for_node(node_id))
+        return store.dataset_for_node(node_id)
     if selected_revision is not None:
-        return dict(store.dataset_for_revision(selected_revision))
-    return dict(store.dataset_for_revision(store.default_revision_id))
+        return store.dataset_for_revision(selected_revision)
+    return store.dataset_for_revision(store.default_revision_id)
 
 
 def scale_runtime(dataset: Mapping[str, Any] | None = None) -> ScaleRuntime | None:

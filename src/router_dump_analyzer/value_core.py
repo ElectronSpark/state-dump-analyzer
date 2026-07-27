@@ -21,8 +21,12 @@ def parse_decimal_integer(value: Any, field: str) -> int:
         or (
             isinstance(value, str)
             and not (
-                value.isdigit()
-                or (value.startswith("-") and value[1:].isdigit())
+                (value.isascii() and value.isdigit())
+                or (
+                    value.startswith("-")
+                    and value[1:].isascii()
+                    and value[1:].isdigit()
+                )
             )
         )
     ):

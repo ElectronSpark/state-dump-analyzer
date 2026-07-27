@@ -8,10 +8,11 @@ two endpoint attachments are current and usable.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
-from .canonical import canonical_json
+from .canonical import CanonicalValueError, canonical_opaque_value
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,13 +52,13 @@ class ConnectivityDomainBinding:
 
 
 def _canonical_topology_key(value: Any) -> str:
-    """Use the shared canonical serializer with this API's error contract."""
+    """Use the bounded type-tagged profile with this API's error contract."""
 
     try:
-        return canonical_json(value)
-    except (TypeError, ValueError) as error:
+        return canonical_opaque_value(value)[1]
+    except CanonicalValueError as error:
         raise ValueError(
-            "topology match arguments must be JSON-serializable"
+            "topology match arguments must be bounded canonical values"
         ) from error
 
 
@@ -155,10 +156,17 @@ def resolve_connectivity_domain_reference(
             != requested_contract_version
         ):
             continue
-        if (
-            _canonical_topology_key(normalized_match.get("segment_key"))
-            != requested_key
-        ):
+        if "segment_key" not in normalized_match:
+            continue
+        try:
+            candidate_key = _canonical_topology_key(
+                normalized_match["segment_key"]
+            )
+        except ValueError:
+            # A malformed snapshot declaration is not evidence for an exact
+            # match and must not make an otherwise valid request fail open.
+            continue
+        if candidate_key != requested_key:
             continue
         candidates.append(raw_domain)
 

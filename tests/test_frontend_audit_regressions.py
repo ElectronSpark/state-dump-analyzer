@@ -293,6 +293,104 @@ class SingleNodeAuditRegressionContractTests(unittest.TestCase):
         self.assertIn("remain representable by this browser", zoom)
         self.assertNotRegex(zoom, r"Math\.min\(")
 
+    def test_server_health_and_failure_semantics_remain_visible(self) -> None:
+        normalize_graph = javascript_function(self.script, "normalizedGraph")
+        render_graph = javascript_function(self.script, "renderGraph")
+        request_preview = javascript_function(
+            self.script,
+            "requestFailureIncidentPreview",
+        )
+        render_incident = javascript_function(self.script, "renderIncidentSummary")
+
+        self.assertIn("status_class: statusClass", normalize_graph)
+        self.assertIn("node.status_class", normalize_graph)
+        self.assertIn("node.status", normalize_graph)
+        self.assertIn('statusClass === "error"', render_graph)
+        self.assertIn("state.failureIncidentPreview = events", request_preview)
+        self.assertIn("state.failureIncidentPreview.slice(0, 3)", render_incident)
+        self.assertIn("formatOffset(eventTime(event))", render_incident)
+        self.assertIn('title="${escapeHtml(uid)}"', render_incident)
+
+    def test_node_route_panel_never_infers_local_or_forwards_inactive_branches(
+        self,
+    ) -> None:
+        branches = javascript_function(self.script, "routePayloadBranches")
+        forwarding = javascript_function(
+            self.script,
+            "routePayloadForwardingPresentation",
+        )
+        render = javascript_function(self.script, "renderRoutePayload")
+
+        self.assertIn("item.active === true ? true", branches)
+        self.assertIn("item.active === false ? false", branches)
+        self.assertIn("branches.filter((item) => item.active === true)", forwarding)
+        self.assertIn("branches.filter((item) => item.active === null)", forwarding)
+        self.assertNotIn('"local"', forwarding + render)
+        self.assertIn('"Not returned"', forwarding)
+        self.assertIn("No forwarding branches returned", render)
+        self.assertIn("does not infer local delivery", render)
+        self.assertIn("inactive / not forwarding", render)
+        self.assertIn("payload.result", render)
+
+    def test_range_summary_discloses_bounded_endpoint_comparison(self) -> None:
+        render = javascript_function(self.script, "renderRangeSummary")
+        flags = javascript_function(self.script, "rangeTruncationFlags")
+
+        self.assertIn("endpoint_diff_evaluated_count", render)
+        self.assertIn("affected_resource_count", render)
+        self.assertIn("rangeTruncationFlags(summary)", render)
+        self.assertIn("Endpoint comparison is bounded", render)
+        self.assertIn("evaluated subset", render)
+        self.assertIn("detail sets truncated", render)
+        self.assertIn("endpoint_diff: true", flags)
+        self.assertIn(".range-facts .bounded-fact", self.styles)
+        self.assertIn(".range-scope-note", self.styles)
+
+    def test_latest_temporal_requests_abort_superseded_fetches(self) -> None:
+        helper = javascript_function(self.script, "beginLatestRequest")
+        schedule = javascript_function(self.script, "scheduleTemporalRefresh")
+
+        self.assertIn("state[controllerKey]?.abort()", helper)
+        self.assertIn("new AbortController()", helper)
+        for name, controller in (
+            ("requestTimeline", "timelineAbortController"),
+            ("requestRangeSummary", "rangeAbortController"),
+            ("requestResources", "resourceAbortController"),
+            ("requestDashboards", "dashboardAbortController"),
+            ("requestGraph", "graphAbortController"),
+            ("requestTopology", "topologyAbortController"),
+            ("resolveRoute", "routeAbortController"),
+        ):
+            body = javascript_function(self.script, name)
+            self.assertIn(controller, body)
+            self.assertIn("controller.signal", body)
+            self.assertIn("requestWasAborted", body)
+        for controller in (
+            "graphAbortController",
+            "resourceAbortController",
+            "dashboardAbortController",
+        ):
+            self.assertIn(controller, schedule)
+        topology = javascript_function(self.script, "requestTopology")
+        self.assertLess(
+            topology.index("request = topologyRequestBody()"),
+            topology.index('abortLatestRequests("topologyAbortController")'),
+        )
+        topology_schedule = javascript_function(
+            self.script,
+            "scheduleTopologyRefreshFromCursor",
+        )
+        self.assertNotIn(
+            'abortLatestRequests("topologyAbortController")',
+            topology_schedule,
+        )
+
+    def test_range_boundary_drag_target_does_not_cover_event_lanes(self) -> None:
+        handles = javascript_function(self.script, "updateRangeHandles")
+
+        self.assertNotIn("handle.style.height", handles)
+        self.assertIn("height: 30px", self.styles)
+
 
 class TopologyAuditRegressionContractTests(unittest.TestCase):
     @classmethod
@@ -301,7 +399,7 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
         cls.styles = TOPOLOGY_CSS.read_text(encoding="utf-8")
         cls.page = TOPOLOGY_HTML.read_text(encoding="utf-8")
 
-    def test_health_uses_only_explicit_normalized_classes(self) -> None:
+    def test_health_uses_explicit_normalized_vocabulary(self) -> None:
         declared = javascript_function(self.script, "declaredHealthPresentation")
         node = javascript_function(self.script, "nodeHealth")
         link = javascript_function(self.script, "linkHealth")
@@ -311,7 +409,9 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
         self.assertIn("value?.status_class", declared)
         self.assertIn("value?.health_class", declared)
         self.assertIn('["healthy", "good"]', self.script)
+        self.assertIn('["usable", "good"]', self.script)
         self.assertIn('["degraded", "warning"]', self.script)
+        self.assertIn('["unusable", "error"]', self.script)
         self.assertIn('["error", "error"]', self.script)
         for raw_status in ('"up"', '"down"', '"programmed"'):
             self.assertNotIn(raw_status, self.script[: self.script.index("const state =")])
@@ -321,8 +421,11 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
         self.assertIn("[node, coverage].map(declaredHealthPresentation)", node)
         self.assertIn('return "warning"', node)
         self.assertNotIn(".test(", node)
-        self.assertIn("declaredHealthPresentation(link)", link)
-        self.assertNotIn("link?.status", link)
+        self.assertIn(
+            "declaredHealthPresentation(link, { includeStatus: true })",
+            link,
+        )
+        self.assertIn("includeStatus ? value?.status : null", declared)
         self.assertNotIn("link?.resolution", link)
 
     def test_dirty_device_selection_filters_stale_results_and_refreshes_map(self) -> None:
@@ -370,15 +473,41 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
             endpoint_inputs,
         )
 
-    def test_route_table_seeds_trace_with_routable_value_before_opaque_id(self) -> None:
+    def test_route_table_seeds_trace_with_plugin_canonical_endpoints(self) -> None:
         seed = javascript_function(self.script, "useRouteTableEntry")
+        endpoint = javascript_function(self.script, "routeEndpointSeedValue")
 
         self.assertIn("routeEndpointSeedValue(explicitFlowSource", seed)
         self.assertIn("routeEndpointSeedValue(explicitFlowDestination", seed)
+        self.assertIn("query?.flow?.source ?? query?.source", seed)
+        self.assertIn("raw.resource_id", endpoint)
+        self.assertIn("raw.node_id", endpoint)
+        self.assertLess(endpoint.index("raw.endpoint_id"), endpoint.index("raw.value"))
+        self.assertLess(
+            seed.index("entry.destination?.destination_id"),
+            seed.index("entry.destination?.value"),
+        )
         self.assertIn('setRouteEndpointInput("destination", destination)', seed)
+        self.assertIn('setRouteEndpointInput("source", source)', seed)
+        self.assertNotIn('if (source) setRouteEndpointInput("source", source)', seed)
         self.assertIn("setRouteStartInput(start)", seed)
         self.assertIn("routeStartSeedValue(startDescriptor, entry.node_id)", seed)
         self.assertNotIn("`start:${entry.node_id}`", seed)
+
+    def test_route_result_reflows_without_clipping_evidence(self) -> None:
+        self.assertIn(".mn-route-workbench > *", self.styles)
+        self.assertIn(".mn-route-workbench .mn-route-summary", self.styles)
+        self.assertIn(
+            "grid-template-columns: repeat(2, minmax(0, 1fr))",
+            self.styles,
+        )
+        result_rule = self.styles[
+            self.styles.rindex(".mn-route-result {") :
+            self.styles.index(".mn-route-empty {", self.styles.rindex(".mn-route-result {"))
+        ]
+        self.assertIn("min-width: 0", result_rule)
+        self.assertIn("overflow-x: auto", result_rule)
+        self.assertNotIn("overflow: hidden", result_rule)
 
     def test_route_table_disables_rows_without_a_plugin_trace_query(self) -> None:
         normalize = javascript_function(self.script, "normalizeRouteTableEntry")

@@ -28,6 +28,7 @@ from rsl_demo_plugin import plugin  # noqa: E402
 from rsl_demo_plugin.session import (  # noqa: E402
     DemoDataPolicy,
     DemoDatasetSource,
+    DemoTemporalProvider,
 )
 
 
@@ -218,6 +219,44 @@ class DemoRuntimeTests(unittest.TestCase):
             "source_record_for_event",
         ):
             self.assertTrue(callable(getattr(service, method_name)))
+
+    def test_temporal_services_do_not_pin_revisions_in_a_second_cache(
+        self,
+    ) -> None:
+        source = DemoDatasetSource(_FakeStore())
+        provider = DemoTemporalProvider(source)
+        data_service = NormalizedDataService(source, DemoDataPolicy(source))
+        dataset = {
+            "resources": [],
+            "events": [],
+            "relationship_mutations": [],
+            "demo": {"revision_id": "revision-a"},
+        }
+        metadata = {
+            "revision_id": "revision-a",
+            "timeline_start_ns": 0,
+            "timeline_end_ns": 1,
+            "capture_ns": 1,
+            "default_node": "node-a",
+        }
+
+        with (
+            patch.object(source, "load_dataset", return_value=dataset) as load,
+            patch(
+                "rsl_demo_plugin.temporal_contract.build_demo_plugin_contract",
+                return_value={},
+            ),
+            patch(
+                "rsl_demo_plugin.temporal_contract.build_temporal_metadata",
+                return_value=metadata,
+            ),
+        ):
+            first = provider.for_revision("revision-a", data_service)
+            second = provider.for_revision("revision-a", data_service)
+
+        self.assertIsNot(first, second)
+        self.assertEqual(load.call_count, 2)
+        self.assertFalse(hasattr(provider, "_services"))
 
 
 if __name__ == "__main__":

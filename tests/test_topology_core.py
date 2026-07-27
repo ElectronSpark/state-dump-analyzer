@@ -156,8 +156,62 @@ class ConnectivityDomainReferenceTests(unittest.TestCase):
         reference["match"]["arguments"]["segment_key"] = {"not-json"}
         with self.assertRaisesRegex(
             ValueError,
-            "topology match arguments must be JSON-serializable",
+            "topology match arguments must be bounded canonical values",
         ):
+            resolve_connectivity_domain_reference(
+                self.snapshot,
+                reference,
+                source_node_id="a",
+                target_node_id="p1",
+                source_resource_id="a/if/1",
+                target_resource_id="p1/if/1",
+            )
+
+    def test_missing_segment_key_does_not_alias_an_explicit_null_key(
+        self,
+    ) -> None:
+        reference = copy.deepcopy(self.reference)
+        snapshot = copy.deepcopy(self.snapshot)
+        reference["match"]["arguments"]["segment_key"] = None
+        del snapshot["network_segments"][0]["match"]["segment_key"]
+
+        result = resolve_connectivity_domain_reference(
+            snapshot,
+            reference,
+            source_node_id="a",
+            target_node_id="p1",
+            source_resource_id="a/if/1",
+            target_resource_id="p1/if/1",
+        )
+
+        self.assertFalse(result.resolved)
+        self.assertEqual(result.reason_code, "connectivity_domain_not_found")
+
+    def test_mapping_key_types_are_part_of_exact_topology_identity(
+        self,
+    ) -> None:
+        reference = copy.deepcopy(self.reference)
+        snapshot = copy.deepcopy(self.snapshot)
+        reference["match"]["arguments"]["segment_key"] = {1: "domain"}
+        snapshot["network_segments"][0]["match"]["segment_key"] = {"1": "domain"}
+
+        result = resolve_connectivity_domain_reference(
+            snapshot,
+            reference,
+            source_node_id="a",
+            target_node_id="p1",
+            source_resource_id="a/if/1",
+            target_resource_id="p1/if/1",
+        )
+
+        self.assertFalse(result.resolved)
+        self.assertEqual(result.reason_code, "connectivity_domain_not_found")
+
+    def test_nonfinite_topology_key_is_rejected(self) -> None:
+        reference = copy.deepcopy(self.reference)
+        reference["match"]["arguments"]["segment_key"] = float("nan")
+
+        with self.assertRaisesRegex(ValueError, "bounded canonical values"):
             resolve_connectivity_domain_reference(
                 self.snapshot,
                 reference,
@@ -172,9 +226,7 @@ class ConnectivityDomainReferenceTests(unittest.TestCase):
         snapshot = copy.deepcopy(self.snapshot)
         key = {"site": "Montréal", "vrf": "蓝"}
         reference["match"]["arguments"]["segment_key"] = key
-        snapshot["network_segments"][0]["match"]["segment_key"] = copy.deepcopy(
-            key
-        )
+        snapshot["network_segments"][0]["match"]["segment_key"] = copy.deepcopy(key)
         result = resolve_connectivity_domain_reference(
             snapshot,
             reference,

@@ -691,8 +691,12 @@ inside one plug-in-described LAG attachment.
 Only a declared, versioned exact-token matcher may be equality-grouped by the
 core. Every atom in a compound key is recursively type-tagged, JSON-safe, and
 assembly/matcher-version scoped. UUID, binary, numeric, and string atoms remain
-distinct. Stable attachment identity excludes ephemeral plug-in run IDs, which
-remain provenance only. Prefix parsing,
+distinct; missing differs from null. The comparison profile accepts finite
+floats and caps nesting at four container levels, each container at 32 items,
+the whole key at 1,024 value units, string/byte atoms at 4,096 units, and
+integers at 4,096 bits. Invalid snapshot keys are not candidates, and invalid
+requested keys fail the request. Stable attachment identity excludes ephemeral
+plug-in run IDs, which remain provenance only. Prefix parsing,
 VRF/VPN disambiguation, VLAN/LAG/subinterface membership, interface/neighbor/
 route corroboration, management or loopback exclusion, and external-network
 classification remain plug-in/linker responsibilities. One visible attachment
@@ -991,6 +995,9 @@ for the pair to be consistent. Mirrored, asymmetric, and non-comparable node
 sequences are a separate `path_relation`; they are descriptive and do not
 change that verdict. A transit-start forward prefix and a full return path are
 `not_comparable`, because they cover different spans.
+An unverified return start is also `not_comparable`
+(`reverse_endpoint_start_unknown`); core does not infer endpoint-to-endpoint
+path symmetry from directional reachability alone.
 
 A compatibility scenario fixed to one endpoint pair may accept that exact pair
 in reverse order. Core then selects the executor's opposite directional

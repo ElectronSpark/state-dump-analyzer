@@ -39,6 +39,7 @@ const state = {
   dataset: null,
   timelinePayload: null,
   timelineRequestId: 0,
+  timelineAbortController: null,
   lanes: [],
   resourceCatalogLanes: [],
   laneByResource: new Map(),
@@ -46,6 +47,7 @@ const state = {
   eventByUid: new Map(),
   eventDetailByUid: new Map(),
   eventDetailRequests: new Map(),
+  failureIncidentPreview: [],
   sourceRecords: [],
   sourceRecordByUid: new Map(),
   sourceRecordGroups: new Map(),
@@ -101,6 +103,7 @@ const state = {
   suppressTimelineClickUntil: 0,
   rangeSummary: null,
   rangeRequestId: 0,
+  rangeAbortController: null,
   zoom: 1,
   trackWidth: 900,
   selectedEventUid: null,
@@ -129,12 +132,14 @@ const state = {
   correlatedResourceIds: new Set(),
   resourceQuery: null,
   graphRequestId: 0,
+  graphAbortController: null,
   graphTimeNs: null,
   graphRequestedTimeNs: null,
   graphPending: false,
   correlationListLimit: CORRELATION_LIST_PAGE_SIZE,
   timelineExpansion: null,
   resourceRequestId: 0,
+  resourceAbortController: null,
   resourceRequestedTimeNs: null,
   resourceReturnedTimeNs: null,
   resourcePending: false,
@@ -148,18 +153,21 @@ const state = {
   dashboardQuery: null,
   dashboardQueryError: null,
   dashboardRequestId: 0,
+  dashboardAbortController: null,
   dashboardRequestedTimeNs: null,
   dashboardReturnedTimeNs: null,
   dashboardPending: false,
   topologyCapabilities: null,
   topologyQuery: null,
   topologyRequestId: 0,
+  topologyAbortController: null,
   topologyQueryPending: false,
   topologyUsingFallback: false,
   topologyFollowCursor: true,
   topologyTimer: null,
   temporalTimer: null,
   routeRequestId: 0,
+  routeAbortController: null,
   hoverModels: new Map(),
   hoverOpenTimer: null,
   hoverCloseTimer: null,
@@ -175,6 +183,28 @@ const state = {
   densityLocalCache: null,
   densityErrorKey: null,
 };
+
+function beginLatestRequest(controllerKey) {
+  state[controllerKey]?.abort();
+  const controller = new AbortController();
+  state[controllerKey] = controller;
+  return controller;
+}
+
+function finishLatestRequest(controllerKey, controller) {
+  if (state[controllerKey] === controller) state[controllerKey] = null;
+}
+
+function requestWasAborted(error, controller) {
+  return controller?.signal.aborted || error?.name === "AbortError";
+}
+
+function abortLatestRequests(...controllerKeys) {
+  controllerKeys.forEach((key) => {
+    state[key]?.abort();
+    state[key] = null;
+  });
+}
 
 function workspaceMetadata(dataset = state.dataset) {
   const metadata = dataset?.workspace;
@@ -2603,7 +2633,6 @@ function updateRangeHandles(bounds) {
       content.appendChild(handle);
     }
     handle.style.left = `${LANE_WIDTH + ratioBetween(value) * state.trackWidth}px`;
-    handle.style.height = `${Math.max(content.scrollHeight, 44)}px`;
     handle.setAttribute("role", "slider");
     handle.setAttribute("aria-label", label);
     handle.setAttribute("aria-valuemin", "0");
@@ -2722,6 +2751,11 @@ function markCorrelationPending(timestampNs = state.cursorNs) {
 
 function scheduleTemporalRefresh() {
   window.clearTimeout(state.temporalTimer);
+  abortLatestRequests(
+    "graphAbortController",
+    "resourceAbortController",
+    "dashboardAbortController",
+  );
   markCorrelationPending(state.cursorNs);
   state.temporalTimer = window.setTimeout(() => {
     requestGraph();
@@ -3539,6 +3573,12 @@ function endpointDiffItems(summary) {
   return diff.items || diff.changed || diff.resources || Object.entries(diff).map(([resource_id, value]) => ({ resource_id, ...(typeof value === "object" ? value : { change: value }) }));
 }
 
+function rangeTruncationFlags(summary) {
+  const raw = summary?.truncated;
+  if (raw === true) return { events: true, affected_resources: true, status_segments: true, endpoint_diff: true, relationship_changes: true };
+  return raw && typeof raw === "object" ? raw : {};
+}
+
 function renderRangeSummary(draft = false) {
   const bounds = rangeBounds();
   if (!bounds) {
@@ -3554,17 +3594,27 @@ function renderRangeSummary(draft = false) {
   const failures = summary.failure_count ?? (Array.isArray(summary.events) ? summary.events.filter(eventFailed).length : 0);
   const resources = summary.affected_resource_count ?? normalizeCount(summary.affected_resources);
   const relations = summary.relationship_change_count ?? normalizeCount(summary.relationship_changes);
-  byId("range-facts").innerHTML = `<span>${Number(eventCount).toLocaleString()} events</span><span class="failure-fact">${Number(failures).toLocaleString()} failed</span><span>${Number(resources).toLocaleString()} resources</span><span>${Number(relations).toLocaleString()} relationship changes</span>`;
+  const truncation = rangeTruncationFlags(summary);
+  const evaluatedEndpoints = Number(summary.endpoint_diff_evaluated_count ?? resources);
+  const truncatedKinds = Object.entries(truncation).filter(([, value]) => value === true).map(([key]) => titleCase(key));
+  const endpointScope = `${evaluatedEndpoints.toLocaleString()} of ${Number(resources).toLocaleString()} endpoint states evaluated`;
+  byId("range-facts").innerHTML = `<span>${Number(eventCount).toLocaleString()} events</span><span class="failure-fact">${Number(failures).toLocaleString()} failed</span><span>${Number(resources).toLocaleString()} resources</span><span>${Number(relations).toLocaleString()} relationship changes</span><span class="${truncation.endpoint_diff ? "bounded-fact" : ""}">${escapeHtml(endpointScope)}${truncation.endpoint_diff ? " / bounded" : ""}</span>${truncatedKinds.length ? `<span class="bounded-fact" title="${escapeHtml(`Bounded detail arrays: ${truncatedKinds.join(", ")}`)}">${truncatedKinds.length} detail sets truncated</span>` : ""}`;
   const diff = endpointDiffItems(summary);
   const relationshipChanges = Array.isArray(summary.relationship_changes) ? summary.relationship_changes : [];
+  const endpointOmitted = Math.max(0, Number(resources) - evaluatedEndpoints);
+  const endpointScopeNote = truncation.endpoint_diff
+    ? `<p class="range-scope-note">Endpoint comparison is bounded: ${escapeHtml(endpointScope)}${endpointOmitted ? `; ${endpointOmitted.toLocaleString()} affected resources were not evaluated` : ""}.</p>`
+    : "";
   const diffHtml = diff.length
     ? `<strong>Endpoint diff</strong><div>${diff.slice(0, 8).map((item) => {
       const resourceId = canonicalResourceId(item.resource_id) || canonicalResourceId(item.id);
       const label = item.label ?? resourceId ?? "unidentified resource";
       const content = `<span>${escapeHtml(formatValue(label))}</span><code>${escapeHtml(conciseEndpointState(item.before ?? item.start_status))} -> ${escapeHtml(conciseEndpointState(item.after ?? item.end_status ?? item.change ?? "changed"))}</code>`;
       return resourceId ? `<button type="button" data-resource-id="${escapeHtml(resourceId)}">${content}</button>` : `<span>${content}</span>`;
-    }).join("")}</div>`
-    : "<span>No endpoint state difference.</span>";
+    }).join("")}</div>${endpointScopeNote}`
+    : truncation.endpoint_diff
+      ? `<span>No endpoint state difference was found in the evaluated subset.</span>${endpointScopeNote}`
+      : "<span>No endpoint state difference.</span>";
   const relationshipHtml = relationshipChanges.length
     ? `<strong>Relationship changes</strong><div class="range-relationship-changes">${relationshipChanges.slice(0, 10).map((item) => {
       const source = canonicalResourceId(item.source) || canonicalResourceId(item.source_resource_id);
@@ -3583,6 +3633,7 @@ async function requestRangeSummary() {
   const bounds = rangeBounds();
   if (!bounds) return;
   const requestId = ++state.rangeRequestId;
+  abortLatestRequests("rangeAbortController");
   state.rangeSummary = null;
   renderRangeSummary();
   if (isTopologyNodeSnapshot()) {
@@ -3592,14 +3643,21 @@ async function requestRangeSummary() {
     renderRangeSummary();
     return requestId === state.rangeRequestId;
   }
+  const controller = beginLatestRequest("rangeAbortController");
   try {
-    const summary = await api(revisionPath("range/summary"), { method: "POST", body: JSON.stringify({ start_ns: bounds[0].toString(), end_ns: bounds[1].toString() }) });
+    const summary = await api(revisionPath("range/summary"), {
+      method: "POST",
+      signal: controller.signal,
+      body: JSON.stringify({ start_ns: bounds[0].toString(), end_ns: bounds[1].toString() }),
+    });
     if (requestId !== state.rangeRequestId) return;
     state.rangeSummary = summary;
-  } catch (_error) {
+  } catch (error) {
+    if (requestWasAborted(error, controller)) return;
     if (requestId !== state.rangeRequestId || !rangeBounds()) return;
     state.rangeSummary = localRangeSummary();
   }
+  finishLatestRequest("rangeAbortController", controller);
   renderRangeSummary();
 }
 
@@ -3609,6 +3667,7 @@ function clearRangeSelection({ refreshEventLog = true } = {}) {
   state.rangeEndNs = null;
   state.rangeSummary = null;
   state.rangeRequestId += 1;
+  abortLatestRequests("rangeAbortController");
   byId("clear-range").hidden = true;
   byId("range-error").textContent = "";
   updateRangeBands(null, refreshEventLog);
@@ -3697,11 +3756,13 @@ function scaleTimelineResourceIds() {
 
 async function requestTimeline() {
   const requestId = ++state.timelineRequestId;
+  abortLatestRequests("timelineAbortController");
   if (isTopologyNodeSnapshot()) {
     state.timelinePayload = null;
     normalizeTimeline(null);
     return requestId === state.timelineRequestId;
   }
+  const controller = beginLatestRequest("timelineAbortController");
   const selectedRange = rangeBounds();
   const scaleResourceIds = scaleTimelineResourceIds();
   const selectedRelationshipRoot = canonicalResourceId(state.selectedResourceId);
@@ -3713,6 +3774,7 @@ async function requestTimeline() {
   try {
     const payload = await api(revisionPath("timeline/query"), {
       method: "POST",
+      signal: controller.signal,
       body: JSON.stringify({
         start_ns: state.viewStartNs.toString(),
         end_ns: state.viewEndNs.toString(),
@@ -3743,10 +3805,12 @@ async function requestTimeline() {
     if (requestId !== state.timelineRequestId) return false;
     state.timelinePayload = payload;
   } catch (error) {
+    if (requestWasAborted(error, controller)) return false;
     if (requestId !== state.timelineRequestId) return false;
     showToast("Timeline query rejected: " + error.message);
     if (!state.timelinePayload) state.timelinePayload = { lanes: [], record_lanes: [] };
   }
+  finishLatestRequest("timelineAbortController", controller);
   normalizeTimeline(state.timelinePayload);
   return true;
 }
@@ -3837,6 +3901,7 @@ async function requestResources() {
   const requestId = ++state.resourceRequestId;
   const viewId = state.selectedResourceViewId;
   const requestedTimeNs = state.cursorNs;
+  abortLatestRequests("resourceAbortController");
   markResourcesPending(requestedTimeNs);
   if (isTopologyNodeSnapshot()) {
     state.resourceQuery = {
@@ -3852,9 +3917,11 @@ async function requestResources() {
     renderResourceTables();
     return;
   }
+  const controller = beginLatestRequest("resourceAbortController");
   try {
     const payload = await api(revisionPath("resources/query"), {
       method: "POST",
+      signal: controller.signal,
       body: JSON.stringify({
         time_ns: requestedTimeNs.toString(),
         view_id: viewId || undefined,
@@ -3868,6 +3935,7 @@ async function requestResources() {
     state.resourceQuery = payload;
     for (const item of payload.items || []) registerResource(item, item.resource_id);
   } catch (error) {
+    if (requestWasAborted(error, controller)) return;
     if (requestId !== state.resourceRequestId) return;
     state.resourceQuery = {
       time_ns: requestedTimeNs.toString(),
@@ -3879,6 +3947,7 @@ async function requestResources() {
       query_error: error.message,
     };
   }
+  finishLatestRequest("resourceAbortController", controller);
   settleResourceRequest(state.resourceQuery, requestedTimeNs);
   renderResourceTables();
 }
@@ -4481,6 +4550,7 @@ async function requestDashboards() {
   const requestId = ++state.dashboardRequestId;
   const requestedTimeNs = state.cursorNs;
   const dashboardIds = dashboardQueryIds();
+  abortLatestRequests("dashboardAbortController");
   state.dashboardQueryError = null;
   markDashboardsPending(requestedTimeNs);
 
@@ -4507,9 +4577,11 @@ async function requestDashboards() {
     return;
   }
 
+  const controller = beginLatestRequest("dashboardAbortController");
   try {
     const payload = await api(revisionPath("dashboards/query"), {
       method: "POST",
+      signal: controller.signal,
       body: JSON.stringify({
         time_ns: requestedTimeNs.toString(),
         dashboard_ids: dashboardIds,
@@ -4518,6 +4590,7 @@ async function requestDashboards() {
     if (requestId !== state.dashboardRequestId) return;
     settleDashboardRequest(payload, requestedTimeNs);
   } catch (error) {
+    if (requestWasAborted(error, controller)) return;
     if (requestId !== state.dashboardRequestId) return;
     state.dashboardQueryError = error.message;
     state.dashboardReturnedTimeNs = state.dashboardQuery
@@ -4525,6 +4598,7 @@ async function requestDashboards() {
       : null;
     state.dashboardPending = false;
   }
+  finishLatestRequest("dashboardAbortController", controller);
   renderPluginDashboards();
 }
 
@@ -5159,8 +5233,8 @@ function localGraphAt(time) {
   ]).filter(Boolean));
   const nodes = [...ids].map((id) => {
     const record = state.resourceById.get(id) || { resource_id: id };
-    const temporal = state.laneByResource.has(id) ? statusAtLane(state.laneByResource.get(id), time) : { status: "unknown", properties: {} };
-    return { id, label: resourceLabel(record, id), kind: resourceKind(record, id), layer: resourceLayer(record, id), status: temporal.status, state: temporal.properties, quality: record.quality || "unknown", complete_record: state.resourceById.has(id), presentation_tags: [...presentationTags(record)] };
+    const temporal = state.laneByResource.has(id) ? statusAtLane(state.laneByResource.get(id), time) : { status: "unknown", statusClass: "unknown", properties: {} };
+    return { id, label: resourceLabel(record, id), kind: resourceKind(record, id), layer: resourceLayer(record, id), status: temporal.status, status_class: temporal.statusClass, state: temporal.properties, quality: record.quality || "unknown", complete_record: state.resourceById.has(id), presentation_tags: [...presentationTags(record)] };
   });
   return {
     nodes,
@@ -5270,6 +5344,7 @@ function rerenderTimelinePreservingScroll() {
 async function requestGraph() {
   const requestId = ++state.graphRequestId;
   const requestedTimeNs = state.cursorNs;
+  abortLatestRequests("graphAbortController");
   state.correlationListLimit = CORRELATION_LIST_PAGE_SIZE;
   markCorrelationPending(requestedTimeNs);
   if (isTopologyNodeSnapshot()) {
@@ -5283,12 +5358,14 @@ async function requestGraph() {
     rerenderTimelinePreservingScroll();
     return;
   }
+  const controller = beginLatestRequest("graphAbortController");
   try {
     const resourceIds = state.graphShowFull
       ? []
       : state.selectedResourceId ? [state.selectedResourceId] : [];
     const graph = await api(revisionPath("graph/query"), {
       method: "POST",
+      signal: controller.signal,
       body: JSON.stringify({
         time_ns: requestedTimeNs.toString(),
         resource_ids: resourceIds,
@@ -5298,10 +5375,12 @@ async function requestGraph() {
     });
     if (requestId !== state.graphRequestId) return;
     state.graph = graph;
-  } catch (_error) {
+  } catch (error) {
+    if (requestWasAborted(error, controller)) return;
     if (requestId !== state.graphRequestId) return;
     state.graph = { ...localGraphAt(requestedTimeNs), time_ns: requestedTimeNs.toString() };
   }
+  finishLatestRequest("graphAbortController", controller);
   state.graphTimeNs = toNs(state.graph?.time_ns, requestedTimeNs);
   state.graphRequestedTimeNs = requestedTimeNs;
   state.graphPending = false;
@@ -5318,7 +5397,23 @@ function normalizedGraph() {
     const id = canonicalResourceId(node.id) || canonicalResourceId(node.resource_id);
     if (!id) return null;
     const record = state.resourceById.get(id) || node;
-    return { ...node, id, label: node.label || resourceLabel(record, id), kind: node.kind || resourceKind(record, id), layer: node.layer || resourceLayer(record, id), presentation_tags: node.presentation_tags || [...presentationTags(record)] };
+    // The graph endpoint uses `status` for the normalized class and
+    // `status_value` for the plug-in-owned condition.  Normalize that transport
+    // shape once so renderers do not miss failure highlighting.
+    const statusClass = typeof node.status_class === "string" && node.status_class
+      ? node.status_class
+      : typeof node.status === "string" && node.status
+        ? node.status
+        : "unknown";
+    return {
+      ...node,
+      id,
+      label: node.label || resourceLabel(record, id),
+      kind: node.kind || resourceKind(record, id),
+      layer: node.layer || resourceLayer(record, id),
+      status_class: statusClass,
+      presentation_tags: node.presentation_tags || [...presentationTags(record)],
+    };
   }).filter(Boolean);
   const edges = (graph.edges || graph.relationships || []).map((edge, index) => {
     const source = canonicalResourceId(edge.source) || canonicalResourceId(edge.source_resource_id);
@@ -6435,29 +6530,49 @@ function incidentCausalPath() {
 }
 
 async function requestFailureIncidentPreview() {
-  if (!usesServerWindowedHistory()) return [];
+  const deterministicFailures = () => [...state.eventByUid.values()]
+    .filter(eventFailed)
+    .sort((left, right) => {
+      const leftTime = eventTime(left);
+      const rightTime = eventTime(right);
+      if (leftTime !== rightTime) return leftTime < rightTime ? -1 : 1;
+      return String(left.event_uid || left.event_id || "").localeCompare(String(right.event_uid || right.event_id || ""));
+    })
+    .slice(0, 3);
+  if (!usesServerWindowedHistory()) {
+    state.failureIncidentPreview = deterministicFailures();
+    return state.failureIncidentPreview;
+  }
   try {
     const payload = await api(revisionPath("events?outcome=failure&limit=3"));
-    const events = Array.isArray(payload?.items) ? payload.items : [];
+    const events = (Array.isArray(payload?.items) ? payload.items : [])
+      .slice()
+      .sort((left, right) => {
+        const leftTime = eventTime(left);
+        const rightTime = eventTime(right);
+        if (leftTime !== rightTime) return leftTime < rightTime ? -1 : 1;
+        return String(left.event_uid || left.event_id || "").localeCompare(String(right.event_uid || right.event_id || ""));
+      })
+      .slice(0, 3);
     events.forEach((event) => {
       const uid = String(event?.event_uid || event?.event_id || "");
       if (uid) state.eventByUid.set(uid, { ...event, event_uid: uid });
     });
-    return events;
+    state.failureIncidentPreview = events;
   } catch (_error) {
     // The incident preview is optional; timeline and event-log queries remain
     // usable when a plug-in supplies no failure preview.
-    return [];
+    state.failureIncidentPreview = deterministicFailures();
   }
+  return state.failureIncidentPreview;
 }
 
 function renderIncidentSummary() {
-  const failures = [...state.eventByUid.values()].filter(eventFailed);
   const causalPath = incidentCausalPath();
   const explicitPath = causalPath.events.length > 1 && causalPath.links.length > 0;
   const selected = explicitPath
     ? causalPath.events
-    : (failures.length ? failures : [...state.eventByUid.values()].slice(-2)).slice(0, 3);
+    : state.failureIncidentPreview.slice(0, 3);
   if (isTopologyNodeSnapshot() && !selected.length) {
     byId("incident-chain").innerHTML = nodeSnapshotUnavailableMarkup(
       "Event history is unavailable for this member snapshot",
@@ -6473,7 +6588,7 @@ function renderIncidentSummary() {
     const arrow = explicitPath && link
       ? `<div class="chain-arrow"><span>${escapeHtml(causalLinkDisplayLabel(link.link_type, causalPath.descriptorByType))}</span><small>${escapeHtml(link.quality || link.provenance || "plug-in declared")}</small></div>`
       : "";
-    return `${arrow}<button class="chain-node" style="--chain-color:${layerColor(subject.layer)}" data-event-uid="${escapeHtml(uid)}" type="button"><span>${escapeHtml(humanLayer(subject.layer))}</span><strong>${escapeHtml(formatValue(subject.raw_key ?? event.event_type))}</strong><small>${escapeHtml(`${event.action || event.operation || "event"} / ${eventOutcomeText(event)}`)}</small></button>`;
+    return `${arrow}<button class="chain-node" style="--chain-color:${layerColor(subject.layer)}" data-event-uid="${escapeHtml(uid)}" type="button"><span>${escapeHtml(humanLayer(subject.layer))}</span><strong>${escapeHtml(formatValue(subject.raw_key ?? event.event_type))}</strong><small>${escapeHtml(`${event.action || event.operation || "event"} / ${eventOutcomeText(event)}`)}</small><time>${escapeHtml(formatOffset(eventTime(event)))}</time><code title="${escapeHtml(uid)}">${escapeHtml(uid)}</code></button>`;
   }).join("")}</div>`;
   byId("incident-chain").querySelectorAll("[data-event-uid]").forEach((button) => button.addEventListener("click", () => { selectEvent(button.dataset.eventUid, true); byId("timeline").scrollIntoView({ behavior: "smooth", block: "start" }); }));
 }
@@ -7148,6 +7263,7 @@ async function requestTopology(event) {
     errorTarget.textContent = error.message;
     return;
   }
+  abortLatestRequests("topologyAbortController");
   const requestId = ++state.topologyRequestId;
   state.topologyQueryPending = true;
   renderTopologyQueryState();
@@ -7157,18 +7273,22 @@ async function requestTopology(event) {
     payload = localTopologyQuery(request, "bounded node snapshot");
     usingFallback = true;
   } else {
+    const controller = beginLatestRequest("topologyAbortController");
     try {
       payload = await api(revisionPath("topology/query"), {
         method: "POST",
+        signal: controller.signal,
         body: JSON.stringify(request),
       });
     } catch (error) {
+      if (requestWasAborted(error, controller)) return;
       payload = localTopologyQuery(request, error.message);
       usingFallback = true;
       if (requestId === state.topologyRequestId) {
         errorTarget.textContent = `Topology API unavailable; showing bounded local reconstruction (${error.message}).`;
       }
     }
+    finishLatestRequest("topologyAbortController", controller);
   }
   if (requestId !== state.topologyRequestId) return;
   state.topologyQuery = payload;
@@ -7315,6 +7435,53 @@ function localNodeRouteResponse(requestContext) {
   return match?.response && typeof match.response === "object" ? match.response : null;
 }
 
+function routePayloadBranches(payload) {
+  const declared = Array.isArray(payload?.branches)
+    ? payload.branches.filter((item) => item && typeof item === "object")
+    : [];
+  if (declared.length) {
+    return declared.map((item, index) => ({
+      id: String(item.branch_id ?? item.next_hop_id ?? `branch-${index + 1}`),
+      nextHop: item.next_hop ?? item.node_id ?? item.next_hop_id ?? null,
+      egress: item.egress_interface_resource_id ?? item.egress_interface ?? item.via ?? null,
+      active: item.active === true ? true : item.active === false ? false : null,
+      result: String(item.result ?? item.disposition ?? item.status ?? (item.active === true ? "active" : item.active === false ? "inactive" : "unknown")),
+    }));
+  }
+  const nextHops = Array.isArray(payload?.next_hops) ? payload.next_hops : [];
+  const egress = Array.isArray(payload?.egress_interfaces) ? payload.egress_interfaces : [];
+  return Array.from({ length: Math.max(nextHops.length, egress.length) }, (_, index) => ({
+    id: `declared-${index + 1}`,
+    nextHop: nextHops[index] ?? null,
+    egress: egress[index] ?? null,
+    active: null,
+    result: "activity unknown",
+  }));
+}
+
+function routePayloadForwardingPresentation(payload) {
+  const branches = routePayloadBranches(payload);
+  const active = branches.filter((item) => item.active === true);
+  const activityUnknown = branches.filter((item) => item.active === null);
+  const forwarding = active.length ? active : activityUnknown;
+  const unique = (values) => [...new Set(values
+    .filter((value) => value !== null && value !== undefined && value !== "")
+    .map(String))];
+  const nextHops = unique(forwarding.map((item) => item.nextHop));
+  const egress = unique(forwarding.map((item) => item.egress));
+  const scope = active.length
+    ? `${active.length} active`
+    : activityUnknown.length
+      ? `${activityUnknown.length} declared; activity unknown`
+      : "no active branch";
+  return {
+    branches,
+    nextHopText: nextHops.length ? nextHops.join(", ") : "Not returned",
+    egressText: egress.length ? egress.join(", ") : "Not returned",
+    scope,
+  };
+}
+
 function renderRoutePayload(result, payload, requestContext) {
   const steps = explanationSteps(payload.explanation);
   const returnedBasis = payload.basis?.kind || payload.basis_kind || requestContext.basisKind || "unknown basis";
@@ -7322,12 +7489,21 @@ function renderRoutePayload(result, payload, requestContext) {
   const returnedTimeCopy = returnedTime === null || returnedTime === undefined
     ? `requested at ${formatOffset(requestContext.timeNs)}`
     : `returned for ${formatOffset(toNs(returnedTime, requestContext.timeNs))}`;
-  result.innerHTML = `<div class="route-request-attribution"><strong>${escapeHtml(requestContext.routeLabel || "Plug-in route")}</strong><span>${escapeHtml(titleCase(returnedBasis))} · ${escapeHtml(returnedTimeCopy)}</span></div><div class="route-answer"><div><span>Matched destination</span><strong>${escapeHtml(payload.matched_prefix || "unknown")}</strong></div><div><span>Next hop</span><strong>${escapeHtml(payload.next_hops?.join(", ") || payload.branches?.map((item) => item.next_hop).filter(Boolean).join(", ") || "local")}</strong></div><div><span>Egress</span><strong>${escapeHtml(payload.egress_interfaces?.join(", ") || payload.branches?.map((item) => item.egress_interface_resource_id).filter(Boolean).join(", ") || "local")}</strong></div></div><ol class="route-path">${steps.map((step) => `<li style="margin-left:${step.depth * 12}px">${escapeHtml(step.text)}</li>`).join("")}</ol><p class="panel-footnote">${escapeHtml(`${returnedBasis} / ${payload.quality || "unknown"}`)}</p>`;
+  const forwarding = routePayloadForwardingPresentation(payload);
+  const resultValue = String(payload.result ?? payload.disposition ?? "unknown");
+  const branchMarkup = forwarding.branches.length
+    ? `<div class="route-branch-list"><strong>Plug-in-declared branches</strong>${forwarding.branches.map((branch) => {
+      const stateLabel = branch.active === true ? "active" : branch.active === false ? "inactive / not forwarding" : branch.result;
+      return `<div class="route-branch is-${branch.active === true ? "active" : branch.active === false ? "inactive" : "unknown"}"><span>${escapeHtml(branch.nextHop ?? "next hop not returned")}</span><code>${escapeHtml(branch.egress ?? "egress not returned")}</code><em>${escapeHtml(stateLabel)}</em></div>`;
+    }).join("")}</div>`
+    : '<div class="route-branch-list is-empty"><strong>No forwarding branches returned</strong><span>The core does not infer local delivery from an empty result.</span></div>';
+  result.innerHTML = `<div class="route-request-attribution"><strong>${escapeHtml(requestContext.routeLabel || "Plug-in route")}</strong><span>${escapeHtml(titleCase(returnedBasis))} · ${escapeHtml(returnedTimeCopy)} · result ${escapeHtml(titleCase(resultValue))}</span></div><div class="route-answer"><div><span>Matched destination</span><strong>${escapeHtml(payload.matched_prefix ?? "Not returned")}</strong></div><div><span>Forwarding next hop</span><strong>${escapeHtml(forwarding.nextHopText)}</strong><small>${escapeHtml(forwarding.scope)}</small></div><div><span>Forwarding egress</span><strong>${escapeHtml(forwarding.egressText)}</strong><small>${escapeHtml(forwarding.scope)}</small></div></div>${branchMarkup}<ol class="route-path">${steps.map((step) => `<li style="margin-left:${step.depth * 12}px">${escapeHtml(step.text)}</li>`).join("")}</ol><p class="panel-footnote">${escapeHtml(`${returnedBasis} / ${payload.quality || "unknown"} / ${resultValue}`)}</p>`;
   result.setAttribute("aria-busy", "false");
 }
 
 async function resolveRoute(event) {
   event?.preventDefault();
+  abortLatestRequests("routeAbortController");
   const form = byId("route-form");
   const data = new FormData(form);
   const result = byId("route-result");
@@ -7359,9 +7535,11 @@ async function resolveRoute(event) {
   }
   result.setAttribute("aria-busy", "true");
   result.innerHTML = `<div class="empty-state route-request-state">Resolving ${escapeHtml(requestContext.routeLabel || "plug-in route")} using ${escapeHtml(titleCase(requestContext.basisKind || "selected basis"))} at ${escapeHtml(formatOffset(requestContext.timeNs))}…</div>`;
+  const controller = beginLatestRequest("routeAbortController");
   try {
     const payload = await api(revisionPath("routes/resolve"), {
       method: "POST",
+      signal: controller.signal,
       body: JSON.stringify({
         route_id: requestContext.routeId,
         basis_kind: requestContext.basisKind,
@@ -7372,10 +7550,12 @@ async function resolveRoute(event) {
     // renderRoutePayload computes returnedTimeCopy from this exact request.
     renderRoutePayload(result, payload, requestContext);
   } catch (error) {
+    if (requestWasAborted(error, controller)) return;
     if (requestId !== state.routeRequestId) return;
     result.innerHTML = `<div class="empty-state"><strong>Route resolution failed for ${escapeHtml(requestContext.routeLabel || "the selected route")}</strong><span>${escapeHtml(titleCase(requestContext.basisKind || "selected basis"))} at ${escapeHtml(formatOffset(requestContext.timeNs))}</span><br>${escapeHtml(error.message)}</div>`;
     result.setAttribute("aria-busy", "false");
   }
+  finishLatestRequest("routeAbortController", controller);
 }
 
 function filteredEvents() {

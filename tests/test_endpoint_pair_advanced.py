@@ -20,22 +20,32 @@ class EndpointPairAdvancedTests(unittest.TestCase):
             "reverse_node_sequence": ("node-b", "transit-p-1", "node-a"),
             "forward_start_node_id": "node-a",
             "traffic_source_node_id": "node-a",
+            "reverse_starts_at_destination_endpoint": True,
         }
         arguments.update(overrides)
         return evaluate_endpoint_reachability_pair(**arguments)  # type: ignore[arg-type]
 
     def test_existing_boolean_only_call_shape_remains_compatible(self) -> None:
-        evaluation = self.evaluate()
+        evaluation = self.evaluate(
+            reverse_starts_at_destination_endpoint=None,
+        )
 
         self.assertEqual(evaluation.endpoint_state, "bidirectionally_reachable")
-        self.assertEqual(evaluation.comparison_state, "symmetric_reachable")
+        self.assertEqual(
+            evaluation.comparison_state,
+            "bidirectionally_reachable",
+        )
         self.assertTrue(evaluation.consistent)
-        self.assertEqual(evaluation.path_relation, "symmetric")
+        self.assertEqual(evaluation.path_relation, "not_comparable")
         self.assertEqual(evaluation.forward_reachability_state, "reached")
         self.assertEqual(evaluation.reverse_reachability_state, "reached")
         self.assertTrue(evaluation.forward_endpoint_span_complete)
-        self.assertTrue(evaluation.reverse_endpoint_span_complete)
+        self.assertFalse(evaluation.reverse_endpoint_span_complete)
         self.assertEqual(evaluation.path_relation_basis, "single_path")
+        self.assertEqual(
+            evaluation.path_relation_reason,
+            "reverse_endpoint_start_unknown",
+        )
 
     def test_partial_active_direction_is_preserved_not_flattened_to_unknown(
         self,

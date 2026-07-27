@@ -166,12 +166,14 @@ def evaluate_endpoint_reachability_pair(
     booleans.  The older node-ID comparison remains a compatibility fallback
     and cannot distinguish two attachments on the same node.
 
-    Existing callers may continue to supply only the directional booleans.
-    Explicit directional states preserve richer aggregate results such as
-    ``partial_active_reachability`` instead of collapsing them into unknown.
-    A caller that knows the active result is multipath may provide both branch
-    sets for comparison, or set ``multipath=True`` without branch sets to
-    explicitly make path shape non-comparable.
+    Existing callers may continue to supply only the directional booleans, but
+    path-shape comparison remains unavailable unless the return trace is known
+    to start at the destination endpoint. Explicit directional states preserve
+    richer aggregate results such as ``partial_active_reachability`` instead of
+    collapsing them into unknown. A caller that knows the active result is
+    multipath may provide both branch sets for comparison, or set
+    ``multipath=True`` without branch sets to explicitly make path shape
+    non-comparable.
     """
 
     for label, value in (
@@ -329,8 +331,6 @@ def evaluate_endpoint_reachability_pair(
     )
     reverse_span_starts_at_destination = (
         reverse_starts_at_destination_endpoint
-        if reverse_starts_at_destination_endpoint is not None
-        else True
     )
     forward_endpoint_span_complete = (
         forward_complete
@@ -340,7 +340,7 @@ def evaluate_endpoint_reachability_pair(
     reverse_endpoint_span_complete = (
         reverse_complete
         and reverse_state == "reached"
-        and reverse_span_starts_at_destination
+        and reverse_span_starts_at_destination is True
     )
     branch_set_comparison = (
         multipath
@@ -367,6 +367,8 @@ def evaluate_endpoint_reachability_pair(
         path_relation = "not_comparable"
         if not forward_span_starts_at_source:
             path_relation_reason = "forward_starts_inside_flow_path"
+        elif reverse_span_starts_at_destination is None:
+            path_relation_reason = "reverse_endpoint_start_unknown"
         elif not reverse_span_starts_at_destination:
             path_relation_reason = "reverse_starts_inside_flow_path"
         elif (

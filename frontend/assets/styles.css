@@ -346,10 +346,22 @@ button.chain-node:hover {
 }
 
 .chain-node span,
-.chain-node small {
+.chain-node small,
+.chain-node time,
+.chain-node code {
   color: var(--muted);
   font-family: var(--mono);
   font-size: 10px;
+}
+
+.chain-node time,
+.chain-node code {
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--muted-2);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chain-node strong {
@@ -1361,6 +1373,64 @@ button.chain-node:hover {
   font-size: 10px;
 }
 
+.route-answer small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted-2);
+  font-size: 8px;
+}
+
+.route-branch-list {
+  display: grid;
+  gap: 5px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: rgba(6, 17, 24, 0.44);
+}
+
+.route-branch-list > strong,
+.route-branch-list > span {
+  color: var(--muted-2);
+  font-size: 8px;
+}
+
+.route-branch {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border-left: 2px solid var(--line);
+  background: rgba(255, 255, 255, 0.018);
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.route-branch.is-active {
+  border-left-color: var(--green);
+  color: var(--text);
+}
+
+.route-branch.is-inactive {
+  border-left-color: var(--amber);
+  opacity: 0.7;
+}
+
+.route-branch code,
+.route-branch em {
+  overflow-wrap: anywhere;
+  color: inherit;
+  font: inherit;
+}
+
+.route-branch em {
+  font-family: var(--mono);
+  font-size: 8px;
+  white-space: nowrap;
+}
+
 .route-path {
   margin: 12px 0 0;
   padding-left: 18px;
@@ -1854,6 +1924,14 @@ footer button {
     grid-template-columns: 1fr;
   }
 
+  .route-branch {
+    grid-template-columns: 1fr;
+  }
+
+  .route-branch em {
+    white-space: normal;
+  }
+
   .log-filters {
     width: 100%;
     flex-direction: column;
@@ -2058,8 +2136,9 @@ footer button {
   position: absolute;
   z-index: 12;
   top: 0;
-  width: 20px;
-  min-width: 20px;
+  width: 16px;
+  min-width: 16px;
+  height: 30px;
   margin: 0;
   padding: 0;
   border: 0;
@@ -3026,9 +3105,20 @@ footer button {
   color: var(--red);
 }
 
+.range-facts .bounded-fact {
+  border-color: rgba(245, 184, 91, 0.38);
+  color: var(--amber);
+}
+
 .range-diff {
   color: var(--muted-2);
   font-size: 9px;
+}
+
+.range-scope-note {
+  margin: 7px 0 0;
+  color: var(--amber);
+  line-height: 1.45;
 }
 
 .range-diff > div {

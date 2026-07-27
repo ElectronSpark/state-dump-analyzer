@@ -1171,6 +1171,9 @@ A bidirectional response classifies endpoint reachability as
 endpoint-reachability verdict. In particular, a forward trace that begins
 inside the flow at a transit member cannot be meaningfully reversed and uses
 `not_comparable` with reason `forward_starts_inside_flow_path`.
+If the return start has not been verified as a destination attachment, path
+shape is `not_comparable` with reason `reverse_endpoint_start_unknown`; a
+separately established bidirectional endpoint result remains intact.
 
 Every path may additionally carry ordered `node_occurrences[]`. Each occurrence
 has a stable `occurrence_id` separate from physical node identity, and segments
@@ -1423,6 +1426,12 @@ normalized topology snapshot. A successful result returns the exact
 missing, multiple, truncated, conflicting, non-current, or unusable evidence is
 reason-coded and unresolved. Prefix, address, VLAN, label/SID, node-pair, and
 display-text inference are forbidden.
+Exact segment keys use the core's recursively type-tagged comparison profile:
+missing and null differ, mapping-key types are retained, and only finite floats
+are accepted. Keys are bounded to four nested container levels, 32 items per
+container, 1,024 total value units, 4,096-character/byte atoms, and 4,096-bit
+integers. Invalid or over-bound snapshot keys are not candidates; an invalid
+requested key is a request error.
 
 The generated-demo coverage transport also has exact non-route evidence.
 `topology_claim` records carry the claim and attachment IDs, opaque matcher and
@@ -2045,6 +2054,12 @@ safe declarative evaluation, redaction, and output bounds. The payload never
 contains plug-in HTML, CSS, JavaScript, remote assets, or executable query
 expressions. Module order and open/collapse choices are browser-local
 preferences and are not revision data.
+Comparison fields are bounded to 16 nested container levels, 1,024 items per
+container, 4,096 comparison units, 65,536-character/byte atoms, and 4,096-bit
+integers. Cyclic, unsupported, and over-bound values fail closed for filters and
+are excluded from `count_distinct`; its `sample_count` counts comparable
+values. Type-tagged non-finite floats remain comparable but are excluded from
+numeric aggregates.
 
 A range summary receives `[start_ns,end_ns)` and returns intersecting events,
 intersecting status/lifecycle intervals, relationship add/remove mutations with

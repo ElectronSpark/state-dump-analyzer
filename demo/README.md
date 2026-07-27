@@ -109,6 +109,11 @@ declarative domain presentation—labels, icon paths, tags, table/dashboard
 descriptors, topology projections, and route or packet explanation text. They
 do not ship executable frontend code.
 
+The generated runtime examples keep exact topology keys and dashboard
+comparison fields inside the core's documented bounds. Their conformance tests
+also exercise typed exact matching and explicit endpoint-start evidence; copy
+those patterns instead of flattening opaque keys or inferring route symmetry.
+
 ## Optional runtime capability
 
 The tiny parser can be installed and validated without starting a server. The

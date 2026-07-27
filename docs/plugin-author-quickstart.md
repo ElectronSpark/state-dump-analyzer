@@ -536,6 +536,13 @@ Topology change queries use the same half-open rule:
 only to the later adjacent window. Do not compensate by moving a timestamp or
 duplicating a change.
 
+Keep an exact connectivity-domain key small and type-stable. Core tags atom,
+container, and mapping-key types and rejects non-finite floats, cycles, more
+than four nested container levels, more than 32 items in one container, more
+than 1,024 total value units, strings/bytes over 4,096 units, or integers over
+4,096 bits. Missing and explicit null are different. Do not stringify a
+numeric, byte, UUID, or compound key merely to fit the transport.
+
 When an optional runtime topology adapter declares relative reconstruction
 watermarks, scope each one by the exact node/member revision, plug-in run,
 status perspective, and topology projection. Provide `local_time_ns`,
@@ -573,6 +580,13 @@ Put mechanics in core when they apply identically to every plug-in:
 - immutable flow direction, exact endpoint-goal matching, and bidirectional
   reachability aggregation;
 - budgets, validation, authorization, and generic rendering.
+
+Dashboard comparison is likewise bounded: 16 nested container levels, 1,024
+items per container, 4,096 comparison units, 65,536-character/byte atoms, and
+4,096-bit integers. Keep filter and statistic fields within those limits.
+Cyclic, unsupported, or over-bound values do not match filters and do not
+contribute to `count_distinct`; non-finite floats may be compared as tagged
+values but never contribute to numeric aggregates.
 
 Cross-node matching that interprets normalized claims belongs to a separate
 federation/linker plug-in. A node plug-in stops at its local connector claim.
@@ -614,6 +628,11 @@ make a bidirectionally reachable flow inconsistent. Conversely, a complete
 return path that ends at the forward start but not the source endpoint is not
 successful. The executable endpoint-pair cases are in
 `tests/test_multi_node_route.py`.
+When calling `evaluate_endpoint_reachability_pair()` directly, pass
+`reverse_starts_at_destination_endpoint=True` only after exact attachment
+resolution proves it. Omitting that proof preserves directional endpoint
+reachability but returns `path_relation=not_comparable` with
+`reverse_endpoint_start_unknown` instead of inventing symmetry.
 
 If a compatibility route executor advertises one fixed source/destination
 pair, a caller may supply that exact pair in either order. Reversing the pair

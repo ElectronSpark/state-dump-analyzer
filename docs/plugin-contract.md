@@ -695,6 +695,14 @@ truncated evidence stays unresolved. Core must not recover a match from a
 prefix, address, VLAN, interface name, label/SID, node pair, or
 `resolution_text`.
 
+The exact domain-key profile type-tags every atom and container, including
+mapping keys, so missing is distinct from explicit null and integer `1` is
+distinct from string `"1"`. It accepts only finite floats and is bounded to
+four nested container levels, 32 items per container, 1,024 total value units,
+4,096-character/string or byte payloads, and 4,096-bit integers. A cyclic,
+unsupported, non-finite, or over-bound key is invalid evidence and cannot
+resolve a connectivity domain.
+
 #### Federating different node plug-in sets
 
 An assembly may contain nodes whose active plug-in sets, resource vocabularies,
@@ -912,6 +920,15 @@ sort field/direction, and one or more `DashboardColumnDescriptor` field
 projections. Common value formats are `auto`, `text`, `number`, `boolean`,
 `status`, and `resource`. Unless `include_absent` is set, both widget types
 exclude resources that do not exist at the selected time.
+
+Dashboard equality retains scalar types, treats transported lists and
+in-process tuples as the same sequence shape, and compares mappings without
+depending on insertion order. Evaluation is bounded to 16 nested container
+levels, 1,024 items per container, 4,096 comparison units, 65,536-character or
+byte atoms, and 4,096-bit integers. Cyclic, unsupported, or over-bound values
+are excluded from filters and `count_distinct`; its `sample_count` reports only
+comparable values. Non-finite floats remain explicitly tagged comparison
+values, but numeric aggregates exclude them.
 
 The core validates and serializes these declarations, calculates their values
 from the generic point-in-time resource query, escapes every value, and renders
@@ -1376,6 +1393,10 @@ evidence.
 node-sequence shape only. Core may compare sequences when both directions cover
 the same endpoint-to-endpoint span. It must return `not_comparable`
 when, for example, the forward trace starts at a transit observation point.
+It must also return `not_comparable` with
+`reverse_endpoint_start_unknown` when the caller has not proved that the
+return trace starts at the destination endpoint. That uncertainty does not
+erase an independently established endpoint-reachability result.
 Path relation never determines consistency: forward must reach the traffic
 destination and reverse must reach the traffic source. A complete path that
 only reaches the forward start fails the reverse endpoint goal.

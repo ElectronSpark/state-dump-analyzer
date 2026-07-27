@@ -145,12 +145,16 @@ class DemoDataPolicy:
 
 
 class DemoTemporalProvider:
-    """Lazily construct revision-scoped temporal query services."""
+    """Construct request-owned revision-scoped temporal query services.
+
+    A service retains its dataset generation and private history runtime.
+    Keeping services in a second provider cache would therefore defeat the
+    revision store's memory bound and could retain a generation after LRU
+    eviction. The returned service lives only as long as its core query.
+    """
 
     def __init__(self, data_source: DemoDatasetSource) -> None:
         self._data_source = data_source
-        self._services: dict[str, Any] = {}
-        self._lock = RLock()
 
     def for_revision(
         self,
@@ -161,50 +165,42 @@ class DemoTemporalProvider:
             revision_id
             or self._data_source.revision_store.default_revision_id
         )
-        with self._lock:
-            service = self._services.get(selected_revision_id)
-            if service is not None:
-                return service
+        from router_dump_analyzer.temporal_topology import (
+            TemporalTopologyService,
+        )
+        from .temporal_contract import (
+            build_demo_plugin_contract,
+            build_temporal_metadata,
+        )
 
-            from router_dump_analyzer.temporal_topology import (
-                TemporalTopologyService,
-            )
-            from .temporal_contract import (
-                build_demo_plugin_contract,
-                build_temporal_metadata,
-            )
+        dataset = self._data_source.load_dataset(selected_revision_id)
 
-            dataset = self._data_source.load_dataset(selected_revision_id)
+        def state_reader(
+            resource_identifier: str,
+            timestamp_ns: int,
+        ) -> dict[str, Any]:
+            with data_service.revision_scope(selected_revision_id):
+                return data_service.resource_state_at(
+                    resource_identifier,
+                    timestamp_ns,
+                )
 
-            def state_reader(
-                resource_identifier: str,
-                timestamp_ns: int,
-            ) -> dict[str, Any]:
-                with data_service.revision_scope(selected_revision_id):
-                    return data_service.resource_state_at(
-                        resource_identifier,
-                        timestamp_ns,
-                    )
+        def relationship_reader(
+            timestamp_ns: int,
+        ) -> list[dict[str, Any]]:
+            with data_service.revision_scope(selected_revision_id):
+                return data_service.relationships_at(timestamp_ns)
 
-            def relationship_reader(
-                timestamp_ns: int,
-            ) -> list[dict[str, Any]]:
-                with data_service.revision_scope(selected_revision_id):
-                    return data_service.relationships_at(timestamp_ns)
-
-            service = TemporalTopologyService(
-                dataset,
-                state_reader,
-                relationship_reader,
-                contract=build_demo_plugin_contract(dataset),
-                temporal_metadata=build_temporal_metadata(dataset),
-            )
-            self._services[selected_revision_id] = service
-            return service
+        return TemporalTopologyService(
+            dataset,
+            state_reader,
+            relationship_reader,
+            contract=build_demo_plugin_contract(dataset),
+            temporal_metadata=build_temporal_metadata(dataset),
+        )
 
     def reset(self) -> None:
-        with self._lock:
-            self._services.clear()
+        """Compatibility hook; request-owned services require no reset."""
 
 
 class DemoTopologyProvider:

@@ -90,8 +90,7 @@ class CanonicalTypedValueTests(unittest.TestCase):
         )
 
         tokens = {
-            canonical_opaque_value(value, key_atom_type=KeyAtom)[1]
-            for value in values
+            canonical_opaque_value(value, key_atom_type=KeyAtom)[1] for value in values
         }
 
         self.assertEqual(len(tokens), len(values))
@@ -113,6 +112,30 @@ class CanonicalTypedValueTests(unittest.TestCase):
             canonical_opaque_value(forward, key_atom_type=KeyAtom),
             canonical_opaque_value(reverse, key_atom_type=KeyAtom),
         )
+
+    def test_opaque_profile_rejects_nonfinite_cycles_and_excess_depth(
+        self,
+    ) -> None:
+        cyclic: list[object] = []
+        cyclic.append(cyclic)
+        too_deep: object = "leaf"
+        for _ in range(6):
+            too_deep = [too_deep]
+
+        for value, message in (
+            (float("nan"), "finite floating-point"),
+            (float("inf"), "finite floating-point"),
+            (cyclic, "reference cycles"),
+            (too_deep, "four container levels"),
+        ):
+            with (
+                self.subTest(message=message),
+                self.assertRaisesRegex(
+                    CanonicalValueError,
+                    message,
+                ),
+            ):
+                canonical_opaque_value(value, key_atom_type=KeyAtom)
 
     def test_resource_and_policy_contracts_reject_unordered_mappings(self) -> None:
         with self.assertRaisesRegex(ValueError, "must be a tuple"):

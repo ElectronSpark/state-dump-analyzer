@@ -122,6 +122,126 @@ class DashboardCoreTests(unittest.TestCase):
         self.assertEqual(1, result["statistics"][1]["value"])
         self.assertEqual(4, result["statistics"][2]["value"])
 
+    def test_mixed_finite_and_nonfinite_mapping_keys_do_not_crash(self) -> None:
+        value = {1.5: "finite", float("nan"): "nonfinite"}
+        result = evaluate_dashboards(
+            [
+                {
+                    "dashboard_id": "mapping-values",
+                    "statistics": [
+                        {
+                            "statistic_id": "distinct",
+                            "aggregation": "count_distinct",
+                            "field": "state.value",
+                        }
+                    ],
+                    "tables": [],
+                }
+            ],
+            [
+                {
+                    "resource_id": "opaque",
+                    "kind": "PLUGIN_KIND",
+                    "exists": True,
+                    "state": {"value": value},
+                }
+            ],
+        )[0]
+
+        self.assertEqual(1, result["statistics"][0]["value"])
+        self.assertEqual(1, result["statistics"][0]["sample_count"])
+
+    def test_mapping_equality_preserves_duplicate_canonical_entries(self) -> None:
+        first_nan = float("nan")
+        second_nan = float("nan")
+        single = {first_nan: "value"}
+        repeated = {first_nan: "value", second_nan: "value"}
+        result = evaluate_dashboards(
+            [
+                {
+                    "dashboard_id": "mapping-multiplicity",
+                    "statistics": [
+                        {
+                            "statistic_id": "single-only",
+                            "aggregation": "count",
+                            "filters": [
+                                {
+                                    "field": "state.value",
+                                    "operator": "eq",
+                                    "value": single,
+                                }
+                            ],
+                        },
+                        {
+                            "statistic_id": "distinct",
+                            "aggregation": "count_distinct",
+                            "field": "state.value",
+                        },
+                    ],
+                    "tables": [],
+                }
+            ],
+            [
+                {
+                    "resource_id": "single",
+                    "kind": "PLUGIN_KIND",
+                    "exists": True,
+                    "state": {"value": single},
+                },
+                {
+                    "resource_id": "repeated",
+                    "kind": "PLUGIN_KIND",
+                    "exists": True,
+                    "state": {"value": repeated},
+                },
+            ],
+        )[0]
+
+        self.assertEqual(1, result["statistics"][0]["value"])
+        self.assertEqual(2, result["statistics"][1]["value"])
+
+    def test_cyclic_dashboard_values_are_excluded_fail_closed(self) -> None:
+        cyclic: list[object] = []
+        cyclic.append(cyclic)
+        result = evaluate_dashboards(
+            [
+                {
+                    "dashboard_id": "cyclic-values",
+                    "statistics": [
+                        {
+                            "statistic_id": "matching",
+                            "aggregation": "count",
+                            "filters": [
+                                {
+                                    "field": "state.value",
+                                    "operator": "not_eq",
+                                    "value": "anything",
+                                }
+                            ],
+                        },
+                        {
+                            "statistic_id": "distinct",
+                            "aggregation": "count_distinct",
+                            "field": "state.value",
+                        },
+                    ],
+                    "tables": [],
+                }
+            ],
+            [
+                {
+                    "resource_id": "opaque",
+                    "kind": "PLUGIN_KIND",
+                    "exists": True,
+                    "state": {"value": cyclic},
+                }
+            ],
+        )[0]
+
+        self.assertEqual(0, result["statistics"][0]["value"])
+        self.assertEqual(0, result["statistics"][1]["value"])
+        self.assertEqual(0, result["statistics"][1]["sample_count"])
+
     def test_unknown_existence_is_not_present_unless_absent_rows_are_requested(
         self,
     ) -> None:
@@ -191,10 +311,7 @@ class DashboardCoreTests(unittest.TestCase):
             ],
             rows,
         )[0]
-        values = {
-            item["statistic_id"]: item["value"]
-            for item in result["statistics"]
-        }
+        values = {item["statistic_id"]: item["value"] for item in result["statistics"]}
 
         self.assertEqual(lower + upper, values["sum"])
         self.assertIsInstance(values["sum"], int)
@@ -277,7 +394,9 @@ class DashboardCoreTests(unittest.TestCase):
         self.assertNotIn("resource", table["items"][0])
         self.assertNotIn("internal_cache", table["items"][0])
 
-    def test_undeclared_precomputed_statistics_are_not_recomputed_by_guessing(self) -> None:
+    def test_undeclared_precomputed_statistics_are_not_recomputed_by_guessing(
+        self,
+    ) -> None:
         result = evaluate_dashboards(
             [
                 {
