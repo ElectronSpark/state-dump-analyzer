@@ -7,57 +7,128 @@ fixtures. No product or customer data is included.
 
 | Component | Fixture | Purpose |
 |---|---|---|
-| Nested dump discovery | `generated/node-a.tgz` | A node archive containing three layer `.tgz` archives and deliberately nonstandard internal roots. |
-| Multi-section status | Status text inside each layer archive | Interfaces, routes, grouped resources, hardware objects, and neighbor tables. |
-| CTF 2 decoder | `external/ctf2-smalltrace`, nested `ctf2-smalltrace.tgz`, and `ctf2-router-domain.tgz` | A tiny valid public CTF 2 trace plus a product-shaped synthetic CTF 2 trace with resource/action/properties/result fields. |
-| Codec-chain discovery | Nested `codec-chain-marker.zst.gz` | Deterministic gzip containing a valid raw-block Zstandard frame, to verify content-based codec-chain handling without third-party generator dependencies. |
-| Domain event parsing | `lltng_domain_export.jsonl` in each layer | Synthetic create/update/state-change events, properties, clock domains, and success/failure results. This stands in for proprietary CTF event payloads. |
-| Arbitrary debug logs | `lltng_info.log` / `lltng_error.log` | Line-oriented debug, info, and error records. |
-| gRPC payload parsing | `resource_update.proto` and `resource_updates.jsonl` | A synthetic protobuf schema and decoded message examples. |
-| Comprehensive protocol scenario | `generated/illustrative/topology.json`, `resources.jsonl`, and plugin-owned kind/relationship/causal-link descriptors | Six-node CE/PE/P topology with IS-IS, SR-MPLS, SRv6 and EVPN; 24 typed resources across 15 plugin-defined kinds. |
-| Correlation and reconstruction | `generated/illustrative/{lifecycle,state,relationship}-intervals.jsonl`, mutations, causal links, and coverage | Resource create/modify/delete periods, a shared ingress/egress Forwarding Group, ETG/ETE ownership, standalone DTE next hops, Glue/VIF/hardware associations, and cross-layer failover. |
-| Dashboard | `generated/illustrative/dashboard-summary.json` and `dashboard-descriptors.json` | Summary counts plus four plugin-owned modules demonstrating common statistics, tables, default-open/collapsed state, and movable layout. |
-| Route calculation | `generated/illustrative/route-resolution*.json` and `route-scenarios.jsonl` | Observed-capture-vector and reconstructed route results plus failover, unresolved, and recursion-cycle acceptance cases. |
-| EVPN scale, fan-out, and churn | `generated-scale/*` (on demand) | Deterministic 125K-event/10K-resource scenario with single-home creation, all-active EVPN multi-homing, bulk ES withdrawal/failover, bulk restore, repeated distinct DTE next-hop dependency changes, and a separate high-fan-out relationship stream. |
-| One-file packed demo dump | `generated-scale/router-state-lab-100k.tgz` | One outer TGZ containing four nested container TGZs. Every container has a synthetic CTF 2 stream, a normalized event export, and resource-status text; two containers use one table and two use multiple typed tables. The outer pack also carries the complete scale corpus and browser review projection. |
+| Public decoder seed | `external/ctf2-smalltrace` | A pinned, tiny valid public CTF 2 trace for decoder work. |
+| Parser conformance vector | `demo/fixtures/minimal-status.jsonl` | Exact bytes rendered from the installed demo plug-in's conformance records; not a second hand-written dump. |
+| Canonical demo authoring source | `demo/router-state-lab-default.scenario.json` | Ordinary independent-tool save containing private topology intent and explicit historical observations; this is the durable source for future mock dumps. |
+| Complete demo input | `demo/fixtures/router-state-lab-demo.tgz` (generated on demand) | One ten-node assembly used by both the fabric and individual-node workspaces. |
+| Per-node raw packets | `nodes/<node-id>.tgz` inside the assembly | Four heterogeneous container TGZs with synthetic CTF 2, retained non-CTF logs, and one- or multi-table status text. |
+| Per-node normalized state | `normalized-scale/` inside each node pack | 125,000 scalable events plus the node's explicit authored observations, at least 100,000 real state-changing events, and a 7,500-resource baseline plus final authored resources, relationships, and mutations. |
+| Plug-in projections | `plugin-projection/` inside each node pack | Immutable demo-owned topology, route, forwarding, packet, evidence, and checksum records generated from the same node model. |
+| Checkable behavior registry | `coverage.json` in the outer assembly | Versioned evidence connecting advertised demo behavior to generated records; its current schema is documented in the demo guide. |
 
 ## Generate
 
-From the repository root with Python 3.12:
+The source of truth is
+`demo/router-state-lab-default.scenario.json`, not the generated TGZ. From the
+repository root with Python 3.12, install the independent authoring tool and
+validate that save:
 
-```text
-python scripts/fetch_babeltrace_sample.py
-python scripts/generate_sample_bundle.py
-python scripts/generate_scale_fixtures.py --events 125000 --resources 10000
-python scripts/generate_packed_scale_bundle.py
+```powershell
+python -m pip install -e .\state-dump-generator
+python -m state_dump_generator validate .\demo\router-state-lab-default.scenario.json
 ```
 
-The generator is deterministic: archive member names, ordering, metadata, and
-gzip timestamps are fixed. The downloaded trace is pinned by commit and checked
-with SHA-256.
+For a visual preview, start the standalone studio:
 
-The review-sized scenario has 25 normalized events, 24 resources, 37 status
-intervals, and 27 relationship intervals. An ETG always has at least one active
-ETE while it exists. One failed ETE programming event returns a non-OK status but
-has no state mutation; the subsequent successful retry starts the next accepted
-status interval. An `add` callback against an existing ETE is intentionally
-classified as a modification. There is no DTG kind: each DTE independently
-matches a label or SID, performs a remove/swap action, and forwards to either an
-ETG or IP routing.
+```powershell
+python -m state_dump_generator serve --open
+```
 
-The scale scenario is organized into five ordered event waves:
+Click **Open**, choose `demo/router-state-lab-default.scenario.json`, and move
+the scenario-time control. Stop the studio with `Ctrl+C`. You can also compile
+the save directly into the independent tool's neutral, topology-free output:
+
+```powershell
+python -m state_dump_generator generate `
+  .\demo\router-state-lab-default.scenario.json `
+  --output .\artifacts\router-state-lab-default.node-dumps.tgz
+```
+
+That neutral assembly is not the full demo input. After running the
+repository's normal demo setup, use the separate demo materializer for the
+scalable fixture:
+
+```powershell
+python -X utf8 -m generator --write-conformance-fixture demo/fixtures/minimal-status.jsonl
+python -X utf8 -m generator --verify-conformance-fixture demo/fixtures/minimal-status.jsonl
+python -X utf8 -m generator --output demo/fixtures/router-state-lab-demo.tgz
+python -X utf8 -m generator --check-launchable demo/fixtures/router-state-lab-demo.tgz
+python -X utf8 -m generator --ensure-launchable demo/fixtures/router-state-lab-demo.tgz
+python -X utf8 -m generator --validate demo/fixtures/router-state-lab-demo.tgz --deep-validate
+```
+
+The generator belongs to the example plug-in distribution and does not start a
+server. After generation, the core-owned application can open the archive
+through the installed example plug-in:
+
+```powershell
+router-dump-analyzer --plugin demo_router --input demo/fixtures/router-state-lab-demo.tgz --no-browser
+```
+
+For a source checkout, the equivalent direct target is
+`--plugin-module plugin`; the module loader defaults
+to the `plugin` attribute.
+
+The demo generator is deterministic: archive member names, ordering, metadata,
+and gzip timestamps are fixed. Its standard-library adapter reads the
+canonical save without importing the independent authoring package. It
+converts explicit node-local history and attachment evidence into the demo
+plug-in's resource model, then adds distinct scalable filler and immutable
+projections. Each raw node pack embeds a deterministic synthetic CTF trace, so
+generation does not depend on a downloaded fixture.
+
+The first demo command renders the tiny JSONL vector from
+`ExampleRouterPlugin`-owned records; the second fails if its checked-in bytes
+drift. `--check-launchable` is the fast launcher probe: it verifies the
+canonical full-scale node inventory, coverage metadata, current authoring-save
+SHA-256 digest, current generator/demo-plug-in materializer fingerprint, and
+one bounded, checksum-matching opaque pack per node without decoding those
+packs. `--ensure-launchable` reuses or generates that corpus. A save edit or
+materialization-code change therefore makes an older TGZ stale. Generation
+rechecks both identities immediately before atomic publication. The command
+replaces only an exact generator-owned preferred archive; unknown preferred
+inputs stay in place while the fixed `.generated.tgz` sibling is selected, and
+an unknown recovery sibling fails closed. `--validate` performs the full
+nested integrity audit.
+
+Alongside the explicitly authored history, each node's scalable filler is
+organized into five ordered event waves:
 `single_home_create`, `multihome_add`, `mass_es_withdraw`,
 `mass_es_restore`, and `next_hop_churn`. Its plug-in-owned resource schema
 includes ETG, primary and backup ETE paths, standalone DTEs, Ethernet Segments,
-virtual interfaces, and IP routing. Start with
-`generated-scale/walkthrough.json` for two readable service histories, use
-`scenario.json` for exact phase and expected-change counts, then stream the
-full JSONL files for scale testing.
+virtual interfaces, neighbors, and IP routing. Failed updates are retained
+without fabricating a state mutation; add-on-existing is represented as a
+modification. There is no DTG kind: each DTE independently matches a label or
+SID and forwards to an ETG or IP routing.
 
-The packed generator assigns every scale event and resource to exactly one
-container: EVPN control, multi-home forwarding, single-home forwarding, or the
-underlay agent. The normal `launch_demo.cmd` path is hard-coded to this outer
-TGZ and creates it automatically when it is missing.
+The canonical authored history is intentionally small enough to inspect. Its
+useful relative-time boundaries are `+30 s`, `+210 s`, and `+270 s` for PE-A
+route lifecycle; `+90.050 s` through `+240.100 s` for asymmetric P1/P2 failure
+and recovery; `+180 s` through `+304 s` for PE-D structural detach/reattach;
+`+360 s` for a failed PE-B next-hop change; `+420 s` through `+535 s` for
+delayed Ottawa failure and recovery; and `+610 s` for PE-A's final next-hop
+change. The
+[demo checkpoint table](../demo/README.md#past-time-reconstruction-checkpoints)
+lists the expected reconstructed state.
+
+The generator assigns every event and resource to exactly one raw container:
+EVPN control, multi-home forwarding, single-home forwarding, or the underlay
+agent. It stages and packs one node at a time, then writes the outer assembly
+atomically. The normal launch scripts fast-check and reuse this TGZ, generate
+or replace it only at a safe generator-owned path, and preserve unknown inputs
+while selecting the fixed recovery sibling.
+
+Node packs deliberately contain only node-local status, local logs, and
+plug-in-readable attachment evidence. The authoring save's private medium IDs
+and any global participant lists are not serialized into final node dumps or
+their topology projections; the analyzer must reconstruct connectivity from
+matching local claims.
+
+The outer registry and node-local projections are generated together so their
+evidence cannot silently drift. Their current projection format, candidate
+binding, evidence shapes, and runtime validation rules belong to the
+[demo-specific contract](../demo/README.md#generated-mock-dumps), not to this
+sample-generation guide.
 
 ## Public CTF source and license
 

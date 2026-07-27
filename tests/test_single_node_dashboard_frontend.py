@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_JS = ROOT / "demo" / "frontend" / "assets" / "app.js"
+APP_JS = ROOT / "frontend" / "assets" / "app.js"
 
 
 def javascript_function(source: str, name: str) -> str:
@@ -37,7 +37,7 @@ class SingleNodeDashboardFrontendTests(unittest.TestCase):
         self.assertIn('capability.scope !== "node"', local)
         self.assertIn("capability.plugin_defined !== true", local)
         self.assertIn("capability.node_id", local)
-        self.assertIn("request.destination", local)
+        self.assertIn("request.route_id", local)
         self.assertIn("request.basis_kind", local)
         self.assertIn("request.time_ns", local)
         self.assertIn("if (isTopologyNodeSnapshot())", resolve)

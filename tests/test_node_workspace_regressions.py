@@ -9,16 +9,20 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "demo" / "src"))
+sys.path.insert(0, str(ROOT / "demo"))
 
-from router_dump_analyzer_demo import app as demo_app
-from router_dump_analyzer_demo.data import REVISION_ID
-from router_dump_analyzer_demo.scale_data import ScaleRuntime
+from router_dump_analyzer.web import runtime_api
+from plugin.data import REVISION_ID
+from plugin.scale_data import ScaleRuntime
 from router_dump_analyzer.source_record_core import record_lanes_for_window
+from tests.support.generated_demo import (
+    configure_generated_demo_for_tests,
+    generated_demo_runtime_session,
+)
 
 
-APP_JS = ROOT / "demo" / "frontend" / "assets" / "app.js"
-STYLES_CSS = ROOT / "demo" / "frontend" / "assets" / "styles.css"
+APP_JS = ROOT / "frontend" / "assets" / "app.js"
+STYLES_CSS = ROOT / "frontend" / "assets" / "styles.css"
 
 
 def javascript_function(source: str, name: str) -> str:
@@ -136,6 +140,7 @@ def scale_runtime_dataset() -> tuple[dict[str, object], str, str, str, str]:
 class NodeWorkspaceRegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        configure_generated_demo_for_tests()
         cls.script = APP_JS.read_text(encoding="utf-8")
         cls.styles = STYLES_CSS.read_text(encoding="utf-8")
 
@@ -176,8 +181,12 @@ class NodeWorkspaceRegressionTests(unittest.TestCase):
 
     def test_scale_timeline_expands_historical_relationship_endpoints_in_window(self) -> None:
         dataset, root, old_path, new_path, future_path = scale_runtime_dataset()
-        with patch.object(demo_app, "load_demo_dataset", return_value=dataset):
-            payload = demo_app.timeline_query(
+        with (
+            generated_demo_runtime_session(),
+            patch.object(runtime_api, "load_dataset", return_value=dataset),
+            patch.object(runtime_api, "_require_revision", return_value=None),
+        ):
+            payload = runtime_api.timeline_query(
                 REVISION_ID,
                 {
                     "start_ns": "50",
@@ -266,7 +275,7 @@ class NodeWorkspaceRegressionTests(unittest.TestCase):
     def test_dashboard_layout_storage_is_scoped_by_revision_and_schema(self) -> None:
         storage_key = javascript_function(self.script, "dashboardLayoutStorageKey")
         initialization = javascript_function(self.script, "initializeDashboardLayout")
-        self.assertIn("state.dataset?.demo?.revision_id", storage_key)
+        self.assertIn("workspaceMetadata().revision_id", storage_key)
         self.assertIn("dashboardDescriptors()", storage_key)
         self.assertIn("item.dashboard_id", storage_key)
         self.assertIn("encodeURIComponent(revision)", storage_key)
@@ -343,10 +352,14 @@ class NodeWorkspaceRegressionTests(unittest.TestCase):
                 self.assertRegex(self.script, pattern)
 
     def test_topology_member_deep_link_bootstraps_its_own_plugin_snapshot(self) -> None:
-        payload = demo_app._node_workspace_dataset("node-b", {})
+        with generated_demo_runtime_session():
+            payload = runtime_api._node_workspace_dataset("node-b", {})
 
-        self.assertTrue(payload["demo"]["node_snapshot"])
-        self.assertEqual(payload["demo"]["mode"], "topology-node-snapshot")
+        self.assertNotIn("demo", payload)
+        self.assertEqual(
+            payload["workspace"]["workspace_kind"],
+            "point-in-time-snapshot",
+        )
         self.assertTrue(payload["resources"])
         self.assertEqual(
             {item["node_id"] for item in payload["resources"]},
@@ -368,22 +381,28 @@ class NodeWorkspaceRegressionTests(unittest.TestCase):
             resource_ids,
         )
         bootstrap = javascript_function(self.script, "bootstrapDatasetPath")
-        self.assertIn('/api/node-demo/${encodeURIComponent(navigationContext.nodeId)}', bootstrap)
+        self.assertIn('return "/v1/workspace"', bootstrap)
+        self.assertIn('/v1/nodes/${encodeURIComponent(navigationContext.nodeId)}/workspace', bootstrap)
         initialize = self.script[self.script.index("async function initialize()") :]
         self.assertIn("state.dataset = await api(bootstrapDatasetPath());", initialize)
 
-    def test_node_snapshot_replaces_full_scale_workspace_identity(self) -> None:
+    def test_node_history_workspace_uses_runtime_identity_and_counts(self) -> None:
         detection = javascript_function(self.script, "isTopologyNodeSnapshot")
         identity = javascript_function(self.script, "renderWorkspaceIdentity")
         summary = javascript_function(self.script, "fillSummary")
 
-        self.assertIn('state.dataset?.demo?.mode === "topology-node-snapshot"', detection)
-        self.assertIn('if (!isTopologyNodeSnapshot()) return;', identity)
-        self.assertIn('Topology member snapshot.', identity)
-        self.assertIn('It is not the packed 100K-event archive', identity)
+        self.assertIn('workspace.history_mode === "point-in-time"', detection)
+        self.assertIn('workspace.capabilities?.historical_state === false', detection)
+        self.assertNotIn("dataset?.demo", detection)
+        self.assertIn("if (!isNodeWorkspace()) return;", identity)
+        self.assertIn("Node analysis workspace.", identity)
+        self.assertIn("eventCount.toLocaleString()", identity)
+        self.assertIn("runtime capabilities", identity)
         self.assertIn('Inspect member resources', identity)
-        self.assertIn('isTopologyNodeSnapshot()', summary)
-        self.assertIn('point-in-time resources', summary)
+        self.assertIn("workspace.matched_event_count", summary)
+        self.assertIn("workspace.resource_count", summary)
+        self.assertIn("isNodeWorkspace()", summary)
+        self.assertNotIn("point-in-time resources", summary)
 
     def test_node_snapshot_empty_features_explain_plugin_coverage(self) -> None:
         unavailable = javascript_function(self.script, "nodeSnapshotUnavailableMarkup")

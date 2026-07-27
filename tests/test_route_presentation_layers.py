@@ -11,16 +11,20 @@ from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "demo" / "src"))
+sys.path.insert(0, str(ROOT / "demo"))
 
-from router_dump_analyzer_demo.app import app
+from tests.support.generated_demo import (
+    configure_generated_demo_for_tests,
+    generated_demo_application,
+)
+
 
 
 TOPOLOGY_JS = (
-    ROOT / "demo" / "frontend" / "assets" / "topology.js"
+    ROOT / "frontend" / "assets" / "topology.js"
 )
-EVPN_PEER_LINK_ID = (
-    "demo.evpn-peer-key.exact.v1:evpn:blue:pe-pair:node-a:node-b"
+CONNECTIVITY_DOMAIN_MATCHER_ID = (
+    "demo.connectivity-domain-key.exact.v1"
 )
 
 
@@ -35,19 +39,22 @@ def javascript_function(source: str, name: str) -> str:
 class RoutePresentationLayerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.client_context = TestClient(app)
+        configure_generated_demo_for_tests()
+        cls.client_context = TestClient(generated_demo_application())
         cls.client = cls.client_context.__enter__()
         cls.script = TOPOLOGY_JS.read_text(encoding="utf-8")
         capabilities = cls.client.get(
             "/v1/topologies/routes/capabilities"
         ).json()
-        cls.physical_links = {
-            item["topology_link_id"]: {
-                item["endpoint_a_node_id"],
-                item["endpoint_b_node_id"],
-            }
-            for item in capabilities["network_model"]["physical_links"]
+        topology = cls.client.post("/v1/topologies/query", json={}).json()
+        cls.forwarding_domains = {
+            item["segment_id"]: set(item["node_ids"])
+            for item in topology["network_segments"]
+            if item["connectivity_enabled"]
         }
+        cls.routed_node_ids = set(
+            capabilities["network_model"]["routed_node_ids"]
+        )
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -63,16 +70,19 @@ class RoutePresentationLayerTests(unittest.TestCase):
         self.assertGreaterEqual(len(node_sequence), 2)
         self.assertEqual(len(boundaries), len(node_sequence) - 1)
         for index, boundary in enumerate(boundaries):
-            link_id = boundary["topology_link_id"]
-            self.assertIn(link_id, self.physical_links)
-            self.assertEqual(
-                self.physical_links[link_id],
-                set(node_sequence[index : index + 2]),
+            segment_id = boundary["network_segment_id"]
+            self.assertIn(segment_id, self.forwarding_domains)
+            self.assertTrue(
+                set(node_sequence[index : index + 2]).issubset(
+                    self.forwarding_domains[segment_id]
+                )
+            )
+            self.assertTrue(
+                set(boundary["node_ids"]).issubset(self.routed_node_ids)
             )
 
     def assert_plugin_overlay_contract(self, path: dict[str, Any]) -> None:
         layers = path["presentations"]
-        self.assertEqual(path["presentation_layers"], layers)
         overlays = [item for item in layers if item["role"] == "overlay"]
         self.assertTrue(overlays)
         geometry_ids = {
@@ -124,38 +134,42 @@ class RoutePresentationLayerTests(unittest.TestCase):
 
         self.assert_physical_forwarding_geometry(control)
         self.assert_plugin_overlay_contract(control)
-        self.assertNotIn(
-            EVPN_PEER_LINK_ID,
-            {
-                segment.get("topology_link_id")
+        self.assertTrue(
+            all(
+                segment.get("participates_in_forwarding_geometry", True)
                 for segment in control["segments"]
-            },
+                if segment["segment_kind"] == "inter_node_boundary"
+            )
         )
         overlay_targets = [
             target
-            for layer in control["presentation_layers"]
+            for layer in control["presentations"]
             if layer["role"] == "overlay"
             for target in layer.get("topology_targets", [])
         ]
-        peer_target = next(
+        connectivity_target = next(
             target
             for target in overlay_targets
-            if target.get("kind") == "topology_link"
-            and target.get("topology_link_id") == EVPN_PEER_LINK_ID
+            if target.get("kind") == "topology_match"
+            and target.get("matcher_id") == CONNECTIVITY_DOMAIN_MATCHER_ID
         )
         self.assertEqual(
-            peer_target["semantic_owner"],
-            "federation_linker_plugin",
+            connectivity_target["match_key"],
+            "vpn:blue:ipv4:10.20.0.0-24",
         )
-        self.assertTrue(peer_target["interaction_target_id"])
+        self.assertEqual(
+            connectivity_target["semantic_owner"],
+            "topology_plugin",
+        )
+        self.assertTrue(connectivity_target["interaction_target_id"])
 
     def test_evpn_and_mpls_l3vpn_overlays_preserve_physical_boundaries(self) -> None:
         requests = [
             {"scenario_id": "evpn-mh-all-active"},
             {
                 "scenario_id": "router-to-router",
-                "source_id": "source:node-d-loopback",
-                "destination_id": "destination:node-e-loopback",
+                "source_id": "source:node-d",
+                "destination_id": "destination:node-e",
                 "vrf_id": "red",
                 "route_family": "vpnv4_unicast",
                 "route_type": "mpls_l3vpn",
@@ -174,7 +188,7 @@ class RoutePresentationLayerTests(unittest.TestCase):
                     self.assert_plugin_overlay_contract(path)
                     presentation_ids = {
                         layer["presentation_id"]
-                        for layer in path["presentation_layers"]
+                        for layer in path["presentations"]
                     }
                     segment_ids = {
                         str(value)
@@ -211,7 +225,11 @@ class RoutePresentationLayerTests(unittest.TestCase):
         self.assertIn("anchor_resources", normalizer)
         self.assertIn("Object.entries(rawFacts)", normalizer)
         self.assertIn("styleRoles", normalizer)
-        self.assertIn("presentation_layers", helpers["routePresentationLayers"])
+        self.assertIn("presentations", helpers["routePresentationLayers"])
+        self.assertNotIn(
+            "presentation_layers",
+            helpers["routePresentationLayers"],
+        )
         self.assertIn(
             "participates_in_forwarding_geometry",
             helpers["routeForwardingSegments"],

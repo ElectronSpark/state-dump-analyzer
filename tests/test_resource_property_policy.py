@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import unittest
 
-from router_dump_analyzer_demo.data import (
-    _redact_resource_view,
-    _resource_search_text,
+from router_dump_analyzer.normalized_data import (
+    redact_resource_for_client,
+    redact_resource_view,
+    resource_search_text,
     redact_event_for_client,
     resource_id,
 )
@@ -69,7 +70,7 @@ class ResourcePropertyPolicyTests(unittest.TestCase):
         }
 
     def test_search_uses_only_plugin_declared_searchable_properties(self) -> None:
-        searchable = _resource_search_text(
+        searchable = resource_search_text(
             self.record,
             self.view,
             self.descriptor,
@@ -82,13 +83,23 @@ class ResourcePropertyPolicyTests(unittest.TestCase):
         self.assertNotIn("key-secret", searchable)
 
     def test_sensitive_properties_are_removed_from_every_resource_projection(self) -> None:
-        redacted = _redact_resource_view(self.view, self.descriptor)
+        redacted = redact_resource_view(self.view, self.descriptor)
 
         self.assertNotIn("auth_secret", redacted["state"])
         self.assertNotIn("auth_secret", redacted["resource"])
         self.assertNotIn("auth_secret", redacted["resource"]["key"])
         self.assertNotIn("auth_secret", redacted["resource"]["state"])
         self.assertEqual("do-not-index", redacted["state"]["diagnostic_blob"])
+
+    def test_client_resource_projection_uses_the_shared_redaction_path(self) -> None:
+        redacted = redact_resource_for_client(self.record, self.descriptor)
+
+        self.assertEqual(self.record["resource_id"], redacted["resource_id"])
+        self.assertEqual("192.0.2.10", redacted["key"]["peer"])
+        self.assertEqual("up", redacted["state"]["oper_state"])
+        self.assertNotIn("auth_secret", redacted)
+        self.assertNotIn("auth_secret", redacted["key"])
+        self.assertNotIn("auth_secret", redacted["state"])
 
     def test_legacy_typed_keys_do_not_collapse_to_display_strings(self) -> None:
         integer_id = resource_id(

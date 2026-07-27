@@ -5,5 +5,5 @@ dependencies:
   - python=3.12
   - pip>=24
   - pip:
-      - -e .[test]
-      - -e ./demo[test]
+      - -e .[test,web]
+      - -e ./demo

@@ -4,9 +4,14 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from router_dump_analyzer_demo.app import app
-from router_dump_analyzer_demo.multi_node_route import MultiNodeRouteDemo
-from router_dump_analyzer_demo.multi_node_topology import MULTI_NODE_TOPOLOGY_ID
+from tests.support.generated_demo import (
+    configure_generated_demo_for_tests,
+    generated_demo_application,
+    query_all_route_table_rows,
+)
+
+from router_dump_analyzer.multi_node_route import MultiNodeRouteService
+from plugin.topology_contract import DEMO_TOPOLOGY_ID
 from router_dump_analyzer.plugin_api import (
     ForwardingCandidateConstraint,
     ForwardingPolicyScope,
@@ -342,12 +347,52 @@ class RouteTraceCoreCompletenessTests(unittest.TestCase):
 class MultiNodeRouteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.client_context = TestClient(app)
+        configure_generated_demo_for_tests()
+        cls.client_context = TestClient(generated_demo_application())
         cls.client = cls.client_context.__enter__()
+        topology_response = cls.client.post(
+            "/v1/topologies/query",
+            json={
+                "resource_limit": 100,
+                "network_segment_limit": 100,
+                "segment_attachment_limit": 200,
+            },
+        )
+        if topology_response.status_code != 200:
+            raise AssertionError(topology_response.text)
+        cls.generated_topology = topology_response.json()
 
     @classmethod
     def tearDownClass(cls) -> None:
         cls.client_context.__exit__(None, None, None)
+
+    @classmethod
+    def _generated_attachment_resource_id(
+        cls,
+        node_id: str,
+        *,
+        shared_with: str,
+    ) -> str:
+        segment_ids = {
+            str(segment["segment_id"])
+            for segment in cls.generated_topology["network_segments"]
+            if {node_id, shared_with} <= set(segment["node_ids"])
+        }
+        candidates = sorted(
+            {
+                str(attachment["resource_id"])
+                for attachment in cls.generated_topology["segment_attachments"]
+                if attachment["node_id"] == node_id
+                and attachment["segment_id"] in segment_ids
+                and "/VIRTUAL_INTERFACE/" in attachment["resource_id"]
+            }
+        )
+        if len(candidates) != 1:
+            raise AssertionError(
+                "expected one generated interface attachment for "
+                f"{node_id} shared with {shared_with}, got {candidates}"
+            )
+        return candidates[0]
 
     @staticmethod
     def _endpoint_fixture(
@@ -356,7 +401,7 @@ class MultiNodeRouteTests(unittest.TestCase):
         node_id: str = "node-b",
         resource_id: str = "node-b/LOOPBACK/1",
     ) -> tuple[dict[str, object], dict[str, object]]:
-        attachment = MultiNodeRouteDemo._endpoint_attachment(
+        attachment = MultiNodeRouteService._endpoint_attachment(
             endpoint_id=endpoint_id,
             node_id=node_id,
             member_id=f"member:{node_id}",
@@ -408,7 +453,7 @@ class MultiNodeRouteTests(unittest.TestCase):
             classification="delivered",
         )
 
-        result = MultiNodeRouteDemo._annotate_endpoint_reachability(
+        result = MultiNodeRouteService._annotate_endpoint_reachability(
             [path],
             target,
             {"node_id": "node-a"},
@@ -433,7 +478,7 @@ class MultiNodeRouteTests(unittest.TestCase):
             classification="not_delivered",
         )
 
-        result = MultiNodeRouteDemo._annotate_endpoint_reachability(
+        result = MultiNodeRouteService._annotate_endpoint_reachability(
             [reached, failed],
             target,
             {"node_id": "node-a"},
@@ -458,7 +503,7 @@ class MultiNodeRouteTests(unittest.TestCase):
             ValueError,
             "begin at the declared trace_start",
         ):
-            MultiNodeRouteDemo._annotate_endpoint_reachability(
+            MultiNodeRouteService._annotate_endpoint_reachability(
                 [path],
                 target,
                 {"node_id": "node-a"},
@@ -479,7 +524,8 @@ class MultiNodeRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 422, response.text)
         self.assertIn(
-            "reverse trace start must resolve",
+            "reverse trace start must resolve to an available attachment "
+            "of flow.destination",
             response.text,
         )
 
@@ -492,14 +538,14 @@ class MultiNodeRouteTests(unittest.TestCase):
         }
 
         self.assertIs(
-            MultiNodeRouteDemo._matching_link(
+            MultiNodeRouteService._matching_link(
                 [candidate],
                 {"interface/a", "interface/b"},
             ),
             candidate,
         )
         self.assertIsNone(
-            MultiNodeRouteDemo._matching_link(
+            MultiNodeRouteService._matching_link(
                 [candidate],
                 {"interface/c", "interface/d"},
             )
@@ -534,66 +580,66 @@ class MultiNodeRouteTests(unittest.TestCase):
             ],
         }
 
-        MultiNodeRouteDemo._refresh_path(path)
+        MultiNodeRouteService._refresh_path(path)
 
         self.assertEqual(path["result"], "unusable")
 
-    def test_cycle_detection_uses_complete_canonical_state(self) -> None:
-        first = {
-            "node_id": "node-a",
-            "member_id": "member:node-a",
-            "vrf_id": "blue",
-            "forwarding_object_key": {"type": "FIB", "key": 10},
-            "lookup_target_key": "203.0.113.0/24",
-            "ingress_scope": {"kind": "vrf", "id": "blue"},
-            "encapsulation_state": {"kind": "mpls", "labels": [16002]},
-            "hop_index": 0,
-            "recursion_depth": 0,
-        }
-        different_lookup = {
-            **first,
-            "forwarding_object_key": {"type": "FIB", "key": 11},
-            "hop_index": 1,
-        }
-        exact_repeat_after_budget = {**first, "hop_index": 99}
+    def test_cycle_detection_uses_complete_canonical_typed_state(self) -> None:
+        perspective = StatusPerspectiveRef(
+            perspective_id="hardware.observed",
+            plugin_instance_id="member-a/example",
+        )
 
-        identity, canonical = MultiNodeRouteDemo._canonical_traversal_state(first)
-        self.assertTrue(identity)
-        self.assertEqual(canonical["forwarding_object_key"]["key"], 10)
-        incomplete_identity, incomplete_canonical = (
-            MultiNodeRouteDemo._canonical_traversal_state(
-                {**first, "policy_scopes_complete": False}
+        def state(
+            index: int,
+            *,
+            scopes_complete: bool = True,
+        ) -> ForwardingTraversalStateKey:
+            return ForwardingTraversalStateKey(
+                member_id="member-a",
+                status_perspective=perspective,
+                forwarding_object=ResourceKey(
+                    namespace="test",
+                    node="node-a",
+                    layer="forwarding",
+                    kind="FIB",
+                    parts=(("index", index),),
+                ),
+                lookup_context=(
+                    ("destination", "203.0.113.0/24"),
+                    ("vrf", "blue"),
+                ),
+                policy_scopes_complete=scopes_complete,
             )
+
+        first = state(10)
+        different_lookup = state(11)
+        incomplete = state(10, scopes_complete=False)
+        self.assertNotEqual(first, different_lookup)
+        self.assertNotEqual(first, incomplete)
+        self.assertIsNone(
+            detect_forwarding_cycle((first, different_lookup))
         )
-        self.assertNotEqual(identity, incomplete_identity)
-        self.assertFalse(incomplete_canonical["policy_scopes_complete"])
-        with self.assertRaisesRegex(ValueError, "must be a boolean"):
-            MultiNodeRouteDemo._canonical_traversal_state(
-                {**first, "policy_scopes_complete": 0}
-            )
-        not_a_cycle = MultiNodeRouteDemo._classify_traversal_states(
-            [first, different_lookup],
-            max_hops=8,
-            max_recursion=8,
-            cycle_reason="forwarding_loop",
-        )
-        self.assertEqual(not_a_cycle["outcome"], "resolved")
-        repeated = MultiNodeRouteDemo._classify_traversal_states(
-            [first, exact_repeat_after_budget],
+        self.assertIsNone(detect_forwarding_cycle((first, incomplete)))
+
+        repeated = evaluate_forwarding_traversal(
+            (first, first),
             max_hops=1,
             max_recursion=8,
-            cycle_reason="forwarding_loop",
+            hop_indices=(0, 99),
         )
-        self.assertEqual(repeated["outcome"], "cycle")
-        self.assertEqual(repeated["cycle"]["first_step"], 1)
-        self.assertEqual(repeated["cycle"]["closing_step"], 2)
-        exhausted = MultiNodeRouteDemo._classify_traversal_states(
-            [first, {**different_lookup, "hop_index": 2}],
+        self.assertEqual(repeated.outcome, "cycle")
+        assert repeated.cycle is not None
+        self.assertEqual(repeated.cycle.first_seen_step, 0)
+        self.assertEqual(repeated.cycle.repeated_at_step, 1)
+
+        exhausted = evaluate_forwarding_traversal(
+            (first, different_lookup),
             max_hops=1,
             max_recursion=8,
-            cycle_reason="forwarding_loop",
+            hop_indices=(0, 2),
         )
-        self.assertEqual(exhausted["outcome"], "hop_limit_exceeded")
+        self.assertEqual(exhausted.outcome, "hop_limit_exceeded")
 
     def test_typed_cycle_detector_allows_changed_key_revisit(self) -> None:
         perspective = StatusPerspectiveRef(
@@ -923,14 +969,14 @@ class MultiNodeRouteTests(unittest.TestCase):
 
     def test_capabilities_advertise_resolver_ownership_and_alias(self) -> None:
         canonical = self.client.get(
-            f"/v1/topology-assemblies/{MULTI_NODE_TOPOLOGY_ID}/routes/capabilities"
+            f"/v1/topology-assemblies/{DEMO_TOPOLOGY_ID}/routes/capabilities"
         )
         alias = self.client.get("/v1/topologies/routes/capabilities")
 
         self.assertEqual(canonical.status_code, 200)
         self.assertEqual(canonical.json(), alias.json())
         payload = canonical.json()
-        self.assertEqual(payload["assembly_id"], MULTI_NODE_TOPOLOGY_ID)
+        self.assertEqual(payload["assembly_id"], DEMO_TOPOLOGY_ID)
         self.assertEqual(payload["default_request"]["resolution_mode"], "best_effort")
         self.assertTrue(
             {item["scenario_id"] for item in payload["scenarios"]}.issuperset(
@@ -959,24 +1005,62 @@ class MultiNodeRouteTests(unittest.TestCase):
                 for item in payload["semantic_ownership"]["node_plugins"]
             )
         )
-        self.assertEqual(
-            payload["destinations"][0]["destination_id"],
+        self.assertIn(
             payload["default_request"]["destination_id"],
+            {
+                item["destination_id"]
+                for item in payload["destinations"]
+            },
+        )
+        self.assertIn(
+            payload["default_request"]["source_id"],
+            {item["source_id"] for item in payload["sources"]},
         )
         self.assertEqual(
             payload["federation_resolver"]["plugin_id"],
             "demo.fabric.federation-linker",
         )
         model = payload["network_model"]
-        self.assertEqual(model["router_count"], 7)
-        self.assertEqual(model["physical_link_count"], 10)
-        self.assertLess(
-            model["physical_link_count"], model["full_mesh_physical_link_count"]
+        self.assertEqual(
+            model["router_count"],
+            model["assembly_node_count"],
         )
-        self.assertEqual(model["reachable_directed_pair_count"], 42)
-        self.assertEqual(len(payload["route_catalog"]), 42)
+        self.assertEqual(model["assembly_node_count"], 10)
+        self.assertEqual(
+            model["physical_connectivity_source"],
+            "generated_topology_segment_claims",
+        )
+        self.assertEqual(model["physical_topology"], "generated_plugin_projection")
+        self.assertEqual(
+            model["descriptor_source"], "generated_assembly_catalog"
+        )
+        self.assertEqual(
+            len(model["routed_node_ids"]),
+            model["router_count"],
+        )
+        self.assertTrue(model["network_segment_matchers"])
+        route_catalog = payload["route_catalog"]
+        self.assertTrue(route_catalog)
+        self.assertEqual(
+            len({item["route_id"] for item in route_catalog}),
+            len(route_catalog),
+        )
+        self.assertTrue(
+            set(model["routed_node_ids"]).issubset(
+                {item["source_node_id"] for item in route_catalog}
+            )
+        )
+        self.assertTrue(
+            all(
+                item["descriptor_source"] == "generated_plugin_projection"
+                for item in route_catalog
+            )
+        )
         self.assertGreaterEqual(len(payload["route_types"]), 11)
-        self.assertEqual(len(payload["start_points"]), 7)
+        self.assertEqual(
+            len(payload["start_points"]),
+            model["router_count"],
+        )
         self.assertIn(
             "start:transit-p-1",
             {item["start_id"] for item in payload["start_points"]},
@@ -1010,7 +1094,10 @@ class MultiNodeRouteTests(unittest.TestCase):
         self.assertEqual(descriptor["state_location"], "time_bound_query_only")
         self.assertNotIn("items", descriptor)
         self.assertNotIn("entries", descriptor)
-        self.assertEqual(len(descriptor["available_node_ids"]), 7)
+        self.assertEqual(
+            len(descriptor["available_node_ids"]),
+            payload["network_model"]["router_count"],
+        )
         red = next(item for item in payload["vrfs"] if item["vrf_id"] == "red")
         self.assertEqual(red["node_ids"], ["node-d", "node-e"])
         self.assertEqual(
@@ -1083,32 +1170,32 @@ class MultiNodeRouteTests(unittest.TestCase):
         }
         expected = {
             "evpn-mh-all-active": (
-                "source:pe-a-loopback",
-                "destination:east-evpn-multihomed-service",
+                "source:node-a",
+                "destination:node-e",
             ),
             "evpn-es-withdraw-failover": (
-                "source:pe-a-loopback",
-                "destination:east-evpn-multihomed-service",
+                "source:node-a",
+                "destination:node-e",
             ),
             "evpn-stale-fib-after-withdraw": (
-                "source:pe-a-loopback",
-                "destination:east-evpn-multihomed-service",
+                "source:node-a",
+                "destination:node-e",
             ),
             "srv6-all-active": (
-                "source:pe-a-loopback",
-                "destination:node-e-loopback",
+                "source:node-a",
+                "destination:node-e",
             ),
             "recursive-static-to-external": (
-                "source:pe-a-loopback",
-                "destination:eta-external-subnet",
+                "source:node-a",
+                "destination:node-e",
             ),
             "connected-external-subnet": (
-                "source:node-e-loopback",
-                "destination:eta-external-subnet",
+                "source:node-e",
+                "destination:node-e",
             ),
             "incomplete-intermediate-resolution": (
-                "source:node-d-loopback",
-                "destination:node-b-loopback",
+                "source:node-d",
+                "destination:node-b",
             ),
         }
         for scenario_id, (source_id, destination_id) in expected.items():
@@ -1128,30 +1215,22 @@ class MultiNodeRouteTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200, response.text)
 
     def test_route_table_query_covers_every_node_with_generic_and_plugin_fields(self) -> None:
-        response = self.client.post(
-            "/v1/topologies/routes/tables/query",
-            json={"page": {"limit": 500}},
+        payload = query_all_route_table_rows(self.client)
+        capabilities = self.client.get(
+            "/v1/topologies/routes/capabilities"
+        ).json()
+        expected_node_ids = set(
+            capabilities["network_model"]["routed_node_ids"]
         )
-
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
         self.assertTrue(payload["route_table_context_id"].startswith("rtctx1-"))
         self.assertTrue(payload["topology_context_id"].startswith("tctx1-"))
-        self.assertEqual(payload["counts"]["nodes"], 7)
+        self.assertEqual(payload["counts"]["nodes"], len(expected_node_ids))
         self.assertEqual(payload["counts"]["returned"], payload["counts"]["total"])
-        self.assertGreaterEqual(payload["counts"]["total"], 180)
+        self.assertGreaterEqual(payload["counts"]["total"], 100)
         self.assertFalse(payload["page"]["truncated"])
         self.assertEqual(
             {item["node_id"] for item in payload["items"]},
-            {
-                "node-a",
-                "node-b",
-                "transit-p-1",
-                "transit-p-2",
-                "node-c",
-                "node-d",
-                "node-e",
-            },
+            expected_node_ids,
         )
         required = {
             "route_entry_id",
@@ -1195,8 +1274,17 @@ class MultiNodeRouteTests(unittest.TestCase):
                 row["trace_query"]["topology_context_id"],
                 payload["topology_context_id"],
             )
-            self.assertEqual(row["trace_query"]["direction"], "both")
-            self.assertTrue(row["next_hops"])
+            self.assertIn(
+                row["trace_query"]["direction"],
+                {"forward", "reverse", "both"},
+            )
+            declared_direction = row["attributes"].get("route_direction")
+            if declared_direction in {"forward", "reverse"}:
+                self.assertIn(
+                    row["trace_query"]["direction"],
+                    {declared_direction, "both"},
+                )
+            self.assertIsInstance(row["next_hops"], list)
             self.assertEqual(
                 row["plugin_provenance"]["decision_owner"],
                 "node_route_plugin",
@@ -1208,22 +1296,28 @@ class MultiNodeRouteTests(unittest.TestCase):
             and item["route_type"] == "evpn_service"
         ]
         self.assertTrue(core_evpn)
-        self.assertTrue(all(item["active"] for item in core_evpn))
+        self.assertTrue(all(not item["active"] for item in core_evpn))
         self.assertTrue(all(not item["installed"] for item in core_evpn))
+        self.assertTrue(
+            all(not item["forwarding_capable"] for item in core_evpn)
+        )
         self.assertTrue(
             all(item["install_state"] == "control_plane_only" for item in core_evpn)
         )
         self.assertTrue(
             all(
                 item["plugin_provenance"]["plugin_id"]
-                == "demo.fabric.evpn-route-reflector"
+                == item["route_entry_ref"]["plugin_id"]
+                and item["plugin_provenance"]["ownership"] == "node_plugin"
+                and item["plugin_provenance"]["data_kind"]
+                == "generated_route_table_row"
                 for item in core_evpn
             )
         )
 
     def test_route_table_query_filters_and_pages_without_losing_context(self) -> None:
         first = self.client.post(
-            f"/v1/topology-assemblies/{MULTI_NODE_TOPOLOGY_ID}/routes/tables/query",
+            f"/v1/topology-assemblies/{DEMO_TOPOLOGY_ID}/routes/tables/query",
             json={
                 "filters": {
                     "node_ids": ["node-a", "node-b"],
@@ -1303,11 +1397,19 @@ class MultiNodeRouteTests(unittest.TestCase):
             [item["route_entry_id"] for item in payload["matched_route_entry_refs"]],
         )
         self.assertTrue(payload["paths"][0]["route_entry_refs"])
+        correlations = payload["route_table_entry_correlations"]
         self.assertTrue(
-            all(
+            any(
                 item["installed"]
                 and item["correlation_role"] == "forwarding_route"
-                for item in payload["route_table_entry_correlations"]
+                for item in correlations
+            )
+        )
+        self.assertTrue(
+            any(
+                not item["installed"]
+                and item["correlation_role"] == "control_plane_evidence"
+                for item in correlations
             )
         )
         transit_segments = [
@@ -1316,8 +1418,20 @@ class MultiNodeRouteTests(unittest.TestCase):
             if str(item.get("node_id") or "").startswith("transit-")
         ]
         self.assertTrue(transit_segments)
+        control_evidence_ids = {
+            item["route_entry_ref"]["route_entry_id"]
+            for item in correlations
+            if not item["installed"]
+            and item["correlation_role"] == "control_plane_evidence"
+        }
+        transit_route_entry_ids = {
+            reference["route_entry_id"]
+            for segment in transit_segments
+            for reference in segment["route_entry_refs"]
+        }
+        self.assertTrue(transit_route_entry_ids)
         self.assertTrue(
-            all(not item["route_entry_refs"] for item in transit_segments)
+            transit_route_entry_ids <= control_evidence_ids
         )
         self.assertTrue(
             any(
@@ -1335,7 +1449,7 @@ class MultiNodeRouteTests(unittest.TestCase):
                     "vrf_id": "default",
                     "route_type": "mpls_transport",
                     "destination": {
-                        "value": "destination:node-a-loopback",
+                        "value": "destination:node-a",
                         "match": "exact",
                     },
                     "active": True,
@@ -1379,7 +1493,7 @@ class MultiNodeRouteTests(unittest.TestCase):
                     "vrf_id": "default",
                     "route_type": "mpls_transport",
                     "destination": {
-                        "value": "destination:node-a-loopback",
+                        "value": "destination:node-a",
                         "match": "exact",
                     },
                 }
@@ -1419,7 +1533,7 @@ class MultiNodeRouteTests(unittest.TestCase):
                     "vrf_id": "blue",
                     "route_type": "evpn_service",
                     "destination": {
-                        "value": "destination:node-c-loopback",
+                        "value": "destination:node-c",
                         "match": "exact",
                     },
                 }
@@ -1481,7 +1595,7 @@ class MultiNodeRouteTests(unittest.TestCase):
                     "vrf_id": "blue",
                     "route_type": "evpn_service",
                     "destination": {
-                        "value": "destination:node-c-loopback",
+                        "value": "destination:node-c",
                         "match": "exact",
                     },
                 }
@@ -1527,13 +1641,19 @@ class MultiNodeRouteTests(unittest.TestCase):
             {segment["segment_kind"] for segment in path["segments"]},
         )
 
-    def test_interface_and_adjacency_resource_endpoints_resolve_to_owners(self) -> None:
+    def test_plugin_resource_endpoints_resolve_to_owners(self) -> None:
+        node_a_attachment = self._generated_attachment_resource_id(
+            "node-a",
+            shared_with="transit-p-2",
+        )
         response = self.client.post(
             "/v1/topologies/routes/trace",
             json={
                 "scenario_id": "router-to-router",
-                "source": {"resource_id": "node-a/INTERFACE/xe-0-0-0"},
-                "destination": "transit-p-2/ADJACENCY/pe-c",
+                "source": {"resource_id": node_a_attachment},
+                "destination": (
+                    "transit-p-2/control-plane/IP_ROUTING/blue"
+                ),
             },
         )
 
@@ -1644,7 +1764,7 @@ class MultiNodeRouteTests(unittest.TestCase):
 
     def test_single_active_retains_primary_and_inactive_standby(self) -> None:
         response = self.client.post(
-            f"/v1/topology-assemblies/{MULTI_NODE_TOPOLOGY_ID}/routes/trace",
+            f"/v1/topology-assemblies/{DEMO_TOPOLOGY_ID}/routes/trace",
             json={"scenario_id": "single-active-primary"},
         )
 
@@ -1679,8 +1799,9 @@ class MultiNodeRouteTests(unittest.TestCase):
                 item["route_resolution"]["text"]
                 for item in path["route_resolution_sequence"]
             )
-            self.assertIn("203.0.113.0/24", resolution_text)
-            self.assertNotIn("10.255.0.2/32", resolution_text)
+            self.assertIn("mpls_transport", resolution_text)
+            self.assertIn("example plug-in", resolution_text)
+            self.assertIn("Core exact-joins", resolution_text)
 
         self.assertEqual(
             standby["node_sequence"], ["node-a", "transit-p-2", "node-b"]
@@ -1690,27 +1811,41 @@ class MultiNodeRouteTests(unittest.TestCase):
             for segment in standby["segments"]
             for resource_ref in segment["resource_refs"]
         }
+        expected_attachment_resource_ids = {
+            self._generated_attachment_resource_id(
+                "node-a",
+                shared_with="transit-p-2",
+            ),
+            self._generated_attachment_resource_id(
+                "transit-p-2",
+                shared_with="node-a",
+            ),
+            self._generated_attachment_resource_id(
+                "transit-p-2",
+                shared_with="node-b",
+            ),
+            self._generated_attachment_resource_id(
+                "node-b",
+                shared_with="transit-p-2",
+            ),
+        }
         self.assertEqual(
             standby_resource_ids,
             {
-                "node-a/LOOPBACK/lo0",
-                "node-a/INTERFACE/xe-0-0-1",
-                "transit-p-2/ADJACENCY/pe-a",
-                "transit-p-2/ADJACENCY/pe-b",
-                "node-b/PORT/18",
-                "node-b/LOOPBACK/1",
-            },
+                "node-a/control-plane/IP_ROUTING/blue",
+                "transit-p-2/control-plane/IP_ROUTING/blue",
+                "node-b/control-plane/IP_ROUTING/blue",
+            }
+            | expected_attachment_resource_ids,
         )
-        self.assertEqual(
-            [
-                segment["topology_link_id"]
-                for segment in standby["segments"]
-                if segment["segment_kind"] == "inter_node_boundary"
-            ],
-            [
-                "demo.connector-key.exact.v1:underlay:circuit-201:node-a:transit-p-2",
-                "demo.connector-key.exact.v1:underlay:circuit-202:node-b:transit-p-2",
-            ],
+        boundary_segments = [
+            segment
+            for segment in standby["segments"]
+            if segment["segment_kind"] == "inter_node_boundary"
+        ]
+        self.assertEqual(len(boundary_segments), 2)
+        self.assertTrue(
+            all(segment["network_segment_id"] for segment in boundary_segments)
         )
         p2_resolution = next(
             segment
@@ -1718,7 +1853,7 @@ class MultiNodeRouteTests(unittest.TestCase):
             if segment.get("node_id") == "transit-p-2"
         )["route_resolution"]
         self.assertEqual(
-            p2_resolution["provided_by"]["plugin_id"], "demo.delta.sr-isis"
+            p2_resolution["provided_by"]["plugin_id"], "demo.example-router"
         )
 
         target_ids = {item["target_id"] for item in payload["interaction_targets"]}
@@ -1741,12 +1876,25 @@ class MultiNodeRouteTests(unittest.TestCase):
                 self.assertIn("confidence", segment)
                 self.assertIn("issue_refs", segment)
                 resolution = segment["route_resolution"]
-                self.assertEqual(resolution["text_source"], "plugin_provided")
                 self.assertIn("plugin_id", resolution["provided_by"])
                 self.assertIn("plugin_run_id", resolution["provided_by"])
-                self.assertEqual(
-                    resolution["core_role"], "orders_and_joins_plugin_steps_only"
-                )
+                if segment["segment_kind"] == "inter_node_boundary":
+                    self.assertEqual(
+                        resolution["text_source"],
+                        "core_exact_join_summary",
+                    )
+                    self.assertEqual(
+                        resolution["core_role"],
+                        "validates_plugin_match_and_current_attachments",
+                    )
+                else:
+                    self.assertEqual(
+                        resolution["text_source"], "plugin_provided"
+                    )
+                    self.assertEqual(
+                        resolution["core_role"],
+                        "orders_and_joins_plugin_steps_only",
+                    )
                 self.assertTrue(set(resolution["interaction_target_ids"]) <= target_ids)
                 self.assertTrue(set(segment["highlight_target_ids"]) <= target_ids)
                 self.assertEqual(
@@ -1761,7 +1909,7 @@ class MultiNodeRouteTests(unittest.TestCase):
                     )
                 )
                 if segment["segment_kind"] == "inter_node_boundary":
-                    self.assertTrue(segment["topology_link_id"])
+                    self.assertTrue(segment["network_segment_id"])
 
         self.assertEqual(
             [
@@ -1770,9 +1918,9 @@ class MultiNodeRouteTests(unittest.TestCase):
             ],
             [
                 "topology_node",
-                "topology_link",
+                "network_segment",
                 "topology_node",
-                "topology_link",
+                "network_segment",
                 "topology_node",
             ],
         )
@@ -1785,7 +1933,7 @@ class MultiNodeRouteTests(unittest.TestCase):
                 }
             ),
             3,
-            "P1 and its two adjacent links must remain individually addressable",
+            "P1 and its two adjacent domains must remain individually addressable",
         )
         self.assertEqual(
             [
@@ -1794,9 +1942,9 @@ class MultiNodeRouteTests(unittest.TestCase):
             ],
             [
                 "topology_node",
-                "topology_link",
+                "network_segment",
                 "topology_node",
-                "topology_link",
+                "network_segment",
                 "topology_node",
             ],
         )
@@ -1854,8 +2002,9 @@ class MultiNodeRouteTests(unittest.TestCase):
                 item["route_resolution"]["text"]
                 for item in path["route_resolution_sequence"]
             )
-            self.assertIn("203.0.113.0/24", resolution_text)
-            self.assertNotIn("10.255.0.2/32", resolution_text)
+            self.assertIn("mpls_transport", resolution_text)
+            self.assertIn("example plug-in", resolution_text)
+            self.assertIn("Core exact-joins", resolution_text)
 
     def test_generic_route_catalog_reaches_every_ordered_router_pair(self) -> None:
         capabilities = self.client.get(
@@ -1891,11 +2040,17 @@ class MultiNodeRouteTests(unittest.TestCase):
                 self.assertEqual(sequence[0], source["node_id"])
                 self.assertEqual(sequence[-1], destination["node_id"])
                 self.assertEqual(len(sequence), len(set(sequence)))
-                self.assertLessEqual(len(sequence), 4)
+                self.assertLessEqual(len(sequence), len(sources))
                 results.append((source["node_id"], destination["node_id"]))
-        self.assertEqual(len(results), 42)
+        participant_count = len(sources)
+        self.assertEqual(
+            len(results),
+            participant_count * (participant_count - 1),
+        )
 
-    def test_advertised_route_types_and_nested_node_refs_are_executable(self) -> None:
+    def test_advertised_route_types_report_truthful_nested_node_applicability(
+        self,
+    ) -> None:
         capabilities = self.client.get(
             "/v1/topologies/routes/capabilities"
         ).json()
@@ -1915,17 +2070,35 @@ class MultiNodeRouteTests(unittest.TestCase):
                         "destination": {"node_id": destination_node_id},
                     },
                 )
-                self.assertEqual(response.status_code, 200)
+                if descriptor["route_type"] == "connected":
+                    self.assertEqual(response.status_code, 422, response.text)
+                    self.assertIn("connected", response.text.casefold())
+                    continue
+                self.assertEqual(response.status_code, 200, response.text)
                 payload = response.json()
                 self.assertEqual(payload["route_type"], descriptor["route_type"])
                 self.assertEqual(payload["source"]["node_id"], source_node_id)
                 self.assertEqual(
                     payload["destination"]["node_id"], destination_node_id
                 )
-                self.assertTrue(payload["reachable"])
                 self.assertEqual(
                     payload["paths"][0]["route_type"], descriptor["route_type"]
                 )
+                if descriptor["route_type"] in {
+                    "evpn_service",
+                    "evpn_mac_ip",
+                }:
+                    self.assertFalse(payload["reachable"])
+                    self.assertEqual(
+                        payload["paths"][0]["alternative_state"],
+                        "control_plane_only",
+                    )
+                    self.assertEqual(
+                        payload["consistency"]["state"],
+                        "control_plane_only_not_forwarding",
+                    )
+                else:
+                    self.assertTrue(payload["reachable"])
 
     def test_route_table_facets_cover_diverse_plugin_route_semantics(self) -> None:
         capabilities = self.client.get(
@@ -1948,11 +2121,7 @@ class MultiNodeRouteTests(unittest.TestCase):
             {item["route_type"] for item in capabilities["route_types"]},
             expected_types,
         )
-        table = self.client.post(
-            "/v1/topologies/routes/tables/query",
-            json={"page": {"limit": 500}},
-        ).json()
-        self.assertLessEqual(table["counts"]["total"], 500)
+        table = query_all_route_table_rows(self.client)
         self.assertFalse(table["page"]["truncated"])
         self.assertEqual(
             {item["value"] for item in table["facets"]["route_types"]},
@@ -2074,8 +2243,17 @@ class MultiNodeRouteTests(unittest.TestCase):
             {"node-b", "node-e"},
         )
         self.assertEqual(
-            {path["encapsulation"]["remote_vtep"] for path in payload["paths"]},
-            {"10.0.0.2", "10.0.0.5"},
+            {
+                (
+                    path["destination_node_id"],
+                    path["encapsulation"]["remote_vtep"],
+                )
+                for path in payload["paths"]
+            },
+            {
+                ("node-b", "10.254.0.2"),
+                ("node-e", "10.254.0.5"),
+            },
         )
         self.assertEqual(len({path["path_id"] for path in payload["paths"]}), 2)
 
@@ -2177,11 +2355,27 @@ class MultiNodeRouteTests(unittest.TestCase):
         )
         connected_payload = connected.json()
         connected_path = connected_payload["paths"][0]
+        connected_rows = [
+            row
+            for row in query_all_route_table_rows(self.client)["items"]
+            if row["route_type"] == "connected"
+            and row["attributes"].get("scenario_id")
+            == "connected-external-subnet"
+            and row["active"]
+        ]
+        self.assertEqual(len(connected_rows), 1)
+        declared_attachment = connected_rows[0]["attributes"][
+            "connected_attachment"
+        ]
         self.assertTrue(connected_payload["reachable"])
         self.assertEqual(connected_path["node_sequence"], ["node-e"])
         self.assertEqual(
             connected_path["egress_resource_id"],
-            "node-e/INTERFACE/et-0-0-20",
+            declared_attachment["resource_id"],
+        )
+        self.assertEqual(
+            declared_attachment["classification"],
+            "external",
         )
         self.assertFalse(
             any(
@@ -2227,11 +2421,11 @@ class MultiNodeRouteTests(unittest.TestCase):
         )
         self.assertIn("inference", best_middle)
 
-    def test_default_bidirectional_asymmetry_is_not_a_directional_fault(self) -> None:
+    def test_bidirectional_asymmetry_is_not_a_directional_fault(self) -> None:
         response = self.client.post(
             "/v1/topologies/routes/trace",
             json={
-                "scenario_id": "single-active-primary",
+                "scenario_id": "site-a-site-c-asymmetric",
                 "direction": "both",
             },
         )
@@ -2245,11 +2439,11 @@ class MultiNodeRouteTests(unittest.TestCase):
         self.assertTrue(payload["consistency"]["consistent"])
         self.assertEqual(
             payload["traces"]["forward"]["paths"][0]["node_sequence"],
-            ["node-a", "transit-p-1", "node-b"],
+            ["node-a", "transit-p-2", "node-c"],
         )
         self.assertEqual(
             payload["traces"]["reverse"]["paths"][0]["node_sequence"],
-            ["node-b", "transit-p-2", "node-a"],
+            ["node-c", "transit-p-2", "transit-p-1", "node-a"],
         )
         for direction in ("forward", "reverse"):
             trace = payload["traces"][direction]
@@ -2330,6 +2524,10 @@ class MultiNodeRouteTests(unittest.TestCase):
     def test_same_router_non_source_attachment_is_not_full_endpoint_span(
         self,
     ) -> None:
+        node_a_attachment = self._generated_attachment_resource_id(
+            "node-a",
+            shared_with="transit-p-2",
+        )
         response = self.client.post(
             "/v1/topologies/routes/trace",
             json={
@@ -2343,7 +2541,7 @@ class MultiNodeRouteTests(unittest.TestCase):
                 },
                 "ingress": {
                     "node_id": "node-a",
-                    "resource_id": "node-a/INTERFACE/xe-0-0-0",
+                    "resource_id": node_a_attachment,
                 },
             },
         )
@@ -2519,41 +2717,26 @@ class MultiNodeRouteTests(unittest.TestCase):
             payload["consistency"]["issue_refs"],
         )
 
-    def test_underlay_only_topology_scope_does_not_fabricate_missing_outer_hop(self) -> None:
+    def test_selected_topology_scope_does_not_fabricate_missing_outer_hop(
+        self,
+    ) -> None:
+        capabilities = self.client.get(
+            "/v1/topologies/capabilities"
+        ).json()
+        nodes_by_id = {
+            item["node_id"]: item for item in capabilities["nodes"]
+        }
         node_queries = [
             {
-                "node_id": "node-a",
-                "plugin_set_id": "node-a.alpha-evpn.v1",
-                "projections": [
-                    {
-                        "plugin_id": "demo.alpha.platform",
-                        "projection_id": "alpha.underlay-links",
-                        "status_perspective_id": "alpha.hardware-observed",
-                    }
+                "node_id": node_id,
+                "plugin_set_id": nodes_by_id[node_id][
+                    "default_plugin_set_id"
                 ],
-            },
-            {
-                "node_id": "node-b",
-                "plugin_set_id": "node-b.beta-evpn.v2",
-                "projections": [
-                    {
-                        "plugin_id": "demo.beta.forwarding",
-                        "projection_id": "beta.forwarding-links",
-                        "status_perspective_id": "beta.asic-observed",
-                    }
+                "projections": nodes_by_id[node_id][
+                    "default_projection_selections"
                 ],
-            },
-            {
-                "node_id": "transit-p-1",
-                "plugin_set_id": "transit-p-1.gamma.v1",
-                "projections": [
-                    {
-                        "plugin_id": "demo.gamma.isis",
-                        "projection_id": "gamma.isis-links",
-                        "status_perspective_id": "gamma.isis-observed",
-                    }
-                ],
-            },
+            }
+            for node_id in ("node-a", "node-b", "transit-p-1")
         ]
         response = self.client.post(
             "/v1/topologies/routes/trace",
@@ -2585,7 +2768,7 @@ class MultiNodeRouteTests(unittest.TestCase):
                 for segment in control["segments"]
                 for node_id in segment["node_ids"]
             },
-            {"node-a", "node-b"},
+            set(control["node_sequence"]),
         )
         local_segments = [
             segment
@@ -2593,10 +2776,23 @@ class MultiNodeRouteTests(unittest.TestCase):
             if segment["segment_kind"] == "node_resolution"
         ]
         self.assertEqual(len(local_segments), 3)
-        self.assertTrue(any(segment["completeness"]["state"] == "unresolved" for segment in control["segments"]))
+        unresolved_boundaries = [
+            segment
+            for segment in control["segments"]
+            if segment["segment_kind"] == "inter_node_boundary"
+        ]
         self.assertEqual(
-            sum(not segment["resource_refs"] for segment in local_segments),
-            1,
+            [segment["completeness"]["state"] for segment in unresolved_boundaries],
+            ["unresolved", "unresolved"],
+        )
+        self.assertTrue(
+            all(
+                segment["network_segment_id"] is None
+                and segment["resource_refs"] == []
+                and segment["generated_connectivity_binding"]["state"]
+                == "unresolved"
+                for segment in unresolved_boundaries
+            )
         )
         evidence = payload["route_resolution_evidence"]
         self.assertTrue(evidence["auxiliary"])
@@ -2669,7 +2865,7 @@ class MultiNodeRouteTests(unittest.TestCase):
             {"direction": "sideways"},
             {
                 "scenario_id": "router-to-router",
-                "source_id": "source:pe-a-loopback",
+                "source_id": "source:node-a",
                 "source": {"node_id": "node-b"},
             },
             {
@@ -2690,7 +2886,7 @@ class MultiNodeRouteTests(unittest.TestCase):
                 "scenario_id": "incomplete-node-resolution",
                 "completeness_policy": "strict",
                 "topology_context_id": topology["context_id"],
-                "destination_id": "destination:blue-service-prefix",
+                "destination_id": "destination:node-b",
             },
         )
 

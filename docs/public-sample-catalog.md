@@ -1,8 +1,19 @@
 # Public sample-input catalog
 
-The integrated fixture in `samples/generated/node-a.tgz` is the primary product
-smoke test. The sources below broaden individual parser and safety tests without
-requiring proprietary router dumps. URLs are commit-pinned where practical.
+The generated-on-demand `demo/fixtures/router-state-lab-demo.tgz` assembly is
+the primary product smoke input. One generator produces its outer multi-node
+assembly and the node packs used by both fabric and single-node views:
+
+```powershell
+python -m generator --output demo/fixtures/router-state-lab-demo.tgz
+```
+
+The sources below broaden individual decoder, parser, and archive-safety tests
+without requiring proprietary router dumps. The current public CTF seed is the
+pinned Babeltrace `smalltrace` fixture downloaded to
+`samples/external/ctf2-smalltrace` by
+`python scripts/fetch_babeltrace_sample.py`. URLs are commit-pinned where
+practical.
 
 Review upstream license notices again before copying any fixture into a product
 repository. A link and license note are not a substitute for your organization's
@@ -20,9 +31,9 @@ AboutCode ExtractCode has Apache-2.0 recursive and hostile-path fixtures:
 
 Use these for archive mechanics only. Keep the router-specific node/layer layout,
 duplicate-member, expansion-bomb, deep-nesting, corrupt-inner-archive, and
-`.zst.gz` cases synthetic. The integrated bundle includes a deterministic
-gzip-then-Zstandard raw-frame marker; add corrupt and expansion-ratio variants
-to the ingestion conformance suite.
+`.zst.gz` cases synthetic. Add deterministic stacked-compression, corrupt, and
+expansion-ratio variants to the ingestion conformance suite when those formats
+are supported.
 
 ## CTF 1.8 and CTF 2
 
@@ -38,13 +49,12 @@ Babeltrace 2 is a tool generation; CTF 2 is a format revision. Inspect the trace
 metadata instead of treating the `babeltrace2` command name as a format marker.
 Babeltrace 2.1 is required for full CTF 2 support through MIP 1.
 
-Public traces do not contain the proprietary ETG/ETE/failover/callback model.
-The integrated `ctf2-router-domain.tgz` is a valid synthetic CTF 2 filesystem
-trace with resource, action, properties JSON, and typed result fields; it was
-validated with Babeltrace 2.1's `source.ctf.fs` decoder.
-Each real plugin should generate its own CTF domain events for success, typed
-failure, retry, duplicate, missing packet, multiple streams, clock skew, and a
-100K-event load case.
+Public traces do not contain the product-shaped ETG/ETE/failover/callback
+model. Every generated demo node pack therefore embeds deterministic synthetic
+CTF 2 filesystem traces in its raw containers, while the pinned public
+`smalltrace` remains a separate decoder smoke input. Each real plug-in should
+generate its own CTF domain events for success, typed failure, retry, duplicate,
+missing packet, multiple streams, clock skew, and a 100K-event load case.
 
 ## Router status text and expected records
 

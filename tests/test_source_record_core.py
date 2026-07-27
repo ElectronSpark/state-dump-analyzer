@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "demo" / "src"))
+sys.path.insert(0, str(ROOT / "demo"))
 
 from router_dump_analyzer.source_record_core import (
     compile_record_pattern,
@@ -16,7 +16,7 @@ from router_dump_analyzer.source_record_core import (
     record_lanes_for_window,
     source_record_event_uids,
 )
-from router_dump_analyzer_demo_plugins.source_records import (
+from plugin.source_records import (
     SOURCE_RECORD_DESCRIPTORS,
     SOURCE_RECORD_GROUP_DESCRIPTORS,
 )

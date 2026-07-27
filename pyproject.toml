@@ -13,17 +13,29 @@ authors = [{ name = "Router Dump Analyzer design team" }]
 dependencies = []
 
 [project.optional-dependencies]
-test = []
+web = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+]
+test = [
+  "fastapi>=0.115,<1",
+  "httpx>=0.27,<1",
+]
 
 [project.scripts]
+router-dump-analyzer = "router_dump_analyzer.cli:main"
 router-dump-plugin-validate = "router_dump_analyzer.plugin_validation:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/router_dump_analyzer"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"frontend" = "router_dump_analyzer/frontend"
+
 [tool.hatch.build.targets.sdist]
 include = [
   "/src",
+  "/frontend",
   "/README.md",
   "/pyproject.toml",
 ]

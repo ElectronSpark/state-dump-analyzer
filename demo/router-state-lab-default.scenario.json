@@ -1,0 +1,1088 @@
+{
+  "schema_version": 1,
+  "schema_id": "state-dump-generator-scenario/v1",
+  "scenario_id": "router-state-lab-default",
+  "name": "Router State Lab default multi-node history",
+  "seed": 20260725,
+  "capture_time_ns": 720000000000,
+  "nodes": [
+    {
+      "node_id": "node-a",
+      "name": "PE-A / Alpha NOS",
+      "kind": "router",
+      "dump_enabled": true,
+      "position": {"x": 140, "y": 190},
+      "site": "toronto-west",
+      "profile": "provider_edge",
+      "clock": {"offset_ns": -4000000, "uncertainty_ns": 5000000},
+      "initial_resources": [
+        {
+          "resource_id": "route:blue:203.0.113.0/24",
+          "resource_type": "IP_ROUTE",
+          "status": "installed",
+          "properties": {"next_hop": "10.64.0.2", "protocol": "isis", "vrf": "blue"}
+        }
+      ]
+    },
+    {
+      "node_id": "node-b",
+      "name": "PE-B / Beta NOS",
+      "kind": "router",
+      "dump_enabled": true,
+      "position": {"x": 930, "y": 190},
+      "site": "montreal-east",
+      "profile": "provider_edge",
+      "clock": {"offset_ns": 6000000, "uncertainty_ns": 9000000},
+      "initial_resources": [
+        {
+          "resource_id": "neighbor:10.64.1.2",
+          "resource_type": "ADJACENCY",
+          "status": "up",
+          "properties": {"protocol": "isis", "interface": "ae-core-east"}
+        },
+        {
+          "resource_id": "route:blue:198.51.100.0/30",
+          "resource_type": "IP_ROUTE",
+          "status": "installed",
+          "properties": {
+            "next_hop": "10.64.1.2",
+            "protocol": "isis",
+            "vrf": "blue"
+          }
+        }
+      ]
+    },
+    {
+      "node_id": "node-c",
+      "name": "PE-C / Epsilon edge NOS",
+      "kind": "router",
+      "dump_enabled": true,
+      "position": {"x": 940, "y": 500},
+      "site": "ottawa-edge",
+      "profile": "provider_edge",
+      "clock": {"offset_ns": 11000000, "uncertainty_ns": 7000000},
+      "initial_resources": [
+        {
+          "resource_id": "route:blue:10.255.0.1/32",
+          "resource_type": "IP_ROUTE",
+          "status": "installed",
+          "properties": {
+            "next_hop": "10.64.2.0",
+            "protocol": "isis",
+            "vrf": "blue"
+          }
+        }
+      ]
+    },
+    {
+      "node_id": "node-d",
+      "name": "PE-D / Zeta EVPN NOS",
+      "kind": "router",
+      "dump_enabled": true,
+      "position": {"x": 130, "y": 360},
+      "site": "toronto-west",
+      "profile": "provider_edge",
+      "clock": {"offset_ns": -8000000, "uncertainty_ns": 6000000},
+      "initial_resources": [
+        {
+          "resource_id": "neighbor:10.64.0.2",
+          "resource_type": "ADJACENCY",
+          "status": "up",
+          "properties": {
+            "interface": "Ethernet1/1.310",
+            "protocol": "isis"
+          }
+        }
+      ]
+    },
+    {
+      "node_id": "node-e",
+      "name": "PE-E / Eta border NOS",
+      "kind": "router",
+      "dump_enabled": true,
+      "position": {"x": 940, "y": 360},
+      "site": "montreal-east",
+      "profile": "provider_edge",
+      "clock": {"offset_ns": 14000000, "uncertainty_ns": 8000000},
+      "initial_resources": []
+    },
+    {
+      "node_id": "transit-p-1",
+      "name": "P1 / Gamma routing daemon",
+      "kind": "router",
+      "dump_enabled": true,
+      "position": {"x": 410, "y": 235},
+      "site": "core-west",
+      "profile": "provider_core",
+      "clock": {"offset_ns": 1000000, "uncertainty_ns": 3000000},
+      "initial_resources": [
+        {
+          "resource_id": "neighbor:10.64.255.1",
+          "resource_type": "ADJACENCY",
+          "status": "up",
+          "properties": {"protocol": "isis", "interface": "Ethernet3/1"}
+        }
+      ]
+    },
+    {
+      "node_id": "transit-p-2",
+      "name": "P2 / Delta SR routing stack",
+      "kind": "router",
+      "dump_enabled": true,
+      "position": {"x": 670, "y": 235},
+      "site": "core-east",
+      "profile": "provider_core",
+      "clock": {"offset_ns": -2000000, "uncertainty_ns": 4000000},
+      "initial_resources": [
+        {
+          "resource_id": "neighbor:10.64.255.0",
+          "resource_type": "ADJACENCY",
+          "status": "up",
+          "properties": {"protocol": "isis", "interface": "Ethernet4/1"}
+        },
+        {
+          "resource_id": "route:blue:203.0.113.0/24",
+          "resource_type": "IP_ROUTE",
+          "status": "installed",
+          "properties": {
+            "next_hop": "10.64.255.0",
+            "protocol": "isis",
+            "vrf": "blue"
+          }
+        }
+      ]
+    },
+    {
+      "node_id": "ce-west",
+      "name": "CE-West / dual-homed site",
+      "kind": "router",
+      "dump_enabled": true,
+      "position": {"x": 255, "y": 540},
+      "site": "toronto-west-access",
+      "profile": "customer_edge",
+      "clock": {"offset_ns": 19000000, "uncertainty_ns": 12000000},
+      "initial_resources": []
+    },
+    {
+      "node_id": "ce-east",
+      "name": "CE-East / dual-homed site",
+      "kind": "router",
+      "dump_enabled": true,
+      "position": {"x": 815, "y": 540},
+      "site": "montreal-east-access",
+      "profile": "customer_edge",
+      "clock": {"offset_ns": -17000000, "uncertainty_ns": 15000000},
+      "initial_resources": [
+        {
+          "resource_id": "neighbor:172.20.20.2",
+          "resource_type": "ADJACENCY",
+          "status": "up",
+          "properties": {"interface": "ae-east-evpn", "protocol": "bgp"}
+        }
+      ]
+    },
+    {
+      "node_id": "edge-c",
+      "name": "Edge-C / recovery lab",
+      "kind": "router",
+      "dump_enabled": true,
+      "position": {"x": 1110, "y": 525},
+      "site": "ottawa-edge-access",
+      "profile": "customer_edge",
+      "clock": {"offset_ns": 31000000, "uncertainty_ns": 25000000},
+      "initial_resources": []
+    }
+  ],
+  "media": [
+    {
+      "medium_id": "authoring-medium-001",
+      "name": "Supposed west core broadcast medium",
+      "kind": "broadcast",
+      "state": "up",
+      "attachments": [
+        {
+          "node_id": "node-a",
+          "port_id": "interface:Ethernet1/1.310",
+          "properties": {
+            "local_resource_id": "interface:Ethernet1/1.310",
+            "segment_key": "core-west-multi-access",
+            "segment_label": "Core west multi-access",
+            "subnet_prefix": "10.64.0.0/24",
+            "attachment_kind": "vlan_subinterface",
+            "classification": "underlay",
+            "confidence": "exact",
+            "vlan_id": 310
+          }
+        },
+        {
+          "node_id": "node-d",
+          "port_id": "interface:Ethernet1/1.310",
+          "properties": {
+            "local_resource_id": "interface:Ethernet1/1.310",
+            "segment_key": "core-west-multi-access",
+            "segment_label": "Core west multi-access",
+            "subnet_prefix": "10.64.0.0/24",
+            "attachment_kind": "vlan_subinterface",
+            "classification": "underlay",
+            "confidence": "exact",
+            "vlan_id": 310
+          }
+        },
+        {
+          "node_id": "transit-p-1",
+          "port_id": "interface:Ethernet1/1.310",
+          "properties": {
+            "local_resource_id": "interface:Ethernet1/1.310",
+            "segment_key": "core-west-multi-access",
+            "segment_label": "Core west multi-access",
+            "subnet_prefix": "10.64.0.0/24",
+            "attachment_kind": "vlan_subinterface",
+            "classification": "underlay",
+            "confidence": "exact",
+            "vlan_id": 310
+          }
+        },
+        {
+          "node_id": "transit-p-2",
+          "port_id": "interface:Ethernet1/1.310",
+          "properties": {
+            "local_resource_id": "interface:Ethernet1/1.310",
+            "segment_key": "core-west-multi-access",
+            "segment_label": "Core west multi-access",
+            "subnet_prefix": "10.64.0.0/24",
+            "attachment_kind": "vlan_subinterface",
+            "classification": "underlay",
+            "confidence": "exact",
+            "vlan_id": 310
+          }
+        }
+      ]
+    },
+    {
+      "medium_id": "authoring-medium-002",
+      "name": "Supposed east core broadcast medium",
+      "kind": "broadcast",
+      "state": "up",
+      "attachments": [
+        {
+          "node_id": "node-b",
+          "port_id": "interface:ae-core-east",
+          "properties": {
+            "local_resource_id": "interface:ae-core-east",
+            "segment_key": "core-east-multi-access",
+            "segment_label": "Core east multi-access",
+            "subnet_prefix": "10.64.1.0/24",
+            "attachment_kind": "lag",
+            "classification": "underlay",
+            "confidence": "exact",
+            "lag_id": "ae-core-east"
+          }
+        },
+        {
+          "node_id": "node-e",
+          "port_id": "interface:ae-core-east",
+          "properties": {
+            "local_resource_id": "interface:ae-core-east",
+            "segment_key": "core-east-multi-access",
+            "segment_label": "Core east multi-access",
+            "subnet_prefix": "10.64.1.0/24",
+            "attachment_kind": "lag",
+            "classification": "underlay",
+            "confidence": "exact",
+            "lag_id": "ae-core-east"
+          }
+        },
+        {
+          "node_id": "transit-p-1",
+          "port_id": "interface:ae-core-east",
+          "properties": {
+            "local_resource_id": "interface:ae-core-east",
+            "segment_key": "core-east-multi-access",
+            "segment_label": "Core east multi-access",
+            "subnet_prefix": "10.64.1.0/24",
+            "attachment_kind": "lag",
+            "classification": "underlay",
+            "confidence": "exact",
+            "lag_id": "ae-core-east"
+          }
+        },
+        {
+          "node_id": "transit-p-2",
+          "port_id": "interface:ae-core-east",
+          "properties": {
+            "local_resource_id": "interface:ae-core-east",
+            "segment_key": "core-east-multi-access",
+            "segment_label": "Core east multi-access",
+            "subnet_prefix": "10.64.1.0/24",
+            "attachment_kind": "lag",
+            "classification": "underlay",
+            "confidence": "exact",
+            "lag_id": "ae-core-east"
+          }
+        }
+      ]
+    },
+    {
+      "medium_id": "authoring-medium-003",
+      "name": "Supposed Ottawa core circuit",
+      "kind": "point-to-point",
+      "state": "up",
+      "attachments": [
+        {
+          "node_id": "node-c",
+          "port_id": "interface:Ethernet1/1.320",
+          "properties": {
+            "local_resource_id": "interface:Ethernet1/1.320",
+            "segment_key": "pe-c-transit",
+            "segment_label": "Ottawa PE to core",
+            "subnet_prefix": "10.64.2.0/31",
+            "attachment_kind": "subinterface",
+            "classification": "underlay",
+            "confidence": "exact",
+            "vlan_id": 320
+          }
+        },
+        {
+          "node_id": "transit-p-2",
+          "port_id": "interface:Ethernet2/1.320",
+          "properties": {
+            "local_resource_id": "interface:Ethernet2/1.320",
+            "segment_key": "pe-c-transit",
+            "segment_label": "Ottawa PE to core",
+            "subnet_prefix": "10.64.2.0/31",
+            "attachment_kind": "subinterface",
+            "classification": "underlay",
+            "confidence": "exact",
+            "vlan_id": 320
+          }
+        }
+      ]
+    },
+    {
+      "medium_id": "authoring-medium-004",
+      "name": "Supposed west EVPN access medium",
+      "kind": "broadcast",
+      "state": "up",
+      "attachments": [
+        {
+          "node_id": "ce-west",
+          "port_id": "interface:ae-west-evpn",
+          "properties": {
+            "local_resource_id": "interface:ae-west-evpn",
+            "segment_key": "west-evpn-access",
+            "segment_label": "Blue west Ethernet segment",
+            "subnet_prefix": "172.20.10.0/29",
+            "attachment_kind": "lag",
+            "classification": "evpn_access",
+            "confidence": "exact",
+            "lag_id": "ae-west-evpn"
+          }
+        },
+        {
+          "node_id": "node-a",
+          "port_id": "interface:ae-west-evpn",
+          "properties": {
+            "local_resource_id": "interface:ae-west-evpn",
+            "segment_key": "west-evpn-access",
+            "segment_label": "Blue west Ethernet segment",
+            "subnet_prefix": "172.20.10.0/29",
+            "attachment_kind": "lag",
+            "classification": "evpn_access",
+            "confidence": "exact",
+            "lag_id": "ae-west-evpn"
+          }
+        },
+        {
+          "node_id": "node-d",
+          "port_id": "interface:ae-west-evpn",
+          "properties": {
+            "local_resource_id": "interface:ae-west-evpn",
+            "segment_key": "west-evpn-access",
+            "segment_label": "Blue west Ethernet segment",
+            "subnet_prefix": "172.20.10.0/29",
+            "attachment_kind": "lag",
+            "classification": "evpn_access",
+            "confidence": "exact",
+            "lag_id": "ae-west-evpn"
+          }
+        }
+      ]
+    },
+    {
+      "medium_id": "authoring-medium-005",
+      "name": "Supposed east EVPN access medium",
+      "kind": "broadcast",
+      "state": "up",
+      "attachments": [
+        {
+          "node_id": "ce-east",
+          "port_id": "interface:ae-east-evpn",
+          "properties": {
+            "local_resource_id": "interface:ae-east-evpn",
+            "segment_key": "east-evpn-access",
+            "segment_label": "Blue east Ethernet segment",
+            "subnet_prefix": "172.20.20.0/29",
+            "attachment_kind": "lag",
+            "classification": "evpn_access",
+            "confidence": "exact",
+            "lag_id": "ae-east-evpn"
+          }
+        },
+        {
+          "node_id": "node-b",
+          "port_id": "interface:ae-east-evpn",
+          "properties": {
+            "local_resource_id": "interface:ae-east-evpn",
+            "segment_key": "east-evpn-access",
+            "segment_label": "Blue east Ethernet segment",
+            "subnet_prefix": "172.20.20.0/29",
+            "attachment_kind": "lag",
+            "classification": "evpn_access",
+            "confidence": "exact",
+            "lag_id": "ae-east-evpn"
+          }
+        },
+        {
+          "node_id": "node-e",
+          "port_id": "interface:ae-east-evpn",
+          "properties": {
+            "local_resource_id": "interface:ae-east-evpn",
+            "segment_key": "east-evpn-access",
+            "segment_label": "Blue east Ethernet segment",
+            "subnet_prefix": "172.20.20.0/29",
+            "attachment_kind": "lag",
+            "classification": "evpn_access",
+            "confidence": "exact",
+            "lag_id": "ae-east-evpn"
+          }
+        }
+      ]
+    },
+    {
+      "medium_id": "authoring-medium-006",
+      "name": "Supposed Eta external circuit",
+      "kind": "external",
+      "state": "up",
+      "attachments": [
+        {
+          "node_id": "node-e",
+          "port_id": "interface:Ethernet2/1",
+          "properties": {
+            "local_resource_id": "interface:Ethernet2/1",
+            "segment_key": "eta-external",
+            "segment_label": "Eta external service subnet",
+            "subnet_prefix": "203.0.113.0/24",
+            "attachment_kind": "physical",
+            "classification": "external",
+            "confidence": "exact"
+          }
+        }
+      ]
+    },
+    {
+      "medium_id": "authoring-medium-007",
+      "name": "Supposed Ottawa external circuit",
+      "kind": "point-to-point",
+      "state": "up",
+      "attachments": [
+        {
+          "node_id": "node-c",
+          "port_id": "interface:Ethernet2/1",
+          "properties": {
+            "local_resource_id": "interface:Ethernet2/1",
+            "segment_key": "ottawa-external",
+            "segment_label": "Ottawa external subnet",
+            "subnet_prefix": "198.51.100.0/30",
+            "attachment_kind": "physical",
+            "classification": "external",
+            "confidence": "exact"
+          }
+        },
+        {
+          "node_id": "edge-c",
+          "port_id": "interface:Ethernet1/1",
+          "properties": {
+            "local_resource_id": "interface:Ethernet1/1",
+            "segment_key": "ottawa-external",
+            "segment_label": "Ottawa external subnet",
+            "subnet_prefix": "198.51.100.0/30",
+            "attachment_kind": "physical",
+            "classification": "external",
+            "confidence": "exact"
+          }
+        }
+      ]
+    },
+    {
+      "medium_id": "authoring-medium-008",
+      "name": "Supposed P1-P2 SR transport circuit",
+      "kind": "point-to-point",
+      "state": "up",
+      "attachments": [
+        {
+          "node_id": "transit-p-1",
+          "port_id": "interface:Ethernet3/1",
+          "properties": {
+            "local_resource_id": "interface:Ethernet3/1",
+            "segment_key": "p1-p2-sr",
+            "segment_label": "P1-P2 SR transport",
+            "subnet_prefix": "10.64.255.0/31",
+            "attachment_kind": "physical",
+            "classification": "underlay",
+            "confidence": "exact"
+          }
+        },
+        {
+          "node_id": "transit-p-2",
+          "port_id": "interface:Ethernet4/1",
+          "properties": {
+            "local_resource_id": "interface:Ethernet4/1",
+            "segment_key": "p1-p2-sr",
+            "segment_label": "P1-P2 SR transport",
+            "subnet_prefix": "10.64.255.0/31",
+            "attachment_kind": "physical",
+            "classification": "underlay",
+            "confidence": "exact"
+          }
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "event_id": "node-a-route-create",
+      "timestamp_ns": 30000000000,
+      "order": 10,
+      "kind": "resource-upsert",
+      "node_id": "node-a",
+      "resource_id": "route:blue:198.51.100.0/30",
+      "resource_type": "IP_ROUTE",
+      "operation": "create",
+      "status": "installed",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"next_hop": "10.64.0.2", "protocol": "isis", "vrf": "blue"},
+      "message": "Installed the Ottawa service route through the west core."
+    },
+    {
+      "event_id": "node-b-neighbor-create",
+      "timestamp_ns": 45000000000,
+      "order": 20,
+      "kind": "resource-upsert",
+      "node_id": "node-b",
+      "resource_id": "neighbor:172.20.20.1",
+      "resource_type": "ADJACENCY",
+      "operation": "create",
+      "status": "up",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"interface": "ae-east-evpn", "protocol": "evpn"},
+      "message": "Created the east EVPN customer adjacency."
+    },
+    {
+      "event_id": "p1-p2-physical-down",
+      "timestamp_ns": 90000000000,
+      "order": 30,
+      "kind": "physical-link-state",
+      "target_type": "medium",
+      "target_id": "authoring-medium-008",
+      "medium_id": "authoring-medium-008",
+      "status": "down",
+      "propagation": {"mode": "manual"},
+      "properties": {"reason": "fiber-cut"}
+    },
+    {
+      "event_id": "p1-carrier-down",
+      "timestamp_ns": 90050000000,
+      "order": 31,
+      "kind": "status",
+      "node_id": "transit-p-1",
+      "resource_id": "interface:Ethernet3/1",
+      "resource_type": "VIRTUAL_INTERFACE",
+      "operation": "state-change",
+      "status": "down",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"oper_status": "down", "reason": "loss-of-signal"},
+      "message": "P1 observed loss of signal on the SR transport port."
+    },
+    {
+      "event_id": "p1-adjacency-withdraw",
+      "timestamp_ns": 91000000000,
+      "order": 32,
+      "kind": "resource-delete",
+      "node_id": "transit-p-1",
+      "resource_id": "neighbor:10.64.255.1",
+      "resource_type": "ADJACENCY",
+      "operation": "delete",
+      "status": "down",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"reason": "interface-down"},
+      "message": "P1 removed the P2 IS-IS adjacency."
+    },
+    {
+      "event_id": "p2-carrier-stale",
+      "timestamp_ns": 96000000000,
+      "order": 33,
+      "kind": "status",
+      "node_id": "transit-p-2",
+      "resource_id": "interface:Ethernet4/1",
+      "resource_type": "VIRTUAL_INTERFACE",
+      "operation": "state-change",
+      "status": "down",
+      "outcome": "stale",
+      "update_snapshot": false,
+      "properties": {"attempted_oper_status": "down", "reason": "driver-event-lost"},
+      "message": "P2 lost the carrier notification and retained the old interface state."
+    },
+    {
+      "event_id": "p2-route-withdraw-failed",
+      "timestamp_ns": 108000000000,
+      "order": 34,
+      "kind": "status",
+      "node_id": "transit-p-2",
+      "resource_id": "route:blue:203.0.113.0/24",
+      "resource_type": "IP_ROUTE",
+      "operation": "delete",
+      "status": "withdrawn",
+      "outcome": "failed",
+      "update_snapshot": false,
+      "properties": {"error": "fib-programming-timeout"},
+      "message": "P2 logged a failed route withdrawal; its prior forwarding state remained."
+    },
+    {
+      "event_id": "node-a-route-reroute",
+      "timestamp_ns": 120000000000,
+      "order": 40,
+      "kind": "status",
+      "node_id": "node-a",
+      "resource_id": "route:blue:203.0.113.0/24",
+      "resource_type": "IP_ROUTE",
+      "operation": "modify",
+      "status": "installed",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"next_hop": "10.64.0.3", "reason": "transport-failover"},
+      "message": "PE-A moved the service route to its alternate core next hop."
+    },
+    {
+      "event_id": "ce-west-neighbor-create",
+      "timestamp_ns": 145000000000,
+      "order": 45,
+      "kind": "resource-upsert",
+      "node_id": "ce-west",
+      "resource_id": "neighbor:172.20.10.2",
+      "resource_type": "ADJACENCY",
+      "operation": "create",
+      "status": "up",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"interface": "ae-west-evpn", "protocol": "bgp"},
+      "message": "CE-West learned its EVPN-facing BGP neighbor."
+    },
+    {
+      "event_id": "node-d-structural-detach",
+      "timestamp_ns": 180000000000,
+      "order": 50,
+      "kind": "resource-delete",
+      "node_id": "node-d",
+      "resource_id": "interface:Ethernet1/1.310",
+      "resource_type": "VIRTUAL_INTERFACE",
+      "operation": "delete",
+      "status": "absent",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"reason": "subinterface-removed-locally"},
+      "message": "PE-D removed its west-core VLAN subinterface without a global topology change."
+    },
+    {
+      "event_id": "node-d-adjacency-detach",
+      "timestamp_ns": 181000000000,
+      "order": 51,
+      "kind": "resource-delete",
+      "node_id": "node-d",
+      "resource_id": "neighbor:10.64.0.2",
+      "resource_type": "ADJACENCY",
+      "operation": "delete",
+      "status": "absent",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"reason": "attachment-removed"},
+      "message": "PE-D removed the adjacency associated with the detached subinterface."
+    },
+    {
+      "event_id": "node-e-external-route-create",
+      "timestamp_ns": 195000000000,
+      "order": 55,
+      "kind": "resource-upsert",
+      "node_id": "node-e",
+      "resource_id": "route:red:203.0.113.0/24",
+      "resource_type": "IP_ROUTE",
+      "operation": "create",
+      "status": "installed",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"interface": "Ethernet2/1", "protocol": "connected", "vrf": "red"},
+      "message": "PE-E installed its directly connected external service route."
+    },
+    {
+      "event_id": "node-a-route-delete",
+      "timestamp_ns": 210000000000,
+      "order": 60,
+      "kind": "resource-delete",
+      "node_id": "node-a",
+      "resource_id": "route:blue:198.51.100.0/30",
+      "resource_type": "IP_ROUTE",
+      "operation": "delete",
+      "status": "absent",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"reason": "policy-withdraw"},
+      "message": "PE-A removed the Ottawa service route."
+    },
+    {
+      "event_id": "p1-p2-physical-restore",
+      "timestamp_ns": 240000000000,
+      "order": 70,
+      "kind": "physical-link-state",
+      "target_type": "medium",
+      "target_id": "authoring-medium-008",
+      "medium_id": "authoring-medium-008",
+      "status": "up",
+      "propagation": {"mode": "manual"},
+      "properties": {"reason": "fiber-repaired"}
+    },
+    {
+      "event_id": "p1-carrier-restore",
+      "timestamp_ns": 240100000000,
+      "order": 71,
+      "kind": "status",
+      "node_id": "transit-p-1",
+      "resource_id": "interface:Ethernet3/1",
+      "resource_type": "VIRTUAL_INTERFACE",
+      "operation": "state-change",
+      "status": "up",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"oper_status": "up", "reason": "carrier-restored"},
+      "message": "P1 observed carrier restoration first."
+    },
+    {
+      "event_id": "p2-carrier-restore",
+      "timestamp_ns": 242500000000,
+      "order": 72,
+      "kind": "status",
+      "node_id": "transit-p-2",
+      "resource_id": "interface:Ethernet4/1",
+      "resource_type": "VIRTUAL_INTERFACE",
+      "operation": "state-change",
+      "status": "up",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"oper_status": "up", "reason": "poll-detected-restoration"},
+      "message": "P2 detected restoration later through periodic polling."
+    },
+    {
+      "event_id": "p1-adjacency-restore",
+      "timestamp_ns": 247000000000,
+      "order": 73,
+      "kind": "resource-upsert",
+      "node_id": "transit-p-1",
+      "resource_id": "neighbor:10.64.255.1",
+      "resource_type": "ADJACENCY",
+      "operation": "create",
+      "status": "up",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"protocol": "isis", "interface": "Ethernet3/1"},
+      "message": "P1 recreated the P2 IS-IS adjacency."
+    },
+    {
+      "event_id": "p2-adjacency-refresh",
+      "timestamp_ns": 252000000000,
+      "order": 74,
+      "kind": "status",
+      "node_id": "transit-p-2",
+      "resource_id": "neighbor:10.64.255.0",
+      "resource_type": "ADJACENCY",
+      "operation": "modify",
+      "status": "up",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"protocol": "isis", "hold_timer": 27},
+      "message": "P2 refreshed its still-present adjacency after carrier restoration."
+    },
+    {
+      "event_id": "node-a-route-recreate",
+      "timestamp_ns": 270000000000,
+      "order": 80,
+      "kind": "resource-upsert",
+      "node_id": "node-a",
+      "resource_id": "route:blue:198.51.100.0/30",
+      "resource_type": "IP_ROUTE",
+      "operation": "create",
+      "status": "installed",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"next_hop": "10.64.0.2", "protocol": "isis", "vrf": "blue"},
+      "message": "PE-A reinstalled the Ottawa service route after convergence."
+    },
+    {
+      "event_id": "node-d-structural-reattach",
+      "timestamp_ns": 300000000000,
+      "order": 90,
+      "kind": "resource-upsert",
+      "node_id": "node-d",
+      "resource_id": "interface:Ethernet1/1.310",
+      "resource_type": "VIRTUAL_INTERFACE",
+      "operation": "create",
+      "status": "up",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {
+        "admin_status": "up",
+        "oper_status": "up",
+        "vlan_id": 310,
+        "segment_key": "core-west-multi-access"
+      },
+      "message": "PE-D recreated and reattached the west-core VLAN subinterface."
+    },
+    {
+      "event_id": "node-d-adjacency-reattach",
+      "timestamp_ns": 304000000000,
+      "order": 91,
+      "kind": "resource-upsert",
+      "node_id": "node-d",
+      "resource_id": "neighbor:10.64.0.2",
+      "resource_type": "ADJACENCY",
+      "operation": "create",
+      "status": "up",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"interface": "Ethernet1/1.310", "protocol": "isis"},
+      "message": "PE-D rediscovered the west-core adjacency."
+    },
+    {
+      "event_id": "node-b-failed-next-hop-update",
+      "timestamp_ns": 360000000000,
+      "order": 100,
+      "kind": "status",
+      "node_id": "node-b",
+      "resource_id": "route:blue:198.51.100.0/30",
+      "resource_type": "IP_ROUTE",
+      "operation": "modify",
+      "status": "installed",
+      "outcome": "failed",
+      "update_snapshot": false,
+      "properties": {"attempted_next_hop": "10.64.1.3", "error": "hardware-reject"},
+      "message": "PE-B rejected a next-hop change and retained its earlier forwarding entry."
+    },
+    {
+      "event_id": "ce-east-neighbor-withdraw",
+      "timestamp_ns": 390000000000,
+      "order": 105,
+      "kind": "resource-delete",
+      "node_id": "ce-east",
+      "resource_id": "neighbor:172.20.20.2",
+      "resource_type": "ADJACENCY",
+      "operation": "delete",
+      "status": "absent",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"reason": "remote-maintenance"},
+      "message": "CE-East withdrew its EVPN-facing neighbor during maintenance."
+    },
+    {
+      "event_id": "edge-c-recovery-route-create",
+      "timestamp_ns": 405000000000,
+      "order": 106,
+      "kind": "resource-upsert",
+      "node_id": "edge-c",
+      "resource_id": "route:default:0.0.0.0/0",
+      "resource_type": "IP_ROUTE",
+      "operation": "create",
+      "status": "installed",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"next_hop": "198.51.100.1", "protocol": "static"},
+      "message": "Edge-C installed its recovery default route toward PE-C."
+    },
+    {
+      "event_id": "ottawa-core-physical-down",
+      "timestamp_ns": 420000000000,
+      "order": 110,
+      "kind": "physical-link-state",
+      "target_type": "medium",
+      "target_id": "authoring-medium-003",
+      "medium_id": "authoring-medium-003",
+      "status": "down",
+      "propagation": {"mode": "manual"},
+      "properties": {"reason": "maintenance"}
+    },
+    {
+      "event_id": "node-c-core-carrier-down",
+      "timestamp_ns": 420200000000,
+      "order": 111,
+      "kind": "status",
+      "node_id": "node-c",
+      "resource_id": "interface:Ethernet1/1.320",
+      "resource_type": "VIRTUAL_INTERFACE",
+      "operation": "state-change",
+      "status": "down",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"oper_status": "down", "reason": "maintenance"},
+      "message": "PE-C observed its core-facing subinterface go down."
+    },
+    {
+      "event_id": "p2-ottawa-carrier-down-delayed",
+      "timestamp_ns": 435000000000,
+      "order": 112,
+      "kind": "status",
+      "node_id": "transit-p-2",
+      "resource_id": "interface:Ethernet2/1.320",
+      "resource_type": "VIRTUAL_INTERFACE",
+      "operation": "state-change",
+      "status": "down",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"oper_status": "down", "reason": "delayed-driver-poll"},
+      "message": "P2 observed the Ottawa circuit failure after a delayed poll."
+    },
+    {
+      "event_id": "node-c-route-withdraw",
+      "timestamp_ns": 439000000000,
+      "order": 113,
+      "kind": "resource-delete",
+      "node_id": "node-c",
+      "resource_id": "route:blue:10.255.0.1/32",
+      "resource_type": "IP_ROUTE",
+      "operation": "delete",
+      "status": "absent",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"reason": "core-adjacency-lost"},
+      "message": "PE-C withdrew a remote loopback route after the core failure."
+    },
+    {
+      "event_id": "ce-east-neighbor-restore",
+      "timestamp_ns": 470000000000,
+      "order": 115,
+      "kind": "resource-upsert",
+      "node_id": "ce-east",
+      "resource_id": "neighbor:172.20.20.2",
+      "resource_type": "ADJACENCY",
+      "operation": "create",
+      "status": "up",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"interface": "ae-east-evpn", "protocol": "bgp"},
+      "message": "CE-East restored its EVPN-facing neighbor after maintenance."
+    },
+    {
+      "event_id": "ottawa-core-physical-restore",
+      "timestamp_ns": 520000000000,
+      "order": 120,
+      "kind": "physical-link-state",
+      "target_type": "medium",
+      "target_id": "authoring-medium-003",
+      "medium_id": "authoring-medium-003",
+      "status": "up",
+      "propagation": {"mode": "manual"},
+      "properties": {"reason": "maintenance-complete"}
+    },
+    {
+      "event_id": "p2-ottawa-carrier-restore",
+      "timestamp_ns": 521000000000,
+      "order": 121,
+      "kind": "status",
+      "node_id": "transit-p-2",
+      "resource_id": "interface:Ethernet2/1.320",
+      "resource_type": "VIRTUAL_INTERFACE",
+      "operation": "state-change",
+      "status": "up",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"oper_status": "up", "reason": "maintenance-complete"},
+      "message": "P2 observed the Ottawa circuit restore first."
+    },
+    {
+      "event_id": "node-c-core-carrier-restore",
+      "timestamp_ns": 528000000000,
+      "order": 122,
+      "kind": "status",
+      "node_id": "node-c",
+      "resource_id": "interface:Ethernet1/1.320",
+      "resource_type": "VIRTUAL_INTERFACE",
+      "operation": "state-change",
+      "status": "up",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"oper_status": "up", "reason": "protocol-debounce-complete"},
+      "message": "PE-C restored the core-facing subinterface after debounce."
+    },
+    {
+      "event_id": "node-c-route-restore",
+      "timestamp_ns": 535000000000,
+      "order": 123,
+      "kind": "resource-upsert",
+      "node_id": "node-c",
+      "resource_id": "route:blue:10.255.0.1/32",
+      "resource_type": "IP_ROUTE",
+      "operation": "create",
+      "status": "installed",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"next_hop": "10.64.2.0", "protocol": "isis", "vrf": "blue"},
+      "message": "PE-C reinstalled the remote loopback route after convergence."
+    },
+    {
+      "event_id": "edge-c-recovery-route-refresh",
+      "timestamp_ns": 545000000000,
+      "order": 125,
+      "kind": "status",
+      "node_id": "edge-c",
+      "resource_id": "route:default:0.0.0.0/0",
+      "resource_type": "IP_ROUTE",
+      "operation": "modify",
+      "status": "installed",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"next_hop": "198.51.100.1", "generation": 2},
+      "message": "Edge-C refreshed the recovery route after the Ottawa core restored."
+    },
+    {
+      "event_id": "node-a-final-next-hop-change",
+      "timestamp_ns": 610000000000,
+      "order": 130,
+      "kind": "status",
+      "node_id": "node-a",
+      "resource_id": "route:blue:203.0.113.0/24",
+      "resource_type": "IP_ROUTE",
+      "operation": "modify",
+      "status": "installed",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"next_hop": "10.64.0.2", "reason": "primary-restored"},
+      "message": "PE-A returned the service route to the preferred next hop."
+    }
+  ],
+  "metadata": {
+    "description": "Canonical authoring source for the generated Router State Lab demo. Physical media IDs are private and must never enter node dumps.",
+    "timeline": {
+      "time_basis": "relative_to_base",
+      "base_time_ns": "1759680000000000000"
+    },
+    "demo_generation": {
+      "assembly_id": "router-state-lab-generated-demo-v1",
+      "default_node_id": "node-a",
+      "events_per_node": 125000,
+      "resources_per_node": 7500,
+      "routing_groups_by_node": {
+        "node-d": ["red_service_pe"],
+        "node-e": ["red_service_pe"]
+      }
+    }
+  }
+}

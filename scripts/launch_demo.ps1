@@ -6,26 +6,21 @@ param(
     [string]$FrontendDir = "",
     [switch]$NoBrowser,
     [switch]$ApiOnly,
-    [switch]$RebuildFixture
+    [switch]$RebuildFixture,
+    [switch]$ValidateFixture
 )
 
 $ErrorActionPreference = "Stop"
 $EnvironmentName = "router-dump-analyzer-demo"
-$MatchedEventTarget = 125000
-$ResourceTarget = 10000
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $FrontendRoot = if ([string]::IsNullOrWhiteSpace($FrontendDir)) {
-    Join-Path $RepositoryRoot "demo\frontend"
+    Join-Path $RepositoryRoot "frontend"
 }
 else {
     (Resolve-Path -LiteralPath $FrontendDir).Path
 }
 $FrontendManifest = Join-Path $FrontendRoot "frontend-manifest.json"
-$FixtureArchiveArgument = "samples\generated-scale\router-state-lab-100k.tgz"
-$FixtureArchive = Join-Path $RepositoryRoot $FixtureArchiveArgument
-$ScaleScenario = Join-Path $RepositoryRoot "samples\generated-scale\scenario.json"
-$ReviewManifest = Join-Path $RepositoryRoot "samples\generated\unpacked\node-a\manifest.json"
-$ReviewResources = Join-Path $RepositoryRoot "samples\generated\illustrative\resources.jsonl"
+$FixtureAssemblyArgument = "demo\fixtures\router-state-lab-demo.tgz"
 $PreviousPythonUtf8 = $env:PYTHONUTF8
 $PreviousPythonIoEncoding = $env:PYTHONIOENCODING
 $env:PYTHONUTF8 = "1"
@@ -52,113 +47,103 @@ function Find-CondaExecutable {
 
 $CondaExecutable = Find-CondaExecutable
 $CondaRoot = Split-Path -Parent (Split-Path -Parent $CondaExecutable)
-$DemoPython = Join-Path $CondaRoot "envs\$EnvironmentName\python.exe"
-if (-not (Test-Path -LiteralPath $DemoPython)) {
+$AnalyzerPython = Join-Path $CondaRoot "envs\$EnvironmentName\python.exe"
+if (-not (Test-Path -LiteralPath $AnalyzerPython)) {
     throw "The Conda environment '$EnvironmentName' is missing. Run .\scripts\setup_demo.cmd first."
 }
 
-function Invoke-DemoPython {
-    param([string[]]$PythonArguments)
-    & $script:DemoPython @PythonArguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "Fixture generation failed with exit code $LASTEXITCODE."
-    }
-}
+# Windows PowerShell 5.1 otherwise decodes Python's forced UTF-8 stdout with
+# the legacy console code page. That corrupts a selected fixture path whenever
+# the repository contains non-ASCII components, such as "文档".
+$PreviousConsoleOutputEncoding = [Console]::OutputEncoding
+$PreviousOutputEncoding = $OutputEncoding
+$Utf8NoBom = New-Object System.Text.UTF8Encoding -ArgumentList $false
+[Console]::OutputEncoding = $Utf8NoBom
+$OutputEncoding = $Utf8NoBom
 
 Push-Location $RepositoryRoot
 try {
     if (-not $ApiOnly -and -not (Test-Path -LiteralPath $FrontendManifest)) {
         throw "Frontend distribution is incomplete: $FrontendManifest was not found."
     }
-    $ScaleReady = Test-Path -LiteralPath $ScaleScenario
-    if ($ScaleReady) {
-        try {
-            $Scenario = Get-Content -Raw -LiteralPath $ScaleScenario | ConvertFrom-Json
-            $ScaleReady = (
-                $Scenario.scenario_id -eq "evpn-multihome-mass-failover-v2" -and
-                [int64]$Scenario.generator_version -ge 7 -and
-                [int64]$Scenario.scale.events -ge $MatchedEventTarget -and
-                [int64]$Scenario.scale.resources -eq $ResourceTarget
-            )
-        }
-        catch {
-            $ScaleReady = $false
-        }
+    Write-Host (
+        "[fixture] Ensuring the canonical full-scale multi-node assembly..."
+    )
+    $EnsureArguments = @(
+        "-m", "generator",
+        "--ensure-launchable", $FixtureAssemblyArgument,
+        "--path-only"
+    )
+    if ($RebuildFixture) {
+        $EnsureArguments += "--force-rebuild"
     }
-    $ScaleRebuilt = $false
-    if ($RebuildFixture -or -not $ScaleReady) {
-        Write-Host "Generating the deterministic $MatchedEventTarget matched-event EVPN scale corpus..."
-        Invoke-DemoPython @(
-            "scripts\generate_scale_fixtures.py",
-            "--events", [string]$MatchedEventTarget,
-            "--resources", [string]$ResourceTarget
-        )
-        $ScaleRebuilt = $true
+    $EnsureTimer = [System.Diagnostics.Stopwatch]::StartNew()
+    $SelectedFixtureOutput = & $AnalyzerPython @EnsureArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not prepare the full-scale multi-node fixture."
     }
-
+    $EnsureTimer.Stop()
+    $SelectedFixture = [string](
+        $SelectedFixtureOutput | Select-Object -Last 1
+    )
+    $SelectedFixture = $SelectedFixture.Trim()
     if (
-        $RebuildFixture -or
-        -not (Test-Path -LiteralPath $ReviewManifest) -or
-        -not (Test-Path -LiteralPath $ReviewResources)
+        [string]::IsNullOrWhiteSpace($SelectedFixture) -or
+        -not (Test-Path -LiteralPath $SelectedFixture -PathType Leaf)
     ) {
-        Write-Host "Generating the browser-sized review projection..."
-        Invoke-DemoPython @(
-            "scripts\generate_sample_bundle.py"
+        throw "Generator did not return a regular launch fixture path."
+    }
+    Write-Host (
+        "[fixture] Launch input ready in {0:N1} s: {1}" -f
+        $EnsureTimer.Elapsed.TotalSeconds,
+        $SelectedFixture
+    )
+
+    if ($ValidateFixture) {
+        Write-Host "[fixture] Validating the existing generated assembly..."
+        $ValidationTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        & $AnalyzerPython @(
+            "-m", "generator",
+            "--validate", $SelectedFixture
+        )
+        if ($LASTEXITCODE -ne 0) {
+            throw "Full fixture validation failed."
+        }
+        $ValidationTimer.Stop()
+        Write-Host (
+            "[fixture] Validation finished in {0:N1} s." -f
+            $ValidationTimer.Elapsed.TotalSeconds
         )
     }
 
-    $PackReady = Test-Path -LiteralPath $FixtureArchive
-    if ($PackReady) {
-        try {
-            & $DemoPython @(
-                "scripts\validate_scale_archive.py",
-                $FixtureArchive,
-                [string]$MatchedEventTarget,
-                [string]$ResourceTarget,
-                "7"
-            )
-            $PackReady = $LASTEXITCODE -eq 0
-        }
-        catch {
-            $PackReady = $false
-        }
-    }
-
-    if ($RebuildFixture -or $ScaleRebuilt -or -not $PackReady) {
-        Write-Host "Packing CTF logs and heterogeneous resource tables into one TGZ..."
-        Invoke-DemoPython @(
-            "scripts\generate_packed_scale_bundle.py",
-            "--output", $FixtureArchiveArgument
-        )
-    }
-
-    $DemoArguments = @(
-        "-m", "router_dump_analyzer_demo.app",
+    $CoreArguments = @(
+        "-m", "router_dump_analyzer",
+        "--plugin", "demo_router",
+        "--input", $SelectedFixture,
         "--host", $BindAddress,
         "--port", [string]$Port,
-        "--frontend-dir", $FrontendRoot,
-        "--fixture-archive", $FixtureArchiveArgument,
-        "--full-scale"
+        "--frontend-dir", $FrontendRoot
     )
     if ($ApiOnly) {
-        $DemoArguments += "--api-only"
+        $CoreArguments += "--api-only"
     }
-    if (-not $NoBrowser) {
-        $DemoArguments += "--open-browser"
+    if ($NoBrowser) {
+        $CoreArguments += "--no-browser"
     }
 
-    Write-Host "Using packed fixture: $FixtureArchive"
-    Write-Host "Loading at least $MatchedEventTarget matched events across $ResourceTarget resources."
+    Write-Host "Using generated assembly: $SelectedFixture"
+    Write-Host "Single-node and fabric views read this same generated assembly."
     if ($ApiOnly) {
         Write-Host "Starting Router State Lab backend API at http://${BindAddress}:$Port"
-        Write-Host "Run 'npm --prefix demo/frontend run serve -- --backend http://${BindAddress}:$Port' in another terminal for the split frontend."
+        Write-Host "Run 'npm --prefix frontend run serve -- --backend http://${BindAddress}:$Port' in another terminal for the split frontend."
     }
     else {
         Write-Host "Starting Router State Lab at http://${BindAddress}:$Port"
     }
-    & $DemoPython @DemoArguments
+    Write-Host "The server intentionally stays attached to this terminal. Press Ctrl+C to stop it."
+    & $AnalyzerPython @CoreArguments
     if ($LASTEXITCODE -ne 0) {
-        throw "The demo did not start. Run .\scripts\setup_demo.cmd first."
+        throw "The core analyzer did not start. Run .\scripts\setup_demo.cmd first."
     }
 }
 finally {
@@ -175,4 +160,6 @@ finally {
     else {
         $env:PYTHONIOENCODING = $PreviousPythonIoEncoding
     }
+    $OutputEncoding = $PreviousOutputEncoding
+    [Console]::OutputEncoding = $PreviousConsoleOutputEncoding
 }

@@ -9,11 +9,25 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from router_dump_analyzer_demo import app as demo_app
-from router_dump_analyzer_demo import data as demo_data
-from router_dump_analyzer_demo.data import REVISION_ID
+from router_dump_analyzer.web import runtime_api as demo_app
+from plugin import data as demo_data
+from plugin.data import REVISION_ID
 from router_dump_analyzer.history_search_core import HistorySearchCorpus
-from router_dump_analyzer_demo.scale_data import ScaleRuntime
+from plugin.scale_data import ScaleRuntime
+from tests.support.generated_demo import generated_demo_application
+from tests.support.normalized_data import static_data_service
+
+
+class DemoLifespanCleanupTests(unittest.TestCase):
+    def test_core_lifespan_closes_the_plugin_runtime_session(self) -> None:
+        application = generated_demo_application()
+
+        with TestClient(application):
+            session = application.state.runtime_session
+            self.assertFalse(session.plugin_session._closed)
+
+        self.assertTrue(session.plugin_session._closed)
+        self.assertIsNone(application.state.runtime_session)
 
 
 def _runtime(
@@ -166,8 +180,7 @@ def _dataset(*, scale: bool = False) -> dict:
 class ScaleHistoryBootstrapTests(unittest.TestCase):
     def test_scale_bootstrap_keeps_catalog_and_metadata_but_streams_history(self) -> None:
         dataset = _dataset(scale=True)
-        with patch.object(demo_data, "load_demo_dataset", return_value=dataset):
-            client = demo_data.client_demo_dataset()
+        client = static_data_service(dataset).client_dataset()
 
         self.assertEqual(client["events"], [])
         self.assertEqual(client["source_records"], [])
@@ -194,8 +207,7 @@ class ScaleHistoryBootstrapTests(unittest.TestCase):
 
     def test_non_scale_bootstrap_retains_compatible_eager_streams(self) -> None:
         dataset = _dataset(scale=False)
-        with patch.object(demo_data, "load_demo_dataset", return_value=dataset):
-            client = demo_data.client_demo_dataset()
+        client = static_data_service(dataset).client_dataset()
 
         self.assertEqual(len(client["events"]), 3)
         self.assertEqual(len(client["source_records"]), 2)
@@ -211,17 +223,16 @@ class ScaleHistoryBootstrapTests(unittest.TestCase):
 class ScaleHistoryApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        # Not entering the context avoids loading the on-disk fixture through
-        # the application lifespan; every request supplies an isolated dataset.
-        cls.client = TestClient(demo_app.app)
+        cls.client_context = TestClient(generated_demo_application())
+        cls.client = cls.client_context.__enter__()
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cls.client.close()
+        cls.client_context.__exit__(None, None, None)
 
     def _post(self, path: str, body: dict, *, scale: bool = False):
         dataset = _dataset(scale=scale)
-        with patch.object(demo_app, "load_demo_dataset", return_value=dataset):
+        with patch.object(demo_app, "load_dataset", return_value=dataset):
             return self.client.post(
                 f"/v1/revisions/{REVISION_ID}/{path}",
                 json=body,
@@ -229,7 +240,7 @@ class ScaleHistoryApiTests(unittest.TestCase):
 
     def test_health_reports_scale_search_warmup_readiness(self) -> None:
         dataset = _dataset(scale=True)
-        with patch.object(demo_app, "load_demo_dataset", return_value=dataset):
+        with patch.object(demo_app, "load_dataset", return_value=dataset):
             before = self.client.get("/health")
             searched = self.client.post(
                 f"/v1/revisions/{REVISION_ID}/event-log/query",
@@ -291,7 +302,7 @@ class ScaleHistoryApiTests(unittest.TestCase):
         dataset = _dataset(scale=True)
         runtime = dataset["_scale_runtime"]
         runtime.events = NoIterationEvents(runtime.events)
-        with patch.object(demo_app, "load_demo_dataset", return_value=dataset):
+        with patch.object(demo_app, "load_dataset", return_value=dataset):
             response = self.client.post(
                 f"/v1/revisions/{REVISION_ID}/events/density/query",
                 json={"start_ns": "100", "end_ns": "399", "bin_count": 3},
@@ -373,7 +384,7 @@ class ScaleHistoryApiTests(unittest.TestCase):
     def test_event_log_selection_resolves_ranges_and_safe_plugin_copy_text(self) -> None:
         endpoint = f"/v1/revisions/{REVISION_ID}/event-log/selection"
         dataset = _dataset()
-        with patch.object(demo_app, "load_demo_dataset", return_value=dataset):
+        with patch.object(demo_app, "load_dataset", return_value=dataset):
             response = self.client.post(
                 endpoint,
                 json={
@@ -402,7 +413,7 @@ class ScaleHistoryApiTests(unittest.TestCase):
 
     def test_event_log_selection_rejects_unbounded_ranges(self) -> None:
         endpoint = f"/v1/revisions/{REVISION_ID}/event-log/selection"
-        with patch.object(demo_app, "load_demo_dataset", return_value=_dataset()):
+        with patch.object(demo_app, "load_dataset", return_value=_dataset()):
             response = self.client.post(
                 endpoint,
                 json={
@@ -482,7 +493,7 @@ class ScaleHistoryApiTests(unittest.TestCase):
         dataset = _dataset(scale=True)
         runtime = dataset["_scale_runtime"]
         endpoint = f"/v1/revisions/{REVISION_ID}/event-log/query"
-        with patch.object(demo_app, "load_demo_dataset", return_value=dataset):
+        with patch.object(demo_app, "load_dataset", return_value=dataset):
             # The first query may initialize a reusable search corpus for a
             # synthetic runtime. Packed scale fixtures can build it while
             # loading; either way, later queries must not walk all raw events.
@@ -522,7 +533,7 @@ class ScaleHistoryApiTests(unittest.TestCase):
                 identity="redacted-test-revision",
                 expected_documents=len(runtime.events),
             )
-            with patch.object(demo_app, "load_demo_dataset", return_value=dataset):
+            with patch.object(demo_app, "load_dataset", return_value=dataset):
                 visible = self.client.post(
                     f"/v1/revisions/{REVISION_ID}/event-log/query",
                     json={"search": "peer-a", "source_types": []},

@@ -513,6 +513,109 @@ class HistorySearchCorpusTests(unittest.TestCase):
             self.assertEqual(list(reopened.query("beta", unexpected_rebuild)), [1])
             reopened.close()
 
+    def test_large_safe_corpus_skips_eager_trigram_build_but_stays_exact(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            sidecar = Path(directory) / "history-search.sqlite3"
+            documents = (
+                "alpha route and backup",
+                "beta route",
+                "unrelated event",
+            )
+            corpus = HistorySearchCorpus(
+                sidecar_path=sidecar,
+                identity="revision-large-scan-policy",
+                expected_documents=len(documents),
+                max_eager_candidate_characters=8,
+            )
+            with patch.object(
+                HistorySearchCorpus,
+                "_build_fts5_candidate_index",
+                side_effect=AssertionError(
+                    "large exact corpora must not build the eager accelerator"
+                ),
+            ):
+                self.assertEqual(
+                    list(corpus.query("route", lambda: documents)),
+                    [0, 1],
+                )
+            self.assertEqual(corpus.storage_mode, "sqlite")
+            self.assertEqual(corpus.candidate_backend, "sqlite-scan")
+            self.assertEqual(
+                list(corpus.query("ha r", lambda: documents)),
+                [0],
+            )
+            corpus.close()
+
+    def test_deferred_validation_moves_linear_sidecar_work_out_of_startup(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            sidecar = Path(directory) / "history-search.sqlite3"
+            documents = ("alpha route", "beta route")
+            original = HistorySearchCorpus(
+                sidecar_path=sidecar,
+                identity="revision-deferred-validation",
+                expected_documents=2,
+            )
+            self.assertEqual(
+                list(original.query("alpha", lambda: documents)),
+                [0],
+            )
+            original.close()
+
+            with patch.object(
+                HistorySearchCorpus,
+                "_open_valid_sidecar",
+                autospec=True,
+                wraps=HistorySearchCorpus._open_valid_sidecar,
+            ) as validate:
+                deferred = HistorySearchCorpus(
+                    sidecar_path=sidecar,
+                    identity="revision-deferred-validation",
+                    expected_documents=2,
+                    eager_validate_sidecar=False,
+                )
+                self.assertFalse(deferred.ready)
+                self.assertEqual(validate.call_count, 0)
+            self.assertEqual(
+                list(deferred.query("beta", lambda: documents)),
+                [1],
+            )
+            self.assertTrue(deferred.ready)
+            deferred.close()
+
+    def test_new_sidecar_is_not_fully_revalidated_after_atomic_publish(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            corpus = HistorySearchCorpus(
+                sidecar_path=Path(directory) / "history-search.sqlite3",
+                identity="revision-single-pass-publish",
+                expected_documents=2,
+                eager_validate_sidecar=False,
+            )
+            with patch.object(
+                corpus,
+                "_open_valid_sidecar",
+                wraps=corpus._open_valid_sidecar,
+            ) as validate:
+                self.assertEqual(
+                    list(
+                        corpus.query(
+                            "alpha",
+                            lambda: ("alpha route", "beta route"),
+                        )
+                    ),
+                    [0],
+                )
+            # One pre-build reuse check in ``ensure`` and one race check just
+            # before publication. The freshly committed corpus is not scanned
+            # a third time in the process that built it.
+            self.assertEqual(validate.call_count, 2)
+            corpus.close()
+
     def test_match_parser_failure_falls_back_without_rebuilding_sidecar(self) -> None:
         with TemporaryDirectory() as directory:
             sidecar = Path(directory) / "history-search.sqlite3"

@@ -3,15 +3,23 @@
 ## Status and scope
 
 This document records the executable generic forwarding-packet boundary, its
-ownership rules, the intended scenario coverage, and remaining integration
-work. It distinguishes three things that must not be conflated:
+ownership rules, the versioned generated-demo coverage, and remaining
+production integration work. It distinguishes four things that must not be
+conflated:
 
 1. the public packet IR and protocol-neutral core helpers, which are
    implemented and unit tested;
 2. node and federation plug-in responsibilities, which are normative; and
-3. the bundled multi-node route demo, whose advanced scenarios now evaluate
+3. the bundled multi-node route demo, whose generated scenarios evaluate
    demo-provider packet transitions, but which does not yet discover and
-   orchestrate `resolve_forwarding_step()` across every installed member.
+   orchestrate `resolve_forwarding_step()` across every installed member; and
+4. arbitrary vendor/protocol combinations that are not entries in the
+   generated demo's versioned coverage registry.
+
+For this 2026-07-25 audit, **all demo cases** meant exactly every entry then in
+`generator.catalog.COVERAGE_CASES`. The inspected
+registry contained 35 cases. It was not shorthand for every possible protocol,
+vendor, release, packet shape, or deployment policy.
 
 The packet IR is not a claim that core understands MPLS, SR-MPLS, SRv6, EVPN,
 VPN, IP-in-IP, MTU behavior, or vendor policy. It is a bounded way for plug-ins
@@ -68,7 +76,8 @@ does not independently choose fragmentation or drop.
 
 ## Executable generic conformance matrix
 
-`tests/test_packet_trace_core.py` currently exercises these packet profiles:
+At the time of this audit, `tests/test_packet_trace_core.py` exercised these
+packet profiles:
 
 | Profile | Ordered outer-to-inner example | Generic operations exercised |
 |---|---|---|
@@ -97,59 +106,116 @@ product-shaped teaching fixtures for PHP, SRv6 endpoint processing, nested
 wrappers, and a plug-in-declared MTU drop; it still does not claim vendor
 accuracy.
 
-## Constrained route-scenario matrix
+## Versioned generated-demo registry — 2026-07-25 snapshot
 
-The following matrix is the tractable target for product-shaped demo coverage.
-“Demo” means an existing dedicated scenario, “IR” means the generic packet
-profile exists but the route demo is shallow, and “Open” means a dedicated
-fixture is still needed.
+> The format versions, provider IDs, case counts, and capability descriptions
+> in this section record the repository on 2026-07-25. The
+> [demo guide](../demo/README.md#generated-mock-dumps) is the source for the
+> current implementation contract; this dated audit is not updated in place to
+> mirror later registry changes.
 
-| ID | Service and transport | Selection/start | Expected interaction | Status |
-|---|---|---|---|---|
-| R01 | IPv4 native/connected | Single, source | Exact connected terminal | Demo |
-| R02 | IPv6 native | Single, transit | Return reaches source without revisiting start | Open |
-| R03 | IPv4 recursive | Single, source | Exact recursive-state loop | Demo |
-| R04 | IPv6 native | Active/standby | Non-shortest device policy plus unknown alternate | Open |
-| R05 | Classic MPLS/LDP | All-active | Push, transit swap, pop; every branch reaches | Open |
-| R06 | SR-MPLS | Single | Node-SID PHP; outer layer removed at penultimate hop | Demo |
-| R07 | SR-MPLS | Active/standby, transit | Explicit-null/no-PHP plus retained dead alternate | Open |
-| R08 | MPLS L3VPN | Single, asymmetric return | Outer PHP retains VPN layer, then VRF lookup | Demo |
-| R09 | MPLS L3VPN | All-active | One selected branch exceeds MTU; known partial reachability | Open |
-| R10 | SR-MPLS policy/BSID | Forced non-shortest | Selected observed path plus unknown standby | Open |
-| R11 | SRv6 | Single | Encap, segment processing, decap and lookup | Demo |
-| R12 | SRv6 | All-active, transit | One success plus one incomplete SID path | Open |
-| R13 | SRv6 | Single, asymmetric return | Forward MTU/PTB failure; healthy MPLS return | Open |
-| R14 | EVPN Type 2/VXLAN | All-active multihoming | Two selected VTEPs reach | Demo |
-| R15 | EVPN Type 2 BUM | DF/single-active | Exact split-horizon block | Demo |
-| R16 | EVPN known unicast | Transit/all-active | Incomplete ingress scope remains unknown | Open |
-| R17 | EVPN Type 5 over SR-MPLS | All-active | Stale FIB/encapsulation disagreement | Open |
-| R18 | IPv4-in-IPv6 or GRE | Single, transit | Tunnel overhead plus DF creates one-way failure | Open |
-| R19 | IPv6-in-IPv4 | Active/standby | Decapsulation or inner lookup unknown | Demo (healthy single path) |
-| R20 | Carrier-supporting-carrier L3VPN | Forced steering | Remove outer carrier context, retain tenant VPN | Demo (nested stack + separate forced path) |
-| R21 | EVPN overlay over SRv6 | All-active | One selected branch fails decapsulation | Open |
-| R22 | IP-in-IP inside L3VPN service chain | Forced hairpin | Changed packet context makes revisit legitimate | IR |
-| R23 | Same nested service chain | Recursive | Complete packet/lookup state repeats and loops | IR |
-| R24 | Multihomed source and destination | All-active, transit | Attachment uncertainty and return bypass | Open |
+In the audited implementation, `COVERAGE_CASES` was the behavior registry for
+the one generated demo.
+The generator writes the exact registry to `coverage.json`; full-demo
+validation fails if a registry entry is absent, lacks its declared nodes, or
+does not carry its generated evidence. Route and packet entries must also map
+to an executable scenario with the same route type, route family, address
+family, and VRF.
 
-The executable checker iterates every advertised advanced profile in both
-directions and every advertised steering preset. Core tests cross packet
-profiles with below/equal/above MTU boundaries. Future additions should keep
-covering valid interaction pairs rather than an unbounded Cartesian product:
+Topology entries now carry exact generated `topology_claim` evidence, including
+the attachment, matcher/segment key, classification, validity, and calculation
+metadata. Temporal entries carry a real generated `temporal_event` UID selected
+by phase and event shape, including resource, outcome, and state-change
+semantics. This closes the earlier loophole where an unrelated but valid
+resource/event ID could make non-route coverage look complete.
 
-- every applicable service family over at least two transport shapes;
-- every transport with a healthy and a failed/unknown case;
-- every multipath mode with healthy and partial/unknown coverage;
-- MTU with label, SRv6, and IP-tunnel shapes;
-- forced steering with both simple and nested packet state;
-- loop detection before and after a packet-context change; and
-- source-start, transit-start, asymmetric, and one-way endpoint goals.
+The installed `demo.example-router` plug-in was also the single source of the
+demo-only `generated_projection_policy`. Generation wrote that policy ID,
+plug-in version, projection format, and
+`projection_materialization: precomputed_during_generation` into the archive.
+Generator validation and runtime loading compared those values with the
+installed policy and rejected drift. `parser_replayed: false` was intentional:
+the runtime validated immutable precomputed evidence rather than pretending
+the small status parser regenerated the comprehensive projection. This was not
+a generic core hook.
+
+The assembly, coverage registry, and precomputed projection audited on
+2026-07-25 used format version 2. The projection capability enumerated each
+immutable member's path,
+media type, serialization, and record collection; the archive carries matching
+`precomputed_projection_capability` and `generated_schema_contract`
+descriptors. The installed example entry point exposed those declarations with
+`describe_generated_fixture()` so generator, validator, and runtime agreed.
+This was an offline-demo extension, not a required live-parser hook.
+
+| Category | Count | Executed by route trace | Coverage focus |
+|---|---:|---:|---|
+| Route | 18 | 18 | Single-active and all-active paths, arbitrary router pairs, transit starts, asymmetric and one-way reachability, EVPN failover and stale FIB, SRv6, recursion, loops, split horizon, connected external delivery, and incomplete resolution |
+| Packet | 8 | 8 | Native IP, SR-MPLS/PHP, L3VPN over SR-MPLS, SRv6, IPv6 over IPv4, nested VPN, MTU drop, and forced steering |
+| Topology | 4 | 0 | Shared multi-access subnet, compact two-party segment, VLAN/LAG/subinterface evidence, and external/management/loopback/VPN classification |
+| Temporal | 5 | 0 | Single-home to multihome, mass ES withdraw, mass ES restore, next-hop churn, and cross-layer lag/failure |
+| **Total** | **35** | **26** | Every entry in the audited `COVERAGE_CASES` snapshot |
+
+The 26 route-executable cases are the 18 `route` entries plus the eight
+`packet` entries. The remaining nine entries belong to topology or temporal
+coverage and are deliberately not mislabeled as packet-forwarding paths.
+
+The generated route trace validates more than scenario names. Every executable
+case declares all forward and reverse `candidate_paths`; every involved node
+contributes one revision-qualified route decision plus
+`directional_decisions` for each exact `(candidate_id, visit_index)`
+occurrence. Each non-local decision names one exact connectivity-domain
+matcher/key and both attachment resources. Packet cases additionally
+contribute a plug-in-owned packet declaration. The coordinator rejects
+missing, duplicate, cross-node, cross-revision, mismatched, ambiguous,
+truncated, or unusable route/forwarding/topology/packet references rather than
+falling back to a hand-written scenario answer.
+
+The automated suite:
+
+- compares generated `coverage.json` with the exact `COVERAGE_CASES` set;
+- requires all full-demo cases to be generated;
+- executes all 26 route/packet cases in both forward and reverse directions;
+- verifies route rows, forwarding rows, packet declarations, provider
+  identity, revision identity, checksums, candidate occurrences, exact
+  connectivity-domain/attachment joins, and evidence references; and
+- proves that removing or tampering with generated forwarding, topology, or
+  packet rows makes trace execution fail closed.
+
+A fresh all-node development assembly (`allow_small=True`) is exercised through
+FastAPI's generated assembly route endpoint. Every one of the 26
+capability-advertised route or packet cases must return a bound candidate for
+both `direction=forward` and `direction=reverse`, including strict/best-effort
+and steering variants where declared. This is an automated API/runtime matrix,
+not a claim that every combination was manually inspected.
+
+## Production expansion is separate from demo completeness
+
+The former R01-R24 table mixed the then-current demo behavior with an aspirational
+vendor matrix and therefore made generated coverage look incomplete even when
+every declared case was present. Those entries are no longer demo pass/fail
+criteria. They remain useful design dimensions for future registry versions or
+production plug-ins:
+
+- explicit-null/no-PHP and vendor-specific MPLS behavior;
+- additional IPv6, SRv6, EVPN-over-SRv6, GRE, and service-chain variants;
+- fragmentation, PTB/ICMP generation, and device-specific MTU bases;
+- more all-active partial-reachability and multihomed attachment combinations;
+- more independently modeled reverse-direction withdraw/policy states; and
+- arbitrary installed-node plug-in orchestration across heterogeneous
+  providers.
+
+Adding one of these behaviors to the advertised demo requires a new
+`COVERAGE_CASES` entry, generated evidence, validation, executable API coverage,
+and documentation in the same change. Until then it is an explicit production
+or future-demo extension, not a hidden failure of the audited 35-case registry.
 
 ## Manual browser validation
 
-The live split frontend/backend demo was exercised at
-`http://127.0.0.1:8765/#route-trace` against the packed 125,000-event,
-10,000-resource fixture. The browser pass used the visible controls rather
-than calling the route endpoint directly.
+The core frontend and demo backend were exercised together at
+`http://127.0.0.1:8765/#route-trace` against the generated assembly whose node
+revisions contain 125,000 events and 7,500 resources each. The browser pass
+used the visible controls rather than calling the route endpoint directly.
 
 The following scenarios were traced in both forward and return directions:
 
@@ -205,26 +271,40 @@ wording was rechecked on P1 forward and P2 return.
 - The optional node-local request/result hook is defined without giving node
   plug-ins cross-node authority.
 
-### Known remaining work
+### Production integration and future registry work
 
-- The demo server consumes generic packet-transition evaluations from its
-  demo provider, but does not yet discover and invoke
-  `resolve_forwarding_step()` across arbitrary installed node plug-ins.
+The 35-case generated registry audited on 2026-07-25 was complete on its own
+terms. The
+following work is deliberately outside that bounded claim:
+
+- A production coordinator still needs to discover installed node plug-ins,
+  negotiate their capabilities, and invoke `resolve_forwarding_step()` at each
+  heterogeneous member boundary. The demo consumes its one provider's
+  generated declarations directly.
 - The browser-facing multi-node route result remains a large demo dictionary
   rather than a typed core `RouteTraceResult`.
-- Most dedicated reverse directions still fall back to a generic shortest-path
-  builder instead of independently modeling withdraw and every legacy policy
-  scenario. The eight advanced packet scenarios do declare forward and return
-  node sequences independently.
-- Default return start does not yet branch a plug-in-declared multihomed
-  destination attachment set.
-- MPLS versus SR-MPLS, PHP versus explicit-null, and device-specific MTU
-  behavior remain plug-in/demo semantics. The demo covers SR-MPLS PHP and one
-  MTU drop; explicit-null, fragmentation/PTB, and vendor-specific variants
-  remain future fixtures. Core must not fill these gaps by inference.
+- The 26-case API matrix covers both declared directions, but it remains the
+  bounded generated registry rather than an exhaustive set of vendor or future
+  protocol behaviors.
+- Additional multihomed attachment branches, independent withdraw/policy
+  states, and vendor-specific behaviors can become future registry entries
+  when they have generated evidence and executable assertions.
+- MPLS versus SR-MPLS, PHP versus explicit-null, fragmentation/PTB, and
+  device-specific MTU outcomes remain plug-in semantics. Core must not fill
+  missing variants by inference.
 
 ### Integration defects found and fixed
 
+- Generated route traces now bind each scenario to the exact
+  revision-qualified route and forwarding rows named by `coverage.json`;
+  missing, duplicate, or mismatched rows fail closed instead of silently using
+  only the in-memory scenario catalog.
+- Generated packet cases now bind their declared profile, initial state, and
+  action contracts to the demo executor while retaining the generated provider
+  and evidence identities. Tampered packet declarations are rejected.
+- Selecting a generated route-table row preserves its scenario, route ID,
+  revision evidence, and correlated forwarding decisions through the trace
+  request.
 - A demo MPLS field named `label` collided with the layer display-label
   argument and prevented the profile from executing. The typed field is now
   `label_value`.
@@ -268,12 +348,21 @@ wording was rechecked on P1 forward and P2 return.
 - A mid-path steering explanation no longer hard-codes P1 when the same rule
   applies to the return-direction P2 transit step.
 
-These open items do not invalidate the generic packet IR. They limit which
-current demo screens can claim to exercise it end to end.
+These production and future-registry items did not invalidate the generic
+packet IR or make an unadvertised case part of the audited demo contract.
 
 ## Documentation maintenance rule
 
-Any change to packet-layer fields, transitions, MTU basis comparison, steering
-provenance, the step hook, federation transfer, or route aggregation must update
-the plug-in contract, architecture, API contract, quickstart, this audit, and
-the corresponding executable tests in the same change.
+Any later change to packet-layer fields, transitions, MTU basis comparison,
+steering provenance, the step hook, federation transfer, or route aggregation
+must update the current plug-in contract, architecture, API contract,
+quickstart, demo guide, and corresponding executable tests in the same change.
+This audit remains the 2026-07-25 record; create a new dated audit when a new
+review snapshot is needed.
+
+After this snapshot, any change to `COVERAGE_CASES` must regenerate
+`coverage.json` and its node-local route/forwarding/packet evidence, update the
+current [demo guide](../demo/README.md#generated-mock-dumps), and add or update
+executable validation before the new case is advertised. Do not rewrite the
+historical totals above; create a new dated audit when another snapshot is
+needed.

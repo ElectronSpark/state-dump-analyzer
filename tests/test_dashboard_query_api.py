@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from router_dump_analyzer_demo.app import app
-from router_dump_analyzer_demo.data import REVISION_ID
+from tests.support.generated_demo import generated_demo_application
+from plugin.data import REVISION_ID
 
 
 class DashboardQueryApiTests(unittest.TestCase):
@@ -17,11 +17,11 @@ class DashboardQueryApiTests(unittest.TestCase):
             }
         }
         self.load_patch = patch(
-            "router_dump_analyzer_demo.app.load_demo_dataset",
+            "router_dump_analyzer.web.runtime_api.load_dataset",
             return_value=self.dataset,
         )
         self.query_patch = patch(
-            "router_dump_analyzer_demo.app.dashboard_query",
+            "router_dump_analyzer.web.runtime_api.dashboard_query",
             return_value={
                 "revision_id": REVISION_ID,
                 "time_ns": "1759680005000000000",
@@ -59,7 +59,7 @@ class DashboardQueryApiTests(unittest.TestCase):
         )
         self.load_mock = self.load_patch.start()
         self.query_mock = self.query_patch.start()
-        self.client_context = TestClient(app)
+        self.client_context = TestClient(generated_demo_application())
         self.client = self.client_context.__enter__()
 
     def tearDown(self) -> None:

@@ -7,13 +7,14 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from router_dump_analyzer_demo import app as demo_app
-from router_dump_analyzer_demo.data import REVISION_ID
+from router_dump_analyzer.web import runtime_api as demo_app
+from plugin.data import REVISION_ID
+from tests.support.generated_demo import generated_demo_runtime_session
 
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_JS = ROOT / "demo" / "frontend" / "assets" / "app.js"
-STYLES_CSS = ROOT / "demo" / "frontend" / "assets" / "styles.css"
+APP_JS = ROOT / "frontend" / "assets" / "app.js"
+STYLES_CSS = ROOT / "frontend" / "assets" / "styles.css"
 
 
 def javascript_function(source: str, name: str) -> str:
@@ -23,6 +24,15 @@ def javascript_function(source: str, name: str) -> str:
 
 
 class TimelineClusterDetailTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.runtime_context = generated_demo_runtime_session()
+        cls.runtime_context.__enter__()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.runtime_context.__exit__(None, None, None)
+
     def setUp(self) -> None:
         self.resource_id = "opaque-resource-1"
         self.dataset = {
@@ -59,8 +69,10 @@ class TimelineClusterDetailTests(unittest.TestCase):
         }
 
     def test_cluster_detail_pages_exact_events_without_losing_total(self) -> None:
-        with patch.object(demo_app, "load_demo_dataset", return_value=self.dataset), patch.object(
-            demo_app, "scale_runtime", return_value=None
+        with (
+            patch.object(demo_app, "load_dataset", return_value=self.dataset),
+            patch.object(demo_app, "history_runtime", return_value=None),
+            patch.object(demo_app, "_require_revision", return_value=None),
         ):
             first = demo_app.timeline_cluster_detail(
                 REVISION_ID,

@@ -6,11 +6,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_JS = ROOT / "demo" / "frontend" / "assets" / "app.js"
-APP_CSS = ROOT / "demo" / "frontend" / "assets" / "styles.css"
-TOPOLOGY_JS = ROOT / "demo" / "frontend" / "assets" / "topology.js"
-TOPOLOGY_CSS = ROOT / "demo" / "frontend" / "assets" / "topology.css"
-TOPOLOGY_HTML = ROOT / "demo" / "frontend" / "pages" / "topology.html"
+APP_JS = ROOT / "frontend" / "assets" / "app.js"
+APP_CSS = ROOT / "frontend" / "assets" / "styles.css"
+TOPOLOGY_JS = ROOT / "frontend" / "assets" / "topology.js"
+TOPOLOGY_CSS = ROOT / "frontend" / "assets" / "topology.css"
+TOPOLOGY_HTML = ROOT / "frontend" / "pages" / "topology.html"
 
 
 def javascript_function(source: str, name: str) -> str:
@@ -52,6 +52,71 @@ class SingleNodeAuditRegressionContractTests(unittest.TestCase):
         self.assertIn("resourcePaginationMarkup(state.resourceQuery)", generic)
         self.assertIn("bindResourcePagination(container)", generic)
         self.assertIn("state.resourceOffset = 0", cursor)
+
+    def test_resource_bundle_tree_guides_continue_across_nested_and_detail_rows(self) -> None:
+        rows = javascript_function(self.script, "resourceBundleRows")
+        row_guides = javascript_function(self.script, "resourceBundleRowGuides")
+        detail_guides = javascript_function(self.script, "resourceBundleDetailGuides")
+        render = javascript_function(self.script, "renderResourceBundleTable")
+
+        self.assertIn("hasVisibleChildren", rows)
+        self.assertIn("hasNextSibling", rows)
+        self.assertIn("continuationDepths", rows)
+        self.assertIn("[...continuationDepths, depth]", rows)
+        self.assertIn('resourceBundleGuide(depth, "through")', row_guides)
+        self.assertIn('row.hasNextSibling ? "incoming continues" : "incoming"', row_guides)
+        self.assertIn("row.depth + 1", row_guides)
+        self.assertIn("if (row.hasNextSibling", detail_guides)
+        self.assertIn("if (row.hasVisibleChildren)", detail_guides)
+        self.assertIn("${resourceBundleRowGuides(row)}", render)
+        self.assertIn("${resourceBundleDetailGuides(row)}", render)
+
+        self.assertIn(".resource-bundle-guides", self.styles)
+        self.assertIn(".resource-bundle-guide-through", self.styles)
+        self.assertIn(".resource-bundle-guide-incoming.continues", self.styles)
+        self.assertIn(".resource-bundle-guide-child", self.styles)
+        self.assertNotIn("top: -20px", self.styles)
+
+    def test_temporal_correlation_inspection_can_be_pinned_and_cleared(self) -> None:
+        validate = javascript_function(self.script, "validGraphInspection")
+        inspect = javascript_function(self.script, "setGraphInspection")
+        pin = javascript_function(self.script, "pinGraphInspection")
+        clear = javascript_function(self.script, "clearPinnedGraphInspection")
+        bind_blank = javascript_function(self.script, "bindGraphStageInspectionClear")
+        render = javascript_function(self.script, "renderGraph")
+        bind_controls = javascript_function(self.script, "bindControls")
+        escape = javascript_function(self.script, "handleEscapeKey")
+        schedule_close = javascript_function(self.script, "scheduleCorrelationHoverClose")
+        hover_card = javascript_function(self.script, "showCorrelationHover")
+
+        self.assertIn("graphPinnedInspection: null", self.script)
+        self.assertIn('inspection.kind === "resource"', validate)
+        self.assertIn('inspection.kind === "edge"', validate)
+        self.assertIn("state.graphPinnedInspection", inspect)
+        self.assertIn('classList.toggle("is-pinned"', inspect)
+        self.assertIn('setAttribute("aria-pressed"', inspect)
+        self.assertIn('classList.contains("graph-edge-label")', inspect)
+        self.assertIn("state.graphPinnedInspection = nextInspection", pin)
+        self.assertIn("showCorrelationHover(anchor, html, { pinned: true })", pin)
+        self.assertIn("state.graphPinnedInspection = null", clear)
+        self.assertIn('classList.remove("is-inspecting", "has-pinned-inspection")', clear)
+        self.assertIn("if (clearPinnedGraphInspection())", escape)
+
+        self.assertIn('event.target.closest(".graph-node, [data-graph-edge-id]")', bind_blank)
+        self.assertIn("clearPinnedGraphInspection()", bind_blank)
+        self.assertIn("bindGraphStageInspectionClear()", bind_controls)
+        self.assertIn("pinGraphInspection(", render)
+        self.assertIn("state.graphPinnedInspection", render)
+        self.assertIn("click to keep it highlighted", render)
+        self.assertIn('role="group" aria-label="Correlation relationships"', render)
+        self.assertIn('tabindex="0" role="button" aria-label="${escapeHtml(edgeActionLabel)}"', render)
+        self.assertIn('event.key !== "Enter" && event.key !== " "', render)
+        self.assertIn('dataset.pinned === "true"', schedule_close)
+        self.assertIn("rect.right + gap + width", hover_card)
+        self.assertIn("rect.left - width - gap", hover_card)
+
+        self.assertIn(".graph-stage.has-pinned-inspection .graph-node.is-pinned", self.styles)
+        self.assertIn(".graph-stage.has-pinned-inspection .graph-edge.is-pinned", self.styles)
 
     def test_point_clusters_use_member_timestamps_not_cluster_span(self) -> None:
         exact = javascript_function(self.script, "pointClusterRangeState")
@@ -236,27 +301,29 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
         cls.styles = TOPOLOGY_CSS.read_text(encoding="utf-8")
         cls.page = TOPOLOGY_HTML.read_text(encoding="utf-8")
 
-    def test_health_uses_exact_normalized_status_classes_and_unknown_is_not_green(self) -> None:
+    def test_health_uses_only_explicit_normalized_classes(self) -> None:
+        declared = javascript_function(self.script, "declaredHealthPresentation")
         node = javascript_function(self.script, "nodeHealth")
         link = javascript_function(self.script, "linkHealth")
 
-        for declaration in (
-            "const HEALTH_ERROR_VALUES = new Set",
-            "const HEALTH_WARNING_VALUES = new Set",
-            "const HEALTH_GOOD_VALUES = new Set",
-        ):
-            self.assertIn(declaration, self.script)
+        self.assertIn("const NORMALIZED_HEALTH_PRESENTATION = new Map", self.script)
+        self.assertIn("value?.condition_class", declared)
+        self.assertIn("value?.status_class", declared)
+        self.assertIn("value?.health_class", declared)
+        self.assertIn('["healthy", "good"]', self.script)
+        self.assertIn('["degraded", "warning"]', self.script)
+        self.assertIn('["error", "error"]', self.script)
+        for raw_status in ('"up"', '"down"', '"programmed"'):
+            self.assertNotIn(raw_status, self.script[: self.script.index("const state =")])
         self.assertIn("node?.resource_previews || node?.resources", node)
-        self.assertIn("HEALTH_ERROR_VALUES.has(value)", node)
-        self.assertIn("HEALTH_WARNING_VALUES.has(value)", node)
-        self.assertIn("HEALTH_GOOD_VALUES.has(value)", node)
+        self.assertIn("declaredHealthPresentation(resource)", node)
+        self.assertIn('|| "warning"', node)
+        self.assertIn("[node, coverage].map(declaredHealthPresentation)", node)
         self.assertIn('return "warning"', node)
         self.assertNotIn(".test(", node)
-        self.assertIn("HEALTH_ERROR_VALUES.has(value)", link)
-        self.assertIn("HEALTH_WARNING_VALUES.has(value)", link)
-        self.assertIn("HEALTH_GOOD_VALUES.has(value)", link)
-        self.assertIn('return "warning"', link)
-        self.assertNotIn(".test(", link)
+        self.assertIn("declaredHealthPresentation(link)", link)
+        self.assertNotIn("link?.status", link)
+        self.assertNotIn("link?.resolution", link)
 
     def test_dirty_device_selection_filters_stale_results_and_refreshes_map(self) -> None:
         selected = javascript_function(self.script, "selectedResultNodes")
@@ -313,6 +380,28 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
         self.assertIn("routeStartSeedValue(startDescriptor, entry.node_id)", seed)
         self.assertNotIn("`start:${entry.node_id}`", seed)
 
+    def test_route_table_disables_rows_without_a_plugin_trace_query(self) -> None:
+        normalize = javascript_function(self.script, "normalizeRouteTableEntry")
+        row = javascript_function(self.script, "routeTableRowMarkup")
+        seed = javascript_function(self.script, "useRouteTableEntry")
+
+        self.assertIn("const declaredTraceable = explicitRouteBoolean(raw?.traceable)", normalize)
+        self.assertIn("declaredTraceable !== false", normalize)
+        self.assertIn("Object.keys(traceQuery).length > 0", normalize)
+        self.assertIn("traceable,", normalize)
+        self.assertIn("trace_query: traceQuery", normalize)
+        self.assertIn("entry.traceable === true", row)
+        self.assertIn('data-route-entry-trace="', row)
+        self.assertIn('disabled aria-label="', row)
+        self.assertIn(">No trace</button>", row)
+        self.assertIn(
+            "The node plug-in did not provide a usable trace query for this row.",
+            row,
+        )
+        self.assertIn("entry.traceable !== true", seed)
+        self.assertIn(".mn-route-table-trace:disabled", self.styles)
+        self.assertIn(".mn-route-table-trace:not(:disabled):hover", self.styles)
+
     def test_route_form_separates_observation_start_from_traffic_endpoints(
         self,
     ) -> None:
@@ -357,6 +446,146 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
             controls.index("|| state.routeCapabilities.default_start"),
             controls.index("|| sourceStart?.start_id"),
         )
+
+    def test_executable_capability_ids_are_declared_or_unavailable(self) -> None:
+        plugin_id = javascript_function(self.script, "pluginId")
+        projection_id = javascript_function(self.script, "projectionId")
+        perspective_id = javascript_function(self.script, "perspectiveId")
+        normalize_plugin = javascript_function(self.script, "normalizePlugin")
+        normalize_node = javascript_function(self.script, "normalizeNode")
+        normalize_capabilities = javascript_function(
+            self.script, "normalizeCapabilities"
+        )
+        plan = javascript_function(self.script, "nodePlan")
+        request = javascript_function(self.script, "buildQueryRequest")
+        route = javascript_function(self.script, "normalizeRouteCapabilities")
+        steering = javascript_function(
+            self.script, "steeringProfilesForScenario"
+        )
+
+        for helper in (plugin_id, projection_id, perspective_id):
+            self.assertIn("firstDeclaredString(", helper)
+        for fabricated in (
+            "unspecified-provider",
+            "resource-association",
+            "observed-status",
+            "boundary-observer",
+            "revision-dump-provider",
+        ):
+            self.assertNotIn(
+                fabricated,
+                normalize_plugin + normalize_node + normalize_capabilities,
+            )
+        self.assertIn("executable", plan)
+        self.assertIn("unavailable_reason", plan)
+        self.assertIn("if (!plan.executable) throw new Error", request)
+        self.assertNotIn("...plan", request)
+
+        for fabricated in (
+            "legacy_source_attachment",
+            "Default forwarding trace",
+            '["best_effort", "strict"]',
+            '?? "default"',
+            '`start:${',
+        ):
+            self.assertNotIn(fabricated, route)
+        self.assertIn("scenarios,", route)
+        self.assertIn("policies,", route)
+        self.assertIn('default_scenario_id: defaultScenario?.scenario_id || ""', route)
+        self.assertIn('default_vrf: defaultVrf?.vrf || ""', route)
+        self.assertNotIn('|| "observed"', steering)
+
+    def test_connectivity_domains_come_only_from_declared_segments(self) -> None:
+        normalize = javascript_function(self.script, "normalizeQuery")
+        domain = javascript_function(self.script, "normalizeConnectivityDomain")
+        visible = javascript_function(self.script, "topologyConnectivityDomains")
+
+        domain_source = normalize[
+            normalize.index("const domainSource")
+            : normalize.index("const segmentAttachments")
+        ]
+        self.assertIn("raw?.connectivity_domains", domain_source)
+        self.assertIn("raw?.network_segments", domain_source)
+        self.assertNotIn("raw?.subnets", domain_source)
+        self.assertNotIn("raw?.broadcast_domains", domain_source)
+        self.assertNotIn("raw?.vpn_segments", domain_source)
+        self.assertNotIn('`network-${index + 1}`', domain)
+        self.assertNotIn('?? "transit"', domain)
+        self.assertNotIn('?? "subnet"', domain)
+        self.assertIn("state.query?.connectivity_domains", visible)
+        self.assertNotIn("addDomainMembership", visible)
+        self.assertNotIn("connectivityDomainKey", visible)
+        self.assertNotIn('source: "link-projection"', visible)
+        self.assertIn("member.link_ids", visible)
+        self.assertIn("They never create a domain or a membership", visible)
+
+    def test_route_domain_tokens_preserve_domain_and_attachment_identity(self) -> None:
+        route_tokens = javascript_function(self.script, "routeTokensFor")
+        segment = javascript_function(self.script, "normalizeRouteSegment")
+        domain = javascript_function(self.script, "connectivityDomainMarkup")
+        attachment = javascript_function(self.script, "attachmentEdgeAttributes")
+        edges = javascript_function(self.script, "renderConnectivityEdges")
+        compact = edges[
+            edges.index("for (const decision of orderedCompactDecisions)") :
+        ]
+
+        self.assertIn("raw?.network_segment_id", route_tokens)
+        self.assertIn("raw?.network_segment_attachment_ids", route_tokens)
+        self.assertIn("raw?.connectivity_attachment_ids", route_tokens)
+        self.assertIn("`network-segment:${networkSegmentId}`", route_tokens)
+        self.assertIn("`network-attachment:${attachmentId}`", route_tokens)
+        self.assertIn("network_segment_id: networkSegmentId", segment)
+        self.assertIn(
+            "network_segment_attachment_ids: firstArray(",
+            segment,
+        )
+        self.assertIn(
+            "`network-attachment:${attachmentId}`",
+            segment,
+        )
+        self.assertIn(
+            "`network-attachment:${member.member_id}`",
+            domain,
+        )
+        self.assertIn(
+            "`network-attachment:${member.member_id}`",
+            attachment,
+        )
+        self.assertIn(
+            "`network-attachment:${attachmentId}`",
+            compact,
+        )
+
+    def test_compact_domain_attachment_merge_is_defined_and_lossless(self) -> None:
+        merge = javascript_function(self.script, "mergeAttachment")
+        participant = javascript_function(
+            self.script,
+            "mergedParticipantAttachment",
+        )
+        renderer = javascript_function(self.script, "renderConnectivityEdges")
+        compact = renderer[
+            renderer.rindex("for (const decision of orderedCompactDecisions)") :
+            renderer.rindex("for (const link of directLinks)")
+        ]
+
+        self.assertIn("uniqueStrings(", merge)
+        self.assertIn("left.interface_names", merge)
+        self.assertIn("right.interface_names", merge)
+        self.assertIn("left.physical_interfaces", merge)
+        self.assertIn("right.physical_interfaces", merge)
+        self.assertIn("left.addresses", merge)
+        self.assertIn("right.addresses", merge)
+        self.assertIn("mergeAttachment(combined, member.attachment || {})", participant)
+        self.assertIn("for (const [memberIndex, member] of [...left.members]", compact)
+        self.assertIn("for (const [memberIndex, member] of [...right.members]", compact)
+        self.assertIn("attachmentEdgeAttributes(member.links?.[0]", compact)
+        self.assertIn("groupOrdinal: memberIndex", compact)
+        self.assertNotIn("const leftMember = left.members[0]", compact)
+        self.assertNotIn("const rightMember = right.members[0]", compact)
+
+    def test_topology_asset_has_no_mojibake_sequences(self) -> None:
+        for corrupted in ("â†’", "Â·", "â€¦", "Ã", "\ufffd"):
+            self.assertNotIn(corrupted, self.script)
 
     def test_route_endpoint_normalization_preserves_plugin_selector_ids(self) -> None:
         normalize = javascript_function(self.script, "normalizeRouteEndpoint")
@@ -433,6 +662,7 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
         self.assertIn("const orientation = sourceToken <= targetToken ? 1 : -1", geometry)
         self.assertIn("stableEdgeBendSign(pairKey)", geometry)
         self.assertIn("baseEdgeBend(length)", geometry)
+        self.assertIn("normalizedLane === 0", geometry)
         self.assertIn("nodeBoundaryPoint(sourceCenter, control, sourceBox)", geometry)
         self.assertIn("nodeBoundaryPoint(targetCenter, control, targetBox)", geometry)
         self.assertIn("Q ${control.x} ${control.y}", geometry)
@@ -443,6 +673,10 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
         self.assertGreaterEqual(topology.count('d="${geometry.d}"'), 6)
         self.assertGreaterEqual(focused_route.count('d="${geometry.d}"'), 3)
         self.assertGreaterEqual(all_routes.count('d="${geometry.d}"'), 2)
+        self.assertIn("pairTotals.get(edge.pairKey) > 1", all_routes)
+        self.assertIn("edge.cycleClosing", all_routes)
+        self.assertIn("targetPosition.x <= sourcePosition.x", all_routes)
+        self.assertIn(": 0", all_routes)
         self.assertIn("quadraticEdgePoint(geometry, pathPosition)", attachments)
         self.assertIn("quadraticEdgePoint(geometry, 0.5)", topology)
         self.assertIn("quadraticEdgePoint(geometry, 0.5)", boundary_tag)
@@ -450,14 +684,41 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
         self.assertIn("graphWorldLayers(stage).forEach", transform)
         self.assertIn('layer.style.transform = transform', transform)
 
-    def test_vpn_suggestion_uses_declared_projection_role_only(self) -> None:
-        render = javascript_function(self.script, "renderLinkStatusMap")
-        vpn_section = render[render.index("const evpnProfile") :]
+    def test_all_path_layout_orders_rows_by_stable_candidate_lanes(self) -> None:
+        normalize = javascript_function(self.script, "normalizeRouteTrace")
+        layout = javascript_function(self.script, "mapAllPathsLayout")
+        render = javascript_function(self.script, "renderAllPathsRouteMap")
 
-        self.assertIn('profile.projection_role === "evpn"', vpn_section)
-        self.assertNotIn(".test(", vpn_section)
-        self.assertNotIn(".includes(", vpn_section)
+        self.assertIn(
+            "left.rank - right.rank || compareLayoutIds(left.path_id, right.path_id)",
+            normalize,
+        )
+        self.assertIn("const nodePathRanks = new Map()", layout)
+        self.assertIn("pathRank(left) - pathRank(right)", layout)
+        self.assertIn("compareLayoutIds(left.key, right.key)", layout)
+        self.assertIn("ROUTE_OVERVIEW_LAYOUT_VERSION", render)
+
+    def test_vpn_suggestion_uses_declared_presentation_role_only(self) -> None:
+        normalize = javascript_function(self.script, "normalizeProfile")
+        role_lookup = javascript_function(self.script, "profileForPresentationRole")
+        render = javascript_function(self.script, "renderLinkStatusMap")
+        vpn_section = render[render.index("const suggestedProfile") :]
+
+        self.assertIn("raw?.presentation_roles", normalize)
+        self.assertIn("raw?.presentation?.roles", normalize)
+        self.assertIn("raw?.empty_action_label", normalize)
+        self.assertIn("profile?.presentation_roles", role_lookup)
+        self.assertIn("String(candidate) === String(role)", role_lookup)
+        self.assertIn('profileForPresentationRole("vpn")', vpn_section)
+        self.assertNotIn("projection_role", vpn_section)
         self.assertIn("VPN identity must come from a device plug-in", vpn_section)
+
+    def test_topology_assembly_id_must_be_declared_by_capabilities(self) -> None:
+        assembly = javascript_function(self.script, "topologyAssemblyId")
+
+        self.assertIn("state.capabilities?.assembly_id", assembly)
+        self.assertIn('throw new Error("Topology capabilities did not declare assembly_id.")', assembly)
+        self.assertNotIn("demo.fabric.multi-node", assembly)
 
     def test_route_family_labels_match_the_normalized_filter_semantics(self) -> None:
         self.assertNotIn("Address family", self.page)
@@ -491,9 +752,10 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
             self.assertIn("loop-closing segment", renderer)
             self.assertIn("mn-route-cycle", renderer)
 
-    def test_policy_blocked_and_split_horizon_are_not_generic_drops(self) -> None:
+    def test_policy_blocking_uses_generic_class_and_plugin_declared_copy(self) -> None:
         normalize = javascript_function(self.script, "normalizeRoutePath")
         decision = javascript_function(self.script, "normalizeRoutePolicyDecision")
+        presentation = javascript_function(self.script, "routePolicyPresentation")
         blocked_segment = javascript_function(
             self.script,
             "routeSegmentIsPolicyBlocked",
@@ -507,12 +769,22 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
         self.assertIn("policy_decisions: policyDecisions", normalize)
         self.assertIn("item.core_verdict", decision)
         self.assertIn("item.scope_refs", decision)
+        self.assertIn("item.policy_category", decision)
+        self.assertIn("item.label", decision)
+        self.assertIn("item.text", decision)
+        self.assertIn("decision?.label", presentation)
+        self.assertIn("decision?.detail", presentation)
+        self.assertIn("decision?.policy_category", presentation)
         self.assertIn("segment?.policy_decision_refs", blocked_segment)
         self.assertIn("path?.cycle?.repeated_state", diagnostics)
         self.assertIn('code: "cycle"', direction)
         self.assertIn('code: "policy_blocked"', direction)
-        self.assertIn("Split horizon blocked", badges)
-        self.assertIn("Blocked by split horizon", summary)
+        self.assertIn("routePolicyPresentation(path).label", badges)
+        self.assertIn("routePolicyPresentation(path).label", summary)
+        self.assertNotRegex(
+            self.script + self.page + self.styles,
+            r"(?i)split[-_ ]horizon",
+        )
         self.assertGreaterEqual(self.script.count('"Looped paths"'), 1)
         self.assertGreaterEqual(self.script.count('"Policy-blocked paths"'), 1)
         self.assertIn("- cycleCount - policyBlockedCount - unusableCount", self.script)
@@ -578,7 +850,9 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
         self.assertIn("firstArray(scenario?.steering_profiles)", allowed)
         self.assertIn("advertised.filter", allowed)
         self.assertIn("allowed.has(profile.profile_id)", allowed)
-        self.assertIn("select.disabled = profiles.length <= 1", options)
+        self.assertIn("select.disabled = !profiles.length", options)
+        self.assertIn('\'<option value="">No steering override</option>\'', options)
+        self.assertNotIn('profiles[0]?.profile_id || ""', options)
         self.assertIn(
             'const steeringProfileId = byId("mn-route-steering").value',
             request,

@@ -6,11 +6,13 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_JS = ROOT / "demo" / "frontend" / "assets" / "app.js"
+APP_JS = ROOT / "frontend" / "assets" / "app.js"
 TEMPORAL_TOPOLOGY_PY = (
-    ROOT / "demo" / "src" / "router_dump_analyzer_demo" / "temporal_topology.py"
+    ROOT / "src" / "router_dump_analyzer" / "temporal_topology.py"
 )
-DEMO_APP_PY = ROOT / "demo" / "src" / "router_dump_analyzer_demo" / "app.py"
+CORE_RUNTIME_API_PY = (
+    ROOT / "src" / "router_dump_analyzer" / "web" / "runtime_api.py"
+)
 
 
 def javascript_function(source: str, name: str) -> str:
@@ -146,10 +148,10 @@ class NodeSemanticBoundaryTests(unittest.TestCase):
         self.assertNotIn("if native and exists is None", state_projection)
 
     def test_node_workspace_adapter_preserves_plugin_vocabulary(self) -> None:
-        source = DEMO_APP_PY.read_text(encoding="utf-8")
+        source = CORE_RUNTIME_API_PY.read_text(encoding="utf-8")
         adapter = source[
             source.index("def _node_workspace_dataset(") :
-            source.index("@app.get(\"/api/node-demo/")
+            source.index('@api_router.get("/v1/nodes/{node_id}/workspace")')
         ]
 
         self.assertNotIn('or "RESOURCE"', adapter)

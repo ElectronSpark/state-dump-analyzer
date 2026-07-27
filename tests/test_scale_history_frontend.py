@@ -6,8 +6,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_JS = ROOT / "demo" / "frontend" / "assets" / "app.js"
-INDEX_HTML = ROOT / "demo" / "frontend" / "pages" / "node.html"
+APP_JS = ROOT / "frontend" / "assets" / "app.js"
+INDEX_HTML = ROOT / "frontend" / "pages" / "node.html"
 
 
 def javascript_function(source: str, name: str) -> str:
@@ -22,10 +22,10 @@ class ScaleHistoryFrontendTests(unittest.TestCase):
         cls.script = APP_JS.read_text(encoding="utf-8")
         cls.index = INDEX_HTML.read_text(encoding="utf-8")
 
-    def test_server_history_mode_is_scale_only_and_snapshot_safe(self) -> None:
+    def test_server_history_mode_is_transport_declared_and_snapshot_safe(self) -> None:
         detection = javascript_function(self.script, "usesServerWindowedHistory")
 
-        self.assertIn("isScaleMode()", detection)
+        self.assertNotIn("isScaleMode()", detection)
         self.assertIn("!isTopologyNodeSnapshot()", detection)
         self.assertIn('history_transport?.mode === "server-windowed"', detection)
 

@@ -1,0 +1,692 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta
+      name="description"
+      content="Author physical network scenarios and generate node-local state dump packets."
+    >
+    <title>State Dump Scenario Studio</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#scenario-canvas">Skip to topology editor</a>
+
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">SD</span>
+        <div>
+          <strong>State Dump Scenario Studio</strong>
+          <span>standalone ground-truth authoring</span>
+        </div>
+      </div>
+
+      <label class="project-name">
+        <span class="sr-only">Project name</span>
+        <input id="project-name" type="text" value="Untitled scenario" maxlength="96">
+      </label>
+
+      <nav class="header-actions" aria-label="Project actions">
+        <button id="new-project" class="button quiet" type="button" title="New project">
+          New
+        </button>
+        <button id="open-project" class="button quiet" type="button" title="Open project JSON">
+          Open
+        </button>
+        <button id="save-project" class="button quiet" type="button" title="Save project JSON">
+          Save
+        </button>
+        <span class="action-separator" aria-hidden="true"></span>
+        <button id="undo" class="icon-button" type="button" title="Undo (Ctrl+Z)" disabled>
+          <span aria-hidden="true">↶</span><span class="sr-only">Undo</span>
+        </button>
+        <button id="redo" class="icon-button" type="button" title="Redo (Ctrl+Shift+Z)" disabled>
+          <span aria-hidden="true">↷</span><span class="sr-only">Redo</span>
+        </button>
+        <button id="validate-project" class="button secondary" type="button">
+          Validate
+        </button>
+        <button id="generate-dumps" class="button primary" type="button">
+          Generate dumps
+        </button>
+      </nav>
+
+      <input id="project-file" class="sr-only" type="file" accept=".json,application/json">
+    </header>
+
+    <main class="studio">
+      <aside class="palette panel" aria-label="Topology palette and scenario patterns">
+        <section>
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">Topology</span>
+              <h1>Devices &amp; media</h1>
+            </div>
+            <span id="object-count" class="count-badge">0</span>
+          </div>
+          <p class="section-help">
+            Drag to the canvas or use Add. The topology stays in this project and is never
+            written into generated node dumps.
+          </p>
+
+          <div class="palette-grid" id="device-palette">
+            <article class="palette-item" draggable="true" data-kind="router">
+              <span class="device-icon router-icon" aria-hidden="true"></span>
+              <span><strong>Router</strong><small>Dump-producing node</small></span>
+              <button class="mini-button add-object" type="button" data-kind="router">Add</button>
+            </article>
+            <article class="palette-item" draggable="true" data-kind="switch">
+              <span class="device-icon switch-icon" aria-hidden="true"></span>
+              <span><strong>Switch</strong><small>L2 participant</small></span>
+              <button class="mini-button add-object" type="button" data-kind="switch">Add</button>
+            </article>
+            <article class="palette-item" draggable="true" data-kind="host">
+              <span class="device-icon host-icon" aria-hidden="true"></span>
+              <span><strong>Host</strong><small>Traffic endpoint</small></span>
+              <button class="mini-button add-object" type="button" data-kind="host">Add</button>
+            </article>
+            <article class="palette-item" draggable="true" data-kind="shared-medium">
+              <span class="device-icon medium-icon" aria-hidden="true"></span>
+              <span><strong>Shared medium</strong><small>Multi-access segment</small></span>
+              <button class="mini-button add-object" type="button" data-kind="shared-medium">
+                Add
+              </button>
+            </article>
+          </div>
+        </section>
+
+        <section class="patterns-section">
+          <div class="section-heading compact">
+            <div>
+              <span class="eyebrow">Scenario tools</span>
+              <h2>Common patterns</h2>
+            </div>
+          </div>
+          <p class="section-help">
+            Patterns schedule editable, node-local observations. They do not emulate a
+            protocol.
+          </p>
+          <div id="pattern-list" class="pattern-list">
+            <button class="pattern-button" type="button" data-pattern="clean-link-flap">
+              <strong>Clean link flap</strong><span>down → converge → restore</span>
+            </button>
+            <button class="pattern-button" type="button" data-pattern="one-sided-detection">
+              <strong>One-sided detection</strong><span>local observation only</span>
+            </button>
+            <button class="pattern-button" type="button" data-pattern="delayed-convergence">
+              <strong>Delayed convergence</strong><span>staggered neighbor updates</span>
+            </button>
+            <button class="pattern-button" type="button" data-pattern="stale-neighbor">
+              <strong>Stale neighbor</strong><span>physical/status mismatch</span>
+            </button>
+            <button class="pattern-button" type="button" data-pattern="failed-update">
+              <strong>Failed update</strong><span>attempt without state change</span>
+            </button>
+            <button class="pattern-button" type="button" data-pattern="route-change">
+              <strong>Next-hop change</strong><span>dependency replacement</span>
+            </button>
+            <button class="pattern-button" type="button" data-pattern="node-restart">
+              <strong>Node restart</strong><span>withdraw and restore burst</span>
+            </button>
+            <button class="pattern-button" type="button" data-pattern="clock-skew">
+              <strong>Clock skew</strong><span>bounded timestamp offset</span>
+            </button>
+            <button class="pattern-button" type="button" data-pattern="log-gap">
+              <strong>Log gap</strong><span>missing local observations</span>
+            </button>
+            <button class="pattern-button" type="button" data-pattern="partial-multi-access">
+              <strong>Partial multi-access failure</strong><span>one member lags</span>
+            </button>
+          </div>
+        </section>
+
+        <details class="accessible-editor">
+          <summary>Keyboard / form editor</summary>
+          <form id="accessible-object-form">
+            <label>
+              Object kind
+              <select id="accessible-kind">
+                <option value="router">Router</option>
+                <option value="switch">Switch</option>
+                <option value="host">Host</option>
+                <option value="shared-medium">Shared medium</option>
+              </select>
+            </label>
+            <label>
+              Name
+              <input id="accessible-name" type="text" maxlength="96" placeholder="Optional">
+            </label>
+            <button class="button secondary" type="submit">Add object</button>
+          </form>
+          <form id="accessible-link-form">
+            <label>
+              Link from
+              <select id="accessible-link-from"></select>
+            </label>
+            <label>
+              Link to
+              <select id="accessible-link-to"></select>
+            </label>
+            <button class="button secondary" type="submit">Add physical link</button>
+          </form>
+          <form id="accessible-select-form">
+            <label>
+              Existing object or link
+              <select id="accessible-existing"></select>
+            </label>
+            <button class="button secondary" type="submit">Select and edit</button>
+          </form>
+        </details>
+      </aside>
+
+      <section class="workspace panel" aria-label="Physical topology workspace">
+        <div class="workspace-header">
+          <div>
+            <span class="eyebrow">Authoring ground truth</span>
+            <h2>Supposed physical topology</h2>
+            <p>
+              What physically happened. Generated dumps contain only each node’s resulting
+              snapshot and local history.
+            </p>
+          </div>
+          <div class="canvas-tools" role="toolbar" aria-label="Canvas tools">
+            <button class="tool-button active" type="button" data-tool="select" aria-pressed="true">
+              <span aria-hidden="true">↖</span> Select
+            </button>
+            <button class="tool-button" type="button" data-tool="link" aria-pressed="false">
+              <span aria-hidden="true">⌁</span> Link
+            </button>
+            <button class="tool-button" type="button" data-tool="pan" aria-pressed="false">
+              <span aria-hidden="true">✥</span> Pan
+            </button>
+            <span class="tool-divider" aria-hidden="true"></span>
+            <button id="zoom-out" class="icon-button" type="button" title="Zoom out">−</button>
+            <output id="zoom-level" class="zoom-output" aria-live="polite">100%</output>
+            <button id="zoom-in" class="icon-button" type="button" title="Zoom in">+</button>
+            <button id="fit-canvas" class="tool-button" type="button">Fit</button>
+          </div>
+        </div>
+
+        <div
+          id="scenario-canvas"
+          class="scenario-canvas"
+          tabindex="0"
+          role="application"
+          aria-label="Physical topology canvas. Use arrow keys to move a selected object, Delete to remove it, and plus or minus to zoom."
+        >
+          <svg id="topology-svg" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <defs>
+              <pattern id="minor-grid" width="24" height="24" patternUnits="userSpaceOnUse">
+                <path d="M 24 0 L 0 0 0 24" class="minor-grid-line"></path>
+              </pattern>
+              <pattern id="major-grid" width="120" height="120" patternUnits="userSpaceOnUse">
+                <rect width="120" height="120" fill="url(#minor-grid)"></rect>
+                <path d="M 120 0 L 0 0 0 120" class="major-grid-line"></path>
+              </pattern>
+              <filter id="selection-glow" x="-40%" y="-40%" width="180%" height="180%">
+                <feGaussianBlur stdDeviation="5" result="blur"></feGaussianBlur>
+                <feMerge><feMergeNode in="blur"></feMergeNode><feMergeNode in="SourceGraphic"></feMergeNode></feMerge>
+              </filter>
+              <marker id="link-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+                <path d="M0,0 L8,4 L0,8 Z" class="link-arrow"></path>
+              </marker>
+            </defs>
+            <rect id="canvas-grid" x="-5000" y="-5000" width="10000" height="10000" fill="url(#major-grid)"></rect>
+            <g id="viewport-layer">
+              <g id="links-layer"></g>
+              <g id="objects-layer"></g>
+              <g id="gesture-layer"></g>
+            </g>
+          </svg>
+
+          <div id="empty-canvas" class="empty-canvas">
+            <span class="empty-illustration" aria-hidden="true">
+              <i></i><i></i><i></i>
+            </span>
+            <strong>Draw the physical situation you want to reproduce</strong>
+            <p>Drag routers and media here, then connect their boundary ports.</p>
+            <button class="button primary add-object" type="button" data-kind="router">
+              Add the first router
+            </button>
+          </div>
+
+          <div class="canvas-hint" aria-hidden="true">
+            Drag objects · drag background to pan · pinch or Ctrl+wheel to zoom ·
+            <kbd>L</kbd> link · <kbd>V</kbd> select
+          </div>
+          <div id="link-instruction" class="link-instruction" hidden>
+            Select a second object to complete the physical link. <kbd>Esc</kbd> cancels.
+          </div>
+        </div>
+
+        <footer class="workspace-status">
+          <span id="selection-status">Nothing selected</span>
+          <span id="validation-summary" class="muted-status">Not validated</span>
+        </footer>
+      </section>
+
+      <aside class="inspector panel" aria-label="Inspector">
+        <div class="inspector-tabs" role="tablist" aria-label="Inspector views">
+          <button
+            id="object-tab"
+            class="inspector-tab active"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="object-panel"
+          >
+            Object
+          </button>
+          <button
+            id="event-tab"
+            class="inspector-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="event-panel"
+          >
+            Event
+          </button>
+          <button
+            id="propagation-tab"
+            class="inspector-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="propagation-panel"
+          >
+            Propagation
+          </button>
+        </div>
+
+        <section id="object-panel" class="inspector-panel" role="tabpanel" aria-labelledby="object-tab">
+          <div id="no-object" class="inspector-empty">
+            <span aria-hidden="true">◇</span>
+            <strong>Select an object or link</strong>
+            <p>Edit physical truth here. Router observations are edited as events.</p>
+          </div>
+          <form id="object-form" class="stacked-form" hidden>
+            <div class="inspector-heading">
+              <div>
+                <span id="object-kind-label" class="eyebrow">Object</span>
+                <h2 id="object-heading">Selected object</h2>
+              </div>
+              <button id="delete-object" class="icon-button danger" type="button" title="Delete">
+                ×
+              </button>
+            </div>
+            <label>
+              Name
+              <input id="object-name" type="text" maxlength="96">
+            </label>
+            <div class="form-row" id="node-fields">
+              <label>
+                Site
+                <input id="object-site" type="text" maxlength="96" placeholder="Optional">
+              </label>
+              <label>
+                Device profile
+                <input id="object-profile" type="text" maxlength="96" placeholder="generic">
+              </label>
+            </div>
+            <div id="link-fields" hidden>
+              <div class="form-row">
+                <label>
+                  A-side port
+                  <input id="link-port-a" type="text" maxlength="96">
+                </label>
+                <label>
+                  B-side port
+                  <input id="link-port-b" type="text" maxlength="96">
+                </label>
+              </div>
+              <label>
+                Physical state at selected time
+                <select id="link-state">
+                  <option value="up">Up</option>
+                  <option value="down">Down</option>
+                  <option value="degraded">Degraded</option>
+                  <option value="unknown">Unknown</option>
+                </select>
+              </label>
+              <button id="schedule-link-state" class="button secondary" type="button">
+                Schedule state change…
+              </button>
+            </div>
+            <label>
+              Authoring notes
+              <textarea id="object-notes" rows="3" placeholder="Ground-truth notes; not exported to dumps"></textarea>
+            </label>
+            <button id="apply-object" class="button secondary" type="submit">Apply changes</button>
+          </form>
+        </section>
+
+        <section
+          id="event-panel"
+          class="inspector-panel"
+          role="tabpanel"
+          aria-labelledby="event-tab"
+          hidden
+        >
+          <form id="event-form" class="stacked-form">
+            <div class="inspector-heading">
+              <div>
+                <span class="eyebrow">Node-local observation</span>
+                <h2 id="event-heading">Add event</h2>
+              </div>
+              <button id="clear-event-form" class="mini-button" type="button">Clear</button>
+            </div>
+            <label>
+              Time
+              <div class="input-with-unit">
+                <input id="event-time" type="number" min="0" step="0.001" value="0">
+                <span>seconds</span>
+              </div>
+            </label>
+            <label>
+              Observed by node
+              <select id="event-node"></select>
+            </label>
+            <div class="form-row">
+              <label>
+                Kind
+                <select id="event-kind">
+                  <option value="status">Status change</option>
+                  <option value="log">Log only</option>
+                  <option value="resource-upsert">Resource add / modify</option>
+                  <option value="resource-delete">Resource delete</option>
+                  <option value="physical-observation">Physical observation</option>
+                  <option value="physical-link-state">Physical link state</option>
+                  <option value="propagated-observation">Propagated observation</option>
+                  <option value="clock">Clock / capture metadata</option>
+                </select>
+              </label>
+              <label>
+                Outcome
+                <select id="event-outcome">
+                  <option value="ok">Ok</option>
+                  <option value="failed">Failed</option>
+                  <option value="partial">Partial</option>
+                  <option value="unknown">Unknown</option>
+                </select>
+              </label>
+            </div>
+            <label>
+              Resource key / subject
+              <input id="event-subject" type="text" maxlength="256" placeholder="interface:Ethernet1/1">
+            </label>
+            <label>
+              Action
+              <input id="event-action" type="text" maxlength="128" placeholder="set_link_state">
+            </label>
+            <label>
+              State patch (JSON)
+              <textarea id="event-payload" rows="5" spellcheck="false" placeholder='{"oper_status":"down"}'>{}</textarea>
+              <span id="payload-error" class="field-error" role="alert"></span>
+            </label>
+            <label>
+              Log text
+              <textarea id="event-log" rows="4" placeholder="Optional node-local source log"></textarea>
+            </label>
+            <label class="check-row">
+              <input id="event-update-snapshot" type="checkbox" checked>
+              <span>Replay this event into the node’s final snapshot</span>
+            </label>
+            <label class="check-row">
+              <input id="event-auto-propagate" type="checkbox">
+              <span>Offer best-effort propagation after saving</span>
+            </label>
+            <div class="button-row">
+              <button id="save-event" class="button primary" type="submit">Add event</button>
+              <button id="delete-event" class="button danger-button" type="button" hidden>
+                Remove
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <section
+          id="propagation-panel"
+          class="inspector-panel"
+          role="tabpanel"
+          aria-labelledby="propagation-tab"
+          hidden
+        >
+          <div class="inspector-heading">
+            <div>
+              <span class="eyebrow">Generic scheduling</span>
+              <h2>Propagation plan</h2>
+            </div>
+          </div>
+          <p class="section-help">
+            The compiler derives delayed node-local observations from this plan. Add explicit
+            local events whenever you need to override or reproduce device-specific behavior.
+          </p>
+          <form id="propagation-form" class="stacked-form">
+            <label>
+              Mode
+              <select id="propagation-mode">
+                <option value="best-effort">Best effort</option>
+                <option value="manual">Manual schedule only</option>
+                <option value="suppressed">Suppress propagation</option>
+                <option value="failed">Propagation attempt fails</option>
+              </select>
+            </label>
+            <div class="form-row">
+              <label>
+                Base delay
+                <div class="input-with-unit">
+                  <input id="propagation-delay" type="number" min="0" step="1" value="250">
+                  <span>ms</span>
+                </div>
+              </label>
+              <label>
+                Jitter ±
+                <div class="input-with-unit">
+                  <input id="propagation-jitter" type="number" min="0" step="1" value="50">
+                  <span>ms</span>
+                </div>
+              </label>
+            </div>
+            <label>
+              Targets
+              <select id="propagation-target-mode">
+                <option value="neighbors">Physical neighbors</option>
+                <option value="all-nodes">All dump-producing nodes</option>
+                <option value="selected">Selected nodes…</option>
+              </select>
+            </label>
+            <fieldset id="propagation-targets" class="target-list" hidden>
+              <legend>Selected target nodes</legend>
+              <div id="propagation-target-options"></div>
+            </fieldset>
+            <label>
+              Intended outcome
+              <select id="propagation-outcome">
+                <option value="success">Success</option>
+                <option value="partial">Partial / mixed</option>
+                <option value="failure">Failure</option>
+                <option value="stale">Stale state remains</option>
+              </select>
+            </label>
+            <label>
+              Fan-out cadence
+              <select id="propagation-cadence">
+                <option value="parallel">Parallel with jitter</option>
+                <option value="serial">Serial hop-by-hop</option>
+                <option value="waves">Convergence waves</option>
+              </select>
+            </label>
+            <div class="button-row">
+              <button id="preview-propagation" class="button secondary" type="button">
+                Preview
+              </button>
+              <button id="apply-propagation" class="button primary" type="submit">
+                Save plan
+              </button>
+            </div>
+          </form>
+
+          <div id="propagation-preview" class="preview-box" aria-live="polite">
+            <strong>No preview yet</strong>
+            <p>Select an event and preview how observations would be scheduled.</p>
+          </div>
+        </section>
+      </aside>
+
+      <section class="timeline panel" aria-label="Scenario time and event history">
+        <div class="timeline-header">
+          <div>
+            <span class="eyebrow">Past changes</span>
+            <h2>Scenario timeline</h2>
+          </div>
+          <div class="timeline-controls">
+            <label>
+              Selected time
+              <div class="input-with-unit">
+                <input id="selected-time" type="number" min="0" step="0.001" value="0">
+                <span>s</span>
+              </div>
+            </label>
+            <button id="add-event" class="button secondary" type="button">+ Add local event</button>
+          </div>
+        </div>
+
+        <div class="time-rail-wrap">
+          <svg id="time-labels" class="time-labels" aria-hidden="true"></svg>
+          <svg id="event-markers" class="event-markers" aria-hidden="true"></svg>
+          <input
+            id="time-rail"
+            class="time-rail"
+            type="range"
+            min="0"
+            max="60"
+            step="0.001"
+            value="0"
+            aria-label="Selected scenario time"
+          >
+        </div>
+
+        <div class="event-list-header">
+          <span id="event-count">0 events</span>
+          <div class="event-filters">
+            <label>
+              Node
+              <select id="event-filter-node"><option value="">All nodes</option></select>
+            </label>
+            <label>
+              <input id="event-filter-physical" type="checkbox" checked>
+              Physical truth
+            </label>
+            <label>
+              <input id="event-filter-local" type="checkbox" checked>
+              Node-local
+            </label>
+          </div>
+        </div>
+
+        <div class="event-table-wrap">
+          <table class="event-table">
+            <thead>
+              <tr>
+                <th scope="col">Time</th>
+                <th scope="col">Scope / node</th>
+                <th scope="col">Kind</th>
+                <th scope="col">Subject</th>
+                <th scope="col">Action</th>
+                <th scope="col">Outcome</th>
+                <th scope="col"><span class="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody id="event-list">
+              <tr class="empty-row"><td colspan="7">No changes have been scheduled.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="pattern-dialog" class="modal">
+      <form id="pattern-form" method="dialog">
+        <div class="modal-heading">
+          <div>
+            <span class="eyebrow">Scenario pattern</span>
+            <h2 id="pattern-title">Apply pattern</h2>
+          </div>
+          <button class="icon-button close-dialog" type="button" aria-label="Close">×</button>
+        </div>
+        <p id="pattern-description"></p>
+        <label>
+          Start time
+          <div class="input-with-unit">
+            <input id="pattern-time" type="number" min="0" step="0.001" value="0">
+            <span>s</span>
+          </div>
+        </label>
+        <label>
+          Primary object
+          <select id="pattern-target"></select>
+        </label>
+        <label>
+          Affected node
+          <select id="pattern-node"></select>
+        </label>
+        <div class="form-row">
+          <label>
+            Detection delay
+            <div class="input-with-unit">
+              <input id="pattern-delay" type="number" min="0" step="1" value="250">
+              <span>ms</span>
+            </div>
+          </label>
+          <label>
+            Restore after
+            <div class="input-with-unit">
+              <input id="pattern-duration" type="number" min="0" step="0.1" value="5">
+              <span>s</span>
+            </div>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button class="button quiet close-dialog" type="button">Cancel</button>
+          <button id="apply-pattern" class="button primary" type="submit">Schedule pattern</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="generation-dialog" class="modal generation-modal">
+      <form method="dialog">
+        <div class="modal-heading">
+          <div>
+            <span class="eyebrow">Node-local output</span>
+            <h2>Generate state dump files</h2>
+          </div>
+          <button class="icon-button close-dialog" type="button" aria-label="Close">×</button>
+        </div>
+        <div id="generation-state" class="generation-state" aria-live="polite">
+          <span class="spinner" aria-hidden="true"></span>
+          <div>
+            <strong>Preparing scenario…</strong>
+            <p>Replaying local events into final snapshots.</p>
+          </div>
+        </div>
+        <div class="boundary-note">
+          <strong>Export boundary</strong>
+          <p>
+            Physical topology, canvas positions, authoring notes, and propagation intent stay in
+            the project JSON. They are excluded from every generated dump.
+          </p>
+        </div>
+        <div class="modal-actions">
+          <button class="button quiet close-dialog" type="button">Close</button>
+          <button id="retry-generation" class="button primary" type="button" hidden>Retry</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  </body>
+</html>

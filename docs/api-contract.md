@@ -11,6 +11,11 @@ translated directly into Pydantic models/OpenAPI components.
 
 - Every analysis read is scoped to one immutable `revision_id`; a response that
   accepts `latest` resolves it once and returns the concrete ID.
+- A `revision_id` is opaque and may contain `/`. Clients must URL-encode the
+  complete ID when placing it in a revision-scoped URL and must not split it
+  into path components. Servers expose path-aware
+  `/v1/revisions/{revision_id}/...` routes so the decoded ID reaches revision
+  lookup unchanged.
 - Nanosecond timestamps, counters that may exceed JavaScript's safe integer, and
   numeric key parts are decimal strings in JSON. Small counts and page sizes are
   ordinary JSON integers.
@@ -25,6 +30,102 @@ translated directly into Pydantic models/OpenAPI components.
   Clients must not parse them. The runnable demo's cluster-detail request uses
   the returned canonical lane resource and exact cluster time envelope as its
   expansion handle; it does not require the client to parse `cluster_id`.
+
+### 1.1 Browser workspace bootstrap
+
+The generic core frontend obtains its runtime identity and scale behavior from
+the API, never from demo names or resource vocabulary:
+
+```http
+GET /v1/workspace
+GET /v1/nodes/{node_id}/workspace
+```
+
+Both responses contain a `workspace` object:
+
+```json
+{
+  "workspace": {
+    "workspace_id": "node-workspace:demo/node-a/revision-0001",
+    "revision_id": "demo/node-a/revision-0001",
+    "assembly_id": "router-state-lab-generated-demo-v1",
+    "scope": "node",
+    "workspace_kind": "node",
+    "history_mode": "server-windowed",
+    "capabilities": {
+      "historical_state": true,
+      "server_windowed_history": true
+    },
+    "node_id": "node-a",
+    "node_label": "PE-A",
+    "event_count": 125000,
+    "matched_event_count": 125000,
+    "resource_count": 7500,
+    "source_record_count": 125000,
+    "timeline_start_ns": "1759680000000000000",
+    "timeline_end_ns": "1759680600000000000",
+    "capture_ns": "1759680600000000000",
+    "scale_mode": true,
+    "large_dataset": true,
+    "initial_resource_ids": [],
+    "initial_focus_resource_id": null,
+    "disclosure": "Synthetic generated node revision."
+  }
+}
+```
+
+`scope: node` means the resource/event payload belongs to exactly one immutable
+node revision. A true bounded topology snapshot instead uses
+`workspace_kind: point-in-time-snapshot`, `history_mode: point-in-time`, and
+`capabilities.historical_state: false`; the browser must not imply history in
+that case. A complete node history uses `history_mode: server-windowed` and a
+matching top-level `history_transport.mode`. Event, source-record, density, and
+detail endpoints in `history_transport` are revision-scoped.
+
+Counts describe the whole workspace, not the current page or DOM window.
+`time_bounds` may repeat the three timestamp fields as a convenience.
+`initial_resource_ids` and `initial_focus_resource_id` are generic bootstrap
+hints whose values remain plug-in-owned resource identities. The coordinator
+owns this envelope; plug-ins supply the node label, descriptors, counts, and
+capabilities through their normalized output. Plug-ins never provide browser
+URLs or executable frontend code.
+
+### 1.2 Core host and plug-in runtime binding
+
+Every route documented here belongs to the core FastAPI application. A plug-in
+cannot add, remove, replace, or wrap API routes, middleware, page templates, or
+frontend assets.
+
+Before startup, the core command loads exactly one module-level plug-in
+instance and one input:
+
+```text
+router-dump-analyzer --plugin ENTRY_POINT_NAME --input PATH
+router-dump-analyzer --plugin-module PACKAGE[.MODULE][:ATTRIBUTE] --input PATH
+```
+
+The installed-name form resolves the
+`router_dump_analyzer.plugins` entry-point group. The direct-module form is for
+source/development use and defaults `ATTRIBUTE` to `plugin`. The selected
+instance must expose the optional non-web runtime adapter
+`plugin.runtime` with capability ID `router_dump_analyzer.runtime.v1`.
+Parse-only plug-ins can pass the author validator without this adapter, but
+cannot be served by this command.
+
+Core enters `runtime.open(input_path)` for the application lifespan. The
+non-web session supplies a required `revision_store`, `data_source`, and
+`data_policy`, plus optional `temporal_provider`, `topology_provider`, and
+`route_provider` surfaces. Core constructs `NormalizedDataService` from the
+source and policy; plug-ins do not implement generic state, relationship,
+resource-table, dashboard, range, redaction, search, or client-projection
+queries. An unsupported optional provider is represented by `None`; its
+dependent API is unavailable rather than inferred from another provider or
+demo vocabulary.
+
+This binding does not alter payload ownership. Core still owns envelopes,
+pagination, errors, routes, and rendering contracts. The plug-in still owns
+input interpretation, resource and relationship meaning, topology/route
+projection policy, redaction policy, and safe explanation text.
 
 ## 2. Time basis
 
@@ -401,6 +502,21 @@ window that crosses relationship creation/removal returns a possible record
 with `exists: null`, supported presence alternatives, and unknown or ambiguous
 usability; clients must not count it as a definite link.
 
+For normalized topology resources represented by `initial_status`,
+`initial_state`, and time-ordered `changes[]`, the snapshot applies only changes
+at or before the resolved basis. An applied change may update `status`, merge
+`state`, and set boolean `exists`. If `exists` is absent, generic `operation`
+values `create`/`add` imply `true` and `delete`/`remove` imply `false`; explicit
+`exists` takes precedence. `state_changed: false` makes the complete change a
+no-op. A plain status transition such as `up` to `down` does not change
+existence.
+
+Resource validity is an independent outer gate:
+`valid_from_ns <= basis_time_ns < valid_to_ns`, with either bound optional.
+Lifecycle changes cannot extend that half-open range. Within the range, delete
+and recreate changes form an absence gap while preserving the canonical
+resource identity; the response reports `status: "absent"` during that gap.
+
 Historical replay is also available:
 
 ```http
@@ -478,6 +594,29 @@ selection for every member; local descriptor IDs are never assumed to match:
   "inter_node_link_limit": 500
 }
 ```
+
+The capabilities response always includes the concrete `assembly_id`. A
+`topology_profiles[]` entry may also contain:
+
+```json
+{
+  "profile_id": "tenant-vpn",
+  "label": "Tenant VPN",
+  "presentation_roles": ["vpn", "overlay"],
+  "empty_action_label": "Show tenant VPN"
+}
+```
+
+`presentation_roles` is a bounded array of opaque, declared role tokens. The
+generic browser uses the exact `vpn` token to offer a VPN-oriented view; it
+does not infer VPN meaning from profile, plug-in, projection, protocol, VRF, or
+resource names. `empty_action_label` is optional safe display text for the
+empty-state action. The coordinator validates and transports these fields. In
+the executable v1 boundary they belong to the coordinator/assembly topology
+profile envelope around a selected plug-in projection; the typed
+`TopologyProjectionDescriptor` does not expose them directly. Provider policy
+owns their meaning, and adding a direct device-plug-in field requires a
+versioned protocol addition.
 
 The demo accepts `node_queries` as an equivalent executable spelling of
 `member_selections`; production clients should use the capability-advertised
@@ -590,7 +729,93 @@ membership.
 
 ## 5. Route resolution
 
-Request:
+### 5.1 Advertised single-node route choices
+
+The generic node workspace never hard-codes a destination or infers a route
+from plug-in attributes. It first reads the selected revision's bounded,
+node-scoped capability:
+
+```http
+GET /v1/revisions/{revision_id}/routes/capabilities
+```
+
+```json
+{
+  "available": true,
+  "plugin_defined": true,
+  "scope": "node",
+  "node_id": "node-a",
+  "revision_id": "demo/node-a/revision-0001",
+  "provider": {
+    "plugin_id": "demo.example-router",
+    "plugin_version": "0.1.0"
+  },
+  "routes": [
+    {
+      "route_id": "node-a/route/single-active-primary",
+      "label": "Single-active primary path",
+      "destination": "demo:node-b:single-active-primary",
+      "scenario_id": "single-active-primary",
+      "route_type": "mpls_transport",
+      "route_family": "mpls_labeled_unicast",
+      "address_family": "mpls",
+      "vrf": "default",
+      "decision": "active",
+      "observed_at_ns": "1759680600000000000"
+    }
+  ],
+  "basis_kinds": [
+    {
+      "basis_kind": "observed_capture_vector",
+      "label": "Observed plug-in projection"
+    }
+  ],
+  "default_route_id": "node-a/route/single-active-primary",
+  "default_basis_kind": "observed_capture_vector"
+}
+```
+
+`route_id` is an opaque plug-in/projection-owned identity within the immutable
+revision. It may contain `/`; neither core nor the browser parses it. The
+coordinator validates that every advertised route belongs to this node and
+revision, de-duplicates exact IDs, and exposes only the basis kinds it can
+execute. Labels, destination vocabulary, route family/type, labels/SIDs,
+encapsulation, next-hop semantics, and explanation remain plug-in-owned.
+Plug-ins do not supply endpoint URLs or executable browser controls.
+
+The browser resolves one advertised choice by exact identity:
+
+```http
+POST /v1/revisions/{revision_id}/routes/resolve
+```
+
+```json
+{
+  "route_id": "node-a/route/single-active-primary",
+  "basis_kind": "observed_capture_vector"
+}
+```
+
+The server rejects an unadvertised `route_id` or basis with `422`; it does not
+fall back to a global route, a hard-coded destination, or string matching. The
+response echoes `route_id`, `revision_id`, the resolved basis, plug-in
+provenance, matched destination, branches, route attributes, and the
+explanation tree. A point-in-time topology-member snapshot may expose no route
+capability; the core frontend then renders the feature unavailable rather than
+calling a resolver for another revision.
+
+This normalized capability is currently a coordinator adapter over
+plug-in-projected route rows. It is not a new `AnalyzerPlugin` hook in the v1
+Python protocol. A production coordinator may derive the same shape from
+`FORWARDING_PROJECTION` or another versioned plug-in projection without
+changing the browser contract.
+
+### 5.2 Arbitrary-destination forwarding query profile
+
+The protocol-neutral forwarding IR also supports a coordinator-owned
+arbitrary-destination query. This is a separate, capability-advertised request
+profile; a client must not send it to a resolver that advertises only the
+`route_id` choices above. A production request profile may use:
 
 ```json
 {
@@ -666,7 +891,7 @@ affected candidate plus `policy_decisions[]`, with the plug-in constraint,
 ingress scopes, `ingress_scopes_complete`, traffic class, verdict, explanation,
 and evidence. Rejected candidates remain inspectable.
 
-### Trace-time packet IR
+### 5.3 Trace-time packet IR
 
 The public Python plug-in boundary additionally defines one node-local packet
 step. This is not a promise that every HTTP route calls the hook. The advanced
@@ -776,7 +1001,7 @@ ambiguous, unresolved, or conflicting connector candidates. It may preserve an
 exact compatible packet contract or perform an explicit linker-owned mapping;
 it must not silently push, pop, reorder, or reinterpret packet layers.
 
-### 5.1 Cross-node multi-path trace
+### 5.4 Cross-node multi-path trace
 
 The executable demo discovers and traces routes through independently
 reconstructed members and their heterogeneous plug-ins:
@@ -1091,6 +1316,31 @@ owns inter-node boundary and endpoint-attachment matches and their candidate
 evidence; it does not reinterpret a node plug-in's split-horizon or local
 delivery decision.
 
+For a generated immutable projection, the version-2 evidence shape is more
+specific than the normalized response above. Each coverage case declares
+forward and reverse `candidate_paths`. Every involved node contributes
+`directional_decisions` keyed by direction, with each occurrence identified by
+the exact `(candidate_id, visit_index)` pair. The node plug-in owns the
+candidate sequence, active/primary/alternative state, local
+decision/disposition, and `resolution_text`. A crossing next hop contains one
+typed `connectivity_domain` reference with the plug-in's matcher ID/version and
+opaque key, plus local and remote attachment resource IDs.
+
+Core resolves that declaration only by exact equality against the selected
+normalized topology snapshot. A successful result returns the exact
+`network_segment_id`, `source_attachment_id`, and `target_attachment_id`;
+missing, multiple, truncated, conflicting, non-current, or unusable evidence is
+reason-coded and unresolved. Prefix, address, VLAN, label/SID, node-pair, and
+display-text inference are forbidden.
+
+The generated-demo coverage transport also has exact non-route evidence.
+`topology_claim` records carry the claim and attachment IDs, opaque matcher and
+segment key, prefix/classification, validity, and plug-in calculation metadata.
+`temporal_event` records carry a real event UID, timestamp, phase, event and
+resource kinds, action, outcome, and `state_changed`. These are demo fixture
+validation records, not a requirement that every production coordinator expose
+the generator's coverage registry through this route response.
+
 `paths[].presentations[]` is the bounded, core-preserved form of the
 `RoutePresentationDescriptor` sidecars encountered while resolving the path.
 `presentation_id` is stable and opaque. `role` is `principal`, `overlay`, or
@@ -1108,12 +1358,11 @@ data: the server and client must not infer VPN, MPLS, SRv6, EVPN, VLAN, or other
 protocol semantics from them. Styles are mapped by the core UI theme; CSS,
 HTML, coordinates, and executable renderer content are not accepted.
 
-The bundled demo currently mirrors `presentations` into
-`presentation_layers` for older clients and may add resolved `endpoint_refs`
-or `topology_targets`. Those are response compatibility extensions: plug-ins
-author the canonical `style`, `topology_references`, `anchor_resources`,
-mapping-valued `facts`, and `description` fields shown above. Clients must
-accept that canonical shape without requiring a demo-only alias.
+The core may add resolved `endpoint_refs` or `topology_targets` to these
+descriptors. Plug-ins author the canonical `style`, `topology_references`,
+`anchor_resources`, mapping-valued `facts`, and `description` fields shown
+above. `presentations` is the sole response field; clients must not require or
+produce a demo-only alias.
 
 Every `comparison_views[]` entry produces a `comparison_results[]` item with the
 same complete `path_groups[]` schema and its own coverage. Different
@@ -1139,6 +1388,33 @@ with role, group mode, result, hop count, egress/encapsulation, first divergence
 and uncertainty. Click pins that focus; a step action opens its frozen member at
 `/node`, and the return URL restores the same path. Hover never mutates the
 selected time or reconstruction context.
+
+### 5.5 Federated route-table rows
+
+The assembly route-table query is:
+
+```http
+POST /v1/topology-assemblies/{assembly_id}/routes/tables/query
+```
+
+It returns bounded, plug-in-owned route rows under the frozen assembly context.
+Rows that name an executable generated case carry an exact trace request.
+Inventory-only rows, including a generated row whose `scenario_id` is null,
+remain visible but return:
+
+```json
+{
+  "traceable": false,
+  "trace_query": {},
+  "trace_unavailable_reason": "This local inventory route has no plug-in-declared cross-node candidate."
+}
+```
+
+The browser disables trace action for that row. It must not derive a source,
+destination, VRF, candidate path, or scenario from display fields. The plug-in
+owns whether a route has a traceable candidate and all route/label/SID
+semantics; core owns bounded federation, identity validation, and transport of
+the explicit capability.
 
 ## 6. Timeline and cluster expansion
 
@@ -1674,7 +1950,13 @@ validity spans clipped to the lifecycles of both endpoint resources. The point
 cursor, pinned event, and selected range are independent client state; the
 request does not imply that selecting a range clears either of the others.
 
-## 8. Plugin selection and resume
+## 8. Future upload-coordinator plug-in selection and resume
+
+The current core executable selects one plug-in before application startup with
+`--plugin` or `--plugin-module` and opens the explicit `--input` path. The
+payloads below specify a future durable upload/probe coordinator; they are not a
+plug-in-provided route and are not required by the current single-runtime
+command.
 
 Candidate response records the probe set:
 

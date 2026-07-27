@@ -7,14 +7,16 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from router_dump_analyzer_demo import app as demo_app
-from router_dump_analyzer_demo import data as demo_data
-from router_dump_analyzer_demo.data import REVISION_ID
+from router_dump_analyzer.web import runtime_api as demo_app
+from plugin import data as demo_data
+from plugin.data import REVISION_ID
 from router_dump_analyzer.plugin_api import (
     ResourceTableRelationLevelDescriptor,
     ResourceTableViewDescriptor,
 )
-from router_dump_analyzer_demo.scale_data import ScaleRuntime
+from plugin.scale_data import ScaleRuntime
+from tests.support.generated_demo import generated_demo_runtime_session
+from tests.support.normalized_data import static_data_service
 
 
 def scale_dataset(
@@ -92,6 +94,7 @@ def scale_dataset(
     return {
         "_scale_runtime": runtime,
         "demo": {
+            "revision_id": REVISION_ID,
             "timeline_start_ns": "0",
             "timeline_end_ns": "1000",
             "capture_ns": "1000",
@@ -124,12 +127,62 @@ def resource(identifier: str, kind: str = "TEST") -> dict[str, Any]:
 
 
 class SingleNodeApiBoundsTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.runtime_context = generated_demo_runtime_session()
+        cls.runtime_context.__enter__()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.runtime_context.__exit__(None, None, None)
+
+    def test_generated_resource_kind_requires_plugin_owned_descriptor(self) -> None:
+        dataset = scale_dataset([resource("test/RESOURCE/one")])
+        dataset["kind_descriptors"] = []
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "lacks a resource descriptor for kind 'TEST'",
+        ):
+            static_data_service(dataset).resources_at(0)
+
+    def test_missing_resource_label_falls_back_to_opaque_identity(self) -> None:
+        identifier = "test/ETG/opaque/identity"
+        record = resource(identifier, "TEST")
+        record.pop("label")
+        dataset = scale_dataset([record])
+
+        payload = static_data_service(dataset).resources_at(0)
+
+        self.assertEqual(payload["items"][0]["label"], identifier)
+
+    def test_resource_search_reuses_one_safe_timestamp_projection(self) -> None:
+        resources = [
+            resource(f"test/RESOURCE/{index:04d}")
+            for index in range(250)
+        ]
+        dataset = scale_dataset(resources)
+        from router_dump_analyzer import normalized_data
+
+        with patch.object(
+            normalized_data,
+            "resource_search_text",
+            wraps=normalized_data.resource_search_text,
+        ) as project_search_text:
+            service = static_data_service(dataset)
+            first = service.resources_at(0, search="resource/00")
+            second = service.resources_at(0, search="resource/01")
+
+        self.assertEqual(first["matched_count"], 100)
+        self.assertEqual(second["matched_count"], 100)
+        self.assertEqual(project_search_text.call_count, len(resources))
+
     def test_correlation_caps_and_deduplicates_roots_before_traversal(self) -> None:
         resources = [resource(f"test/ROOT/{index:02d}") for index in range(12)]
         dataset = scale_dataset(resources)
         requested = [item["resource_id"] for item in resources]
         requested.insert(2, requested[0])
-        with patch.object(demo_app, "load_demo_dataset", return_value=dataset), patch.object(
+        with patch.object(demo_app, "load_dataset", return_value=dataset), patch.object(
             demo_data, "load_demo_dataset", return_value=dataset
         ):
             payload = demo_app._correlation_payload(
@@ -179,7 +232,19 @@ class SingleNodeApiBoundsTests(unittest.TestCase):
             "viewport_pixels": 2,
             "cluster_window_ns": 0,
         }
-        with patch.object(demo_app, "load_demo_dataset", return_value=dataset):
+        with patch.object(
+            demo_app,
+            "load_dataset",
+            return_value=dataset,
+        ), patch.object(
+            demo_data,
+            "load_demo_dataset",
+            return_value=dataset,
+        ), patch.object(
+            demo_app,
+            "_require_revision",
+            return_value=None,
+        ):
             first = demo_app.timeline_query(REVISION_ID, body.copy())
             second = demo_app.timeline_query(REVISION_ID, body.copy())
 
@@ -215,7 +280,19 @@ class SingleNodeApiBoundsTests(unittest.TestCase):
             for index in range(60)
         ]
         dataset = scale_dataset(resources, relationships=relationships)
-        with patch.object(demo_app, "load_demo_dataset", return_value=dataset):
+        with patch.object(
+            demo_app,
+            "load_dataset",
+            return_value=dataset,
+        ), patch.object(
+            demo_data,
+            "load_demo_dataset",
+            return_value=dataset,
+        ), patch.object(
+            demo_app,
+            "_require_revision",
+            return_value=None,
+        ):
             payload = demo_app.timeline_query(
                 REVISION_ID,
                 {
@@ -278,8 +355,7 @@ class SingleNodeApiBoundsTests(unittest.TestCase):
             events=[event],
             state_by_resource={noisy: noisy_states, changed: changed_states},
         )
-        with patch.object(demo_data, "load_demo_dataset", return_value=dataset):
-            payload = demo_data.range_summary(0, 100)
+        payload = static_data_service(dataset).range_summary(0, 100)
 
         self.assertIn(changed, {item["resource_id"] for item in payload["endpoint_diff"]})
         self.assertEqual(payload["endpoint_diff_evaluated_count"], 2)
@@ -350,8 +426,10 @@ class SingleNodeApiBoundsTests(unittest.TestCase):
             relationships=relationships,
             resource_table_views=[view],
         )
-        with patch.object(demo_data, "load_demo_dataset", return_value=dataset):
-            payload = demo_data.resources_at(0, view_id="bounded-tree")
+        payload = static_data_service(dataset).resources_at(
+            0,
+            view_id="bounded-tree",
+        )
 
         bundle = payload["bundles"][0]
         self.assertEqual(bundle["child_count"], 5)
@@ -363,8 +441,18 @@ class SingleNodeApiBoundsTests(unittest.TestCase):
 
     def test_zero_time_and_malformed_shapes_are_handled_explicitly(self) -> None:
         dataset = scale_dataset([resource("test/RESOURCE/zero")])
-        with patch.object(demo_app, "load_demo_dataset", return_value=dataset), patch.object(
-            demo_data, "load_demo_dataset", return_value=dataset
+        with patch.object(
+            demo_app,
+            "load_dataset",
+            return_value=dataset,
+        ), patch.object(
+            demo_app,
+            "_require_revision",
+            return_value=None,
+        ), patch.object(
+            demo_data,
+            "load_demo_dataset",
+            return_value=dataset,
         ):
             at_zero = demo_app.resource_tables_at(
                 REVISION_ID,

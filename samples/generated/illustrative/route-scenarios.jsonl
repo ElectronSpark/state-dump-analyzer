@@ -1,2 +1,0 @@
-{"basis":"reconstructed_time","destination":"203.0.113.42","expected_result":"resolved","scenario":"srv6-selected-after-sr-mpls-failure"}
-{"basis":"observed_capture_vector","destination":"203.0.113.42","expected_result":"resolved","scenario":"capture-observation"}

@@ -1,3 +1,0 @@
-include README.md
-recursive-include fixtures *.jsonl
-recursive-include tests *.py

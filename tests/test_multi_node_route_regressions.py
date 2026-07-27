@@ -1,21 +1,278 @@
 from __future__ import annotations
 
+import ast
 import unittest
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from router_dump_analyzer_demo.app import app
+from tests.support.generated_demo import (
+    configure_generated_demo_for_tests,
+    generated_demo_application,
+    query_all_route_table_rows,
+)
+
+import generator as generated_fixture
+from generator import COVERAGE_CASES, DEMO_NODES
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOTS = (
+    ROOT / "src",
+    ROOT / "demo" / "plugin",
+    ROOT / "demo" / "generator",
+)
+GENERATOR_ROOT = Path(generated_fixture.__file__).resolve().parent
+
+
+def _assigned_names(statement: ast.Assign | ast.AnnAssign) -> set[str]:
+    targets = statement.targets if isinstance(statement, ast.Assign) else [
+        statement.target
+    ]
+    return {
+        target.id
+        for target in targets
+        if isinstance(target, ast.Name)
+    }
+
+
+def _literal_strings(node: ast.AST | None) -> set[str]:
+    if node is None:
+        return set()
+    return {
+        item.value
+        for item in ast.walk(node)
+        if isinstance(item, ast.Constant)
+        and isinstance(item.value, str)
+    }
+
+
+def _immediate_literal_strings(node: ast.AST | None) -> set[str]:
+    if isinstance(node, ast.Dict):
+        values = node.keys
+    elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        values = node.elts
+    else:
+        return set()
+    return {
+        item.value
+        for item in values
+        if isinstance(item, ast.Constant)
+        and isinstance(item.value, str)
+    }
+
+
+def _nongenerator_source_trees() -> list[tuple[Path, ast.Module]]:
+    sources: list[tuple[Path, ast.Module]] = []
+    for package_root in SOURCE_ROOTS:
+        for source_path in package_root.rglob("*.py"):
+            resolved = source_path.resolve()
+            generator_root = GENERATOR_ROOT.resolve()
+            if (
+                generator_root == resolved.parent
+                or generator_root in resolved.parents
+            ):
+                continue
+            sources.append(
+                (
+                    source_path,
+                    ast.parse(
+                        source_path.read_text(encoding="utf-8"),
+                        filename=str(source_path),
+                    ),
+                )
+            )
+    return sources
+
+
+class RouteGeometryOwnershipTests(unittest.TestCase):
+    def test_generator_is_the_only_routed_node_catalog_owner(self) -> None:
+        routed_node_ids = {item.node_id for item in DEMO_NODES}
+        duplicate_catalogs: list[str] = []
+
+        for source_path, tree in _nongenerator_source_trees():
+            for statement in tree.body:
+                if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                    continue
+                value = statement.value
+                names = _assigned_names(statement)
+                immediate = (
+                    _immediate_literal_strings(value) & routed_node_ids
+                )
+                recursively_named = set()
+                if any(
+                    token in name.upper()
+                    for name in names
+                    for token in ("NODE", "ROUTER", "UNDERLAY", "TOPOLOGY")
+                ):
+                    recursively_named = _literal_strings(value) & routed_node_ids
+                if len(immediate | recursively_named) >= 2:
+                    duplicate_catalogs.append(
+                        f"{source_path.relative_to(ROOT)}:"
+                        f"{statement.lineno}:{','.join(sorted(names))}"
+                    )
+
+        self.assertEqual(
+            duplicate_catalogs,
+            [],
+            "routed-node catalogs must be generated fixture inputs only",
+        )
+
+    def test_runtime_does_not_construct_named_scenario_geometry(self) -> None:
+        routed_node_ids = {item.node_id for item in DEMO_NODES}
+        scenario_ids = {item.case_id for item in COVERAGE_CASES}
+        source_trees = _nongenerator_source_trees()
+
+        forbidden_advanced_helpers = {
+            node.name
+            for _source_path, tree in source_trees
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name
+            in {"preferred_node_sequence", "forced_node_sequence"}
+        }
+        self.assertEqual(
+            forbidden_advanced_helpers,
+            set(),
+            "advanced tracing owns packet actions, not route geometry",
+        )
+
+        literal_sequences: list[str] = []
+        for source_path, tree in source_trees:
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.List, ast.Tuple)):
+                    continue
+                values = _immediate_literal_strings(node)
+                if (
+                    len(node.elts) >= 2
+                    and len(values) == len(node.elts)
+                    and values <= routed_node_ids
+                ):
+                    literal_sequences.append(
+                        f"{source_path.relative_to(ROOT)}:{node.lineno}"
+                    )
+        self.assertEqual(
+            literal_sequences,
+            [],
+            "runtime route geometry must not contain literal node sequences",
+        )
+
+        geometry_names = {
+            "paths",
+            "node_sequence",
+            "candidate_paths",
+        }
+        scenario_geometry_branches: list[str] = []
+        for source_path, tree in source_trees:
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.If):
+                    continue
+                selector_names = {
+                    item.id
+                    for item in ast.walk(node.test)
+                    if isinstance(item, ast.Name)
+                }
+                selector_literals = _literal_strings(node.test)
+                named_selector = (
+                    "scenario_id" in selector_names
+                    and (
+                        bool(selector_literals & scenario_ids)
+                        or any(
+                            "SCENARIO" in name.upper()
+                            and "ID" in name.upper()
+                            for name in selector_names
+                        )
+                    )
+                )
+                if not named_selector:
+                    continue
+                branch = ast.Module(
+                    body=[*node.body, *node.orelse],
+                    type_ignores=[],
+                )
+                mutates_geometry = any(
+                    isinstance(item, ast.Name)
+                    and isinstance(item.ctx, ast.Store)
+                    and item.id in geometry_names
+                    for item in ast.walk(branch)
+                ) or any(
+                    isinstance(item, ast.Subscript)
+                    and isinstance(item.ctx, ast.Store)
+                    and isinstance(item.slice, ast.Constant)
+                    and item.slice.value == "node_sequence"
+                    for item in ast.walk(branch)
+                ) or any(
+                    isinstance(item, ast.Call)
+                    and isinstance(item.func, ast.Attribute)
+                    and isinstance(item.func.value, ast.Name)
+                    and item.func.value.id
+                    in {"paths", "candidate_paths"}
+                    and item.func.attr in {"append", "extend", "insert"}
+                    for item in ast.walk(branch)
+                )
+                if mutates_geometry:
+                    scenario_geometry_branches.append(
+                        f"{source_path.relative_to(ROOT)}:{node.lineno}"
+                    )
+
+        self.assertEqual(
+            scenario_geometry_branches,
+            [],
+            "named scenario branches may select semantics but must not "
+            "construct candidate geometry",
+        )
 
 
 class MultiNodeRouteRegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.client_context = TestClient(app)
+        configure_generated_demo_for_tests()
+        cls.client_context = TestClient(generated_demo_application())
         cls.client = cls.client_context.__enter__()
 
     @classmethod
     def tearDownClass(cls) -> None:
         cls.client_context.__exit__(None, None, None)
+
+    def assert_candidate_geometry_comes_from_generated_projection(
+        self,
+        payload: dict,
+    ) -> None:
+        projection = payload["generated_projection"]
+        self.assertIn(
+            projection["source"],
+            {
+                "generated_plugin_projection",
+                "generated_plugin_route_inventory",
+            },
+        )
+        candidates = {
+            item["candidate_id"]: item
+            for item in projection["candidate_paths"]
+        }
+        self.assertEqual(len(candidates), len(projection["candidate_paths"]))
+
+        rendered_candidate_ids: list[str] = []
+        for path in payload["paths"]:
+            candidate_id = path["generated_candidate_id"]
+            rendered_candidate_ids.append(candidate_id)
+            self.assertIn(candidate_id, candidates)
+            candidate = candidates[candidate_id]
+            self.assertEqual(
+                path["generated_candidate_declaration"],
+                candidate,
+            )
+            self.assertEqual(
+                path["node_sequence"],
+                candidate["node_sequence"],
+            )
+            self.assertEqual(path["primary"], candidate["primary"])
+            self.assertEqual(
+                path["alternative_state"],
+                candidate["alternative_state"],
+            )
+
+        self.assertCountEqual(rendered_candidate_ids, candidates)
 
     def test_non_shortest_selected_route_row_action_is_executable(self) -> None:
         table = self.client.post(
@@ -26,7 +283,7 @@ class MultiNodeRouteRegressionTests(unittest.TestCase):
                     "vrf_id": "default",
                     "route_type": "mpls_transport",
                     "destination": {
-                        "value": "destination:node-a-loopback",
+                        "value": "destination:node-a",
                         "match": "exact",
                     },
                     "active": True,
@@ -36,7 +293,8 @@ class MultiNodeRouteRegressionTests(unittest.TestCase):
         row = next(
             item
             for item in table["items"]
-            if item["route_entry_id"].endswith("asymmetric-scenario-active")
+            if item["attributes"].get("scenario_id")
+            == "site-a-site-c-asymmetric"
         )
 
         response = self.client.post(
@@ -44,11 +302,12 @@ class MultiNodeRouteRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200, response.text)
-        forward = response.json()["traces"]["forward"]
-        self.assertEqual(forward["focused_path_id"], row["path_id"])
+        trace = response.json()
+        self.assertEqual(trace["direction"], "reverse")
+        self.assertEqual(trace["focused_path_id"], row["path_id"])
         focused = next(
             item
-            for item in forward["paths"]
+            for item in trace["paths"]
             if item["path_id"] == row["path_id"]
         )
         self.assertEqual(
@@ -104,12 +363,19 @@ class MultiNodeRouteRegressionTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(initial.status_code, 200, initial.text)
-                counterpart = initial.json()["counterpart_request"]
+                initial_payload = initial.json()
+                self.assert_candidate_geometry_comes_from_generated_projection(
+                    initial_payload
+                )
+                counterpart = initial_payload["counterpart_request"]
                 response = self.client.post(
                     "/v1/topologies/routes/trace", json=counterpart
                 )
                 self.assertEqual(response.status_code, 200, response.text)
                 payload = response.json()
+                self.assert_candidate_geometry_comes_from_generated_projection(
+                    payload
+                )
                 for field in (
                     "route_type",
                     "route_family",
@@ -149,10 +415,10 @@ class MultiNodeRouteRegressionTests(unittest.TestCase):
             for item in capabilities["scenarios"]
             if item["scenario_id"] == "router-to-router"
         )
-        self.assertEqual(scenario["default_source"], "source:pe-a-loopback")
+        self.assertEqual(scenario["default_source"], "source:node-a")
         self.assertEqual(
             scenario["default_destination"],
-            "destination:node-b-loopback",
+            "destination:node-b",
         )
         source = next(
             item
@@ -195,16 +461,16 @@ class MultiNodeRouteRegressionTests(unittest.TestCase):
         invalid_requests = [
             {
                 "scenario_id": "router-to-router",
-                "source_id": "source:pe-a-loopback",
-                "destination_id": "destination:node-b-loopback",
+                "source_id": "source:node-a",
+                "destination_id": "destination:node-b",
                 "vrf_id": "red",
                 "route_family": "vpnv4_unicast",
                 "route_type": "mpls_l3vpn",
             },
             {
                 "scenario_id": "router-to-router",
-                "source_id": "source:transit-p-1-loopback",
-                "destination_id": "destination:transit-p-2-loopback",
+                "source_id": "source:transit-p-1",
+                "destination_id": "destination:transit-p-2",
                 "vrf_id": "management",
                 "route_family": "ipv4_unicast",
                 "route_type": "ipv4_unicast",
@@ -221,8 +487,8 @@ class MultiNodeRouteRegressionTests(unittest.TestCase):
             "/v1/topologies/routes/trace",
             json={
                 "scenario_id": "router-to-router",
-                "source_id": "source:node-d-loopback",
-                "destination_id": "destination:node-e-loopback",
+                "source_id": "source:node-d",
+                "destination_id": "destination:node-e",
                 "vrf_id": "red",
                 "route_family": "vpnv4_unicast",
                 "route_type": "mpls_l3vpn",
@@ -245,19 +511,19 @@ class MultiNodeRouteRegressionTests(unittest.TestCase):
         invalid = [
             {
                 "scenario_id": "single-active-primary",
-                "destination_id": "destination:node-b-loopback",
+                "destination_id": "destination:node-e",
             },
             {
                 "scenario_id": "evpn-mh-all-active",
-                "destination_id": "destination:node-e-loopback",
+                "destination_id": "destination:node-b",
             },
             {
                 "scenario_id": "recursive-static-to-external",
-                "destination_id": "destination:node-e-loopback",
+                "destination_id": "destination:node-b",
             },
             {
                 "scenario_id": "router-to-router",
-                "source_id": "source:pe-a-loopback",
+                "source_id": "source:node-a",
                 "destination": "203.0.113.0/24",
             },
         ]
@@ -406,7 +672,14 @@ class MultiNodeRouteRegressionTests(unittest.TestCase):
         )
         self.assertEqual(matching.status_code, 200, matching.text)
 
-        differing_selection = selected[:1]
+        differing_selection = [
+            {
+                **selected[0],
+                "projection_id": (
+                    f"{selected[0]['projection_id']}.different"
+                ),
+            }
+        ]
         self.assertNotEqual(differing_selection, selected)
         response = self.client.post(
             "/v1/topologies/routes/tables/query",
@@ -554,12 +827,7 @@ class MultiNodeRouteRegressionTests(unittest.TestCase):
                 self.assertEqual(trace.status_code, 200, trace.text)
 
     def test_every_route_table_trace_action_is_executable(self) -> None:
-        table = self.client.post(
-            "/v1/topologies/routes/tables/query",
-            json={"page": {"limit": 500}},
-        )
-        self.assertEqual(table.status_code, 200, table.text)
-        payload = table.json()
+        payload = query_all_route_table_rows(self.client)
         self.assertFalse(payload["page"]["truncated"])
         self.assertEqual(payload["counts"]["total"], len(payload["items"]))
 

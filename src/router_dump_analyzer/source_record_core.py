@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
+from .value_core import parse_decimal_integer
+
 
 MAX_RECORD_LANES = 8
 MAX_RECORD_PATTERN_LENGTH = 160
@@ -36,27 +38,6 @@ _STACKED_QUANTIFIER_PATTERN = re.compile(
 def _bounded_text(value: Any, limit: int = MAX_RECORD_HAYSTACK_LENGTH) -> str:
     text = str(value if value is not None else "")
     return text[:limit]
-
-
-def _integer_value(value: Any, field: str) -> int:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, str))
-        or (
-            isinstance(value, str)
-            and not (
-                value.isdigit()
-                or (value.startswith("-") and value[1:].isdigit())
-            )
-        )
-    ):
-        raise ValueError(f"{field} must be an integer or decimal integer string")
-    try:
-        return int(value)
-    except (ValueError, OverflowError) as error:
-        raise ValueError(
-            f"{field} must be an integer or decimal integer string"
-        ) from error
 
 
 def _boolean_field(
@@ -94,7 +75,7 @@ def _source_record_timestamp_ns(record: dict[str, Any]) -> int | None:
     if value is None:
         return None
     try:
-        return _integer_value(value, "timestamp_ns")
+        return parse_decimal_integer(value, "timestamp_ns")
     except ValueError as error:
         identifier = _bounded_text(
             record.get("source_record_uid") or "<unknown>",
@@ -482,8 +463,16 @@ def query_source_records(
         raise ValueError("source-record query must be an object")
     start = body.get("start_ns")
     end = body.get("end_ns")
-    start_ns = _integer_value(start, "start_ns") if start is not None else None
-    end_ns = _integer_value(end, "end_ns") if end is not None else None
+    start_ns = (
+        parse_decimal_integer(start, "start_ns")
+        if start is not None
+        else None
+    )
+    end_ns = (
+        parse_decimal_integer(end, "end_ns")
+        if end is not None
+        else None
+    )
     if start_ns is not None and end_ns is not None and end_ns < start_ns:
         raise ValueError("end_ns must be >= start_ns")
     source_types = set(_string_array_field(body, "source_types"))
@@ -511,11 +500,14 @@ def query_source_records(
     if search_value is not None and not isinstance(search_value, str):
         raise ValueError("search must be a string or null")
     search = (search_value or "").casefold()
-    offset = max(0, _integer_value(body.get("offset", 0), "offset"))
+    offset = max(
+        0,
+        parse_decimal_integer(body.get("offset", 0), "offset"),
+    )
     limit = max(
         1,
         min(
-            _integer_value(body.get("limit", 100), "limit"),
+            parse_decimal_integer(body.get("limit", 100), "limit"),
             MAX_SOURCE_QUERY_LIMIT,
         ),
     )

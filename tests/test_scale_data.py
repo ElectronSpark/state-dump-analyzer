@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import unittest
+from collections import defaultdict
 
-from router_dump_analyzer_demo.scale_data import (
+from plugin.scale_data import (
     _LazyIntervalMap,
     _ScaleTemporalIndex,
+    _add_history_only_resources,
     _compact_event,
     _icon_descriptor,
     _resource_record,
     _scale_projection_capabilities,
     _status_class,
 )
-from router_dump_analyzer_demo.temporal_topology import build_demo_plugin_contract
-from scripts.generate_scale_fixtures import _plugin_schema
+from plugin.temporal_contract import (
+    build_demo_plugin_contract,
+)
+from generator._scale import _plugin_schema
 
 
 RESOURCE_ID = "data-bridge-layer/DTE/blue/dte-000001"
@@ -236,21 +240,86 @@ class LazyScaleTemporalIndexTests(unittest.TestCase):
             "etg-b",
         )
 
+    def test_history_only_resource_is_cataloged_for_past_reconstruction(
+        self,
+    ) -> None:
+        temporary_id = "control-plane/IP_ROUTE/history-probe"
+        created = _compact_event(
+            {
+                "event_uid": "history-create",
+                "timestamp_ns": "10",
+                "event_name": "route_create",
+                "action": "create",
+                "outcome": "success",
+                "state_changed": True,
+                "layer": "control-plane",
+                "resource_id": temporary_id,
+                "resource_kind": "IP_ROUTE",
+                "effects": [
+                    {
+                        "resource_id": temporary_id,
+                        "kind": "IP_ROUTE",
+                        "effect_type": "create",
+                        "state_changed": True,
+                        "condition": "installed",
+                        "after": {
+                            "status": "installed",
+                            "next_hop": "transit-p-1",
+                        },
+                    }
+                ],
+            }
+        )
+        deleted = _compact_event(
+            {
+                "event_uid": "history-delete",
+                "timestamp_ns": "20",
+                "event_name": "route_delete",
+                "action": "delete",
+                "outcome": "success",
+                "state_changed": True,
+                "layer": "control-plane",
+                "resource_id": temporary_id,
+                "resource_kind": "IP_ROUTE",
+                "effects": [
+                    {
+                        "resource_id": temporary_id,
+                        "kind": "IP_ROUTE",
+                        "effect_type": "delete",
+                        "state_changed": True,
+                        "after": {},
+                    }
+                ],
+            }
+        )
+        resources: list[dict[str, object]] = []
+        resource_by_id: dict[str, dict[str, object]] = {}
+        resources_by_kind = defaultdict(list)
+
+        _add_history_only_resources(
+            resources,
+            resource_by_id,
+            resources_by_kind,
+            {temporary_id: [created, deleted]},
+        )
+
+        self.assertIn(temporary_id, resource_by_id)
+        self.assertFalse(resource_by_id[temporary_id]["snapshot_present"])
+        index = _ScaleTemporalIndex(
+            resource_by_id,
+            {temporary_id: [created, deleted]},
+        )
+        self.assertEqual(
+            [
+                (item["valid_from_ns"], item["valid_to_ns"])
+                for item in index.lifecycle_intervals(temporary_id)
+            ],
+            [("10", "20")],
+        )
+
 
 class ScaleKindDescriptorTests(unittest.TestCase):
-    def test_scale_semantics_override_review_fields_without_losing_icon(self) -> None:
-        review = {
-            "ETG": {
-                "kind": "ETG",
-                "display_name": "Encapsulation tunnel group",
-                "key_fields": ["review-id"],
-                "display_name_fields": ["review-name"],
-                "default_table_fields": ["review-status"],
-                "condition_field": "review-status",
-                "presentation_tags": ["forwarding"],
-                "icon": {"path": "M 2 2 L 22 22"},
-            }
-        }
+    def test_generated_schema_is_the_authoritative_kind_descriptor(self) -> None:
         scale = {
             "ETG": {
                 "kind": "ETG",
@@ -259,10 +328,12 @@ class ScaleKindDescriptorTests(unittest.TestCase):
                 "display_name_fields": ["service_id"],
                 "default_table_fields": ["status", "overlay_destination"],
                 "condition_field": "status",
+                "presentation_tags": ["forwarding"],
+                "icon": {"path": "M 2 2 L 22 22"},
             }
         }
 
-        descriptor = _icon_descriptor("ETG", review, scale)
+        descriptor = _icon_descriptor("ETG", scale)
 
         self.assertEqual(descriptor["key_fields"], ["vrf", "service_id"])
         self.assertEqual(descriptor["display_name_fields"], ["service_id"])
@@ -272,26 +343,18 @@ class ScaleKindDescriptorTests(unittest.TestCase):
         )
         self.assertEqual(descriptor["condition_field"], "status")
         self.assertEqual(descriptor["layer"], "data-bridge-layer")
-        self.assertEqual(descriptor["icon"], review["ETG"]["icon"])
+        self.assertEqual(descriptor["icon"], scale["ETG"]["icon"])
         self.assertEqual(descriptor["presentation_tags"], ["forwarding"])
         self.assertEqual(
             descriptor["display_name"],
             "Encapsulation Tunnel Group",
         )
 
-    def test_review_semantics_do_not_leak_when_scale_descriptor_omits_them(
+    def test_sparse_generated_descriptor_receives_only_generic_defaults(
         self,
     ) -> None:
         descriptor = _icon_descriptor(
             "DTE",
-            {
-                "DTE": {
-                    "key_fields": ["wrong-review-id"],
-                    "default_table_fields": ["wrong-review-field"],
-                    "condition_field": "wrong-review-condition",
-                    "icon": {"path": "M 1 1 L 2 2"},
-                }
-            },
             {"DTE": {"kind": "DTE", "layer": "data-bridge-layer"}},
         )
 
@@ -301,7 +364,7 @@ class ScaleKindDescriptorTests(unittest.TestCase):
             ["status", "oper_state", "next_hop"],
         )
         self.assertEqual(descriptor["condition_field"], "status")
-        self.assertEqual(descriptor["icon"]["path"], "M 1 1 L 2 2")
+        self.assertNotIn("icon", descriptor)
         self.assertEqual(
             descriptor["display_name"],
             "Decapsulation Tunnel Entry",
@@ -345,7 +408,7 @@ class ScaleProjectionCapabilityTests(unittest.TestCase):
             self.assertFalse(capabilities["underlay_topology"]["available"])
             self.assertFalse(capabilities["route_resolution"]["available"])
 
-    def test_scale_contract_does_not_expose_review_underlay_status_sources(
+    def test_scale_contract_does_not_expose_underlay_without_owned_evidence(
         self,
     ) -> None:
         capabilities = _scale_projection_capabilities(_plugin_schema())

@@ -21,10 +21,11 @@ The example plug-in:
 7. passes the generic author validator and its own golden test.
 
 This repository is still a design/conformance demo. The validator proves the
-plug-in-facing package and protocol shape; the main review server does not yet
-run arbitrary installed plug-ins through a production ingestion coordinator.
-Do not work around that by importing a plug-in directly from
-`router_dump_analyzer_demo.app`.
+plug-in-facing package and protocol shape. The core owns the only web command
+and can load one installed or directly named plug-in at a time; it is not yet a
+production upload and multi-plug-in selection coordinator. The demo publishes
+the same example through normal entry-point discovery and contains no
+application entry point.
 
 ## 1. Run the known-good example
 
@@ -32,44 +33,95 @@ From the repository root, using Python 3.12 in the analyzer environment:
 
 ```text
 python -m pip install -e .
-python -m pip install --no-deps -e examples/minimal_plugin
+python -m pip install -e demo
 router-dump-plugin-validate --list
-router-dump-plugin-validate minimal_router --artifact examples/minimal_plugin/fixtures/minimal-status.jsonl --node-hint router-1 --metadata platform=minimal-router-os --metadata software_version=1
-python -m unittest discover -s examples/minimal_plugin/tests -v
+python -X utf8 -m generator --verify-conformance-fixture demo/fixtures/minimal-status.jsonl
+router-dump-plugin-validate demo_router --artifact demo/fixtures/minimal-status.jsonl --node-hint router-1 --metadata platform=demo-router-os --metadata software_version=1
+python -m unittest discover -s demo/tests -v
 ```
 
-The first command installs only `router-dump-analyzer-core`. It does not install
-the review server or the synthetic demo plug-ins, and neither is required to
-author or validate a device plug-in.
+The first command installs `router-dump-analyzer-core`. The second installs the
+single demo distribution so its `demo_router` entry point is discoverable. Your
+own device plug-in depends only on the core distribution; it does not depend on
+the demo distribution.
 
 The validator must end with:
 
 ```text
-OK: example.minimal-router
+OK: demo.example-router
 ```
 
-Do not start a new implementation until these commands work unchanged.
+The generator verification proves that the tiny JSONL vector exactly matches
+the plug-in-owned `CONFORMANCE_STATUS_RECORDS`; it is not a second hand-written
+mock dump. Do not start a new implementation until these commands work
+unchanged.
 
-## 2. Copy this package, not the demo server
+The browser bootstrap is core-owned. A node plug-in supplies normalized
+identity, descriptors, counts, time bounds, and capabilities; it does not
+build the `/v1/workspace` envelope or ship page templates.
 
-Use `examples/minimal_plugin/` as the template:
+The executable v1 `TopologyProjectionDescriptor` declares topology semantics
+and supported status perspectives, but it does not contain browser-profile
+fields. Today the coordinator or assembly profile adapter publishes
+`presentation_roles` and optional safe `empty_action_label` text around a
+selected plug-in projection. Use the exact `vpn` role only for a profile
+genuinely intended for the VPN view; the browser will not guess from EVPN,
+VRF, protocol, or projection names. Adding those fields directly to a device
+plug-in requires a versioned protocol addition, not an extra attribute or
+executable frontend code.
+
+To run the generated example through the core-owned server after an assembly
+has been generated, use either discovery mode:
 
 ```text
-examples/minimal_plugin/
-|-- pyproject.toml
-|-- README.md
-|-- fixtures/
-|   `-- minimal-status.jsonl
-|-- src/
-|   `-- minimal_router_plugin/
-|       `-- __init__.py
-`-- tests/
-    `-- test_minimal_plugin.py
+python -m pip install -e ".[web]"
+router-dump-analyzer --plugin demo_router --input demo/fixtures/router-state-lab-demo.tgz --no-browser
+python -m router_dump_analyzer --plugin-module plugin --input demo/fixtures/router-state-lab-demo.tgz --no-browser
 ```
 
+`--plugin` selects an installed entry-point name.
+`--plugin-module PACKAGE[:ATTRIBUTE]` imports a module-level instance directly;
+`ATTRIBUTE` defaults to `plugin`. The repository launch scripts generate the
+large assembly when it is absent.
+
+## 2. Copy the teaching slice, not the fixture runtime
+
+The runnable teaching slice is kept beside the real demo so there is only one
+example implementation:
+`demo/plugin/__init__.py`.
+
+```text
+demo/
+|-- pyproject.toml
+|-- fixtures/
+|   `-- minimal-status.jsonl
+|-- plugin/
+|   `-- __init__.py
+|-- generator/
+|   `-- __init__.py
+`-- tests/
+    `-- test_plugin.py
+```
+
+Copy the parser/schema portion of `plugin/__init__.py`, its
+`CONFORMANCE_STATUS_RECORDS` plus renderer, its golden test, and the entry-point
+declaration into a new independently installable `src/`-layout distribution.
 Rename the distribution, import package, entry-point name, plug-in ID, platform
-ID, parser ID, resource kinds, and fixture vocabulary. Keep the `src/` layout
-and the golden test.
+ID, parser ID, resource kinds, and fixture vocabulary. Do not copy the demo
+runtime adapter, scenario builders, `ExampleRouterGeneratedProjectionPolicy`,
+generated-corpus policies, or fixture generator.
+
+`ExampleRouterPlugin.generated_projection_policy` is a demo-only offline
+fixture facade. The comprehensive generator, archive validator, and runtime
+loader all validate that one installed policy, and stored projection manifests
+truthfully record `parser_replayed: false`. It is not a standard
+`AnalyzerPlugin` hook and a normal device parser does not need it.
+
+Copy none of the offline materializer into a normal live parser. If you are
+deliberately building an independently versioned precomputed-projection
+workflow, treat it as a separate application contract with equivalent
+validation; the bundled implementation's current format and evidence rules live
+in the [demo guide](../demo/README.md#generated-mock-dumps).
 
 The entry point must target a module-level instance:
 
@@ -108,10 +160,12 @@ Use the standard `PluginCapability` enum. A capability is a promise that its
 hook is implemented. `AnalyzerPluginBase` raises instead of silently ignoring
 a declared-but-missing hook.
 
-The current v1 API has no runtime configuration injection hook. Keep defaults
-immutable and packaged with the plug-in; do not read hidden environment
-variables. The core records `supported_software_versions`, while `probe()` owns
-the actual version interpretation and `exact`/`compatible` decision.
+The normal v1 parsing API has no arbitrary runtime-configuration injection
+hook. Keep parser defaults immutable and packaged with the plug-in; do not read
+hidden environment variables. The optional `plugin.runtime.open(input_path)`
+host adapter described below receives only the selected input path. The core
+records `supported_software_versions`, while `probe()` owns the actual version
+interpretation and `exact`/`compatible` decision.
 
 ### B. Static schema
 
@@ -126,6 +180,10 @@ normalized condition field. It also declares one source-record group and one
 type must appear in this static schema.
 
 Never return HTML, JavaScript, CSS, SQL, remote URLs, or layout coordinates.
+The core owns the generic browser pages, widgets, interaction logic, and
+accessible rendering. Plug-ins contribute declarative domain presentation
+only: labels, icons, tags, table/dashboard descriptors, topology projections,
+and route or packet explanation text.
 
 ### C. Probe
 
@@ -206,9 +264,116 @@ Everything else is capability-gated:
 | `CONSISTENCY_CHECK` | `check_consistency()` | PASS/FAIL/UNKNOWN findings |
 | `TOPOLOGY_PROJECTION` | `project_topology()` | bounded typed topology records |
 | `FORWARDING_PROJECTION` | `project_forwarding()` | bounded forwarding IR mutations |
+| `FORWARDING_TRACE` | `resolve_forwarding_step()` | one bounded node-local packet transition |
 
 Inherit undeclared hooks from `AnalyzerPluginBase`; they return safe empty
 results. Do not copy placeholder implementations into a new plug-in.
+
+The generic node browser can show a bounded list of plug-in-projected route
+choices, but v1 has no separate route-catalog hook. The coordinator derives
+that capability from `FORWARDING_PROJECTION` or another explicitly versioned
+projection. If your projection participates, give each route decision one
+opaque, revision-stable `route_id`; keep node/revision/provider identity
+explicit; and declare only basis kinds the coordinator can execute. Do not put
+a URL in the plug-in or expect the browser to infer a destination, VRF,
+label/SID, or fallback route from display text. Unknown IDs and unsupported
+bases must fail closed. The normalized HTTP shape is in
+[`api-contract.md`](api-contract.md#51-advertised-single-node-route-choices).
+
+A projected row that only inventories local or null-scenario forwarding state
+may set `traceable: false`, leave `trace_query` empty, and supply a bounded
+`trace_unavailable_reason`. Core can still list that row, but it must not invent
+a cross-node candidate or let the browser submit it as a trace.
+
+### Optional host runtime for the core web command
+
+Stop here for an ordinary parse-only plug-in. It does **not** need a
+`plugin.runtime` attribute, and `router-dump-plugin-validate` can validate it
+without one.
+
+Add a runtime only when the core web command must open a plug-in-owned dump,
+assembly, or precomputed projection directly. The loaded plug-in instance then
+exposes `runtime` implementing `PluginRuntimeCapability`:
+
+```python
+from contextlib import contextmanager
+from pathlib import Path
+
+from router_dump_analyzer.runtime import PLUGIN_RUNTIME_CAPABILITY_ID
+
+
+class MyRuntimeCapability:
+    capability_id = PLUGIN_RUNTIME_CAPABILITY_ID
+
+    @contextmanager
+    def open(self, input_path: Path):
+        session = open_my_non_web_session(input_path)
+        try:
+            yield session
+        finally:
+            session.close()
+```
+
+This is only the capability wrapper; `open_my_non_web_session()` represents
+the plug-in's tested session constructor. The complete executable reference is
+[`demo/plugin/session.py`](../demo/plugin/session.py),
+covered by
+[`demo/tests/test_runtime.py`](../demo/tests/test_runtime.py).
+
+The yielded `PluginRuntimeSession` is a structural protocol with six non-web
+surfaces:
+
+| Session member | Requirement | Responsibility |
+|---|---|---|
+| `revision_store` | required | Immutable assembly/revision lookup implementing core `RevisionStore`. |
+| `data_source` | required | Revision-scoped normalized dataset loading and optional indexed history implementing `NormalizedDatasetSource`. |
+| `data_policy` | required | Opaque analysis/workspace metadata, route-row lookup, and safe source-record formatting implementing `NormalizedDataPolicy`. |
+| `temporal_provider` | optional; use `None` when unsupported | Supply temporal descriptors; `for_revision()` must return the core `TemporalTopologyService`. |
+| `topology_provider` | optional; use `None` when unsupported | Expose a stable `topology_id` and return the topology service from `get()`. |
+| `route_provider` | optional; use `None` when unsupported | Return the route/packet service from `get()`. |
+
+`NormalizedDatasetSource`, `NormalizedDataPolicy`, and
+`NormalizedDataService` are exported by `router_dump_analyzer.normalized_data`.
+The remaining structural protocols are exported by
+`router_dump_analyzer.runtime`. Core constructs the data service and validates
+that optional providers return the corresponding core service class; a plug-in
+must not copy or replace those generic query engines.
+
+Keep the two required adapters small:
+
+```python
+class MyDatasetSource:
+    def revision_scope(self, revision_id): ...
+    def load_dataset(self, revision_id=None, **selection): ...
+    def revision_id(self, dataset): ...
+    def indexed_history(self, dataset):
+        return None  # or a structural IndexedHistory
+
+
+class MyDataPolicy:
+    def analysis_metadata(self, dataset): ...
+    def workspace_metadata(
+        self, dataset, *, revision_id, history_mode
+    ): ...
+    def route_resolution_capability(self, dataset):
+        return {"available": False, "routes": []}
+    def route_row(self, route_id, dataset):
+        raise KeyError(route_id)
+    def source_record_for_event(self, event): ...
+```
+
+`load_dataset()` returns the normalized envelope produced by the plug-in.
+`indexed_history()` may return `None`; it is an optimization, not a second
+semantic model. The two route methods above are the correct no-route
+implementation. Core owns all resource/event traversal after these callbacks.
+`open()` must be a context manager so the core application lifespan can close
+stores, indexes, and caches exactly once.
+
+This adapter supplies data and device policy, not an application. Do not return
+FastAPI, `APIRouter`, middleware, routes, page templates, assets, or browser
+code. The core creates all of those. Selecting a plug-in without this adapter
+with `router-dump-analyzer` fails clearly, even though its ordinary parsing
+contract may still validate successfully.
 
 ## 5. Use keys that cannot alias
 
@@ -249,6 +414,11 @@ Never:
 - use a plug-in run ID as resource identity.
 
 Relationships, not key parsing, control grouping and dependency traversal.
+Analysis `revision_id` values are separately core-owned opaque identifiers.
+They may contain `/`; neither plug-ins nor clients may split them to recover
+node, platform, or resource meaning. A client putting one in a URL must
+percent-encode the whole value and use the revision-scoped route returned by
+the API.
 
 ## 6. Preserve source records and evidence
 
@@ -291,6 +461,22 @@ and byte `b"1"` remain distinct. Never use Python `hash()`, random UUIDs, the
 wall clock, or list position after filtering. Increment `parser_id` when a
 release changes how one source record is split into domain events.
 
+### Represent topology resource lifecycles
+
+If your topology adapter emits the compact resource replay shape, start with
+`initial_status` and `initial_state`, then place updates in `changes[]` with a
+`time_ns`. Use `status: "down"` when the resource still exists but is unusable.
+Use boolean `exists: false` for deletion and `exists: true` for recreation. You
+may instead use the generic `operation` values `delete`/`remove` and
+`create`/`add`; explicit `exists` wins when both are present.
+
+Set `state_changed: false` on a failed or proposed update that changed nothing.
+The core then ignores that change's lifecycle, status, and state fields.
+`valid_from_ns` is inclusive and `valid_to_ns` is exclusive and always bounds
+the result, so a create cannot extend a resource outside its declared validity
+window. A delete followed by a create produces an absence gap for the same
+canonical resource ID.
+
 ## 7. Keep core and plug-in responsibilities separate
 
 Put a decision in the node/device plug-in when it depends on:
@@ -300,6 +486,8 @@ Put a decision in the node/device plug-in when it depends on:
 - UUID/byte/integer interpretation;
 - vendor status normalization;
 - resource relationships or matching rules;
+- candidate paths, directional/per-visit forwarding decisions, or which exact
+  connectivity-domain key and attachment resources a next hop names;
 - route-resolution text;
 - endpoint attachment or local delivery/termination meaning;
 - topology projection;
@@ -311,6 +499,9 @@ Put mechanics in core when they apply identically to every plug-in:
 - canonical envelopes and key serialization;
 - clock fitting and temporal selector resolution;
 - interval persistence and pagination;
+- exact equality joins between a plug-in-declared connectivity-domain
+  matcher/key and the selected normalized domain plus current attachments,
+  including fail-closed missing/ambiguous/truncated/unusable results;
 - immutable flow direction, exact endpoint-goal matching, and bidirectional
   reachability aggregation;
 - budgets, validation, authorization, and generic rendering.
@@ -409,9 +600,10 @@ transition must be `origin=user_forced` and must never replace observed
 reachability. Normal device policy remains `origin=node_plugin`.
 
 The public types and core helpers are executable and covered by
-`tests/test_packet_trace_core.py`. The bundled multi-node route demo also
-evaluates demo-provider transitions in eight advanced route scenarios; it is
-not yet a production coordinator that discovers and calls
+`tests/test_packet_trace_core.py`. The generated demo evaluates its declared
+packet cases through those generic helpers; current case counts and fixture
+details live in the [demo guide](../demo/README.md#generated-mock-dumps).
+This is not yet a production coordinator that discovers and calls
 `resolve_forwarding_step()` for every installed node. See
 [Packet state, transitions, and MTU](plugin-contract.md#packet-state-transitions-and-mtu)
 for the normative rules.
@@ -488,6 +680,12 @@ each case applies to the declared capabilities. Record non-applicable cases in
 the test plan rather than fabricating meaningless tests. Scale parsers must also
 stream 100K+ records within their budget.
 
+The validator also does not require the optional web-runtime adapter. If your
+plug-in exposes `plugin.runtime`, add a separate smoke test that enters
+`runtime.open(input_path)`, calls `validate_runtime_session()`, exercises every
+non-`None` provider, and proves the context closes its resources. Then run the
+core command against that input.
+
 Common failures:
 
 | Message | Fix |
@@ -498,6 +696,7 @@ Common failures:
 | `has no parser_kind` | Set `InputParserKind` on every new `InputSpec`. |
 | `does not declare ...` | Add the matching standard capability. |
 | `describe() must be deterministic` | Build one immutable schema without clocks, randomness, or input state. |
+| `does not expose a 'runtime' capability` | Use the validator for a parse-only plug-in, or add the optional non-web runtime adapter before using the core web command. |
 
 ## Definition of done
 
@@ -514,6 +713,15 @@ A first plug-in is ready for review only when:
 - [ ] failed events do not mutate state unless device semantics prove a change;
 - [ ] golden tests cover applicable bad-input and temporal edge cases; and
 - [ ] no plug-in-specific branch was added to core or the browser.
+
+If the plug-in also supplies an input session to the core web command:
+
+- [ ] `plugin.runtime.capability_id` equals
+  `router_dump_analyzer.runtime.v1`;
+- [ ] `open(input_path)` yields a valid non-web session and closes it once;
+- [ ] every unsupported optional provider is explicitly `None`; and
+- [ ] both installed-name and direct-module loading are smoke-tested as
+  applicable.
 
 After this passes, use the relevant advanced sections of
 `docs/plugin-contract.md` for reducers, temporal correlation, dashboards,

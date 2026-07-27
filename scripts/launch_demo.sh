@@ -8,9 +8,7 @@ port="8765"
 open_browser=false
 api_only=false
 rebuild_fixture=false
-full_scale=true
-matched_event_target=125000
-resource_target=10000
+validate_fixture=false
 
 usage() {
     cat <<'EOF'
@@ -19,12 +17,12 @@ Usage: ./scripts/launch_demo.sh [options]
 Options:
   --host ADDRESS       Bind address (default: 127.0.0.1)
   --port PORT          TCP port (default: 8765)
-  --frontend-dir PATH  Frontend distribution (default: <repository>/demo/frontend)
+  --frontend-dir PATH  Frontend distribution (default: <repository>/frontend)
   --api-only           Disable integrated pages for split-process development
-  --open-browser       Ask the demo process to open the browser
+  --open-browser       Ask the core analyzer process to open the browser
   --no-browser         Keep browser launch disabled (the WSL default)
-  --rebuild-fixture    Regenerate the 125K-event / 10K-resource corpus and TGZ
-  --review-projection  Load the small embedded review projection instead
+  --rebuild-fixture    Regenerate the complete multi-node demo assembly
+  --validate-fixture   Fully validate an existing generated assembly
   -h, --help           Show this help
 EOF
 }
@@ -58,8 +56,8 @@ while (($#)); do
         --rebuild-fixture)
             rebuild_fixture=true
             ;;
-        --review-projection)
-            full_scale=false
+        --validate-fixture)
+            validate_fixture=true
             ;;
         -h|--help)
             usage
@@ -107,23 +105,20 @@ if ! conda_executable="$(find_conda)"; then
     exit 1
 fi
 
-if ! demo_python="$("${conda_executable}" run --name "${environment_name}" python -c 'import sys; print(sys.executable)' 2>/dev/null)"; then
+if ! analyzer_python="$("${conda_executable}" run --name "${environment_name}" python -c 'import sys; print(sys.executable)' 2>/dev/null)"; then
     printf 'Conda environment %s is missing. Run ./scripts/setup_demo.sh first.\n' "${environment_name}" >&2
     exit 1
 fi
-demo_python="$(printf '%s\n' "${demo_python}" | tail -n 1)"
-if [[ ! -x "${demo_python}" ]]; then
+analyzer_python="$(printf '%s\n' "${analyzer_python}" | tail -n 1)"
+if [[ ! -x "${analyzer_python}" ]]; then
     printf 'Could not resolve the Python executable for Conda environment %s.\n' "${environment_name}" >&2
     exit 1
 fi
 
-# This packed archive is the single, hard-coded demo input requested for review.
-fixture_argument="samples/generated-scale/router-state-lab-100k.tgz"
+# This generated assembly is the one input for both node and fabric views.
+fixture_argument="demo/fixtures/router-state-lab-demo.tgz"
 fixture_archive="${repository_root}/${fixture_argument}"
-frontend_root="${frontend_root:-${repository_root}/demo/frontend}"
-scale_scenario="${repository_root}/samples/generated-scale/scenario.json"
-review_manifest="${repository_root}/samples/generated/unpacked/node-a/manifest.json"
-review_resources="${repository_root}/samples/generated/illustrative/resources.jsonl"
+frontend_root="${frontend_root:-${repository_root}/frontend}"
 
 cd -- "${repository_root}"
 export PYTHONUTF8=1
@@ -135,81 +130,67 @@ if [[ "${api_only}" == false && ! -f "${frontend_root}/frontend-manifest.json" ]
     exit 1
 fi
 
-scale_ready=false
-if [[ -f "${scale_scenario}" ]] && \
-   "${demo_python}" -c '
-import json, sys
-with open(sys.argv[1], encoding="utf-8") as stream:
-    scenario = json.load(stream)
-scale = scenario.get("scale", {})
-ready = (
-    scenario.get("scenario_id") == "evpn-multihome-mass-failover-v2"
-    and int(scenario.get("generator_version", 0)) >= 7
-    and int(scale.get("events", 0)) >= int(sys.argv[2])
-    and int(scale.get("resources", 0)) == int(sys.argv[3])
+printf '%s\n' \
+    '[fixture] Ensuring the canonical full-scale multi-node assembly...'
+ensure_arguments=(
+    -m generator
+    --ensure-launchable "${fixture_archive}"
+    --path-only
 )
-raise SystemExit(0 if ready else 1)
-' "${scale_scenario}" "${matched_event_target}" "${resource_target}"; then
-    scale_ready=true
+if [[ "${rebuild_fixture}" == true ]]; then
+    ensure_arguments+=(--force-rebuild)
+fi
+ensure_started="${SECONDS}"
+if ! selected_fixture="$(
+    "${analyzer_python}" "${ensure_arguments[@]}"
+)"; then
+    printf '%s\n' \
+        'Could not prepare the full-scale multi-node fixture.' >&2
+    exit 1
+fi
+selected_fixture="$(printf '%s\n' "${selected_fixture}" | tail -n 1)"
+if [[ -z "${selected_fixture}" || ! -f "${selected_fixture}" ]]; then
+    printf '%s\n' \
+        'Generator did not return a regular launch fixture path.' >&2
+    exit 1
+fi
+printf '[fixture] Launch input ready in %d s: %s\n' \
+    "$((SECONDS - ensure_started))" "${selected_fixture}"
+
+if [[ "${validate_fixture}" == true ]]; then
+    printf '%s\n' '[fixture] Validating the existing generated assembly...'
+    validation_started="${SECONDS}"
+    "${analyzer_python}" -m generator \
+        --validate "${selected_fixture}"
+    printf '[fixture] Validation finished in %d s.\n' \
+        "$((SECONDS - validation_started))"
 fi
 
-scale_rebuilt=false
-if [[ "${rebuild_fixture}" == true || "${scale_ready}" == false ]]; then
-    printf 'Generating the deterministic %d matched-event EVPN scale corpus...\n' "${matched_event_target}"
-    "${demo_python}" scripts/generate_scale_fixtures.py \
-        --events "${matched_event_target}" \
-        --resources "${resource_target}"
-    scale_rebuilt=true
-fi
-
-if [[ "${rebuild_fixture}" == true || ! -f "${review_manifest}" || ! -f "${review_resources}" ]]; then
-    printf 'Generating the browser-sized review projection...\n'
-    "${demo_python}" scripts/generate_sample_bundle.py
-fi
-
-pack_ready=false
-if [[ -f "${fixture_archive}" ]] && \
-   "${demo_python}" scripts/validate_scale_archive.py \
-      "${fixture_archive}" "${matched_event_target}" "${resource_target}" 7; then
-    pack_ready=true
-fi
-
-if [[ "${rebuild_fixture}" == true || "${scale_rebuilt}" == true || "${pack_ready}" == false ]]; then
-    printf 'Packing CTF logs and heterogeneous resource tables into one TGZ...\n'
-    "${demo_python}" scripts/generate_packed_scale_bundle.py \
-        --output "${fixture_argument}"
-fi
-
-demo_arguments=(
-    -m router_dump_analyzer_demo.app
+core_arguments=(
+    -m router_dump_analyzer
+    --plugin demo_router
+    --input "${selected_fixture}"
     --host "${bind_address}"
     --port "${port}"
     --frontend-dir "${frontend_root}"
-    --fixture-archive "${fixture_argument}"
 )
 if [[ "${api_only}" == true ]]; then
-    demo_arguments+=(--api-only)
+    core_arguments+=(--api-only)
 fi
-if [[ "${full_scale}" == true ]]; then
-    demo_arguments+=(--full-scale)
-fi
-if [[ "${open_browser}" == true ]]; then
-    demo_arguments+=(--open-browser)
+if [[ "${open_browser}" == false ]]; then
+    core_arguments+=(--no-browser)
 fi
 
-printf 'Using packed fixture: %s\n' "${fixture_archive}"
-if [[ "${full_scale}" == true ]]; then
-    printf 'Loading the complete %d-matched-event / %d-resource normalized corpus.\n' \
-        "${matched_event_target}" "${resource_target}"
-else
-    printf 'Loading the embedded browser review projection.\n'
-fi
+printf 'Using generated assembly: %s\n' "${selected_fixture}"
+printf '%s\n' 'Single-node and fabric views read this same generated assembly.'
 if [[ "${api_only}" == true ]]; then
     printf 'Starting Router State Lab backend API at http://%s:%s\n' \
         "${bind_address}" "${port}"
-    printf "Run 'npm --prefix demo/frontend run serve -- --backend http://%s:%s' in another terminal for the split frontend.\n" \
+    printf "Run 'npm --prefix frontend run serve -- --backend http://%s:%s' in another terminal for the split frontend.\n" \
         "${bind_address}" "${port}"
 else
     printf 'Starting Router State Lab at http://%s:%s\n' "${bind_address}" "${port}"
 fi
-exec "${demo_python}" "${demo_arguments[@]}"
+printf '%s\n' \
+    'The server intentionally stays attached to this terminal. Press Ctrl+C to stop it.'
+exec "${analyzer_python}" "${core_arguments[@]}"

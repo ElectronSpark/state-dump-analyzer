@@ -55,10 +55,12 @@ class HistorySearchCorpus:
         sidecar_path: Path | None = None,
         identity: str | None = None,
         expected_documents: int | None = None,
+        eager_validate_sidecar: bool = True,
         max_documents: int = 250_000,
         max_characters: int = 256 * 1024 * 1024,
         max_document_bytes: int = 8 * 1024 * 1024,
         max_database_bytes: int = 512 * 1024 * 1024,
+        max_eager_candidate_characters: int = 64 * 1024 * 1024,
         max_cached_queries: int = 12,
         max_cached_ordinals: int = 1_000_000,
     ) -> None:
@@ -71,6 +73,7 @@ class HistorySearchCorpus:
             max_characters,
             max_document_bytes,
             max_database_bytes,
+            max_eager_candidate_characters,
             max_cached_queries,
             max_cached_ordinals,
         ) <= 0:
@@ -86,6 +89,9 @@ class HistorySearchCorpus:
         self._max_characters = max_characters
         self._max_document_bytes = max_document_bytes
         self._max_database_bytes = max_database_bytes
+        self._max_eager_candidate_characters = (
+            max_eager_candidate_characters
+        )
         self._max_cached_queries = max_cached_queries
         self._max_cached_ordinals = max_cached_ordinals
         self._condition = Condition(RLock())
@@ -100,7 +106,10 @@ class HistorySearchCorpus:
         self._error: Exception | None = None
         self._results: OrderedDict[str, array[int]] = OrderedDict()
         self._cached_ordinals = 0
-        if self._sidecar_path is not None:
+        # Hosts that already warm the corpus in a background worker can defer
+        # the linear digest/index validation to that worker.  The default
+        # remains eager for callers that use ``ready`` as a startup contract.
+        if self._sidecar_path is not None and eager_validate_sidecar:
             try:
                 opened = self._open_valid_sidecar(self._sidecar_path)
             except (OSError, sqlite3.DatabaseError):
@@ -460,24 +469,33 @@ class HistorySearchCorpus:
             connection.commit()
             backend = self._SCAN_BACKEND
             candidate_digest = ""
-            try:
-                built_candidate_digest = self._build_fts5_candidate_index(
-                    connection
-                )
-                if built_candidate_digest is not None:
-                    connection.commit()
-                    backend = self._FTS5_BACKEND
-                    candidate_digest = built_candidate_digest
-                else:
+            # Trigram indexing is O(total safe-text characters) and can dwarf
+            # parsing for large immutable histories.  Exact SQLite substring
+            # scans remain bounded and correct, so large corpora publish the
+            # scan backend immediately instead of delaying availability for an
+            # accelerator.  Smaller corpora retain the responsive FTS path.
+            if (
+                self._character_count
+                <= self._max_eager_candidate_characters
+            ):
+                try:
+                    built_candidate_digest = (
+                        self._build_fts5_candidate_index(connection)
+                    )
+                    if built_candidate_digest is not None:
+                        connection.commit()
+                        backend = self._FTS5_BACKEND
+                        candidate_digest = built_candidate_digest
+                    else:
+                        connection.rollback()
+                except sqlite3.DatabaseError:
+                    # An optional accelerator must not make the exact corpus
+                    # unavailable.  Roll back its transaction and compact any
+                    # pages it allocated before publishing the scan backend.
                     connection.rollback()
-            except sqlite3.DatabaseError:
-                # An optional accelerator must not make the exact corpus
-                # unavailable.  Roll back its transaction and compact any
-                # pages it allocated before publishing the scan backend.
-                connection.rollback()
-                connection.execute("DROP TABLE IF EXISTS documents_fts")
-                connection.commit()
-                connection.execute("VACUUM")
+                    connection.execute("DROP TABLE IF EXISTS documents_fts")
+                    connection.commit()
+                    connection.execute("VACUUM")
             connection.execute(
                 """
                 INSERT INTO metadata(
@@ -518,12 +536,16 @@ class HistorySearchCorpus:
                 temporary.unlink(missing_ok=True)
                 return existing
             os.replace(temporary, target)
-            opened = self._open_valid_sidecar(target)
-            if opened is None:
-                raise _SidecarUnavailable(
-                    "published history search sidecar failed validation"
-                )
-            return opened
+            # The just-committed database was built from the bounded source
+            # iterator, and its exact document/accelerator digests were
+            # computed in this process. Re-reading every document (and the
+            # complete FTS vocabulary) here only repeats O(corpus) work. A
+            # later process still performs the full validation before reuse.
+            return (
+                self._document_count,
+                self._character_count,
+                backend,
+            )
         except HistorySearchCapacityError:
             raise
         except (OSError, sqlite3.DatabaseError) as error:

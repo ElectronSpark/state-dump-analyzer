@@ -79,11 +79,26 @@ else
         --file "${repository_root}/environment.yml"
 fi
 
+# Existing environments may retain the retired demo application distribution
+# and its console scripts because those files predate the current package
+# split.  Reinstall both current distributions after removing that metadata.
+printf 'Removing retired demo application metadata, if present...\n'
+"${conda_executable}" run --no-capture-output \
+    --name "${environment_name}" \
+    python -m pip uninstall --yes router-dump-analyzer-design
+"${conda_executable}" run --no-capture-output \
+    --name "${environment_name}" \
+    python -m pip install --no-deps \
+        --editable '.[test,web]' --editable ./demo
+
 if [[ "${skip_tests}" == false ]]; then
     printf 'Running the demo test suite inside the WSL Conda environment...\n'
     "${conda_executable}" run --no-capture-output \
         --name "${environment_name}" \
         python -m unittest discover -s tests -v
+    "${conda_executable}" run --no-capture-output \
+        --name "${environment_name}" \
+        python -m unittest discover -s demo/tests -v
 fi
 
 printf '\nReady. Launch with: ./scripts/launch_demo.sh\n'

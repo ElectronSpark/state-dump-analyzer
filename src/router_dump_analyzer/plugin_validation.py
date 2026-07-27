@@ -8,7 +8,6 @@ the synthetic corpus described in ``docs/plugin-contract.md``.
 from __future__ import annotations
 
 import argparse
-import inspect
 import mimetypes
 from dataclasses import dataclass
 from importlib import metadata
@@ -35,6 +34,7 @@ from .plugin_api import (
     ProbeResult,
     ReconstructionSupport,
 )
+from .plugin_loading import load_plugin_entry_point
 
 
 _MAX_DISCOVERY_OUTPUTS = 1_000
@@ -310,37 +310,7 @@ def _entry_points() -> tuple[metadata.EntryPoint, ...]:
 def load_entry_point(name: str) -> Any:
     """Load exactly one installed analyzer plug-in by entry-point name."""
 
-    matches = tuple(entry_point for entry_point in _entry_points() if entry_point.name == name)
-    if not matches:
-        raise LookupError(
-            f"no {PLUGIN_ENTRY_POINT_GROUP!r} entry point named {name!r} is installed"
-        )
-    if len(matches) > 1:
-        distributions = ", ".join(
-            sorted(
-                entry_point.dist.name if entry_point.dist is not None else "<unknown>"
-                for entry_point in matches
-            )
-        )
-        raise LookupError(
-            f"entry point {name!r} is ambiguous across distributions: {distributions}"
-        )
-    try:
-        loaded = matches[0].load()
-    except Exception as error:  # noqa: BLE001 - turn import failures into CLI diagnostics.
-        raise RuntimeError(
-            f"failed to load entry point {name!r}: "
-            f"{type(error).__name__}: {error}"
-        ) from error
-    if inspect.isclass(loaded):
-        raise TypeError(
-            "entry-point target must be a module-level plug-in instance, not a class"
-        )
-    if inspect.isfunction(loaded):
-        raise TypeError(
-            "entry-point target must be a module-level plug-in instance, not a factory"
-        )
-    return loaded
+    return load_plugin_entry_point(name, candidates=_entry_points())
 
 
 def _inventory_from_arguments(

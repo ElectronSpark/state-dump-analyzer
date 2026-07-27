@@ -5,9 +5,13 @@ from uuid import UUID
 
 from fastapi.testclient import TestClient
 
-from router_dump_analyzer_demo.app import app
-from router_dump_analyzer_demo.multi_node_route import MultiNodeRouteDemo
-from router_dump_analyzer_demo_plugins.advanced_trace import (
+from tests.support.generated_demo import (
+    configure_generated_demo_for_tests,
+    generated_demo_application,
+)
+
+from router_dump_analyzer.multi_node_route import MultiNodeRouteService
+from plugin.advanced_trace import (
     ADVANCED_TRACE_SCENARIOS,
 )
 from router_dump_analyzer.plugin_api import (
@@ -95,7 +99,7 @@ class AdvancedRoutePacketSerializationTests(unittest.TestCase):
             contributions=(contribution,),
         )
 
-        serialized = MultiNodeRouteDemo._packet_transition_json(
+        serialized = MultiNodeRouteService._packet_transition_json(
             evaluate_forwarding_packet_transition(transition),
             segment={
                 "segment_id": "segment:node-a",
@@ -164,19 +168,19 @@ class AdvancedRoutePacketSerializationTests(unittest.TestCase):
         incomplete = ForwardingPacketState(layers=(), complete=False)
 
         self.assertTrue(
-            MultiNodeRouteDemo._packet_boundary_continuity(
+            MultiNodeRouteService._packet_boundary_continuity(
                 complete,
                 complete,
             )
         )
         self.assertFalse(
-            MultiNodeRouteDemo._packet_boundary_continuity(
+            MultiNodeRouteService._packet_boundary_continuity(
                 complete,
                 different,
             )
         )
         self.assertIsNone(
-            MultiNodeRouteDemo._packet_boundary_continuity(
+            MultiNodeRouteService._packet_boundary_continuity(
                 complete,
                 incomplete,
             )
@@ -200,7 +204,8 @@ class AdvancedRoutePacketSerializationTests(unittest.TestCase):
 class AdvancedRoutePacketDemoTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.client_context = TestClient(app)
+        configure_generated_demo_for_tests()
+        cls.client_context = TestClient(generated_demo_application())
         cls.client = cls.client_context.__enter__()
 
     @classmethod
@@ -720,7 +725,7 @@ class AdvancedRoutePacketDemoTests(unittest.TestCase):
         self.assertEqual(unknown.status_code, 422, unknown.text)
         self.assertEqual(unsupported.status_code, 422, unsupported.text)
 
-    def test_legacy_basic_ip_and_mpls_scenarios_do_not_gain_packet_ir(
+    def test_basic_ip_and_mpls_scenarios_do_not_gain_packet_ir(
         self,
     ) -> None:
         for scenario_id in ("router-to-router", "single-active-primary"):

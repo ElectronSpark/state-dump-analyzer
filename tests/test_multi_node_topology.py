@@ -2,19 +2,37 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import unittest
 import uuid
-from itertools import permutations
+from itertools import combinations, permutations
 from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
 
-from router_dump_analyzer_demo.app import app
-from router_dump_analyzer_demo.data import REVISION_ID
-from router_dump_analyzer_demo.multi_node_topology import (
-    MULTI_NODE_TOPOLOGY_ID,
-    MultiNodeTopologyDemo,
+from tests.support.generated_demo import (
+    configure_generated_demo_for_tests,
+    generated_demo_application,
+    generated_demo_runtime_session,
 )
+configure_generated_demo_for_tests()
+
+from plugin.data import (
+    REVISION_ID,
+)
+from router_dump_analyzer.multi_node_topology import (
+    MultiNodeTopologyService,
+    _status_at,
+)
+from plugin.topology_contract import DEMO_TOPOLOGY_ID
+
+_RUNTIME_SESSION = None
+
+
+def generated_topology_demo() -> MultiNodeTopologyService:
+    if _RUNTIME_SESSION is None:
+        raise AssertionError("generated test runtime is not open")
+    return _RUNTIME_SESSION.topology_provider.get()
 
 
 def javascript_function(source: str, name: str) -> str:
@@ -27,29 +45,150 @@ def javascript_function(source: str, name: str) -> str:
     ]
 
 
+class TopologyStatusReplayTests(unittest.TestCase):
+    def test_status_change_keeps_resource_present_within_validity(self) -> None:
+        resource = {
+            "valid_from_ns": "100",
+            "valid_to_ns": "500",
+            "initial_status": "up",
+            "initial_state": {"generation": 1},
+            "changes": [
+                {
+                    "time_ns": "200",
+                    "status": "down",
+                    "state": {"reason": "carrier-loss"},
+                }
+            ],
+        }
+
+        self.assertEqual(
+            _status_at(resource, 99),
+            (False, "absent", {"generation": 1}),
+        )
+        self.assertEqual(
+            _status_at(resource, 250),
+            (
+                True,
+                "down",
+                {"generation": 1, "reason": "carrier-loss"},
+            ),
+        )
+        self.assertEqual(
+            _status_at(resource, 500),
+            (
+                False,
+                "absent",
+                {"generation": 1, "reason": "carrier-loss"},
+            ),
+        )
+
+    def test_delete_creates_gap_and_add_recreates_resource(self) -> None:
+        resource = {
+            "initial_status": "up",
+            "initial_state": {"generation": 1},
+            "changes": [
+                {
+                    "time_ns": "200",
+                    "operation": "delete",
+                    "status": "withdrawn",
+                    "state": {"reason": "withdraw"},
+                },
+                {
+                    "time_ns": "300",
+                    "operation": "add",
+                    "status": "up",
+                    "state": {"generation": 2},
+                },
+            ],
+        }
+
+        self.assertEqual(
+            _status_at(resource, 250),
+            (
+                False,
+                "absent",
+                {"generation": 1, "reason": "withdraw"},
+            ),
+        )
+        self.assertEqual(
+            _status_at(resource, 350),
+            (
+                True,
+                "up",
+                {"generation": 2, "reason": "withdraw"},
+            ),
+        )
+
+    def test_explicit_exists_takes_precedence_over_operation_inference(self) -> None:
+        resource = {
+            "initial_status": "up",
+            "changes": [
+                {
+                    "time_ns": "200",
+                    "operation": "add",
+                    "exists": False,
+                },
+                {
+                    "time_ns": "300",
+                    "operation": "remove",
+                    "exists": True,
+                    "status": "restored",
+                },
+            ],
+        }
+
+        self.assertEqual(_status_at(resource, 250)[:2], (False, "absent"))
+        self.assertEqual(_status_at(resource, 350)[:2], (True, "restored"))
+
+    def test_failed_no_op_change_does_not_mutate_lifecycle_or_state(self) -> None:
+        resource = {
+            "initial_status": "up",
+            "initial_state": {"generation": 1},
+            "changes": [
+                {
+                    "time_ns": "200",
+                    "operation": "delete",
+                    "exists": False,
+                    "status": "down",
+                    "state": {"generation": 2},
+                    "outcome": "failed",
+                    "state_changed": False,
+                }
+            ],
+        }
+
+        self.assertEqual(
+            _status_at(resource, 250),
+            (True, "up", {"generation": 1}),
+        )
+
+
 class MultiNodeTopologyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.client_context = TestClient(app)
+        global _RUNTIME_SESSION
+        configure_generated_demo_for_tests()
+        cls.runtime_context = generated_demo_runtime_session()
+        _RUNTIME_SESSION = cls.runtime_context.__enter__()
+        cls.client_context = TestClient(generated_demo_application())
         cls.client = cls.client_context.__enter__()
 
     @classmethod
     def tearDownClass(cls) -> None:
+        global _RUNTIME_SESSION
         cls.client_context.__exit__(None, None, None)
+        cls.runtime_context.__exit__(None, None, None)
+        _RUNTIME_SESSION = None
 
-    def test_capabilities_make_heterogeneous_plugin_selections_executable(self) -> None:
+    def test_capabilities_make_generated_plugin_selections_executable(self) -> None:
         response = self.client.get("/v1/topologies/capabilities")
         alias = self.client.get(
-            f"/v1/topology-assemblies/{MULTI_NODE_TOPOLOGY_ID}/capabilities"
-        )
-        revision_alias = self.client.get(
-            f"/v1/revisions/{REVISION_ID}/multi-node/capabilities"
+            f"/v1/topology-assemblies/{DEMO_TOPOLOGY_ID}/capabilities"
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), alias.json())
-        self.assertEqual(response.json(), revision_alias.json())
         payload = response.json()
-        self.assertEqual(payload["assembly_id"], MULTI_NODE_TOPOLOGY_ID)
+        self.assertEqual(payload["assembly_id"], DEMO_TOPOLOGY_ID)
         self.assertEqual(payload["deep_links"]["topology"]["route"], "/")
         self.assertEqual(
             urlparse(payload["deep_links"]["topology"]["href"]).path,
@@ -69,10 +208,11 @@ class MultiNodeTopologyTests(unittest.TestCase):
                 "transit-p-2",
                 "ce-west",
                 "ce-east",
+                "edge-c",
             },
         )
         plugin_sets = {item["active_plugin_set_id"] for item in active}
-        self.assertEqual(len(plugin_sets), 9)
+        self.assertEqual(len(plugin_sets), 10)
         self.assertTrue(all(item["site"] for item in active))
         self.assertTrue(all(item["roles"] for item in active))
         for node in active:
@@ -94,11 +234,7 @@ class MultiNodeTopologyTests(unittest.TestCase):
                     selection["status_perspective_id"],
                     descriptor["supported_status_perspective_ids"],
                 )
-        unavailable = next(
-            item for item in payload["nodes"] if item["node_id"] == "edge-c"
-        )
-        self.assertFalse(unavailable["available"])
-        self.assertTrue(unavailable["optional"])
+        self.assertTrue(all(item["available"] for item in payload["nodes"]))
         segment_contract = payload["network_segment_contract"]
         self.assertEqual(segment_contract["contract_version"], "1.0")
         self.assertEqual(
@@ -125,7 +261,7 @@ class MultiNodeTopologyTests(unittest.TestCase):
             any("VLAN, LAG" in item for item in ownership["plugin"])
         )
 
-    def test_segment_projection_models_shared_external_excluded_and_vpn_domains(self) -> None:
+    def test_generated_segment_projection_models_shared_and_excluded_domains(self) -> None:
         response = self.client.post(
             "/v1/topologies/query",
             json={
@@ -143,28 +279,25 @@ class MultiNodeTopologyTests(unittest.TestCase):
             payload["counts"]["segment_attachments"], len(attachments)
         )
 
-        by_prefix = {item["prefix"]: item for item in segments if item["prefix"]}
-        core_west = by_prefix["192.0.2.0/29"]
+        core_west = next(
+            item for item in segments if item["prefix"] == "10.64.0.0/24"
+        )
         self.assertEqual(
             set(core_west["node_ids"]),
-            {"node-a", "node-d", "node-e", "transit-p-1", "transit-p-2"},
+            {"node-a", "node-d", "transit-p-1", "transit-p-2"},
         )
-        self.assertEqual(core_west["existing_node_count"], 5)
-        self.assertEqual(core_west["existing_attachment_count"], 6)
+        self.assertEqual(core_west["existing_node_count"], 4)
+        self.assertEqual(core_west["existing_attachment_count"], 4)
         self.assertTrue(core_west["shared_by_multiple_nodes"])
         self.assertFalse(core_west["semantic_conflict"])
-        p2_attachments = [
-            item
-            for item in core_west["members"]
-            if item["node_id"] == "transit-p-2"
-        ]
-        self.assertEqual(len(p2_attachments), 2)
         self.assertEqual(
             core_west["topology_presentation"]["two_participant_shape"],
             "domain_node",
         )
 
-        edge = by_prefix["192.0.2.16/30"]
+        edge = next(
+            item for item in segments if item["prefix"] == "10.64.2.0/31"
+        )
         self.assertEqual(set(edge["node_ids"]), {"transit-p-2", "node-c"})
         self.assertEqual(edge["existing_node_count"], 2)
         self.assertEqual(edge["existing_attachment_count"], 2)
@@ -181,40 +314,45 @@ class MultiNodeTopologyTests(unittest.TestCase):
             if item["node_id"] == "node-a"
         )
         model = alpha_attachment["attachment_model"]
-        self.assertEqual(model["vlan"]["id"], 101)
-        self.assertTrue(model["lag_resource_id"].endswith("/LAG/ae0"))
-        self.assertEqual(len(model["physical_interface_resource_ids"]), 2)
-        self.assertEqual(alpha_attachment["inference"]["owner"], "plugin")
-        self.assertGreaterEqual(len(alpha_attachment["evidence"]), 3)
-
-        external = by_prefix["198.51.100.0/24"]
-        self.assertEqual(external["role"], "external")
-        self.assertTrue(external["single_sided_in_query_scope"])
-        self.assertTrue(external["plugin_asserted_external"])
-        self.assertEqual(external["node_ids"], ["node-c"])
-
-        management = by_prefix["172.20.0.0/24"]
-        self.assertEqual(management["role"], "management")
-        self.assertFalse(management["connectivity_enabled"])
-        self.assertEqual(management["presentation_plane"], "excluded_infrastructure")
-        loopbacks = [item for item in segments if item["role"] == "loopback"]
-        self.assertEqual(len(loopbacks), 9)
-        self.assertTrue(all(not item["connectivity_enabled"] for item in loopbacks))
-
-        vpn = by_prefix["10.20.0.0/24"]
-        self.assertEqual(vpn["role"], "vpn")
-        self.assertEqual(vpn["presentation_plane"], "vpn")
-        self.assertTrue(vpn["plugin_semantics"]["separate_view"])
+        self.assertEqual(model["kind"], "vlan_subinterface")
+        self.assertEqual(model["components"]["vlan_id"], 310)
         self.assertEqual(
-            set(vpn["node_ids"]), {"node-a", "node-b", "node-d", "node-e"}
+            model["components"]["physical_interfaces"], ["Ethernet1/1"]
         )
+        self.assertEqual(alpha_attachment["inference"]["owner"], "plugin")
+        self.assertTrue(alpha_attachment["evidence"])
+
+        external = next(
+            item for item in segments if item["prefix"] == "198.51.100.0/30"
+        )
+        self.assertEqual(external["role"], "external")
+        self.assertEqual(set(external["node_ids"]), {"node-c", "edge-c"})
+        self.assertEqual(
+            external["topology_presentation"]["two_participant_shape"],
+            "compact_edge",
+        )
+
+        management = [
+            item for item in segments if item["role"] == "management"
+        ]
+        self.assertEqual(len(management), 10)
+        self.assertTrue(
+            all(
+                not item["connectivity_enabled"]
+                and item["presentation_plane"] == "management"
+                for item in management
+            )
+        )
+        loopbacks = [item for item in segments if item["role"] == "loopback"]
+        self.assertEqual(len(loopbacks), 10)
+        self.assertTrue(all(not item["connectivity_enabled"] for item in loopbacks))
 
         for segment in segments:
             self.assertIn("typed_key", segment["match"])
             self.assertTrue(segment["segment_id"].startswith("network-segment:"))
             self.assertEqual(segment["semantic_owner"], "plugin")
 
-    def test_expanded_multihoming_domains_preserve_interface_stacks_and_planes(self) -> None:
+    def test_generated_multihoming_domains_preserve_attachment_components(self) -> None:
         payload = self.client.post(
             "/v1/topologies/query",
             json={
@@ -223,10 +361,13 @@ class MultiNodeTopologyTests(unittest.TestCase):
                 "segment_attachment_limit": 200,
             },
         ).json()
-        by_label = {item["label"]: item for item in payload["network_segments"]}
-
-        west_access = by_label["Blue west Ethernet segment / VLAN 310"]
-        east_access = by_label["Blue east Ethernet segment / VLAN 320"]
+        by_prefix = {
+            item["prefix"]: item
+            for item in payload["network_segments"]
+            if item["prefix"]
+        }
+        west_access = by_prefix["172.20.10.0/29"]
+        east_access = by_prefix["172.20.20.0/29"]
         self.assertEqual(
             set(west_access["node_ids"]), {"node-a", "node-d", "ce-west"}
         )
@@ -237,116 +378,81 @@ class MultiNodeTopologyTests(unittest.TestCase):
         self.assertEqual(east_access["presentation_plane"], "physical")
         self.assertTrue(west_access["connectivity_enabled"])
         self.assertTrue(east_access["connectivity_enabled"])
+        for segment, lag_id in (
+            (west_access, "ae-west-evpn"),
+            (east_access, "ae-east-evpn"),
+        ):
+            self.assertEqual(segment["role"], "evpn_access")
+            self.assertEqual(segment["node_count"], 3)
+            self.assertTrue(
+                all(
+                    member["attachment_model"]["kind"] == "lag"
+                    and member["attachment_model"]["components"]["lag_id"]
+                    == lag_id
+                    and member["attachment_model"]["components"][
+                        "physical_interfaces"
+                    ]
+                    for member in segment["members"]
+                )
+            )
 
-        core_west = by_label["Core west multi-access"]
-        core_east = by_label["Core east multi-access"]
-        for node_id in ("node-d", "node-e"):
-            west_model = next(
-                item["attachment_model"]
-                for item in core_west["members"]
-                if item["node_id"] == node_id
-            )
-            east_model = next(
-                item["attachment_model"]
-                for item in core_east["members"]
-                if item["node_id"] == node_id
-            )
-            self.assertEqual(
-                west_model["lag_resource_id"], east_model["lag_resource_id"]
-            )
-            self.assertEqual(
-                west_model["physical_interface_resource_ids"],
-                east_model["physical_interface_resource_ids"],
-            )
-            self.assertNotEqual(
-                west_model["logical_interface_resource_id"],
-                east_model["logical_interface_resource_id"],
-            )
-            self.assertEqual(west_model["vlan"]["id"], 101)
-            self.assertEqual(east_model["vlan"]["id"], 102)
-
-        west_control = by_label["Blue west EVPN ES control state"]
-        east_control = by_label["Blue east EVPN ES control state"]
-        red_vpn = by_label["Red tenant IP-VRF"]
-        self.assertEqual(set(west_control["node_ids"]), {"node-a", "node-d"})
-        self.assertEqual(set(east_control["node_ids"]), {"node-b", "node-e"})
-        self.assertEqual(set(red_vpn["node_ids"]), {"node-d", "node-e"})
-        self.assertTrue(
-            all(
-                item["presentation_plane"] == "vpn"
-                and not item["connectivity_enabled"]
-                for item in (west_control, east_control, red_vpn)
-            )
+        core_west = by_prefix["10.64.0.0/24"]
+        node_a = next(
+            item for item in core_west["members"] if item["node_id"] == "node-a"
+        )
+        self.assertEqual(node_a["attachment_model"]["kind"], "vlan_subinterface")
+        self.assertEqual(
+            node_a["attachment_model"]["components"]["vlan_id"], 310
         )
 
-        by_prefix = {
-            item["prefix"]: item
-            for item in payload["network_segments"]
-            if item["prefix"]
-        }
-        for prefix, node_id in (
-            ("203.0.113.0/24", "node-e"),
-            ("10.100.10.0/24", "ce-west"),
-            ("10.100.20.0/24", "ce-east"),
-        ):
-            segment = by_prefix[prefix]
-            self.assertEqual(segment["node_ids"], [node_id])
-            self.assertEqual(segment["role"], "external")
-            self.assertTrue(segment["plugin_asserted_external"])
-
-        management = by_prefix["172.20.0.0/24"]
-        self.assertEqual(management["existing_node_count"], 9)
-        self.assertFalse(management["connectivity_enabled"])
-
-    def test_evpn_es_withdrawal_does_not_take_down_physical_access_domain(self) -> None:
-        capabilities = self.client.get("/v1/topologies/capabilities").json()
-        capture_ns = int(capabilities["time_bounds"]["capture_ns"])
-        failure_ns = capture_ns - 2_980_000_000
-        during = self.client.post(
+    def test_generated_attachment_validity_is_temporal(self) -> None:
+        current = self.client.post(
+            "/v1/topologies/query",
+            json={"resource_limit": 100},
+        ).json()
+        attachment = next(
+            item
+            for item in current["segment_attachments"]
+            if item["node_id"] == "node-a"
+            and item["attachment_model"]["kind"] == "vlan_subinterface"
+        )
+        valid_from_ns = int(attachment["validity"]["valid_from_ns"])
+        before = self.client.post(
             "/v1/topologies/query",
             json={
                 "basis": {
                     "kind": "absolute_time",
                     "clock_domain": "utc",
-                    "time_ns": str(failure_ns + 120_000_000),
+                    "time_ns": str(valid_from_ns - 1),
                 },
                 "resource_limit": 100,
             },
         ).json()
-        restored = self.client.post(
+        at_start = self.client.post(
             "/v1/topologies/query",
             json={
                 "basis": {
                     "kind": "absolute_time",
                     "clock_domain": "utc",
-                    "time_ns": str(capture_ns),
+                    "time_ns": str(valid_from_ns),
                 },
                 "resource_limit": 100,
             },
         ).json()
 
-        during_by_label = {
-            item["label"]: item for item in during["network_segments"]
-        }
-        restored_by_label = {
-            item["label"]: item for item in restored["network_segments"]
-        }
-        for site in ("west", "east"):
-            physical = during_by_label[
-                f"Blue {site} Ethernet segment / VLAN {310 if site == 'west' else 320}"
-            ]
-            control = during_by_label[f"Blue {site} EVPN ES control state"]
-            self.assertEqual(physical["operational_status"], "usable")
-            self.assertEqual(control["operational_status"], "unusable")
-            self.assertTrue(
-                all(item["status"] == "withdrawn" for item in control["members"])
+        def by_id(payload):
+            return next(
+                item
+                for item in payload["segment_attachments"]
+                if item["attachment_id"] == attachment["attachment_id"]
             )
-            self.assertEqual(
-                restored_by_label[f"Blue {site} EVPN ES control state"][
-                    "operational_status"
-                ],
-                "usable",
-            )
+
+        before_attachment = by_id(before)
+        active_attachment = by_id(at_start)
+        self.assertFalse(before_attachment["claim_valid_at_basis"])
+        self.assertFalse(before_attachment["exists"])
+        self.assertTrue(active_attachment["claim_valid_at_basis"])
+        self.assertTrue(active_attachment["exists"])
 
     def test_resource_preview_limit_does_not_prune_topology_claims(self) -> None:
         small_preview = self.client.post(
@@ -388,119 +494,53 @@ class MultiNodeTopologyTests(unittest.TestCase):
             sum(len(item["resources"]) for item in full["nodes"]),
         )
 
-    def test_segment_status_is_temporal_and_mixed_attachments_are_degraded(self) -> None:
-        capabilities = self.client.get("/v1/topologies/capabilities").json()
-        capture_ns = int(capabilities["time_bounds"]["capture_ns"])
-        failure_ns = capture_ns - 2_980_000_000
-        during = self.client.post(
-            "/v1/topologies/query",
-            json={
-                "basis": {
-                    "kind": "absolute_time",
-                    "clock_domain": "utc",
-                    "time_ns": str(failure_ns + 50_000_000),
-                }
-            },
-        ).json()
-        restored = self.client.post(
-            "/v1/topologies/query",
-            json={
-                "basis": {
-                    "kind": "absolute_time",
-                    "clock_domain": "utc",
-                    "time_ns": str(capture_ns),
-                }
-            },
-        ).json()
-        during_core_west = next(
+    def test_mixed_generated_attachment_statuses_are_degraded(self) -> None:
+        demo = generated_topology_demo()
+        node_d = demo.nodes_by_id["node-d"]
+        projection = node_d["plugin_sets"][0]["plugins"][0]["projections"][0]
+        claim = next(
             item
-            for item in during["network_segments"]
-            if item["prefix"] == "192.0.2.0/29"
+            for item in projection["network_segment_claims"]
+            if item["segment_key"] == "subnet:core-west-multi-access"
         )
-        restored_core_west = next(
+        resource = next(
             item
-            for item in restored["network_segments"]
-            if item["prefix"] == "192.0.2.0/29"
+            for item in projection["resources"]
+            if item["resource_id"] == claim["resource_id"]
         )
-        self.assertEqual(during_core_west["operational_status"], "degraded")
-        self.assertEqual(restored_core_west["operational_status"], "usable")
+        resource["initial_status"] = "down"
+        resource["changes"] = []
+
+        payload = demo.query(
+            {
+                "node_ids": [
+                    "node-a",
+                    "node-d",
+                    "transit-p-1",
+                    "transit-p-2",
+                ]
+            }
+        )
+        core_west = next(
+            item
+            for item in payload["network_segments"]
+            if item["prefix"] == "10.64.0.0/24"
+        )
+        self.assertEqual(core_west["operational_status"], "degraded")
         self.assertEqual(
-            during_core_west["status_combination_policy"],
+            core_west["status_combination_policy"],
             "all_existing_attachments_usable",
         )
         self.assertEqual(
-            during_core_west["segment_id"], restored_core_west["segment_id"]
+            {
+                item["operational_status"]
+                for item in core_west["members"]
+            },
+            {"usable", "unusable"},
         )
-        self.assertEqual(
-            len(
-                [
-                    item
-                    for item in during_core_west["members"]
-                    if item["node_id"] == "transit-p-2"
-                ]
-            ),
-            1,
-        )
-        self.assertEqual(
-            len(
-                [
-                    item
-                    for item in restored_core_west["members"]
-                    if item["node_id"] == "transit-p-2"
-                ]
-            ),
-            2,
-        )
-        not_yet_active = next(
-            item
-            for item in during["segment_attachments"]
-            if item["segment_id"] == during_core_west["segment_id"]
-            and item["resource_id"].endswith("TenGig0-0-4.101")
-        )
-        self.assertFalse(not_yet_active["exists"])
-        self.assertFalse(not_yet_active["claim_valid_at_basis"])
-        self.assertTrue(not_yet_active["endpoint_exists_at_basis"])
-        self.assertIsNotNone(not_yet_active["validity"]["valid_from_ns"])
-
-        valid_from_ns = failure_ns + 100_000_000
-        valid_to_ns = capture_ns + 500_000_000
-
-        def temporary_attachment_at(time_ns: int) -> dict[str, object]:
-            result = self.client.post(
-                "/v1/topologies/query",
-                json={
-                    "basis": {
-                        "kind": "absolute_time",
-                        "clock_domain": "utc",
-                        "time_ns": str(time_ns),
-                    }
-                },
-            ).json()
-            return next(
-                item
-                for item in result["segment_attachments"]
-                if item["resource_id"].endswith("TenGig0-0-4.101")
-            )
-
-        at_start = temporary_attachment_at(valid_from_ns)
-        at_end = temporary_attachment_at(valid_to_ns)
-        self.assertTrue(at_start["claim_valid_at_basis"])
-        self.assertTrue(at_start["exists"])
-        self.assertFalse(at_end["claim_valid_at_basis"])
-        self.assertFalse(at_end["exists"])
-        self.assertTrue(at_end["endpoint_exists_at_basis"])
 
     def test_segment_federation_uses_typed_opaque_keys_not_prefixes(self) -> None:
-        demo = MultiNodeTopologyDemo(
-            {
-                "demo": {
-                    "revision_id": "test-revision",
-                    "capture_ns": 1_000,
-                    "timeline_start_ns": 0,
-                    "timeline_end_ns": 1_000,
-                }
-            }
-        )
+        demo = generated_topology_demo()
         common_semantics = {
             "network_kind": "l3_subnet",
             "label": "same displayed network",
@@ -614,7 +654,7 @@ class MultiNodeTopologyTests(unittest.TestCase):
         node_a_underlay = demo.contract["nodes"][0]["plugin_sets"][0]["plugins"][0][
             "projections"
         ][0]
-        node_a_underlay["fixture_network_segment_claims"][0][
+        node_a_underlay["network_segment_claims"][0][
             "matcher_id"
         ] = "undeclared.matcher"
         result = demo.query({"node_ids": ["node-a"]})
@@ -638,17 +678,22 @@ class MultiNodeTopologyTests(unittest.TestCase):
             item["node_id"] for item in payload["nodes"] if item["available"]
         }
         endpoint_pairs = {
-            frozenset(
-                {
-                    item["endpoint_a"]["node_id"],
-                    item["endpoint_b"]["node_id"],
-                }
-            )
-            for item in payload["inter_node_links"]
-            if item["link_type"].startswith(("underlay", "access"))
+            frozenset((left, right))
+            for segment in payload["network_segments"]
+            if segment["connectivity_enabled"]
+            for left, right in combinations(segment["node_ids"], 2)
         }
-        self.assertEqual(len(active_nodes), 9)
-        self.assertEqual(len(endpoint_pairs), 14)
+        self.assertEqual(len(active_nodes), 10)
+        connectivity_segment_count = sum(
+            1
+            for item in payload["network_segments"]
+            if item["connectivity_enabled"]
+        )
+        self.assertGreater(connectivity_segment_count, 0)
+        self.assertLess(
+            connectivity_segment_count,
+            len(active_nodes) * (len(active_nodes) - 1) // 2,
+        )
         self.assertLess(
             len(endpoint_pairs), len(active_nodes) * (len(active_nodes) - 1) // 2
         )
@@ -665,7 +710,19 @@ class MultiNodeTopologyTests(unittest.TestCase):
                 frontier.append(neighbor)
         self.assertEqual(reached, active_nodes)
 
-    def test_absolute_query_federates_distinct_node_plugins_and_deep_links(self) -> None:
+    def test_absolute_query_federates_generated_projections_and_deep_links(self) -> None:
+        capabilities = self.client.get("/v1/topologies/capabilities").json()
+        nodes = {item["node_id"]: item for item in capabilities["nodes"]}
+
+        def node_query(node_id: str) -> dict[str, object]:
+            node = nodes[node_id]
+            selection = node["default_projection_selections"][0]
+            return {
+                "node_id": node_id,
+                "plugin_set_id": node["active_plugin_set_id"],
+                "projections": [selection],
+            }
+
         body = {
             "basis": {
                 "kind": "absolute_time",
@@ -674,39 +731,8 @@ class MultiNodeTopologyTests(unittest.TestCase):
             },
             "clock_policy": "best_effort",
             "node_queries": [
-                {
-                    "node_id": "node-a",
-                    "plugin_set_id": "node-a.alpha-evpn.v1",
-                    "projections": [
-                        {
-                            "plugin_id": "demo.alpha.platform",
-                            "projection_id": "alpha.underlay-links",
-                            "status_perspective_id": "alpha.hardware-observed",
-                        }
-                    ],
-                },
-                {
-                    "node_id": "node-b",
-                    "plugin_set_id": "node-b.beta-evpn.v2",
-                    "projections": [
-                        {
-                            "plugin_id": "demo.beta.forwarding",
-                            "projection_id": "beta.forwarding-links",
-                            "status_perspective_id": "beta.asic-observed",
-                        }
-                    ],
-                },
-                {
-                    "node_id": "transit-p-1",
-                    "plugin_set_id": "transit-p-1.gamma.v1",
-                    "projections": [
-                        {
-                            "plugin_id": "demo.gamma.isis",
-                            "projection_id": "gamma.isis-links",
-                            "status_perspective_id": "gamma.isis-observed",
-                        }
-                    ],
-                },
+                node_query(node_id)
+                for node_id in ("node-a", "node-b", "transit-p-1")
             ],
         }
         response = self.client.post("/v1/topologies/reconstruct", json=body)
@@ -728,113 +754,98 @@ class MultiNodeTopologyTests(unittest.TestCase):
         self.assertEqual(
             {item["plugin_set_id"] for item in payload["nodes"]},
             {
-                "node-a.alpha-evpn.v1",
-                "node-b.beta-evpn.v2",
-                "transit-p-1.gamma.v1",
+                "node-a.generated.v1",
+                "node-b.generated.v1",
+                "transit-p-1.generated.v1",
             },
         )
-        self.assertEqual(len(payload["inter_node_links"]), 3)
-        self.assertEqual(
-            sorted(item["resolution"] for item in payload["inter_node_links"]),
-            ["ambiguous", "ambiguous", "matched"],
-        )
-        for link in payload["inter_node_links"]:
-            self.assertEqual(
-                link["inference"]["plugin_id"],
-                "demo.fabric.federation-linker",
+        self.assertEqual(payload["inter_node_links"], [])
+        self.assertTrue(payload["network_segments"])
+        self.assertTrue(
+            all(
+                observation["simultaneity"] == "same_absolute_instant"
+                for segment in payload["network_segments"]
+                for observation in segment["time_alignment"][
+                    "attachment_observations"
+                ]
             )
-            self.assertEqual(
-                link["time_alignment"]["simultaneity"],
-                "same_absolute_instant",
-            )
-        ambiguous = next(
-            item
-            for item in payload["connector_resolutions"]
-            if item["resolution"] == "ambiguous"
         )
-        self.assertGreaterEqual(len(ambiguous["claims"]), 3)
         resource = payload["nodes"][0]["resources"][0]
         self.assertEqual(resource["resource_ref"]["member_id"], "member:node-a")
-        self.assertEqual(resource["resource_ref"]["revision_id"], REVISION_ID)
+        self.assertEqual(
+            resource["resource_ref"]["revision_id"],
+            nodes["node-a"]["revision_id"],
+        )
         parameters = parse_qs(urlparse(resource["deep_link"]["href"]).query)
         parsed_resource_link = urlparse(resource["deep_link"]["href"])
         self.assertEqual(parsed_resource_link.path, "/node")
         self.assertEqual(parsed_resource_link.fragment, "timeline")
         self.assertEqual(resource["deep_link"]["route"], "/node")
-        self.assertEqual(parameters["plugin_set_id"], ["node-a.alpha-evpn.v1"])
-        self.assertEqual(parameters["projection_id"], ["alpha.underlay-links"])
+        self.assertEqual(parameters["plugin_set_id"], ["node-a.generated.v1"])
         self.assertEqual(
-            parameters["status_perspective_id"], ["alpha.hardware-observed"]
+            parameters["projection_id"], ["node-a.generated-topology"]
+        )
+        self.assertEqual(
+            parameters["status_perspective_id"],
+            ["node-a.generated-observed"],
         )
         self.assertEqual(parameters["context_id"], [payload["context_id"]])
 
-    def test_inter_node_link_ids_are_stable_unique_and_route_compatible(self) -> None:
+    def test_generated_segment_ids_are_stable_across_node_order(self) -> None:
         node_ids = ("node-a", "transit-p-1", "node-b")
-        link_sets: list[set[str]] = []
-        endpoint_maps: list[dict[tuple[tuple[str, str], ...], str]] = []
+        segment_sets: list[set[str]] = []
+        attachment_maps: list[dict[tuple[tuple[str, str], ...], str]] = []
         for node_order in permutations(node_ids):
             response = self.client.post(
                 "/v1/topologies/query",
-                json={"node_ids": list(node_order), "link_limit": 100},
+                json={
+                    "node_ids": list(node_order),
+                    "network_segment_limit": 100,
+                    "segment_attachment_limit": 200,
+                },
             )
             self.assertEqual(response.status_code, 200)
-            links = response.json()["inter_node_links"]
-            link_ids = [item["link_id"] for item in links]
-            self.assertEqual(len(link_ids), len(set(link_ids)))
-            link_sets.append(set(link_ids))
-            endpoint_maps.append(
+            segments = response.json()["network_segments"]
+            segment_ids = [item["segment_id"] for item in segments]
+            self.assertEqual(len(segment_ids), len(set(segment_ids)))
+            segment_sets.append(set(segment_ids))
+            attachment_maps.append(
                 {
                     tuple(
                         sorted(
-                            (
-                                (endpoint["node_id"], endpoint["resource_id"])
-                                for endpoint in (
-                                    item["endpoint_a"],
-                                    item["endpoint_b"],
-                                )
-                            )
+                            (member["node_id"], member["resource_id"])
+                            for member in item["members"]
                         )
-                    ): item["link_id"]
-                    for item in links
+                    ): item["segment_id"]
+                    for item in segments
                 }
             )
 
-        self.assertTrue(all(item == link_sets[0] for item in link_sets[1:]))
         self.assertTrue(
-            all(item == endpoint_maps[0] for item in endpoint_maps[1:])
+            all(item == segment_sets[0] for item in segment_sets[1:])
         )
-        primary_id = (
-            "demo.connector-key.exact.v1:underlay:circuit-101:"
-            "node-a:transit-p-1"
+        self.assertTrue(
+            all(item == attachment_maps[0] for item in attachment_maps[1:])
         )
-        self.assertIn(primary_id, link_sets[0])
+        shared = next(
+            segment_id
+            for endpoints, segment_id in attachment_maps[0].items()
+            if {node_id for node_id, _ in endpoints}
+            == {"node-a", "transit-p-1"}
+        )
+        self.assertTrue(shared.startswith("network-segment:"))
         primary_endpoints = next(
             endpoints
-            for endpoints, link_id in endpoint_maps[0].items()
-            if link_id == primary_id
+            for endpoints, segment_id in attachment_maps[0].items()
+            if segment_id == shared
         )
-        self.assertIn(
-            ("transit-p-1", "transit-p-1/ADJACENCY/pe-a"),
-            primary_endpoints,
+        self.assertEqual(
+            {node_id for node_id, _ in primary_endpoints},
+            {"node-a", "transit-p-1"},
         )
-        alternate_ids = [
-            link_id
-            for link_id in link_sets[0]
-            if link_id.startswith(primary_id + ":candidate-")
-        ]
-        self.assertEqual(len(alternate_ids), 1)
 
     def test_asymmetric_route_trace_roles_fail_closed(self) -> None:
-        demo = MultiNodeTopologyDemo(
-            {
-                "demo": {
-                    "revision_id": "test-revision",
-                    "capture_ns": 1_000,
-                    "timeline_start_ns": 0,
-                    "timeline_end_ns": 1_000,
-                }
-            }
-        )
+        demo = generated_topology_demo()
 
         def claim(node_id: str, role: str) -> dict[str, object]:
             return {
@@ -982,7 +993,7 @@ class MultiNodeTopologyTests(unittest.TestCase):
 
     def test_relative_query_uses_projection_scoped_watermarks(self) -> None:
         response = self.client.post(
-            f"/v1/revisions/{REVISION_ID}/multi-node/query",
+            "/v1/topologies/query",
             json={
                 "basis": {
                     "kind": "relative_to_watermark",
@@ -1001,7 +1012,11 @@ class MultiNodeTopologyTests(unittest.TestCase):
             for node in payload["nodes"]
             for item in node["resolved_times"]
         ]
-        self.assertGreater(len({item["query_time_ns"] for item in resolved}), 1)
+        self.assertGreater(len({item["local_time_ns"] for item in resolved}), 1)
+        self.assertEqual(
+            len({item["local_clock_domain"] for item in resolved}),
+            len(resolved),
+        )
         for item in resolved:
             scope = item["watermark_scope"]
             self.assertTrue(scope["member_id"].startswith("member:"))
@@ -1010,7 +1025,7 @@ class MultiNodeTopologyTests(unittest.TestCase):
             self.assertIn("projection_id", scope)
             self.assertIn("status_perspective_id", scope)
 
-    def test_optional_unavailable_member_is_partial_not_silently_dropped(self) -> None:
+    def test_generated_member_is_not_silently_dropped(self) -> None:
         response = self.client.post(
             "/v1/topologies/query",
             json={
@@ -1020,32 +1035,33 @@ class MultiNodeTopologyTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertFalse(payload["complete"])
-        self.assertEqual(payload["completeness"]["incomplete_nodes"], ["edge-c"])
+        self.assertTrue(payload["complete"])
+        self.assertEqual(payload["completeness"]["incomplete_nodes"], [])
         node = payload["nodes"][0]
-        self.assertFalse(node["complete"])
+        self.assertEqual(node["node_id"], "edge-c")
+        self.assertTrue(node["complete"])
         self.assertEqual(
-            node["completeness"]["reasons"][0]["reason_code"],
-            "plugin_dependency_unavailable",
+            node["plugin_set_id"],
+            "edge-c.generated.v1",
         )
 
-    def test_single_member_query_preserves_unresolved_connector_claims(self) -> None:
+    def test_single_member_query_preserves_single_sided_segment_claims(self) -> None:
         response = self.client.post(
             "/v1/topologies/query",
             json={"node_ids": ["node-a"], "link_limit": 20},
         )
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertFalse(payload["complete"])
+        self.assertTrue(payload["complete"])
         self.assertEqual(payload["inter_node_links"], [])
-        self.assertTrue(payload["connector_resolutions"])
+        self.assertEqual(payload["connector_resolutions"], [])
+        self.assertTrue(payload["network_segments"])
         self.assertTrue(
             all(
-                item["resolution"] == "unresolved"
-                for item in payload["connector_resolutions"]
+                set(item["node_ids"]).issubset({"node-a"})
+                for item in payload["network_segments"]
             )
         )
-        self.assertTrue(payload["completeness"]["unmatched_connector_claims"])
 
     def test_context_member_and_node_query_preserve_navigation_context(self) -> None:
         reconstruction = self.client.post(
@@ -1071,17 +1087,182 @@ class MultiNodeTopologyTests(unittest.TestCase):
                     "kind": "absolute_time",
                     "time_ns": "1759680005000000000",
                 },
-                "plugin_set_id": "node-b.beta-evpn.v2",
-                "plugin_id": "demo.beta.forwarding",
-                "projection_id": "beta.forwarding-links",
-                "status_perspective_id": "beta.asic-observed",
+                "plugin_set_id": "node-b.generated.v1",
+                "plugin_id": "demo.example-router",
+                "projection_id": "node-b.generated-topology",
+                "status_perspective_id": "node-b.generated-observed",
             },
         )
         self.assertEqual(node.status_code, 200)
         self.assertEqual(node.json()["node"]["node_id"], "node-b")
         href = node.json()["navigation"]["individual_node"]["href"]
-        self.assertIn("plugin_set_id=node-b.beta-evpn.v2", href)
-        self.assertIn("projection_id=beta.forwarding-links", href)
+        self.assertIn("plugin_set_id=node-b.generated.v1", href)
+        self.assertIn("projection_id=node-b.generated-topology", href)
+
+    def test_relative_node_deep_link_round_trips_without_absolute_time(self) -> None:
+        offset_ns = "-1000000"
+        response = self.client.post(
+            "/v1/topologies/nodes/node-a/query",
+            json={
+                "basis": {
+                    "kind": "relative_to_watermark",
+                    "offset_ns": offset_ns,
+                }
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        href = payload["navigation"]["individual_node"]["href"]
+        query = parse_qs(urlparse(href).query)
+
+        self.assertEqual(query["basis_kind"], ["relative_to_watermark"])
+        self.assertEqual(query["basis_offset_ns"], [offset_ns])
+        self.assertNotIn("time_ns", query)
+        self.assertNotIn("offset_ns", query)
+
+        workspace = self.client.get(
+            "/v1/nodes/node-a/workspace",
+            params={
+                key: values[-1]
+                for key, values in query.items()
+                if key
+                in {
+                    "plugin_set_id",
+                    "plugin_id",
+                    "projection_id",
+                    "status_perspective_id",
+                    "basis_kind",
+                    "basis_offset_ns",
+                }
+            },
+        )
+        self.assertEqual(workspace.status_code, 200, workspace.text)
+        self.assertEqual(
+            workspace.json()["node_snapshot"]["basis"],
+            {
+                "kind": "relative_to_watermark",
+                "time_ns": None,
+                "offset_ns": offset_ns,
+                "clock_domain": "utc",
+                "clock_policy": "best_effort",
+            },
+        )
+
+    def test_frontend_preserves_relative_node_link_as_relative_when_enriching_it(
+        self,
+    ) -> None:
+        offset_ns = "-2000000"
+        response = self.client.post(
+            "/v1/topologies/nodes/node-a/query",
+            json={
+                "basis": {
+                    "kind": "relative_to_watermark",
+                    "offset_ns": offset_ns,
+                }
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        href = payload["navigation"]["individual_node"]["href"]
+        resolved_time = payload["node"]["resolved_time"]["query_time_ns"]
+        script = self.client.get("/assets/topology.js").text
+        helper = javascript_function(script, "applyNodeNavigationBasis")
+        probe = (
+            helper
+            + "\n"
+            + f"const target = new URL({json.dumps(href)}, 'http://127.0.0.1');\n"
+            + "applyNodeNavigationBasis("
+            + "target, "
+            + json.dumps(
+                {
+                    "kind": "relative_to_watermark",
+                    "queryTime": resolved_time,
+                }
+            )
+            + ", "
+            + json.dumps(
+                {
+                    "kind": "relative_to_watermark",
+                    "offset_ns": offset_ns,
+                }
+            )
+            + ");\n"
+            + "process.stdout.write(target.pathname + target.search + target.hash);\n"
+        )
+        completed = subprocess.run(
+            ["node", "-e", probe],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        enriched_href = completed.stdout
+        query = parse_qs(urlparse(enriched_href).query)
+
+        self.assertEqual(query["basis_kind"], ["relative_to_watermark"])
+        self.assertEqual(query["basis_offset_ns"], [offset_ns])
+        self.assertNotIn("time_ns", query)
+        self.assertNotIn("offset_ns", query)
+
+        workspace = self.client.get(
+            "/v1/nodes/node-a/workspace",
+            params={
+                key: values[-1]
+                for key, values in query.items()
+                if key
+                in {
+                    "plugin_set_id",
+                    "plugin_id",
+                    "projection_id",
+                    "status_perspective_id",
+                    "basis_kind",
+                    "basis_offset_ns",
+                }
+            },
+        )
+        self.assertEqual(workspace.status_code, 200, workspace.text)
+
+    def test_absolute_node_deep_link_round_trips_without_relative_offset(self) -> None:
+        time_ns = "1759680005000000000"
+        response = self.client.post(
+            "/v1/topologies/nodes/node-a/query",
+            json={
+                "basis": {
+                    "kind": "absolute_time",
+                    "time_ns": time_ns,
+                }
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        href = response.json()["navigation"]["individual_node"]["href"]
+        query = parse_qs(urlparse(href).query)
+
+        self.assertEqual(query["basis_kind"], ["absolute_time"])
+        self.assertEqual(query["time_ns"], [time_ns])
+        self.assertNotIn("basis_offset_ns", query)
+        self.assertNotIn("offset_ns", query)
+
+        workspace = self.client.get(
+            "/v1/nodes/node-a/workspace",
+            params={
+                key: values[-1]
+                for key, values in query.items()
+                if key
+                in {
+                    "plugin_set_id",
+                    "plugin_id",
+                    "projection_id",
+                    "status_perspective_id",
+                    "basis_kind",
+                    "time_ns",
+                }
+            },
+        )
+        self.assertEqual(workspace.status_code, 200, workspace.text)
+        self.assertEqual(
+            workspace.json()["node_snapshot"]["basis"]["time_ns"],
+            time_ns,
+        )
 
     def test_invalid_cross_node_projection_selection_is_rejected(self) -> None:
         response = self.client.post(
@@ -1090,11 +1271,11 @@ class MultiNodeTopologyTests(unittest.TestCase):
                 "node_queries": [
                     {
                         "node_id": "node-a",
-                        "plugin_set_id": "node-a.alpha-evpn.v1",
+                        "plugin_set_id": "node-a.generated.v1",
                         "projections": [
                             {
-                                "plugin_id": "demo.beta.forwarding",
-                                "projection_id": "beta.forwarding-links",
+                                "plugin_id": "demo.example-router",
+                                "projection_id": "node-b.generated-topology",
                             }
                         ],
                     }
@@ -1104,32 +1285,21 @@ class MultiNodeTopologyTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
 
     def test_page_style_flat_node_plans_and_limit_aliases_are_supported(self) -> None:
-        plans = [
-            (
-                "node-a",
-                "node-a.alpha-evpn.v1",
-                "alpha.underlay-links",
-                "alpha.hardware-observed",
-            ),
-            (
-                "node-b",
-                "node-b.beta-evpn.v2",
-                "beta.forwarding-links",
-                "beta.asic-observed",
-            ),
-            (
-                "transit-p-1",
-                "transit-p-1.gamma.v1",
-                "gamma.isis-links",
-                "gamma.isis-observed",
-            ),
-            (
-                "edge-c",
-                "edge-c.delta.v1",
-                "delta.legacy-links",
-                "delta.driver-observed",
-            ),
-        ]
+        capabilities = self.client.get("/v1/topologies/capabilities").json()
+        nodes = {item["node_id"]: item for item in capabilities["nodes"]}
+        plans = []
+        for node_id in ("node-a", "node-b", "transit-p-1", "edge-c"):
+            node = nodes[node_id]
+            selection = node["default_projection_selections"][0]
+            plans.append(
+                (
+                    node_id,
+                    node["revision_id"],
+                    node["active_plugin_set_id"],
+                    selection["projection_id"],
+                    selection["status_perspective_id"],
+                )
+            )
         response = self.client.post(
             "/v1/topologies/reconstruct",
             json={
@@ -1141,12 +1311,18 @@ class MultiNodeTopologyTests(unittest.TestCase):
                     {
                         "member_id": f"member:{node_id}",
                         "node_id": node_id,
-                        "revision_id": REVISION_ID,
+                        "revision_id": revision_id,
                         "plugin_set_id": plugin_set_id,
                         "projection_id": projection_id,
                         "status_perspective_id": perspective_id,
                     }
-                    for node_id, plugin_set_id, projection_id, perspective_id in plans
+                    for (
+                        node_id,
+                        revision_id,
+                        plugin_set_id,
+                        projection_id,
+                        perspective_id,
+                    ) in plans
                 ],
                 "resource_preview_limit": 20,
                 "link_limit": 20,
@@ -1155,10 +1331,11 @@ class MultiNodeTopologyTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(len(payload["nodes"]), 4)
-        self.assertEqual(payload["counts"]["inter_node_links"], 3)
+        self.assertEqual(payload["counts"]["inter_node_links"], 0)
+        self.assertGreater(payload["counts"]["network_segments"], 0)
         self.assertEqual(
             payload["nodes"][0]["node_query"]["projection_id"],
-            "alpha.underlay-links",
+            "node-a.generated-topology",
         )
 
     def test_topology_page_is_primary_and_former_route_remains_an_alias(self) -> None:
@@ -1171,8 +1348,8 @@ class MultiNodeTopologyTests(unittest.TestCase):
         self.assertEqual(node.status_code, 200)
         self.assertIn("Multi-node topology", primary.text)
         self.assertEqual(primary.text, alias.text)
-        self.assertIn("Synthetic review fixture", node.text)
-        self.assertIn("20260725-endpoint-selector-v30", primary.text)
+        self.assertIn("single-node analysis workspace", node.text)
+        self.assertIn("20260725-incidence-layout-v34", primary.text)
         self.assertIn("control-plane only / not installed", primary.text)
         topology_script = self.client.get("/assets/topology.js")
         topology_styles = self.client.get("/assets/topology.css")
@@ -1389,6 +1566,144 @@ class MultiNodeTopologyTests(unittest.TestCase):
             ".mn-route-quality-legend",
         ):
             self.assertIn(contract, styles.text)
+
+    def test_topology_layout_is_generic_deterministic_and_incidence_aware(self) -> None:
+        script = self.client.get("/assets/topology.js")
+
+        self.assertEqual(script.status_code, 200)
+        builder = javascript_function(script.text, "buildConnectivityLayoutGraph")
+        components = javascript_function(script.text, "connectivityLayoutComponents")
+        ranks = javascript_function(script.text, "rankConnectivityComponent")
+        crossing_reduction = javascript_function(
+            script.text, "minimizeConnectivityRankCrossings"
+        )
+        component_layout = javascript_function(
+            script.text, "layoutConnectivityComponent"
+        )
+        rank_grid = javascript_function(script.text, "connectivityRankGrid")
+        layout = javascript_function(script.text, "mapConnectivityLayout")
+        signature = javascript_function(
+            script.text, "connectivityLayoutSignature"
+        )
+        geometry_signature = javascript_function(
+            script.text, "connectivityLayoutGeometrySignature"
+        )
+        render = javascript_function(script.text, "renderLinkStatusMap")
+
+        for contract in (
+            'const TOPOLOGY_LAYOUT_VERSION = "incidence-v3"',
+            "const TOPOLOGY_LAYOUT_SWEEPS = 6",
+            "const TOPOLOGY_LAYOUT_MAX_CROSS_ITEMS = 5",
+            "const TOPOLOGY_LAYOUT_OUTER_PADDING = 52",
+            "buildConnectivityLayoutGraph(",
+            "connectivityLayoutComponents(graph)",
+            "rankConnectivityComponent(",
+            "minimizeConnectivityRankCrossings(",
+            "TOPOLOGY_LAYOUT_BAND_GAP",
+        ):
+            self.assertIn(contract, script.text)
+        self.assertIn('kind: "node"', builder)
+        self.assertIn('kind: "domain"', builder)
+        self.assertIn("compactDecisions", builder)
+        self.assertIn("directLinks", builder)
+        self.assertIn("remaining.values().next().value", components)
+        self.assertIn("connectivityBfsDistances", ranks)
+        self.assertIn("sweeps = TOPOLOGY_LAYOUT_SWEEPS", crossing_reduction)
+        self.assertIn("mirrored = bandIndex % 2 === 1", component_layout)
+        self.assertIn("targetMainSpan", component_layout)
+        self.assertIn("TOPOLOGY_LAYOUT_MAX_CROSS_ITEMS", rank_grid)
+        self.assertIn("Math.ceil(rank.length / columns)", rank_grid)
+        self.assertIn("compactDecisions = []", layout)
+        self.assertIn("directLinks = []", layout)
+        self.assertIn('"horizontal" : "vertical"', layout)
+        self.assertIn('"domain-boxes" : "junctions"', layout)
+        self.assertIn("records", signature)
+        self.assertIn("].sort()", signature)
+        self.assertIn("stableLayoutHash", signature)
+        self.assertIn("layoutMode.orientation", signature)
+        self.assertIn("layoutMode.domainBoxMode", signature)
+        self.assertIn("layoutMode.geometrySignature", signature)
+        self.assertIn("dimensions.positions.entries()", geometry_signature)
+        self.assertIn("dimensions.domainPositions.entries()", geometry_signature)
+        self.assertIn("stableLayoutHash", geometry_signature)
+        self.assertIn("compactDecisions,\n    directLinks,", render)
+        self.assertIn("connectivityLayoutSignature(", render)
+        self.assertIn("connectivityLayoutGeometrySignature(dimensions)", render)
+        self.assertIn("TOPOLOGY_LAYOUT_VERSION", render)
+
+        generic_layout_source = builder + ranks + crossing_reduction + component_layout
+        for forbidden in (
+            "node.label",
+            ".device_role",
+            ".prefix",
+            ".vlan",
+            ".protocol",
+            ".site",
+        ):
+            self.assertNotIn(forbidden, generic_layout_source)
+        self.assertNotIn("localeCompare", generic_layout_source)
+
+    def test_topology_relationship_context_and_semantic_detail_are_wired(self) -> None:
+        page = self.client.get("/")
+        script = self.client.get("/assets/topology.js")
+        styles = self.client.get("/assets/topology.css")
+
+        self.assertEqual(page.status_code, 200)
+        show = javascript_function(script.text, "showTopologyInspector")
+        clear = javascript_function(script.text, "clearTopologyInspector")
+        context = javascript_function(
+            script.text, "applyTopologyRelationshipContext"
+        )
+        edges = javascript_function(script.text, "renderConnectivityEdges")
+
+        self.assertIn("expandNodeDomains: state.topologyInspectorPinned", show)
+        self.assertIn("clearTopologyRelationshipContext()", clear)
+        self.assertIn("state.topologyInspectorPinned && !pinned", show)
+        for contract in (
+            '"attachment"',
+            '"domain"',
+            '"link"',
+            '"node"',
+            "data-network-segment-id",
+            "data-network-attachment-id",
+            "data-topology-link-id",
+            "is-topology-context-related",
+            "is-topology-context-muted",
+        ):
+            self.assertIn(contract, context if contract.startswith('"') else script.text)
+        self.assertIn("const originNodeKeys = new Set(facts.nodeKeys)", context)
+        self.assertIn("const directlyIncidentItems = new Set()", context)
+        self.assertIn("directlyIncidentItems.add(element)", context)
+        self.assertIn(
+            'if (!expandNodeDomains) return directlyIncidentItems.has(element)',
+            context,
+        )
+        self.assertIn(
+            'kind === "domain" || expandNodeDomains',
+            context,
+        )
+        self.assertIn(
+            'topologyRelationshipScope = kind === "node"',
+            context,
+        )
+        self.assertIn("topologyContextAttributes", edges)
+        self.assertIn("has-topology-relationship-context", styles.text)
+        self.assertIn('data-topology-relationship-scope="incident"', styles.text)
+        self.assertIn(
+            '#mn-map-stage[data-graph-detail="normal"] .mn-attachment-component',
+            styles.text,
+        )
+        self.assertIn(
+            '#mn-map-stage[data-graph-detail="detail"] .mn-attachment-component',
+            styles.text,
+        )
+        self.assertIn("pointer-events: none;", styles.text)
+        self.assertIn("clamp(640px, 68vh, 700px)", styles.text)
+        self.assertIn("arranged from their declared connectivity", page.text)
+        self.assertIn("capturePinnedTopologyInspector()", script.text)
+        self.assertIn("restorePinnedTopologyInspector(pinnedInspector)", script.text)
+        self.assertIn("state.resizeTargets.add(entry.target.id)", script.text)
+        self.assertNotIn("requestAnimationFrame(renderMap)", script.text)
 
     def test_topology_frontend_guards_async_state_and_route_edge_cases(self) -> None:
         script = self.client.get("/assets/topology.js")

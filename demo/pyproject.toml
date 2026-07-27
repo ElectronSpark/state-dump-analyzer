@@ -5,37 +5,35 @@ build-backend = "hatchling.build"
 [project]
 name = "router-dump-analyzer-demo"
 version = "0.1.0"
-description = "Runnable Router State Lab review application and synthetic demo plug-ins"
+description = "Example Router Dump Analyzer plug-in and generated fixture tooling"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "Router Dump Analyzer design team" }]
 dependencies = [
   "router-dump-analyzer-core>=0.1.0,<1",
-  "fastapi>=0.115,<1",
-  "uvicorn>=0.30,<1",
   "pydantic-core>=2.20,<3",
 ]
 
-[project.optional-dependencies]
-test = ["httpx>=0.27,<1"]
-
-[project.scripts]
-router-dump-demo = "router_dump_analyzer_demo.app:main"
+[project.entry-points."router_dump_analyzer.plugins"]
+demo_router = "plugin:plugin"
 
 [tool.hatch.build.targets.wheel]
 packages = [
-  "src/router_dump_analyzer_demo",
-  "src/router_dump_analyzer_demo_plugins",
+  "plugin",
+  "generator",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
-"frontend" = "router_dump_analyzer_demo/frontend"
+"fixtures/minimal-status.jsonl" = "plugin/fixtures/minimal-status.jsonl"
+"router-state-lab-default.scenario.json" = "generator/router-state-lab-default.scenario.json"
 
 [tool.hatch.build.targets.sdist]
 include = [
-  "/src",
-  "/frontend",
+  "/plugin",
+  "/generator",
+  "/fixtures/minimal-status.jsonl",
+  "/router-state-lab-default.scenario.json",
   "/README.md",
   "/pyproject.toml",
 ]

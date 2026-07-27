@@ -6,14 +6,22 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from router_dump_analyzer_demo import app as demo_app
-from router_dump_analyzer_demo.data import REVISION_ID
+from tests.support.generated_demo import (
+    configure_generated_demo_for_tests,
+    generated_demo_application,
+)
+
+configure_generated_demo_for_tests()
+
+from router_dump_analyzer.web import runtime_api
+from plugin.data import REVISION_ID
 
 
 class EventQueryRedactionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.client_context = TestClient(demo_app.app)
+        configure_generated_demo_for_tests()
+        cls.client_context = TestClient(generated_demo_application())
         cls.client = cls.client_context.__enter__()
 
     @classmethod
@@ -104,8 +112,8 @@ class EventQueryRedactionTests(unittest.TestCase):
 
     def _get(self, **params: object):
         with patch.object(
-            demo_app,
-            "load_demo_dataset",
+            runtime_api,
+            "load_dataset",
             return_value=self.dataset,
         ):
             return self.client.get(

@@ -23,8 +23,9 @@ The executable reference types are in
 
 If this is your first plug-in, start with
 `docs/plugin-author-quickstart.md` and the runnable
-`examples/minimal_plugin/` package. This document is the normative reference,
-not the recommended reading order for a first implementation.
+`demo/plugin/__init__.py` teaching slice. This document is
+the normative reference, not the recommended reading order for a first
+implementation.
 
 ## 1. Packaging and discovery
 
@@ -42,20 +43,21 @@ factory. The loaded object implements `AnalyzerPlugin` and exposes a
 it supplies safe empty behavior for undeclared optional capabilities and fails
 loudly when a declared capability's hook was not overridden.
 
-Install and validate a distribution in the same environment as the analyzer:
+Install a candidate distribution in the analyzer environment, run
+`router-dump-plugin-validate` against a representative plug-in-owned synthetic
+artifact, and run that distribution's golden tests. The exact known-good
+copy-paste workflow is maintained in
+[Plug-in author quickstart, step 1](plugin-author-quickstart.md#1-run-the-known-good-example).
 
-```text
-python -m pip install -e .
-python -m pip install --no-deps -e examples/minimal_plugin
-router-dump-plugin-validate minimal_router --artifact examples/minimal_plugin/fixtures/minimal-status.jsonl --node-hint router-1 --metadata platform=minimal-router-os --metadata software_version=1
-```
-
-`python -m pip install -e .` installs the
-`router-dump-analyzer-core` distribution only. The reference FastAPI server,
-synthetic demo plug-ins, fixtures, and browser assets are a separate
-`router-dump-analyzer-demo` distribution and are not part of the plug-in
-runtime contract. A device plug-in must depend on the core distribution, never
-on the demo package.
+A device plug-in depends on `router-dump-analyzer-core`, never on the demo
+package. Core owns the generic browser pages and interaction code; plug-ins
+contribute validated declarative presentation descriptors and never ship executable frontend code.
+Precomputed offline fixtures and their materializers are application-specific
+extensions, not standard `AnalyzerPlugin` hooks and not shortcuts around the
+ordinary capability hooks for a live parser. The bundled example uses the
+illustrative provider ID `demo.example-router`; its current offline projection
+and evidence format is documented only in the
+[demo guide](../demo/README.md#generated-mock-dumps).
 
 The validator checks entry-point construction, manifest/core compatibility,
 schema determinism, required hooks, capability overrides, empty-inventory
@@ -75,6 +77,91 @@ Package immutable defaults with the plug-in; any future configurable constructor
 or configuration object requires a versioned protocol addition. The
 `supported_software_versions` string is recorded for humans and reproducibility;
 the plug-in's `probe()` owns version interpretation and returns `match_kind`.
+
+### Optional core-hosted runtime session
+
+The standard `AnalyzerPlugin` parsing contract and the optional non-web runtime
+adapter are
+separate. An ordinary parse-only plug-in need not expose a runtime and remains
+valid under `router-dump-plugin-validate`.
+
+A plug-in selected by the core `router-dump-analyzer` web command additionally
+exposes a module-level plug-in instance whose optional `runtime` attribute
+implements `PluginRuntimeCapability` from
+`router_dump_analyzer.runtime`. This is not a `PluginCapability` enum value and
+does not change parser dispatch.
+
+The core accepts exactly one of these selectors:
+
+```text
+router-dump-analyzer --plugin ENTRY_POINT_NAME --input PATH
+router-dump-analyzer --plugin-module PACKAGE[.MODULE][:ATTRIBUTE] --input PATH
+```
+
+`--plugin` resolves exactly one installed
+`router_dump_analyzer.plugins` entry point. `--plugin-module` is a
+source/development path that imports the named module; `ATTRIBUTE` defaults to
+`plugin`. Both selectors must resolve to a module-level instance, not a class or
+factory. `PATH` is validated for existence by core and interpreted only by the
+selected plug-in.
+
+The runtime contract is:
+
+- `capability_id` equals `router_dump_analyzer.runtime.v1`;
+- `open(input_path: Path)` returns a context manager; and
+- entering that context yields one `PluginRuntimeSession` with no HTTP, ASGI,
+  or browser objects.
+
+The session has six structural surfaces:
+
+| Member | Normative requirement |
+|---|---|
+| `revision_store` | Required `RevisionStore` implementation for immutable assembly and revision access. |
+| `data_source` | Required `NormalizedDatasetSource` for revision-scoped normalized dataset loading and an optional structural history index. |
+| `data_policy` | Required `NormalizedDataPolicy` for opaque analysis/workspace metadata, plug-in route rows, and safe retained-source formatting. |
+| `temporal_provider` | `RuntimeTemporalProvider` or `None`; a supported provider returns core `TemporalTopologyService` from `for_revision()`. |
+| `topology_provider` | `RuntimeTopologyProvider` or `None`; a supported provider exposes `topology_id` and returns core `MultiNodeTopologyService` from `get()`. |
+| `route_provider` | `RuntimeRouteProvider` or `None`; a supported provider returns core `MultiNodeRouteService` from `get()`. |
+
+Core validates the structural session before serving, enters it for the FastAPI
+application lifespan, binds it request-locally, and closes the context once at
+shutdown. Core constructs `NormalizedDataService`; the plug-in must not
+implement generic state, relationship, resource-table, dashboard, range,
+redaction, search, or client-projection algorithms. The plug-in owns
+input-format interpretation, normalized data, and device/protocol policy. Core
+owns the executable, application factory, lifespan, middleware, every HTTP
+route, error mapping, generic services,
+frontend host, page templates, assets, and interactions.
+
+`NormalizedDatasetSource` has exactly four operations:
+
+- `revision_scope(revision_id)` returns a context manager;
+- `load_dataset(revision_id=None, **selection)` returns one normalized
+  dataset;
+- `revision_id(dataset)` returns its exact stable revision identity; and
+- `indexed_history(dataset)` returns a structural `IndexedHistory` or `None`.
+
+`NormalizedDataPolicy` has exactly five operations:
+
+- `analysis_metadata(dataset)` returns opaque plug-in analysis metadata;
+- `workspace_metadata(dataset, *, revision_id, history_mode)` returns the
+  generic workspace envelope values;
+- `route_resolution_capability(dataset)` returns the node route catalog, or
+  `{"available": false, "routes": []}`;
+- `route_row(route_id, dataset)` returns an exact declared row or raises
+  `KeyError`; and
+- `source_record_for_event(event)` returns the plug-in-safe retained source
+  record representation.
+
+The optional indexed history may accelerate the same normalized semantics; it
+must not change resource identity, temporal validity, redaction, or query
+results.
+
+A runtime must not return or register FastAPI, `APIRouter`, middleware, routes,
+templates, HTML, JavaScript, or CSS. Failure to expose a runtime is a core
+application selection error, not an `AnalyzerPlugin` conformance error. The
+installable example in `demo/plugin/session.py` and its
+tests exercise this complete boundary.
 
 ## 2. Capability boundary
 
@@ -195,6 +282,13 @@ Plug-ins never provide executable browser matching code.
 - The same logical key after a confirmed delete/recreate may be a new incarnation.
 - Unknown references are emitted as keys and become placeholders; they are not dropped.
 - Canonicalization rules are part of the plugin's compatibility contract.
+
+Analysis `revision_id` values are core-owned opaque identifiers, not resource
+keys or plug-in vocabulary. They may contain `/`. A plug-in must preserve them
+unchanged and must not parse them for node, platform, or resource semantics.
+Clients must percent-encode the complete value in a revision-scoped URL; the
+server uses a path-aware revision parameter so lookup receives the decoded ID
+unchanged.
 
 ### Evidence
 
@@ -432,6 +526,24 @@ canonical references and limits, then materializes/serves the intervals. A
 plugin must use `unknown` rather than omit a projected object merely because the
 selected status perspective has no answer.
 
+When a plug-in supplies a normalized topology resource in compact replay form,
+`initial_status` and `initial_state` establish its first known values and
+`changes[]` supplies time-ordered updates. Each applied change may update
+`status` and merge `state`. It may also set the optional boolean `exists`
+explicitly. When `exists` is omitted, the core recognizes the generic
+`operation` values `create` and `add` as existence and `delete` and `remove` as
+non-existence; an explicit boolean always takes precedence over that inference.
+A change with `state_changed: false` is a complete no-op for existence, status,
+and state, even if it describes a failed delete or carries proposed values.
+
+The enclosing `valid_from_ns`/`valid_to_ns` interval remains authoritative and
+half-open. No lifecycle change can make the resource exist before
+`valid_from_ns` or at/after `valid_to_ns`. Within that interval, a delete may
+create an absence gap and a later create may restore the same canonical
+identity. A status such as `down` alone does not delete the resource. Status and
+merged state are retained across an absence gap so a later recreation can
+either reuse or explicitly replace them.
+
 An ambiguous relationship boundary therefore produces `exists=None` and a
 possible link with unknown usability. It is never promoted to a definite link.
 
@@ -477,6 +589,19 @@ plug-in asserts `external` and the relevant projection coverage is complete.
 VPN domains belong to a separate projection or presentation plane so an
 overlay is not silently mixed with underlay adjacency.
 
+The executable v1 `TopologyProjectionDescriptor` declares topology semantics
+and supported status perspectives; it does not yet carry reusable
+browser-profile fields. When the coordinator or assembly profile adapter
+publishes a reusable profile around a selected plug-in projection, that
+profile declares bounded `presentation_roles` explicitly. Use the exact role
+token `vpn` when the profile is appropriate for the generic VPN-view
+suggestion; do not rely on `evpn`, `l3vpn`, VRF, projection, protocol, or
+resource names being parsed by the core. The profile may also declare safe
+`empty_action_label` text. These fields influence only generic presentation
+and selection. They do not add topology, route, or reachability semantics.
+Adding them directly to a node plug-in requires a versioned protocol addition;
+plug-ins still cannot provide HTML, CSS, JavaScript, or navigation URLs.
+
 For a domain that the plug-in knows is safe to display inline when it has two
 participants, set `TopologyResourceRecord.presentation` to a
 `TopologyResourcePresentation` whose `two_participant_shape` is
@@ -505,6 +630,18 @@ and that it is not subnet-membership evidence; the physical view suppresses it
 when an explicit domain projection is available. Removing either compatibility
 form requires a versioned route schema that can name attachment transitions
 directly.
+
+A forwarding candidate that crosses a connectivity domain must retain a typed
+declarative topology reference rather than only a derived pairwise line. The
+plug-in owns the matcher ID/version, opaque domain key, local/remote attachment
+resource IDs, candidate selection, decision/disposition, and explanation. Core
+may join the reference only through an advertised exact-token contract. The
+generic join requires exactly one current usable domain, exactly one current
+usable source attachment, exactly one current usable target attachment, and
+complete non-truncated evidence. Missing, ambiguous, conflicting, down, or
+truncated evidence stays unresolved. Core must not recover a match from a
+prefix, address, VLAN, interface name, label/SID, node pair, or
+`resolution_text`.
 
 #### Federating different node plug-in sets
 
@@ -820,6 +957,41 @@ compares a delta-maintained projection with a clean full projection, checks
 removal of stale objects, and rejects invalid references, perspectives, budget
 overruns, or IR versions.
 
+### Coordinator-normalized node route choices
+
+The generic node browser may expose a bounded route-choice capability derived
+from the selected node plug-in's normalized projection. This is a coordinator
+adapter, not a new v1 `AnalyzerPlugin` hook. A production integration normally
+derives it from `FORWARDING_PROJECTION`; a specialized versioned projection
+may supply an equivalent catalog.
+
+When a plug-in projection participates in this adapter:
+
+- each `route_id` is non-empty, opaque, unique within the immutable revision,
+  and stable for that projected route decision;
+- every advertised row is qualified by the exact node and revision and carries
+  the provider identity;
+- the projection owns destination vocabulary, route family/type, VRF,
+  labels/SIDs, encapsulation, candidate semantics, and explanation;
+- the coordinator advertises only executable basis kinds and validates that a
+  resolve request selects an exact advertised `route_id`; and
+- an unknown ID, mismatched revision, duplicate row, or unsupported basis
+  fails closed. Core and the browser must not infer a substitute destination or
+  select a route by display text.
+
+The plug-in never supplies route URLs, HTML, JavaScript, or a browser control.
+A point-in-time member snapshot must include a matching bounded node-local
+response if it advertises a route choice; otherwise route resolution is
+unavailable in that snapshot. See `docs/api-contract.md` for the normalized
+capability and request payload.
+
+A route-table projection may also contain a local or otherwise inventory-only
+row with no declared end-to-end candidate. Such a row remains visible data but
+must be marked `traceable: false`, carry an empty `trace_query`, and may provide
+a bounded `trace_unavailable_reason`. Neither coordinator nor browser may infer
+a trace target from its destination string, route type, or local forwarding
+action.
+
 ### Packet state, transitions, and MTU
 
 `ForwardingPacketState` is the protocol-neutral packet snapshot used by the
@@ -908,10 +1080,12 @@ plug-in transition. A device's own policy steering remains
 `origin=node_plugin` and must not claim a user `forced_rule_id`.
 
 These packet types and helpers are an implemented public boundary. The bundled
-multi-node demo has eight demo-provider scenarios whose declared transitions
-are evaluated by this boundary and serialized with their route steps. It still
-does not provide production-style discovery/orchestration that repeatedly
-invokes `resolve_forwarding_step()` across arbitrary installed members.
+demo exercises that boundary with generated route and packet evidence, but its
+current scenario counts and materialization format are demo implementation
+details documented in the [demo guide](../demo/README.md#generated-mock-dumps).
+The demo does not provide production-style discovery/orchestration that
+repeatedly invokes `resolve_forwarding_step()` across arbitrary installed
+members.
 Plug-in authors may implement and unit-test the hook, but must not assume every
 server path executes it until that orchestration is explicitly advertised.
 
@@ -1212,6 +1386,19 @@ random event sequences.
   canonical resource keys.
 - Declarative match references round-trip without core interpretation and retain
   all plugin-resolved candidates, source-resource keys, and evidence.
+
+### Optional runtime adapter
+
+When `plugin.runtime` is present, conformance additionally proves:
+
+- the capability ID and every structural session member validate;
+- invalid or unsupported input fails before serving requests;
+- required providers work and unsupported optional providers are `None`;
+- the context releases stores, indexes, and caches exactly once;
+- the runtime and demo distribution import no web framework or core frontend;
+  and
+- the core CLI can load the same instance by installed entry-point name and,
+  for source development, by direct module target.
 
 The repository's `samples/` directory is a core smoke-test corpus. Real plugins
 need richer product-shaped synthetic generators, especially failure and clock-skew cases.

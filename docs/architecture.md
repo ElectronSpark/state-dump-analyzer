@@ -129,6 +129,11 @@ Reprocessing after a plugin upgrade creates a new revision. Published rows are
 never reinterpreted in place. A small transaction changes the case's published
 revision pointer only after validation succeeds.
 
+The public `revision_id` is an opaque core-owned string and may contain `/`.
+No plug-in, browser, or external client may infer node or resource semantics by
+splitting it. Revision-scoped routes use a path-aware parameter, and clients
+percent-encode the complete ID when constructing a URL.
+
 Recommended job state machine (an exact configured match may pass directly from
 `PROBED` to `SELECTED`):
 
@@ -176,8 +181,9 @@ Discover plugin bundles through Python entry points under
 `router_dump_analyzer.plugins`. The reference protocol is in
 `src/router_dump_analyzer/plugin_api.py`; operational rules are in
 `docs/plugin-contract.md`. First-time authors use
-`docs/plugin-author-quickstart.md` and the installable
-`examples/minimal_plugin/` before consulting the full normative contract.
+`docs/plugin-author-quickstart.md` and the installable example in
+`demo/plugin/__init__.py` before consulting the full
+normative contract.
 
 ### Three-owner rule
 
@@ -196,36 +202,94 @@ The core must not branch on plug-in kind, relation, source-type, source-group,
 or key-field names. The detailed audit and migration ledger is in
 `docs/core-plugin-boundary-audit-2026-07-22.md`.
 
-### Distribution dependency rule
+### Distribution and executable ownership
 
-The executable repository keeps the protocol-neutral package and the review
-application in separate distributions:
+The protocol-neutral core is the foundation and the only application
+distribution:
 
 ```text
+router-dump-analyzer-core[web]
+    -> router-dump-analyzer executable
+    -> dynamic plug-in/module loader
+    -> FastAPI application, routes, middleware, and lifecycle
+    -> generic API/query orchestration and browser distribution
+    -X-> demo package or demo vocabulary
+
 router-dump-analyzer-demo
-    -> router_dump_analyzer_demo_plugins
     -> router-dump-analyzer-core
-
-router_dump_analyzer_demo_plugins
-    -> router-dump-analyzer-core
-
-router-dump-analyzer-core
-    -X-> demo application, demo plug-ins, FastAPI, Uvicorn, or browser assets
+    -> one installed example plug-in and non-web runtime providers
+    -> generated-fixture policy, scenarios, and generator
+    -X-> executable, FastAPI objects, routes, or frontend assets
 ```
 
-`src/router_dump_analyzer/` is the core source root. The FastAPI application,
-synthetic fixture runtime, and scenario builders live under
-`demo/src/router_dump_analyzer_demo/`; synthetic device/protocol vocabulary
-lives under `demo/src/router_dump_analyzer_demo_plugins/`. Mixed prototype
-coordinators remain on the demo side until their inputs and outputs become
-typed, protocol-neutral core contracts. A reusable-looking algorithm is not
-promoted merely because a demo currently exercises it.
+`src/router_dump_analyzer/` is the core source root. It contains the core CLI,
+application factory, runtime-session protocols, complete HTTP API, generic
+services, and frontend host. The separately packaged `frontend/` tree is forced
+into the core wheel and source distribution. FastAPI and Uvicorn remain behind
+the core's optional `web` extra so contract-only and parser-only use does not
+install a server stack.
 
-The core wheel therefore contains only `router_dump_analyzer`, publishes the
-plug-in validator but not the demo launcher, and has no web-framework runtime
-dependency. The demo wheel depends on the core, publishes `router-dump-demo`,
-and owns its web dependencies and frontend distribution. Static dependency
-tests reject reverse imports or accidental demo assets in the core package.
+`demo/plugin/` contains the example plug-in, its
+device/protocol and generated-projection policy, and a non-web input/session
+adapter for the generated archive. The sibling
+`demo/generator/` contains the dedicated fixture
+generator and imports the plug-in package explicitly. The demo
+depends on the core base distribution without the `web` extra. It publishes
+only the `demo_router` plug-in entry point and no application executable.
+
+The core dynamically loads a module-level plug-in instance either from an
+installed `router_dump_analyzer.plugins` entry point (`--plugin NAME`) or a
+direct development target (`--plugin-module PACKAGE[:ATTRIBUTE]`). Core never
+imports the demo statically. Static dependency and package-content tests reject
+reverse imports, demo-named core modules, a demo executable, web objects in the
+demo runtime, and duplicated frontend assets.
+
+Mixed prototype semantics remain plug-in policy until their inputs and outputs
+become typed, protocol-neutral core contracts. A reusable-looking algorithm is
+not promoted merely because the demo currently exercises it.
+
+#### Runtime session boundary
+
+The parsing contract does not require a web runtime. An ordinary parse-only
+plug-in can be discovered and validated with no `runtime` attribute. To host an
+input through `router-dump-analyzer`, the selected instance additionally
+exposes `plugin.runtime` with capability ID
+`router_dump_analyzer.runtime.v1` and a context-managed `open(input_path)`.
+
+Entering the capability yields one non-web session with six surfaces:
+
+1. a required immutable `revision_store`;
+2. a required normalized `data_source`;
+3. a required device/input `data_policy`;
+4. an optional `temporal_provider`;
+5. an optional `topology_provider`; and
+6. an optional `route_provider`.
+
+Unsupported optional providers are `None`. Core validates the structural
+protocols, constructs the core `NormalizedDataService`, owns the context
+lifetime, stores the active session in application state, binds it
+request-locally, and closes it at shutdown. Generic state, relationship,
+resource-table, dashboard, range, redaction, search, and client projection
+stay in core. The plug-in owns input-format interpretation and device/protocol
+policy; it cannot return an ASGI app, replace a core query service, or
+contribute routes, middleware, templates, or executable frontend code. The
+normative shapes are in
+[`docs/plugin-contract.md`](plugin-contract.md#optional-core-hosted-runtime-session).
+
+A plug-in runtime may own a validated precomputed-fixture materializer, but
+that extension is not a standard parser hook and must not claim that a live
+parser replayed data it did not parse. Its runtime loader validates the declared
+provider, schema, materialization mode, and immutable members before publishing
+a revision. Ordinary live device plug-ins use the standard capability hooks
+instead.
+
+The bundled demo plug-in's current provider identity, projection format,
+coverage registry, evidence shapes, and validation rules are implementation
+details maintained in the
+[demo guide](../demo/README.md#generated-mock-dumps). That guide currently
+names the illustrative provider `demo.example-router`; architecture depends
+only on the boundary above, not on that identity, a particular demo format
+version, or a scenario count.
 
 A plugin bundle supplies:
 
@@ -479,6 +543,16 @@ vendor status strings to usability. Conversely, a plugin does not align node
 clocks, choose a substitute perspective, page API results, or fabricate state
 outside its evidence range.
 
+For the compact normalized-resource replay path, the core owns only generic
+lifecycle mechanics. It evaluates the resource's half-open
+`valid_from_ns`/`valid_to_ns` envelope, then replays eligible `changes[]` in
+time order. Boolean `exists` is authoritative when present; otherwise the
+generic operations `create`/`add` and `delete`/`remove` open and close the
+lifecycle. Status/state updates remain independent from existence, and
+`state_changed: false` suppresses the entire proposed change. This allows a
+down-but-present resource, a deletion gap, and recreation of the same canonical
+identity without teaching core any device or protocol vocabulary.
+
 The logical worker hook is
 `project_topology(TopologyProjectionRequest, ReadOnlyWorld)`. It streams one
 bounded envelope whose payload is a resource, endpoint, or link record. Endpoint
@@ -554,6 +628,16 @@ quality, confidence, provenance, evidence, and unresolved semantics.
 Resource-table preview pagination is independent of the bounded topology claim
 projection and therefore cannot remove a subnet attachment.
 
+Generated route candidates keep the topology join declarative. Coverage owns
+all forward/reverse candidate sequences; the node plug-in projection owns the
+per-candidate, per-visit forwarding decision and names one exact
+connectivity-domain matcher/key with the source and target attachment resources.
+Core performs the reusable equality join against the frozen topology snapshot.
+It requires one usable domain and one current usable attachment per side and
+fails closed on missing, ambiguous, conflicting, truncated, or down evidence.
+It never parses prefixes, addresses, VLANs, labels, node names, or explanation
+text to reconstruct the relationship.
+
 Legacy pairwise inter-node links remain a route-trace compatibility projection,
 not the physical shared-medium rendering. When segment records are present, the
 physical view suppresses those route-only links to avoid drawing both models at
@@ -584,6 +668,28 @@ page, and core-generated topology actions open an assembly member in the
 individual-node workspace at `/node`. The node workspace carries its frozen
 context and exposes a return target to the primary topology page, so navigation
 does not silently reconstruct a different time or member selection.
+
+The browser implementation itself is part of the core distribution. Core owns
+the generic pages, table/timeline/graph components, selection behavior,
+virtualization, and the `/v1/workspace` bootstrap schema. The core application
+opens the selected plug-in runtime and serves the same pages and routes for
+every valid session. The demo contributes an example generated revision store
+and non-web providers; it does not compose or replace the application.
+Plug-ins contribute validated declarative labels, icons,
+table/dashboard descriptors, hover/copy text, topology projections, and route
+explanations. The current v1 node plug-in schema does not carry browser
+topology-profile roles; the coordinator or assembly profile adapter attaches
+`presentation_roles` and optional `empty_action_label` around the selected
+projection. Plug-ins do not ship executable page templates or duplicate the
+core frontend. A full node workspace declares
+`history_mode: server-windowed`; a bounded topology member snapshot declares
+`point-in-time` so the generic UI does not invent unavailable history.
+
+The all-node route table may include a plug-in inventory row with no candidate
+path, for example a null-scenario local route. Such a row is preserved with
+`traceable: false` and an empty trace request. The core browser renders it as
+non-actionable rather than fabricating a destination or borrowing a candidate
+from another row.
 
 ## 8. Route and forwarding calculation
 
@@ -618,6 +724,19 @@ references, then opens/closes `forwarding_interval` rows. Conformance tests
 periodically compare incremental output with a clean full projection so stale
 derived objects cannot accumulate silently. A plug-in never performs LPM or
 returns a final route answer; those algorithms remain core-owned.
+
+The node browser uses a smaller capability-gated adapter before asking for a
+route explanation. The coordinator advertises bounded node/revision-qualified
+route choices, exact opaque `route_id` values, executable basis kinds, and
+plug-in provenance. The core frontend selects only an advertised `route_id`;
+it does not invent a destination, VRF, route family, label/SID, or fallback
+resolver. The coordinator resolves that exact identity through the selected
+node's projection/resolver and rejects unknown IDs. The current v1 Python
+protocol has no separate route-catalog hook: a production coordinator derives
+this browser capability from `FORWARDING_PROJECTION` or another versioned
+plug-in projection. A point-in-time member snapshot that lacks a matching
+node-local response reports route resolution unavailable instead of reaching
+into a different global revision.
 
 Single-node route resolution at time `t` is:
 
@@ -710,12 +829,15 @@ Counterfactual output may be compared or displayed, but cannot replace
 observed projection or serve as reachability ground truth.
 
 The packet IR, validation helpers, step request/result types, and optional hook
-are implemented in the core package. The bundled multi-node demo now evaluates
-demo-provider packet transitions for eight advanced scenarios and correlates
-them with route steps. It is not yet a production coordinator that discovers
-and invokes `resolve_forwarding_step()` at every installed member boundary.
-Architecture and examples must preserve that distinction until runtime
-orchestration is implemented.
+are implemented in the core package. The generated demo exercises them with
+demo-provider transitions correlated to generated route and forwarding
+evidence; its current case inventory is maintained in the
+[demo guide](../demo/README.md#generated-mock-dumps). This is not yet a
+production coordinator that discovers and invokes `resolve_forwarding_step()`
+across independently selected plug-ins at every member boundary. The current
+core runtime hosts one selected plug-in session; architecture and examples must
+preserve that distinction until heterogeneous per-member orchestration is
+implemented.
 
 ### 8.1 Cross-node multi-path route traces
 
@@ -991,13 +1113,12 @@ code.
 
 ### 9.3 Frontend deployment boundary
 
-Browser source belongs to the demo distribution under `demo/frontend/`; the
-core source package and core wheel contain no backend application, page
-template, or browser asset. A frontend-owned, versioned manifest maps public
-page routes to HTML files and declares the asset directory. The demo backend's
-host adapter validates that manifest, mounts only its assets, and can be
-disabled entirely for split-process development. It does not select page
-filenames, construct HTML, or expose the page directory below the asset mount.
+Browser source belongs to the core distribution under `frontend/`. A
+frontend-owned, versioned manifest maps public page routes to HTML files and
+declares the asset directory. The optional core web adapter validates that
+manifest, mounts only its assets, and can be disabled entirely for
+split-process development. It does not select page filenames, construct HTML,
+or expose the page directory below the asset mount.
 
 The integrated deployment remains same-origin because the browser clients use
 root-relative, revision-scoped API URLs. A dependency-free development server
@@ -1006,21 +1127,21 @@ That proxy is deployment tooling, not a plugin surface. Plugins still contribute
 only validated data and presentation descriptors; they cannot ship executable
 browser code or templates.
 
-The **demo** source distribution and wheel must both include the frontend
-distribution; the core artifacts must not. An explicit
+The **core** source distribution and wheel must both include the frontend
+distribution; the demo artifacts must not duplicate it. An explicit
 `ROUTER_DUMP_FRONTEND_DIR` can select another complete build, while
-`ROUTER_DUMP_SERVE_FRONTEND=0` or the demo's `--api-only` option leaves only the
-backend endpoints enabled.
+`ROUTER_DUMP_SERVE_FRONTEND=0` or the core CLI's `--api-only` option leaves
+only the backend endpoints enabled.
 
 ### 9.4 Why not a Python-only browser framework
 
 Parsing, correlation, reconstruction, APIs, and route logic remain Python 3.12;
-the reference FastAPI host lives in the demo distribution rather than the core
-library. A Trace Compass-like browser timeline with 100K items still needs
-browser-native Canvas/WebGL code. Dash, Panel, or server-rendered templates can
-prototype dashboards, but they do not remove JavaScript and would make the
-custom lane interaction harder. Keep the TypeScript surface thin and
-domain-free.
+the reusable FastAPI asset host lives in the core's optional `web` boundary,
+and the concrete application composition is also core-owned. A
+Trace Compass-like browser timeline with 100K items still needs browser-native
+Canvas/WebGL code. Dash, Panel, or server-rendered templates can prototype
+dashboards, but they do not remove JavaScript and would make the custom lane
+interaction harder. Keep the JavaScript surface thin and domain-free.
 
 ## 10. API surface
 
@@ -1052,6 +1173,7 @@ GET  /v1/revisions/{revision_id}/timeline/clusters/{cluster_id}/events?cursor=
 POST /v1/revisions/{revision_id}/graph/query
 GET  /v1/revisions/{revision_id}/events/{event_id}
 GET  /v1/revisions/{revision_id}/events/{event_id}/source-context
+GET  /v1/revisions/{revision_id}/routes/capabilities
 POST /v1/revisions/{revision_id}/routes/resolve
 GET  /v1/revisions/{revision_id}/consistency-findings
 GET  /v1/revisions/{revision_id}/export?format=jsonl|arrow|parquet
