@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from .boundary import private_identifier_paths
+from .boundary import node_dump_projection_issue
 from .model import (
     ScenarioDocument,
     ScenarioValidationError,
@@ -862,19 +862,14 @@ def reconstruct_scenario(
         str(medium["medium_id"]) for medium in document.media
     )
     for node_id, plan in result.items():
-        leaked_path = next(
-            private_identifier_paths(
-                plan,
-                private_medium_ids,
-                location=f"node_plans.{node_id}",
-            ),
-            None,
+        issue = node_dump_projection_issue(
+            plan,
+            private_medium_ids,
+            location=f"node_plans.{node_id}",
         )
-        if leaked_path is not None:
-            raise ScenarioValidationError(
-                f"{leaked_path} copies a private physical medium identifier "
-                "into a node-local observation"
-            )
+        if issue is not None:
+            path, message = issue
+            raise ScenarioValidationError(f"{path}: {message}")
     return {
         "at_time_ns": reconstruction_time_ns,
         "capture_time_ns": document.capture_time_ns,

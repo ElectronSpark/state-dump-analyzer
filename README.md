@@ -44,7 +44,10 @@ observations, and generate topology-free dump files. Its saved project,
 is also the canonical authoring source for future bundled demo dumps. The
 authoring tool, demo materializer, and analyzer remain separate packages: the
 demo reads that JSON through a small standard-library adapter and never imports
-the authoring tool.
+the authoring tool. Attachment `properties` in that save are always
+authoring-only; only an explicit `node_local_observation` may supply exported
+node evidence. A top-level attachment resource ID is used only as the local
+identity fallback.
 
 ## Run the demo
 
@@ -295,7 +298,7 @@ own device and protocol meaning.
 
 | Owner | Responsibilities |
 |---|---|
-| Core | The `router-dump-analyzer` executable, plug-in loading, FastAPI routes and lifecycle, frontend hosting, immutable revisions, safe archive inventory, source records, generic temporal storage, uncertainty, bounded queries, pagination, API contracts, exact connectivity-domain/attachment joins over plug-in-declared keys, LPM, bounded recursive/multipath traversal, exact packet-state continuity and MTU arithmetic over matching declared bases, immutable flow direction, exact endpoint-goal and typed-policy comparison, bidirectional aggregation, cycle/limit handling, and the reusable browser application |
+| Core | The `router-dump-analyzer` executable, plug-in loading, FastAPI routes and lifecycle, frontend hosting, immutable revisions, safe archive inventory, source records, generic temporal storage, uncertainty, bounded queries, pagination, API contracts, collision-safe client publication and redaction, exact connectivity-domain/attachment joins over plug-in-declared keys, LPM, bounded recursive/multipath traversal, exact packet-state continuity and MTU arithmetic over matching declared bases, immutable flow direction, exact endpoint-goal and typed-policy comparison, bidirectional aggregation, cycle/limit handling, and the reusable browser application |
 | Device plug-ins | Dump recognition, input parsing, resource types and typed/compound keys, state transitions, relationships, forwarding-object projection, candidate paths and directional decisions, candidate rank/group semantics, connectivity-domain matcher/key meaning, packet-layer/action/overhead and disposition semantics, typed policy scopes, endpoint attachments and local terminal classification, topology classifications, consistency rules, route-resolution text, icons, and dashboard descriptors |
 | Federation/linker plug-ins | Matching endpoint and boundary claims between members, preserving or explicitly mapping compatible packet/scope contracts, and explaining inter-node connectivity without assuming every device uses the same plug-in |
 

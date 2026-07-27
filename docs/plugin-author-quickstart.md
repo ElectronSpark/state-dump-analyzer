@@ -188,6 +188,36 @@ property from becoming a search oracle or a public `condition_field` value.
 `client_visible` defaults to `True` for compatibility, so the declaration
 itself is the allowlist.
 
+A dotted descriptor name such as `credentials.token` removes that relative
+path anywhere inside a plug-in property payload, including objects nested in
+lists. It also removes a literal key named `credentials.token`. Property rules
+are deliberately scoped to plug-in-owned containers such as `state`, `key`,
+`properties`, `attributes`, `before`, `after`, and `result`; they never delete
+a same-named core field such as an event's `action`, a resource's
+`resource_id`, or the workspace `revision_id`. Do not try to hide a core
+envelope field by declaring a colliding property name.
+
+Keep public metadata typed. `evidence`, `provenance`, `unknown_fields`, and
+`incarnation` are bounded normalized envelopes, not extension dictionaries.
+Put device-specific values in declared properties. The core publishes only
+the normalized metadata fields and scalar shapes it knows, and drops
+unrecognized metadata children. An incarnation is a string or integer, never
+an object or Boolean.
+
+For event payload redaction, identify resources explicitly. Use an event-level
+`resource_kind`, typed `subjects`/`effects`, and canonical IDs in
+`affected_resources`. The core resolves those IDs against the immutable
+resource catalog and applies every involved kind's policy. The generic event
+`kind` is the event classification and is never treated as a resource kind.
+An unresolved affected ID makes publication use the conservative union of
+sensitive fields. If a private property is also the descriptor's
+`condition_field`, public resource, interval, effect, and top-level event
+condition/status values become `unknown`.
+Nested `subject`, `affected_resources`, `effects`, and
+`relationship_effects` records are core-owned typed envelopes. Unknown
+children are dropped; put device-specific values under a declared property
+payload such as `properties`, `after`, or `result`.
+
 Never return HTML, JavaScript, CSS, SQL, remote URLs, or layout coordinates.
 The core owns the generic browser pages, widgets, interaction logic, and
 accessible rendering. Plug-ins contribute declarative domain presentation
@@ -501,6 +531,20 @@ the result, so a create cannot extend a resource outside its declared validity
 window. A delete followed by a create produces an absence gap for the same
 canonical resource ID.
 
+Topology change queries use the same half-open rule:
+`start_ns <= change_time_ns < end_ns`. An event on a shared boundary belongs
+only to the later adjacent window. Do not compensate by moving a timestamp or
+duplicating a change.
+
+When an optional runtime topology adapter declares relative reconstruction
+watermarks, scope each one by the exact node/member revision, plug-in run,
+status perspective, and topology projection. Provide `local_time_ns`,
+`clock_domain`, and `complete`; provide both absolute bounds or neither. A
+complete local-only watermark supports a relative query without a wall-clock
+transform. New adapters should declare these watermarks. Omitting them invokes
+only the legacy capture-time-minus-projection-lag compatibility path, which
+still needs the node clock mapping and is identified as legacy in the result.
+
 ## 7. Keep core and plug-in responsibilities separate
 
 Put a decision in the node/device plug-in when it depends on:
@@ -570,6 +614,21 @@ make a bidirectionally reachable flow inconsistent. Conversely, a complete
 return path that ends at the forward start but not the source endpoint is not
 successful. The executable endpoint-pair cases are in
 `tests/test_multi_node_route.py`.
+
+If a compatibility route executor advertises one fixed source/destination
+pair, a caller may supply that exact pair in either order. Reversing the pair
+selects the executor's opposite directional declarations while the response
+keeps the caller's requested `forward` or `reverse` label. Provide complete
+directional decisions for both orders. A fixed scenario whose declared
+destination has several possible attachments cannot be reversed safely unless
+it also declares an exact source-attachment contract; core rejects that
+ambiguous request.
+
+Always declare route group mode in new projections. `single_active` permits at
+most one selected path; `all_active` explicitly declares concurrent selected
+members. The legacy route-executor v1 omission is accepted only when zero or
+one path is selected, where it unambiguously means `single_active`. Omission
+with several selected paths fails instead of inventing ECMP.
 
 ### Packet transformations and trace-time forwarding
 
@@ -662,6 +721,11 @@ attribute:
    `evaluate_forwarding_traversal()` when you need a
    `ForwardingTraversalEvaluation`; its optional `.cycle` carries that report.
    A same-router revisit with changed context is not automatically a loop.
+
+Set an executor's `identity_complete=True` only after all cycle-relevant typed
+state is present. The compatibility field defaults to false. Repeating the
+same opaque key while identity is incomplete remains a repeated observation,
+not proof of a cycle; core still applies hop and recursion limits.
 
 Keep a policy-blocked candidate in output with its explanation. It is an
 intentional exclusion, not a failed physical link. Test at least an exact

@@ -149,6 +149,42 @@ class ConnectivityDomainReferenceTests(unittest.TestCase):
                 target_resource_id="p1/if/1",
             )
 
+    def test_shared_canonical_serializer_preserves_topology_error_contract(
+        self,
+    ) -> None:
+        reference = copy.deepcopy(self.reference)
+        reference["match"]["arguments"]["segment_key"] = {"not-json"}
+        with self.assertRaisesRegex(
+            ValueError,
+            "topology match arguments must be JSON-serializable",
+        ):
+            resolve_connectivity_domain_reference(
+                self.snapshot,
+                reference,
+                source_node_id="a",
+                target_node_id="p1",
+                source_resource_id="a/if/1",
+                target_resource_id="p1/if/1",
+            )
+
+    def test_unicode_keys_still_match_exactly(self) -> None:
+        reference = copy.deepcopy(self.reference)
+        snapshot = copy.deepcopy(self.snapshot)
+        key = {"site": "Montréal", "vrf": "蓝"}
+        reference["match"]["arguments"]["segment_key"] = key
+        snapshot["network_segments"][0]["match"]["segment_key"] = copy.deepcopy(
+            key
+        )
+        result = resolve_connectivity_domain_reference(
+            snapshot,
+            reference,
+            source_node_id="a",
+            target_node_id="p1",
+            source_resource_id="a/if/1",
+            target_resource_id="p1/if/1",
+        )
+        self.assertTrue(result.resolved)
+
 
 if __name__ == "__main__":
     unittest.main()

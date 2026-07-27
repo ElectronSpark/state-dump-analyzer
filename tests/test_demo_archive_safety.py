@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 import unittest
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from rsl_demo_plugin.archive import normalize_archive_member_name
 from rsl_demo_plugin.assembly_store import (
@@ -11,6 +12,15 @@ from rsl_demo_plugin.assembly_store import (
 from rsl_demo_generator import assembly as generator_assembly
 from rsl_demo_generator._archive import validate_archive_name
 from rsl_demo_plugin.scale_data import _safe_archive_member_name
+
+
+ARCHIVE_MEMBER_CONFORMANCE = (
+    Path(__file__).resolve().parents[1]
+    / "state-dump-generator"
+    / "tests"
+    / "fixtures"
+    / "archive-member-name-conformance.json"
+)
 
 
 class DemoArchiveSafetyTests(unittest.TestCase):
@@ -37,6 +47,21 @@ class DemoArchiveSafetyTests(unittest.TestCase):
             with self.subTest(unsafe=unsafe):
                 with self.assertRaises(ValueError):
                     normalize_archive_member_name(unsafe)
+
+    def test_normalizer_matches_shared_portability_vectors(self) -> None:
+        vectors = json.loads(
+            ARCHIVE_MEMBER_CONFORMANCE.read_text(encoding="utf-8")
+        )
+        for accepted in vectors["accepted"]:
+            with self.subTest(accepted=accepted):
+                self.assertEqual(
+                    PurePosixPath(accepted),
+                    normalize_archive_member_name(accepted),
+                )
+        for rejected in vectors["rejected"]:
+            with self.subTest(rejected=rejected):
+                with self.assertRaises(ValueError):
+                    normalize_archive_member_name(rejected)
 
     def test_generator_archive_api_is_the_shared_normalizer_alias(self) -> None:
         self.assertIs(validate_archive_name, normalize_archive_member_name)

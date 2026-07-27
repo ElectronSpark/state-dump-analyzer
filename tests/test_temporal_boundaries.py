@@ -175,7 +175,7 @@ class TemporalReplayOrderingTests(unittest.TestCase):
             {"relationship_types": []},
             self._perspective(),
             100,
-            100,
+            101,
             {"node-a/layer/THING/1"},
             10,
             after=None,
@@ -190,6 +190,48 @@ class TemporalReplayOrderingTests(unittest.TestCase):
         self.assertEqual(changes[0]["after"]["status"], "up")
         self.assertEqual(changes[1]["before"]["status"], "up")
         self.assertEqual(changes[1]["after"]["status"], "down")
+
+    def test_adjacent_change_windows_do_not_duplicate_boundary_events(
+        self,
+    ) -> None:
+        service = self._service(
+            [
+                self._event(
+                    "boundary",
+                    100,
+                    10,
+                    "create",
+                    {"status": "up"},
+                )
+            ]
+        )
+
+        before, _ = service._changes(
+            {"relationship_types": []},
+            self._perspective(),
+            0,
+            100,
+            {"node-a/layer/THING/1"},
+            10,
+            after=None,
+            position=0,
+        )
+        after, _ = service._changes(
+            {"relationship_types": []},
+            self._perspective(),
+            100,
+            101,
+            {"node-a/layer/THING/1"},
+            10,
+            after=None,
+            position=0,
+        )
+
+        self.assertEqual(before, [])
+        self.assertEqual(
+            [item["event_uid"] for item in after],
+            ["boundary"],
+        )
 
     def test_missing_reader_and_future_event_do_not_claim_native_evidence(self) -> None:
         service = self._service(

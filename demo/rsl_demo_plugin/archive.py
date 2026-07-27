@@ -33,6 +33,16 @@ NORMALIZED_SCALE_PREFIX = (
 NORMALIZED_SCALE_MANIFEST_MEMBER = (
     f"{NORMALIZED_SCALE_PREFIX}/{MANIFEST_MEMBER_NAME}"
 )
+_WINDOWS_RESERVED_MEMBER_NAMES = frozenset(
+    {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        *(f"com{index}" for index in range(1, 10)),
+        *(f"lpt{index}" for index in range(1, 10)),
+    }
+)
 
 
 def normalize_archive_member_name(logical_name: str) -> PurePosixPath:
@@ -54,20 +64,12 @@ def normalize_archive_member_name(logical_name: str) -> PurePosixPath:
         or path.as_posix() != logical_name
     ):
         raise ValueError(f"unsafe archive member name: {logical_name!r}")
-    reserved_windows_names = {
-        "con",
-        "prn",
-        "aux",
-        "nul",
-        *(f"com{index}" for index in range(1, 10)),
-        *(f"lpt{index}" for index in range(1, 10)),
-    }
     for part in path.parts:
         base_name = part.split(".", 1)[0].casefold()
         if (
             ":" in part
             or part.endswith((".", " "))
-            or base_name in reserved_windows_names
+            or base_name in _WINDOWS_RESERVED_MEMBER_NAMES
         ):
             raise ValueError(f"unsafe archive member name: {logical_name!r}")
     return path

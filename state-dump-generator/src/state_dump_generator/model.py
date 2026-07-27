@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .boundary import forbidden_authoring_paths, private_identifier_paths
+from .boundary import node_dump_projection_issue
 from .path_safety import resolve_regular_file
 
 
@@ -193,12 +193,11 @@ def _attachment(
                 f"{label}.node_local_observation.properties must be an object"
             )
     else:
-        # Schema-v1 originally treated attachment.properties as node-local
-        # interface evidence.  Normalize that legacy shape into the explicit
-        # export envelope so old saved projects keep their exact output while
-        # newly authored projects can keep arbitrary metadata private.
+        # Attachment properties belong only to the private authoring model.
+        # Node-local evidence crosses the dump boundary exclusively through
+        # the explicit observation envelope.
         observation = {}
-        observation_properties = properties
+        observation_properties = {}
     raw_observation_resource_id = observation.get(
         "resource_id",
         observation.get("local_resource_id", resource_id),
@@ -220,7 +219,7 @@ def _attachment(
     }
     observation_status = observation.get(
         "observed_state",
-        observation.get("status", item.get("observed_state")),
+        observation.get("status"),
     )
     if observation_status is not None:
         node_local_observation["observed_state"] = str(observation_status)
@@ -428,10 +427,24 @@ def scenario_from_dict(value: Mapping[str, Any]) -> ScenarioDocument:
         _normalize_event(item, index)
         for index, item in enumerate(_sequence(raw_events, "events"))
     )
+    dump_node_ids = frozenset(
+        str(node["node_id"])
+        for node in nodes
+        if bool(node.get("dump_enabled", True))
+    )
     latest_scheduled_ns = max(
         (
             int(event["timestamp_ns"])
-            + _propagation_horizon_ns(event.get("propagation", {}))
+            + _propagation_horizon_ns(
+                event.get("propagation", {}),
+                target_count=len(
+                    _propagation_target_ids(
+                        media,
+                        event,
+                        dump_node_ids,
+                    )
+                ),
+            )
             for event in events
         ),
         default=0,
@@ -463,8 +476,10 @@ def scenario_from_dict(value: Mapping[str, Any]) -> ScenarioDocument:
     return document
 
 
-def _propagation_horizon_ns(value: Any) -> int:
-    if not isinstance(value, Mapping):
+def _propagation_horizon_ns(value: Any, *, target_count: int) -> int:
+    """Return a safe upper bound for every generated target observation."""
+
+    if not isinstance(value, Mapping) or target_count < 1:
         return 0
     if "delay_ns" in value or "jitter_ns" in value:
         delay = _integer(value.get("delay_ns", 0), "propagation.delay_ns")
@@ -478,7 +493,97 @@ def _propagation_horizon_ns(value: Any) -> int:
             value.get("jitter_ms", 0),
             "propagation.jitter_ms",
         ) * 1_000_000
-    return delay + jitter
+    cadence = str(value.get("cadence", "parallel")).casefold()
+    final_ordinal = target_count - 1
+    if cadence == "serial":
+        delay += final_ordinal * max(delay, 1_000_000)
+    elif cadence == "waves":
+        delay += (final_ordinal // 2) * max(delay // 2, 1_000_000)
+    return max(0, delay + abs(jitter))
+
+
+def _propagation_target_ids(
+    media: Sequence[Mapping[str, Any]],
+    event: Mapping[str, Any],
+    dump_node_ids: frozenset[str],
+) -> tuple[str, ...]:
+    """Mirror the simulator's generated-observation target selection."""
+
+    propagation = event.get("propagation", {})
+    if not isinstance(propagation, Mapping) or not propagation:
+        return ()
+    if (
+        propagation.get("materialized") is True
+        or propagation.get("generated") is True
+    ):
+        return ()
+    physical = _event_is_physical(event)
+    default_mode = "manual" if physical else "best-effort"
+    mode = str(propagation.get("mode", default_mode)).casefold()
+    if mode in {"manual", "none", "suppressed"}:
+        return ()
+
+    explicit = propagation.get(
+        "targets",
+        propagation.get("target_node_ids"),
+    )
+    if isinstance(explicit, Sequence) and not isinstance(explicit, (str, bytes)):
+        candidates = list(dict.fromkeys(str(item) for item in explicit))
+    else:
+        target_mode = str(
+            propagation.get(
+                "target_mode",
+                propagation.get("targets_mode", "neighbors"),
+            )
+        ).casefold()
+        if target_mode in {"all", "all-nodes", "all_nodes"}:
+            candidates = sorted(dump_node_ids)
+        elif physical:
+            medium_id = str(
+                event.get(
+                    "medium_id",
+                    event.get("link_id", event.get("target_id", "")),
+                )
+            )
+            medium = next(
+                (
+                    item
+                    for item in media
+                    if str(item["medium_id"]) == medium_id
+                ),
+                None,
+            )
+            candidates = (
+                [
+                    str(item["node_id"])
+                    for item in medium.get("attachments", [])
+                    if str(item["node_id"]) in dump_node_ids
+                ]
+                if medium is not None
+                else []
+            )
+        else:
+            source_node_id = str(event.get("node_id", ""))
+            neighbors: set[str] = set()
+            for medium in media:
+                participants = {
+                    str(item["node_id"])
+                    for item in medium.get("attachments", [])
+                }
+                if source_node_id in participants:
+                    neighbors.update(participants)
+            candidates = sorted(neighbors)
+
+    if not physical:
+        source_node_id = str(event.get("node_id", ""))
+        candidates = [
+            node_id for node_id in candidates if node_id != source_node_id
+        ]
+    return tuple(
+        node_id
+        for node_id in dict.fromkeys(candidates)
+        if node_id in dump_node_ids
+    )
 
 
 def load_scenario(path: Path | str) -> ScenarioDocument:
@@ -552,11 +657,13 @@ def validate_scenario(value: ScenarioDocument | Mapping[str, Any]) -> dict[str, 
     node_ids = [str(node["node_id"]) for node in document.nodes]
     if len(node_ids) != len(set(node_ids)):
         errors.append(_issue("nodes", "node IDs must be unique"))
-    dump_nodes = {
+    medium_ids = [str(medium["medium_id"]) for medium in document.media]
+    private_medium_ids = frozenset(medium_ids)
+    dump_nodes = frozenset(
         str(node["node_id"])
         for node in document.nodes
         if node.get("dump_enabled", True)
-    }
+    )
     if not dump_nodes:
         errors.append(
             _issue("nodes", "at least one dump-producing node is required")
@@ -580,25 +687,16 @@ def validate_scenario(value: ScenarioDocument | Mapping[str, Any]) -> dict[str, 
         for resource_index, resource in enumerate(
             node.get("initial_resources", [])
         ):
-            first_forbidden = next(
-                forbidden_authoring_paths(
-                    resource,
-                    location=(
-                        f"nodes[{node_index}].initial_resources"
-                        f"[{resource_index}]"
-                    ),
+            issue = node_dump_projection_issue(
+                resource,
+                private_medium_ids,
+                location=(
+                    f"nodes[{node_index}].initial_resources"
+                    f"[{resource_index}]"
                 ),
-                None,
             )
-            if first_forbidden is not None:
-                path, key = first_forbidden
-                errors.append(
-                    _issue(
-                        path,
-                        f"field {key!r} is private authoring truth and cannot enter a node dump",
-                    )
-                )
-    medium_ids = [str(medium["medium_id"]) for medium in document.media]
+            if issue is not None:
+                errors.append(_issue(*issue))
     if len(medium_ids) != len(set(medium_ids)):
         errors.append(_issue("media", "medium/link IDs must be unique"))
     for medium_index, medium in enumerate(document.media):
@@ -630,43 +728,16 @@ def validate_scenario(value: ScenarioDocument | Mapping[str, Any]) -> dict[str, 
                 )
             seen_attachments.add(key)
             node_local_observation = attachment["node_local_observation"]
-            first_forbidden = next(
-                forbidden_authoring_paths(
-                    node_local_observation,
-                    location=(
-                        f"media[{medium_index}].attachments"
-                        f"[{attachment_index}].node_local_observation"
-                    ),
+            issue = node_dump_projection_issue(
+                node_local_observation,
+                private_medium_ids,
+                location=(
+                    f"media[{medium_index}].attachments"
+                    f"[{attachment_index}].node_local_observation"
                 ),
-                None,
             )
-            if first_forbidden is not None:
-                path, forbidden_key = first_forbidden
-                errors.append(
-                    _issue(
-                        path,
-                        f"field {forbidden_key!r} is private authoring truth and cannot enter a node dump",
-                    )
-                )
-            private_value_path = next(
-                private_identifier_paths(
-                    node_local_observation,
-                    frozenset(medium_ids),
-                    location=(
-                        f"media[{medium_index}].attachments"
-                        f"[{attachment_index}].node_local_observation"
-                    ),
-                ),
-                None,
-            )
-            if private_value_path is not None:
-                errors.append(
-                    _issue(
-                        private_value_path,
-                        "node-local observation copies a private physical "
-                        "medium identifier",
-                    )
-                )
+            if issue is not None:
+                errors.append(_issue(*issue))
     event_ids = [str(event["event_id"]) for event in document.events]
     if len(event_ids) != len(set(event_ids)):
         errors.append(_issue("events", "event IDs must be unique"))
@@ -755,22 +826,26 @@ def validate_scenario(value: ScenarioDocument | Mapping[str, Any]) -> dict[str, 
                             )
                         )
         properties = event.get("properties", {})
-        first_forbidden = next(
-            forbidden_authoring_paths(
-                properties,
-                location=f"events[{event_index}].properties",
-            ),
-            None,
+        issue = node_dump_projection_issue(
+            properties,
+            private_medium_ids,
+            location=f"events[{event_index}].properties",
         )
-        if first_forbidden is not None:
-            path, key = first_forbidden
-            errors.append(
-                _issue(
-                    path,
-                    f"field {key!r} is private authoring truth and cannot enter a node dump",
-                )
+        if issue is not None:
+            errors.append(_issue(*issue))
+        propagation_targets = _propagation_target_ids(
+            document.media,
+            event,
+            dump_nodes,
+        )
+        if (
+            timestamp_ns
+            + _propagation_horizon_ns(
+                propagation,
+                target_count=len(propagation_targets),
             )
-        if timestamp_ns + _propagation_horizon_ns(propagation) > document.capture_time_ns:
+            > document.capture_time_ns
+        ):
             warnings.append(
                 _issue(
                     f"events[{event_index}].propagation",

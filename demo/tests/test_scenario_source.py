@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
 import tomllib
 import unittest
@@ -78,6 +80,15 @@ class DemoScenarioSourceTests(unittest.TestCase):
             },
             {link.segment_id for link in source.links},
         )
+        attachments = [
+            attachment
+            for medium in raw["media"]
+            for attachment in medium["attachments"]
+        ]
+        self.assertTrue(
+            all("node_local_observation" in item for item in attachments)
+        )
+        self.assertTrue(all("properties" not in item for item in attachments))
 
     def test_explicit_history_contains_distinct_temporal_cases(self) -> None:
         source = load_default_scenario_source()
@@ -188,9 +199,9 @@ class DemoScenarioSourceTests(unittest.TestCase):
 
     def test_loader_rejects_disagreeing_local_evidence(self) -> None:
         value = json.loads(DEFAULT_SCENARIO_PATH.read_text(encoding="utf-8"))
-        value["media"][0]["attachments"][1]["properties"][
-            "segment_key"
-        ] = "different-observed-domain"
+        value["media"][0]["attachments"][1]["node_local_observation"][
+            "properties"
+        ]["segment_key"] = "different-observed-domain"
 
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "invalid.scenario.json"
@@ -241,6 +252,64 @@ class DemoScenarioSourceTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["ok"], True)
+
+    def test_canonical_save_generates_topology_free_node_dumps(self) -> None:
+        environment = dict(os.environ)
+        environment["PYTHONPATH"] = str(
+            REPOSITORY_ROOT / "state-dump-generator" / "src"
+        )
+        raw = json.loads(DEFAULT_SCENARIO_PATH.read_text(encoding="utf-8"))
+        private_medium_ids = {
+            str(item["medium_id"]).encode()
+            for item in raw["media"]
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "assembly.tgz"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "state_dump_generator",
+                    "generate",
+                    str(DEFAULT_SCENARIO_PATH),
+                    "--output",
+                    str(output),
+                ],
+                cwd=REPOSITORY_ROOT,
+                env=environment,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=15,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with tarfile.open(output, mode="r:gz") as outer:
+                node_members = [
+                    member
+                    for member in outer.getmembers()
+                    if member.isfile() and member.name.startswith("nodes/")
+                ]
+                self.assertEqual(len(node_members), 10)
+                nested_content: list[bytes] = []
+                for member in node_members:
+                    stream = outer.extractfile(member)
+                    assert stream is not None
+                    with tarfile.open(
+                        fileobj=io.BytesIO(stream.read()),
+                        mode="r:gz",
+                    ) as nested:
+                        for child in nested.getmembers():
+                            if not child.isfile():
+                                continue
+                            child_stream = nested.extractfile(child)
+                            assert child_stream is not None
+                            nested_content.append(child_stream.read())
+        combined = b"\n".join(nested_content)
+        for private_medium_id in private_medium_ids:
+            self.assertNotIn(private_medium_id, combined)
+        self.assertNotIn(b"physical_topology", combined)
+        self.assertNotIn(b"peer_node", combined)
+        self.assertNotIn(b"remote_port", combined)
 
 
 if __name__ == "__main__":

@@ -8,9 +8,10 @@ two endpoint attachments are current and usable.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any, Mapping
+
+from .canonical import canonical_json
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,14 +50,11 @@ class ConnectivityDomainBinding:
         }
 
 
-def _canonical_json(value: Any) -> str:
+def _canonical_topology_key(value: Any) -> str:
+    """Use the shared canonical serializer with this API's error contract."""
+
     try:
-        return json.dumps(
-            value,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        return canonical_json(value)
     except (TypeError, ValueError) as error:
         raise ValueError(
             "topology match arguments must be JSON-serializable"
@@ -125,7 +123,7 @@ def resolve_connectivity_domain_reference(
         raise ValueError(
             "topology reference requires arguments.segment_key"
         )
-    requested_key = _canonical_json(arguments["segment_key"])
+    requested_key = _canonical_topology_key(arguments["segment_key"])
     requested_contract_version = match.get("matcher_contract_version")
     if requested_contract_version is not None and (
         not isinstance(requested_contract_version, str)
@@ -157,7 +155,10 @@ def resolve_connectivity_domain_reference(
             != requested_contract_version
         ):
             continue
-        if _canonical_json(normalized_match.get("segment_key")) != requested_key:
+        if (
+            _canonical_topology_key(normalized_match.get("segment_key"))
+            != requested_key
+        ):
             continue
         candidates.append(raw_domain)
 

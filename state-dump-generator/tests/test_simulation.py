@@ -210,6 +210,8 @@ class SimulationTests(unittest.TestCase):
         attachment = value["media"][0]["attachments"][0]  # type: ignore[index]
         attachment["properties"] = {
             "layout_group": "private-editor-group",
+            "peer_node": "r2",
+            "remote_port": "eth1",
             # A private ID is allowed in authoring-only metadata because the
             # explicit projection envelope prevents it from crossing.
             "apparently_safe_key": "private-wire",
@@ -266,26 +268,75 @@ class SimulationTests(unittest.TestCase):
         serialized = repr(plan)
         self.assertNotIn("layout_group", serialized)
         self.assertNotIn("private-editor-group", serialized)
+        self.assertNotIn("peer_node", serialized)
+        self.assertNotIn("remote_port", serialized)
+        self.assertNotIn("eth1", repr(interface))
         self.assertNotIn("private-wire", serialized)
 
-    def test_private_medium_id_is_rejected_inside_explicit_local_evidence(self) -> None:
+    def test_private_medium_id_is_rejected_in_identity_bearing_evidence(
+        self,
+    ) -> None:
+        for identity_field in (
+            "segment_key",
+            "neighbor_id",
+            "peer_id",
+            "attachment_id",
+            "interface_id",
+            "connection_id",
+            "candidate_ids",
+        ):
+            with self.subTest(identity_field=identity_field):
+                value = base_scenario()
+                attachment = value["media"][0]["attachments"][0]  # type: ignore[index]
+                attachment["properties"] = {
+                    "apparently_safe_key": "authoring-only-value",
+                }
+                attachment["node_local_observation"] = {
+                    "resource_id": "interface:r1-uplink",
+                    "properties": {
+                        identity_field: (
+                            ["private-wire"]
+                            if identity_field.endswith("_ids")
+                            else "private-wire"
+                        ),
+                    },
+                }
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "private physical medium identifier",
+                ):
+                    compile_scenario(value)
+
+    def test_private_medium_text_is_allowed_in_non_identity_evidence(
+        self,
+    ) -> None:
         value = base_scenario()
         attachment = value["media"][0]["attachments"][0]  # type: ignore[index]
-        attachment["properties"] = {
-            "apparently_safe_key": "authoring-only-value",
-        }
         attachment["node_local_observation"] = {
             "resource_id": "interface:r1-uplink",
             "properties": {
-                "apparently_safe_key": "private-wire",
+                "operator_note": "private-wire",
             },
         }
 
-        with self.assertRaisesRegex(
-            ValueError,
-            "private physical medium identifier",
-        ):
-            compile_scenario(value)
+        plan = compile_scenario(value)["r1"]
+        interface = next(
+            item
+            for item in plan["final_state"]
+            if item["resource_id"] == "interface:r1-uplink"
+        )
+        self.assertEqual(interface["properties"]["operator_note"], "private-wire")
+
+    def test_ordinary_state_and_type_words_are_valid_private_medium_ids(
+        self,
+    ) -> None:
+        for medium_id in ("up", "interface"):
+            with self.subTest(medium_id=medium_id):
+                value = base_scenario()
+                value["media"][0]["medium_id"] = medium_id  # type: ignore[index]
+                plan = compile_scenario(value)
+                self.assertEqual(plan["r1"]["final_state"][0]["status"], "up")
 
     def test_final_compile_is_the_final_reconstruction_node_plan(self) -> None:
         value = base_scenario()
@@ -355,9 +406,11 @@ class SimulationTests(unittest.TestCase):
     def test_as_of_time_must_be_inside_the_saved_capture(self) -> None:
         value = base_scenario()
         for invalid in (-1, 20_000_000_001, True, 1.5):
-            with self.subTest(invalid=invalid):
-                with self.assertRaisesRegex(ValueError, "at_time_ns"):
-                    reconstruct_scenario(value, at_time_ns=invalid)
+            with (
+                self.subTest(invalid=invalid),
+                self.assertRaisesRegex(ValueError, "at_time_ns"),
+            ):
+                reconstruct_scenario(value, at_time_ns=invalid)
 
     def test_past_edits_replay_to_the_final_snapshot(self) -> None:
         value = base_scenario()

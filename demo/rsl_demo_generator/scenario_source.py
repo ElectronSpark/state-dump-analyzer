@@ -450,52 +450,68 @@ def _attachment_evidence(
     attachment: Mapping[str, Any],
     field: str,
 ) -> dict[str, Any]:
-    properties = _object(attachment.get("properties"), f"{field}.properties")
+    observation = _object(
+        attachment.get("node_local_observation"),
+        f"{field}.node_local_observation",
+    )
+    properties = _object(
+        observation.get("properties"),
+        f"{field}.node_local_observation.properties",
+    )
     resource_id = _identifier(
-        properties.get("local_resource_id"),
-        f"{field}.properties.local_resource_id",
+        observation.get("resource_id"),
+        f"{field}.node_local_observation.resource_id",
     )
     port_id = _identifier(attachment.get("port_id"), f"{field}.port_id")
     if resource_id != port_id:
         raise ScenarioSourceError(
-            f"{field} local_resource_id must equal its node-local port_id"
+            f"{field} node-local resource_id must equal its port_id"
         )
     return {
+        "resource_id": resource_id,
+        "observed_state": (
+            None
+            if observation.get("observed_state") is None
+            else _identifier(
+                observation["observed_state"],
+                f"{field}.node_local_observation.observed_state",
+            )
+        ),
         "segment_id": _identifier(
             properties.get("segment_key"),
-            f"{field}.properties.segment_key",
+            f"{field}.node_local_observation.properties.segment_key",
         ),
         "label": _text(
             properties.get("segment_label"),
-            f"{field}.properties.segment_label",
+            f"{field}.node_local_observation.properties.segment_label",
         ),
         "prefix": _text(
             properties.get("subnet_prefix"),
-            f"{field}.properties.subnet_prefix",
+            f"{field}.node_local_observation.properties.subnet_prefix",
         ),
         "attachment_kind": _identifier(
             properties.get("attachment_kind"),
-            f"{field}.properties.attachment_kind",
+            f"{field}.node_local_observation.properties.attachment_kind",
         ),
         "vlan_id": _optional_integer(
             properties.get("vlan_id"),
-            f"{field}.properties.vlan_id",
+            f"{field}.node_local_observation.properties.vlan_id",
         ),
         "lag_id": (
             None
             if properties.get("lag_id") is None
             else _identifier(
                 properties["lag_id"],
-                f"{field}.properties.lag_id",
+                f"{field}.node_local_observation.properties.lag_id",
             )
         ),
         "classification": _identifier(
             properties.get("classification", "underlay"),
-            f"{field}.properties.classification",
+            f"{field}.node_local_observation.properties.classification",
         ),
         "confidence": _identifier(
             properties.get("confidence", "exact"),
-            f"{field}.properties.confidence",
+            f"{field}.node_local_observation.properties.confidence",
         ),
     }
 
@@ -547,25 +563,24 @@ def _load_links(
                     f"media[{medium_index}] repeats node {node_id!r}"
                 )
             participants.append(node_id)
+            local_evidence = _attachment_evidence(attachment, field)
             attachment_resource_ids.append(
-                _identifier(
-                    attachment.get("port_id"),
-                    f"{field}.port_id",
-                )
+                str(local_evidence["resource_id"])
             )
             attachment_statuses.append(
-                _identifier(
-                    attachment.get(
-                        "observed_state",
-                        medium.get("state", "up"),
-                    ),
-                    f"{field}.observed_state",
+                str(
+                    local_evidence["observed_state"]
+                    or medium.get("state", "up")
                 )
             )
-            local_evidence = _attachment_evidence(attachment, field)
+            shared_evidence = {
+                key: value
+                for key, value in local_evidence.items()
+                if key not in {"resource_id", "observed_state"}
+            }
             if evidence is None:
-                evidence = local_evidence
-            elif local_evidence != evidence:
+                evidence = shared_evidence
+            elif shared_evidence != evidence:
                 raise ScenarioSourceError(
                     f"{field} disagrees with the other node-local "
                     "connectivity evidence on this medium"

@@ -357,7 +357,7 @@ function normalizeLink(link, index) {
 
 function normalizeEndpoint(value) {
   const endpoint = value && typeof value === "object" ? value : {};
-  return {
+  const normalized = {
     ...endpoint,
     node_id: stringValue(endpoint.node_id || endpoint.object_id || endpoint.id, ""),
     port: stringValue(endpoint.port || endpoint.port_id || endpoint.interface, "auto"),
@@ -369,6 +369,12 @@ function normalizeEndpoint(value) {
       ? structuredClone(endpoint.properties)
       : {},
   };
+  if (isPlainObject(endpoint.node_local_observation)) {
+    normalized.node_local_observation = structuredClone(
+      endpoint.node_local_observation,
+    );
+  }
+  return normalized;
 }
 
 function normalizeEvent(event) {
@@ -2578,21 +2584,50 @@ function canonicalMedia() {
 }
 
 function canonicalAttachment(endpoint) {
+  const portId = safeIdentifier(endpoint.port || endpoint.port_id, "auto");
+  const fallbackResourceId = safeIdentifier(
+    endpoint.resource_id || endpoint.local_resource_id,
+    `interface:${portId}`,
+  );
+  const suppliedObservation = isPlainObject(endpoint.node_local_observation)
+    ? structuredClone(endpoint.node_local_observation)
+    : {};
+  const observationResourceId = safeIdentifier(
+    suppliedObservation.resource_id ||
+      suppliedObservation.local_resource_id ||
+      fallbackResourceId,
+    fallbackResourceId,
+  );
+  const observationProperties = isPlainObject(suppliedObservation.properties)
+    ? structuredClone(suppliedObservation.properties)
+    : {};
   const attachment = {
     node_id: safeIdentifier(endpoint.node_id, "unknown-node"),
-    port_id: safeIdentifier(endpoint.port || endpoint.port_id, "auto"),
+    port_id: portId,
     properties: isPlainObject(endpoint.properties)
       ? structuredClone(endpoint.properties)
       : {},
+    node_local_observation: {
+      resource_id: observationResourceId,
+      resource_type: stringValue(
+        suppliedObservation.resource_type || suppliedObservation.type,
+        "interface",
+      ),
+      properties: observationProperties,
+    },
   };
   if (endpoint.resource_id || endpoint.local_resource_id) {
-    attachment.resource_id = safeIdentifier(
-      endpoint.resource_id || endpoint.local_resource_id,
-      `interface:${attachment.port_id}`,
-    );
+    attachment.resource_id = fallbackResourceId;
   }
   if (endpoint.observed_state !== undefined) {
     attachment.observed_state = String(endpoint.observed_state);
+  }
+  const suppliedObservationStatus =
+    suppliedObservation.observed_state ?? suppliedObservation.status;
+  if (suppliedObservationStatus !== undefined) {
+    attachment.node_local_observation.observed_state = String(
+      suppliedObservationStatus,
+    );
   }
   return attachment;
 }
@@ -2709,13 +2744,67 @@ function maximumPropagationHorizonMs() {
   return scenario.events.reduce((maximum, event) => {
     const propagation = event.propagation;
     if (!propagation || typeof propagation !== "object") return maximum;
-    const delay = Math.max(
+    const targetCount = propagationTargetsForEvent(event).length;
+    if (!targetCount) return maximum;
+    let delay = Math.max(
       0,
       finiteNumber(propagation.delay_ms ?? propagation.base_delay_ms, 0),
     );
-    const jitter = Math.max(0, finiteNumber(propagation.jitter_ms, 0));
+    const jitter = Math.abs(finiteNumber(propagation.jitter_ms, 0));
+    const finalOrdinal = targetCount - 1;
+    const cadence = stringValue(propagation.cadence, "parallel").toLowerCase();
+    if (cadence === "serial") {
+      delay += finalOrdinal * Math.max(delay, 1);
+    } else if (cadence === "waves") {
+      delay += Math.floor(finalOrdinal / 2) * Math.max(delay / 2, 1);
+    }
     return Math.max(maximum, delay + jitter);
   }, 0);
+}
+
+function propagationTargetsForEvent(event) {
+  const propagation = event.propagation;
+  if (
+    !propagation ||
+    typeof propagation !== "object" ||
+    propagation.materialized === true ||
+    propagation.generated === true
+  ) {
+    return [];
+  }
+  const physical =
+    event.scope === "physical" ||
+    event.target_type === "physical-link" ||
+    ["physical-link-state", "link-state", "medium-state"].includes(event.kind);
+  const mode = stringValue(
+    propagation.mode,
+    physical ? "manual" : "best-effort",
+  ).toLowerCase();
+  if (["manual", "none", "suppressed"].includes(mode)) return [];
+
+  const eligible = new Set(dumpNodes().map((node) => node.id));
+  let targets;
+  if (Array.isArray(propagation.targets || propagation.target_node_ids)) {
+    targets = propagation.targets || propagation.target_node_ids;
+  } else {
+    const targetMode = stringValue(
+      propagation.target_mode || propagation.targets_mode,
+      "neighbors",
+    ).toLowerCase();
+    if (["all", "all-nodes", "all_nodes"].includes(targetMode)) {
+      targets = [...eligible];
+    } else if (physical) {
+      const targetId = stringValue(event.target_id, "");
+      targets = physicalTargetNodes(linkById(targetId), targetId).map(
+        (node) => node.id,
+      );
+    } else {
+      targets = propagationNeighbors(event.node_id).map((node) => node.id);
+    }
+  }
+  return [...new Set(targets.map(String))].filter(
+    (nodeId) => eligible.has(nodeId) && (physical || nodeId !== event.node_id),
+  );
 }
 
 function safeIdentifier(value, fallback) {

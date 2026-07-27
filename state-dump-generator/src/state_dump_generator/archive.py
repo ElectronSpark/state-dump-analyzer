@@ -32,6 +32,18 @@ GENERATOR_NAME = "state-dump-generator"
 GZIP_LEVEL = 6
 
 _SAFE_SLUG = re.compile(r"[^A-Za-z0-9_.-]+")
+_WINDOWS_RESERVED_MEMBER_NAMES = frozenset(
+    {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        *(f"com{index}" for index in range(1, 10)),
+        *(f"lpt{index}" for index in range(1, 10)),
+    }
+)
+
+
 class ArchiveProjectionError(ValueError):
     """A compiled plan cannot safely be represented as a node dump."""
 
@@ -73,7 +85,12 @@ def canonical_jsonl_bytes(records: Iterable[Mapping[str, Any]]) -> bytes:
 def validate_member_name(value: str) -> str:
     """Validate and normalize a regular-file archive member name."""
 
-    if not isinstance(value, str) or not value or "\x00" in value:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value in {".", ".."}
+        or "\x00" in value
+    ):
         raise ArchiveProjectionError("archive member name must be non-empty text")
     if "\\" in value or re.match(r"^[A-Za-z]:", value):
         raise ArchiveProjectionError(f"unsafe archive member name: {value!r}")
@@ -83,6 +100,16 @@ def validate_member_name(value: str) -> str:
     normalized = path.as_posix()
     if normalized != value:
         raise ArchiveProjectionError(f"non-canonical archive member name: {value!r}")
+    for part in path.parts:
+        base_name = part.split(".", 1)[0].casefold()
+        if (
+            ":" in part
+            or part.endswith((".", " "))
+            or base_name in _WINDOWS_RESERVED_MEMBER_NAMES
+        ):
+            raise ArchiveProjectionError(
+                f"unsafe archive member name: {value!r}"
+            )
     return normalized
 
 
@@ -451,6 +478,8 @@ def build_node_dump_bytes(plan_value: Any, *, node_id_hint: str | None = None) -
 
 def _node_member_name(node_id: str, used: set[str]) -> str:
     slug = _SAFE_SLUG.sub("-", node_id.strip()).strip(".-") or "node"
+    if slug.split(".", 1)[0].casefold() in _WINDOWS_RESERVED_MEMBER_NAMES:
+        slug = f"node-{slug}"
     candidate = f"nodes/{slug}.tgz"
     counter = 2
     while candidate in used:

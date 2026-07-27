@@ -227,16 +227,22 @@ node-local evidence that may enter its router's dump:
 Only `node_local_observation` is eligible for interface snapshot and propagated
 physical-observation records. Attachment-level `properties` stay in the saved
 authoring project and private preview; the simulator never copies them into a
-node dump when the explicit envelope is present. The envelope is neutral
-generator JSON and does not depend on analyzer or plug-in types.
+node dump. This is true even when `node_local_observation` is absent. The
+top-level attachment `resource_id` (or legacy `local_resource_id`, then the
+port ID) is retained only as the fallback identity of that node's local
+interface record. Top-level `properties` and `observed_state` are not promoted
+into node-local evidence.
 
-Existing schema-v1 saves remain compatible. When an attachment has no
-`node_local_observation`, the loader performs a one-way normalization of the
-legacy `resource_id` / `local_resource_id`, `observed_state`, and `properties`
-fields into the canonical envelope. Saving the normalized document writes the
-explicit envelope, so subsequent edits have an unambiguous projection boundary.
-Forbidden authoring keys and any exact private medium ID are rejected inside
-the export envelope even when nested under an otherwise harmless key.
+Existing schema-v1 saves can still be opened, but authors must move every value
+that should cross the dump boundary into an explicit
+`node_local_observation`. Saving writes that explicit envelope; it does not
+silently reclassify authoring metadata as router evidence. The envelope is
+neutral generator JSON and does not depend on analyzer or plug-in types.
+Forbidden authoring keys are rejected recursively inside export-eligible
+values. An exact private medium ID is rejected when it appears in any
+identity-bearing field: built-in fields and plug-in-defined `*_id`, `*_ids`,
+`*_key`, or `*_keys` fields all participate. The same ordinary text in a
+non-identity note is not treated as topology identity.
 
 ## Best-effort propagation
 
@@ -264,6 +270,23 @@ The editor includes reusable starting patterns:
 Because generated observations remain ordinary editable events, patterns can be
 combined. For example, apply a link flap, suppress one endpoint's propagation,
 delay a transit node, and turn one route update into a failed attempt.
+
+### Capture horizon and cadence
+
+Validation computes the latest possible generated observation using the actual
+eligible target set, delay, absolute jitter bound, and cadence:
+
+- `parallel` schedules every target from the same base delay;
+- `serial` advances each target by another base-delay slot (at least 1 ms);
+- `waves` advances each pair of targets by half a base-delay slot (at least
+  1 ms).
+
+When that conservative horizon is later than `capture_time_ns`, validation
+returns a warning rather than changing the scenario. Observations after capture
+remain in the authoring plan but do not enter final snapshots or exported
+history. If capture time is omitted, the loader chooses a default at least one
+second beyond the calculated horizon. Explicit capture time always wins, which
+lets an author deliberately test incomplete propagation.
 
 ## Generated archive layout
 
@@ -300,10 +323,11 @@ configured offset. The private editor timeline is not exported as an absolute
 clock oracle. History rows also carry `source_sequence`, which preserves the
 author-defined order of changes that share one local timestamp.
 
-The archive boundary rejects forbidden authoring/oracle keys recursively and
-also rejects a private physical-medium identifier if it is copied into an
-export-eligible node-local value under an otherwise harmless key. A generated
-dump therefore contains only the attachment evidence declared in
+The generation boundary rejects forbidden authoring/oracle keys recursively
+and also rejects a private physical-medium identifier if it is copied into an
+export-eligible node-local identity field, including a plug-in-defined
+`*_id` or `*_key`. A generated dump therefore contains only the attachment
+evidence declared in
 `node_local_observation`, such as an interface, VLAN, or subnet observation,
 but not attachment-level authoring metadata or the editor's physical medium
 identity. The writer produces stable ordering, ownership metadata, and gzip

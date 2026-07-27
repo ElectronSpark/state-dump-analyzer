@@ -1,0 +1,28 @@
+{
+  "accepted": [
+    "manifest.json",
+    "nodes/router-1.tgz",
+    "logs/router/state.jsonl",
+    "unicode/rout\u00e9.json"
+  ],
+  "rejected": [
+    "",
+    ".",
+    "../escape",
+    "/absolute",
+    "windows\\path",
+    "C:/drive",
+    "./relative",
+    "nodes//router.tgz",
+    "nodes/CON.tgz",
+    "nodes/con.txt",
+    "nodes/AUX",
+    "nodes/NUL.json",
+    "nodes/COM1.bin",
+    "nodes/LPT9.bin",
+    "logs/trailing.",
+    "logs/trailing ",
+    "logs/name:stream",
+    "logs/nul\u0000byte"
+  ]
+}

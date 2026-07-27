@@ -92,6 +92,31 @@ owns this envelope; plug-ins supply the node label, descriptors, counts, and
 capabilities through their normalized output. Plug-ins never provide browser
 URLs or executable frontend code.
 
+Client publication applies property descriptors only inside plug-in-owned
+payload containers: `state`, `key`, `properties`, `attributes`, `before`,
+`after`, and `result`. A dotted descriptor name is a relative path through
+nested mappings and lists and also matches an exact literal dotted key. It is
+not a global key blacklist. Core structural fields such as revision, node,
+resource and event identity, event `kind`/`action`, affected-resource
+references, timestamps, interval bounds, descriptors, and capabilities remain
+present with their core values even when a plug-in property has the same name.
+
+Public `evidence`, `provenance`, `unknown_fields`, and `incarnation` values are
+typed core metadata, not extension bags. The core keeps only their declared
+bounded scalar shapes; device-specific metadata belongs in declared properties.
+For event redaction, the core derives every involved resource kind from an
+explicit event/subject/effect resource kind and from canonical resource IDs in
+resource references and `affected_resources`, resolved against the immutable
+resource catalog. Generic event `kind` is event classification, not a resource
+kind. An unresolved reference, missing kind policy, or event with no determined
+resource kind uses the conservative union of all declared sensitive fields.
+This publication boundary is identical for bootstrap, resource, search,
+interval, range-summary, and event-query responses.
+Nested event subjects, affected resources, effects, and relationship effects
+are typed core envelopes rather than extension maps. Unknown children and
+container values supplied for scalar core fields are omitted; device-specific
+values must use a descriptor-governed payload container.
+
 ### 1.2 Core host and plug-in runtime binding
 
 Every route documented here belongs to the core FastAPI application. A plug-in
@@ -262,6 +287,24 @@ That node is still locally reconstructable; lack of a wall-clock transform only
 prevents treating it as part of a simultaneous absolute snapshot. Absolute
 selectors accept only clock domains advertised by provider discovery; an
 unknown domain returns `422`.
+
+The runtime declaration is scoped as
+`watermarks[status_perspective_id][topology_projection_id]` and supplies
+`local_time_ns`, `clock_domain`, and `complete`; `query_time_ns`, mapping
+metadata/quality, and the paired `absolute_min_ns`/`absolute_max_ns` bounds are
+optional. Supplying only one absolute bound is invalid, and `complete: false`
+cannot anchor a query. The coordinator qualifies the declaration with the
+node/member, revision, plug-in set, plug-in run, projection, and perspective in
+`watermark_scope`. An explicit local-only anchor returns
+`watermark_source: "projection_declaration"`, `resolution: "local_exact"`,
+`query_time_ns: null`, and null absolute bounds without requiring a clock
+mapping.
+
+If an older topology provider has no exact scoped declaration, the executable
+compatibility path may derive the anchor from assembly capture time minus that
+projection's declared watermark lag. This path still requires a node clock
+mapping and returns `watermark_source: "legacy_capture_lag"`. New providers
+must declare explicit scoped watermarks.
 
 Under `strict` policy, raw timestamps from different clock domains are never
 compared directly. A missing transform returns a per-node `clock_unaligned`
@@ -532,6 +575,10 @@ changes. Every change carries its node-local effective range, normalized
 absolute range when supported, uncertainty, before/after value, cause/evidence,
 provenance, and quality. Pagination is revision/query-bound; replaying all pages
 must produce the same snapshot as `topology/query` at the end basis.
+The query window is half-open:
+`start_ns <= effective_time_ns < end_ns` for both resource events and
+relationship mutations. A change on the shared boundary of adjacent windows is
+returned exactly once by the later window, and a zero-width window is empty.
 Changes at the same effective timestamp are ordered by
 `source_sequence` and then their stable event/change identifier. A modify after
 a delete does not recreate a resource. For a multi-node basis with non-zero
@@ -633,6 +680,12 @@ reference `(member_id, revision_id, resource_id)`. Inter-node links retain both
 endpoint references, plug-in-run provenance, tri-state existence/usability,
 and `resolution` (`matched`, `ambiguous`, `unresolved`, or `conflict`) with all
 bounded candidates. The core never selects the first ambiguous candidate.
+When paired claims disagree on normalized `link_type`, the coordinator emits a
+deterministic conflict with `link_type: "unknown"`, sorted distinct
+`claimed_link_types`, unknown operational status, and reason
+`plugin_link_type_mismatch`; claim order cannot select a winner. A conflicting
+presentation role is likewise fail-closed and cannot become a physical route
+hop.
 
 The response also contains `context_id`, per-member clock/watermark resolution,
 coverage reasons, independent counts/cursors, and core-generated navigation
@@ -1064,6 +1117,14 @@ must itself resolve to an available attachment of `flow.destination`.
 An arbitrary mid-return observation can still be traced as a single direction,
 but it cannot prove reachability from the destination endpoint.
 
+A compatibility executor fixed to one declared endpoint pair may accept that
+same pair in either order. For the reversed pair, the coordinator uses the
+executor's opposite directional candidates and per-visit decisions while
+preserving the caller-facing `direction`; a counterpart request reverses the
+caller's flow, not the executor's original labels. A fixed scenario with a
+multi-attachment destination is rejected on reversal unless it declares an
+explicit source-attachment contract.
+
 The response returns a flat, ordered `paths[]` candidate set plus
 `multipath`, `focused_path_id`, `route_resolution_sequence[]`, `issues[]`,
 `interaction_targets[]`, `completeness`, and `context_consistency` envelopes.
@@ -1074,6 +1135,11 @@ and no fabricated singular primary; single-active scenarios may retain inactive
 eligible standby or withdrawn/dead candidates for inspection. Cross-layer
 scenarios preserve control-plane and observed-FIB disagreement as typed findings
 instead of rewriting one layer to agree with the other.
+New projections always declare their path-group mode. The route-executor v1
+compatibility envelope may omit `multipath_mode` only when at most one candidate
+is selected; the coordinator normalizes that case to `single_active`. Multiple
+selected candidates without an explicit mode fail validation rather than being
+interpreted as ECMP.
 
 Each directional response also returns the immutable `flow`, its
 `trace_start`, the direction's `goal_endpoint`, and `endpoint_reachability`.
@@ -1114,6 +1180,12 @@ it into the earlier P1 card. A cycle path has `result: "cycle"`,
 `terminal_reason`, and a `cycle` envelope that identifies the first and closing
 occurrences. The server checks complete canonical forwarding state, not router
 identity alone, before declaring the cycle.
+Compatibility candidate traversal declarations therefore carry
+`identity_complete`, which defaults to false and may be true only when the
+opaque key covers every cycle-relevant component. The response publishes this
+as `canonical_identity_complete`. Equal incomplete keys do not mark an
+occurrence repeated and cannot produce `result: "cycle"`; hop and recursion
+budgets still bound such a trace.
 
 An ingress-policy rejection has `result: "policy_blocked"` and retains
 `policy_decisions[]`. A decision includes the stable decision/constraint

@@ -389,6 +389,25 @@ transform can still reconstruct `-5s` from its own exact scoped watermark. Only
 an absolute selector requires a registered transform from its named source
 clock domain.
 
+For the runtime topology envelope, watermarks are indexed first by
+`status_perspective_id` and then by `projection_id`. Each declaration carries
+`local_time_ns`, `clock_domain`, and `complete`, plus optional
+`query_time_ns`, `mapping_method`, quality, and an
+`absolute_min_ns`/`absolute_max_ns` pair. Supplying only one absolute bound is
+invalid, and `complete: false` cannot anchor a query. The coordinator qualifies
+the declaration with node/member, revision, plug-in set, plug-in run,
+projection, and perspective in the returned `watermark_scope`. It reports
+`watermark_source: projection_declaration`; local-only resolution reports
+`query_time_ns: null`, null absolute bounds, and `resolution: local_exact`.
+
+The executable coordinator retains one narrow compatibility path for topology
+providers created before scoped watermark declarations. If the exact
+perspective/projection entry is absent, it derives the anchor from assembly
+capture time minus the projection's declared watermark lag and uses the node
+clock mapping. The response labels this
+`watermark_source: legacy_capture_lag`. New providers must emit explicit
+scoped watermarks and must not depend on this fallback.
+
 With `ClockAlignmentPolicy.STRICT`, missing clock transforms, gaps in transform
 coverage, and uncertainty that straddles a state transition remain unknown or
 ambiguous. The core never treats equal raw timestamps from different clock
@@ -571,6 +590,12 @@ identity. A status such as `down` alone does not delete the resource. Status and
 merged state are retained across an absence gap so a later recreation can
 either reuse or explicitly replace them.
 
+Topology history/change queries are also half-open:
+`start_ns <= effective_time_ns < end_ns`. This applies to resource events and
+relationship mutations alike. A boundary change is returned by the later of
+two adjacent windows exactly once; a zero-width window is empty. Plug-ins must
+not duplicate or offset boundary records to compensate.
+
 An ambiguous relationship boundary therefore produces `exists=None` and a
 possible link with unknown usability. It is never promoted to a definite link.
 
@@ -700,6 +725,14 @@ sets and a resolution of matched, ambiguous, unresolved, or conflict. Reciprocal
 evidence requirements, one-sided observations, alias rules, and link usability
 are linker semantics. The core preserves all candidates and never resolves
 ambiguity by picking the first match.
+
+Both paired claims also declare their normalized `link_type`. If the values
+disagree, the coordinator returns one deterministic conflict record with
+`link_type: "unknown"`, the sorted distinct `claimed_link_types`, operational
+status `unknown`, and reason `plugin_link_type_mismatch`. It never chooses the
+left claim, right claim, or iteration order. A presentation-role disagreement
+is likewise fail-closed and cannot be promoted into a physical route hop.
+
 `ConnectorMatchPolicyDescriptor` makes the boundary executable:
 `exact_token` authorizes only equality over the complete ordered typed argument
 tuple, while `linker` names the allowlisted `FederationLinkerPlugin`. Only the
@@ -762,11 +795,47 @@ envelope. Each non-sensitive property is browser-visible only when its
 `PropertyDescriptor.client_visible` value is true; undeclared and
 `client_visible: false` resource fields are omitted and excluded from search.
 If `condition_field` names a sensitive or non-client-visible property, the core
-reports the generic condition as `unknown` rather than copying that value into
-`status`.
+reports the generic condition as `unknown` in resource views, intervals, event
+effects, and top-level event condition/status fields rather than copying that
+value into `status`.
+
+A dotted property name is a relative path inside plug-in-owned property
+payloads. Redaction follows that path through nested mappings and lists and
+also removes an exact literal dotted key. The property policy is never applied
+as a global key blacklist. Core-owned structural fields such as
+`revision_id`, `node_id`, `resource_id`, `kind`, `label`, `action`,
+`affected_resources`, timestamps, interval bounds, schema descriptors, and
+workspace capabilities remain present and retain their core value even when a
+plug-in declares a property with the same name. The scoped payload containers
+include `state`, `key`, `properties`, `attributes`, `before`, `after`, and
+`result`.
+
+Public `evidence`, `provenance`, `unknown_fields`, and `incarnation` values are
+typed metadata envelopes, not plug-in extension bags. Core projects only the
+normalized scalar metadata fields defined by the API; unknown metadata keys or
+nonconforming shapes are dropped. `unknown_fields` is an ordered list of
+reason-coded records with bounded evidence references, and an incarnation is a
+non-Boolean string or integer. Device-specific values belong in declared
+properties and do not become public by being nested under a metadata key.
+
+Event payload policy is resolved from the event's explicit `resource_kind`,
+typed subject/effect resource kinds, and every canonical resource reference in
+`affected_resources`, `resource`, and `resource_id`. The core looks those IDs up
+in the immutable resource catalog. Generic event `kind` names the event type;
+it is not a resource-kind hint. When an affected reference is unresolved, no
+resource kind is determined, or an involved kind lacks a policy, event
+publication uses the conservative union of declared sensitive fields.
+The nested `subject`, `subjects`, `affected_resources`, `effects`, and
+`relationship_effects` records use explicit core allowlists. Unknown children
+are dropped, and their core scalar fields reject container-shaped values;
+plug-in-specific data belongs only in a declared property payload.
+
 Bootstrap serialization uses a core-owned allowlist of normalized model and
 workspace fields, so plug-in caches or parser-private dataset keys cannot become
-client data merely because they lack a leading underscore.
+client data merely because they lack a leading underscore. Property redaction
+is then applied only inside the allowlisted plug-in payload leaves. This
+core-envelope invariance is required across the workspace bootstrap,
+point-in-time resources, range summaries, and event-query responses.
 
 `PluginSchema.source_record_groups` declares zero or more
 `SourceRecordGroupDescriptor` values. Each supplies an opaque plug-in-owned
@@ -1242,6 +1311,12 @@ Path-group mode is semantic output, not a UI guess:
   eligible members, preserving weights and selection metadata when known.
   Duplicate rank or multiple viable next hops alone is insufficient.
 
+New projections always declare the mode. The legacy route-executor v1
+compatibility envelope may omit `multipath_mode` only when zero or one
+candidate is selected; the coordinator then normalizes it to
+`single_active`. An omission with multiple selected candidates is ambiguous
+and fails validation rather than being interpreted as ECMP.
+
 The plug-in stops at a local egress connector claim. It must not identify a
 remote member, walk another node's state, align clocks, or assemble an
 end-to-end path. Inter-node candidate matching belongs exclusively to the
@@ -1268,6 +1343,15 @@ For a bidirectional endpoint verdict, an explicit return start must resolve to
 an available destination attachment. A plug-in may expose an arbitrary
 mid-return observation as a single-direction diagnostic, but core must not
 treat that suffix as proof that the destination can reach the source.
+
+A compatibility executor whose scenario is fixed to one declared endpoint pair
+may accept that same pair in either order. When the caller reverses the pair,
+the coordinator uses the executor's opposite directional candidate and
+per-visit decision declarations while preserving the caller-facing
+`direction`. The counterpart request reverses the caller's flow, not the
+executor's original labels. A fixed scenario with a multi-attachment
+destination cannot reverse safely without an explicit source-attachment
+contract and is rejected rather than selecting one attachment.
 
 A node plug-in owns its normalized endpoint attachment declarations and the
 local, perspective-specific classification that a selected forwarding action
@@ -1325,6 +1409,13 @@ target-reaching. Candidate count, segments per path, hop count, and recursion
 depth are core-enforced limits; plug-in-supplied counters are consistency
 evidence and cannot expand those budgets.
 
+For the compatibility candidate envelope, each opaque traversal declaration
+also carries `identity_complete`. It defaults to false and may be true only
+when the opaque key covers every cycle-relevant component above. Core publishes
+that value as `canonical_identity_complete`. Equal incomplete keys do not mark
+an occurrence as repeated and cannot create a `cycle` result; independent hop
+and recursion budgets still apply.
+
 Status perspectives are resolved independently. A plug-in must not borrow a
 control-plane value to fill an unknown hardware value, and it must retain
 different local next hop, egress interface, destination, or encapsulation
@@ -1381,6 +1472,8 @@ device-semantic cases.
 - Partial/non-invertible events return unknown instead of a fabricated inverse.
 - Delete/recreate yields separate incarnations.
 - Relationship changes create correct half-open intervals.
+- Adjacent topology-change windows use `[start_ns,end_ns)` and return a
+  boundary event only in the later window.
 
 Property-based tests with Hypothesis are well suited to reducer round trips and
 random event sequences.
@@ -1392,6 +1485,9 @@ random event sequences.
   unknown rather than compared by raw timestamp.
 - Relative queries use the selected perspective/projection watermark, not a
   global event maximum or another layer's watermark.
+- A complete local-only scoped watermark resolves a relative query without a
+  wall-clock transform; a missing declaration uses only the labeled legacy
+  capture-lag path.
 - A clock uncertainty range that crosses a resource or relationship transition
   returns ambiguous alternatives rather than one arbitrarily chosen state.
 - One-to-many and many-to-one cross-layer correlation.
@@ -1410,6 +1506,8 @@ random event sequences.
 - A same-node revisit with a different lookup, packet, ingress, or policy-scope
   context does not produce a false cycle; hop exhaustion remains a distinct
   bounded result.
+- Repeated opaque traversal keys with `identity_complete=false` do not prove a
+  cycle.
 - Packet layers remain outermost-to-innermost, complete transitions preserve
   exact before/after continuity, incomplete continuity remains unknown, and
   the independent packet-step budget is enforced.
@@ -1428,6 +1526,12 @@ random event sequences.
   source. Its successful return reaches the source endpoint without being
   required to visit the forward start, and its path relation is
   `not_comparable`.
+- Reversing a fixed endpoint pair uses the opposite executor direction while
+  retaining the caller-facing direction; an ambiguous multi-attachment
+  reversal fails closed.
+- Omitted legacy `multipath_mode` is accepted only for an unambiguous
+  zero-or-one-selected-path executor; multiple selected paths require
+  `all_active`.
 - Reaching the forward start without reaching the exact source endpoint remains
   one-way or unreachable. Unknown, ambiguous, withdrawn, and multihomed
   endpoint attachments retain bounded alternatives and coverage rather than a
@@ -1446,6 +1550,8 @@ random event sequences.
 - Topology hooks reject undeclared projection/perspective pairs, duplicate or
   over-budget records, invalid exact/match endpoint unions, and dangling
   canonical resource keys.
+- Conflicting paired link types return sorted claims plus deterministic
+  `unknown`/`plugin_link_type_mismatch`, never an order-dependent winner.
 - Declarative match references round-trip without core interpretation and retain
   all plugin-resolved candidates, source-resource keys, and evidence.
 

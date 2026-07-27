@@ -8,16 +8,17 @@ and supplying presentation/route/source-record policy.
 
 from __future__ import annotations
 
+import json
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
+from collections.abc import Iterable, Mapping
 from contextlib import AbstractContextManager
+from functools import lru_cache
 from hashlib import sha256
-import json
-from typing import Any, Iterable, Mapping, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from .dashboard_core import evaluate_dashboards
 from .source_record_core import project_source_record_for_log
-
 
 MAX_RESOURCE_TABLE_TRAVERSAL_NODES = 5_000
 MAX_RESOURCE_PAGE_SIZE = 1_000
@@ -163,6 +164,199 @@ _CLIENT_RESOURCE_ENVELOPE_FIELDS = frozenset(
         "valid_to_ns",
     }
 )
+_CLIENT_PLUGIN_DATASET_PAYLOAD_FIELDS = frozenset(
+    {
+        "causal_links",
+        "coverage",
+        "findings",
+        "gaps",
+        "inventory",
+        "lifecycle_intervals",
+        "node_snapshot",
+        "nodes",
+        "relationship_intervals",
+        "relationship_mutations",
+        "relationships",
+        "review_prompts",
+        "summary",
+        "timeline",
+        "topology_capabilities",
+        "topology_defaults",
+        "topology_nodes",
+    }
+)
+_CLIENT_PLUGIN_PROPERTY_CONTAINER_FIELDS = frozenset(
+    {
+        "after",
+        "attributes",
+        "before",
+        "key",
+        "properties",
+        "result",
+        "state",
+    }
+)
+_CLIENT_EVIDENCE_FIELDS = frozenset(
+    {
+        "artifact_id",
+        "clock_domain",
+        "evidence_id",
+        "excerpt_sha256",
+        "locator",
+        "raw_timestamp_ns",
+        "source_record_uid",
+    }
+)
+_CLIENT_PROVENANCE_FIELDS = frozenset(
+    {
+        "actor",
+        "kind",
+        "mapping_method",
+        "method",
+        "origin",
+        "plugin_id",
+        "plugin_instance_id",
+        "plugin_run_id",
+        "reason_code",
+        "rule_id",
+        "schema_digest",
+        "source",
+    }
+)
+_CLIENT_UNKNOWN_FIELD_FIELDS = frozenset(
+    {
+        "evidence",
+        "evidence_ids",
+        "message",
+        "name",
+        "reason_code",
+    }
+)
+_CLIENT_EVENT_CORE_FIELDS = frozenset(
+    {
+        "action",
+        "absolute_timestamp_ns",
+        "burst_id",
+        "clock_domain",
+        "condition",
+        "condition_class",
+        "display_name",
+        "event_id",
+        "event_name",
+        "event_type",
+        "event_uid",
+        "kind",
+        "layer",
+        "message",
+        "operation",
+        "outcome",
+        "phase",
+        "quality",
+        "resource",
+        "resource_id",
+        "resource_kind",
+        "resource_uid",
+        "source_record_uid",
+        "source_sequence",
+        "state_changed",
+        "status",
+        "status_class",
+        "timestamp_ns",
+        "timestamp_uncertainty_ns",
+        "time_ns",
+    }
+)
+_CLIENT_EVENT_PAYLOAD_FIELDS = frozenset(
+    {
+        "attributes",
+        "properties",
+        "result",
+    }
+)
+_CLIENT_EVENT_SUBJECT_CORE_FIELDS = frozenset(
+    {
+        "kind",
+        "label",
+        "layer",
+        "resource",
+        "resource_id",
+        "resource_kind",
+        "resource_uid",
+    }
+)
+_CLIENT_EVENT_EFFECT_CORE_FIELDS = frozenset(
+    {
+        "action",
+        "condition",
+        "condition_class",
+        "effect_type",
+        "kind",
+        "label",
+        "layer",
+        "operation",
+        "outcome",
+        "resource",
+        "resource_id",
+        "resource_kind",
+        "resource_uid",
+        "state_changed",
+        "status",
+        "status_class",
+    }
+)
+_CLIENT_EVENT_EFFECT_PAYLOAD_FIELDS = frozenset(
+    {
+        "after",
+        "attributes",
+        "before",
+        "properties",
+        "result",
+        "state",
+    }
+)
+_CLIENT_RELATIONSHIP_EFFECT_CORE_FIELDS = frozenset(
+    {
+        "operation",
+        "relation_type",
+        "source",
+        "target",
+        "type",
+    }
+)
+_CLIENT_STATE_INTERVAL_FIELDS = frozenset(
+    {
+        "condition",
+        "condition_class",
+        "evidence",
+        "field_quality",
+        "incarnation",
+        "observed_at_max_ns",
+        "observed_at_min_ns",
+        "perspective_ref",
+        "properties",
+        "provenance",
+        "quality",
+        "resource",
+        "source_event_uid",
+        "start_event_uid",
+        "status",
+        "status_class",
+        "unknown_fields",
+        "valid_from_ns",
+        "valid_to_ns",
+    }
+)
+_PUBLIC_STATUS_CLASSES = frozenset(
+    {
+        "absent",
+        "degraded",
+        "error",
+        "healthy",
+        "unknown",
+    }
+)
+_SENSITIVE_PATH_TERMINAL = object()
+_DROP_CLIENT_FIELD = object()
 
 
 @runtime_checkable
@@ -359,24 +553,277 @@ def descriptor_sensitive_condition(
     )
 
 
-def redact_sensitive_tree(value: Any, sensitive_fields: set[str]) -> Any:
-    """Remove declared sensitive names at every plug-in payload depth."""
+@lru_cache(maxsize=256)
+def _sensitive_path_trie(
+    sensitive_fields: frozenset[str],
+) -> dict[object, Any]:
+    root: dict[object, Any] = {}
+    for field in sensitive_fields:
+        parts = tuple(
+            part
+            for part in str(field).split(".")
+            if part
+        )
+        if not parts:
+            continue
+        branch = root
+        for part in parts:
+            branch = branch.setdefault(part, {})
+        branch[_SENSITIVE_PATH_TERMINAL] = True
+    return root
 
-    if isinstance(value, Mapping):
-        return {
-            key: redact_sensitive_tree(nested, sensitive_fields)
-            for key, nested in value.items()
-            if str(key) not in sensitive_fields
-        }
+
+def _redact_relative_paths(
+    value: Any,
+    branch: Mapping[object, Any],
+) -> Any:
     if isinstance(value, list):
         return [
-            redact_sensitive_tree(nested, sensitive_fields)
+            _redact_relative_paths(item, branch)
+            for item in value
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            _redact_relative_paths(item, branch)
+            for item in value
+        )
+    if not isinstance(value, Mapping):
+        return value
+    result: dict[Any, Any] = {}
+    for key, nested in value.items():
+        child = branch.get(str(key))
+        if isinstance(child, Mapping) and child.get(_SENSITIVE_PATH_TERMINAL):
+            continue
+        result[key] = (
+            _redact_relative_paths(nested, child)
+            if isinstance(child, Mapping)
+            else nested
+        )
+    return result
+
+
+def _redact_sensitive_tree(
+    value: Any,
+    *,
+    exact_names: frozenset[str],
+    path_trie: Mapping[object, Any],
+) -> Any:
+    if isinstance(value, Mapping):
+        result: dict[Any, Any] = {}
+        for key, nested in value.items():
+            name = str(key)
+            if name in exact_names:
+                continue
+            child = path_trie.get(name)
+            if isinstance(child, Mapping) and child.get(
+                _SENSITIVE_PATH_TERMINAL
+            ):
+                continue
+            projected = _redact_sensitive_tree(
+                nested,
+                exact_names=exact_names,
+                path_trie=path_trie,
+            )
+            result[key] = (
+                _redact_relative_paths(projected, child)
+                if isinstance(child, Mapping)
+                else projected
+            )
+        return result
+    if isinstance(value, list):
+        return [
+            _redact_sensitive_tree(
+                nested,
+                exact_names=exact_names,
+                path_trie=path_trie,
+            )
             for nested in value
         ]
     if isinstance(value, tuple):
         return tuple(
-            redact_sensitive_tree(nested, sensitive_fields)
+            _redact_sensitive_tree(
+                nested,
+                exact_names=exact_names,
+                path_trie=path_trie,
+            )
             for nested in value
+        )
+    return value
+
+
+def redact_sensitive_tree(value: Any, sensitive_fields: set[str]) -> Any:
+    """Remove declared names and dotted paths inside a plug-in payload."""
+
+    exact_names = frozenset(str(field) for field in sensitive_fields)
+    return _redact_sensitive_tree(
+        value,
+        exact_names=exact_names,
+        path_trie=_sensitive_path_trie(exact_names),
+    )
+
+
+def _safe_public_scalar(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return _DROP_CLIENT_FIELD
+
+
+def _project_evidence_for_client(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: projected
+            for key, nested in value.items()
+            if str(key) in _CLIENT_EVIDENCE_FIELDS
+            and (projected := _safe_public_scalar(nested))
+            is not _DROP_CLIENT_FIELD
+        }
+    if isinstance(value, (list, tuple)):
+        result = []
+        for item in value:
+            projected = _project_evidence_for_client(item)
+            if projected is not _DROP_CLIENT_FIELD:
+                result.append(projected)
+        return result
+    return _safe_public_scalar(value)
+
+
+def _project_provenance_for_client(value: Any) -> Any:
+    scalar = _safe_public_scalar(value)
+    if scalar is not _DROP_CLIENT_FIELD:
+        return scalar
+    if not isinstance(value, Mapping):
+        return _DROP_CLIENT_FIELD
+    return {
+        key: projected
+        for key, nested in value.items()
+        if str(key) in _CLIENT_PROVENANCE_FIELDS
+        and (projected := _safe_public_scalar(nested))
+        is not _DROP_CLIENT_FIELD
+    }
+
+
+def _project_unknown_fields_for_client(value: Any) -> Any:
+    if not isinstance(value, (list, tuple)):
+        return []
+    result: list[dict[Any, Any]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        projected: dict[Any, Any] = {}
+        for key, nested in item.items():
+            name = str(key)
+            if name not in _CLIENT_UNKNOWN_FIELD_FIELDS:
+                continue
+            if name == "evidence":
+                public = _project_evidence_for_client(nested)
+            elif name == "evidence_ids" and isinstance(
+                nested,
+                (list, tuple),
+            ):
+                public = [
+                    scalar
+                    for value_item in nested
+                    if (scalar := _safe_public_scalar(value_item))
+                    is not _DROP_CLIENT_FIELD
+                ]
+            else:
+                public = _safe_public_scalar(nested)
+            if public is not _DROP_CLIENT_FIELD:
+                projected[key] = public
+        result.append(projected)
+    return result
+
+
+def _project_incarnation_for_client(value: Any) -> Any:
+    if isinstance(value, bool):
+        return _DROP_CLIENT_FIELD
+    if isinstance(value, (str, int)):
+        return value
+    return _DROP_CLIENT_FIELD
+
+
+def _safe_status_class(value: Any, *, exists: Any = None) -> str:
+    if exists is False:
+        return "absent"
+    candidate = str(value or "unknown").casefold()
+    return candidate if candidate in _PUBLIC_STATUS_CLASSES else "unknown"
+
+
+def _sanitize_resource_metadata(
+    projected: dict[str, Any],
+    *,
+    exists: Any = None,
+) -> None:
+    handlers = {
+        "evidence": _project_evidence_for_client,
+        "incarnation": _project_incarnation_for_client,
+        "provenance": _project_provenance_for_client,
+        "unknown_fields": _project_unknown_fields_for_client,
+    }
+    for field, handler in handlers.items():
+        if field not in projected:
+            continue
+        public = handler(projected[field])
+        if public is _DROP_CLIENT_FIELD:
+            projected.pop(field, None)
+        else:
+            projected[field] = public
+    if "status_class" in projected:
+        projected["status_class"] = _safe_status_class(
+            projected["status_class"],
+            exists=exists,
+        )
+    if "condition_class" in projected:
+        projected["condition_class"] = _safe_status_class(
+            projected["condition_class"],
+            exists=exists,
+        )
+
+
+def _sanitize_plugin_payload_tree(
+    value: Any,
+    sensitive_fields: set[str],
+) -> Any:
+    """Sanitize plug-in leaves without applying names to structural envelopes."""
+
+    if isinstance(value, Mapping):
+        result: dict[Any, Any] = {}
+        for key, nested in value.items():
+            name = str(key)
+            if name in _CLIENT_PLUGIN_PROPERTY_CONTAINER_FIELDS:
+                result[key] = redact_sensitive_tree(
+                    nested,
+                    sensitive_fields,
+                )
+            elif name == "evidence":
+                public = _project_evidence_for_client(nested)
+                if public is not _DROP_CLIENT_FIELD:
+                    result[key] = public
+            elif name == "provenance":
+                public = _project_provenance_for_client(nested)
+                if public is not _DROP_CLIENT_FIELD:
+                    result[key] = public
+            elif name == "unknown_fields":
+                result[key] = _project_unknown_fields_for_client(nested)
+            elif name == "incarnation":
+                public = _project_incarnation_for_client(nested)
+                if public is not _DROP_CLIENT_FIELD:
+                    result[key] = public
+            else:
+                result[key] = _sanitize_plugin_payload_tree(
+                    nested,
+                    sensitive_fields,
+                )
+        return result
+    if isinstance(value, list):
+        return [
+            _sanitize_plugin_payload_tree(item, sensitive_fields)
+            for item in value
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            _sanitize_plugin_payload_tree(item, sensitive_fields)
+            for item in value
         )
     return value
 
@@ -465,7 +912,10 @@ def redact_resource_view(
         }
     rules = descriptor_property_rules(descriptor)
     sensitive = {
-        name for name, rule in rules.items() if bool(rule.get("sensitive"))
+        name
+        for name, rule in rules.items()
+        if bool(rule.get("sensitive"))
+        or rule.get("client_visible", True) is False
     }
     visible_properties = _client_visible_property_names(descriptor)
     visible_key_fields = {
@@ -478,8 +928,15 @@ def redact_resource_view(
         for key, nested in view.items()
         if str(key) in _CLIENT_RESOURCE_ENVELOPE_FIELDS
     }
-    if descriptor_sensitive_condition(descriptor) and "status" in projected:
-        projected["status"] = "unknown"
+    _sanitize_resource_metadata(
+        projected,
+        exists=view.get("exists"),
+    )
+    if descriptor_sensitive_condition(descriptor):
+        if "status" in projected:
+            projected["status"] = "unknown"
+        if "condition" in projected:
+            projected["condition"] = "unknown"
     projected["state"] = redact_sensitive_tree(
         _project_declared_fields(
             view.get("state", {}),
@@ -502,6 +959,10 @@ def redact_resource_view(
             for key, nested in raw_record.items()
             if str(key) in _CLIENT_RESOURCE_ENVELOPE_FIELDS
         }
+        _sanitize_resource_metadata(
+            safe_record,
+            exists=view.get("exists"),
+        )
         safe_record["state"] = redact_sensitive_tree(
             _project_declared_fields(
                 raw_record.get("state", {}),
@@ -522,8 +983,11 @@ def redact_resource_view(
                     raw_record[name],
                     sensitive,
                 )
-        if descriptor_sensitive_condition(descriptor) and "status" in safe_record:
-            safe_record["status"] = "unknown"
+        if descriptor_sensitive_condition(descriptor):
+            if "status" in safe_record:
+                safe_record["status"] = "unknown"
+            if "condition" in safe_record:
+                safe_record["condition"] = "unknown"
         projected["resource"] = safe_record
     return projected
 
@@ -626,12 +1090,16 @@ def _client_dataset_envelope(
     accidental serialization of those adapter internals.
     """
 
-    client = {
-        key: redact_sensitive_tree(value, sensitive_fields)
-        for key, value in dataset.items()
-        if str(key) in _CLIENT_DATASET_FIELDS
-        and str(key) not in omit_fields
-    }
+    client: dict[str, Any] = {}
+    for key, value in dataset.items():
+        name = str(key)
+        if name not in _CLIENT_DATASET_FIELDS or name in omit_fields:
+            continue
+        client[key] = (
+            _sanitize_plugin_payload_tree(value, sensitive_fields)
+            if name in _CLIENT_PLUGIN_DATASET_PAYLOAD_FIELDS
+            else value
+        )
     demo = client.get("demo")
     if isinstance(demo, Mapping):
         client["demo"] = {
@@ -701,32 +1169,84 @@ def event_redaction_policy(
 def _event_resource_kinds(
     event: Mapping[str, Any],
     kind_by_resource_id: Mapping[str, str],
-) -> set[str]:
+) -> tuple[set[str], bool]:
     kinds: set[str] = set()
     identifiers: set[str] = set()
 
-    def collect(value: Any) -> None:
+    def collect(
+        value: Any,
+        *,
+        nested_resource: bool,
+    ) -> None:
         if not isinstance(value, Mapping):
             return
-        for field in ("resource_kind", "kind"):
-            if value.get(field):
-                kinds.add(str(value[field]))
+        if value.get("resource_kind"):
+            kinds.add(str(value["resource_kind"]))
+        if nested_resource and value.get("kind"):
+            kinds.add(str(value["kind"]))
         for field in ("resource_id", "resource"):
             if value.get(field):
                 identifiers.add(str(value[field]))
 
-    collect(event)
-    collect(event.get("subject"))
+    collect(event, nested_resource=False)
+    collect(event.get("subject"), nested_resource=True)
     for subject in event.get("subjects", []):
-        collect(subject)
+        collect(subject, nested_resource=True)
     for effect in event.get("effects", []):
-        collect(effect)
+        collect(effect, nested_resource=True)
+    for affected in event.get("affected_resources", []):
+        if isinstance(affected, Mapping):
+            collect(affected, nested_resource=True)
+        elif affected:
+            identifiers.add(str(affected))
     kinds.update(
         kind_by_resource_id[identifier]
         for identifier in identifiers
         if identifier in kind_by_resource_id
     )
-    return kinds
+    return kinds, any(
+        identifier not in kind_by_resource_id
+        for identifier in identifiers
+    )
+
+
+def _redact_event_nested_record(
+    value: Any,
+    sensitive: set[str],
+    *,
+    core_fields: frozenset[str],
+    payload_fields: frozenset[str],
+    sensitive_condition: bool,
+) -> Any:
+    if not isinstance(value, Mapping):
+        return redact_sensitive_tree(value, sensitive)
+    result: dict[Any, Any] = {}
+    for key, nested in value.items():
+        name = str(key)
+        if name in core_fields:
+            if name in {"status_class", "condition_class"}:
+                result[key] = _safe_status_class(nested)
+            elif sensitive_condition and name in {"status", "condition"}:
+                result[key] = "unknown"
+            else:
+                public = _safe_public_scalar(nested)
+                if public is not _DROP_CLIENT_FIELD:
+                    result[key] = public
+            continue
+        if name not in payload_fields:
+            continue
+        projected = redact_sensitive_tree(
+            {key: nested},
+            sensitive,
+        )
+        if key not in projected:
+            continue
+        result[key] = (
+            redact_sensitive_tree(projected[key], sensitive)
+            if name in payload_fields
+            else projected[key]
+        )
+    return result
 
 
 def redact_event_for_client(
@@ -739,19 +1259,126 @@ def redact_event_for_client(
     sensitive_by_kind, kind_by_id, all_sensitive = (
         policy or event_redaction_policy(dataset, runtime)
     )
-    kinds = _event_resource_kinds(event, kind_by_id)
-    if not all_sensitive:
-        return dict(event)
+    kinds, unresolved_identifiers = _event_resource_kinds(
+        event,
+        kind_by_id,
+    )
     sensitive: set[str] = set()
     for kind in kinds:
         sensitive.update(sensitive_by_kind.get(kind, ()))
-    if not kinds or any(kind not in sensitive_by_kind for kind in kinds):
+    if (
+        not kinds
+        or unresolved_identifiers
+        or any(kind not in sensitive_by_kind for kind in kinds)
+    ):
         sensitive.update(all_sensitive)
-    return (
-        redact_sensitive_tree(event, sensitive)
-        if sensitive
-        else dict(event)
+    descriptors = {
+        str(item.get("kind")): item
+        for item in dataset.get("kind_descriptors", [])
+        if isinstance(item, Mapping) and item.get("kind")
+    }
+    sensitive_condition = any(
+        descriptor_sensitive_condition(descriptors.get(kind))
+        for kind in kinds
     )
+    result: dict[Any, Any] = {}
+    for key, nested in event.items():
+        name = str(key)
+        if name in _CLIENT_EVENT_CORE_FIELDS:
+            if name in {"status_class", "condition_class"}:
+                result[key] = _safe_status_class(nested)
+            elif sensitive_condition and name in {"status", "condition"}:
+                result[key] = "unknown"
+            else:
+                public = _safe_public_scalar(nested)
+                if public is not _DROP_CLIENT_FIELD:
+                    result[key] = public
+        elif name == "subject":
+            result[key] = _redact_event_nested_record(
+                nested,
+                sensitive,
+                core_fields=_CLIENT_EVENT_SUBJECT_CORE_FIELDS,
+                payload_fields=_CLIENT_EVENT_PAYLOAD_FIELDS
+                | frozenset({"key", "raw_key", "state"}),
+                sensitive_condition=sensitive_condition,
+            )
+        elif name == "affected_resources" and isinstance(
+            nested,
+            (list, tuple),
+        ):
+            projected_resources: list[Any] = []
+            for item in nested:
+                projected = (
+                    _redact_event_nested_record(
+                        item,
+                        sensitive,
+                        core_fields=_CLIENT_EVENT_SUBJECT_CORE_FIELDS,
+                        payload_fields=_CLIENT_EVENT_PAYLOAD_FIELDS
+                        | frozenset({"key", "raw_key", "state"}),
+                        sensitive_condition=sensitive_condition,
+                    )
+                    if isinstance(item, Mapping)
+                    else _safe_public_scalar(item)
+                )
+                if projected is not _DROP_CLIENT_FIELD:
+                    projected_resources.append(projected)
+            result[key] = projected_resources
+        elif name == "subjects" and isinstance(nested, (list, tuple)):
+            result[key] = [
+                _redact_event_nested_record(
+                    item,
+                    sensitive,
+                    core_fields=_CLIENT_EVENT_SUBJECT_CORE_FIELDS,
+                    payload_fields=_CLIENT_EVENT_PAYLOAD_FIELDS
+                    | frozenset({"key", "raw_key", "state"}),
+                    sensitive_condition=sensitive_condition,
+                )
+                for item in nested
+            ]
+        elif name == "effects" and isinstance(nested, (list, tuple)):
+            result[key] = [
+                _redact_event_nested_record(
+                    item,
+                    sensitive,
+                    core_fields=_CLIENT_EVENT_EFFECT_CORE_FIELDS,
+                    payload_fields=_CLIENT_EVENT_EFFECT_PAYLOAD_FIELDS,
+                    sensitive_condition=sensitive_condition,
+                )
+                for item in nested
+            ]
+        elif name == "relationship_effects" and isinstance(
+            nested,
+            (list, tuple),
+        ):
+            result[key] = [
+                _redact_event_nested_record(
+                    item,
+                    sensitive,
+                    core_fields=_CLIENT_RELATIONSHIP_EFFECT_CORE_FIELDS,
+                    payload_fields=_CLIENT_EVENT_PAYLOAD_FIELDS,
+                    sensitive_condition=False,
+                )
+                for item in nested
+            ]
+        elif name == "evidence":
+            public = _project_evidence_for_client(nested)
+            if public is not _DROP_CLIENT_FIELD:
+                result[key] = public
+        elif name == "provenance":
+            public = _project_provenance_for_client(nested)
+            if public is not _DROP_CLIENT_FIELD:
+                result[key] = public
+        elif name == "unknown_fields":
+            result[key] = _project_unknown_fields_for_client(nested)
+        elif name == "incarnation":
+            public = _project_incarnation_for_client(nested)
+            if public is not _DROP_CLIENT_FIELD:
+                result[key] = public
+        elif name in _CLIENT_EVENT_PAYLOAD_FIELDS:
+            projected = redact_sensitive_tree({key: nested}, sensitive)
+            if key in projected:
+                result[key] = projected[key]
+    return result
 
 
 def resource_search_text(
@@ -1078,9 +1705,7 @@ class NormalizedDataService:
             )
         )
         client["route_resolution"] = self.route_resolution_capability(dataset)
-        return _sanitize_client_presentation(
-            redact_sensitive_tree(client, set(all_sensitive))
-        )
+        return _sanitize_client_presentation(client)
 
     def _descriptors(
         self,
@@ -1179,6 +1804,10 @@ class NormalizedDataService:
                 or state.get("status_class")
                 or "unknown"
             )
+            status_class = _safe_status_class(
+                status_class,
+                exists=exists,
+            )
         view = {
             "resource_id": resource_identifier,
             "kind": kind,
@@ -1192,6 +1821,12 @@ class NormalizedDataService:
             "status": status,
             "status_class": status_class,
             "state": state,
+            "key": (
+                dict(record.get("key", {}))
+                if record is not None
+                and isinstance(record.get("key", {}), Mapping)
+                else {}
+            ),
             "valid_from_ns": (
                 state_interval.get("valid_from_ns")
                 if state_interval
@@ -1334,18 +1969,33 @@ class NormalizedDataService:
         )
         kind = str(record.get("kind", "UNKNOWN")) if record else "UNKNOWN"
         descriptor = self._required_descriptor(self._descriptors(active), kind)
-        sensitive = {
-            name
-            for name, rule in descriptor_property_rules(descriptor).items()
-            if bool(rule.get("sensitive"))
+        projected = {
+            key: nested
+            for key, nested in interval.items()
+            if str(key) in _CLIENT_STATE_INTERVAL_FIELDS
         }
-        projected = redact_sensitive_tree(interval, sensitive)
+        _sanitize_resource_metadata(
+            projected,
+            exists=True,
+        )
         projected["properties"] = redact_resource_view(
             {"state": dict(interval.get("properties", {}))},
             descriptor,
         ).get("state", {})
         if descriptor_sensitive_condition(descriptor):
             projected["status"] = "unknown"
+            if "condition" in projected:
+                projected["condition"] = "unknown"
+        if "status_class" in projected:
+            projected["status_class"] = _safe_status_class(
+                projected["status_class"],
+                exists=True,
+            )
+        if "condition_class" in projected:
+            projected["condition_class"] = _safe_status_class(
+                projected["condition_class"],
+                exists=True,
+            )
         return projected
 
     def _resource_table_view_at(
@@ -2250,9 +2900,9 @@ class NormalizedDataService:
 
 
 __all__ = [
+    "MAX_RESOURCE_TABLE_TRAVERSAL_NODES",
     "EventRedactionPolicy",
     "IndexedHistory",
-    "MAX_RESOURCE_TABLE_TRAVERSAL_NODES",
     "NormalizedDataPolicy",
     "NormalizedDataService",
     "NormalizedDatasetSource",

@@ -5,15 +5,9 @@ import unittest
 from uuid import UUID
 
 from fastapi.testclient import TestClient
-
-from tests.support.generated_demo import (
-    configure_generated_demo_for_tests,
-    generated_demo_application,
-    query_all_route_table_rows,
-)
+from rsl_demo_plugin.topology_contract import DEMO_TOPOLOGY_ID
 
 from router_dump_analyzer.multi_node_route import MultiNodeRouteService
-from rsl_demo_plugin.topology_contract import DEMO_TOPOLOGY_ID
 from router_dump_analyzer.plugin_api import (
     ForwardingCandidateConstraint,
     ForwardingPolicyScope,
@@ -30,6 +24,11 @@ from router_dump_analyzer.route_trace_core import (
     evaluate_forwarding_constraint,
     evaluate_forwarding_policy,
     evaluate_forwarding_traversal,
+)
+from tests.support.generated_demo import (
+    configure_generated_demo_for_tests,
+    generated_demo_application,
+    query_all_route_table_rows,
 )
 
 
@@ -769,6 +768,75 @@ class MultiNodeRouteTests(unittest.TestCase):
         self.assertEqual(report.first_seen_step, 0)
         self.assertEqual(report.repeated_at_step, 2)
         self.assertEqual(report.cycle_states, (first, changed, first))
+
+    def test_incomplete_declared_identity_cannot_prove_generated_cycle(
+        self,
+    ) -> None:
+        path = {
+            "path_id": "test-incomplete-identity",
+            "node_sequence": ["node-a", "node-a"],
+            "segments": [],
+        }
+        candidate = {
+            "traversal_states": [
+                {
+                    "visit_index": 0,
+                    "node_id": "node-a",
+                    "cycle_key": "opaque-repeat",
+                    "identity_complete": False,
+                },
+                {
+                    "visit_index": 1,
+                    "node_id": "node-a",
+                    "cycle_key": "opaque-repeat",
+                    "identity_complete": False,
+                },
+            ],
+            "terminal_semantics": {},
+        }
+
+        MultiNodeRouteService._project_candidate_traversal(
+            path,
+            candidate,
+            max_hops=64,
+            max_recursion=16,
+        )
+
+        self.assertNotIn("cycle", path)
+        self.assertEqual(
+            [
+                item["canonical_identity_complete"]
+                for item in path["node_occurrences"]
+            ],
+            [False, False],
+        )
+        self.assertFalse(path["node_occurrences"][1]["repeated"])
+
+    def test_legacy_multipath_mode_defaults_only_for_unambiguous_single_path(
+        self,
+    ) -> None:
+        self.assertEqual(
+            MultiNodeRouteService._route_executor_multipath_mode(
+                {},
+                selected_count=1,
+            ),
+            "single_active",
+        )
+        self.assertEqual(
+            MultiNodeRouteService._route_executor_multipath_mode(
+                {"multipath_mode": "all_active"},
+                selected_count=1,
+            ),
+            "all_active",
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "contract v1 omits multipath_mode",
+        ):
+            MultiNodeRouteService._route_executor_multipath_mode(
+                {},
+                selected_count=2,
+            )
 
     def test_typed_policy_evaluator_is_exact_and_protocol_neutral(self) -> None:
         candidate = ResourceKey(
@@ -2420,6 +2488,130 @@ class MultiNodeRouteTests(unittest.TestCase):
             },
         )
         self.assertEqual(len({path["path_id"] for path in payload["paths"]}), 2)
+
+    def test_fixed_scenario_respects_reversed_endpoint_pair(self) -> None:
+        response = self.client.post(
+            "/v1/topologies/routes/trace",
+            json={
+                "scenario_id": "single-active-primary",
+                "direction": "forward",
+                "source": {"node_id": "node-b"},
+                "destination": {"node_id": "node-a"},
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+
+        self.assertEqual(payload["direction"], "forward")
+        self.assertEqual(payload["flow"]["source"]["node_id"], "node-b")
+        self.assertEqual(
+            payload["flow"]["destination"]["node_id"],
+            "node-a",
+        )
+        self.assertEqual(
+            payload["target_endpoint"]["endpoint_id"],
+            payload["destination"]["endpoint_id"],
+        )
+        self.assertTrue(payload["paths"])
+        self.assertTrue(
+            all(
+                path["node_sequence"][0] == "node-b"
+                and path["node_sequence"][-1] == "node-a"
+                for path in payload["paths"]
+            )
+        )
+        self.assertTrue(
+            all(
+                path["generated_forwarding_projection"][
+                    "directional_scope"
+                ]
+                == "reverse"
+                for path in payload["paths"]
+            )
+        )
+
+        counterpart = self.client.post(
+            "/v1/topologies/routes/trace",
+            json=payload["counterpart_request"],
+        )
+        self.assertEqual(counterpart.status_code, 200, counterpart.text)
+        counterpart_payload = counterpart.json()
+        self.assertEqual(counterpart_payload["direction"], "reverse")
+        self.assertEqual(
+            counterpart_payload["target_endpoint"]["endpoint_id"],
+            counterpart_payload["destination"]["endpoint_id"],
+        )
+        self.assertEqual(
+            counterpart_payload["target_endpoint"]["endpoint_id"],
+            "endpoint:blue-service-prefix",
+        )
+        self.assertTrue(
+            all(
+                path["terminal_reachability"]["target_endpoint_id"]
+                == counterpart_payload["target_endpoint"]["endpoint_id"]
+                for path in counterpart_payload["paths"]
+            )
+        )
+        self.assertTrue(
+            all(
+                path["node_sequence"][0] == "node-a"
+                and path["node_sequence"][-1] == "node-b"
+                for path in counterpart_payload["paths"]
+            )
+        )
+
+        bidirectional = self.client.post(
+            "/v1/topologies/routes/trace",
+            json={
+                "scenario_id": "single-active-primary",
+                "direction": "both",
+                "source": {"node_id": "node-b"},
+                "destination": {"node_id": "node-a"},
+            },
+        )
+        self.assertEqual(
+            bidirectional.status_code,
+            200,
+            bidirectional.text,
+        )
+        paired = bidirectional.json()["traces"]
+        self.assertEqual(
+            paired["forward"]["target_endpoint"]["endpoint_id"],
+            paired["forward"]["destination"]["endpoint_id"],
+        )
+        self.assertEqual(
+            paired["reverse"]["target_endpoint"]["endpoint_id"],
+            paired["reverse"]["destination"]["endpoint_id"],
+        )
+        self.assertTrue(
+            all(
+                path["node_sequence"][0] == "node-b"
+                and path["node_sequence"][-1] == "node-a"
+                for path in paired["forward"]["paths"]
+            )
+        )
+        self.assertTrue(
+            all(
+                path["node_sequence"][0] == "node-a"
+                and path["node_sequence"][-1] == "node-b"
+                for path in paired["reverse"]["paths"]
+            )
+        )
+
+        ambiguous = self.client.post(
+            "/v1/topologies/routes/trace",
+            json={
+                "scenario_id": "evpn-mh-all-active",
+                "direction": "forward",
+                "source": {"node_id": "node-e"},
+                "destination": {"node_id": "node-a"},
+            },
+        )
+        self.assertEqual(ambiguous.status_code, 422)
+        self.assertIn(
+            "multi-attachment destination",
+            ambiguous.text,
+        )
 
     def test_evpn_withdraw_retains_a_focusable_dead_candidate(self) -> None:
         initial = self.client.post(

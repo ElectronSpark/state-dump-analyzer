@@ -12,6 +12,14 @@ from state_dump_generator.model import (
     validate_scenario,
 )
 
+WEB_APP_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "state_dump_generator"
+    / "web"
+    / "app.js"
+)
+
 
 def scenario() -> dict[str, object]:
     return {
@@ -79,10 +87,14 @@ class ScenarioModelTests(unittest.TestCase):
             {
                 "resource_id": "port-resource:r1-xe0",
                 "resource_type": "interface",
-                "properties": {
-                    "subnet_prefix": "192.0.2.0/31",
-                    "vlan_id": 310,
-                },
+                "properties": {},
+            },
+        )
+        self.assertEqual(
+            document.media[0]["attachments"][0]["properties"],
+            {
+                "subnet_prefix": "192.0.2.0/31",
+                "vlan_id": 310,
             },
         )
         self.assertTrue(validate_scenario(document)["ok"])
@@ -127,6 +139,41 @@ class ScenarioModelTests(unittest.TestCase):
         self.assertIn("unknown node", text)
         self.assertIn("after the final snapshot", text)
 
+    def test_serial_and_wave_horizons_warn_before_observations_are_cut(
+        self,
+    ) -> None:
+        for cadence, node_count, capture_time_ns in (
+            ("serial", 2, 5_150_000_000),
+            ("waves", 3, 5_140_000_000),
+        ):
+            with self.subTest(cadence=cadence):
+                value = scenario()
+                value["capture_time_ns"] = capture_time_ns
+                value["nodes"] = [
+                    {
+                        "node_id": f"r{index}",
+                        "name": f"R{index}",
+                        "kind": "router",
+                    }
+                    for index in range(1, node_count + 1)
+                ]
+                value["media"][0]["attachments"] = [  # type: ignore[index]
+                    {
+                        "node_id": f"r{index}",
+                        "port_id": f"Ethernet{index}",
+                    }
+                    for index in range(1, node_count + 1)
+                ]
+                value["events"][0]["propagation"]["cadence"] = cadence  # type: ignore[index]
+
+                report = validate_scenario(value)
+                self.assertTrue(report["ok"])
+                self.assertEqual(len(report["warnings"]), 1)
+                self.assertIn(
+                    "after capture",
+                    report["warnings"][0]["message"],
+                )
+
     def test_saved_document_round_trips(self) -> None:
         document = scenario_from_dict(scenario())
         with tempfile.TemporaryDirectory() as temporary:
@@ -139,6 +186,27 @@ class ScenarioModelTests(unittest.TestCase):
             )
             loaded = load_scenario(path)
         self.assertEqual(loaded, document)
+
+    def test_web_save_writes_an_explicit_local_observation(self) -> None:
+        source = WEB_APP_PATH.read_text(encoding="utf-8")
+        start = source.index("function canonicalAttachment(endpoint)")
+        end = source.index("\nfunction canonicalEvent(", start)
+        function_source = source[start:end]
+
+        self.assertIn("node_local_observation: {", function_source)
+        self.assertIn(
+            "suppliedObservation.resource_id",
+            function_source,
+        )
+        self.assertIn(
+            "suppliedObservation.local_resource_id",
+            function_source,
+        )
+        self.assertIn("properties: observationProperties", function_source)
+        self.assertNotIn(
+            "attachment.node_local_observation = structuredClone",
+            function_source,
+        )
 
     def test_windows_bom_project_loads(self) -> None:
         document = scenario_from_dict(scenario())
@@ -195,6 +263,12 @@ class ScenarioModelTests(unittest.TestCase):
         ]
         value["media"][0]["attachments"][0]["properties"] = {  # type: ignore[index]
             "physical_topology": {"peer": "r2"}
+        }
+        value["media"][0]["attachments"][0][  # type: ignore[index]
+            "node_local_observation"
+        ] = {
+            "resource_id": "interface:xe0",
+            "properties": {"physical_topology": {"peer": "r2"}},
         }
         value["nodes"][1]["clock"] = {  # type: ignore[index]
             "offset_ns": -30_000_000_000,

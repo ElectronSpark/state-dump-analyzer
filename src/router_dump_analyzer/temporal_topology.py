@@ -18,10 +18,9 @@ import hashlib
 import heapq
 import hmac
 import json
-from bisect import bisect_left, bisect_right
+from bisect import bisect_left
 from collections.abc import Callable
 from typing import Any
-
 
 StateReader = Callable[[str, int], dict[str, Any]]
 RelationshipReader = Callable[[int], list[dict[str, Any]]]
@@ -2022,7 +2021,7 @@ class TemporalTopologyService:
             )
 
         event_left = bisect_left(self._event_times, start_ns)
-        event_right = bisect_right(self._event_times, end_ns)
+        event_right = bisect_left(self._event_times, end_ns)
         local_node = next(
             item
             for item in self.contract["nodes"]
@@ -2144,7 +2143,7 @@ class TemporalTopologyService:
 
         relation_types = set(projection.get("relationship_types") or [])
         mutation_left = bisect_left(self._mutation_times, start_ns)
-        mutation_right = bisect_right(self._mutation_times, end_ns)
+        mutation_right = bisect_left(self._mutation_times, end_ns)
 
         def mutation_changes():
             for index in range(mutation_left, mutation_right):

@@ -23,6 +23,12 @@ from state_dump_generator.simulation import reconstruct_scenario
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ARCHIVE_MEMBER_CONFORMANCE = (
+    PROJECT_ROOT
+    / "tests"
+    / "fixtures"
+    / "archive-member-name-conformance.json"
+)
 
 
 def _members(content: bytes) -> dict[str, bytes]:
@@ -124,6 +130,17 @@ class ArchiveTests(unittest.TestCase):
             self.assertNotIn(b"scenario_id", combined)
             self.assertNotIn(b"global_participants", combined)
 
+    def test_reserved_node_id_gets_a_portable_archive_member_name(self) -> None:
+        plan = _plans()["node-a"]
+        assert isinstance(plan, dict)
+        plan["node_id"] = "CON"
+
+        outer = _members(build_assembly_bytes({"CON": plan}))
+        self.assertIn("nodes/node-CON.tgz", outer)
+        manifest = json.loads(outer["manifest.json"])
+        self.assertEqual(manifest["nodes"][0]["node_id"], "CON")
+        self.assertEqual(manifest["nodes"][0]["file"], "nodes/node-CON.tgz")
+
     def test_history_is_sorted_by_timestamp(self) -> None:
         content = build_node_dump_bytes(_plans()["node-a"])
         history = _members(content)["logs/history.jsonl"].decode("utf-8")
@@ -175,6 +192,20 @@ class ArchiveTests(unittest.TestCase):
                     validate_member_name(unsafe)
         with self.assertRaises(ArchiveProjectionError):
             deterministic_tgz_bytes({"../escape": b"bad"})
+
+    def test_archive_member_policy_matches_shared_portability_vectors(
+        self,
+    ) -> None:
+        vectors = json.loads(
+            ARCHIVE_MEMBER_CONFORMANCE.read_text(encoding="utf-8")
+        )
+        for accepted in vectors["accepted"]:
+            with self.subTest(accepted=accepted):
+                self.assertEqual(accepted, validate_member_name(accepted))
+        for rejected in vectors["rejected"]:
+            with self.subTest(rejected=rejected):
+                with self.assertRaises(ArchiveProjectionError):
+                    validate_member_name(rejected)
 
     def test_output_symlinks_are_rejected_before_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -341,7 +372,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertNotIn(private_medium_id.encode("utf-8"), nested_bytes)
         self.assertIn(b"interface:xe0", nested_bytes)
 
-    def test_private_medium_id_cannot_hide_in_attachment_property_values(self) -> None:
+    def test_authoring_attachment_properties_never_enter_node_dump(self) -> None:
         private_medium_id = "private-property-wire"
         scenario = {
             "schema_version": 1,
@@ -359,6 +390,8 @@ class ArchiveTests(unittest.TestCase):
                             "port_id": "xe0",
                             "properties": {
                                 "apparently_safe_key": private_medium_id,
+                                "peer_node": "r2",
+                                "remote_port": "xe9",
                             },
                         }
                     ],
@@ -366,8 +399,18 @@ class ArchiveTests(unittest.TestCase):
             ],
             "events": [],
         }
-        with self.assertRaisesRegex(ValueError, "private physical medium"):
-            compile_and_build(scenario)
+        content = compile_and_build(scenario)
+        outer = _members(content)
+        nested_bytes = b"\n".join(
+            b"\n".join(_members(payload).values())
+            for name, payload in outer.items()
+            if name.startswith("nodes/")
+        )
+        self.assertNotIn(private_medium_id.encode("utf-8"), nested_bytes)
+        self.assertNotIn(b"apparently_safe_key", nested_bytes)
+        self.assertNotIn(b"peer_node", nested_bytes)
+        self.assertNotIn(b"remote_port", nested_bytes)
+        self.assertIn(b"interface:xe0", nested_bytes)
 
     def test_reconstruction_private_truth_is_never_projected_into_archive(self) -> None:
         private_medium_id = "private-reconstruction-wire"

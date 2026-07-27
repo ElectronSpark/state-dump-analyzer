@@ -111,6 +111,15 @@ latest completely reconstructed status for that exact scope; negative offsets
 select its past. Resolving this independently across nodes produces a capture
 vector, not necessarily one wall-clock instant.
 
+At runtime, the node declares that anchor under the exact
+perspective/projection pair. The coordinator qualifies it with immutable
+member, revision, plug-in set, and plug-in-run identity. A complete local-only
+declaration remains usable with `local_exact` resolution and null absolute
+bounds; it does not require a clock transform. A narrow legacy compatibility
+path may instead derive an anchor from capture time and declared projection lag,
+but it is labeled `legacy_capture_lag` and still requires the node clock
+mapping. New providers declare explicit scoped watermarks.
+
 Events without a usable timestamp remain in an **unplaced events** collection
 with their source ordinal. They can be reached from resource history and source
 context, but must not be assigned a fabricated point on the global timeline.
@@ -435,6 +444,30 @@ An ordered safe-projection digest, strict ordinal and size bounds, and a stored
 FTS vocabulary digest protect reopen reuse from stale document/index
 combinations; FTS5's full source-aware integrity check runs before publication.
 
+Client publication is a separate core projection over that storage model.
+Descriptor sensitivity and visibility rules apply only inside plug-in property
+containers, including nested mappings/lists and literal dotted keys; they never
+become a global blacklist over core envelopes. Revision/node/resource/event
+identity, event classification, affected-resource references, timestamps,
+schema, and capability fields therefore retain their core meaning even when a
+plug-in property collides with the same name. Public evidence, provenance,
+unknown-field, and incarnation values use bounded typed metadata shapes rather
+than arbitrary plug-in maps.
+
+For an event, core assembles the applicable property policies from explicit
+event/subject/effect resource kinds and from every referenced canonical
+resource, including `affected_resources`, resolved through the immutable
+catalog. Event `kind` is not a resource-kind hint. An unresolved reference or
+missing policy fails closed by applying the union of declared sensitive fields.
+A nested subject, affected-resource, effect, or relationship-effect record is
+a typed core envelope: unknown children are dropped, scalar fields cannot carry
+containers, and plug-in extensions remain inside descriptor-governed property
+payloads.
+A sensitive or non-client-visible condition remains the generic value
+`unknown` in resources, intervals, event effects, and aggregate keys. The same
+projection governs bootstrap, resource, search, range, interval, and event
+responses so one endpoint cannot become a publication bypass.
+
 ### 5.3 Core tables
 
 | Table | Essential purpose |
@@ -584,6 +617,10 @@ lifecycle. Status/state updates remain independent from existence, and
 `state_changed: false` suppresses the entire proposed change. This allows a
 down-but-present resource, a deletion gap, and recreation of the same canonical
 identity without teaching core any device or protocol vocabulary.
+Bounded topology-change queries use the same half-open convention:
+`start_ns <= effective_time_ns < end_ns` for resource events and relationship
+mutations. A boundary change therefore appears exactly once in the later of two
+adjacent windows, and a zero-width window is empty.
 
 The logical worker hook is
 `project_topology(TopologyProjectionRequest, ReadOnlyWorld)`. It streams one
@@ -635,6 +672,11 @@ matching, corroboration, aliases, one-sided observations, ambiguity, and
 cross-vendor policy belong to an allowlisted federation/linker plug-in. The
 linker receives bounded normalized claims rather than artifacts or database
 access and emits matched, ambiguous, unresolved, or conflicting candidate sets.
+If otherwise paired claims disagree on normalized link type, the coordinator
+emits one deterministic conflict with unknown link type/operational state,
+sorted distinct claimed types, and reason `plugin_link_type_mismatch`; input
+order never selects a winner. A presentation-role disagreement is also
+fail-closed for route use.
 
 Shared media use the same graph algebra. A plug-in projects a subnet or other
 connectivity domain as a `TopologyResourceRecord` vertex and projects every
@@ -776,7 +818,9 @@ Single-node route resolution at time `t` is:
 2. Longest-prefix match in the requested VRF.
 3. Apply the plugin-projected lexicographic `selection_rank` (lower wins), exact
    selected status when available, and explicit multipath grouping. Equal rank
-   alone never invents ECMP.
+   alone never invents ECMP. A legacy route-executor v1 envelope may omit its
+   mode only when zero or one candidate is selected, which normalizes to
+   `single_active`; multiple selected candidates without a mode fail validation.
 4. Evaluate each plug-in-declared ingress-dependent candidate constraint
    against the request's typed traffic class and carried ingress policy scopes.
    Preserve blocked, not-applicable, and unknown decisions instead of deleting
@@ -800,6 +844,10 @@ occurrence, and the exact closed state sequence. The closing occurrence remains
 visible to callers; it is not deduplicated into the earlier node. An
 incomplete policy-scope set, packet state, packet layer, or packet-size
 observation cannot prove a cycle.
+The compatibility candidate's `identity_complete` flag defaults to false and
+becomes `canonical_identity_complete` in the public result. Repeating an opaque
+key whose identity is incomplete neither marks a node occurrence repeated nor
+produces a cycle; independent hop and recursion budgets still terminate it.
 
 The request selects an observed capture vector or reconstructed time. The
 response echoes that basis, resolved revision/time or capture ranges,
@@ -943,6 +991,13 @@ for the pair to be consistent. Mirrored, asymmetric, and non-comparable node
 sequences are a separate `path_relation`; they are descriptive and do not
 change that verdict. A transit-start forward prefix and a full return path are
 `not_comparable`, because they cover different spans.
+
+A compatibility scenario fixed to one endpoint pair may accept that exact pair
+in reverse order. Core then selects the executor's opposite directional
+candidates and decisions while keeping the caller-facing direction and
+constructing the counterpart from the caller's reversed flow. A
+multi-attachment fixed destination cannot be reversed safely without an
+explicit source-attachment contract and fails closed.
 
 For a plug-in-selected multipath set, core requires every selected active
 branch to reach the directional goal. A mixed success/failure set is

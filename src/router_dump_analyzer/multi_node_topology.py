@@ -1222,6 +1222,17 @@ class MultiNodeTopologyService:
         basis: dict[str, Any],
         clock_policy: str,
     ) -> dict[str, Any]:
+        scope = {
+            "node_id": node["node_id"],
+            "member_id": node["member_id"],
+            "revision_id": node["revision_id"],
+            "plugin_set_id": plugin_set_id,
+            "plugin_id": plugin["plugin_id"],
+            "plugin_run_id": plugin["plugin_run_id"],
+            "projection_id": projection["projection_id"],
+            "status_perspective_id": perspective_id,
+        }
+        common = dict(scope)
         kind = str(basis.get("kind", "relative_to_watermark"))
         if kind == "relative_to_scope_end":
             kind = "relative_to_watermark"
@@ -1244,6 +1255,166 @@ class MultiNodeTopologyService:
                 raise MultiNodeTopologyRequestError(
                     "basis.offset_ns must be zero or negative"
                 )
+            watermarks = node.get("watermarks", {})
+            if not isinstance(watermarks, dict):
+                raise MultiNodeTopologyRequestError(
+                    f"watermarks for node {node['node_id']} must be an object"
+                )
+            perspective_watermarks = watermarks.get(
+                perspective_id,
+                {},
+            )
+            if not isinstance(perspective_watermarks, dict):
+                raise MultiNodeTopologyRequestError(
+                    "perspective watermarks must be an object for "
+                    f"{node['node_id']}:{perspective_id}"
+                )
+            watermark = perspective_watermarks.get(
+                projection["projection_id"]
+            )
+            if watermark is not None:
+                if not isinstance(watermark, dict):
+                    raise MultiNodeTopologyRequestError(
+                        "projection watermark must be an object for "
+                        f"{node['node_id']}:{plugin['plugin_id']}:"
+                        f"{projection['projection_id']}:{perspective_id}"
+                    )
+                if watermark.get("complete") is False:
+                    raise MultiNodeTopologyRequestError(
+                        "projection watermark is explicitly incomplete for "
+                        f"{node['node_id']}:{plugin['plugin_id']}:"
+                        f"{projection['projection_id']}:{perspective_id}"
+                    )
+                local_watermark = _integer_ns(
+                    watermark.get("local_time_ns"),
+                    "watermark.local_time_ns",
+                )
+                query_watermark_raw = watermark.get("query_time_ns")
+                query_watermark = (
+                    None
+                    if query_watermark_raw is None
+                    else _integer_ns(
+                        query_watermark_raw,
+                        "watermark.query_time_ns",
+                    )
+                )
+                absolute_min_raw = watermark.get("absolute_min_ns")
+                absolute_max_raw = watermark.get("absolute_max_ns")
+                if (absolute_min_raw is None) != (absolute_max_raw is None):
+                    raise MultiNodeTopologyRequestError(
+                        "watermark.absolute_min_ns and "
+                        "watermark.absolute_max_ns must be supplied together"
+                    )
+                absolute_min = (
+                    None
+                    if absolute_min_raw is None
+                    else _integer_ns(
+                        absolute_min_raw,
+                        "watermark.absolute_min_ns",
+                    )
+                    + offset
+                )
+                absolute_max = (
+                    None
+                    if absolute_max_raw is None
+                    else _integer_ns(
+                        absolute_max_raw,
+                        "watermark.absolute_max_ns",
+                    )
+                    + offset
+                )
+                if (
+                    absolute_min is not None
+                    and absolute_max is not None
+                    and absolute_min > absolute_max
+                ):
+                    raise MultiNodeTopologyRequestError(
+                        "watermark absolute bounds are reversed"
+                    )
+                local_time = local_watermark + offset
+                query_time = (
+                    None
+                    if query_watermark is None
+                    else query_watermark + offset
+                )
+                if absolute_min is None and clock:
+                    if query_time is None:
+                        query_time = (
+                            local_time
+                            - int(clock["local_minus_absolute_ns"])
+                        )
+                    clock_uncertainty = int(clock["uncertainty_ns"])
+                    absolute_min = query_time - clock_uncertainty
+                    absolute_max = query_time + clock_uncertainty
+                elif query_time is None and absolute_min is not None:
+                    query_time = (absolute_min + absolute_max) // 2
+                uncertainty = (
+                    None
+                    if absolute_min is None
+                    else max(0, (absolute_max - absolute_min) // 2)
+                )
+                quality = str(
+                    watermark.get("quality")
+                    or watermark.get("mapping_quality")
+                    or (
+                        clock.get("mapping_quality")
+                        if isinstance(clock, dict)
+                        else "unknown"
+                    )
+                )
+                return {
+                    **common,
+                    "basis_kind": "relative_capture_vector",
+                    "kind": "relative_capture_vector",
+                    "query_time_ns": (
+                        None if query_time is None else str(query_time)
+                    ),
+                    "local_time_ns": str(local_time),
+                    "local_clock_domain": str(
+                        watermark.get("clock_domain")
+                        or (
+                            clock.get("clock_domain")
+                            if isinstance(clock, dict)
+                            else "local"
+                        )
+                    ),
+                    "absolute_min_ns": (
+                        None if absolute_min is None else str(absolute_min)
+                    ),
+                    "absolute_max_ns": (
+                        None if absolute_max is None else str(absolute_max)
+                    ),
+                    "uncertainty_ns": (
+                        None if uncertainty is None else str(uncertainty)
+                    ),
+                    "resolution": (
+                        "local_exact"
+                        if absolute_min is None
+                        else "exact"
+                        if uncertainty == 0
+                        else "bounded"
+                    ),
+                    "mapping_method": watermark.get("mapping_method")
+                    or (
+                        clock.get("mapping_method")
+                        if isinstance(clock, dict)
+                        else None
+                    ),
+                    "mapping_quality": quality,
+                    "simultaneity": "not_implied",
+                    "watermark_query_time_ns": (
+                        None
+                        if query_watermark is None
+                        else str(query_watermark)
+                    ),
+                    "watermark_local_time_ns": str(local_watermark),
+                    "watermark_scope": scope,
+                    "watermark_source": "projection_declaration",
+                    "relative_offset_ns": str(offset),
+                }
+            # Compatibility for pre-watermark topology providers. This remains
+            # intentionally explicit in the result and still requires the
+            # legacy node clock mapping.
             lag = int(projection.get("watermark_lag_ns", 0))
             watermark = self.capture_ns - lag
             query_time = watermark + offset
@@ -1258,14 +1429,7 @@ class MultiNodeTopologyService:
                     f"node {node['node_id']} has no usable clock mapping"
                 )
             return {
-                "node_id": node["node_id"],
-                "member_id": node["member_id"],
-                "revision_id": node["revision_id"],
-                "plugin_set_id": plugin_set_id,
-                "plugin_id": plugin["plugin_id"],
-                "plugin_run_id": plugin["plugin_run_id"],
-                "projection_id": projection["projection_id"],
-                "status_perspective_id": perspective_id,
+                **common,
                 "basis_kind": basis_kind,
                 "kind": basis_kind,
                 "query_time_ns": None,
@@ -1278,14 +1442,7 @@ class MultiNodeTopologyService:
             }
         uncertainty = int(clock["uncertainty_ns"])
         result = {
-            "node_id": node["node_id"],
-            "member_id": node["member_id"],
-            "revision_id": node["revision_id"],
-            "plugin_set_id": plugin_set_id,
-            "plugin_id": plugin["plugin_id"],
-            "plugin_run_id": plugin["plugin_run_id"],
-            "projection_id": projection["projection_id"],
-            "status_perspective_id": perspective_id,
+            **common,
             "basis_kind": basis_kind,
             "kind": basis_kind,
             "query_time_ns": str(query_time),
@@ -1310,16 +1467,8 @@ class MultiNodeTopologyService:
                     "watermark_local_time_ns": str(
                         watermark + int(clock["local_minus_absolute_ns"])
                     ),
-                    "watermark_scope": {
-                        "node_id": node["node_id"],
-                        "member_id": node["member_id"],
-                        "revision_id": node["revision_id"],
-                        "plugin_set_id": plugin_set_id,
-                        "plugin_id": plugin["plugin_id"],
-                        "plugin_run_id": plugin["plugin_run_id"],
-                        "projection_id": projection["projection_id"],
-                        "status_perspective_id": perspective_id,
-                    },
+                    "watermark_scope": scope,
+                    "watermark_source": "legacy_capture_lag",
                     "relative_offset_ns": str(query_time - watermark),
                 }
             )
@@ -1337,9 +1486,20 @@ class MultiNodeTopologyService:
         resource_limit: int,
         context_id: str,
     ) -> dict[str, Any]:
-        timestamp_ns = int(resolved_time["query_time_ns"])
-        minimum_ns = int(resolved_time["absolute_min_ns"])
-        maximum_ns = int(resolved_time["absolute_max_ns"])
+        timestamp_value = (
+            resolved_time.get("query_time_ns")
+            if resolved_time.get("query_time_ns") is not None
+            else resolved_time["local_time_ns"]
+        )
+        timestamp_ns = int(timestamp_value)
+        minimum_value = resolved_time.get("absolute_min_ns")
+        maximum_value = resolved_time.get("absolute_max_ns")
+        minimum_ns = (
+            timestamp_ns if minimum_value is None else int(minimum_value)
+        )
+        maximum_ns = (
+            timestamp_ns if maximum_value is None else int(maximum_value)
+        )
         all_resources = list(projection.get("resources", []))
         resources: list[dict[str, Any]] = []
         state_by_id: dict[str, dict[str, Any]] = {}
@@ -2169,7 +2329,12 @@ class MultiNodeTopologyService:
                             "route_trace": route_trace_role,
                         },
                         "resolution": resolution,
-                        "link_type": next(iter(link_types), "unknown"),
+                        "link_type": (
+                            next(iter(link_types))
+                            if len(link_types) == 1
+                            else "unknown"
+                        ),
+                        "claimed_link_types": sorted(link_types),
                         "directed": bool(left.get("directed") or right.get("directed")),
                         "endpoint_a": self._claim_endpoint(left),
                         "endpoint_b": self._claim_endpoint(right),

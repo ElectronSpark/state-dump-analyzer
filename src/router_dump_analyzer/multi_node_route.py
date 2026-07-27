@@ -13,29 +13,11 @@ import base64
 import binascii
 import hashlib
 import json
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Mapping
+from itertools import pairwise
+from typing import Any
 
-from .canonical import CanonicalValueError, packet_value_json
-from .multi_node_topology import (
-    MultiNodeTopologyService,
-    MultiNodeTopologyRequestError,
-)
-from router_dump_analyzer.route_trace_core import (
-    EndpointReachabilityPairEvaluation,
-    ForwardingPolicyEvaluation,
-    ForwardingPacketTraceEvaluation,
-    ForwardingPacketTransitionEvaluation,
-    RouteTraceContractError,
-    evaluate_endpoint_reachability_pair,
-    evaluate_forwarding_packet_trace,
-    evaluate_forwarding_policy,
-    evaluate_forwarding_traversal,
-)
-from router_dump_analyzer.topology_core import (
-    resolve_connectivity_domain_reference,
-)
-from router_dump_analyzer.value_core import parse_decimal_integer
 from router_dump_analyzer.plugin_api import (
     Evidence,
     ForwardingCandidateConstraint,
@@ -49,6 +31,27 @@ from router_dump_analyzer.plugin_api import (
     ResourceKey,
     StatusPerspectiveRef,
     TopologyEndpointReference,
+)
+from router_dump_analyzer.route_trace_core import (
+    EndpointReachabilityPairEvaluation,
+    ForwardingPacketTraceEvaluation,
+    ForwardingPacketTransitionEvaluation,
+    ForwardingPolicyEvaluation,
+    RouteTraceContractError,
+    evaluate_endpoint_reachability_pair,
+    evaluate_forwarding_packet_trace,
+    evaluate_forwarding_policy,
+    evaluate_forwarding_traversal,
+)
+from router_dump_analyzer.topology_core import (
+    resolve_connectivity_domain_reference,
+)
+from router_dump_analyzer.value_core import parse_decimal_integer
+
+from .canonical import CanonicalValueError, packet_value_json
+from .multi_node_topology import (
+    MultiNodeTopologyRequestError,
+    MultiNodeTopologyService,
 )
 
 
@@ -1277,6 +1280,7 @@ class MultiNodeRouteService:
         projection: dict[str, Any] | None,
         *,
         direction: str,
+        requested_direction: str | None = None,
         steering_profile_id: str,
     ) -> None:
         if projection is None:
@@ -1344,7 +1348,9 @@ class MultiNodeRouteService:
                 evidence = {
                     **decision,
                     "directional_scope": direction,
-                    "requested_direction": direction,
+                    "requested_direction": (
+                        requested_direction or direction
+                    ),
                     "generated_candidate_id": candidate_id,
                     "visit_index": index,
                     "selected_next_node_id": next_node_id,
@@ -1371,7 +1377,7 @@ class MultiNodeRouteService:
                 "coverage_case_id": projection["coverage_case_id"],
                 "generated_candidate_id": candidate_id,
                 "directional_scope": direction,
-                "requested_direction": direction,
+                "requested_direction": requested_direction or direction,
                 "decision_count": len(path_evidence),
                 "all_rendered_candidates_match": bool(path_evidence)
                 and all(
@@ -2219,11 +2225,13 @@ class MultiNodeRouteService:
             declared_visit_index = declaration.get("visit_index")
             declared_node_id = declaration.get("node_id")
             cycle_key = declaration.get("cycle_key")
+            identity_complete = declaration.get("identity_complete", False)
             if (
                 declared_visit_index != visit_index
                 or declared_node_id != node_id
                 or not isinstance(cycle_key, str)
                 or not cycle_key
+                or not isinstance(identity_complete, bool)
             ):
                 raise MultiNodeRouteRequestError(
                     "candidate traversal state identity disagrees with "
@@ -2241,6 +2249,12 @@ class MultiNodeRouteService:
                     kind="OPAQUE_TRAVERSAL_STATE",
                     parts=(("canonical_state", cycle_key),),
                 ),
+                # The generic traversal evaluator already refuses to prove a
+                # cycle when the declared policy-scope envelope is incomplete.
+                # Generated executors currently project one opaque canonical
+                # key, so conservatively carry their whole-identity
+                # completeness through that existing proof gate.
+                policy_scopes_complete=identity_complete,
             )
             hop_index = visit_index
             recursion_depth = (
@@ -2275,7 +2289,11 @@ class MultiNodeRouteService:
             occurrence_id = (
                 f"{path['path_id']}:node-occurrence:{visit_index + 1}"
             )
-            repeated_occurrence_id = first_occurrence_by_state.get(state)
+            repeated_occurrence_id = (
+                first_occurrence_by_state.get(state)
+                if identity_complete
+                else None
+            )
             occurrence = {
                 "occurrence_id": occurrence_id,
                 "node_id": node_id,
@@ -2286,9 +2304,9 @@ class MultiNodeRouteService:
                 ),
                 "repeated": repeated_occurrence_id is not None,
                 "repeats_occurrence_id": repeated_occurrence_id,
-                "canonical_identity_complete": True,
+                "canonical_identity_complete": identity_complete,
             }
-            if repeated_occurrence_id is None:
+            if identity_complete and repeated_occurrence_id is None:
                 first_occurrence_by_state[state] = occurrence_id
             typed_states.append(state)
             hop_indices.append(hop_index)
@@ -3050,11 +3068,6 @@ class MultiNodeRouteService:
             trace_scenario_id,
             {},
         )
-        multipath_mode = trace_semantics.get("multipath_mode")
-        if multipath_mode not in {"single_active", "all_active"}:
-            raise MultiNodeRouteRequestError(
-                "the selected route executor must declare multipath_mode"
-            )
         path_ids = [str(row.get("path_id") or "") for row in source_rows]
         if any(not path_id for path_id in path_ids) or len(
             set(path_ids)
@@ -3073,6 +3086,10 @@ class MultiNodeRouteService:
                 str(row.get("decision") or "") == "active",
             )
         ]
+        multipath_mode = self._route_executor_multipath_mode(
+            trace_semantics,
+            selected_count=len(selected_rows),
+        )
         if len(selected_rows) > 1 and multipath_mode != "all_active":
             raise MultiNodeRouteRequestError(
                 "multiple selected route rows require an explicit "
@@ -3627,6 +3644,34 @@ class MultiNodeRouteService:
     ) -> bool:
         value = row.get(field)
         return value if isinstance(value, bool) else fallback
+
+    @staticmethod
+    def _route_executor_multipath_mode(
+        scenario: Mapping[str, Any],
+        *,
+        selected_count: int,
+    ) -> str:
+        """Resolve legacy single-path executors without inventing ECMP."""
+
+        value = scenario.get("multipath_mode")
+        if value in {"single_active", "all_active"}:
+            return str(value)
+        if value is None and selected_count <= 1:
+            # Before the explicit group-mode field existed, one selected row
+            # unambiguously meant the singular forwarding choice. Preserve
+            # that executor compatibility without guessing when several rows
+            # claim to forward concurrently.
+            return "single_active"
+        if value is None:
+            raise MultiNodeRouteRequestError(
+                "route executor contract v1 omits multipath_mode while "
+                "declaring multiple selected candidates; declare "
+                "single_active or all_active"
+            )
+        raise MultiNodeRouteRequestError(
+            "route executor contract v1 multipath_mode must be "
+            "single_active or all_active"
+        )
 
     @staticmethod
     def _declared_trace_endpoint(
@@ -4587,19 +4632,25 @@ class MultiNodeRouteService:
                     "ordering and joining plug-in-provided resolution steps",
                     "candidate retention and focus selection",
                     "bounded traversal and canonical-state cycle detection",
-                    "exact typed policy comparison, decision validation, and "
-                    "aggregate verdict handling",
+                    (
+                        "exact typed policy comparison, decision validation, "
+                        "and aggregate verdict handling"
+                    ),
                     "uncertainty, completeness, and best-effort evidence accounting",
-                    "immutable flow direction, endpoint-goal matching, and "
-                    "bidirectional reachability aggregation",
+                    (
+                        "immutable flow direction, endpoint-goal matching, and "
+                        "bidirectional reachability aggregation"
+                    ),
                 ],
                 "node_plugins": [
                     "local route resolution and candidate activity",
                     "route_resolution text and resource references",
                     "layer-specific reachability and forwarding semantics",
                     "route-table keys, VRF/family semantics, preference, and next hops",
-                    "policy constraints, scope construction/completeness, reasons, "
-                    "and evidence",
+                    (
+                        "policy constraints, scope construction/completeness, "
+                        "reasons, and evidence"
+                    ),
                     "endpoint attachment and local terminal/delivery classification",
                 ],
                 "federation_linker": [
@@ -5656,6 +5707,38 @@ class MultiNodeRouteService:
                         field,
                         declared_query[field],
                     )
+        flow_source, flow_destination = self._resolve_endpoints(
+            normalized_body,
+            scenario_id,
+            "forward",
+        )
+        scenario_direction = self._scenario_direction_for_flow(
+            scenario_id,
+            flow_source,
+            flow_destination,
+            "forward" if direction == "both" else direction,
+        )
+        if scenario_direction != direction:
+            (
+                route_type,
+                routing_context,
+                remapped_referenced_row,
+            ) = self._resolve_routing_context(
+                normalized_body,
+                scenario,
+                scenario_direction,
+            )
+            if (
+                referenced_row is not None
+                and remapped_referenced_row is not None
+                and remapped_referenced_row.get("route_entry_id")
+                != referenced_row.get("route_entry_id")
+            ):
+                raise MultiNodeRouteRequestError(
+                    "route_entry_ref resolves to a different row after "
+                    "fixed-scenario direction mapping"
+                )
+            referenced_row = remapped_referenced_row
         if direction == "both":
             forward_request = dict(normalized_body)
             reverse_request = dict(normalized_body)
@@ -5723,12 +5806,10 @@ class MultiNodeRouteService:
             return self._bidirectional_response(
                 scenario, route_type, resolution_mode, forward, reverse
             )
-        flow_source, flow_destination = self._resolve_endpoints(
-            normalized_body, scenario_id, "forward"
-        )
         source, destination = self._resolve_endpoints(
             normalized_body, scenario_id, direction
         )
+        effective_direction = scenario_direction
         referenced_attributes = (
             referenced_row.get("attributes", {})
             if isinstance(referenced_row, dict)
@@ -5744,13 +5825,13 @@ class MultiNodeRouteService:
                 source_node_id=source["node_id"],
                 destination_node_id=destination["node_id"],
                 routing_context=routing_context,
-                direction=direction,
+                direction=effective_direction,
             )
             if scenario.get("supports_arbitrary_endpoints")
             and referenced_scenario_id != scenario_id
             else self._generated_projection_for_scenario(
                 scenario_id,
-                direction,
+                effective_direction,
                 resolution_mode=resolution_mode,
                 steering_profile_id=steering_profile_id,
             )
@@ -5760,6 +5841,7 @@ class MultiNodeRouteService:
             scenario,
             direction,
             flow_source if direction == "forward" else flow_destination,
+            scenario_direction=effective_direction,
         )
         if (
             scenario.get("supports_explicit_start")
@@ -5775,11 +5857,13 @@ class MultiNodeRouteService:
                 source_node_id=trace_start["node_id"],
                 destination_node_id=destination["node_id"],
                 routing_context=routing_context,
-                direction=direction,
+                direction=effective_direction,
             )
-        target_endpoint = (
-            flow_destination if direction == "forward" else flow_source
-        )
+        # Reachability is always evaluated against this trace's actual
+        # directional destination.  That differs from the immutable base-flow
+        # endpoint when a fixed scenario is requested in the opposite
+        # orientation and its return trace resolves a presented service.
+        target_endpoint = destination
         vrf_node_ids = set(self._vrf(routing_context["vrf_id"])["node_ids"])
         outside_vrf = [
             endpoint["node_id"]
@@ -5924,7 +6008,8 @@ class MultiNodeRouteService:
         self._attach_generated_forwarding_projection(
             paths,
             generated_projection,
-            direction=direction,
+            direction=effective_direction,
+            requested_direction=direction,
             steering_profile_id=steering_profile_id,
         )
         self._reconcile_generated_route_evidence(
@@ -5933,7 +6018,7 @@ class MultiNodeRouteService:
             route_evidence,
             resources,
             targets,
-            direction=direction,
+            direction=effective_direction,
             resolution_mode=resolution_mode,
         )
         self._apply_generated_candidate_semantics(
@@ -5949,7 +6034,7 @@ class MultiNodeRouteService:
                 consistency_state = "inconsistent"
             elif (
                 generated_outcome == "one_way_drop"
-                and direction == "reverse"
+                and effective_direction == "reverse"
             ):
                 consistency_state = "inconsistent_one_way_drop"
             elif generated_outcome == "policy_blocked":
@@ -5968,7 +6053,7 @@ class MultiNodeRouteService:
             self._attach_packet_trace(
                 paths[0],
                 profile_id=packet_executor_profile_id,
-                direction=direction,
+                direction=effective_direction,
                 steering_profile_id=steering_profile_id,
                 issues=issues,
                 declared_case=(
@@ -6046,6 +6131,19 @@ class MultiNodeRouteService:
         issue_by_id = {item["issue_id"]: item for item in issues}
         active_paths = [item for item in paths if item["active"]]
         primary = next((item for item in paths if item["primary"]), None)
+        multipath_mode = self._route_executor_multipath_mode(
+            scenario,
+            selected_count=sum(
+                1
+                for item in paths
+                if bool(
+                    item.get(
+                        "selected_active_by_plugin",
+                        item.get("active"),
+                    )
+                )
+            ),
+        )
         trace_material = {
             "context_id": snapshot["context_id"],
             "route_evidence_context_id": route_evidence["context_id"],
@@ -6082,8 +6180,11 @@ class MultiNodeRouteService:
         counterpart_direction = (
             "reverse" if direction == "forward" else "forward"
         )
+        counterpart_effective_direction = self._opposite_trace_direction(
+            effective_direction
+        )
         counterpart_context = self._scenario_routing_context(
-            scenario, counterpart_direction
+            scenario, counterpart_effective_direction
         )
         if scenario.get("supports_arbitrary_endpoints"):
             counterpart_source_id = self._router(
@@ -6099,14 +6200,12 @@ class MultiNodeRouteService:
                 "vrf_id": routing_context["vrf_id"],
             }
         else:
-            counterpart_source_id = scenario.get("default_source") or self._router(
-                directional_pair["base_source_node_id"]
-            )["source_id"]
-            counterpart_destination_id = scenario.get("default_destination")
-            if counterpart_destination_id is None:
-                counterpart_destination_id = self._router(
-                    directional_pair["base_destination_node_id"]
-                )["destination_id"]
+            # Keep these selectors aligned with the caller's base flow.  A
+            # fixed scenario may be exercised with its advertised endpoint
+            # pair reversed, in which case the executor direction changes but
+            # the public forward/reverse vocabulary does not.
+            counterpart_source_id = flow_source["source_id"]
+            counterpart_destination_id = flow_destination["destination_id"]
         return {
             "api_version": "v1",
             "assembly_id": self.topology.assembly_id,
@@ -6221,7 +6320,7 @@ class MultiNodeRouteService:
             "max_recursion": max_recursion,
             "resolved_basis": snapshot["resolved_basis"],
             "multipath": {
-                "mode": scenario["multipath_mode"],
+                "mode": multipath_mode,
                 "selection_owner": "node_plugins",
                 "candidate_count": len(paths),
                 "active_path_count": len(active_paths),
@@ -6858,14 +6957,7 @@ class MultiNodeRouteService:
                 "policy_blocked",
                 "hop_limit_exceeded",
                 "recursion_limit_exceeded",
-            } or not forwarding_capable:
-                declaration = {
-                    "classification": "not_delivered",
-                    "classification_complete": True,
-                    "endpoint_id": None,
-                    "attachment": None,
-                }
-            elif (
+            } or not forwarding_capable or (
                 resolved
                 and forwarding_capable
                 and result == "resolved"
@@ -7514,6 +7606,8 @@ class MultiNodeRouteService:
         scenario: dict[str, Any],
         direction: str,
         directional_source: dict[str, Any],
+        *,
+        scenario_direction: str | None = None,
     ) -> dict[str, Any]:
         """Resolve a traversal seed without changing the packet source.
 
@@ -7565,7 +7659,7 @@ class MultiNodeRouteService:
         )
         if (
             not request
-            and direction == "forward"
+            and (scenario_direction or direction) == "forward"
             and scenario.get("default_start")
         ):
             request = {"start_id": scenario["default_start"]}
@@ -7736,6 +7830,49 @@ class MultiNodeRouteService:
             "derivation": derivation,
             "semantic_role": "traversal_seed",
         }
+
+    @staticmethod
+    def _opposite_trace_direction(direction: str) -> str:
+        if direction == "forward":
+            return "reverse"
+        if direction == "reverse":
+            return "forward"
+        raise MultiNodeRouteRequestError(
+            "an endpoint pair can map only forward or reverse direction"
+        )
+
+    def _scenario_direction_for_flow(
+        self,
+        scenario_id: str,
+        flow_source: Mapping[str, Any],
+        flow_destination: Mapping[str, Any],
+        requested_direction: str,
+    ) -> str:
+        """Map a caller-oriented flow onto a fixed executor's declarations."""
+
+        scenario = self.policy.scenarios[scenario_id]
+        if scenario.get("supports_arbitrary_endpoints"):
+            return requested_direction
+        advertised = self._advertised_scenario_by_id[scenario_id]
+        declared_pair = (
+            str(advertised.get("source", {}).get("node_id") or ""),
+            str(advertised.get("destination", {}).get("node_id") or ""),
+        )
+        supplied_pair = (
+            str(flow_source.get("node_id") or ""),
+            str(flow_destination.get("node_id") or ""),
+        )
+        if supplied_pair == declared_pair:
+            return requested_direction
+        if (
+            declared_pair[0] != declared_pair[1]
+            and supplied_pair == (declared_pair[1], declared_pair[0])
+        ):
+            return self._opposite_trace_direction(requested_direction)
+        raise MultiNodeRouteRequestError(
+            f"scenario {scenario_id} is scoped to "
+            f"{declared_pair[0]}/{declared_pair[1]}"
+        )
 
     def _resolve_endpoints(
         self, body: dict[str, Any], scenario_id: str, direction: str
@@ -7957,6 +8094,24 @@ class MultiNodeRouteService:
                 allowed_destination_ids.add(
                     str(generated_destination_id)
                 )
+            advertised_source_node_id = str(
+                advertised_scenario.get("source", {}).get("node_id") or ""
+            )
+            if (
+                advertised_source_node_id
+                and not scenario_semantics.get("supports_arbitrary_endpoints")
+            ):
+                # Fixed scenarios explicitly allow their advertised pair in
+                # either orientation.  Accept the opposite router's normal
+                # destination selector so a generated counterpart request for
+                # that reversed base flow is round-trippable.
+                allowed_destination_ids.add(
+                    str(
+                        self._router(advertised_source_node_id)[
+                            "destination_id"
+                        ]
+                    )
+                )
             if (
                 destination_id_text.startswith("destination:")
                 and destination_id_text not in allowed_destination_ids
@@ -8007,13 +8162,30 @@ class MultiNodeRouteService:
                     f"scenario {scenario_id} is scoped to "
                     f"{base_source}/{base_destination}"
                 )
+            pair_reversed = (
+                base_source != base_destination
+                and supplied_pair == (base_destination, base_source)
+            )
+            if pair_reversed and endpoint_profile.get("multi_attachment"):
+                raise MultiNodeRouteRequestError(
+                    "a fixed scenario with a multi-attachment destination "
+                    "cannot reverse its endpoint pair without an explicit "
+                    "source-attachment contract"
+                )
+            base_source, base_destination = supplied_pair
         else:
             base_source = str(source_node_id or declared_source_node)
             base_destination = str(
                 destination_node_id or declared_destination_node
             )
+            pair_reversed = False
             self._router(base_source)
             self._router(base_destination)
+        scenario_direction = (
+            self._opposite_trace_direction(direction)
+            if pair_reversed
+            else direction
+        )
         actual_source, actual_destination = (
             (base_destination, base_source)
             if direction == "reverse"
@@ -8041,16 +8213,22 @@ class MultiNodeRouteService:
         use_presented_endpoint = bool(
             endpoint_profile
             and (
-                direction == "forward"
+                scenario_direction == "forward"
                 or actual_source == actual_destination
             )
         )
-        if direction == "reverse" and actual_source != actual_destination:
+        if (
+            scenario_direction == "reverse"
+            and actual_source != actual_destination
+        ):
             # Destination selectors describe the base forward pair.  In the
             # reverse trace the service/subnet is the source-side endpoint and
             # the resolved destination is the opposite router loopback.
             use_presented_endpoint = False
-        if destination_is_presented_endpoint and direction == "forward":
+        if (
+            destination_is_presented_endpoint
+            and scenario_direction == "forward"
+        ):
             use_presented_endpoint = True
         endpoint_resource_mode = str(
             endpoint_profile.get("resource_mode") or "router"
@@ -8367,7 +8545,7 @@ class MultiNodeRouteService:
             else evaluation.endpoint_state
         )
         trace_id = "rtrace-pair1-" + hashlib.sha256(
-            f"{forward['trace_id']}:{reverse['trace_id']}".encode("utf-8")
+            f"{forward['trace_id']}:{reverse['trace_id']}".encode()
         ).hexdigest()[:24]
         response = dict(forward)
         response.update(
@@ -8741,9 +8919,7 @@ class MultiNodeRouteService:
             )
         )
         ordinal += 1
-        for index, (left, right) in enumerate(
-            zip(node_sequence, node_sequence[1:])
-        ):
+        for index, (left, right) in enumerate(pairwise(node_sequence)):
             boundary = self._boundary_descriptor(left, right)
             segments.append(
                 self._boundary_segment(
@@ -9412,7 +9588,7 @@ class MultiNodeRouteService:
 
     @staticmethod
     def _target_id(kind: str, material: str) -> str:
-        digest = hashlib.sha256(f"{kind}:{material}".encode("utf-8")).hexdigest()[:16]
+        digest = hashlib.sha256(f"{kind}:{material}".encode()).hexdigest()[:16]
         return f"target:{kind}:{digest}"
 
     def _resource_target(

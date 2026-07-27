@@ -203,57 +203,69 @@
         {
           "node_id": "node-a",
           "port_id": "interface:Ethernet1/1.310",
-          "properties": {
-            "local_resource_id": "interface:Ethernet1/1.310",
-            "segment_key": "core-west-multi-access",
-            "segment_label": "Core west multi-access",
-            "subnet_prefix": "10.64.0.0/24",
-            "attachment_kind": "vlan_subinterface",
-            "classification": "underlay",
-            "confidence": "exact",
-            "vlan_id": 310
+          "node_local_observation": {
+            "resource_id": "interface:Ethernet1/1.310",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "core-west-multi-access",
+              "segment_label": "Core west multi-access",
+              "subnet_prefix": "10.64.0.0/24",
+              "attachment_kind": "vlan_subinterface",
+              "classification": "underlay",
+              "confidence": "exact",
+              "vlan_id": 310
+            }
           }
         },
         {
           "node_id": "node-d",
           "port_id": "interface:Ethernet1/1.310",
-          "properties": {
-            "local_resource_id": "interface:Ethernet1/1.310",
-            "segment_key": "core-west-multi-access",
-            "segment_label": "Core west multi-access",
-            "subnet_prefix": "10.64.0.0/24",
-            "attachment_kind": "vlan_subinterface",
-            "classification": "underlay",
-            "confidence": "exact",
-            "vlan_id": 310
+          "node_local_observation": {
+            "resource_id": "interface:Ethernet1/1.310",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "core-west-multi-access",
+              "segment_label": "Core west multi-access",
+              "subnet_prefix": "10.64.0.0/24",
+              "attachment_kind": "vlan_subinterface",
+              "classification": "underlay",
+              "confidence": "exact",
+              "vlan_id": 310
+            }
           }
         },
         {
           "node_id": "transit-p-1",
           "port_id": "interface:Ethernet1/1.310",
-          "properties": {
-            "local_resource_id": "interface:Ethernet1/1.310",
-            "segment_key": "core-west-multi-access",
-            "segment_label": "Core west multi-access",
-            "subnet_prefix": "10.64.0.0/24",
-            "attachment_kind": "vlan_subinterface",
-            "classification": "underlay",
-            "confidence": "exact",
-            "vlan_id": 310
+          "node_local_observation": {
+            "resource_id": "interface:Ethernet1/1.310",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "core-west-multi-access",
+              "segment_label": "Core west multi-access",
+              "subnet_prefix": "10.64.0.0/24",
+              "attachment_kind": "vlan_subinterface",
+              "classification": "underlay",
+              "confidence": "exact",
+              "vlan_id": 310
+            }
           }
         },
         {
           "node_id": "transit-p-2",
           "port_id": "interface:Ethernet1/1.310",
-          "properties": {
-            "local_resource_id": "interface:Ethernet1/1.310",
-            "segment_key": "core-west-multi-access",
-            "segment_label": "Core west multi-access",
-            "subnet_prefix": "10.64.0.0/24",
-            "attachment_kind": "vlan_subinterface",
-            "classification": "underlay",
-            "confidence": "exact",
-            "vlan_id": 310
+          "node_local_observation": {
+            "resource_id": "interface:Ethernet1/1.310",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "core-west-multi-access",
+              "segment_label": "Core west multi-access",
+              "subnet_prefix": "10.64.0.0/24",
+              "attachment_kind": "vlan_subinterface",
+              "classification": "underlay",
+              "confidence": "exact",
+              "vlan_id": 310
+            }
           }
         }
       ]
@@ -267,57 +279,69 @@
         {
           "node_id": "node-b",
           "port_id": "interface:ae-core-east",
-          "properties": {
-            "local_resource_id": "interface:ae-core-east",
-            "segment_key": "core-east-multi-access",
-            "segment_label": "Core east multi-access",
-            "subnet_prefix": "10.64.1.0/24",
-            "attachment_kind": "lag",
-            "classification": "underlay",
-            "confidence": "exact",
-            "lag_id": "ae-core-east"
+          "node_local_observation": {
+            "resource_id": "interface:ae-core-east",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "core-east-multi-access",
+              "segment_label": "Core east multi-access",
+              "subnet_prefix": "10.64.1.0/24",
+              "attachment_kind": "lag",
+              "classification": "underlay",
+              "confidence": "exact",
+              "lag_id": "ae-core-east"
+            }
           }
         },
         {
           "node_id": "node-e",
           "port_id": "interface:ae-core-east",
-          "properties": {
-            "local_resource_id": "interface:ae-core-east",
-            "segment_key": "core-east-multi-access",
-            "segment_label": "Core east multi-access",
-            "subnet_prefix": "10.64.1.0/24",
-            "attachment_kind": "lag",
-            "classification": "underlay",
-            "confidence": "exact",
-            "lag_id": "ae-core-east"
+          "node_local_observation": {
+            "resource_id": "interface:ae-core-east",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "core-east-multi-access",
+              "segment_label": "Core east multi-access",
+              "subnet_prefix": "10.64.1.0/24",
+              "attachment_kind": "lag",
+              "classification": "underlay",
+              "confidence": "exact",
+              "lag_id": "ae-core-east"
+            }
           }
         },
         {
           "node_id": "transit-p-1",
           "port_id": "interface:ae-core-east",
-          "properties": {
-            "local_resource_id": "interface:ae-core-east",
-            "segment_key": "core-east-multi-access",
-            "segment_label": "Core east multi-access",
-            "subnet_prefix": "10.64.1.0/24",
-            "attachment_kind": "lag",
-            "classification": "underlay",
-            "confidence": "exact",
-            "lag_id": "ae-core-east"
+          "node_local_observation": {
+            "resource_id": "interface:ae-core-east",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "core-east-multi-access",
+              "segment_label": "Core east multi-access",
+              "subnet_prefix": "10.64.1.0/24",
+              "attachment_kind": "lag",
+              "classification": "underlay",
+              "confidence": "exact",
+              "lag_id": "ae-core-east"
+            }
           }
         },
         {
           "node_id": "transit-p-2",
           "port_id": "interface:ae-core-east",
-          "properties": {
-            "local_resource_id": "interface:ae-core-east",
-            "segment_key": "core-east-multi-access",
-            "segment_label": "Core east multi-access",
-            "subnet_prefix": "10.64.1.0/24",
-            "attachment_kind": "lag",
-            "classification": "underlay",
-            "confidence": "exact",
-            "lag_id": "ae-core-east"
+          "node_local_observation": {
+            "resource_id": "interface:ae-core-east",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "core-east-multi-access",
+              "segment_label": "Core east multi-access",
+              "subnet_prefix": "10.64.1.0/24",
+              "attachment_kind": "lag",
+              "classification": "underlay",
+              "confidence": "exact",
+              "lag_id": "ae-core-east"
+            }
           }
         }
       ]
@@ -331,29 +355,35 @@
         {
           "node_id": "node-c",
           "port_id": "interface:Ethernet1/1.320",
-          "properties": {
-            "local_resource_id": "interface:Ethernet1/1.320",
-            "segment_key": "pe-c-transit",
-            "segment_label": "Ottawa PE to core",
-            "subnet_prefix": "10.64.2.0/31",
-            "attachment_kind": "subinterface",
-            "classification": "underlay",
-            "confidence": "exact",
-            "vlan_id": 320
+          "node_local_observation": {
+            "resource_id": "interface:Ethernet1/1.320",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "pe-c-transit",
+              "segment_label": "Ottawa PE to core",
+              "subnet_prefix": "10.64.2.0/31",
+              "attachment_kind": "subinterface",
+              "classification": "underlay",
+              "confidence": "exact",
+              "vlan_id": 320
+            }
           }
         },
         {
           "node_id": "transit-p-2",
           "port_id": "interface:Ethernet2/1.320",
-          "properties": {
-            "local_resource_id": "interface:Ethernet2/1.320",
-            "segment_key": "pe-c-transit",
-            "segment_label": "Ottawa PE to core",
-            "subnet_prefix": "10.64.2.0/31",
-            "attachment_kind": "subinterface",
-            "classification": "underlay",
-            "confidence": "exact",
-            "vlan_id": 320
+          "node_local_observation": {
+            "resource_id": "interface:Ethernet2/1.320",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "pe-c-transit",
+              "segment_label": "Ottawa PE to core",
+              "subnet_prefix": "10.64.2.0/31",
+              "attachment_kind": "subinterface",
+              "classification": "underlay",
+              "confidence": "exact",
+              "vlan_id": 320
+            }
           }
         }
       ]
@@ -367,43 +397,52 @@
         {
           "node_id": "ce-west",
           "port_id": "interface:ae-west-evpn",
-          "properties": {
-            "local_resource_id": "interface:ae-west-evpn",
-            "segment_key": "west-evpn-access",
-            "segment_label": "Blue west Ethernet segment",
-            "subnet_prefix": "172.20.10.0/29",
-            "attachment_kind": "lag",
-            "classification": "evpn_access",
-            "confidence": "exact",
-            "lag_id": "ae-west-evpn"
+          "node_local_observation": {
+            "resource_id": "interface:ae-west-evpn",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "west-evpn-access",
+              "segment_label": "Blue west Ethernet segment",
+              "subnet_prefix": "172.20.10.0/29",
+              "attachment_kind": "lag",
+              "classification": "evpn_access",
+              "confidence": "exact",
+              "lag_id": "ae-west-evpn"
+            }
           }
         },
         {
           "node_id": "node-a",
           "port_id": "interface:ae-west-evpn",
-          "properties": {
-            "local_resource_id": "interface:ae-west-evpn",
-            "segment_key": "west-evpn-access",
-            "segment_label": "Blue west Ethernet segment",
-            "subnet_prefix": "172.20.10.0/29",
-            "attachment_kind": "lag",
-            "classification": "evpn_access",
-            "confidence": "exact",
-            "lag_id": "ae-west-evpn"
+          "node_local_observation": {
+            "resource_id": "interface:ae-west-evpn",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "west-evpn-access",
+              "segment_label": "Blue west Ethernet segment",
+              "subnet_prefix": "172.20.10.0/29",
+              "attachment_kind": "lag",
+              "classification": "evpn_access",
+              "confidence": "exact",
+              "lag_id": "ae-west-evpn"
+            }
           }
         },
         {
           "node_id": "node-d",
           "port_id": "interface:ae-west-evpn",
-          "properties": {
-            "local_resource_id": "interface:ae-west-evpn",
-            "segment_key": "west-evpn-access",
-            "segment_label": "Blue west Ethernet segment",
-            "subnet_prefix": "172.20.10.0/29",
-            "attachment_kind": "lag",
-            "classification": "evpn_access",
-            "confidence": "exact",
-            "lag_id": "ae-west-evpn"
+          "node_local_observation": {
+            "resource_id": "interface:ae-west-evpn",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "west-evpn-access",
+              "segment_label": "Blue west Ethernet segment",
+              "subnet_prefix": "172.20.10.0/29",
+              "attachment_kind": "lag",
+              "classification": "evpn_access",
+              "confidence": "exact",
+              "lag_id": "ae-west-evpn"
+            }
           }
         }
       ]
@@ -417,43 +456,52 @@
         {
           "node_id": "ce-east",
           "port_id": "interface:ae-east-evpn",
-          "properties": {
-            "local_resource_id": "interface:ae-east-evpn",
-            "segment_key": "east-evpn-access",
-            "segment_label": "Blue east Ethernet segment",
-            "subnet_prefix": "172.20.20.0/29",
-            "attachment_kind": "lag",
-            "classification": "evpn_access",
-            "confidence": "exact",
-            "lag_id": "ae-east-evpn"
+          "node_local_observation": {
+            "resource_id": "interface:ae-east-evpn",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "east-evpn-access",
+              "segment_label": "Blue east Ethernet segment",
+              "subnet_prefix": "172.20.20.0/29",
+              "attachment_kind": "lag",
+              "classification": "evpn_access",
+              "confidence": "exact",
+              "lag_id": "ae-east-evpn"
+            }
           }
         },
         {
           "node_id": "node-b",
           "port_id": "interface:ae-east-evpn",
-          "properties": {
-            "local_resource_id": "interface:ae-east-evpn",
-            "segment_key": "east-evpn-access",
-            "segment_label": "Blue east Ethernet segment",
-            "subnet_prefix": "172.20.20.0/29",
-            "attachment_kind": "lag",
-            "classification": "evpn_access",
-            "confidence": "exact",
-            "lag_id": "ae-east-evpn"
+          "node_local_observation": {
+            "resource_id": "interface:ae-east-evpn",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "east-evpn-access",
+              "segment_label": "Blue east Ethernet segment",
+              "subnet_prefix": "172.20.20.0/29",
+              "attachment_kind": "lag",
+              "classification": "evpn_access",
+              "confidence": "exact",
+              "lag_id": "ae-east-evpn"
+            }
           }
         },
         {
           "node_id": "node-e",
           "port_id": "interface:ae-east-evpn",
-          "properties": {
-            "local_resource_id": "interface:ae-east-evpn",
-            "segment_key": "east-evpn-access",
-            "segment_label": "Blue east Ethernet segment",
-            "subnet_prefix": "172.20.20.0/29",
-            "attachment_kind": "lag",
-            "classification": "evpn_access",
-            "confidence": "exact",
-            "lag_id": "ae-east-evpn"
+          "node_local_observation": {
+            "resource_id": "interface:ae-east-evpn",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "east-evpn-access",
+              "segment_label": "Blue east Ethernet segment",
+              "subnet_prefix": "172.20.20.0/29",
+              "attachment_kind": "lag",
+              "classification": "evpn_access",
+              "confidence": "exact",
+              "lag_id": "ae-east-evpn"
+            }
           }
         }
       ]
@@ -467,14 +515,17 @@
         {
           "node_id": "node-e",
           "port_id": "interface:Ethernet2/1",
-          "properties": {
-            "local_resource_id": "interface:Ethernet2/1",
-            "segment_key": "eta-external",
-            "segment_label": "Eta external service subnet",
-            "subnet_prefix": "203.0.113.0/24",
-            "attachment_kind": "physical",
-            "classification": "external",
-            "confidence": "exact"
+          "node_local_observation": {
+            "resource_id": "interface:Ethernet2/1",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "eta-external",
+              "segment_label": "Eta external service subnet",
+              "subnet_prefix": "203.0.113.0/24",
+              "attachment_kind": "physical",
+              "classification": "external",
+              "confidence": "exact"
+            }
           }
         }
       ]
@@ -488,27 +539,33 @@
         {
           "node_id": "node-c",
           "port_id": "interface:Ethernet2/1",
-          "properties": {
-            "local_resource_id": "interface:Ethernet2/1",
-            "segment_key": "ottawa-external",
-            "segment_label": "Ottawa external subnet",
-            "subnet_prefix": "198.51.100.0/30",
-            "attachment_kind": "physical",
-            "classification": "external",
-            "confidence": "exact"
+          "node_local_observation": {
+            "resource_id": "interface:Ethernet2/1",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "ottawa-external",
+              "segment_label": "Ottawa external subnet",
+              "subnet_prefix": "198.51.100.0/30",
+              "attachment_kind": "physical",
+              "classification": "external",
+              "confidence": "exact"
+            }
           }
         },
         {
           "node_id": "edge-c",
           "port_id": "interface:Ethernet1/1",
-          "properties": {
-            "local_resource_id": "interface:Ethernet1/1",
-            "segment_key": "ottawa-external",
-            "segment_label": "Ottawa external subnet",
-            "subnet_prefix": "198.51.100.0/30",
-            "attachment_kind": "physical",
-            "classification": "external",
-            "confidence": "exact"
+          "node_local_observation": {
+            "resource_id": "interface:Ethernet1/1",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "ottawa-external",
+              "segment_label": "Ottawa external subnet",
+              "subnet_prefix": "198.51.100.0/30",
+              "attachment_kind": "physical",
+              "classification": "external",
+              "confidence": "exact"
+            }
           }
         }
       ]
@@ -522,27 +579,33 @@
         {
           "node_id": "transit-p-1",
           "port_id": "interface:Ethernet3/1",
-          "properties": {
-            "local_resource_id": "interface:Ethernet3/1",
-            "segment_key": "p1-p2-sr",
-            "segment_label": "P1-P2 SR transport",
-            "subnet_prefix": "10.64.255.0/31",
-            "attachment_kind": "physical",
-            "classification": "underlay",
-            "confidence": "exact"
+          "node_local_observation": {
+            "resource_id": "interface:Ethernet3/1",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "p1-p2-sr",
+              "segment_label": "P1-P2 SR transport",
+              "subnet_prefix": "10.64.255.0/31",
+              "attachment_kind": "physical",
+              "classification": "underlay",
+              "confidence": "exact"
+            }
           }
         },
         {
           "node_id": "transit-p-2",
           "port_id": "interface:Ethernet4/1",
-          "properties": {
-            "local_resource_id": "interface:Ethernet4/1",
-            "segment_key": "p1-p2-sr",
-            "segment_label": "P1-P2 SR transport",
-            "subnet_prefix": "10.64.255.0/31",
-            "attachment_kind": "physical",
-            "classification": "underlay",
-            "confidence": "exact"
+          "node_local_observation": {
+            "resource_id": "interface:Ethernet4/1",
+            "resource_type": "VIRTUAL_INTERFACE",
+            "properties": {
+              "segment_key": "p1-p2-sr",
+              "segment_label": "P1-P2 SR transport",
+              "subnet_prefix": "10.64.255.0/31",
+              "attachment_kind": "physical",
+              "classification": "underlay",
+              "confidence": "exact"
+            }
           }
         }
       ]

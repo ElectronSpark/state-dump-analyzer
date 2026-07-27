@@ -906,7 +906,12 @@ class MultiNodeTopologyTests(unittest.TestCase):
     def test_asymmetric_route_trace_roles_fail_closed(self) -> None:
         demo = generated_topology_demo()
 
-        def claim(node_id: str, role: str) -> dict[str, object]:
+        def claim(
+            node_id: str,
+            role: str,
+            *,
+            link_type: str = "ethernet",
+        ) -> dict[str, object]:
             return {
                 "matcher_id": "test.connector.exact.v1",
                 "match_key": "shared-key",
@@ -921,7 +926,7 @@ class MultiNodeTopologyTests(unittest.TestCase):
                 "plugin_version": "1.0",
                 "projection_id": f"test.{node_id}.projection",
                 "status_perspective_id": f"test.{node_id}.observed",
-                "link_type": "ethernet",
+                "link_type": link_type,
                 "directed": False,
                 "combination_policy": "all_claims_usable",
                 "presentation": {"route_trace": role},
@@ -952,6 +957,36 @@ class MultiNodeTopologyTests(unittest.TestCase):
 
         script = self.client.get("/assets/topology.js").text
         self.assertIn('routeTraceRole === "include"', script)
+
+        type_links, _resolutions, _unmatched, _truncated = (
+            demo._join_claims(
+                [
+                    claim(
+                        "node-a",
+                        "include",
+                        link_type="ethernet",
+                    ),
+                    claim(
+                        "node-b",
+                        "include",
+                        link_type="optical",
+                    ),
+                ],
+                10,
+                "test-context",
+            )
+        )
+        self.assertEqual(len(type_links), 1)
+        type_conflict = type_links[0]
+        self.assertEqual(type_conflict["link_type"], "unknown")
+        self.assertEqual(
+            type_conflict["claimed_link_types"],
+            ["ethernet", "optical"],
+        )
+        self.assertEqual(
+            type_conflict["operational"]["reason"],
+            "plugin_link_type_mismatch",
+        )
 
     def test_topology_basis_is_strict_and_canonical(self) -> None:
         time_ns = 1_759_680_005_000_000_000
@@ -1083,6 +1118,92 @@ class MultiNodeTopologyTests(unittest.TestCase):
             self.assertIn("plugin_set_id", scope)
             self.assertIn("projection_id", scope)
             self.assertIn("status_perspective_id", scope)
+
+    def test_declared_local_watermark_does_not_require_node_clock(
+        self,
+    ) -> None:
+        original = generated_topology_demo()
+        contract = json.loads(json.dumps(original.contract))
+        node = next(
+            item for item in contract["nodes"] if item["node_id"] == "node-a"
+        )
+        node["clock"] = None
+        plugin = node["plugin_sets"][0]["plugins"][0]
+        projection = plugin["projections"][0]
+        selection = {
+            "plugin_id": plugin["plugin_id"],
+            "projection_id": projection["projection_id"],
+            "status_perspective_id": projection[
+                "default_status_perspective_id"
+            ],
+        }
+        perspective_id = selection["status_perspective_id"]
+        projection_id = selection["projection_id"]
+        local_watermark = original.capture_ns - 1_000_000
+        watermark = {
+            "local_time_ns": str(local_watermark),
+            "clock_domain": "node-a-local",
+            "mapping_method": "plugin_sequence_anchor",
+            "quality": "exact",
+            "complete": True,
+        }
+        node["watermarks"] = {
+            perspective_id: {projection_id: watermark}
+        }
+        service = MultiNodeTopologyService(
+            contract=contract,
+            topology_profiles=original.topology_profiles,
+            topology_metadata=original.topology_metadata,
+        )
+        request = {
+            "basis": {
+                "kind": "relative_to_watermark",
+                "offset_ns": "-100",
+            },
+            "clock_policy": "strict",
+            "node_queries": [
+                {
+                    "node_id": "node-a",
+                    "plugin_set_id": node["active_plugin_set_id"],
+                    "projections": [selection],
+                }
+            ],
+        }
+
+        payload = service.query(request)
+        resolved = payload["nodes"][0]["resolved_times"][0]
+
+        self.assertEqual(resolved["resolution"], "local_exact")
+        self.assertEqual(
+            resolved["local_time_ns"],
+            str(local_watermark - 100),
+        )
+        self.assertIsNone(resolved["query_time_ns"])
+        self.assertIsNone(resolved["absolute_min_ns"])
+        self.assertEqual(
+            resolved["watermark_source"],
+            "projection_declaration",
+        )
+        self.assertTrue(payload["nodes"][0]["plugin_results"])
+
+        watermark.update(
+            {
+                "absolute_min_ns": str(original.capture_ns - 9),
+                "absolute_max_ns": str(original.capture_ns + 11),
+                "quality": "bounded",
+            }
+        )
+        bounded = service.query(request)["nodes"][0]["resolved_times"][0]
+        self.assertEqual(bounded["resolution"], "bounded")
+        self.assertEqual(bounded["uncertainty_ns"], "10")
+        self.assertEqual(
+            bounded["absolute_min_ns"],
+            str(original.capture_ns - 109),
+        )
+        self.assertEqual(
+            bounded["absolute_max_ns"],
+            str(original.capture_ns - 89),
+        )
 
     def test_generated_member_is_not_silently_dropped(self) -> None:
         response = self.client.post(
