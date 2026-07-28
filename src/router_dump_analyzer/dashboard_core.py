@@ -9,12 +9,12 @@ resource envelopes and enforces output bounds.
 from __future__ import annotations
 
 import json
-from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from math import isfinite
 from typing import Any, NoReturn
 
+from .canonical import bounded_value_key
 from .plugin_api import (
     DashboardAggregation,
     DashboardFilterOperator,
@@ -35,13 +35,6 @@ _CORE_TABLE_ENVELOPE_FIELDS = (
     "source_event_uid",
     "quality",
 )
-_MAX_EQUALITY_DEPTH = 16
-_MAX_EQUALITY_CONTAINER_ITEMS = 1_024
-_MAX_EQUALITY_UNITS = 4_096
-_MAX_EQUALITY_ATOM_UNITS = 65_536
-_MAX_EQUALITY_INTEGER_BITS = 4_096
-
-
 class DashboardDescriptorValidationError(ValueError):
     """One deterministic failure in a serialized dashboard descriptor."""
 
@@ -487,104 +480,10 @@ def _comparable(value: Any) -> str | None:
     return str(value)
 
 
-def _equality_key(
-    value: Any,
-    *,
-    _depth: int = 0,
-    _active_container_ids: set[int] | None = None,
-    _units: list[int] | None = None,
-) -> tuple[Any, ...]:
-    """Return one bounded hashable key without erasing scalar types."""
+def _equality_key(value: Any) -> tuple[Any, ...]:
+    """Return the shared bounded equality key used by generic core views."""
 
-    if _active_container_ids is None:
-        _active_container_ids = set()
-    if _units is None:
-        _units = [0]
-    if _depth > _MAX_EQUALITY_DEPTH:
-        raise ValueError("dashboard values support at most 16 container levels")
-    _units[0] += 1
-    if _units[0] > _MAX_EQUALITY_UNITS:
-        raise ValueError("dashboard values support at most 4096 comparison units")
-
-    if value is None:
-        return ("null",)
-    if isinstance(value, bool):
-        return ("bool", value)
-    if isinstance(value, int):
-        if value.bit_length() > _MAX_EQUALITY_INTEGER_BITS:
-            raise ValueError("dashboard integers exceed 4096 bits")
-        return ("int", value)
-    if isinstance(value, float):
-        if not isfinite(value):
-            return ("float", repr(value))
-        return ("float", value)
-    if isinstance(value, str):
-        if len(value) > _MAX_EQUALITY_ATOM_UNITS:
-            raise ValueError("dashboard strings exceed 65536 characters")
-        return ("string", value)
-    if isinstance(value, bytes):
-        if len(value) > _MAX_EQUALITY_ATOM_UNITS:
-            raise ValueError("dashboard byte strings exceed 65536 bytes")
-        return ("bytes", value)
-    if isinstance(value, Mapping):
-        if len(value) > _MAX_EQUALITY_CONTAINER_ITEMS:
-            raise ValueError("dashboard mappings support at most 1024 items")
-        container_id = id(value)
-        if container_id in _active_container_ids:
-            raise ValueError("dashboard values must not contain reference cycles")
-        _active_container_ids.add(container_id)
-        try:
-            entries = [
-                (
-                    _equality_key(
-                        key,
-                        _depth=_depth + 1,
-                        _active_container_ids=_active_container_ids,
-                        _units=_units,
-                    ),
-                    _equality_key(
-                        nested,
-                        _depth=_depth + 1,
-                        _active_container_ids=_active_container_ids,
-                        _units=_units,
-                    ),
-                )
-                for key, nested in value.items()
-            ]
-            return (
-                "mapping",
-                frozenset(Counter(entries).items()),
-            )
-        finally:
-            _active_container_ids.remove(container_id)
-    if isinstance(value, (list, tuple)):
-        # Tuples are the in-process representation of plug-in Value sequences;
-        # JSON transports them as arrays. Treat those two containers alike while
-        # retaining the types of every nested item.
-        if len(value) > _MAX_EQUALITY_CONTAINER_ITEMS:
-            raise ValueError("dashboard sequences support at most 1024 items")
-        container_id = id(value)
-        if container_id in _active_container_ids:
-            raise ValueError("dashboard values must not contain reference cycles")
-        _active_container_ids.add(container_id)
-        try:
-            return (
-                "sequence",
-                tuple(
-                    _equality_key(
-                        item,
-                        _depth=_depth + 1,
-                        _active_container_ids=_active_container_ids,
-                        _units=_units,
-                    )
-                    for item in value
-                ),
-            )
-        finally:
-            _active_container_ids.remove(container_id)
-    raise ValueError(
-        f"dashboard values contain unsupported type {type(value).__name__}"
-    )
+    return bounded_value_key(value)
 
 
 def _comparison_key(value: Any) -> tuple[Any, ...] | None:

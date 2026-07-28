@@ -23,6 +23,12 @@ from threading import RLock
 from typing import Any
 
 from pydantic_core import from_json
+from router_dump_analyzer.temporal_core import (
+    RESOURCE_CREATION_OPERATIONS,
+    RESOURCE_DELETION_OPERATIONS,
+    temporal_integer,
+    temporal_order_key,
+)
 
 from .archive import (
     MANIFEST_MEMBER_NAME,
@@ -208,7 +214,7 @@ class _ScaleTemporalIndex:
                     ):
                         continue
                     operation = str(effect.get("effect_type", "")).casefold()
-                    if operation in {"create", "add", "insert"}:
+                    if operation in RESOURCE_CREATION_OPERATIONS:
                         saw_lifecycle_effect = True
                         if open_interval is None:
                             open_interval = {
@@ -219,7 +225,7 @@ class _ScaleTemporalIndex:
                                 "end_event_uid": None,
                                 "quality": "exact",
                             }
-                    elif operation in {"delete", "remove"}:
+                    elif operation in RESOURCE_DELETION_OPERATIONS:
                         saw_lifecycle_effect = True
                         timestamp = str(event["timestamp_ns"])
                         if open_interval is None and not intervals:
@@ -312,7 +318,7 @@ class _ScaleTemporalIndex:
                         open_interval["valid_to_ns"] = timestamp
                         intervals.append(open_interval)
                     operation = str(effect.get("effect_type", "")).casefold()
-                    if operation in {"delete", "remove"}:
+                    if operation in RESOURCE_DELETION_OPERATIONS:
                         open_interval = None
                         current_state = {}
                         continue
@@ -478,8 +484,13 @@ def _compact_event(raw: dict[str, Any]) -> dict[str, Any]:
     result = raw.get("result", {})
     return {
         "event_uid": str(raw["event_uid"]),
-        "timestamp_ns": str(raw["timestamp_ns"]),
-        "source_sequence": int(raw.get("source_sequence", 0)),
+        "timestamp_ns": str(
+            temporal_integer(raw["timestamp_ns"], "timestamp_ns")
+        ),
+        "source_sequence": temporal_integer(
+            raw.get("source_sequence", 0),
+            "source_sequence",
+        ),
         "event_type": event_name,
         "event_name": event_name,
         "display_name": _event_display_name(event_name),
@@ -539,7 +550,7 @@ def _add_history_only_resources(
                 if (
                     not first_state
                     and bool(effect.get("state_changed", False))
-                    and operation not in {"delete", "remove"}
+                    and operation not in RESOURCE_DELETION_OPERATIONS
                 ):
                     first_state = dict(effect.get("after") or {})
                     first_status = str(
@@ -598,9 +609,9 @@ def load_scale_dataset(
     normalized_manifest: dict[str, Any] | None = None
     plugin_schema: dict[str, Any] | None = None
     walkthrough: dict[str, Any] | None = None
-    last_event_key: tuple[int, int] | None = None
+    last_event_key: tuple[int, int, str] | None = None
     events_ordered = True
-    last_mutation_key: tuple[int, str] | None = None
+    last_mutation_key: tuple[int, int, str] | None = None
     mutations_ordered = True
     pack_manifest: dict[str, Any] | None = None
     inventory_members: list[dict[str, Any]] = []
@@ -732,9 +743,10 @@ def load_scale_dataset(
                         continue
                     raw = from_json(line)
                     event = _compact_event(raw)
-                    event_key = (
-                        int(event["timestamp_ns"]),
-                        int(event.get("source_sequence", 0)),
+                    event_key = temporal_order_key(
+                        event,
+                        time_field="timestamp_ns",
+                        identifier_fields=("event_uid", "event_id"),
                     )
                     if last_event_key is not None and event_key < last_event_key:
                         events_ordered = False
@@ -772,9 +784,10 @@ def load_scale_dataset(
                     "relation_type",
                     mutation.get("type", "related_to"),
                 )
-                mutation_key = (
-                    int(mutation["effective_time_ns"]),
-                    str(mutation.get("mutation_id", "")),
+                mutation_key = temporal_order_key(
+                    mutation,
+                    time_field="effective_time_ns",
+                    identifier_fields=("mutation_id",),
                 )
                 if last_mutation_key is not None and mutation_key < last_mutation_key:
                     mutations_ordered = False
@@ -817,16 +830,18 @@ def load_scale_dataset(
 
     if not events_ordered:
         events.sort(
-            key=lambda item: (
-                int(item["timestamp_ns"]),
-                int(item.get("source_sequence", 0)),
+            key=lambda item: temporal_order_key(
+                item,
+                time_field="timestamp_ns",
+                identifier_fields=("event_uid", "event_id"),
             )
         )
     if not mutations_ordered:
         mutation_records.sort(
-            key=lambda item: (
-                int(item["effective_time_ns"]),
-                item.get("mutation_id", ""),
+            key=lambda item: temporal_order_key(
+                item,
+                time_field="effective_time_ns",
+                identifier_fields=("mutation_id",),
             )
         )
     events_by_resource_index = dict(events_by_resource)
@@ -886,7 +901,13 @@ def load_scale_dataset(
         relationships=relationship_records,
         relationships_by_endpoint=dict(relationships_by_endpoint),
         mutations=mutation_records,
-        mutation_times=[int(item["effective_time_ns"]) for item in mutation_records],
+        mutation_times=[
+            temporal_integer(
+                item["effective_time_ns"],
+                "effective_time_ns",
+            )
+            for item in mutation_records
+        ],
         mutations_by_endpoint=dict(mutations_by_endpoint),
         initial_resource_ids=initial_ids,
     )

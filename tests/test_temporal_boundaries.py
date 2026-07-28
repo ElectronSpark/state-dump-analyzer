@@ -3,7 +3,11 @@ from __future__ import annotations
 import unittest
 
 from router_dump_analyzer.normalized_data import overlaps_range
-from router_dump_analyzer.temporal_topology import TemporalTopologyService
+from router_dump_analyzer.temporal_topology import (
+    TemporalTopologyRequestError,
+    TemporalTopologyService,
+    _ns,
+)
 from router_dump_analyzer.web.runtime_api import _overlaps_window
 
 
@@ -129,6 +133,35 @@ class TemporalReplayOrderingTests(unittest.TestCase):
         )
         self.assertTrue(recreated["exists"])
         self.assertEqual(recreated["state"], {"status": "up"})
+
+    def test_insert_is_a_lifecycle_creation_operation(self) -> None:
+        service = self._service(
+            [
+                self._event(
+                    "insert",
+                    100,
+                    1,
+                    "insert",
+                    {"status": "up"},
+                )
+            ]
+        )
+        record = service.resource_by_id["node-a/layer/THING/1"]
+        perspective = self._perspective()
+        entries = service._perspective_status_events(
+            record["resource_id"], perspective
+        )
+
+        self.assertFalse(
+            service._perspective_state_at(
+                record, perspective, 99, entries
+            )["exists"]
+        )
+        self.assertTrue(
+            service._perspective_state_at(
+                record, perspective, 100, entries
+            )["exists"]
+        )
 
     def test_same_timestamp_events_follow_source_sequence(self) -> None:
         service = self._service(
@@ -258,6 +291,114 @@ class TemporalReplayOrderingTests(unittest.TestCase):
         self.assertIsNone(state["exists"])
         self.assertEqual(state["status"], "unknown")
         self.assertEqual(state["quality"], "unknown")
+
+    def test_validity_only_transition_is_ambiguous_in_clock_window(self) -> None:
+        service = self._service(
+            [
+                self._event(
+                    "same-state",
+                    200,
+                    1,
+                    "modify",
+                    {"status": "up", "generation": 1},
+                )
+            ],
+            state_reader=lambda _resource_id, _timestamp_ns: {
+                "exists": True,
+                "status": "up",
+                "state": {"status": "up", "generation": 1},
+                "valid_from_ns": "0",
+                "valid_to_ns": None,
+                "quality": "exact",
+            },
+        )
+        record = service.resource_by_id["node-a/layer/THING/1"]
+
+        result = service._state_with_uncertainty(
+            record,
+            "node-a",
+            {
+                "query_time_ns": "200",
+                "resolved_at_min_ns": "190",
+                "resolved_at_max_ns": "210",
+                "uncertainty_ns": "20",
+            },
+            self._perspective(),
+        )
+
+        self.assertEqual(result["status"], "ambiguous")
+        self.assertEqual(
+            {
+                (item["valid_from_ns"], item["valid_to_ns"])
+                for item in result["possible_states"]
+            },
+            {("0", "200"), ("200", None)},
+        )
+
+    def test_uncomparable_state_fails_closed(self) -> None:
+        cyclic_state: dict[str, object] = {"status": "up"}
+        cyclic_state["cycle"] = cyclic_state
+        service = self._service(
+            [],
+            state_reader=lambda _resource_id, _timestamp_ns: {
+                "exists": True,
+                "status": "up",
+                "state": cyclic_state,
+                "valid_from_ns": "0",
+                "valid_to_ns": None,
+                "quality": "exact",
+            },
+        )
+        record = service.resource_by_id["node-a/layer/THING/1"]
+
+        result = service._state_with_uncertainty(
+            record,
+            "node-a",
+            {
+                "query_time_ns": "200",
+                "resolved_at_min_ns": "200",
+                "resolved_at_max_ns": "200",
+                "uncertainty_ns": "0",
+            },
+            self._perspective(),
+        )
+
+        self.assertIsNone(result["exists"])
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["temporal_resolution"], "unknown")
+        self.assertEqual(
+            result["unknown_fields"][0]["reason_code"],
+            "state_comparison_unavailable",
+        )
+
+    def test_float_nanoseconds_are_rejected_with_existing_error_contract(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            TemporalTopologyRequestError,
+            "^basis.time_ns must be an integer nanosecond value$",
+        ):
+            _ns(1.5, "basis.time_ns")
+
+    def test_ordering_cursor_version_rejects_stale_handles(self) -> None:
+        service = self._service([])
+        token = service._encode_cursor(
+            "resource",
+            "query-fingerprint",
+            position=1,
+        )
+        self.assertTrue(token.startswith("tt2."))
+        stale = token.replace("tt2.", "tt1.", 1)
+
+        with self.assertRaisesRegex(
+            TemporalTopologyRequestError,
+            "^invalid resource_cursor$",
+        ):
+            service._decode_cursor(
+                stale,
+                "resource",
+                "query-fingerprint",
+            )
 
 
 if __name__ == "__main__":

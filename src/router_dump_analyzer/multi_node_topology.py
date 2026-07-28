@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from itertools import combinations
 from typing import Any
 from urllib.parse import quote, urlencode
@@ -24,8 +25,15 @@ from router_dump_analyzer.canonical import (
     canonical_opaque_value,
     opaque_value_json,
 )
+from router_dump_analyzer.normalized_data import contains_time
 from router_dump_analyzer.plugin_api import KeyAtom
-from router_dump_analyzer.value_core import parse_decimal_integer
+from router_dump_analyzer.temporal_core import (
+    RESOURCE_CREATION_OPERATIONS,
+    RESOURCE_DELETION_OPERATIONS,
+    distinct_temporal_states,
+    temporal_integer,
+    temporal_order_key,
+)
 
 
 class MultiNodeTopologyRequestError(ValueError):
@@ -55,7 +63,7 @@ def _canonical_opaque_key(value: Any) -> tuple[dict[str, Any], str]:
 
 def _integer_ns(value: Any, field: str) -> int:
     try:
-        return parse_decimal_integer(value, field)
+        return temporal_integer(value, field)
     except ValueError as error:
         raise MultiNodeTopologyRequestError(
             f"{field} must be an integer nanosecond value"
@@ -126,45 +134,113 @@ def _canonical_topology_basis(
     )
 
 
-def _status_at(
+def _status_view_at(
     resource: dict[str, Any],
     timestamp_ns: int,
-) -> tuple[bool, str, dict[str, Any]]:
+) -> dict[str, Any]:
     valid_from = resource.get("valid_from_ns")
     valid_to = resource.get("valid_to_ns")
-    valid_at_timestamp = (
-        valid_from is None or timestamp_ns >= int(valid_from)
-    ) and (
-        valid_to is None or timestamp_ns < int(valid_to)
+    valid_from_value = (
+        None
+        if valid_from is None
+        else _integer_ns(valid_from, "resource.valid_from_ns")
+    )
+    valid_to_value = (
+        None
+        if valid_to is None
+        else _integer_ns(valid_to, "resource.valid_to_ns")
+    )
+    valid_at_timestamp = contains_time(
+        timestamp_ns,
+        valid_from_value,
+        valid_to_value,
     )
     lifecycle_exists = True
     status = str(resource.get("initial_status", "unknown"))
-    state = dict(resource.get("initial_state") or {})
-    for change in sorted(
+    initial_state = resource.get("initial_state")
+    state: Any = (
+        dict(initial_state)
+        if isinstance(initial_state, Mapping)
+        else ({} if initial_state is None else initial_state)
+    )
+    changes = sorted(
         resource.get("changes", []),
-        key=lambda item: (
-            int(item["time_ns"]),
-            int(item.get("source_sequence", 0)),
-            str(item.get("event_uid") or item.get("change_id") or ""),
+        key=lambda item: temporal_order_key(
+            item,
+            time_field="time_ns",
+            identifier_fields=("event_uid", "change_id"),
         ),
-    ):
-        if timestamp_ns < int(change["time_ns"]):
-            break
+    )
+    applied_time: int | None = None
+    next_time: int | None = None
+    for change in changes:
+        change_time, _, _ = temporal_order_key(
+            change,
+            time_field="time_ns",
+            identifier_fields=("event_uid", "change_id"),
+        )
         if change.get("state_changed") is False:
             continue
+        if timestamp_ns < change_time:
+            next_time = change_time
+            break
+        applied_time = change_time
         explicit_exists = change.get("exists")
         if isinstance(explicit_exists, bool):
             lifecycle_exists = explicit_exists
         else:
             operation = str(change.get("operation", "")).casefold()
-            if operation in {"create", "add"}:
+            if operation in RESOURCE_CREATION_OPERATIONS:
                 lifecycle_exists = True
-            elif operation in {"delete", "remove"}:
+            elif operation in RESOURCE_DELETION_OPERATIONS:
                 lifecycle_exists = False
         status = str(change.get("status", status))
-        state.update(change.get("state") or {})
+        changed_state = change.get("state")
+        if isinstance(state, dict) and isinstance(changed_state, Mapping):
+            state.update(changed_state)
+        elif changed_state is not None:
+            state = changed_state
     exists = valid_at_timestamp and lifecycle_exists
-    return exists, status if exists else "absent", state
+    interval_start = valid_from_value
+    if applied_time is not None:
+        interval_start = (
+            applied_time
+            if interval_start is None
+            else max(interval_start, applied_time)
+        )
+    interval_end = valid_to_value
+    if next_time is not None:
+        interval_end = (
+            next_time
+            if interval_end is None
+            else min(interval_end, next_time)
+        )
+    if (
+        valid_from_value is not None
+        and timestamp_ns < valid_from_value
+    ):
+        interval_start = None
+        interval_end = valid_from_value
+    elif valid_to_value is not None and timestamp_ns >= valid_to_value:
+        interval_start = valid_to_value
+        interval_end = None
+    return {
+        "exists": exists,
+        "status": status if exists else "absent",
+        "state": state,
+        "valid_from_ns": (
+            None if interval_start is None else str(interval_start)
+        ),
+        "valid_to_ns": None if interval_end is None else str(interval_end),
+    }
+
+
+def _status_at(
+    resource: dict[str, Any],
+    timestamp_ns: int,
+) -> tuple[bool, str, Any]:
+    view = _status_view_at(resource, timestamp_ns)
+    return view["exists"], view["status"], view["state"]
 
 
 def _status_window_at(
@@ -184,7 +260,7 @@ def _status_window_at(
 
     sample_times = {minimum_ns, center_ns, maximum_ns}
     for change in resource.get("changes", []):
-        change_time = int(change["time_ns"])
+        change_time = _integer_ns(change.get("time_ns"), "change.time_ns")
         if minimum_ns <= change_time <= maximum_ns:
             sample_times.add(change_time)
             if change_time > minimum_ns:
@@ -193,36 +269,45 @@ def _status_window_at(
         boundary = resource.get(boundary_name)
         if boundary is None:
             continue
-        boundary_time = int(boundary)
+        boundary_time = _integer_ns(
+            boundary,
+            f"resource.{boundary_name}",
+        )
         if minimum_ns <= boundary_time <= maximum_ns:
             sample_times.add(boundary_time)
             if boundary_time > minimum_ns:
                 sample_times.add(boundary_time - 1)
 
     samples = [
-        (sampled_at, _status_at(resource, sampled_at))
+        (sampled_at, _status_view_at(resource, sampled_at))
         for sampled_at in sorted(sample_times)
     ]
-    unique: dict[str, tuple[int, tuple[bool, str, dict[str, Any]]]] = {}
-    for sampled_at, view in samples:
-        signature = json.dumps(
-            {
-                "exists": view[0],
-                "status": view[1],
-                "state": view[2],
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        )
-        unique[signature] = (sampled_at, view)
-
-    center = _status_at(resource, center_ns)
+    unique, comparison_complete = distinct_temporal_states(samples)
+    center = _status_view_at(resource, center_ns)
+    if not comparison_complete:
+        return {
+            "exists": None,
+            "status": "unknown",
+            "state": None,
+            "quality": "unknown",
+            "temporal_resolution": "unknown",
+            "possible_states": [],
+            "unknown_fields": [
+                {
+                    "name": "*",
+                    "reason_code": "state_comparison_unavailable",
+                    "message": (
+                        "The state could not be compared safely inside "
+                        "the mapped clock interval."
+                    ),
+                }
+            ],
+        }
     if len(unique) == 1:
         return {
-            "exists": center[0],
-            "status": center[1],
-            "state": center[2],
+            "exists": center["exists"],
+            "status": center["status"],
+            "state": center["state"],
             "quality": (
                 "exact"
                 if minimum_ns == maximum_ns
@@ -245,11 +330,13 @@ def _status_window_at(
         "possible_states": [
             {
                 "sampled_at_ns": str(sampled_at),
-                "exists": view[0],
-                "status": view[1],
-                "state": view[2],
+                "exists": view["exists"],
+                "status": view["status"],
+                "state": view["state"],
+                "valid_from_ns": view.get("valid_from_ns"),
+                "valid_to_ns": view.get("valid_to_ns"),
             }
-            for sampled_at, view in sorted(unique.values())
+            for sampled_at, view in sorted(unique)
         ],
         "unknown_fields": [
             {
@@ -303,9 +390,18 @@ class MultiNodeTopologyService:
         self.assembly_id = assembly_id
         self.revision_id = revision_id
         try:
-            self.capture_ns = int(topology_metadata["capture_ns"])
-            self.start_ns = int(topology_metadata["timeline_start_ns"])
-            self.end_ns = int(topology_metadata["timeline_end_ns"])
+            self.capture_ns = _integer_ns(
+                topology_metadata["capture_ns"],
+                "topology_metadata.capture_ns",
+            )
+            self.start_ns = _integer_ns(
+                topology_metadata["timeline_start_ns"],
+                "topology_metadata.timeline_start_ns",
+            )
+            self.end_ns = _integer_ns(
+                topology_metadata["timeline_end_ns"],
+                "topology_metadata.timeline_end_ns",
+            )
         except (KeyError, TypeError, ValueError) as error:
             raise MultiNodeTopologyRequestError(
                 "topology metadata must provide integer capture and "
@@ -1341,9 +1437,15 @@ class MultiNodeTopologyService:
                     if query_time is None:
                         query_time = (
                             local_time
-                            - int(clock["local_minus_absolute_ns"])
+                            - _integer_ns(
+                                clock["local_minus_absolute_ns"],
+                                "clock.local_minus_absolute_ns",
+                            )
                         )
-                    clock_uncertainty = int(clock["uncertainty_ns"])
+                    clock_uncertainty = _integer_ns(
+                        clock["uncertainty_ns"],
+                        "clock.uncertainty_ns",
+                    )
                     absolute_min = query_time - clock_uncertainty
                     absolute_max = query_time + clock_uncertainty
                 elif query_time is None and absolute_min is not None:
@@ -1415,7 +1517,10 @@ class MultiNodeTopologyService:
             # Compatibility for pre-watermark topology providers. This remains
             # intentionally explicit in the result and still requires the
             # legacy node clock mapping.
-            lag = int(projection.get("watermark_lag_ns", 0))
+            lag = _integer_ns(
+                projection.get("watermark_lag_ns", 0),
+                "projection.watermark_lag_ns",
+            )
             watermark = self.capture_ns - lag
             query_time = watermark + offset
             basis_kind = "relative_capture_vector"
@@ -1440,13 +1545,20 @@ class MultiNodeTopologyService:
                 "resolution": "clock_unaligned",
                 "reason_code": "clock_mapping_unavailable",
             }
-        uncertainty = int(clock["uncertainty_ns"])
+        uncertainty = _integer_ns(
+            clock["uncertainty_ns"],
+            "clock.uncertainty_ns",
+        )
+        local_offset = _integer_ns(
+            clock["local_minus_absolute_ns"],
+            "clock.local_minus_absolute_ns",
+        )
         result = {
             **common,
             "basis_kind": basis_kind,
             "kind": basis_kind,
             "query_time_ns": str(query_time),
-            "local_time_ns": str(query_time + int(clock["local_minus_absolute_ns"])),
+            "local_time_ns": str(query_time + local_offset),
             "local_clock_domain": clock["clock_domain"],
             "absolute_min_ns": str(query_time - uncertainty),
             "absolute_max_ns": str(query_time + uncertainty),
@@ -1465,7 +1577,7 @@ class MultiNodeTopologyService:
                 {
                     "watermark_query_time_ns": str(watermark),
                     "watermark_local_time_ns": str(
-                        watermark + int(clock["local_minus_absolute_ns"])
+                        watermark + local_offset
                     ),
                     "watermark_scope": scope,
                     "watermark_source": "legacy_capture_lag",
@@ -1491,14 +1603,27 @@ class MultiNodeTopologyService:
             if resolved_time.get("query_time_ns") is not None
             else resolved_time["local_time_ns"]
         )
-        timestamp_ns = int(timestamp_value)
+        timestamp_ns = _integer_ns(
+            timestamp_value,
+            "resolved_time.query_time_ns",
+        )
         minimum_value = resolved_time.get("absolute_min_ns")
         maximum_value = resolved_time.get("absolute_max_ns")
         minimum_ns = (
-            timestamp_ns if minimum_value is None else int(minimum_value)
+            timestamp_ns
+            if minimum_value is None
+            else _integer_ns(
+                minimum_value,
+                "resolved_time.absolute_min_ns",
+            )
         )
         maximum_ns = (
-            timestamp_ns if maximum_value is None else int(maximum_value)
+            timestamp_ns
+            if maximum_value is None
+            else _integer_ns(
+                maximum_value,
+                "resolved_time.absolute_max_ns",
+            )
         )
         all_resources = list(projection.get("resources", []))
         resources: list[dict[str, Any]] = []
@@ -1639,9 +1764,25 @@ class MultiNodeTopologyService:
                 continue
             valid_from_ns = item.get("valid_from_ns")
             valid_to_ns = item.get("valid_to_ns")
-            claim_valid = (
-                valid_from_ns is None or timestamp_ns >= int(valid_from_ns)
-            ) and (valid_to_ns is None or timestamp_ns < int(valid_to_ns))
+            claim_valid = contains_time(
+                timestamp_ns,
+                (
+                    None
+                    if valid_from_ns is None
+                    else _integer_ns(
+                        valid_from_ns,
+                        "network_segment_claim.valid_from_ns",
+                    )
+                ),
+                (
+                    None
+                    if valid_to_ns is None
+                    else _integer_ns(
+                        valid_to_ns,
+                        "network_segment_claim.valid_to_ns",
+                    )
+                ),
+            )
             claim_exists = source["exists"] is True and claim_valid
             usable = (
                 True

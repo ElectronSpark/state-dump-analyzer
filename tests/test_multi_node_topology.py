@@ -21,7 +21,9 @@ from rsl_demo_plugin.data import (
     REVISION_ID,
 )
 from router_dump_analyzer.multi_node_topology import (
+    MultiNodeTopologyRequestError,
     MultiNodeTopologyService,
+    _integer_ns,
     _status_at,
     _status_window_at,
 )
@@ -123,6 +125,43 @@ class TopologyStatusReplayTests(unittest.TestCase):
             ),
         )
 
+    def test_insert_recreates_a_deleted_resource(self) -> None:
+        resource = {
+            "initial_status": "up",
+            "changes": [
+                {"time_ns": "100", "operation": "delete"},
+                {
+                    "time_ns": "200",
+                    "operation": "insert",
+                    "status": "restored",
+                },
+            ],
+        }
+
+        self.assertEqual(_status_at(resource, 150)[:2], (False, "absent"))
+        self.assertEqual(_status_at(resource, 250)[:2], (True, "restored"))
+
+    def test_same_timestamp_changes_follow_source_sequence(self) -> None:
+        resource = {
+            "initial_status": "initial",
+            "changes": [
+                {
+                    "time_ns": "100",
+                    "source_sequence": 20,
+                    "event_uid": "later",
+                    "status": "down",
+                },
+                {
+                    "time_ns": "100",
+                    "source_sequence": 10,
+                    "event_uid": "earlier",
+                    "status": "up",
+                },
+            ],
+        }
+
+        self.assertEqual(_status_at(resource, 100)[1], "down")
+
     def test_explicit_exists_takes_precedence_over_operation_inference(self) -> None:
         resource = {
             "initial_status": "up",
@@ -223,6 +262,67 @@ class TopologyStatusReplayTests(unittest.TestCase):
             result["temporal_resolution"],
             "stable_within_clock_window",
         )
+
+    def test_validity_only_transition_is_ambiguous(self) -> None:
+        resource = {
+            "initial_status": "up",
+            "initial_state": {"generation": 1},
+            "changes": [
+                {
+                    "time_ns": "200",
+                    "source_sequence": 1,
+                    "status": "up",
+                    "state": {"generation": 1},
+                }
+            ],
+        }
+
+        result = _status_window_at(
+            resource,
+            center_ns=200,
+            minimum_ns=190,
+            maximum_ns=210,
+        )
+
+        self.assertEqual(result["status"], "ambiguous")
+        self.assertEqual(
+            {
+                (item["valid_from_ns"], item["valid_to_ns"])
+                for item in result["possible_states"]
+            },
+            {(None, "200"), ("200", None)},
+        )
+
+    def test_uncomparable_state_fails_closed(self) -> None:
+        cyclic_state: dict[str, object] = {"generation": 1}
+        cyclic_state["cycle"] = cyclic_state
+
+        result = _status_window_at(
+            {
+                "initial_status": "up",
+                "initial_state": cyclic_state,
+            },
+            center_ns=200,
+            minimum_ns=200,
+            maximum_ns=200,
+        )
+
+        self.assertIsNone(result["exists"])
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["temporal_resolution"], "unknown")
+        self.assertEqual(
+            result["unknown_fields"][0]["reason_code"],
+            "state_comparison_unavailable",
+        )
+
+    def test_float_nanoseconds_are_rejected_with_existing_error_contract(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            MultiNodeTopologyRequestError,
+            "^basis.time_ns must be an integer nanosecond value$",
+        ):
+            _integer_ns(1.5, "basis.time_ns")
 
 
 class MultiNodeTopologyTests(unittest.TestCase):

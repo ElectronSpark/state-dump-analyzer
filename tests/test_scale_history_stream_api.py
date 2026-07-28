@@ -361,6 +361,36 @@ class ScaleHistoryApiTests(unittest.TestCase):
             ["inside", "outside", "outside"],
         )
 
+    def test_event_log_same_timestamp_order_uses_source_sequence(self) -> None:
+        dataset = _dataset(scale=False)
+        template = dataset["events"][0]
+        dataset["events"] = [
+            {
+                **template,
+                "event_uid": "later",
+                "timestamp_ns": "100",
+                "source_sequence": 20,
+            },
+            {
+                **template,
+                "event_uid": "earlier",
+                "timestamp_ns": "100",
+                "source_sequence": 10,
+            },
+        ]
+        dataset["source_records"] = []
+        with patch.object(demo_app, "load_dataset", return_value=dataset):
+            response = self.client.post(
+                f"/v1/revisions/{REVISION_ID}/event-log/query",
+                json={"source_types": []},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            ["earlier", "later"],
+            [item["uid"] for item in response.json()["items"]],
+        )
+
     def test_event_log_filters_each_generic_stream_independently(self) -> None:
         only_ctf = self._post(
             "event-log/query",

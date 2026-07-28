@@ -110,6 +110,78 @@ class TimelineClusterDetailTests(unittest.TestCase):
 
         self.assertEqual(422, raised.exception.status_code)
 
+    def test_same_timestamp_detail_pages_follow_source_sequence(self) -> None:
+        dataset = {
+            **self.dataset,
+            "events": [
+                {
+                    **self.dataset["events"][0],
+                    "event_uid": "later",
+                    "timestamp_ns": "10",
+                    "source_sequence": 20,
+                },
+                {
+                    **self.dataset["events"][0],
+                    "event_uid": "earlier",
+                    "timestamp_ns": "10",
+                    "source_sequence": 10,
+                },
+            ],
+        }
+        with (
+            patch.object(demo_app, "load_dataset", return_value=dataset),
+            patch.object(demo_app, "history_runtime", return_value=None),
+            patch.object(demo_app, "_require_revision", return_value=None),
+        ):
+            result = demo_app.timeline_cluster_detail(
+                REVISION_ID,
+                {
+                    "resource_id": self.resource_id,
+                    "start_ns": "10",
+                    "end_ns": "10",
+                },
+            )
+
+        self.assertEqual(
+            ["earlier", "later"],
+            [item["event_uid"] for item in result["items"]],
+        )
+
+    def test_cluster_handles_are_order_versioned_and_canonical(self) -> None:
+        lanes = [
+            {
+                "lane_id": self.resource_id,
+                "event_marks": [
+                    {
+                        "event_uid": "later",
+                        "time_ns": "10",
+                        "source_sequence": 20,
+                        "outcome": "success",
+                    },
+                    {
+                        "event_uid": "earlier",
+                        "time_ns": "10",
+                        "source_sequence": 10,
+                        "outcome": "success",
+                    },
+                ],
+            }
+        ]
+
+        clusters, _ = demo_app._bounded_timeline_clusters(
+            lanes,
+            start_ns=0,
+            end_ns=20,
+            glyph_budget=10,
+            cluster_window_ns=20,
+            selected_event_uid=None,
+        )
+
+        self.assertEqual(1, len(clusters))
+        self.assertIn("::server-v2::", clusters[0]["cluster_id"])
+        self.assertEqual("earlier", clusters[0]["first_event_uid"])
+        self.assertEqual("later", clusters[0]["last_event_uid"])
+
 
 class TimelineClusterDetailFrontendTests(unittest.TestCase):
     @classmethod

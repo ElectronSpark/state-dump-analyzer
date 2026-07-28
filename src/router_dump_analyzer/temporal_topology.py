@@ -22,6 +22,16 @@ from bisect import bisect_left
 from collections.abc import Callable
 from typing import Any
 
+from .normalized_data import contains_time
+from .temporal_core import (
+    RESOURCE_CREATION_OPERATIONS,
+    RESOURCE_DELETION_OPERATIONS,
+    TEMPORAL_ORDER_VERSION,
+    distinct_temporal_states,
+    temporal_integer,
+    temporal_order_key,
+)
+
 StateReader = Callable[[str, int], dict[str, Any]]
 RelationshipReader = Callable[[int], list[dict[str, Any]]]
 
@@ -31,11 +41,9 @@ class TemporalTopologyRequestError(ValueError):
 
 
 def _ns(value: Any, field: str) -> int:
-    if isinstance(value, bool):
-        raise TemporalTopologyRequestError(f"{field} must be an integer nanosecond value")
     try:
-        return int(value)
-    except (TypeError, ValueError) as error:
+        return temporal_integer(value, field)
+    except ValueError as error:
         raise TemporalTopologyRequestError(
             f"{field} must be an integer nanosecond value"
         ) from error
@@ -52,20 +60,6 @@ def _event_layer(event: dict[str, Any]) -> str:
     return str(subjects[0].get("layer", "unknown")) if subjects else "unknown"
 
 
-def _status_signature(view: dict[str, Any]) -> str:
-    return json.dumps(
-        {
-            "exists": view.get("exists"),
-            "status": view.get("status"),
-            "state": view.get("state"),
-            "valid_from_ns": view.get("valid_from_ns"),
-            "valid_to_ns": view.get("valid_to_ns"),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
 def _relationship_key(item: dict[str, Any]) -> str:
     explicit = item.get("relationship_id") or item.get("id")
     if explicit:
@@ -78,12 +72,6 @@ def _relationship_key(item: dict[str, Any]) -> str:
             item.get("target"),
             item.get("valid_from_ns"),
         )
-    )
-
-
-def _contains(timestamp_ns: int, start: Any, end: Any) -> bool:
-    return (start is None or timestamp_ns >= int(start)) and (
-        end is None or timestamp_ns < int(end)
     )
 
 
@@ -110,13 +98,18 @@ class TemporalTopologyService:
         self.temporal_metadata = dict(temporal_metadata)
         try:
             self.revision_id = str(temporal_metadata["revision_id"])
-            self.timeline_start_ns = int(
-                temporal_metadata["timeline_start_ns"]
+            self.timeline_start_ns = temporal_integer(
+                temporal_metadata["timeline_start_ns"],
+                "temporal_metadata.timeline_start_ns",
             )
-            self.timeline_end_ns = int(
-                temporal_metadata["timeline_end_ns"]
+            self.timeline_end_ns = temporal_integer(
+                temporal_metadata["timeline_end_ns"],
+                "temporal_metadata.timeline_end_ns",
             )
-            self.capture_ns = int(temporal_metadata["capture_ns"])
+            self.capture_ns = temporal_integer(
+                temporal_metadata["capture_ns"],
+                "temporal_metadata.capture_ns",
+            )
         except (KeyError, TypeError, ValueError) as error:
             raise TemporalTopologyRequestError(
                 "temporal metadata must provide revision and integer "
@@ -143,25 +136,30 @@ class TemporalTopologyService:
         else:
             self._events = sorted(
                 dataset.get("events", []),
-                key=lambda item: (
-                    int(item["timestamp_ns"]),
-                    int(item.get("source_sequence", 0)),
-                    str(item.get("event_uid", "")),
+                key=lambda item: temporal_order_key(
+                    item,
+                    time_field="timestamp_ns",
+                    identifier_fields=("event_uid", "event_id"),
                 ),
             )
             self._event_times = [
-                int(item["timestamp_ns"]) for item in self._events
+                temporal_integer(item["timestamp_ns"], "timestamp_ns")
+                for item in self._events
             ]
             self._mutations = sorted(
                 dataset.get("relationship_mutations", []),
-                key=lambda item: (
-                    int(item["effective_time_ns"]),
-                    int(item.get("source_sequence", 0)),
-                    str(item.get("mutation_id", "")),
+                key=lambda item: temporal_order_key(
+                    item,
+                    time_field="effective_time_ns",
+                    identifier_fields=("mutation_id",),
                 ),
             )
             self._mutation_times = [
-                int(item["effective_time_ns"]) for item in self._mutations
+                temporal_integer(
+                    item["effective_time_ns"],
+                    "effective_time_ns",
+                )
+                for item in self._mutations
             ]
 
     def capabilities(self) -> dict[str, Any]:
@@ -260,7 +258,7 @@ class TemporalTopologyService:
         after: tuple[int, int, int, str] | None = None,
     ) -> str:
         payload: dict[str, Any] = {
-            "v": 1,
+            "v": TEMPORAL_ORDER_VERSION,
             "kind": kind,
             "revision_id": self.revision_id,
             "fingerprint": fingerprint,
@@ -279,7 +277,7 @@ class TemporalTopologyService:
         checksum = hashlib.sha256(
             raw + b"\0" + self.revision_id.encode("utf-8")
         ).hexdigest()[:16]
-        return f"tt1.{encoded}.{checksum}"
+        return f"tt{TEMPORAL_ORDER_VERSION}.{encoded}.{checksum}"
 
     def _decode_cursor(
         self,
@@ -293,7 +291,7 @@ class TemporalTopologyService:
             raise TemporalTopologyRequestError(f"{kind}_cursor must be a string")
         try:
             prefix, encoded, supplied_checksum = token.split(".", 2)
-            if prefix != "tt1":
+            if prefix != f"tt{TEMPORAL_ORDER_VERSION}":
                 raise ValueError("unsupported version")
             padding = "=" * (-len(encoded) % 4)
             raw = base64.urlsafe_b64decode(encoded + padding)
@@ -317,7 +315,7 @@ class TemporalTopologyService:
         if not isinstance(payload, dict):
             raise TemporalTopologyRequestError(f"invalid {kind}_cursor")
         if (
-            payload.get("v") != 1
+            payload.get("v") != TEMPORAL_ORDER_VERSION
             or payload.get("kind") != kind
             or payload.get("revision_id") != self.revision_id
         ):
@@ -1015,19 +1013,26 @@ class TemporalTopologyService:
         clock = self._clock(node, perspective)
         if not clock:
             return self._unaligned_node_time(node, perspective, clock_policy)
-        uncertainty = int(clock["uncertainty_ns"])
+        uncertainty = _ns(
+            clock["uncertainty_ns"],
+            "clock.uncertainty_ns",
+        )
+        local_offset = _ns(
+            clock["local_minus_absolute_ns"],
+            "clock.local_minus_absolute_ns",
+        )
         return {
             "node_id": node["node_id"],
             "status_perspective_id": perspective["perspective_id"],
             "clock_domain": clock["clock_domain"],
             "local_clock_domain": clock["clock_domain"],
             "query_time_ns": str(timestamp_ns),
-            "local_time_ns": str(timestamp_ns + int(clock["local_minus_absolute_ns"])),
+            "local_time_ns": str(timestamp_ns + local_offset),
             "local_min_ns": str(
-                timestamp_ns + int(clock["local_minus_absolute_ns"]) - uncertainty
+                timestamp_ns + local_offset - uncertainty
             ),
             "local_max_ns": str(
-                timestamp_ns + int(clock["local_minus_absolute_ns"]) + uncertainty
+                timestamp_ns + local_offset + uncertainty
             ),
             "resolved_at_min_ns": str(timestamp_ns - uncertainty),
             "resolved_at_max_ns": str(timestamp_ns + uncertainty),
@@ -1052,13 +1057,25 @@ class TemporalTopologyService:
     ) -> dict[str, Any]:
         if watermark is None:
             return self._unaligned_node_time(node, perspective, clock_policy)
-        query_time_ns = int(watermark["query_time_ns"]) + offset_ns
-        local_time_ns = int(watermark["local_time_ns"]) + offset_ns
+        query_time_ns = _ns(
+            watermark["query_time_ns"],
+            "watermark.query_time_ns",
+        ) + offset_ns
+        local_time_ns = _ns(
+            watermark["local_time_ns"],
+            "watermark.local_time_ns",
+        ) + offset_ns
         absolute_min = watermark.get("absolute_min_ns")
         absolute_max = watermark.get("absolute_max_ns")
         if absolute_min is not None:
-            absolute_min = int(absolute_min) + offset_ns
-            absolute_max = int(absolute_max) + offset_ns
+            absolute_min = _ns(
+                absolute_min,
+                "watermark.absolute_min_ns",
+            ) + offset_ns
+            absolute_max = _ns(
+                absolute_max,
+                "watermark.absolute_max_ns",
+            ) + offset_ns
         uncertainty = (
             None
             if absolute_min is None
@@ -1284,9 +1301,7 @@ class TemporalTopologyService:
             )
             for timestamp in sorted(sample_times)
         ]
-        unique: dict[str, tuple[int, dict[str, Any]]] = {}
-        for sampled_at, view in samples:
-            unique[_status_signature(view)] = (sampled_at, view)
+        unique, comparison_complete = distinct_temporal_states(samples)
         center = self._perspective_state_at(
             record, perspective, center_ns, status_events
         )
@@ -1304,6 +1319,30 @@ class TemporalTopologyService:
             "time_uncertainty_ns": node_time.get("uncertainty_ns"),
             "plugin_defined": bool(record.get("plugin_defined", True)),
         }
+        if not comparison_complete:
+            return {
+                **common,
+                "exists": None,
+                "status": "unknown",
+                "status_class": "unknown",
+                "state": None,
+                "properties": None,
+                "valid_from_ns": None,
+                "valid_to_ns": None,
+                "quality": "unknown",
+                "temporal_resolution": "unknown",
+                "possible_states": [],
+                "unknown_fields": [
+                    {
+                        "name": "*",
+                        "reason_code": "state_comparison_unavailable",
+                        "message": (
+                            "The state could not be compared safely inside "
+                            "the mapped clock interval."
+                        ),
+                    }
+                ],
+            }
         if len(unique) > 1:
             return {
                 **common,
@@ -1325,7 +1364,7 @@ class TemporalTopologyService:
                         "valid_from_ns": view.get("valid_from_ns"),
                         "valid_to_ns": view.get("valid_to_ns"),
                     }
-                    for sampled_at, view in sorted(unique.values())
+                    for sampled_at, view in sorted(unique)
                 ],
                 "unknown_fields": [
                     {
@@ -1391,18 +1430,21 @@ class TemporalTopologyService:
                         "after": event.get("properties", {}),
                         "state_changed": True,
                     }
-                ]
+            ]
             for effect_index, effect in enumerate(effects):
-                source_sequence = int(event.get("source_sequence", 0))
-                event_uid = str(event.get("event_uid") or "")
+                timestamp_ns, source_sequence, event_uid = temporal_order_key(
+                    event,
+                    time_field="timestamp_ns",
+                    identifier_fields=("event_uid", "event_id"),
+                )
                 entries.append(
                     {
-                        "timestamp_ns": int(event["timestamp_ns"]),
+                        "timestamp_ns": timestamp_ns,
                         "source_sequence": source_sequence,
                         "event_uid": event_uid,
                         "effect_index": effect_index,
                         "order_key": (
-                            int(event["timestamp_ns"]),
+                            timestamp_ns,
                             source_sequence,
                             event_uid,
                             effect_index,
@@ -1449,9 +1491,10 @@ class TemporalTopologyService:
             if initial_observed and isinstance(initial, dict)
             else None
         )
-        creation_operations = {"create", "add", "insert"}
-        deletion_operations = {"delete", "remove"}
-        if entries and entries[0]["operation"] in creation_operations:
+        if (
+            entries
+            and entries[0]["operation"] in RESOURCE_CREATION_OPERATIONS
+        ):
             state = {}
             exists = False
         valid_from = (
@@ -1476,10 +1519,10 @@ class TemporalTopologyService:
                 valid_to = str(entry_time)
                 break
             operation = entry["operation"]
-            if operation in creation_operations:
+            if operation in RESOURCE_CREATION_OPERATIONS:
                 state = {}
                 exists = True
-            elif operation in deletion_operations:
+            elif operation in RESOURCE_DELETION_OPERATIONS:
                 exists = False
             # A modify/update after a delete intentionally retains latent
             # state but must not recreate lifecycle existence. Only an
@@ -1597,10 +1640,20 @@ class TemporalTopologyService:
         unique: dict[str, dict[str, Any]] = {}
         for identifier in resource_ids:
             for item in self.runtime.relationships_by_endpoint.get(identifier, []):
-                if _contains(
+                valid_from = item.get("valid_from_ns")
+                valid_to = item.get("valid_to_ns")
+                if contains_time(
                     timestamp_ns,
-                    item.get("valid_from_ns"),
-                    item.get("valid_to_ns"),
+                    (
+                        None
+                        if valid_from is None
+                        else _ns(valid_from, "relationship.valid_from_ns")
+                    ),
+                    (
+                        None
+                        if valid_to is None
+                        else _ns(valid_to, "relationship.valid_to_ns")
+                    ),
                 ):
                     unique[_relationship_key(item)] = item
         return list(unique.values())
@@ -2031,7 +2084,11 @@ class TemporalTopologyService:
 
         def time_fields(timestamp: int, observed_clock_domain: Any = None) -> dict[str, Any]:
             local_time = (
-                timestamp + int(local_clock["local_minus_absolute_ns"])
+                timestamp
+                + _ns(
+                    local_clock["local_minus_absolute_ns"],
+                    "clock.local_minus_absolute_ns",
+                )
                 if local_clock is not None
                 else None
             )
@@ -2048,9 +2105,11 @@ class TemporalTopologyService:
         def event_changes():
             for index in range(event_left, event_right):
                 event = self._events[index]
-                timestamp = int(event["timestamp_ns"])
-                source_sequence = int(event.get("source_sequence", 0))
-                event_uid = str(event.get("event_uid") or "")
+                timestamp, source_sequence, event_uid = temporal_order_key(
+                    event,
+                    time_field="timestamp_ns",
+                    identifier_fields=("event_uid", "event_id"),
+                )
                 order_key = (
                     timestamp,
                     0,
@@ -2148,15 +2207,20 @@ class TemporalTopologyService:
         def mutation_changes():
             for index in range(mutation_left, mutation_right):
                 mutation = self._mutations[index]
-                timestamp = int(mutation["effective_time_ns"])
-                source_sequence = int(
-                    mutation.get("source_sequence", index)
+                (
+                    timestamp,
+                    source_sequence,
+                    declared_mutation_id,
+                ) = temporal_order_key(
+                    mutation,
+                    time_field="effective_time_ns",
+                    identifier_fields=("mutation_id",),
                 )
                 relation_type = mutation.get(
                     "relation_type", mutation.get("type")
                 )
                 mutation_id = str(
-                    mutation.get("mutation_id")
+                    declared_mutation_id
                     or f"relationship:{mutation.get('source')}:{relation_type}:"
                     f"{mutation.get('target')}:{timestamp}:"
                     f"{mutation.get('operation')}"
@@ -2177,8 +2241,12 @@ class TemporalTopologyService:
                 } & resource_ids:
                     continue
                 operation = str(mutation.get("operation", "unknown"))
-                present_before = operation not in {"add", "create", "insert"}
-                present_after = operation not in {"remove", "delete"}
+                present_before = (
+                    operation.casefold() not in RESOURCE_CREATION_OPERATIONS
+                )
+                present_after = (
+                    operation.casefold() not in RESOURCE_DELETION_OPERATIONS
+                )
                 yield order_key, {
                     "change_id": str(
                         mutation.get("mutation_id")

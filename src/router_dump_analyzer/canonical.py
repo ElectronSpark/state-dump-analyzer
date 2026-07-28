@@ -10,6 +10,10 @@ the broader opaque matcher value set cannot acquire conflicting collision or
 ordering rules in separate services.  It deliberately does not interpret any
 plug-in vocabulary.
 
+It also provides one bounded, in-process structural equality key for generic
+core views. That key is not a wire representation and never assigns domain
+meaning to the compared values.
+
 ``key_atom_type`` is injected by :mod:`plugin_api` to avoid a dependency cycle
 while retaining ``KeyAtom`` as a public plug-in API type.
 """
@@ -20,6 +24,7 @@ import base64
 import binascii
 import json
 import re
+from collections import Counter
 from collections.abc import Callable, Mapping
 from math import isfinite
 from typing import Any
@@ -45,10 +50,131 @@ _PLUGIN_KEY_ATOM_TAG_PATTERN = re.compile(
 _KEY_ATOM_MAX_TAG_LENGTH = 128
 _CANONICAL_INTEGER_PATTERN = re.compile(r"-?(?:0|[1-9][0-9]*)")
 _MAX_OPAQUE_INTEGER_DECIMAL_DIGITS = 1_234
+MAX_COMPARISON_DEPTH = 16
+MAX_COMPARISON_CONTAINER_ITEMS = 1_024
+MAX_COMPARISON_UNITS = 4_096
+MAX_COMPARISON_ATOM_UNITS = 65_536
+MAX_COMPARISON_INTEGER_BITS = 4_096
 
 
 class CanonicalValueError(ValueError):
     """A value cannot be represented by the requested canonical profile."""
+
+
+def bounded_value_key(
+    value: Any,
+    *,
+    _depth: int = 0,
+    _active_container_ids: set[int] | None = None,
+    _units: list[int] | None = None,
+) -> tuple[Any, ...]:
+    """Return a bounded, hashable key without erasing scalar types.
+
+    This profile is intentionally broader than the wire-level plug-in key
+    profiles below. It is used for bounded in-process equality where state
+    envelopes may contain mappings and sequences, but must still fail closed
+    for cycles, unsupported objects, or adversarially large values.
+    """
+
+    if _active_container_ids is None:
+        _active_container_ids = set()
+    if _units is None:
+        _units = [0]
+    if _depth > MAX_COMPARISON_DEPTH:
+        raise CanonicalValueError(
+            "comparison values support at most 16 container levels"
+        )
+    _units[0] += 1
+    if _units[0] > MAX_COMPARISON_UNITS:
+        raise CanonicalValueError(
+            "comparison values support at most 4096 comparison units"
+        )
+
+    if value is None:
+        return ("null",)
+    if isinstance(value, bool):
+        return ("bool", value)
+    if isinstance(value, int):
+        if value.bit_length() > MAX_COMPARISON_INTEGER_BITS:
+            raise CanonicalValueError("comparison integers exceed 4096 bits")
+        return ("int", value)
+    if isinstance(value, float):
+        if not isfinite(value):
+            return ("float", repr(value))
+        return ("float", value)
+    if isinstance(value, str):
+        if len(value) > MAX_COMPARISON_ATOM_UNITS:
+            raise CanonicalValueError(
+                "comparison strings exceed 65536 characters"
+            )
+        return ("string", value)
+    if isinstance(value, bytes):
+        if len(value) > MAX_COMPARISON_ATOM_UNITS:
+            raise CanonicalValueError(
+                "comparison byte strings exceed 65536 bytes"
+            )
+        return ("bytes", value)
+    if isinstance(value, Mapping):
+        if len(value) > MAX_COMPARISON_CONTAINER_ITEMS:
+            raise CanonicalValueError(
+                "comparison mappings support at most 1024 items"
+            )
+        container_id = id(value)
+        if container_id in _active_container_ids:
+            raise CanonicalValueError(
+                "comparison values must not contain reference cycles"
+            )
+        _active_container_ids.add(container_id)
+        try:
+            entries = [
+                (
+                    bounded_value_key(
+                        key,
+                        _depth=_depth + 1,
+                        _active_container_ids=_active_container_ids,
+                        _units=_units,
+                    ),
+                    bounded_value_key(
+                        nested,
+                        _depth=_depth + 1,
+                        _active_container_ids=_active_container_ids,
+                        _units=_units,
+                    ),
+                )
+                for key, nested in value.items()
+            ]
+            return ("mapping", frozenset(Counter(entries).items()))
+        finally:
+            _active_container_ids.remove(container_id)
+    if isinstance(value, (list, tuple)):
+        if len(value) > MAX_COMPARISON_CONTAINER_ITEMS:
+            raise CanonicalValueError(
+                "comparison sequences support at most 1024 items"
+            )
+        container_id = id(value)
+        if container_id in _active_container_ids:
+            raise CanonicalValueError(
+                "comparison values must not contain reference cycles"
+            )
+        _active_container_ids.add(container_id)
+        try:
+            return (
+                "sequence",
+                tuple(
+                    bounded_value_key(
+                        item,
+                        _depth=_depth + 1,
+                        _active_container_ids=_active_container_ids,
+                        _units=_units,
+                    )
+                    for item in value
+                ),
+            )
+        finally:
+            _active_container_ids.remove(container_id)
+    raise CanonicalValueError(
+        f"comparison values contain unsupported type {type(value).__name__}"
+    )
 
 
 def _is_key_atom(value: Any, key_atom_type: type[Any] | None) -> bool:

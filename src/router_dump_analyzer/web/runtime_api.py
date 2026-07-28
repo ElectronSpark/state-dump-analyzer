@@ -22,6 +22,11 @@ from router_dump_analyzer.source_record_core import (
     source_record_haystack,
 )
 from router_dump_analyzer.history_search_core import HistorySearchCapacityError
+from router_dump_analyzer.temporal_core import (
+    TEMPORAL_ORDER_VERSION,
+    temporal_integer,
+    temporal_order_key,
+)
 from router_dump_analyzer.value_core import parse_decimal_integer
 from router_dump_analyzer.web.runtime_context import current_runtime_session
 
@@ -2388,11 +2393,13 @@ def event_log_query(
                 policy=policy,
             )
 
-    # Candidate tuple: group rank, timestamp, stable prefixed id, stream kind,
-    # raw uid, membership, raw entry.  Event projections are deliberately not
-    # retained for all 100K+ rows; they are redacted before search and again
-    # only for the bounded return page.
-    candidates: list[tuple[int, int, str, str, str, str, dict[str, Any]]] = []
+    # Candidate tuple: group rank, timestamp, source sequence, stable prefixed
+    # id, stream kind, raw uid, membership, raw entry. Event projections are
+    # deliberately not retained for all 100K+ rows; they are redacted before
+    # search and again only for the bounded return page.
+    candidates: list[
+        tuple[int, int, int, str, str, str, str, dict[str, Any]]
+    ] = []
     inside_count = 0
 
     def append_candidate(
@@ -2413,10 +2420,15 @@ def event_log_query(
             if in_range:
                 inside_count += 1
         stable_id = f"{stream_kind}:{uid}"
+        source_sequence = temporal_integer(
+            entry.get("source_sequence", 0),
+            "source_sequence",
+        )
         candidates.append(
             (
                 group_rank,
                 timestamp_ns,
+                source_sequence,
                 stable_id,
                 stream_kind,
                 uid,
@@ -2468,7 +2480,10 @@ def event_log_query(
             append_candidate(
                 stream_kind="event",
                 uid=uid,
-                timestamp_ns=int(event.get("timestamp_ns", 0)),
+                timestamp_ns=temporal_integer(
+                    event.get("timestamp_ns", 0),
+                    "timestamp_ns",
+                ),
                 entry=event,
             )
 
@@ -2491,11 +2506,14 @@ def event_log_query(
             append_candidate(
                 stream_kind="source",
                 uid=uid,
-                timestamp_ns=int(record.get("timestamp_ns", 0)),
+                timestamp_ns=temporal_integer(
+                    record.get("timestamp_ns", 0),
+                    "timestamp_ns",
+                ),
                 entry=record,
             )
 
-    candidates.sort(key=lambda item: item[:3])
+    candidates.sort(key=lambda item: item[:4])
     total_count = len(candidates)
     outside_count = total_count - inside_count
     located_display_index = None
@@ -2504,7 +2522,7 @@ def event_log_query(
             (
                 index
                 for index, candidate in enumerate(candidates)
-                if candidate[3] == locate[0] and candidate[4] == locate[1]
+                if candidate[4] == locate[0] and candidate[5] == locate[1]
             ),
             None,
         )
@@ -2512,7 +2530,16 @@ def event_log_query(
     selected = candidates[offset : offset + limit]
     items: list[dict[str, Any]] = []
     for display_index, candidate in enumerate(selected, start=offset):
-        _, timestamp_ns, _, stream_kind, uid, membership, entry = candidate
+        (
+            _,
+            timestamp_ns,
+            _,
+            _,
+            stream_kind,
+            uid,
+            membership,
+            entry,
+        ) = candidate
         safe_entry = (
             redact_event_for_client(entry, dataset, policy=policy)
             if stream_kind == "event"
@@ -3096,6 +3123,10 @@ def _timeline_mark(
         "event_uid": event["event_uid"],
         "time_ns": str(event["timestamp_ns"]),
         "timestamp_ns": str(event["timestamp_ns"]),
+        "source_sequence": temporal_integer(
+            event.get("source_sequence", 0),
+            "source_sequence",
+        ),
         "event_type": event.get("event_type"),
         "action": event.get("action", "unknown"),
         "operation": effect.get("effect_type", event.get("action", "unknown")),
@@ -3190,7 +3221,14 @@ def _bounded_timeline_clusters(
     glyph_count = 0
     span = max(1, end_ns - start_ns + 1)
     for lane, allocation in zip(lanes, allocations, strict=True):
-        marks = sorted(lane["event_marks"], key=lambda item: int(item["time_ns"]))
+        marks = sorted(
+            lane["event_marks"],
+            key=lambda item: temporal_order_key(
+                item,
+                time_field="time_ns",
+                identifier_fields=("event_uid",),
+            ),
+        )
         lane["event_mark_count"] = len(marks)
         lane["event_marks_truncated"] = forced and allocation < len(marks)
         groups: list[list[dict[str, Any]]] = []
@@ -3232,7 +3270,8 @@ def _bounded_timeline_clusters(
             clusters.append(
                 {
                     "cluster_id": (
-                        f"{lane['lane_id']}::server::{index}::"
+                        f"{lane['lane_id']}::server-v{TEMPORAL_ORDER_VERSION}::"
+                        f"{index}::"
                         f"{group[0]['time_ns']}::{group[-1]['time_ns']}"
                     ),
                     "lane_id": lane["lane_id"],
@@ -3727,7 +3766,11 @@ def timeline_cluster_detail(
         if start_ns <= int(item["timestamp_ns"]) <= end_ns
     ]
     selected.sort(
-        key=lambda item: (int(item["timestamp_ns"]), str(item["event_uid"]))
+        key=lambda item: temporal_order_key(
+            item,
+            time_field="timestamp_ns",
+            identifier_fields=("event_uid", "event_id"),
+        )
     )
     page = selected[offset : offset + limit]
     items = [
