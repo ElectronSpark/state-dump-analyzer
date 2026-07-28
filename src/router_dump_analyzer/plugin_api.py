@@ -9,19 +9,26 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import BinaryIO, Iterable, Mapping, Protocol, Sequence
+from typing import BinaryIO, Protocol
 from uuid import UUID
 
 from .canonical import (
     MAX_TYPED_ATOM_PAYLOAD_UNITS,
     validate_named_typed_parts,
 )
-
+from .contract_validation import (
+    coerce_enum,
+    strict_boolean,
+    strict_integer,
+    typed_tuple,
+    validity_bounds,
+)
 
 CORE_PLUGIN_API_VERSION = "1.0"
 FORWARDING_IR_VERSION = "1.0"
@@ -2186,20 +2193,22 @@ class TopologyProjectionRequest:
             self.status_perspective_id,
             "topology status perspective request ID",
         )
-        if (
-            not isinstance(self.max_records, int)
-            or isinstance(self.max_records, bool)
-            or not 1 <= self.max_records <= 100_000
-        ):
-            raise ValueError("topology max_records must be between 1 and 100000")
-        if (
-            not isinstance(self.max_world_reads, int)
-            or isinstance(self.max_world_reads, bool)
-            or not 1 <= self.max_world_reads <= 1_000_000
-        ):
-            raise ValueError(
-                "topology max_world_reads must be between 1 and 1000000"
-            )
+        strict_integer(
+            self.max_records,
+            "topology max_records",
+            minimum=1,
+            maximum=100_000,
+            exact=False,
+            message="topology max_records must be between 1 and 100000",
+        )
+        strict_integer(
+            self.max_world_reads,
+            "topology max_world_reads",
+            minimum=1,
+            maximum=1_000_000,
+            exact=False,
+            message="topology max_world_reads must be between 1 and 1000000",
+        )
         if len(self.seed_resources) != len(set(self.seed_resources)):
             raise ValueError("topology seed resources must be unique")
 
@@ -2245,10 +2254,12 @@ class TopologyResourcePresentation:
     )
 
     def __post_init__(self) -> None:
-        try:
-            TopologyTwoParticipantShape(self.two_participant_shape)
-        except (TypeError, ValueError) as error:
-            raise ValueError("unsupported topology two-participant shape") from error
+        coerce_enum(
+            TopologyTwoParticipantShape,
+            self.two_participant_shape,
+            "topology two-participant shape",
+            message="unsupported topology two-participant shape",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2334,12 +2345,20 @@ class TopologyProjectionRecord:
             self.status_perspective_id,
             "topology status perspective record ID",
         )
-        try:
-            TopologyUsability(self.usability)
-        except (TypeError, ValueError) as error:
-            raise ValueError("unsupported topology usability") from error
-        if self.exists is not None and not isinstance(self.exists, bool):
-            raise ValueError("topology projection existence must be boolean or unknown")
+        coerce_enum(
+            TopologyUsability,
+            self.usability,
+            "topology usability",
+            message="unsupported topology usability",
+        )
+        if self.exists is not None:
+            strict_boolean(
+                self.exists,
+                "topology projection existence",
+                message=(
+                    "topology projection existence must be boolean or unknown"
+                ),
+            )
         if not isinstance(
             self.payload,
             (TopologyResourceRecord, TopologyEndpointRecord, TopologyLinkRecord),
@@ -2347,17 +2366,16 @@ class TopologyProjectionRecord:
             raise ValueError("unsupported topology projection payload")
         if len(self.source_resources) != len(set(self.source_resources)):
             raise ValueError("topology source resources must be unique")
-        for value in (self.valid_from_ns, self.valid_to_ns):
-            if value is not None and (
-                not isinstance(value, int) or isinstance(value, bool)
-            ):
-                raise ValueError("topology validity bounds must be integers")
-        if (
-            self.valid_from_ns is not None
-            and self.valid_to_ns is not None
-            and self.valid_from_ns > self.valid_to_ns
-        ):
-            raise ValueError("topology validity bounds are reversed")
+        validity_bounds(
+            self.valid_from_ns,
+            self.valid_to_ns,
+            "topology validity",
+            allow_partial=True,
+            exact_integers=False,
+            minimum_type_message="topology validity bounds must be integers",
+            maximum_type_message="topology validity bounds must be integers",
+            order_message="topology validity bounds are reversed",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2441,10 +2459,20 @@ class ConnectorClaim:
             "connector claim_contract_id",
         )
         _validate_dashboard_id(self.match_policy_id, "connector match_policy_id")
-        if not isinstance(self.arguments, tuple):
-            raise ValueError("connector claim arguments must be a tuple")
-        if not 1 <= len(self.arguments) <= 32:
-            raise ValueError("connector claims require 1 to 32 typed arguments")
+        typed_tuple(
+            self.arguments,
+            "connector claim arguments",
+            tuple,
+            minimum=1,
+            maximum=32,
+            tuple_message="connector claim arguments must be a tuple",
+            bounds_message=(
+                "connector claims require 1 to 32 typed arguments"
+            ),
+            item_message=(
+                "connector claim arguments must be (name, KeyValue) pairs"
+            ),
+        )
         names: list[str] = []
         total_units = 0
         for argument in self.arguments:
@@ -2466,14 +2494,18 @@ class ConnectorClaim:
             raise ValueError(
                 "connector claims support at most 1024 typed argument units"
             )
-        try:
-            Provenance(self.provenance)
-        except (TypeError, ValueError) as error:
-            raise ValueError("unsupported connector claim provenance") from error
-        try:
-            Quality(self.quality)
-        except (TypeError, ValueError) as error:
-            raise ValueError("unsupported connector claim quality") from error
+        coerce_enum(
+            Provenance,
+            self.provenance,
+            "connector claim provenance",
+            message="unsupported connector claim provenance",
+        )
+        coerce_enum(
+            Quality,
+            self.quality,
+            "connector claim quality",
+            message="unsupported connector claim quality",
+        )
         if self.status_perspective is not None and not isinstance(
             self.status_perspective,
             StatusPerspectiveRef,
@@ -2483,26 +2515,33 @@ class ConnectorClaim:
             )
         if self.role is not None:
             _validate_dashboard_id(self.role, "connector claim role")
-        for label, value in (
-            ("valid_from_ns", self.valid_from_ns),
-            ("valid_to_ns", self.valid_to_ns),
-        ):
-            if value is not None and (
-                not isinstance(value, int) or isinstance(value, bool)
-            ):
-                raise ValueError(f"connector claim {label} must be an integer")
-        if (
-            self.valid_from_ns is not None
-            and self.valid_to_ns is not None
-            and self.valid_from_ns > self.valid_to_ns
-        ):
-            raise ValueError("connector claim validity bounds are reversed")
-        if not isinstance(self.evidence, tuple):
-            raise ValueError("connector claim evidence must be a tuple")
-        if len(self.evidence) > 64:
-            raise ValueError("connector claims support at most 64 evidence items")
-        if any(not isinstance(item, Evidence) for item in self.evidence):
-            raise ValueError("connector claim evidence must contain Evidence values")
+        validity_bounds(
+            self.valid_from_ns,
+            self.valid_to_ns,
+            "connector claim validity",
+            allow_partial=True,
+            exact_integers=False,
+            minimum_type_message=(
+                "connector claim valid_from_ns must be an integer"
+            ),
+            maximum_type_message=(
+                "connector claim valid_to_ns must be an integer"
+            ),
+            order_message="connector claim validity bounds are reversed",
+        )
+        typed_tuple(
+            self.evidence,
+            "connector claim evidence",
+            Evidence,
+            maximum=64,
+            tuple_message="connector claim evidence must be a tuple",
+            bounds_message=(
+                "connector claims support at most 64 evidence items"
+            ),
+            item_message=(
+                "connector claim evidence must contain Evidence values"
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2550,10 +2589,12 @@ class FederationMatchCandidate:
             raise ValueError(
                 "federation candidate endpoint must be a GlobalResourceRef"
             )
-        try:
-            Quality(self.quality)
-        except (TypeError, ValueError) as error:
-            raise ValueError("unsupported federation candidate quality") from error
+        coerce_enum(
+            Quality,
+            self.quality,
+            "federation candidate quality",
+            message="unsupported federation candidate quality",
+        )
         if self.confidence is not None and (
             isinstance(self.confidence, bool)
             or not isinstance(self.confidence, (int, float))
@@ -2563,16 +2604,19 @@ class FederationMatchCandidate:
             raise ValueError(
                 "federation candidate confidence must be between zero and one"
             )
-        if not isinstance(self.evidence, tuple):
-            raise ValueError("federation candidate evidence must be a tuple")
-        if len(self.evidence) > 64:
-            raise ValueError(
+        typed_tuple(
+            self.evidence,
+            "federation candidate evidence",
+            Evidence,
+            maximum=64,
+            tuple_message="federation candidate evidence must be a tuple",
+            bounds_message=(
                 "federation candidates support at most 64 evidence items"
-            )
-        if any(not isinstance(item, Evidence) for item in self.evidence):
-            raise ValueError(
+            ),
+            item_message=(
                 "federation candidate evidence must contain Evidence values"
-            )
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2601,33 +2645,34 @@ class FederationLinkResult:
             raise ValueError(
                 "federation result source must be a FederatedConnectorClaim"
             )
-        try:
-            state = FederationMatchState(self.state)
-        except (TypeError, ValueError) as error:
-            raise ValueError("unsupported federation match state") from error
-        if not isinstance(self.candidates, tuple):
-            raise ValueError("federation result candidates must be a tuple")
-        if len(self.candidates) > 64:
-            raise ValueError("federation results support at most 64 candidates")
-        if any(
-            not isinstance(candidate, FederationMatchCandidate)
-            for candidate in self.candidates
-        ):
-            raise ValueError(
-                "federation result candidates must be FederationMatchCandidate values"
-            )
-        candidate_ids = [
-            (
+        state = coerce_enum(
+            FederationMatchState,
+            self.state,
+            "federation match state",
+            message="unsupported federation match state",
+        )
+        typed_tuple(
+            self.candidates,
+            "federation result candidates",
+            FederationMatchCandidate,
+            maximum=64,
+            unique_key=lambda candidate: (
                 candidate.endpoint.member_id,
                 candidate.endpoint.revision_id,
                 candidate.endpoint.plugin_instance_id,
                 candidate.claim_id,
                 candidate.endpoint.resource,
-            )
-            for candidate in self.candidates
-        ]
-        if len(candidate_ids) != len(set(candidate_ids)):
-            raise ValueError("federation result candidates must be unique")
+            ),
+            tuple_message="federation result candidates must be a tuple",
+            bounds_message=(
+                "federation results support at most 64 candidates"
+            ),
+            item_message=(
+                "federation result candidates must be "
+                "FederationMatchCandidate values"
+            ),
+            duplicate_message="federation result candidates must be unique",
+        )
         if any(
             candidate.endpoint.member_id == self.source.endpoint.member_id
             for candidate in self.candidates
@@ -2645,30 +2690,42 @@ class FederationLinkResult:
             raise ValueError(
                 "conflicting federation results require at least one candidate"
             )
-        try:
-            Provenance(self.provenance)
-        except (TypeError, ValueError) as error:
-            raise ValueError("unsupported federation result provenance") from error
-        try:
-            Quality(self.quality)
-        except (TypeError, ValueError) as error:
-            raise ValueError("unsupported federation result quality") from error
+        coerce_enum(
+            Provenance,
+            self.provenance,
+            "federation result provenance",
+            message="unsupported federation result provenance",
+        )
+        coerce_enum(
+            Quality,
+            self.quality,
+            "federation result quality",
+            message="unsupported federation result quality",
+        )
         if self.link_type is not None:
             _validate_dashboard_id(self.link_type, "federation result link_type")
-        if not isinstance(self.directed, bool):
-            raise ValueError("federation result directed must be a boolean")
+        strict_boolean(
+            self.directed,
+            "federation result directed",
+            message="federation result directed must be a boolean",
+        )
         if not isinstance(self.properties, Mapping):
             raise ValueError("federation result properties must be a mapping")
         if len(self.properties) > 64:
             raise ValueError("federation results support at most 64 properties")
-        if not isinstance(self.evidence, tuple):
-            raise ValueError("federation result evidence must be a tuple")
-        if len(self.evidence) > 64:
-            raise ValueError("federation results support at most 64 evidence items")
-        if any(not isinstance(item, Evidence) for item in self.evidence):
-            raise ValueError(
+        typed_tuple(
+            self.evidence,
+            "federation result evidence",
+            Evidence,
+            maximum=64,
+            tuple_message="federation result evidence must be a tuple",
+            bounds_message=(
+                "federation results support at most 64 evidence items"
+            ),
+            item_message=(
                 "federation result evidence must contain Evidence values"
-            )
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2692,27 +2749,27 @@ class FederationLinkRequest:
             raise ValueError(
                 "exact-token policies are resolved by the core, not a linker plug-in"
             )
-        if not isinstance(self.claims, tuple):
-            raise ValueError("federation request claims must be a tuple")
-        if len(self.claims) > 100_000:
-            raise ValueError("federation requests support at most 100000 claims")
-        if any(
-            not isinstance(claim, FederatedConnectorClaim) for claim in self.claims
-        ):
-            raise ValueError(
-                "federation request claims must be FederatedConnectorClaim values"
-            )
-        claim_ids = [
-            (
+        typed_tuple(
+            self.claims,
+            "federation request claims",
+            FederatedConnectorClaim,
+            maximum=100_000,
+            unique_key=lambda claim: (
                 claim.endpoint.member_id,
                 claim.endpoint.revision_id,
                 claim.endpoint.plugin_instance_id,
                 claim.claim.claim_id,
-            )
-            for claim in self.claims
-        ]
-        if len(claim_ids) != len(set(claim_ids)):
-            raise ValueError("federation request claims must be unique")
+            ),
+            tuple_message="federation request claims must be a tuple",
+            bounds_message=(
+                "federation requests support at most 100000 claims"
+            ),
+            item_message=(
+                "federation request claims must be "
+                "FederatedConnectorClaim values"
+            ),
+            duplicate_message="federation request claims must be unique",
+        )
         for claim in self.claims:
             if claim.claim.match_policy_id != self.policy.policy_id:
                 raise ValueError(
@@ -2727,20 +2784,24 @@ class FederationLinkRequest:
                 raise ValueError(
                     "federation request claim arguments do not match policy order"
                 )
-        if (
-            not isinstance(self.max_results, int)
-            or isinstance(self.max_results, bool)
-            or not 1 <= self.max_results <= 100_000
-        ):
-            raise ValueError("federation max_results must be between 1 and 100000")
-        if (
-            not isinstance(self.max_candidates_per_result, int)
-            or isinstance(self.max_candidates_per_result, bool)
-            or not 1 <= self.max_candidates_per_result <= 64
-        ):
-            raise ValueError(
+        strict_integer(
+            self.max_results,
+            "federation max_results",
+            minimum=1,
+            maximum=100_000,
+            exact=False,
+            message="federation max_results must be between 1 and 100000",
+        )
+        strict_integer(
+            self.max_candidates_per_result,
+            "federation max_candidates_per_result",
+            minimum=1,
+            maximum=64,
+            exact=False,
+            message=(
                 "federation max_candidates_per_result must be between 1 and 64"
-            )
+            ),
+        )
 
 
 class FederationLinkerPlugin(Protocol):
@@ -2936,20 +2997,22 @@ class ForwardingProjectionRequest:
             )
         if self.changes is not None and not isinstance(self.changes, ChangeSet):
             raise ValueError("forwarding changes must be a ChangeSet or None")
-        if (
-            not isinstance(self.max_records, int)
-            or isinstance(self.max_records, bool)
-            or not 1 <= self.max_records <= 100_000
-        ):
-            raise ValueError("forwarding max_records must be between 1 and 100000")
-        if (
-            not isinstance(self.max_world_reads, int)
-            or isinstance(self.max_world_reads, bool)
-            or not 1 <= self.max_world_reads <= 1_000_000
-        ):
-            raise ValueError(
-                "forwarding max_world_reads must be between 1 and 1000000"
-            )
+        strict_integer(
+            self.max_records,
+            "forwarding max_records",
+            minimum=1,
+            maximum=100_000,
+            exact=False,
+            message="forwarding max_records must be between 1 and 100000",
+        )
+        strict_integer(
+            self.max_world_reads,
+            "forwarding max_world_reads",
+            minimum=1,
+            maximum=1_000_000,
+            exact=False,
+            message="forwarding max_world_reads must be between 1 and 1000000",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2977,44 +3040,54 @@ class ResolutionContribution:
             raise ValueError(
                 "resolution contribution text must contain 1 to 2000 plain-text characters"
             )
-        try:
-            Quality(self.quality)
-        except (TypeError, ValueError) as error:
-            raise ValueError("unsupported resolution contribution quality") from error
-        if not isinstance(self.resource_references, tuple):
-            raise ValueError("resolution resource references must be a tuple")
-        if len(self.resource_references) > 64:
-            raise ValueError(
+        coerce_enum(
+            Quality,
+            self.quality,
+            "resolution contribution quality",
+            message="unsupported resolution contribution quality",
+        )
+        typed_tuple(
+            self.resource_references,
+            "resolution resource references",
+            ResourceKey,
+            maximum=64,
+            unique_key=lambda reference: reference,
+            tuple_message="resolution resource references must be a tuple",
+            bounds_message=(
                 "resolution contributions support at most 64 resource references"
-            )
-        if any(
-            not isinstance(reference, ResourceKey)
-            for reference in self.resource_references
-        ):
-            raise ValueError(
+            ),
+            item_message=(
                 "resolution resource references must be ResourceKey values"
-            )
-        if len(self.resource_references) != len(set(self.resource_references)):
-            raise ValueError("resolution resource references must be unique")
-        if not isinstance(self.topology_references, tuple):
-            raise ValueError("resolution topology references must be a tuple")
-        if len(self.topology_references) > 64:
-            raise ValueError(
+            ),
+            duplicate_message=(
+                "resolution resource references must be unique"
+            ),
+        )
+        typed_tuple(
+            self.topology_references,
+            "resolution topology references",
+            TopologyEndpointReference,
+            maximum=64,
+            tuple_message="resolution topology references must be a tuple",
+            bounds_message=(
                 "resolution contributions support at most 64 topology references"
-            )
-        if any(
-            not isinstance(reference, TopologyEndpointReference)
-            for reference in self.topology_references
-        ):
-            raise ValueError(
-                "resolution topology references must be TopologyEndpointReference values"
-            )
-        if not isinstance(self.evidence, tuple):
-            raise ValueError("resolution evidence must be a tuple")
-        if len(self.evidence) > 64:
-            raise ValueError("resolution contributions support at most 64 evidence items")
-        if any(not isinstance(item, Evidence) for item in self.evidence):
-            raise ValueError("resolution evidence must contain Evidence values")
+            ),
+            item_message=(
+                "resolution topology references must be "
+                "TopologyEndpointReference values"
+            ),
+        )
+        typed_tuple(
+            self.evidence,
+            "resolution evidence",
+            Evidence,
+            maximum=64,
+            tuple_message="resolution evidence must be a tuple",
+            bounds_message=(
+                "resolution contributions support at most 64 evidence items"
+            ),
+            item_message="resolution evidence must contain Evidence values",
+        )
 
 
 def _validate_forwarding_parts(
@@ -3052,16 +3125,21 @@ class ForwardingSizeObservation:
             self.basis_contract_id,
             "forwarding size basis_contract_id",
         )
-        if (
-            not isinstance(self.size_bytes, int)
-            or isinstance(self.size_bytes, bool)
-            or not 0 <= self.size_bytes <= 2**63 - 1
-        ):
-            raise ValueError(
+        strict_integer(
+            self.size_bytes,
+            "forwarding size_bytes",
+            minimum=0,
+            maximum=2**63 - 1,
+            exact=False,
+            message=(
                 "forwarding size_bytes must be a non-negative 64-bit integer"
-            )
-        if not isinstance(self.complete, bool):
-            raise ValueError("forwarding size completeness must be a boolean")
+            ),
+        )
+        strict_boolean(
+            self.complete,
+            "forwarding size completeness",
+            message="forwarding size completeness must be a boolean",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -3078,18 +3156,23 @@ class ForwardingMtuConstraint:
             self.basis_contract_id,
             "forwarding MTU basis_contract_id",
         )
-        if (
-            not isinstance(self.limit_bytes, int)
-            or isinstance(self.limit_bytes, bool)
-            or not 1 <= self.limit_bytes <= 2**63 - 1
-        ):
-            raise ValueError(
+        strict_integer(
+            self.limit_bytes,
+            "forwarding MTU limit_bytes",
+            minimum=1,
+            maximum=2**63 - 1,
+            exact=False,
+            message=(
                 "forwarding MTU limit_bytes must be a positive 64-bit integer"
-            )
+            ),
+        )
         if self.resource is not None and not isinstance(self.resource, ResourceKey):
             raise ValueError("forwarding MTU resource must be a ResourceKey or None")
-        if not isinstance(self.complete, bool):
-            raise ValueError("forwarding MTU completeness must be a boolean")
+        strict_boolean(
+            self.complete,
+            "forwarding MTU completeness",
+            message="forwarding MTU completeness must be a boolean",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -3138,19 +3221,23 @@ class ForwardingPacketLayer:
             "fields",
             tuple(sorted(self.fields, key=lambda item: item[0])),
         )
-        if self.size_bytes is not None and (
-            not isinstance(self.size_bytes, int)
-            or isinstance(self.size_bytes, bool)
-            or not 0 <= self.size_bytes <= 2**31 - 1
-        ):
-            raise ValueError(
-                "forwarding packet layer size_bytes must be a non-negative "
-                "32-bit integer or None"
+        if self.size_bytes is not None:
+            strict_integer(
+                self.size_bytes,
+                "forwarding packet layer size_bytes",
+                minimum=0,
+                maximum=2**31 - 1,
+                exact=False,
+                message=(
+                    "forwarding packet layer size_bytes must be a non-negative "
+                    "32-bit integer or None"
+                ),
             )
-        if not isinstance(self.complete, bool):
-            raise ValueError(
-                "forwarding packet layer completeness must be a boolean"
-            )
+        strict_boolean(
+            self.complete,
+            "forwarding packet layer completeness",
+            message="forwarding packet layer completeness must be a boolean",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -3162,22 +3249,23 @@ class ForwardingPacketState:
     complete: bool = True
 
     def __post_init__(self) -> None:
-        if not isinstance(self.layers, tuple):
-            raise ValueError("forwarding packet layers must be a tuple")
-        if len(self.layers) > 256:
-            raise ValueError("forwarding packet states support at most 256 layers")
-        if any(
-            not isinstance(layer, ForwardingPacketLayer)
-            for layer in self.layers
-        ):
-            raise ValueError(
+        typed_tuple(
+            self.layers,
+            "forwarding packet layers",
+            ForwardingPacketLayer,
+            maximum=256,
+            unique_key=lambda layer: layer.layer_id,
+            tuple_message="forwarding packet layers must be a tuple",
+            bounds_message=(
+                "forwarding packet states support at most 256 layers"
+            ),
+            item_message=(
                 "forwarding packet states require ForwardingPacketLayer values"
-            )
-        layer_ids = [layer.layer_id for layer in self.layers]
-        if len(layer_ids) != len(set(layer_ids)):
-            raise ValueError(
+            ),
+            duplicate_message=(
                 "forwarding packet layer identifiers must be unique within a state"
-            )
+            ),
+        )
         if self.size is not None and not isinstance(
             self.size,
             ForwardingSizeObservation,
@@ -3185,8 +3273,11 @@ class ForwardingPacketState:
             raise ValueError(
                 "forwarding packet size must be a ForwardingSizeObservation or None"
             )
-        if not isinstance(self.complete, bool):
-            raise ValueError("forwarding packet state completeness must be a boolean")
+        strict_boolean(
+            self.complete,
+            "forwarding packet state completeness",
+            message="forwarding packet state completeness must be a boolean",
+        )
 
     @property
     def identity_complete(self) -> bool:
@@ -3242,23 +3333,20 @@ class ForwardingPacketTransition:
             raise ValueError(
                 "forwarding packet action_label must contain 1 to 160 characters"
             )
-        try:
-            object.__setattr__(
-                self,
-                "disposition",
-                ForwardingPacketDisposition(self.disposition),
-            )
-        except (TypeError, ValueError) as error:
-            raise ValueError(
-                "unsupported forwarding packet disposition"
-            ) from error
-        try:
-            origin = ForwardingTransitionOrigin(self.origin)
-            object.__setattr__(self, "origin", origin)
-        except (TypeError, ValueError) as error:
-            raise ValueError(
-                "unsupported forwarding packet transition origin"
-            ) from error
+        disposition = coerce_enum(
+            ForwardingPacketDisposition,
+            self.disposition,
+            "forwarding packet disposition",
+            message="unsupported forwarding packet disposition",
+        )
+        object.__setattr__(self, "disposition", disposition)
+        origin = coerce_enum(
+            ForwardingTransitionOrigin,
+            self.origin,
+            "forwarding packet transition origin",
+            message="unsupported forwarding packet transition origin",
+        )
+        object.__setattr__(self, "origin", origin)
         _validate_opaque_id(self.actor_id, "forwarding packet transition actor_id")
         if self.mtu is not None and not isinstance(
             self.mtu,
@@ -3282,22 +3370,22 @@ class ForwardingPacketTransition:
                 self.forced_rule_id,
                 "forwarding packet transition forced_rule_id",
             )
-        if not isinstance(self.contributions, tuple):
-            raise ValueError(
+        typed_tuple(
+            self.contributions,
+            "forwarding packet transition contributions",
+            ResolutionContribution,
+            maximum=64,
+            tuple_message=(
                 "forwarding packet transition contributions must be a tuple"
-            )
-        if len(self.contributions) > 64:
-            raise ValueError(
+            ),
+            bounds_message=(
                 "forwarding packet transitions support at most 64 contributions"
-            )
-        if any(
-            not isinstance(contribution, ResolutionContribution)
-            for contribution in self.contributions
-        ):
-            raise ValueError(
+            ),
+            item_message=(
                 "forwarding packet transition contributions must be "
                 "ResolutionContribution values"
-            )
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -3449,14 +3537,16 @@ class ForwardingStepRequest:
             raise ValueError(
                 "forwarding step requests support at most 64 steering rules"
             )
-        if (
-            not isinstance(self.max_candidates, int)
-            or isinstance(self.max_candidates, bool)
-            or not 1 <= self.max_candidates <= 4_096
-        ):
-            raise ValueError(
+        strict_integer(
+            self.max_candidates,
+            "forwarding step request max_candidates",
+            minimum=1,
+            maximum=4_096,
+            exact=False,
+            message=(
                 "forwarding step request max_candidates must be between 1 and 4096"
-            )
+            ),
+        )
         _validate_opaque_id(
             self.ir_version,
             "forwarding step request ir_version",
@@ -3500,17 +3590,26 @@ class ForwardingStepResult:
             "forwarding step result next_lookup_context",
             require_nonempty=False,
         )
-        if not isinstance(self.recursive, bool) or not isinstance(
+        boolean_message = (
+            "forwarding step result recursive and terminal must be booleans"
+        )
+        strict_boolean(
+            self.recursive,
+            "forwarding step result recursive",
+            message=boolean_message,
+        )
+        strict_boolean(
             self.terminal,
-            bool,
-        ):
-            raise ValueError(
-                "forwarding step result recursive and terminal must be booleans"
-            )
-        try:
-            object.__setattr__(self, "quality", Quality(self.quality))
-        except (TypeError, ValueError) as error:
-            raise ValueError("unsupported forwarding step result quality") from error
+            "forwarding step result terminal",
+            message=boolean_message,
+        )
+        quality = coerce_enum(
+            Quality,
+            self.quality,
+            "forwarding step result quality",
+            message="unsupported forwarding step result quality",
+        )
+        object.__setattr__(self, "quality", quality)
         if self.recursive and self.terminal:
             raise ValueError(
                 "forwarding step result cannot be both recursive and terminal"
