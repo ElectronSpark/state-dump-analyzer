@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import copy
 import unittest
+from unittest.mock import patch
 from uuid import UUID
 
 from fastapi.testclient import TestClient
 from rsl_demo_plugin.topology_contract import DEMO_TOPOLOGY_ID
 
+from router_dump_analyzer.canonical import canonical_opaque_value
 from router_dump_analyzer.multi_node_route import MultiNodeRouteService
+from router_dump_analyzer.multi_node_topology import MultiNodeTopologyService
 from router_dump_analyzer.plugin_api import (
     ForwardingCandidateConstraint,
     ForwardingPolicyScope,
@@ -2179,6 +2182,117 @@ class MultiNodeRouteTests(unittest.TestCase):
                 "network_segment",
                 "topology_node",
             ],
+        )
+
+    def test_route_trace_exact_joins_runtime_tagged_four_level_segment_keys(
+        self,
+    ) -> None:
+        original_topology_query = MultiNodeTopologyService.query
+        original_projection = (
+            MultiNodeRouteService._generated_projection_for_scenario
+        )
+
+        def nested_key(raw_key: object) -> tuple[dict[str, object], str]:
+            if (
+                not isinstance(raw_key, dict)
+                or raw_key.get("type") != "string"
+                or not isinstance(raw_key.get("value"), str)
+            ):
+                raise AssertionError(
+                    "generated route fixture must expose tagged string keys"
+                )
+            return canonical_opaque_value(
+                {
+                    "scope": [
+                        {
+                            "domain": {
+                                "identity": raw_key["value"],
+                            }
+                        }
+                    ]
+                }
+            )
+
+        def query_with_nested_keys(
+            service: MultiNodeTopologyService,
+            request: dict[str, object],
+        ) -> dict[str, object]:
+            payload = copy.deepcopy(
+                original_topology_query(service, request)
+            )
+            for segment in payload["network_segments"]:
+                normalized, typed_key = nested_key(
+                    segment["match"]["segment_key"]
+                )
+                segment["match"]["segment_key"] = normalized
+                segment["match"]["typed_key"] = typed_key
+                segment["segment_key"] = normalized
+            return payload
+
+        def projection_with_nested_keys(
+            service: MultiNodeRouteService,
+            scenario_id: str,
+            direction: str,
+            *,
+            resolution_mode: str,
+            steering_profile_id: str,
+        ) -> dict[str, object] | None:
+            projection = original_projection(
+                service,
+                scenario_id,
+                direction,
+                resolution_mode=resolution_mode,
+                steering_profile_id=steering_profile_id,
+            )
+            if projection is None:
+                return None
+            payload = copy.deepcopy(projection)
+            for decision in payload["forwarding_decisions"]:
+                for directional_decisions in decision[
+                    "directional_decisions"
+                ].values():
+                    for directional_decision in directional_decisions:
+                        next_hop = directional_decision.get("next_hop")
+                        if next_hop is None:
+                            continue
+                        reference = next_hop["topology_references"][0]
+                        arguments = reference["match"]["arguments"]
+                        arguments["segment_key"] = nested_key(
+                            arguments["segment_key"]
+                        )[0]
+            return payload
+
+        with (
+            patch.object(
+                MultiNodeTopologyService,
+                "query",
+                query_with_nested_keys,
+            ),
+            patch.object(
+                MultiNodeRouteService,
+                "_generated_projection_for_scenario",
+                projection_with_nested_keys,
+            ),
+        ):
+            response = self.client.post(
+                "/v1/topologies/routes/trace",
+                json={"scenario_id": "single-active-primary"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        boundaries = [
+            segment
+            for path in response.json()["paths"]
+            for segment in path["segments"]
+            if segment["segment_kind"] == "inter_node_boundary"
+        ]
+        self.assertTrue(boundaries)
+        self.assertTrue(
+            all(
+                segment["generated_connectivity_binding"]["state"]
+                == "resolved"
+                for segment in boundaries
+            )
         )
 
     def test_an_inactive_candidate_can_be_focused_without_activating_it(self) -> None:

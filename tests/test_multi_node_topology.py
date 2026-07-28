@@ -25,6 +25,9 @@ from router_dump_analyzer.multi_node_topology import (
     _status_at,
     _status_window_at,
 )
+from router_dump_analyzer.topology_core import (
+    resolve_connectivity_domain_reference,
+)
 from rsl_demo_plugin.topology_contract import DEMO_TOPOLOGY_ID
 
 _RUNTIME_SESSION = None
@@ -684,6 +687,64 @@ class MultiNodeTopologyTests(unittest.TestCase):
                 "resolutions": compound_resolutions,
             }
         )
+
+        nested_key = {
+            "vrf": "red",
+            "members": [{"site": {"rack": "a"}}],
+        }
+        source_claim = claim(nested_key, 20)
+        source_claim.update(
+            {
+                "claim_valid_at_basis": True,
+                "endpoint_exists_at_basis": True,
+            }
+        )
+        target_claim = claim(nested_key, 21)
+        target_claim.update(
+            {
+                "node_id": "node-b",
+                "member_id": "member:node-b",
+                "resource_id": "node-b/INTERFACE/21",
+                "claim_valid_at_basis": True,
+                "endpoint_exists_at_basis": True,
+            }
+        )
+        runtime_segments, runtime_attachments, _, _, _ = (
+            demo._assemble_network_segments(
+                [source_claim, target_claim],
+                10,
+                10,
+            )
+        )
+        self.assertEqual(len(runtime_segments), 1)
+        runtime_segment = runtime_segments[0]
+        binding = resolve_connectivity_domain_reference(
+            {
+                "network_segments": runtime_segments,
+                "segment_attachments": runtime_attachments,
+                "completeness": {
+                    "network_segments_truncated": False,
+                    "segment_attachments_truncated": False,
+                },
+            },
+            {
+                "reference_kind": "connectivity_domain",
+                "match": {
+                    "matcher_id": runtime_segment["match"]["matcher_id"],
+                    "matcher_contract_version": runtime_segment["match"][
+                        "matcher_contract_version"
+                    ],
+                    "arguments": {
+                        "segment_key": runtime_segment["match"]["segment_key"],
+                    },
+                },
+            },
+            source_node_id="node-a",
+            target_node_id="node-b",
+            source_resource_id="node-a/INTERFACE/20",
+            target_resource_id="node-b/INTERFACE/21",
+        )
+        self.assertTrue(binding.resolved)
 
         stable_claim = claim("stable-attachment", 14)
         _, first_attachments, _, _, _ = demo._assemble_network_segments(

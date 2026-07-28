@@ -7,11 +7,12 @@ fixture format and exposes non-web providers consumed by those core services.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
-from typing import Any, Callable, Iterator, Mapping, TypeVar
+from typing import Any, TypeVar
 
 from router_dump_analyzer.normalized_data import NormalizedDataService
 from router_dump_analyzer.runtime import PLUGIN_RUNTIME_CAPABILITY_ID
@@ -20,7 +21,6 @@ from . import data
 from .assembly_store import DemoAssemblyStore
 from .scale_data import load_scale_dataset
 from .source_records import lazy_demo_ctf_source_record
-
 
 _Result = TypeVar("_Result")
 
@@ -44,7 +44,6 @@ class DemoDatasetSource:
 
     def __init__(self, revision_store: DemoAssemblyStore) -> None:
         self.revision_store = revision_store
-        self._lock = RLock()
 
     def _call(
         self,
@@ -54,7 +53,7 @@ class DemoDatasetSource:
     ) -> _Result:
         # The store scope is request-local; the data facade never discovers or
         # owns an archive through process-global configuration.
-        with self._lock, data.revision_store_scope(self.revision_store):
+        with data.revision_store_scope(self.revision_store):
             return operation(*args, **kwargs)
 
     @contextmanager
@@ -168,6 +167,7 @@ class DemoTemporalProvider:
         from router_dump_analyzer.temporal_topology import (
             TemporalTopologyService,
         )
+
         from .temporal_contract import (
             build_demo_plugin_contract,
             build_temporal_metadata,
@@ -228,6 +228,7 @@ class DemoTopologyProvider:
                 from router_dump_analyzer.multi_node_topology import (
                     MultiNodeTopologyService,
                 )
+
                 from .topology_contract import (
                     build_topology_contract,
                     build_topology_metadata,
@@ -272,6 +273,7 @@ class DemoRouteProvider:
                 from router_dump_analyzer.multi_node_route import (
                     MultiNodeRouteService,
                 )
+
                 from .route_policy import (
                     DEMO_ROUTE_POLICY,
                     build_route_projection_set,

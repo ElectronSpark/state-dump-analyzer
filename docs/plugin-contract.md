@@ -703,6 +703,16 @@ four nested container levels, 32 items per container, 1,024 total value units,
 unsupported, non-finite, or over-bound key is invalid evidence and cannot
 resolve a connectivity domain.
 
+The topology hook supplies raw Python values; the core applies the profile once
+and stores the tagged normalized representation. A resolver that consumes
+stored or API projection data validates and canonicalizes that normalized
+representation directly. Transport tag wrappers do not consume logical
+container depth. Unknown tags, missing or extra tag fields, invalid UUID/base64
+or numeric encodings, non-canonical mapping order, duplicate canonical mapping
+keys, and a candidate `typed_key` that does not reproduce its normalized key
+are invalid evidence. A normalized value must never be passed back through the
+raw-value normalizer or accepted by heuristic JSON-shape matching.
+
 #### Federating different node plug-in sets
 
 An assembly may contain nodes whose active plug-in sets, resource vocabularies,
@@ -930,11 +940,26 @@ are excluded from filters and `count_distinct`; its `sample_count` reports only
 comparable values. Non-finite floats remain explicitly tagged comparison
 values, but numeric aggregates exclude them.
 
+Field lookup distinguishes absence from an explicit null. A present generic
+envelope field wins even when null and is not replaced by a state/key fallback.
+Ordinary comparisons fail closed on a missing field; `exists` tests presence
+and defaults to `value: true`; explicit null participates in equality and
+`count_distinct`; and a missing projected table column is omitted. Numeric
+aggregates accept only finite integer/float values and exclude booleans,
+numeric strings, null, and non-finite floats. With zero numeric samples,
+`sum` returns `0`, while `average`, `minimum`, and `maximum` return null; all
+report `sample_count: 0`. `max_rows` is an exact non-boolean integer in
+`1..500`.
+
 The core validates and serializes these declarations, calculates their values
 from the generic point-in-time resource query, escapes every value, and renders
 the common controls. Plugins do not provide markup, scripts, styles, URLs, query
 code, or callbacks. This keeps resource semantics in the plugin without making a
 plugin part of the browser trust boundary.
+
+Serialized descriptors are validated again at the query boundary. A malformed
+descriptor produces a bounded structured `descriptor_errors` result and no
+partially evaluated dashboards rather than an HTTP 500 or silent coercion.
 
 The browser presents all descriptors in an index and opens the
 `default_open` modules at the end of the page. Open/closed, expanded/collapsed,

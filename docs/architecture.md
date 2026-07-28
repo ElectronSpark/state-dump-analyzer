@@ -628,6 +628,12 @@ bounded envelope whose payload is a resource, endpoint, or link record. Endpoint
 references are exclusive unions of a canonical resource key and a declarative
 plugin match reference. A match carries a namespaced matcher ID, typed arguments,
 and plugin-resolved candidate keys; the core never implements the matcher.
+The hook emits raw values and core normalizes them once. Stored/API projection
+values are validated and canonicalized as normalized tagged transport values;
+they are never routed back through raw normalization. Logical nesting limits
+count plug-in containers, not the transport tag wrappers. Strict tag shape,
+encoding, canonical mapping order, duplicate-key, and optional `typed_key`
+integrity checks make malformed candidates unusable without guessing.
 Every envelope repeats projection/perspective IDs and carries usability, source
 resource keys, tri-state existence, validity, provenance, quality, unknowns,
 and evidence. The
@@ -1199,6 +1205,14 @@ stores only presentation preferences—open modules, collapsed modules, and
 ordering—in local storage. Reordering by drag or accessible move controls never
 mutates analysis data.
 
+Dashboard evaluation is presence-aware: explicit null is data, missing is not,
+and generic envelope fields do not fall through merely because their value is
+null. Strict descriptor validation runs both at schema construction and at the
+serialized query boundary. Invalid declarations return structured diagnostics
+without partial results. Aggregation sample counts include only admissible
+values; empty sum remains zero while the other empty numeric aggregates remain
+unknown.
+
 Do not accept plugin-provided HTML, CSS, JavaScript, templates, remote URLs, SQL,
 or expression-language programs for dashboards. New reusable widget types belong
 in a versioned core contract with validation and query budgets. This preserves a
@@ -1220,6 +1234,13 @@ may host the pages separately when it reverse-proxies those paths to FastAPI.
 That proxy is deployment tooling, not a plugin surface. Plugins still contribute
 only validated data and presentation descriptors; they cannot ship executable
 browser code or templates.
+
+Domain-free browser decisions live in importable pure view-model modules. The
+same production functions used by the page have executable Node tests for
+health/status normalization, route seeding and forwarding presentation,
+dashboard presence/aggregation semantics, bounded range summaries, request
+supersession, and visible descriptor errors. Static source assertions may guard
+deployment wiring, but they do not substitute for behavioral tests.
 
 The **core** source distribution and wheel must both include the frontend
 distribution; the demo artifacts must not duplicate it. An explicit

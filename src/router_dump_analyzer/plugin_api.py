@@ -868,8 +868,10 @@ class DashboardTableDescriptor:
         _validate_dashboard_id(self.table_id, "dashboard table_id")
         if not self.columns:
             raise ValueError("dashboard tables require at least one column")
-        if not 1 <= self.max_rows <= 500:
-            raise ValueError("dashboard table max_rows must be between 1 and 500")
+        if type(self.max_rows) is not int or not 1 <= self.max_rows <= 500:
+            raise ValueError(
+                "dashboard table max_rows must be an integer between 1 and 500"
+            )
         if self.sort_field is not None:
             _validate_dashboard_field(self.sort_field, "dashboard table sort_field")
         try:

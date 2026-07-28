@@ -6,6 +6,10 @@ import {
   titleCase,
   toBigInt,
 } from "./shared.js";
+import {
+  declaredHealthPresentation,
+  routeEndpointSeedValue,
+} from "./view_models.js";
 
 const MAX_NODES = 32;
 const MAX_LINKS = 500;
@@ -48,18 +52,6 @@ const TOPOLOGY_ELEMENT_PRESETS = Object.freeze({
   compact: Object.freeze(["subnets", "interfaces"]),
   all: TOPOLOGY_ELEMENT_KEYS,
 });
-const NORMALIZED_HEALTH_PRESENTATION = new Map([
-  ["healthy", "good"],
-  ["good", "good"],
-  ["usable", "good"],
-  ["degraded", "warning"],
-  ["warning", "warning"],
-  ["absent", "warning"],
-  ["unknown", "warning"],
-  ["unusable", "error"],
-  ["error", "error"],
-]);
-
 const state = {
   bootstrap: null,
   capabilities: null,
@@ -2979,17 +2971,6 @@ function basisForNode(node) {
     resolution: basis.resolution ?? basis.mapping_quality ?? basis.quality ?? "unknown",
     clock_domain: basis.clock_domain ?? basis.local_clock_domain ?? "node-local",
   };
-}
-
-function declaredHealthPresentation(value, { includeStatus = false } = {}) {
-  const declared = firstDeclaredString(
-    value?.condition_class,
-    value?.status_class,
-    value?.health_class,
-    includeStatus ? value?.status : null,
-  );
-  if (!declared) return null;
-  return NORMALIZED_HEALTH_PRESENTATION.get(normalizedRouteEnum(declared)) || "warning";
 }
 
 function nodeHealth(node) {
@@ -8762,23 +8743,6 @@ function ensureRouteSelectValue(select, value) {
     select.insertAdjacentHTML("beforeend", `<option value="${escapeHtml(value)}">${escapeHtml(titleCase(value))}</option>`);
   }
   select.value = value;
-}
-
-function routeEndpointSeedValue(raw, kind) {
-  if (raw === undefined || raw === null) return "";
-  if (typeof raw !== "object") return String(raw);
-  const idField = kind === "source" ? "source_id" : "destination_id";
-  return String(
-    raw[idField]
-    ?? raw.endpoint_id
-    ?? raw.resource_id
-    ?? raw.node_id
-    ?? raw.value
-    ?? raw.address
-    ?? raw.prefix
-    ?? raw.label
-    ?? "",
-  );
 }
 
 function useRouteTableEntry(entryId) {

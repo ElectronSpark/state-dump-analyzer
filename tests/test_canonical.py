@@ -5,7 +5,9 @@ from uuid import UUID
 
 from router_dump_analyzer.canonical import (
     CanonicalValueError,
+    canonical_normalized_opaque_value,
     canonical_opaque_value,
+    normalized_opaque_value_json,
     opaque_value_json,
     packet_value_json,
 )
@@ -94,6 +96,18 @@ class CanonicalTypedValueTests(unittest.TestCase):
         }
 
         self.assertEqual(len(tokens), len(values))
+        for value in values:
+            normalized, token = canonical_opaque_value(
+                value,
+                key_atom_type=KeyAtom,
+            )
+            self.assertEqual(
+                canonical_normalized_opaque_value(
+                    normalized,
+                    typed_key=token,
+                ),
+                (normalized, token),
+            )
         self.assertEqual(
             opaque_value_json(b"\x00\xff", key_atom_type=KeyAtom),
             {
@@ -112,6 +126,138 @@ class CanonicalTypedValueTests(unittest.TestCase):
             canonical_opaque_value(forward, key_atom_type=KeyAtom),
             canonical_opaque_value(reverse, key_atom_type=KeyAtom),
         )
+
+    def test_normalized_profile_round_trips_without_transport_depth_inflation(
+        self,
+    ) -> None:
+        value: object = "leaf"
+        for _ in range(4):
+            value = {"member": value}
+        normalized, token = canonical_opaque_value(
+            value,
+            key_atom_type=KeyAtom,
+        )
+
+        self.assertEqual(
+            canonical_normalized_opaque_value(
+                normalized,
+                typed_key=token,
+            ),
+            (normalized, token),
+        )
+
+        too_deep: object = "leaf"
+        for _ in range(5):
+            too_deep = {"member": too_deep}
+        with self.assertRaisesRegex(
+            CanonicalValueError,
+            "four container levels",
+        ):
+            canonical_opaque_value(too_deep, key_atom_type=KeyAtom)
+
+    def test_normalized_profile_canonicalizes_mapping_entries_and_rejects_duplicates(
+        self,
+    ) -> None:
+        normalized = {
+            "type": "mapping",
+            "entries": [
+                {
+                    "key": {"type": "string", "value": "z"},
+                    "value": {"type": "integer", "value": "2"},
+                },
+                {
+                    "key": {"type": "string", "value": "a"},
+                    "value": {"type": "integer", "value": "1"},
+                },
+            ],
+        }
+        canonical = normalized_opaque_value_json(normalized)
+        self.assertEqual(
+            [entry["key"]["value"] for entry in canonical["entries"]],
+            ["a", "z"],
+        )
+
+        duplicate = {
+            "type": "mapping",
+            "entries": [
+                {
+                    "key": {"type": "integer", "value": "1"},
+                    "value": {"type": "string", "value": "first"},
+                },
+                {
+                    "key": {"value": "1", "type": "integer"},
+                    "value": {"type": "string", "value": "second"},
+                },
+            ],
+        }
+        with self.assertRaisesRegex(CanonicalValueError, "unique keys"):
+            normalized_opaque_value_json(duplicate)
+
+    def test_normalized_profile_validates_tags_encodings_and_cached_token(
+        self,
+    ) -> None:
+        invalid_values = (
+            {"type": "integer", "value": "01"},
+            {
+                "type": "number",
+                "encoding": "decimal",
+                "value": "1.0",
+            },
+            {
+                "type": "bytes",
+                "encoding": "base64",
+                "length": 2,
+                "value": "AA==",
+            },
+            {
+                "type": "key_atom",
+                "type_tag": "vendor-private",
+                "value": {"type": "integer", "value": "1"},
+            },
+            {
+                "type": "tuple",
+                "items": [{"type": "string", "value": "x"}],
+                "extra": True,
+            },
+            {"type": "string", "value": "x" * 4_097},
+            {"type": "integer", "value": "1" * 1_235},
+            {
+                "type": "list",
+                "items": [
+                    {"type": "integer", "value": str(index)}
+                    for index in range(33)
+                ],
+            },
+        )
+        for value in invalid_values:
+            with (
+                self.subTest(value=value),
+                self.assertRaises(CanonicalValueError),
+            ):
+                normalized_opaque_value_json(value)
+
+        normalized = {"type": "string", "value": "domain"}
+        with self.assertRaisesRegex(CanonicalValueError, "does not match"):
+            canonical_normalized_opaque_value(
+                normalized,
+                typed_key="stale-token",
+            )
+
+        over_unit_budget = {
+            "type": "list",
+            "items": [
+                {
+                    "type": "list",
+                    "items": [
+                        {"type": "integer", "value": str(inner)}
+                        for inner in range(32)
+                    ],
+                }
+                for _ in range(32)
+            ],
+        }
+        with self.assertRaisesRegex(CanonicalValueError, "1024 value units"):
+            normalized_opaque_value_json(over_unit_budget)
 
     def test_opaque_profile_rejects_nonfinite_cycles_and_excess_depth(
         self,

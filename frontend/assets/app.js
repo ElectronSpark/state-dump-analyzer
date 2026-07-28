@@ -6,6 +6,18 @@ import {
   titleCase,
   toBigInt as toNs,
 } from "./shared.js";
+import {
+  dashboardComparable,
+  dashboardDescriptorErrorMessage,
+  dashboardFieldValue,
+  dashboardFilterMatches,
+  dashboardRowIncluded,
+  dashboardStatisticEvaluation,
+  graphStatusClass,
+  rangeSummaryFacts,
+  replaceAbortController,
+  routePayloadForwardingPresentation,
+} from "./view_models.js";
 
 const PALETTE = ["#52e0c4", "#a58bff", "#f5b85b", "#66b8ff", "#ff8eb5", "#9bd66f", "#df9dff"];
 const REVIEW_STORAGE_KEY = "router-state-lab-review-v2";
@@ -185,8 +197,7 @@ const state = {
 };
 
 function beginLatestRequest(controllerKey) {
-  state[controllerKey]?.abort();
-  const controller = new AbortController();
+  const controller = replaceAbortController(state[controllerKey]);
   state[controllerKey] = controller;
   return controller;
 }
@@ -3506,12 +3517,6 @@ function localRangeSummary() {
   };
 }
 
-function normalizeCount(value) {
-  if (Array.isArray(value)) return value.length;
-  if (value && typeof value === "object") return Number(value.total ?? value.count ?? Object.keys(value).length);
-  return Number(value || 0);
-}
-
 function formatRangeInput(value) {
   const delta = clampNs(value) - state.viewStartNs;
   const seconds = delta / 1_000_000_000n;
@@ -3573,12 +3578,6 @@ function endpointDiffItems(summary) {
   return diff.items || diff.changed || diff.resources || Object.entries(diff).map(([resource_id, value]) => ({ resource_id, ...(typeof value === "object" ? value : { change: value }) }));
 }
 
-function rangeTruncationFlags(summary) {
-  const raw = summary?.truncated;
-  if (raw === true) return { events: true, affected_resources: true, status_segments: true, endpoint_diff: true, relationship_changes: true };
-  return raw && typeof raw === "object" ? raw : {};
-}
-
 function renderRangeSummary(draft = false) {
   const bounds = rangeBounds();
   if (!bounds) {
@@ -3590,20 +3589,18 @@ function renderRangeSummary(draft = false) {
   }
   const summary = draft ? localRangeSummary() : state.rangeSummary || localRangeSummary();
   byId("range-title").textContent = `${formatOffset(bounds[0])} to ${formatOffset(bounds[1])} / ${formatDuration(bounds[1] - bounds[0])}`;
-  const eventCount = summary.event_count ?? normalizeCount(summary.events);
-  const failures = summary.failure_count ?? (Array.isArray(summary.events) ? summary.events.filter(eventFailed).length : 0);
-  const resources = summary.affected_resource_count ?? normalizeCount(summary.affected_resources);
-  const relations = summary.relationship_change_count ?? normalizeCount(summary.relationship_changes);
-  const truncation = rangeTruncationFlags(summary);
-  const evaluatedEndpoints = Number(summary.endpoint_diff_evaluated_count ?? resources);
-  const truncatedKinds = Object.entries(truncation).filter(([, value]) => value === true).map(([key]) => titleCase(key));
-  const endpointScope = `${evaluatedEndpoints.toLocaleString()} of ${Number(resources).toLocaleString()} endpoint states evaluated`;
-  byId("range-facts").innerHTML = `<span>${Number(eventCount).toLocaleString()} events</span><span class="failure-fact">${Number(failures).toLocaleString()} failed</span><span>${Number(resources).toLocaleString()} resources</span><span>${Number(relations).toLocaleString()} relationship changes</span><span class="${truncation.endpoint_diff ? "bounded-fact" : ""}">${escapeHtml(endpointScope)}${truncation.endpoint_diff ? " / bounded" : ""}</span>${truncatedKinds.length ? `<span class="bounded-fact" title="${escapeHtml(`Bounded detail arrays: ${truncatedKinds.join(", ")}`)}">${truncatedKinds.length} detail sets truncated</span>` : ""}`;
+  const facts = rangeSummaryFacts(summary, {
+    fallbackFailureCount: Array.isArray(summary.events)
+      ? summary.events.filter(eventFailed).length
+      : 0,
+  });
+  const truncatedKinds = facts.truncatedKinds.map(titleCase);
+  const endpointScope = `${facts.evaluatedEndpointCount.toLocaleString()} of ${facts.affectedResourceCount.toLocaleString()} endpoint states evaluated`;
+  byId("range-facts").innerHTML = `<span>${facts.eventCount.toLocaleString()} events</span><span class="failure-fact">${facts.failureCount.toLocaleString()} failed</span><span>${facts.affectedResourceCount.toLocaleString()} resources</span><span>${facts.relationshipChangeCount.toLocaleString()} relationship changes</span><span class="${facts.truncation.endpoint_diff ? "bounded-fact" : ""}">${escapeHtml(endpointScope)}${facts.truncation.endpoint_diff ? " / bounded" : ""}</span>${truncatedKinds.length ? `<span class="bounded-fact" title="${escapeHtml(`Bounded detail arrays: ${truncatedKinds.join(", ")}`)}">${truncatedKinds.length} detail sets truncated</span>` : ""}`;
   const diff = endpointDiffItems(summary);
   const relationshipChanges = Array.isArray(summary.relationship_changes) ? summary.relationship_changes : [];
-  const endpointOmitted = Math.max(0, Number(resources) - evaluatedEndpoints);
-  const endpointScopeNote = truncation.endpoint_diff
-    ? `<p class="range-scope-note">Endpoint comparison is bounded: ${escapeHtml(endpointScope)}${endpointOmitted ? `; ${endpointOmitted.toLocaleString()} affected resources were not evaluated` : ""}.</p>`
+  const endpointScopeNote = facts.truncation.endpoint_diff
+    ? `<p class="range-scope-note">Endpoint comparison is bounded: ${escapeHtml(endpointScope)}${facts.omittedEndpointCount ? `; ${facts.omittedEndpointCount.toLocaleString()} affected resources were not evaluated` : ""}.</p>`
     : "";
   const diffHtml = diff.length
     ? `<strong>Endpoint diff</strong><div>${diff.slice(0, 8).map((item) => {
@@ -3612,7 +3609,7 @@ function renderRangeSummary(draft = false) {
       const content = `<span>${escapeHtml(formatValue(label))}</span><code>${escapeHtml(conciseEndpointState(item.before ?? item.start_status))} -> ${escapeHtml(conciseEndpointState(item.after ?? item.end_status ?? item.change ?? "changed"))}</code>`;
       return resourceId ? `<button type="button" data-resource-id="${escapeHtml(resourceId)}">${content}</button>` : `<span>${content}</span>`;
     }).join("")}</div>${endpointScopeNote}`
-    : truncation.endpoint_diff
+    : facts.truncation.endpoint_diff
       ? `<span>No endpoint state difference was found in the evaluated subset.</span>${endpointScopeNote}`
       : "<span>No endpoint state difference.</span>";
   const relationshipHtml = relationshipChanges.length
@@ -4529,6 +4526,7 @@ function markDashboardsPending(timestampNs = state.cursorNs) {
 
 function settleDashboardRequest(payload, requestedTimeNs) {
   state.dashboardQuery = payload;
+  state.dashboardQueryError = dashboardDescriptorErrorMessage(payload);
   state.dashboardReturnedTimeNs = toNs(payload?.time_ns, requestedTimeNs);
   state.dashboardPending = false;
   refreshDashboardTimePresentation();
@@ -4721,85 +4719,8 @@ function moveDashboard(dashboardId, direction) {
   placeDashboard(dashboardId, openIds[targetIndex], direction < 0);
 }
 
-function dashboardFieldValue(item, field) {
-  if (!field) return undefined;
-  const parts = String(field).split(".");
-  const descend = (value, path) => {
-    let current = value;
-    for (const key of path) {
-      if (!current || typeof current !== "object" || !Object.prototype.hasOwnProperty.call(current, key)) {
-        return undefined;
-      }
-      current = current[key];
-    }
-    return current;
-  };
-  const direct = descend(item, parts);
-  if ((direct !== null && direct !== undefined) || parts.length > 1) return direct;
-
-  // Match the generic server evaluator for legacy unqualified plug-in fields:
-  // envelope first, then state/key scopes without any resource-kind knowledge.
-  const name = parts[0];
-  const resource = item?.resource && typeof item.resource === "object" ? item.resource : null;
-  for (const scope of [item?.state, item?.key, resource?.state, resource?.key]) {
-    if (scope && typeof scope === "object" && Object.prototype.hasOwnProperty.call(scope, name)) {
-      return scope[name];
-    }
-  }
-  return undefined;
-}
-
-function dashboardComparable(value) {
-  if (value === undefined || value === null) return "null";
-  if (typeof value === "boolean") return value ? "True" : "False";
-  if (Array.isArray(value)) return `[${value.map((item) => dashboardJsonComparable(item)).join(",")}]`;
-  if (typeof value === "object") return dashboardJsonComparable(value);
-  return String(value);
-}
-
-function dashboardJsonComparable(value) {
-  if (value === undefined || value === null) return "null";
-  if (typeof value === "string") return JSON.stringify(value);
-  if (typeof value === "number" || typeof value === "boolean") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map((item) => dashboardJsonComparable(item)).join(",")}]`;
-  if (typeof value === "object") {
-    return `{${Object.keys(value).sort().map(
-      (key) => `${JSON.stringify(key)}:${dashboardJsonComparable(value[key])}`,
-    ).join(",")}}`;
-  }
-  return String(value);
-}
-
-function dashboardFilterMatches(item, filter) {
-  const actual = dashboardFieldValue(item, filter.field);
-  const expected = filter.value;
-  const equals = (left, right) => dashboardComparable(left) === dashboardComparable(right);
-  switch (filter.operator || "eq") {
-    case "eq":
-      return equals(actual, expected);
-    case "not_eq":
-      return !equals(actual, expected);
-    case "in":
-      return Array.isArray(expected) && expected.some((value) => equals(actual, value));
-    case "not_in":
-      return Array.isArray(expected) && !expected.some((value) => equals(actual, value));
-    case "exists":
-      return (actual !== null && actual !== undefined) === (
-        expected === null || expected === undefined ? true : Boolean(expected)
-      );
-    case "contains": {
-      if (Array.isArray(actual)) return actual.some((value) => equals(value, expected));
-      const haystack = typeof actual === "object" ? dashboardComparable(actual) : String(actual ?? "");
-      return haystack.toLowerCase().includes(String(expected ?? "").toLowerCase());
-    }
-    default:
-      return false;
-  }
-}
-
 function dashboardResourceRows(resourceKinds = [], includeAbsent = false) {
   if (!isTopologyNodeSnapshot()) return [];
-  const allowedKinds = new Set((resourceKinds || []).map(String));
   const rowsById = new Map();
   // Node-workspace dashboards may use the complete local member snapshot. Do
   // not use resourceQuery here: that is a bounded table window, not a
@@ -4811,7 +4732,7 @@ function dashboardResourceRows(resourceKinds = [], includeAbsent = false) {
     const temporal = lane
       ? statusAtLane(lane, state.cursorNs)
       : {
-        exists: item.exists !== false,
+        exists: item.exists === true ? true : item.exists === false ? false : null,
         status: item.status || item.state?.status || item.state?.program_state || "observed",
         statusClass: item.status_class || "unknown",
         properties: item.state || item.properties || {},
@@ -4829,8 +4750,7 @@ function dashboardResourceRows(resourceKinds = [], includeAbsent = false) {
     });
   }
   return [...rowsById.values()]
-    .filter((item) => (!allowedKinds.size || allowedKinds.has(String(item.kind)))
-      && (includeAbsent || item.exists !== false));
+    .filter((item) => dashboardRowIncluded(item, resourceKinds, includeAbsent));
 }
 
 function dashboardStatisticResult(descriptor, dashboardId) {
@@ -4866,43 +4786,10 @@ function dashboardStatisticResult(descriptor, dashboardId) {
   const rows = dashboardResourceRows(
     descriptor.resource_kinds,
     descriptor.include_absent === true,
-  ).filter((item) => (descriptor.filters || []).every(
-    (filter) => dashboardFilterMatches(item, filter),
-  ));
-  const values = descriptor.field
-    ? rows.map((item) => dashboardFieldValue(item, descriptor.field))
-      .filter((value) => value !== null && value !== undefined)
-    : [];
-  const numericValues = values.map(Number).filter(Number.isFinite);
-  let value = null;
-  switch (descriptor.aggregation || "count") {
-    case "count":
-      value = rows.length;
-      break;
-    case "count_distinct":
-      value = new Set(values.map(dashboardComparable)).size;
-      break;
-    case "sum":
-      value = numericValues.reduce((total, item) => total + item, 0);
-      break;
-    case "average":
-      value = numericValues.length
-        ? numericValues.reduce((total, item) => total + item, 0) / numericValues.length
-        : null;
-      break;
-    case "minimum":
-      value = numericValues.length ? Math.min(...numericValues) : null;
-      break;
-    case "maximum":
-      value = numericValues.length ? Math.max(...numericValues) : null;
-      break;
-    default:
-      value = null;
-  }
+  );
+  const evaluation = dashboardStatisticEvaluation(rows, descriptor);
   return {
-    value,
-    matchingCount: rows.length,
-    sampleCount: values.length,
+    ...evaluation,
     source: "local_member_snapshot",
   };
 }
@@ -4934,7 +4821,10 @@ function renderDashboardStatistic(descriptor, dashboardId) {
       ? `Authoritative query failed · ${state.dashboardQueryError}`
       : "Authoritative point-in-time result was not returned";
   } else {
-    attribution = `${aggregation} · ${result.matchingCount} matching · ${dashboardTimeSummary()}`;
+    const samples = String(descriptor.aggregation || "count") === "count"
+      ? ""
+      : ` · ${result.sampleCount} samples`;
+    attribution = `${aggregation} · ${result.matchingCount} matching${samples} · ${dashboardTimeSummary()}`;
   }
   return `<article class="dashboard-stat">
     <span>${escapeHtml(descriptor.label || descriptor.statistic_id)}</span>
@@ -5100,7 +4990,13 @@ function renderPluginDashboards() {
   }).join("")}
     </ol>
   </div>`;
-  modules.innerHTML = openIds.map((id, openPosition) => {
+  const queryErrorMarkup = state.dashboardQueryError
+    ? `<div class="empty-state dashboard-query-error" role="alert">
+        <strong>Dashboard descriptor unavailable</strong>
+        <span>${escapeHtml(state.dashboardQueryError)}</span>
+      </div>`
+    : "";
+  modules.innerHTML = `${queryErrorMarkup}${openIds.map((id, openPosition) => {
     const descriptor = descriptorById.get(id);
     const expanded = descriptor.collapsible === false || state.expandedDashboardIds.has(id);
     const movable = descriptor.movable !== false;
@@ -5132,7 +5028,7 @@ function renderPluginDashboards() {
       </header>
       ${body}
     </article>`;
-  }).join("");
+  }).join("")}`;
 
   index.querySelectorAll("[data-dashboard-open]").forEach((button) => {
     button.addEventListener("click", () => toggleDashboardOpen(button.dataset.dashboardOpen));
@@ -5400,11 +5296,7 @@ function normalizedGraph() {
     // The graph endpoint uses `status` for the normalized class and
     // `status_value` for the plug-in-owned condition.  Normalize that transport
     // shape once so renderers do not miss failure highlighting.
-    const statusClass = typeof node.status_class === "string" && node.status_class
-      ? node.status_class
-      : typeof node.status === "string" && node.status
-        ? node.status
-        : "unknown";
+    const statusClass = graphStatusClass(node);
     return {
       ...node,
       id,
@@ -7433,53 +7325,6 @@ function localNodeRouteResponse(requestContext) {
       && String(request.time_ns || "") === requestContext.timeNs.toString();
   });
   return match?.response && typeof match.response === "object" ? match.response : null;
-}
-
-function routePayloadBranches(payload) {
-  const declared = Array.isArray(payload?.branches)
-    ? payload.branches.filter((item) => item && typeof item === "object")
-    : [];
-  if (declared.length) {
-    return declared.map((item, index) => ({
-      id: String(item.branch_id ?? item.next_hop_id ?? `branch-${index + 1}`),
-      nextHop: item.next_hop ?? item.node_id ?? item.next_hop_id ?? null,
-      egress: item.egress_interface_resource_id ?? item.egress_interface ?? item.via ?? null,
-      active: item.active === true ? true : item.active === false ? false : null,
-      result: String(item.result ?? item.disposition ?? item.status ?? (item.active === true ? "active" : item.active === false ? "inactive" : "unknown")),
-    }));
-  }
-  const nextHops = Array.isArray(payload?.next_hops) ? payload.next_hops : [];
-  const egress = Array.isArray(payload?.egress_interfaces) ? payload.egress_interfaces : [];
-  return Array.from({ length: Math.max(nextHops.length, egress.length) }, (_, index) => ({
-    id: `declared-${index + 1}`,
-    nextHop: nextHops[index] ?? null,
-    egress: egress[index] ?? null,
-    active: null,
-    result: "activity unknown",
-  }));
-}
-
-function routePayloadForwardingPresentation(payload) {
-  const branches = routePayloadBranches(payload);
-  const active = branches.filter((item) => item.active === true);
-  const activityUnknown = branches.filter((item) => item.active === null);
-  const forwarding = active.length ? active : activityUnknown;
-  const unique = (values) => [...new Set(values
-    .filter((value) => value !== null && value !== undefined && value !== "")
-    .map(String))];
-  const nextHops = unique(forwarding.map((item) => item.nextHop));
-  const egress = unique(forwarding.map((item) => item.egress));
-  const scope = active.length
-    ? `${active.length} active`
-    : activityUnknown.length
-      ? `${activityUnknown.length} declared; activity unknown`
-      : "no active branch";
-  return {
-    branches,
-    nextHopText: nextHops.length ? nextHops.join(", ") : "Not returned",
-    egressText: egress.length ? egress.join(", ") : "Not returned",
-    scope,
-  };
 }
 
 function renderRoutePayload(result, payload, requestContext) {

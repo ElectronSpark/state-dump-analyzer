@@ -483,6 +483,14 @@ Matching targets carry a namespaced plugin matcher ID, typed arguments, and the
 plugin-resolved candidate set; the core does not interpret proprietary matching
 semantics.
 
+Opaque match arguments and candidate keys in this response are already
+type-tagged normalized transport values. Consumers validate and canonicalize
+that form directly rather than applying raw-value normalization again.
+Transport wrappers do not count as logical nesting. Unknown tags, invalid or
+extra fields/encodings, non-canonical or duplicate mapping entries, and a
+candidate `typed_key` inconsistent with its normalized key are rejected as
+invalid evidence.
+
 ```json
 {
   "revision_id": "rev-01",
@@ -2017,6 +2025,7 @@ dashboard, while an empty array evaluates none. A successful response is:
   "revision_id": "rev-01",
   "time_ns": "1759680005000000000",
   "population_count": 247,
+  "descriptor_errors": [],
   "dashboards": [
     {
       "dashboard_id": "protocol-state",
@@ -2060,6 +2069,39 @@ integers. Cyclic, unsupported, and over-bound values fail closed for filters and
 are excluded from `count_distinct`; its `sample_count` counts comparable
 values. Type-tagged non-finite floats remain comparable but are excluded from
 numeric aggregates.
+
+Field lookup is presence-aware. An explicit envelope null is present and wins
+over state/key fallbacks; missing fields fail ordinary comparisons and are
+omitted from projected table rows. `exists` defaults to testing for presence,
+and explicit null participates in equality and `count_distinct`. Numeric
+aggregates accept finite numbers only, excluding booleans and numeric strings.
+An empty `sum` returns `0`; `average`, `minimum`, and `maximum` return null, and
+each reports `sample_count: 0`. Table `max_rows` is an exact non-boolean integer
+from 1 through 500.
+
+`descriptor_errors` is empty for valid declarations. If an installed serialized
+descriptor is malformed, the response remains bounded and contains no partially
+evaluated dashboards:
+
+```json
+{
+  "revision_id": "rev-01",
+  "time_ns": "1759680005000000000",
+  "population_count": 0,
+  "dashboards": [],
+  "descriptor_errors": [
+    {
+      "code": "invalid_dashboard_descriptor",
+      "dashboard_id": "protocol-state",
+      "path": "dashboards[0].tables[0].max_rows",
+      "message": "dashboard table max_rows must be an integer between 1 and 500"
+    }
+  ]
+}
+```
+
+The browser displays this failure instead of presenting an empty dashboard as a
+successful query.
 
 A range summary receives `[start_ns,end_ns)` and returns intersecting events,
 intersecting status/lifecycle intervals, relationship add/remove mutations with

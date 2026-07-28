@@ -113,6 +113,11 @@ The generated runtime examples keep exact topology keys and dashboard
 comparison fields inside the core's documented bounds. Their conformance tests
 also exercise typed exact matching and explicit endpoint-start evidence; copy
 those patterns instead of flattening opaque keys or inferring route symmetry.
+The runtime gives core raw topology values only at the plug-in hook; generated
+projection JSON contains the core's already-normalized tagged form and is
+validated directly on reload. Dashboard examples rely on presence-aware fields:
+explicit null remains a value, missing stays missing, and numeric statistics do
+not coerce strings or booleans.
 
 ## Optional runtime capability
 
@@ -139,6 +144,13 @@ session, constructs `NormalizedDataService`, and owns resource/state,
 relationship, table, dashboard, range, redaction, and client-projection
 algorithms. A runtime provider must not return a FastAPI app, `APIRouter`,
 middleware, templates, frontend code, or a substitute query engine.
+
+The demo assembly cache is likewise only an input adapter. It serializes cold
+materialization without holding the cache-bookkeeping lock, so existing leases
+and cache hits remain usable while another generation loads. Lease copies
+preserve the caller's current shallow top-level view and keep the shared
+generation alive; core still owns request/session lifecycle and query
+semantics.
 
 `plugin.runtime` is optional for ordinary parse-only plug-ins:
 `router-dump-plugin-validate` validates their normal `AnalyzerPlugin`

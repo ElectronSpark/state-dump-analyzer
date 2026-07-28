@@ -11,21 +11,25 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 import tarfile
 import tempfile
 import weakref
 from collections import OrderedDict
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from threading import RLock
-from typing import Any, Callable, Mapping
+from threading import Lock, RLock
+from typing import Any
 
 from router_dump_analyzer.revision_store import (
     AssemblyDescriptor,
     RevisionDescriptor,
 )
 
+from . import (
+    GENERATED_ASSEMBLY_FORMAT_VERSION,
+    GENERATED_PROJECTION_POLICY,
+)
 from .archive import (
     ASSEMBLY_COVERAGE_MEMBER,
     ASSEMBLY_GENERATOR,
@@ -35,12 +39,7 @@ from .archive import (
     NODE_PACK_ROOT,
     normalize_archive_member_name,
 )
-from . import (
-    GENERATED_ASSEMBLY_FORMAT_VERSION,
-    GENERATED_PROJECTION_POLICY,
-)
 from .scale_data import ScaleRuntime, load_scale_dataset
-
 
 MAX_ASSEMBLY_METADATA_BYTES = 16 * 1024 * 1024
 MAX_NESTED_NODE_ARCHIVE_BYTES = 512 * 1024 * 1024
@@ -77,7 +76,7 @@ class _LeasedDataset(dict[str, Any]):
         source: Mapping[str, Any],
         *,
         release: Callable[[], None],
-        retain: Callable[[], "_LeasedDataset"],
+        retain: Callable[[Mapping[str, Any]], "_LeasedDataset"],
     ) -> None:
         super().__init__(source)
         self._retain = retain
@@ -91,7 +90,9 @@ class _LeasedDataset(dict[str, Any]):
     def copy(self) -> "_LeasedDataset":
         """Return another independently leased shallow view."""
 
-        return self._retain()
+        if not self._finalizer.alive:
+            raise RuntimeError("demo dataset lease is released")
+        return self._retain(self)
 
     def __enter__(self) -> "_LeasedDataset":
         return self
@@ -170,7 +171,12 @@ class DemoAssemblyStore:
         self._revisions_by_node: dict[str, RevisionDescriptor] = {}
         self._datasets: OrderedDict[str, _DatasetEntry] = OrderedDict()
         self._projections_by_node: dict[str, dict[str, Any]] = {}
+        # Cache hits and lease releases only need the short bookkeeping lock.
+        # Misses are serialized separately so one expensive materialization
+        # cannot block callers already using a cached revision.
         self._lock = RLock()
+        self._cold_load_lock = Lock()
+        self._loads_in_progress = 0
         self._closed = False
         self._temporary_directory_cleaned = False
         self.coverage: dict[str, Any] = {}
@@ -186,17 +192,17 @@ class DemoAssemblyStore:
         coverage_name = ASSEMBLY_COVERAGE_MEMBER
         with tarfile.open(self.archive_path, mode="r:gz") as archive:
             members: dict[str, tarfile.TarInfo] = {}
-            for member in archive.getmembers():
-                _safe_member_name(member.name)
-                if member.name in members:
+            for archive_member in archive.getmembers():
+                _safe_member_name(archive_member.name)
+                if archive_member.name in members:
                     raise DemoAssemblyError(
-                        f"duplicate assembly member: {member.name}"
+                        f"duplicate assembly member: {archive_member.name}"
                     )
-                if not member.isfile() and not member.isdir():
+                if not archive_member.isfile() and not archive_member.isdir():
                     raise DemoAssemblyError(
-                        f"assembly contains a non-regular member: {member.name}"
+                        f"assembly contains a non-regular member: {archive_member.name}"
                     )
-                members[member.name] = member
+                members[archive_member.name] = archive_member
             try:
                 manifest_member = members[manifest_name]
                 coverage_member = members[coverage_name]
@@ -534,15 +540,52 @@ class DemoAssemblyStore:
             if self._closed:
                 raise RuntimeError("demo assembly store is closed")
             entry = self._datasets.pop(revision_id, None)
-            if entry is None:
-                entry = self._load_entry_locked(revision_id)
-            self._datasets[revision_id] = entry
-            entry.lease_count += 1
-            leased = self._lease_view_locked(entry)
-            self._trim_cache_locked()
-            return leased
+            if entry is not None:
+                self._datasets[revision_id] = entry
+                leased = self._lease_view_locked(entry, entry.dataset)
+                self._trim_cache_locked()
+                return leased
 
-    def _load_entry_locked(self, revision_id: str) -> _DatasetEntry:
+        # Only cold materialization is serialized. Recheck the cache after
+        # waiting because another miss may have published this revision.
+        with self._cold_load_lock:
+            with self._lock:
+                if self._closed:
+                    raise RuntimeError("demo assembly store is closed")
+                entry = self._datasets.pop(revision_id, None)
+                if entry is not None:
+                    self._datasets[revision_id] = entry
+                    leased = self._lease_view_locked(entry, entry.dataset)
+                    self._trim_cache_locked()
+                    return leased
+                # Resolve the immutable descriptor and archive path before
+                # announcing a load. Unknown revisions never affect shutdown.
+                self.revision(revision_id)
+                self._loads_in_progress += 1
+
+            try:
+                entry = self._load_entry(revision_id)
+            except BaseException:
+                with self._lock:
+                    self._loads_in_progress -= 1
+                    self._finish_close_locked()
+                raise
+
+            with self._lock:
+                self._loads_in_progress -= 1
+                if self._closed:
+                    # close() may race a materialization. Never publish into a
+                    # closed store, and close the just-built runtime exactly
+                    # once before allowing temporary archive cleanup.
+                    self._close_entry_locked(entry)
+                    self._finish_close_locked()
+                    raise RuntimeError("demo assembly store is closed")
+                self._datasets[revision_id] = entry
+                leased = self._lease_view_locked(entry, entry.dataset)
+                self._trim_cache_locked()
+                return leased
+
+    def _load_entry(self, revision_id: str) -> _DatasetEntry:
         descriptor = self.revision(revision_id)
         dataset = self._dataset_loader(
             self._node_archive_paths[revision_id],
@@ -582,21 +625,35 @@ class DemoAssemblyStore:
             self._close_runtime(dataset)
             raise
 
-    def _lease_view_locked(self, entry: _DatasetEntry) -> _LeasedDataset:
-        return _LeasedDataset(
-            entry.dataset,
-            release=lambda: self._release_entry(entry),
-            retain=lambda: self._retain_entry(entry),
-        )
+    def _lease_view_locked(
+        self,
+        entry: _DatasetEntry,
+        source: Mapping[str, Any],
+    ) -> _LeasedDataset:
+        if entry.closed:
+            raise RuntimeError("demo dataset generation is closed")
+        entry.lease_count += 1
+        try:
+            return _LeasedDataset(
+                source,
+                release=lambda: self._release_entry(entry),
+                retain=lambda current: self._retain_entry(entry, current),
+            )
+        except BaseException:
+            entry.lease_count -= 1
+            raise
 
-    def _retain_entry(self, entry: _DatasetEntry) -> _LeasedDataset:
+    def _retain_entry(
+        self,
+        entry: _DatasetEntry,
+        source: Mapping[str, Any],
+    ) -> _LeasedDataset:
         with self._lock:
-            if self._closed:
-                raise RuntimeError("demo assembly store is closed")
             if entry.closed:
                 raise RuntimeError("demo dataset generation is closed")
-            entry.lease_count += 1
-            return self._lease_view_locked(entry)
+            # A live source lease may be copied after store.close(). The copy
+            # retains that same generation and delays its final close.
+            return self._lease_view_locked(entry, source)
 
     def _release_entry(self, entry: _DatasetEntry) -> None:
         with self._lock:
@@ -655,7 +712,12 @@ class DemoAssemblyStore:
             self._finish_close_locked()
 
     def _finish_close_locked(self) -> None:
-        if self._temporary_directory_cleaned or self._datasets:
+        if (
+            not self._closed
+            or self._temporary_directory_cleaned
+            or self._datasets
+            or self._loads_in_progress
+        ):
             return
         self._temporary_directory.cleanup()
         self._temporary_directory_cleaned = True

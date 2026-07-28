@@ -8,19 +8,21 @@ import json
 import tarfile
 import tempfile
 import unittest
+from collections.abc import Mapping
 from pathlib import Path
+from threading import Event, Thread
 from unittest.mock import patch
 
+from rsl_demo_plugin import (
+    GENERATED_ASSEMBLY_FORMAT_VERSION,
+    GENERATED_COVERAGE_FORMAT_VERSION,
+    GENERATED_PROJECTION_POLICY,
+)
 from rsl_demo_plugin.assembly_store import (
     DemoAssemblyError,
     DemoAssemblyStore,
 )
 from rsl_demo_plugin.scale_data import ScaleRuntime
-from rsl_demo_plugin import GENERATED_PROJECTION_POLICY
-from rsl_demo_plugin import (
-    GENERATED_ASSEMBLY_FORMAT_VERSION,
-    GENERATED_COVERAGE_FORMAT_VERSION,
-)
 
 
 def _json_bytes(value: object) -> bytes:
@@ -530,6 +532,326 @@ class DemoAssemblyStoreTests(unittest.TestCase):
             self.assertEqual(searches["revision:node-b"][1].close_count, 0)
             revisited_b.release()
             self.assertEqual(searches["revision:node-b"][1].close_count, 1)
+
+    def test_cache_hits_and_releases_continue_during_a_cold_load(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "demo.tgz"
+            _write_assembly(archive)
+            cold_started = Event()
+            allow_cold = Event()
+            hit_finished = Event()
+            release_finished = Event()
+            errors: list[BaseException] = []
+
+            def load(path: Path, revision_id: str) -> dict[str, object]:
+                path.read_bytes()
+                if revision_id == "revision:node-b":
+                    cold_started.set()
+                    if not allow_cold.wait(10):
+                        raise TimeoutError("test did not release cold load")
+                return {
+                    "demo": {
+                        "node": revision_id.removeprefix("revision:"),
+                        "revision_id": revision_id,
+                        "event_count": 3,
+                        "resource_count": 2,
+                    }
+                }
+
+            store = DemoAssemblyStore(
+                archive,
+                cache_size=2,
+                dataset_loader=load,
+            )
+            original = store.dataset_for_node("node-a")
+            leases: list[Mapping[str, object]] = []
+
+            def load_cold() -> None:
+                try:
+                    leases.append(store.dataset_for_node("node-b"))
+                except Exception as error:
+                    errors.append(error)
+
+            def load_cached() -> None:
+                try:
+                    leases.append(store.dataset_for_node("node-a"))
+                except Exception as error:
+                    errors.append(error)
+                finally:
+                    hit_finished.set()
+
+            def release_original() -> None:
+                original.release()
+                release_finished.set()
+
+            cold_thread = Thread(target=load_cold)
+            hit_thread = Thread(target=load_cached)
+            release_thread = Thread(target=release_original)
+            cold_thread.start()
+            self.assertTrue(cold_started.wait(10))
+            hit_thread.start()
+            release_thread.start()
+            try:
+                self.assertTrue(
+                    hit_finished.wait(10),
+                    "a cache hit was blocked by cold materialization",
+                )
+                self.assertTrue(
+                    release_finished.wait(10),
+                    "a lease release was blocked by cold materialization",
+                )
+            finally:
+                allow_cold.set()
+                for thread in (cold_thread, hit_thread, release_thread):
+                    thread.join(10)
+
+            self.assertFalse(
+                any(
+                    thread.is_alive()
+                    for thread in (cold_thread, hit_thread, release_thread)
+                )
+            )
+            self.assertEqual(errors, [])
+            for lease in leases:
+                lease.release()
+            store.close()
+
+    def test_duplicate_cold_misses_materialize_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "demo.tgz"
+            _write_assembly(archive)
+            begin = Event()
+            ready = [Event(), Event()]
+            load_started = Event()
+            allow_load = Event()
+            calls: list[str] = []
+            leases: list[Mapping[str, object]] = []
+            errors: list[BaseException] = []
+
+            def load(path: Path, revision_id: str) -> dict[str, object]:
+                path.read_bytes()
+                calls.append(revision_id)
+                load_started.set()
+                if not allow_load.wait(10):
+                    raise TimeoutError("test did not release cold load")
+                return {
+                    "demo": {
+                        "node": "node-a",
+                        "revision_id": revision_id,
+                        "event_count": 3,
+                        "resource_count": 2,
+                    }
+                }
+
+            store = DemoAssemblyStore(archive, dataset_loader=load)
+
+            def request(index: int) -> None:
+                ready[index].set()
+                begin.wait()
+                try:
+                    leases.append(store.dataset_for_node("node-a"))
+                except Exception as error:
+                    errors.append(error)
+
+            threads = [
+                Thread(target=request, args=(index,)) for index in range(2)
+            ]
+            for thread in threads:
+                thread.start()
+            self.assertTrue(all(event.wait(10) for event in ready))
+            begin.set()
+            self.assertTrue(load_started.wait(10))
+            allow_load.set()
+            for thread in threads:
+                thread.join(10)
+
+            self.assertFalse(any(thread.is_alive() for thread in threads))
+            self.assertEqual(errors, [])
+            self.assertEqual(calls, ["revision:node-a"])
+            self.assertEqual(len(leases), 2)
+            for lease in leases:
+                lease.release()
+            store.close()
+
+    def test_close_during_load_rejects_publish_and_closes_runtime_once(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "demo.tgz"
+            _write_assembly(archive)
+            load_started = Event()
+            allow_load = Event()
+            search = _CloseCountingSearch()
+            errors: list[BaseException] = []
+
+            def load(path: Path, revision_id: str) -> dict[str, object]:
+                path.read_bytes()
+                load_started.set()
+                if not allow_load.wait(10):
+                    raise TimeoutError("test did not release cold load")
+                return {
+                    "demo": {
+                        "node": "node-a",
+                        "revision_id": revision_id,
+                        "event_count": 3,
+                        "resource_count": 2,
+                    },
+                    "_scale_runtime": _scale_runtime(search),
+                }
+
+            store = DemoAssemblyStore(archive, dataset_loader=load)
+            temporary_path = Path(store._temporary_directory.name)
+
+            def request() -> None:
+                try:
+                    store.dataset_for_node("node-a")
+                except Exception as error:
+                    errors.append(error)
+
+            thread = Thread(target=request)
+            thread.start()
+            self.assertTrue(load_started.wait(10))
+            store.close()
+            self.assertTrue(temporary_path.exists())
+            allow_load.set()
+            thread.join(10)
+
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], RuntimeError)
+            self.assertEqual(str(errors[0]), "demo assembly store is closed")
+            self.assertEqual(store.loaded_revision_ids(), ())
+            self.assertEqual(search.close_count, 1)
+            self.assertFalse(temporary_path.exists())
+            store.close()
+            self.assertEqual(search.close_count, 1)
+
+    def test_close_during_failed_load_cleans_up_and_closes_runtime_once(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "demo.tgz"
+            _write_assembly(archive)
+            load_started = Event()
+            allow_load = Event()
+            search = _CloseCountingSearch()
+            errors: list[BaseException] = []
+
+            def load(path: Path, revision_id: str) -> dict[str, object]:
+                path.read_bytes()
+                load_started.set()
+                if not allow_load.wait(10):
+                    raise TimeoutError("test did not release cold load")
+                return {
+                    "demo": {
+                        "node": "wrong-node",
+                        "revision_id": revision_id,
+                        "event_count": 3,
+                        "resource_count": 2,
+                    },
+                    "_scale_runtime": _scale_runtime(search),
+                }
+
+            store = DemoAssemblyStore(archive, dataset_loader=load)
+            temporary_path = Path(store._temporary_directory.name)
+
+            def request() -> None:
+                try:
+                    store.dataset_for_node("node-a")
+                except Exception as error:
+                    errors.append(error)
+
+            thread = Thread(target=request)
+            thread.start()
+            self.assertTrue(load_started.wait(10))
+            store.close()
+            allow_load.set()
+            thread.join(10)
+
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], DemoAssemblyError)
+            self.assertEqual(search.close_count, 1)
+            self.assertFalse(temporary_path.exists())
+
+    def test_failed_load_leaves_open_store_retryable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "demo.tgz"
+            _write_assembly(archive)
+            calls = 0
+
+            def load(path: Path, revision_id: str) -> dict[str, object]:
+                nonlocal calls
+                path.read_bytes()
+                calls += 1
+                if calls == 1:
+                    raise ValueError("synthetic load failure")
+                return {
+                    "demo": {
+                        "node": "node-a",
+                        "revision_id": revision_id,
+                        "event_count": 3,
+                        "resource_count": 2,
+                    }
+                }
+
+            store = DemoAssemblyStore(archive, dataset_loader=load)
+            temporary_path = Path(store._temporary_directory.name)
+            with self.assertRaisesRegex(ValueError, "synthetic load failure"):
+                store.dataset_for_node("node-a")
+
+            self.assertTrue(temporary_path.exists())
+            self.assertEqual(store.loaded_revision_ids(), ())
+            lease = store.dataset_for_node("node-a")
+            self.assertEqual(calls, 2)
+            lease.release()
+            store.close()
+            self.assertFalse(temporary_path.exists())
+
+    def test_lease_copy_preserves_view_and_survives_store_close(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "demo.tgz"
+            _write_assembly(archive)
+            search = _CloseCountingSearch()
+
+            def load(path: Path, revision_id: str) -> dict[str, object]:
+                path.read_bytes()
+                return {
+                    "demo": {
+                        "node": "node-a",
+                        "revision_id": revision_id,
+                        "event_count": 3,
+                        "resource_count": 2,
+                    },
+                    "shared": [],
+                    "_scale_runtime": _scale_runtime(search),
+                }
+
+            store = DemoAssemblyStore(archive, dataset_loader=load)
+            source = store.dataset_for_node("node-a")
+            source["added"] = {"value": 1}
+            del source["shared"]
+            copied = source.copy()
+
+            self.assertIn("added", copied)
+            self.assertNotIn("shared", copied)
+            self.assertIs(copied["added"], source["added"])
+            source["added"] = {"value": 2}
+            copied["copy-only"] = True
+            self.assertEqual(copied["added"], {"value": 1})
+            self.assertNotIn("copy-only", source)
+
+            store.close()
+            copied_after_close = copied.copy()
+            source.release()
+            with self.assertRaisesRegex(RuntimeError, "lease is released"):
+                source.copy()
+            copied.release()
+            self.assertEqual(search.close_count, 0)
+            copied_after_close.release()
+            self.assertEqual(search.close_count, 1)
+            copied_after_close.release()
+            self.assertEqual(search.close_count, 1)
 
     def test_manifest_inventory_is_available_without_loading_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

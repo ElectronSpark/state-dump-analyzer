@@ -543,6 +543,15 @@ than 1,024 total value units, strings/bytes over 4,096 units, or integers over
 4,096 bits. Missing and explicit null are different. Do not stringify a
 numeric, byte, UUID, or compound key merely to fit the transport.
 
+Plug-in hooks provide ordinary Python values; core normalizes them exactly once
+before storage or JSON transport. A stored/API key is already a tagged
+normalized value. Core validates and canonicalizes that representation
+directly, counts only the plug-in's logical containers toward the four-level
+limit, rejects unknown tags, extra fields, invalid encodings, non-canonical
+mapping order, or duplicate canonical mapping keys, and verifies an optional
+`typed_key` against the candidate key. Never feed a tagged transport value back
+through the raw-value normalizer or infer meaning from its JSON shape.
+
 When an optional runtime topology adapter declares relative reconstruction
 watermarks, scope each one by the exact node/member revision, plug-in run,
 status perspective, and topology projection. Provide `local_time_ns`,
@@ -587,6 +596,15 @@ items per container, 4,096 comparison units, 65,536-character/byte atoms, and
 Cyclic, unsupported, or over-bound values do not match filters and do not
 contribute to `count_distinct`; non-finite floats may be compared as tagged
 values but never contribute to numeric aggregates.
+
+Dashboard field lookup is presence-aware. An explicit envelope value, including
+null, wins over a same-named state or key value; a missing field does not match
+ordinary comparisons and is omitted from table projection. `exists` tests
+presence (`value` defaults to true), explicit null participates in equality and
+`count_distinct`, and numeric aggregates accept only finite numeric values
+(never booleans or numeric strings). An empty `sum` is `0` with
+`sample_count: 0`; `average`, `minimum`, and `maximum` are null with zero
+samples. `max_rows` must be an exact non-boolean integer from 1 through 500.
 
 Cross-node matching that interprets normalized claims belongs to a separate
 federation/linker plug-in. A node plug-in stops at its local connector claim.

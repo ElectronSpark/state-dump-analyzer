@@ -17,7 +17,11 @@ from functools import lru_cache
 from hashlib import sha256
 from typing import Any, Protocol, runtime_checkable
 
-from .dashboard_core import evaluate_dashboards
+from .dashboard_core import (
+    DashboardDescriptorValidationError,
+    evaluate_dashboards,
+    validate_dashboard_descriptors,
+)
 from .source_record_core import project_source_record_for_log
 
 MAX_RESOURCE_TABLE_TRAVERSAL_NODES = 5_000
@@ -2552,19 +2556,29 @@ class NormalizedDataService:
         dashboard_ids: Iterable[str] | None = None,
     ) -> dict[str, Any]:
         dataset = self.load_dataset()
-        descriptors = [
-            item
-            for item in (
-                dataset.get("dashboard_descriptors")
-                or dataset.get("schema", {}).get("dashboards", [])
-            )
-            if isinstance(item, Mapping) and item.get("dashboard_id")
-        ]
         selected_ids = (
             {str(item) for item in dashboard_ids if str(item)}
             if dashboard_ids is not None
             else None
         )
+        schema = dataset.get("schema")
+        raw_descriptors = dataset.get("dashboard_descriptors")
+        if not raw_descriptors and isinstance(schema, Mapping):
+            raw_descriptors = schema.get("dashboards", ())
+        if raw_descriptors is None:
+            raw_descriptors = ()
+        try:
+            descriptors = list(
+                validate_dashboard_descriptors(raw_descriptors)
+            )
+        except DashboardDescriptorValidationError as error:
+            return {
+                "revision_id": self.current_revision_id(dataset),
+                "time_ns": str(timestamp_ns),
+                "population_count": 0,
+                "dashboards": [],
+                "descriptor_errors": [error.as_dict()],
+            }
         selected = [
             item
             for item in descriptors
@@ -2616,6 +2630,7 @@ class NormalizedDataService:
                 rows,
                 dashboard_ids=selected_ids,
             ),
+            "descriptor_errors": [],
         }
 
     def range_summary(

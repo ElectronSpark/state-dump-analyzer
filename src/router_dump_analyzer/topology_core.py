@@ -12,7 +12,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .canonical import CanonicalValueError, canonical_opaque_value
+from .canonical import (
+    CanonicalValueError,
+    canonical_normalized_opaque_value,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,11 +54,18 @@ class ConnectivityDomainBinding:
         }
 
 
-def _canonical_topology_key(value: Any) -> str:
-    """Use the bounded type-tagged profile with this API's error contract."""
+def _canonical_topology_key(
+    value: Any,
+    *,
+    typed_key: str | None = None,
+) -> str:
+    """Validate one tagged topology key without re-normalizing its transport."""
 
     try:
-        return canonical_opaque_value(value)[1]
+        return canonical_normalized_opaque_value(
+            value,
+            typed_key=typed_key,
+        )[1]
     except CanonicalValueError as error:
         raise ValueError(
             "topology match arguments must be bounded canonical values"
@@ -158,9 +168,13 @@ def resolve_connectivity_domain_reference(
             continue
         if "segment_key" not in normalized_match:
             continue
+        typed_key = normalized_match.get("typed_key")
+        if "typed_key" in normalized_match and not isinstance(typed_key, str):
+            continue
         try:
             candidate_key = _canonical_topology_key(
-                normalized_match["segment_key"]
+                normalized_match["segment_key"],
+                typed_key=typed_key,
             )
         except ValueError:
             # A malformed snapshot declaration is not evidence for an exact

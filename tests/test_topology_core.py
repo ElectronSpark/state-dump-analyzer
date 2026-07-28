@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import unittest
 
+from router_dump_analyzer.canonical import canonical_opaque_value
 from router_dump_analyzer.topology_core import (
     resolve_connectivity_domain_reference,
 )
@@ -10,16 +11,19 @@ from router_dump_analyzer.topology_core import (
 
 class ConnectivityDomainReferenceTests(unittest.TestCase):
     def setUp(self) -> None:
+        segment_key, typed_key = canonical_opaque_value(
+            {
+                "type": "compound",
+                "value": ["blue", 310],
+            }
+        )
         self.reference = {
             "reference_kind": "connectivity_domain",
             "match": {
                 "matcher_id": "vendor.exact-domain.v1",
                 "matcher_contract_version": "1.0",
                 "arguments": {
-                    "segment_key": {
-                        "type": "compound",
-                        "value": ["blue", 310],
-                    }
+                    "segment_key": copy.deepcopy(segment_key),
                 },
             },
         }
@@ -30,10 +34,8 @@ class ConnectivityDomainReferenceTests(unittest.TestCase):
                     "match": {
                         "matcher_id": "vendor.exact-domain.v1",
                         "matcher_contract_version": "1.0",
-                        "segment_key": {
-                            "value": ["blue", 310],
-                            "type": "compound",
-                        },
+                        "segment_key": segment_key,
+                        "typed_key": typed_key,
                     },
                     "connectivity_enabled": True,
                     "exists": True,
@@ -172,7 +174,10 @@ class ConnectivityDomainReferenceTests(unittest.TestCase):
     ) -> None:
         reference = copy.deepcopy(self.reference)
         snapshot = copy.deepcopy(self.snapshot)
-        reference["match"]["arguments"]["segment_key"] = None
+        reference["match"]["arguments"]["segment_key"] = {
+            "type": "null",
+            "value": None,
+        }
         del snapshot["network_segments"][0]["match"]["segment_key"]
 
         result = resolve_connectivity_domain_reference(
@@ -192,8 +197,12 @@ class ConnectivityDomainReferenceTests(unittest.TestCase):
     ) -> None:
         reference = copy.deepcopy(self.reference)
         snapshot = copy.deepcopy(self.snapshot)
-        reference["match"]["arguments"]["segment_key"] = {1: "domain"}
-        snapshot["network_segments"][0]["match"]["segment_key"] = {"1": "domain"}
+        reference["match"]["arguments"]["segment_key"] = canonical_opaque_value(
+            {1: "domain"}
+        )[0]
+        snapshot_key, typed_key = canonical_opaque_value({"1": "domain"})
+        snapshot["network_segments"][0]["match"]["segment_key"] = snapshot_key
+        snapshot["network_segments"][0]["match"]["typed_key"] = typed_key
 
         result = resolve_connectivity_domain_reference(
             snapshot,
@@ -209,7 +218,11 @@ class ConnectivityDomainReferenceTests(unittest.TestCase):
 
     def test_nonfinite_topology_key_is_rejected(self) -> None:
         reference = copy.deepcopy(self.reference)
-        reference["match"]["arguments"]["segment_key"] = float("nan")
+        reference["match"]["arguments"]["segment_key"] = {
+            "type": "number",
+            "encoding": "python-float-hex",
+            "value": "nan",
+        }
 
         with self.assertRaisesRegex(ValueError, "bounded canonical values"):
             resolve_connectivity_domain_reference(
@@ -225,8 +238,12 @@ class ConnectivityDomainReferenceTests(unittest.TestCase):
         reference = copy.deepcopy(self.reference)
         snapshot = copy.deepcopy(self.snapshot)
         key = {"site": "Montréal", "vrf": "蓝"}
-        reference["match"]["arguments"]["segment_key"] = key
-        snapshot["network_segments"][0]["match"]["segment_key"] = copy.deepcopy(key)
+        normalized, typed_key = canonical_opaque_value(key)
+        reference["match"]["arguments"]["segment_key"] = copy.deepcopy(
+            normalized
+        )
+        snapshot["network_segments"][0]["match"]["segment_key"] = normalized
+        snapshot["network_segments"][0]["match"]["typed_key"] = typed_key
         result = resolve_connectivity_domain_reference(
             snapshot,
             reference,
@@ -236,6 +253,48 @@ class ConnectivityDomainReferenceTests(unittest.TestCase):
             target_resource_id="p1/if/1",
         )
         self.assertTrue(result.resolved)
+
+    def test_runtime_tagged_four_level_key_resolves_without_double_encoding(
+        self,
+    ) -> None:
+        raw_key = {
+            "vrf": "red",
+            "members": [
+                {
+                    "site": {
+                        "rack": "a",
+                    }
+                }
+            ],
+        }
+        normalized, typed_key = canonical_opaque_value(raw_key)
+        reference = copy.deepcopy(self.reference)
+        snapshot = copy.deepcopy(self.snapshot)
+        reference["match"]["arguments"]["segment_key"] = copy.deepcopy(
+            normalized
+        )
+        snapshot["network_segments"][0]["match"]["segment_key"] = normalized
+        snapshot["network_segments"][0]["match"]["typed_key"] = typed_key
+
+        result = resolve_connectivity_domain_reference(
+            snapshot,
+            reference,
+            source_node_id="a",
+            target_node_id="p1",
+            source_resource_id="a/if/1",
+            target_resource_id="p1/if/1",
+        )
+
+        self.assertTrue(result.resolved)
+
+    def test_stale_snapshot_typed_key_is_not_matchable_evidence(self) -> None:
+        snapshot = copy.deepcopy(self.snapshot)
+        snapshot["network_segments"][0]["match"]["typed_key"] = "stale"
+
+        result = self.resolve(snapshot)
+
+        self.assertFalse(result.resolved)
+        self.assertEqual(result.reason_code, "connectivity_domain_not_found")
 
 
 if __name__ == "__main__":

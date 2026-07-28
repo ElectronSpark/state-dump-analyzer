@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_JS = ROOT / "frontend" / "assets" / "app.js"
+VIEW_MODELS_JS = ROOT / "frontend" / "assets" / "view_models.js"
 
 
 def javascript_function(source: str, name: str) -> str:
@@ -19,6 +20,7 @@ class SingleNodeDashboardFrontendTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.script = APP_JS.read_text(encoding="utf-8")
+        cls.view_models = VIEW_MODELS_JS.read_text(encoding="utf-8")
 
     def test_node_snapshot_range_summary_never_uses_global_revision(self) -> None:
         request = javascript_function(self.script, "requestRangeSummary")
@@ -96,9 +98,6 @@ class SingleNodeDashboardFrontendTests(unittest.TestCase):
 
     def test_dashboard_rendering_does_not_use_bounded_resource_query_population(self) -> None:
         rows = javascript_function(self.script, "dashboardResourceRows")
-        field_value = javascript_function(self.script, "dashboardFieldValue")
-        comparable = javascript_function(self.script, "dashboardComparable")
-        filter_matches = javascript_function(self.script, "dashboardFilterMatches")
         statistic = javascript_function(self.script, "dashboardStatisticResult")
         table = javascript_function(self.script, "renderDashboardTable")
         render = javascript_function(self.script, "renderPluginDashboards")
@@ -107,17 +106,15 @@ class SingleNodeDashboardFrontendTests(unittest.TestCase):
         self.assertIn("state.dataset?.resources", rows)
         self.assertNotIn("fallbackResourceItems", rows)
         self.assertNotIn("state.resourceQuery", rows)
-        self.assertIn("item?.state", field_value)
-        self.assertIn("item?.key", field_value)
-        self.assertIn("resource?.state", field_value)
-        self.assertIn("resource?.key", field_value)
-        self.assertIn("Object.prototype.hasOwnProperty.call(scope, name)", field_value)
-        self.assertIn('value === undefined || value === null', comparable)
-        self.assertIn('return "null"', comparable)
-        self.assertIn("expected === null || expected === undefined", filter_matches)
+        self.assertIn("dashboardFieldValue,", self.script)
+        self.assertIn("dashboardFilterMatches,", self.script)
+        self.assertIn("dashboardRowIncluded,", self.script)
+        self.assertIn("dashboardStatisticEvaluation,", self.script)
+        self.assertIn('from "./view_models.js"', self.script)
         self.assertIn("dashboardResultFor(dashboardId)", statistic)
         self.assertIn('source: "authoritative_query"', statistic)
         self.assertIn('source: "plugin_precomputed"', statistic)
+        self.assertIn("dashboardStatisticEvaluation(rows, descriptor)", statistic)
         self.assertIn("dashboardResultFor(dashboardId)", table)
         self.assertIn("result.total_count", table)
         self.assertIn("result.truncated", table)
@@ -125,6 +122,16 @@ class SingleNodeDashboardFrontendTests(unittest.TestCase):
         self.assertIn("dashboardFilterMatches(item, filter)", table)
         self.assertIn("state.dashboardPending", render)
         self.assertNotIn("state.resourcePending", render)
+
+    def test_dashboard_existence_and_descriptor_errors_are_not_optimistic_or_hidden(self) -> None:
+        rows = javascript_function(self.script, "dashboardResourceRows")
+        render = javascript_function(self.script, "renderPluginDashboards")
+
+        self.assertIn("dashboardRowIncluded(item, resourceKinds, includeAbsent)", rows)
+        self.assertIn("item.exists === true ? true : item.exists === false ? false : null", rows)
+        self.assertIn("state.dashboardQueryError", render)
+        self.assertIn('class="empty-state dashboard-query-error" role="alert"', render)
+        self.assertIn("Dashboard descriptor unavailable", render)
 
     def test_precomputed_statistics_are_not_mislabelled_point_in_time(self) -> None:
         render = javascript_function(self.script, "renderDashboardStatistic")

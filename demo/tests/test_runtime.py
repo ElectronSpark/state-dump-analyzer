@@ -4,31 +4,34 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import patch
-
 
 DEMO_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = DEMO_ROOT.parent
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 sys.path.insert(0, str(DEMO_ROOT))
 
+from rsl_demo_plugin import (  # noqa: E402
+    data,
+    plugin,
+)
+from rsl_demo_plugin import session as runtime_module  # noqa: E402
+from rsl_demo_plugin.session import (  # noqa: E402
+    DemoDataPolicy,
+    DemoDatasetSource,
+    DemoTemporalProvider,
+)
+
+from router_dump_analyzer.normalized_data import (  # noqa: E402
+    NormalizedDataService,
+)
 from router_dump_analyzer.runtime import (  # noqa: E402
     PLUGIN_RUNTIME_CAPABILITY_ID,
     PluginRuntimeSession,
     require_plugin_runtime,
     validate_runtime_session,
-)
-from router_dump_analyzer.normalized_data import (  # noqa: E402
-    NormalizedDataService,
-)
-from rsl_demo_plugin import data  # noqa: E402
-from rsl_demo_plugin import session as runtime_module  # noqa: E402
-from rsl_demo_plugin import plugin  # noqa: E402
-from rsl_demo_plugin.session import (  # noqa: E402
-    DemoDataPolicy,
-    DemoDatasetSource,
-    DemoTemporalProvider,
 )
 
 
@@ -169,6 +172,62 @@ class DemoRuntimeTests(unittest.TestCase):
         self.assertIsNone(data._active_revision_id.get())
         self.assertIsNone(data._active_revision_store.get())
         self.assertEqual(store.revision_requests, ["revision-a"])
+
+    def test_dataset_source_does_not_serialize_independent_calls(self) -> None:
+        source = DemoDatasetSource(_FakeStore())
+        first_started = Event()
+        allow_first = Event()
+        second_finished = Event()
+        results: dict[str, dict[str, object]] = {}
+        errors: list[BaseException] = []
+
+        def load(
+            revision_id: str | None = None,
+            *,
+            node_id: str | None = None,
+        ) -> dict[str, object]:
+            selected = revision_id or node_id or ""
+            if selected == "revision-a":
+                first_started.set()
+                if not allow_first.wait(10):
+                    raise TimeoutError("test did not release first call")
+            else:
+                second_finished.set()
+            return {"demo": {"revision_id": selected}}
+
+        def request(name: str, revision_id: str) -> None:
+            try:
+                results[name] = source.load_dataset(revision_id)
+            except Exception as error:
+                errors.append(error)
+
+        with patch.object(data, "load_demo_dataset", side_effect=load):
+            first = Thread(target=request, args=("first", "revision-a"))
+            second = Thread(target=request, args=("second", "revision-b"))
+            first.start()
+            self.assertTrue(first_started.wait(10))
+            second.start()
+            try:
+                self.assertTrue(
+                    second_finished.wait(10),
+                    "independent source call was serialized",
+                )
+            finally:
+                allow_first.set()
+                first.join(10)
+                second.join(10)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            results["first"]["demo"]["revision_id"],
+            "revision-a",
+        )
+        self.assertEqual(
+            results["second"]["demo"]["revision_id"],
+            "revision-b",
+        )
 
     def test_core_service_owns_generic_queries(self) -> None:
         source = DemoDatasetSource(_FakeStore())

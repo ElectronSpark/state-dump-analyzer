@@ -11,6 +11,7 @@ APP_CSS = ROOT / "frontend" / "assets" / "styles.css"
 TOPOLOGY_JS = ROOT / "frontend" / "assets" / "topology.js"
 TOPOLOGY_CSS = ROOT / "frontend" / "assets" / "topology.css"
 TOPOLOGY_HTML = ROOT / "frontend" / "pages" / "topology.html"
+VIEW_MODELS_JS = ROOT / "frontend" / "assets" / "view_models.js"
 
 
 def javascript_function(source: str, name: str) -> str:
@@ -26,6 +27,7 @@ class SingleNodeAuditRegressionContractTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.script = APP_JS.read_text(encoding="utf-8")
         cls.styles = APP_CSS.read_text(encoding="utf-8")
+        cls.view_models = VIEW_MODELS_JS.read_text(encoding="utf-8")
 
     def test_resource_query_and_both_table_shapes_are_pageable(self) -> None:
         request = javascript_function(self.script, "requestResources")
@@ -303,8 +305,8 @@ class SingleNodeAuditRegressionContractTests(unittest.TestCase):
         render_incident = javascript_function(self.script, "renderIncidentSummary")
 
         self.assertIn("status_class: statusClass", normalize_graph)
-        self.assertIn("node.status_class", normalize_graph)
-        self.assertIn("node.status", normalize_graph)
+        self.assertIn("graphStatusClass(node)", normalize_graph)
+        self.assertIn("graphStatusClass,", self.script)
         self.assertIn('statusClass === "error"', render_graph)
         self.assertIn("state.failureIncidentPreview = events", request_preview)
         self.assertIn("state.failureIncidentPreview.slice(0, 3)", render_incident)
@@ -314,19 +316,11 @@ class SingleNodeAuditRegressionContractTests(unittest.TestCase):
     def test_node_route_panel_never_infers_local_or_forwards_inactive_branches(
         self,
     ) -> None:
-        branches = javascript_function(self.script, "routePayloadBranches")
-        forwarding = javascript_function(
-            self.script,
-            "routePayloadForwardingPresentation",
-        )
         render = javascript_function(self.script, "renderRoutePayload")
 
-        self.assertIn("item.active === true ? true", branches)
-        self.assertIn("item.active === false ? false", branches)
-        self.assertIn("branches.filter((item) => item.active === true)", forwarding)
-        self.assertIn("branches.filter((item) => item.active === null)", forwarding)
-        self.assertNotIn('"local"', forwarding + render)
-        self.assertIn('"Not returned"', forwarding)
+        self.assertIn("routePayloadForwardingPresentation,", self.script)
+        self.assertIn("routePayloadForwardingPresentation(payload)", render)
+        self.assertNotIn('"local"', render)
         self.assertIn("No forwarding branches returned", render)
         self.assertIn("does not infer local delivery", render)
         self.assertIn("inactive / not forwarding", render)
@@ -334,15 +328,13 @@ class SingleNodeAuditRegressionContractTests(unittest.TestCase):
 
     def test_range_summary_discloses_bounded_endpoint_comparison(self) -> None:
         render = javascript_function(self.script, "renderRangeSummary")
-        flags = javascript_function(self.script, "rangeTruncationFlags")
 
-        self.assertIn("endpoint_diff_evaluated_count", render)
-        self.assertIn("affected_resource_count", render)
-        self.assertIn("rangeTruncationFlags(summary)", render)
+        self.assertIn("rangeSummaryFacts(summary", render)
+        self.assertIn("facts.evaluatedEndpointCount", render)
+        self.assertIn("facts.affectedResourceCount", render)
         self.assertIn("Endpoint comparison is bounded", render)
         self.assertIn("evaluated subset", render)
         self.assertIn("detail sets truncated", render)
-        self.assertIn("endpoint_diff: true", flags)
         self.assertIn(".range-facts .bounded-fact", self.styles)
         self.assertIn(".range-scope-note", self.styles)
 
@@ -350,8 +342,8 @@ class SingleNodeAuditRegressionContractTests(unittest.TestCase):
         helper = javascript_function(self.script, "beginLatestRequest")
         schedule = javascript_function(self.script, "scheduleTemporalRefresh")
 
-        self.assertIn("state[controllerKey]?.abort()", helper)
-        self.assertIn("new AbortController()", helper)
+        self.assertIn("replaceAbortController(state[controllerKey])", helper)
+        self.assertIn("replaceAbortController,", self.script)
         for name, controller in (
             ("requestTimeline", "timelineAbortController"),
             ("requestRangeSummary", "rangeAbortController"),
@@ -398,23 +390,14 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
         cls.script = TOPOLOGY_JS.read_text(encoding="utf-8")
         cls.styles = TOPOLOGY_CSS.read_text(encoding="utf-8")
         cls.page = TOPOLOGY_HTML.read_text(encoding="utf-8")
+        cls.view_models = VIEW_MODELS_JS.read_text(encoding="utf-8")
 
     def test_health_uses_explicit_normalized_vocabulary(self) -> None:
-        declared = javascript_function(self.script, "declaredHealthPresentation")
         node = javascript_function(self.script, "nodeHealth")
         link = javascript_function(self.script, "linkHealth")
 
-        self.assertIn("const NORMALIZED_HEALTH_PRESENTATION = new Map", self.script)
-        self.assertIn("value?.condition_class", declared)
-        self.assertIn("value?.status_class", declared)
-        self.assertIn("value?.health_class", declared)
-        self.assertIn('["healthy", "good"]', self.script)
-        self.assertIn('["usable", "good"]', self.script)
-        self.assertIn('["degraded", "warning"]', self.script)
-        self.assertIn('["unusable", "error"]', self.script)
-        self.assertIn('["error", "error"]', self.script)
-        for raw_status in ('"up"', '"down"', '"programmed"'):
-            self.assertNotIn(raw_status, self.script[: self.script.index("const state =")])
+        self.assertIn("declaredHealthPresentation,", self.script)
+        self.assertIn('from "./view_models.js"', self.script)
         self.assertIn("node?.resource_previews || node?.resources", node)
         self.assertIn("declaredHealthPresentation(resource)", node)
         self.assertIn('|| "warning"', node)
@@ -425,7 +408,6 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
             "declaredHealthPresentation(link, { includeStatus: true })",
             link,
         )
-        self.assertIn("includeStatus ? value?.status : null", declared)
         self.assertNotIn("link?.resolution", link)
 
     def test_dirty_device_selection_filters_stale_results_and_refreshes_map(self) -> None:
@@ -475,14 +457,11 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
 
     def test_route_table_seeds_trace_with_plugin_canonical_endpoints(self) -> None:
         seed = javascript_function(self.script, "useRouteTableEntry")
-        endpoint = javascript_function(self.script, "routeEndpointSeedValue")
 
+        self.assertIn("routeEndpointSeedValue,", self.script)
         self.assertIn("routeEndpointSeedValue(explicitFlowSource", seed)
         self.assertIn("routeEndpointSeedValue(explicitFlowDestination", seed)
         self.assertIn("query?.flow?.source ?? query?.source", seed)
-        self.assertIn("raw.resource_id", endpoint)
-        self.assertIn("raw.node_id", endpoint)
-        self.assertLess(endpoint.index("raw.endpoint_id"), endpoint.index("raw.value"))
         self.assertLess(
             seed.index("entry.destination?.destination_id"),
             seed.index("entry.destination?.value"),

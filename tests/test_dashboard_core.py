@@ -2,10 +2,274 @@ from __future__ import annotations
 
 import unittest
 
-from router_dump_analyzer.dashboard_core import evaluate_dashboards
+from router_dump_analyzer.dashboard_core import (
+    DashboardDescriptorValidationError,
+    evaluate_dashboards,
+)
+from tests.support.normalized_data import static_data_service
 
 
 class DashboardCoreTests(unittest.TestCase):
+    def test_field_presence_distinguishes_explicit_null_from_missing(self) -> None:
+        rows = [
+            {
+                "resource_id": "explicit-null",
+                "kind": "PLUGIN_KIND",
+                "exists": True,
+                "status": None,
+                "state": {
+                    "status": "must-not-shadow-envelope-null",
+                    "optional": None,
+                },
+            },
+            {
+                "resource_id": "missing",
+                "kind": "PLUGIN_KIND",
+                "exists": True,
+                "status": "ready",
+                "state": {},
+            },
+        ]
+        result = evaluate_dashboards(
+            [
+                {
+                    "dashboard_id": "presence-aware",
+                    "statistics": [
+                        {
+                            "statistic_id": "root-null-wins",
+                            "aggregation": "count",
+                            "filters": [
+                                {
+                                    "field": "status",
+                                    "operator": "eq",
+                                    "value": None,
+                                }
+                            ],
+                        },
+                        {
+                            "statistic_id": "null-equality",
+                            "aggregation": "count",
+                            "filters": [
+                                {
+                                    "field": "state.optional",
+                                    "operator": "eq",
+                                    "value": None,
+                                }
+                            ],
+                        },
+                        {
+                            "statistic_id": "missing-not-unequal",
+                            "aggregation": "count",
+                            "filters": [
+                                {
+                                    "field": "state.optional",
+                                    "operator": "not_eq",
+                                    "value": "anything",
+                                }
+                            ],
+                        },
+                        {
+                            "statistic_id": "present-even-when-null",
+                            "aggregation": "count",
+                            "filters": [
+                                {
+                                    "field": "state.optional",
+                                    "operator": "exists",
+                                    "value": True,
+                                }
+                            ],
+                        },
+                        {
+                            "statistic_id": "exists-defaults-to-present",
+                            "aggregation": "count",
+                            "filters": [
+                                {
+                                    "field": "state.optional",
+                                    "operator": "exists",
+                                }
+                            ],
+                        },
+                        {
+                            "statistic_id": "actually-missing",
+                            "aggregation": "count",
+                            "filters": [
+                                {
+                                    "field": "state.optional",
+                                    "operator": "exists",
+                                    "value": False,
+                                }
+                            ],
+                        },
+                        {
+                            "statistic_id": "null-is-distinct",
+                            "aggregation": "count_distinct",
+                            "field": "state.optional",
+                        },
+                    ],
+                    "tables": [
+                        {
+                            "table_id": "presence-projection",
+                            "columns": [
+                                {
+                                    "field": "state.optional",
+                                    "label": "Optional",
+                                },
+                                {
+                                    "field": "state.absent",
+                                    "label": "Absent",
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+            rows,
+        )[0]
+
+        statistics = {item["statistic_id"]: item for item in result["statistics"]}
+        self.assertEqual(1, statistics["root-null-wins"]["value"])
+        self.assertEqual(1, statistics["null-equality"]["value"])
+        self.assertEqual(1, statistics["missing-not-unequal"]["value"])
+        self.assertEqual(1, statistics["present-even-when-null"]["value"])
+        self.assertEqual(1, statistics["exists-defaults-to-present"]["value"])
+        self.assertEqual(1, statistics["actually-missing"]["value"])
+        self.assertEqual(1, statistics["null-is-distinct"]["value"])
+        self.assertEqual(1, statistics["null-is-distinct"]["sample_count"])
+        explicit, missing = result["tables"][0]["items"]
+        self.assertEqual({"optional": None}, explicit["state"])
+        self.assertNotIn("state", missing)
+
+    def test_empty_numeric_sum_remains_zero_with_zero_samples(self) -> None:
+        result = evaluate_dashboards(
+            [
+                {
+                    "dashboard_id": "empty-sum",
+                    "statistics": [
+                        {
+                            "statistic_id": "sum",
+                            "aggregation": "sum",
+                            "field": "state.metric",
+                        }
+                    ],
+                    "tables": [],
+                }
+            ],
+            [
+                {
+                    "resource_id": "not-numeric",
+                    "kind": "PLUGIN_KIND",
+                    "exists": True,
+                    "state": {"metric": "unknown"},
+                }
+            ],
+        )[0]["statistics"][0]
+
+        self.assertEqual(0, result["value"])
+        self.assertEqual(0, result["sample_count"])
+        self.assertEqual(1, result["matching_count"])
+
+    def test_unknown_aggregation_is_rejected_before_evaluation(self) -> None:
+        with self.assertRaises(DashboardDescriptorValidationError) as raised:
+            evaluate_dashboards(
+                [
+                    {
+                        "dashboard_id": "invalid-aggregation",
+                        "statistics": [
+                            {
+                                "statistic_id": "plausible-null",
+                                "aggregation": "median",
+                                "field": "state.metric",
+                            }
+                        ],
+                        "tables": [],
+                    }
+                ],
+                [],
+            )
+
+        self.assertEqual(
+            "dashboards[0].statistics[0].aggregation",
+            raised.exception.path,
+        )
+        self.assertEqual(
+            "invalid-aggregation",
+            raised.exception.dashboard_id,
+        )
+
+    def test_raw_table_max_rows_requires_a_bounded_exact_integer(self) -> None:
+        for value in ("abc", True, 1.5, 0, 501, None):
+            with self.subTest(value=value):
+                with self.assertRaises(DashboardDescriptorValidationError) as raised:
+                    evaluate_dashboards(
+                        [
+                            {
+                                "dashboard_id": "invalid-table",
+                                "statistics": [],
+                                "tables": [
+                                    {
+                                        "table_id": "resources",
+                                        "columns": [
+                                            {
+                                                "field": "label",
+                                                "label": "Resource",
+                                            }
+                                        ],
+                                        "max_rows": value,
+                                    }
+                                ],
+                            }
+                        ],
+                        [],
+                    )
+                self.assertEqual(
+                    "dashboards[0].tables[0].max_rows",
+                    raised.exception.path,
+                )
+
+    def test_normalized_query_reports_invalid_descriptors_structurally(self) -> None:
+        result = static_data_service(
+            {
+                "demo": {
+                    "capture_ns": "0",
+                    "revision_id": "test/revision",
+                },
+                "dashboard_descriptors": [
+                    {
+                        "dashboard_id": "invalid-table",
+                        "statistics": [],
+                        "tables": [
+                            {
+                                "table_id": "resources",
+                                "columns": [
+                                    {
+                                        "field": "label",
+                                        "label": "Resource",
+                                    }
+                                ],
+                                "max_rows": "abc",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ).dashboard_query(0)
+
+        self.assertEqual([], result["dashboards"])
+        self.assertEqual(0, result["population_count"])
+        self.assertEqual(
+            [
+                {
+                    "code": "invalid_dashboard_descriptor",
+                    "dashboard_id": "invalid-table",
+                    "path": "dashboards[0].tables[0].max_rows",
+                    "message": (
+                        "dashboard table max_rows must be an integer between 1 and 500"
+                    ),
+                }
+            ],
+            result["descriptor_errors"],
+        )
+
     def test_widgets_use_the_full_temporal_population_not_a_visible_page(self) -> None:
         rows = [
             {

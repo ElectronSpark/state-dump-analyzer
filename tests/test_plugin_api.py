@@ -792,6 +792,27 @@ class PluginApiTests(unittest.TestCase):
                 value="up",
             )
 
+    def test_dashboard_table_max_rows_requires_an_exact_integer(self) -> None:
+        columns = (
+            DashboardColumnDescriptor(
+                field="label",
+                label="Resource",
+            ),
+        )
+        for max_rows in (True, 1.5, "50", None):
+            with self.subTest(max_rows=max_rows):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "must be an integer between 1 and 500",
+                ):
+                    DashboardTableDescriptor(
+                        table_id="resources",
+                        title="Resources",
+                        resource_kinds=(),
+                        columns=columns,
+                        max_rows=max_rows,  # type: ignore[arg-type]
+                    )
+
     def test_plugin_resource_table_views_group_by_declared_relationships(self) -> None:
         parent = ResourceKindDescriptor(
             kind="SYNTHETIC_PARENT",
