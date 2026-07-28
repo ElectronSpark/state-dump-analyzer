@@ -7,7 +7,6 @@ import {
   toBigInt as toNs,
 } from "./shared.js";
 import {
-  dashboardComparable,
   dashboardDescriptorErrorMessage,
   dashboardFieldValue,
   dashboardFilterMatches,
@@ -17,6 +16,7 @@ import {
   rangeSummaryFacts,
   replaceAbortController,
   routePayloadForwardingPresentation,
+  statusClassPresentation,
 } from "./view_models.js";
 
 const PALETTE = ["#52e0c4", "#a58bff", "#f5b85b", "#66b8ff", "#ff8eb5", "#9bd66f", "#df9dff"];
@@ -6894,14 +6894,6 @@ function topologyResultNodeTimes(payload = state.topologyQuery) {
     .slice(0, MAX_TOPOLOGY_NODE_ROWS);
 }
 
-function topologyTone(statusClass) {
-  const normalized = typeof statusClass === "string" ? statusClass.toLowerCase() : "unknown";
-  if (["error", "failure", "unusable"].includes(normalized)) return "is-error";
-  if (["warning", "ambiguous", "partial", "unknown"].includes(normalized)) return "is-warning";
-  if (["ok", "success", "usable"].includes(normalized)) return "is-good";
-  return "";
-}
-
 function topologyObjectPreview(value, limit = 4) {
   if (value === null || value === undefined || value === "") return "unknown";
   if (Array.isArray(value)) return value.slice(0, limit).map((item) => topologyObjectPreview(item, 2)).join(", ") + (value.length > limit ? ` +${value.length - limit}` : "");
@@ -7018,7 +7010,7 @@ function renderTopologyNodeTimes() {
       ? `${minimum === undefined ? "unknown" : topologyTimeLabel(minimum)} -> ${maximum === undefined ? "unknown" : topologyTimeLabel(maximum)}`
       : "Absolute mapping not supplied";
     const statusClass = item.status_class ?? item.resolution_class ?? item.tone ?? "unknown";
-    return `<article class="topology-node-time ${topologyTone(statusClass)}">
+    return `<article class="topology-node-time ${statusClassPresentation({ status_class: statusClass })}">
       <header><strong>${escapeHtml(item.label || item.display_name || nodeId || "Unnamed node")}</strong><span>${escapeHtml(titleCase(status))}</span></header>
       <code>${escapeHtml(`local ${localLabel}${item.local_clock_domain || item.clock_domain ? ` / ${item.local_clock_domain || item.clock_domain}` : ""}`)}</code>
       <small>${escapeHtml(absoluteWindow)}</small>
@@ -7065,7 +7057,7 @@ function renderTopologyResources() {
     return `<tr>
       <td>${id ? `<button class="topology-resource-button" type="button" data-topology-resource="${escapeHtml(id)}"><strong>${escapeHtml(item.label || item.display_name || displayId)}</strong><code title="${escapeHtml(id)}">${escapeHtml(id)}</code></button>` : `<span class="topology-resource-button"><strong>${escapeHtml(item.label || item.display_name || "Unidentified resource")}</strong><code>${escapeHtml(displayId)}</code></span>`}</td>
       <td class="topology-cell-stack"><strong>${escapeHtml(item.node_id || item.node || "node unknown")}</strong><small>${escapeHtml(`${item.status_layer || item.layer_id || item.layer || "status layer unknown"}${item.native_layer && item.native_layer !== (item.status_layer || item.layer_id || item.layer) ? ` status / ${item.native_layer} identity` : ""}`)}</small></td>
-      <td class="topology-cell-stack"><span class="topology-status ${topologyTone(item.status_class ?? item.status?.status_class ?? "unknown")}">${escapeHtml(`${exists} / ${topologyObjectPreview(statusValue, 2)}`)}</span><code title="${escapeHtml(topologyObjectPreview(properties, 8))}">${escapeHtml(topologyObjectPreview(properties))}</code></td>
+      <td class="topology-cell-stack"><span class="topology-status ${statusClassPresentation({ status_class: item.status_class ?? item.status?.status_class ?? "unknown" })}">${escapeHtml(`${exists} / ${topologyObjectPreview(statusValue, 2)}`)}</span><code title="${escapeHtml(topologyObjectPreview(properties, 8))}">${escapeHtml(topologyObjectPreview(properties))}</code></td>
       <td class="topology-cell-stack"><code title="${escapeHtml(topologyValidityLabel(item))}">${escapeHtml(topologyValidityLabel(item))}</code></td>
       <td class="topology-cell-stack"><strong>${escapeHtml(item.quality || item.confidence || "unknown")}</strong><small>${escapeHtml(`${firstArray(item.evidence, item.evidence_refs).length} evidence refs`)}</small></td>
     </tr>`;
@@ -7102,7 +7094,7 @@ function renderTopologyConnectivity() {
     return `<tr>
       <td><div class="topology-connection"><code title="${escapeHtml(source)}">${escapeHtml(source)}</code><span>${relationPresentation.directed === true ? "→" : "—"}</span><code title="${escapeHtml(target)}">${escapeHtml(target)}</code></div></td>
       <td><div class="topology-relationship-kind"><strong>${escapeHtml(relationPresentation.displayLabel)}</strong>${item.inferred ? '<span class="topology-inferred-tag">inferred</span>' : ""}</div></td>
-      <td><span class="topology-status ${topologyTone(item.status_class ?? item.operational?.status_class ?? item.status?.status_class ?? "unknown")}">${escapeHtml(topologyObjectPreview(statusDetail, 2))}</span></td>
+      <td><span class="topology-status ${statusClassPresentation({ status_class: item.status_class ?? item.operational?.status_class ?? item.status?.status_class ?? "unknown" })}">${escapeHtml(topologyObjectPreview(statusDetail, 2))}</span></td>
       <td class="topology-cell-stack"><code title="${escapeHtml(topologyValidityLabel(item))}">${escapeHtml(topologyValidityLabel(item))}</code><small>${escapeHtml(`${item.quality || item.confidence || "quality unknown"} / ${evidenceCount} evidence refs`)}</small></td>
     </tr>`;
   }).join("") || '<tr><td class="topology-empty-row" colspan="4">No relationships or inferred connectivity were active at this basis.</td></tr>';

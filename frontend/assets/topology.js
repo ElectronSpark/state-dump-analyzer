@@ -8,6 +8,7 @@ import {
 } from "./shared.js";
 import {
   declaredHealthPresentation,
+  replaceAbortController,
   routeEndpointSeedValue,
 } from "./view_models.js";
 
@@ -8929,8 +8930,7 @@ async function runRouteTrace(event) {
     return;
   }
   const generation = ++state.routeRequestGeneration;
-  state.routeAbortController?.abort();
-  const controller = new AbortController();
+  const controller = replaceAbortController(state.routeAbortController);
   state.routeAbortController = controller;
   const params = new URLSearchParams(location.search);
   const requestedPath = state.requestedRoutePathId || params.get("route_path");
@@ -8996,8 +8996,7 @@ async function runQuery(event) {
     return;
   }
   const generation = ++state.topologyRequestGeneration;
-  state.topologyAbortController?.abort();
-  const controller = new AbortController();
+  const controller = replaceAbortController(state.topologyAbortController);
   state.topologyAbortController = controller;
   state.routeRequestGeneration += 1;
   state.routeAbortController?.abort();

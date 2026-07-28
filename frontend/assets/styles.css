@@ -6663,16 +6663,24 @@ footer button {
   content: "";
 }
 
-.topology-node-time.is-good::before {
+.topology-node-time.is-healthy::before {
   background: var(--green);
 }
 
-.topology-node-time.is-warning::before {
+.topology-node-time.is-degraded::before {
   background: var(--amber);
 }
 
 .topology-node-time.is-error::before {
   background: var(--red);
+}
+
+.topology-node-time.is-absent::before {
+  background: var(--muted-2);
+}
+
+.topology-node-time.is-unknown::before {
+  background: var(--muted);
 }
 
 .topology-node-time header {
@@ -6855,13 +6863,13 @@ footer button {
   font-weight: 800;
 }
 
-.topology-status.is-good {
+.topology-status.is-healthy {
   border-color: rgba(105, 221, 161, 0.25);
   background: rgba(105, 221, 161, 0.09);
   color: var(--green);
 }
 
-.topology-status.is-warning {
+.topology-status.is-degraded {
   border-color: rgba(245, 184, 91, 0.25);
   background: var(--amber-soft);
   color: var(--amber);
@@ -6871,6 +6879,19 @@ footer button {
   border-color: rgba(255, 104, 121, 0.25);
   background: var(--red-soft);
   color: var(--red);
+}
+
+.topology-status.is-absent {
+  border-color: rgba(130, 151, 162, 0.24);
+  border-style: dashed;
+  background: rgba(130, 151, 162, 0.06);
+  color: var(--muted-2);
+}
+
+.topology-status.is-unknown {
+  border-color: var(--line);
+  background: rgba(8, 21, 30, 0.58);
+  color: var(--muted);
 }
 
 .topology-connection {

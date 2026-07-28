@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  dashboardComparable,
   dashboardDescriptorErrorMessage,
   dashboardFieldLookup,
   dashboardFilterMatches,
@@ -13,23 +15,39 @@ import {
   replaceAbortController,
   routeEndpointSeedValue,
   routePayloadForwardingPresentation,
+  statusClassPresentation,
 } from "../assets/view_models.js";
 
-test("normalized topology health uses the declared core vocabulary", () => {
-  assert.equal(declaredHealthPresentation({ status_class: "usable" }), "good");
-  assert.equal(declaredHealthPresentation({ condition_class: "error" }), "error");
+test("normalized topology status uses one closed server vocabulary", () => {
+  const expected = new Map([
+    ["absent", ["warning", "is-absent"]],
+    ["degraded", ["warning", "is-degraded"]],
+    ["error", ["error", "is-error"]],
+    ["healthy", ["good", "is-healthy"]],
+    ["unknown", ["warning", "is-unknown"]],
+  ]);
+  for (const [statusClass, [health, className]] of expected) {
+    const value = { status_class: statusClass };
+    assert.equal(declaredHealthPresentation(value), health);
+    assert.equal(statusClassPresentation(value), className);
+  }
+  assert.equal(declaredHealthPresentation({ status: "healthy" }), null);
   assert.equal(
-    declaredHealthPresentation(
-      { status_class: "degraded", status: "usable" },
-      { includeStatus: true },
-    ),
-    "warning",
+    declaredHealthPresentation({ status: "healthy" }, { includeStatus: true }),
+    "good",
   );
-  assert.equal(declaredHealthPresentation({ status: "usable" }), null);
-  assert.equal(
-    declaredHealthPresentation({ status: "unusable" }, { includeStatus: true }),
-    "error",
-  );
+  for (const deadAlias of ["failed", "failure", "good", "warning", "usable", "unusable"]) {
+    assert.equal(statusClassPresentation({ status_class: deadAlias }), "is-unknown");
+  }
+});
+
+test("every normalized topology status class has explicit component CSS", () => {
+  const css = readFileSync(new URL("../assets/styles.css", import.meta.url), "utf8");
+  for (const statusClass of ["absent", "degraded", "error", "healthy", "unknown"]) {
+    const className = statusClassPresentation({ status_class: statusClass });
+    assert.match(css, new RegExp(`\\.topology-node-time\\.${className}::before`));
+    assert.match(css, new RegExp(`\\.topology-status\\.${className}(?:\\s|\\{|,)`));
+  }
 });
 
 test("route-table seeding prefers canonical identifiers over labels", () => {
@@ -94,17 +112,13 @@ test("bounded range facts preserve affected and evaluated populations", () => {
   assert.deepEqual(facts.truncatedKinds, ["endpoint_diff", "relationship_changes"]);
 });
 
-test("latest-request replacement aborts only the superseded controller", () => {
-  const previous = {
-    aborted: false,
-    abort() {
-      this.aborted = true;
-    },
-  };
-  const next = { aborted: false, abort() { this.aborted = true; } };
-  assert.equal(replaceAbortController(previous, () => next), next);
-  assert.equal(previous.aborted, true);
-  assert.equal(next.aborted, false);
+test("request replacement aborts the prior signal and preserves explicit cancellation", () => {
+  const previous = new AbortController();
+  const next = replaceAbortController(previous);
+  assert.equal(previous.signal.aborted, true);
+  assert.equal(next.signal.aborted, false);
+  next.abort();
+  assert.equal(next.signal.aborted, true);
 });
 
 test("dashboard lookup preserves explicit null and envelope precedence", () => {
@@ -154,6 +168,70 @@ test("local dashboard statistics match backend null and numeric semantics", () =
   });
   assert.equal(empty.value, 0);
   assert.equal(empty.sampleCount, 0);
+});
+
+test("local dashboard comparison is bounded, cycle-safe, and fail-closed", () => {
+  let allowedDepth = null;
+  for (let depth = 0; depth < 16; depth += 1) allowedDepth = [allowedDepth];
+  assert.notEqual(dashboardComparable(allowedDepth), null);
+
+  let excessiveDepth = null;
+  for (let depth = 0; depth < 17; depth += 1) excessiveDepth = [excessiveDepth];
+  const excessiveItems = Array.from({ length: 1_025 }, (_, index) => index);
+  const excessiveUnits = Array.from({ length: 1_024 }, () => [1, 2, 3]);
+  const cyclic = [];
+  cyclic.push(cyclic);
+
+  for (const invalid of [
+    excessiveDepth,
+    excessiveItems,
+    excessiveUnits,
+    "x".repeat(65_537),
+    cyclic,
+  ]) {
+    assert.equal(dashboardComparable(invalid), null);
+    assert.equal(
+      dashboardFilterMatches(
+        { state: { value: invalid } },
+        { field: "state.value", operator: "eq", value: invalid },
+      ),
+      false,
+    );
+    assert.equal(
+      dashboardFilterMatches(
+        { state: { value: invalid } },
+        { field: "state.value", operator: "not_eq", value: "other" },
+      ),
+      false,
+    );
+  }
+});
+
+test("invalid local dashboard samples are excluded and signed zero compares equal", () => {
+  const cyclic = {};
+  cyclic.self = cyclic;
+  const oversized = Array.from({ length: 1_025 }, (_, index) => index);
+  const distinct = dashboardStatisticEvaluation([
+    { state: { value: 0 } },
+    { state: { value: -0 } },
+    { state: { value: cyclic } },
+    { state: { value: oversized } },
+  ], {
+    aggregation: "count_distinct",
+    field: "state.value",
+  });
+
+  assert.equal(dashboardComparable(-0), dashboardComparable(0));
+  assert.equal(distinct.value, 1);
+  assert.equal(distinct.matchingCount, 4);
+  assert.equal(distinct.sampleCount, 2);
+  assert.equal(
+    dashboardFilterMatches(
+      { state: { value: -0 } },
+      { field: "state.value", operator: "eq", value: 0 },
+    ),
+    true,
+  );
 });
 
 test("serialized dashboard descriptor failures remain visible to the operator", () => {

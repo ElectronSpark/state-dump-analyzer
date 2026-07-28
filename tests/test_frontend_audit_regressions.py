@@ -313,6 +313,16 @@ class SingleNodeAuditRegressionContractTests(unittest.TestCase):
         self.assertIn("formatOffset(eventTime(event))", render_incident)
         self.assertIn('title="${escapeHtml(uid)}"', render_incident)
 
+    def test_temporal_topology_status_uses_the_shared_closed_vocabulary(self) -> None:
+        node_times = javascript_function(self.script, "renderTopologyNodeTimes")
+        resources = javascript_function(self.script, "renderTopologyResources")
+        connectivity = javascript_function(self.script, "renderTopologyConnectivity")
+
+        self.assertIn("statusClassPresentation,", self.script)
+        self.assertNotIn("function topologyTone(", self.script)
+        for renderer in (node_times, resources, connectivity):
+            self.assertIn("statusClassPresentation(", renderer)
+
     def test_node_route_panel_never_infers_local_or_forwards_inactive_branches(
         self,
     ) -> None:
@@ -409,6 +419,24 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
             link,
         )
         self.assertNotIn("link?.resolution", link)
+
+    def test_topology_request_replacement_uses_shared_helper_but_explicit_cancel_remains_direct(self) -> None:
+        run_route = javascript_function(self.script, "runRouteTrace")
+        run_query = javascript_function(self.script, "runQuery")
+        cancel_route = javascript_function(self.script, "cancelPendingRouteTrace")
+
+        self.assertIn("replaceAbortController,", self.script)
+        self.assertIn(
+            "replaceAbortController(state.routeAbortController)",
+            run_route,
+        )
+        self.assertIn(
+            "replaceAbortController(state.topologyAbortController)",
+            run_query,
+        )
+        self.assertNotIn("new AbortController()", run_route)
+        self.assertNotIn("new AbortController()", run_query)
+        self.assertIn("state.routeAbortController?.abort()", cancel_route)
 
     def test_dirty_device_selection_filters_stale_results_and_refreshes_map(self) -> None:
         selected = javascript_function(self.script, "selectedResultNodes")
