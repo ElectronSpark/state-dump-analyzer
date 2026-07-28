@@ -7,22 +7,22 @@ the returned session is entered and closed.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
-from typing import Any, Callable, Protocol, TypeVar, runtime_checkable
+from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
+from .multi_node_route import MultiNodeRouteService
+from .multi_node_topology import MultiNodeTopologyService
 from .normalized_data import (
     NormalizedDataPolicy,
     NormalizedDataService,
     NormalizedDatasetSource,
 )
-from .multi_node_route import MultiNodeRouteService
-from .multi_node_topology import MultiNodeTopologyService
 from .revision_store import RevisionStore
 from .temporal_topology import TemporalTopologyService
-
 
 PLUGIN_RUNTIME_CAPABILITY_ID = "router_dump_analyzer.runtime.v1"
 _CachedValue = TypeVar("_CachedValue")
@@ -122,7 +122,7 @@ class CoreRuntimeSession:
         with self._cache_lock:
             if key not in self._cache:
                 self._cache[key] = factory()
-            return self._cache[key]
+            return cast(_CachedValue, self._cache[key])
 
     def clear_cache(self) -> None:
         with self._cache_lock:
@@ -195,13 +195,25 @@ def validate_runtime_session(session: Any) -> PluginRuntimeSession:
 
 
 def require_plugin_runtime(plugin: Any) -> PluginRuntimeCapability:
-    """Return one explicit runtime capability or fail with a clear contract error."""
+    """Return an executable runtime for either supported plug-in shape.
+
+    ``runtime.v1`` is the compatibility surface for immutable/precomputed
+    fixture adapters. Ordinary parser plug-ins need no path-opening hook: the
+    core wraps their standard discovery/parser contract in its own
+    ``runtime.v2`` ingestion adapter.
+    """
 
     runtime = getattr(plugin, "runtime", None)
     if runtime is None:
-        raise PluginRuntimeCapabilityError(
-            "loaded plug-in does not expose a 'runtime' capability"
-        )
+        from .ingestion import CoreIngestionRuntime, IngestionError
+
+        try:
+            return CoreIngestionRuntime(plugin)
+        except IngestionError as error:
+            raise PluginRuntimeCapabilityError(
+                "loaded plug-in does not expose runtime.v1 and does not "
+                "implement the standard core-ingestion parser contract"
+            ) from error
     if not isinstance(runtime, PluginRuntimeCapability):
         raise PluginRuntimeCapabilityError(
             "plug-in runtime must expose capability_id and "
@@ -268,20 +280,20 @@ def create_runtime_application(
     )
 
     @asynccontextmanager
-    async def lifespan(application: FastAPI):
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         frontend_host.validate_if_enabled()
-        with request.runtime.open(request.input_path) as session:
-            plugin_session = validate_runtime_session(session)
-            session = CoreRuntimeSession(
+        with request.runtime.open(request.input_path) as opened_session:
+            plugin_session = validate_runtime_session(opened_session)
+            core_session = CoreRuntimeSession(
                 plugin_session=plugin_session,
                 data_service=NormalizedDataService(
                     plugin_session.data_source,
                     plugin_session.data_policy,
                 ),
             )
-            application.state.runtime_session = session
+            application.state.runtime_session = core_session
             reset_runtime_api_caches()
-            with activate_runtime_session(session):
+            with activate_runtime_session(core_session):
                 warmup = start_runtime_warmup()
             try:
                 yield
@@ -323,8 +335,8 @@ def create_runtime_application(
 
 
 __all__ = [
-    "CoreRuntimeSession",
     "PLUGIN_RUNTIME_CAPABILITY_ID",
+    "CoreRuntimeSession",
     "PluginRuntimeCapability",
     "PluginRuntimeCapabilityError",
     "PluginRuntimeSession",

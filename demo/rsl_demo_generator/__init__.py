@@ -38,11 +38,23 @@ from .catalog import (
     TopologyEvidenceSelector,
     TopologyProfileSpec,
 )
+from .conformance import (
+    CONFORMANCE_CORPUS_FORMAT_VERSION,
+    CONFORMANCE_CORPUS_NAME,
+    CONFORMANCE_CORPUS_ROOT,
+    build_ingestion_conformance_corpus,
+    ingestion_conformance_members,
+    ingestion_temporal_semantic_vector,
+    render_ingestion_temporal_semantic_vector,
+)
 
 __all__ = [
     "ASSEMBLY_FORMAT_VERSION",
     "ASSEMBLY_GENERATOR",
     "ASSEMBLY_ROOT",
+    "CONFORMANCE_CORPUS_FORMAT_VERSION",
+    "CONFORMANCE_CORPUS_NAME",
+    "CONFORMANCE_CORPUS_ROOT",
     "COVERAGE_CASES",
     "DEFAULT_ASSEMBLY_ID",
     "DEFAULT_ASSEMBLY_NAME",
@@ -61,8 +73,8 @@ __all__ = [
     "AssemblyConfig",
     "CoverageCaseSpec",
     "EnsureLaunchReport",
-    "LinkSpec",
     "LaunchPreflightReport",
+    "LinkSpec",
     "NodeSpec",
     "TemporalEvidenceSelector",
     "TopologyEvidenceSelector",
@@ -70,8 +82,12 @@ __all__ = [
     "ValidationReport",
     "build_coverage",
     "build_demo_fixture",
+    "build_ingestion_conformance_corpus",
     "ensure_demo_fixture_for_launch",
+    "ingestion_conformance_members",
+    "ingestion_temporal_semantic_vector",
     "parse_node_selection",
     "probe_demo_fixture_for_launch",
+    "render_ingestion_temporal_semantic_vector",
     "validate_demo_fixture",
 ]

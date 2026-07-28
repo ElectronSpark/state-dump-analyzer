@@ -32,6 +32,11 @@ translated directly into Pydantic models/OpenAPI components.
   Clients must not parse them. The runnable demo's cluster-detail request uses
   the returned canonical lane resource and exact cluster time envelope as its
   expansion handle; it does not require the client to parse `cluster_id`.
+  The current ordering migration emits temporal cursors internally versioned
+  as `tt2` and server cluster IDs containing `server-v2`. An older temporal
+  cursor is rejected, while an older cluster ID must be discarded because it
+  cannot equal a current-order cluster. These strings remain opaque; the
+  prefixes are documented only as stale-handle behavior, not client syntax.
 
 ### 1.1 Browser workspace bootstrap
 
@@ -133,26 +138,59 @@ router-dump-analyzer --plugin-module PACKAGE[.MODULE][:ATTRIBUTE] --input PATH
 
 The installed-name form resolves the
 `router_dump_analyzer.plugins` entry-point group. The direct-module form is for
-source/development use and defaults `ATTRIBUTE` to `plugin`. The selected
-instance must expose the optional non-web runtime adapter
-`plugin.runtime` with capability ID `router_dump_analyzer.runtime.v1`.
-Parse-only plug-ins can pass the author validator without this adapter, but
-cannot be served by this command.
+source/development use and defaults `ATTRIBUTE` to `plugin`.
 
-Core enters `runtime.open(input_path)` for the application lifespan. The
-non-web session supplies a required `revision_store`, `data_source`, and
-`data_policy`, plus optional `temporal_provider`, `topology_provider`, and
-`route_provider` surfaces. Core constructs `NormalizedDataService` from the
-source and policy; plug-ins do not implement generic state, relationship,
-resource-table, dashboard, range, redaction, search, or client-projection
-queries. An unsupported optional provider is represented by `None`; its
-dependent API is unavailable rather than inferred from another provider or
-demo vocabulary.
+For an ordinary parser plug-in without `plugin.runtime`, core constructs
+`router_dump_analyzer.runtime.v2`. It inventories the input, calls
+`describe()`, `probe()`, and `locate_inputs()`, capability-dispatches the
+selected parsers through a core `ArtifactReader`, validates every output, and
+builds an immutable normalized revision. The plug-in receives logical artifact
+IDs, read-only streams, and session-private materializations; it never receives
+the original host path.
+
+The current v2 session supplies a required `revision_store`, `data_source`, and
+`data_policy` and serves the basic normalized node workspace. Its optional
+`temporal_provider`, `topology_provider`, and `route_provider` are `None`, so
+dependent APIs are unavailable rather than inferred from another provider or
+device vocabulary. Its in-memory source currently exposes no structural
+history index.
+
+`plugin.runtime` with capability ID `router_dump_analyzer.runtime.v1` is a
+compatibility adapter only for independently versioned precomputed fixtures.
+When present, core enters `runtime.open(input_path)` for the application
+lifespan and validates the same six session surfaces. Core constructs
+`NormalizedDataService` from the source and policy; plug-ins do not implement
+generic state, relationship, resource-table, dashboard, range, redaction,
+search, or client-projection queries.
 
 This binding does not alter payload ownership. Core still owns envelopes,
 pagination, errors, routes, and rendering contracts. The plug-in still owns
 input interpretation, resource and relationship meaning, topology/route
 projection policy, redaction policy, and safe explanation text.
+
+Runtime-v2 publication is fail-closed. Core rejects wrong output classes,
+undeclared schema references, evidence outside the selected input, coercive
+integer/boolean fields, invalid time bounds, unsupported or cyclic values,
+non-finite floats, and configured artifact/discovery/output/nesting/size
+overruns before the revision is exposed. It neither truncates a semantic value
+nor publishes a valid prefix of an invalid parser stream.
+
+Optional semantic hooks have an executable Python caller but no plug-in-owned
+HTTP surface. Host code imports `PluginCapabilityExecutor` from
+`router_dump_analyzer` and uses its `apply`, `revert`, `correlate`,
+`check_consistency`, `project_topology`, `project_forwarding`, and
+`resolve_forwarding_step` methods. The executor gates each call by the manifest,
+bounds world reads and output iterators, validates requests and results against
+the immutable schema, preserves recoverable diagnostics in typed result
+envelopes, and raises a typed execution error for fatal or invalid output.
+This makes the hook contract executable without implying that the current
+runtime-v2 host has scheduled those hooks or exposed temporal, topology, or
+route APIs; the providers above remain `None`.
+
+Runtime-v2 ingestion also validates and retains scoped
+`RelationshipCollectionObservation` markers as private normalized metadata.
+Their collection-completeness inference is not yet materialized into the public
+relationship intervals or API payloads in this document.
 
 ## 2. Time basis
 
@@ -559,10 +597,10 @@ For normalized topology resources represented by `initial_status`,
 `initial_state`, and time-ordered `changes[]`, the snapshot applies only changes
 at or before the resolved basis. An applied change may update `status`, merge
 `state`, and set boolean `exists`. If `exists` is absent, generic `operation`
-values `create`/`add` imply `true` and `delete`/`remove` imply `false`; explicit
-`exists` takes precedence. `state_changed: false` makes the complete change a
-no-op. A plain status transition such as `up` to `down` does not change
-existence.
+values `create`/`add`/`insert` imply `true` and `delete`/`remove` imply
+`false`; explicit `exists` takes precedence. `state_changed: false` makes the
+complete change a no-op. A plain status transition such as `up` to `down` does
+not change existence.
 
 Resource validity is an independent outer gate:
 `valid_from_ns <= basis_time_ns < valid_to_ns`, with either bound optional.

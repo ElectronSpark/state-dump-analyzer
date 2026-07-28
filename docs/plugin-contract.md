@@ -78,18 +78,13 @@ or configuration object requires a versioned protocol addition. The
 `supported_software_versions` string is recorded for humans and reproducibility;
 the plug-in's `probe()` owns version interpretation and returns `match_kind`.
 
-### Optional core-hosted runtime session
+### Core-owned ingestion runtime and compatibility sessions
 
-The standard `AnalyzerPlugin` parsing contract and the optional non-web runtime
-adapter are
-separate. An ordinary parse-only plug-in need not expose a runtime and remains
-valid under `router-dump-plugin-validate`.
-
-A plug-in selected by the core `router-dump-analyzer` web command additionally
-exposes a module-level plug-in instance whose optional `runtime` attribute
-implements `PluginRuntimeCapability` from
-`router_dump_analyzer.runtime`. This is not a `PluginCapability` enum value and
-does not change parser dispatch.
+The standard `AnalyzerPlugin` parsing contract is the normal executable path.
+An ordinary parser plug-in does not expose a `runtime` attribute. When selected
+by the core `router-dump-analyzer` web command, core wraps its standard hooks in
+`CoreIngestionRuntime`, whose capability ID is
+`router_dump_analyzer.runtime.v2`.
 
 The core accepts exactly one of these selectors:
 
@@ -102,10 +97,38 @@ router-dump-analyzer --plugin-module PACKAGE[.MODULE][:ATTRIBUTE] --input PATH
 `router_dump_analyzer.plugins` entry point. `--plugin-module` is a
 source/development path that imports the named module; `ATTRIBUTE` defaults to
 `plugin`. Both selectors must resolve to a module-level instance, not a class or
-factory. `PATH` is validated for existence by core and interpreted only by the
-selected plug-in.
+factory. Core validates `PATH`, inventories a regular file, directory, tar, or
+ZIP, and owns the artifact-reader lifetime. It then:
 
-The runtime contract is:
+1. calls deterministic `describe()`;
+2. calls `probe()` with safe inventory metadata;
+3. calls `locate_inputs()` and validates each selected logical artifact;
+4. dispatches `STATUS`, `TEXT_TRACE`, or `CTF` only when the corresponding
+   manifest capability and parser hook agree;
+5. validates every discovery/parser output and evidence reference;
+6. assigns canonical resource/source/revision identity; and
+7. publishes the normalized node dataset through the core application.
+
+The plug-in receives logical artifact UUIDs, portable logical names, read-only
+streams, and session-private materializations only. It never receives `PATH`,
+an archive extraction destination, or a host-global path. A private
+materialization becomes invalid when the reader session closes.
+
+The current core-built v2 session supplies `revision_store`, `data_source`, and
+`data_policy` for the normalized workspace. Its optional
+`temporal_provider`, `topology_provider`, and `route_provider` are all `None`;
+its history source currently has no optional structural index. Those APIs
+remain unavailable until an executable provider contract supplies them. Core
+does not infer a provider from resource names or plug-in properties.
+
+`plugin.runtime` and `router_dump_analyzer.runtime.v1` remain a compatibility
+path only for independently versioned precomputed fixtures/assemblies, such as
+the bundled 100K-per-node demo. A new live parser must use the standard hooks
+above rather than adding its own path-opening adapter. When this compatibility
+surface is present, it is not a `PluginCapability` enum value and does not
+change parser dispatch.
+
+The compatibility runtime contract is:
 
 - `capability_id` equals `router_dump_analyzer.runtime.v1`;
 - `open(input_path: Path)` returns a context manager; and
@@ -123,7 +146,7 @@ The session has six structural surfaces:
 | `topology_provider` | `RuntimeTopologyProvider` or `None`; a supported provider exposes `topology_id` and returns core `MultiNodeTopologyService` from `get()`. |
 | `route_provider` | `RuntimeRouteProvider` or `None`; a supported provider returns core `MultiNodeRouteService` from `get()`. |
 
-Core validates the structural session before serving, enters it for the FastAPI
+Core validates a compatibility session before serving, enters it for the FastAPI
 application lifespan, binds it request-locally, and closes the context once at
 shutdown. Core constructs `NormalizedDataService`; the plug-in must not
 implement generic state, relationship, resource-table, dashboard, range,
@@ -157,11 +180,11 @@ The optional indexed history may accelerate the same normalized semantics; it
 must not change resource identity, temporal validity, redaction, or query
 results.
 
-A runtime must not return or register FastAPI, `APIRouter`, middleware, routes,
-templates, HTML, JavaScript, or CSS. Failure to expose a runtime is a core
-application selection error, not an `AnalyzerPlugin` conformance error. The
-installable example in `demo/rsl_demo_plugin/session.py` and its
-tests exercise this complete boundary.
+A compatibility runtime must not return or register FastAPI, `APIRouter`,
+middleware, routes, templates, HTML, JavaScript, or CSS. A standard parser
+without runtime v1 is served through core-owned runtime v2. The installable
+precomputed-fixture example in `demo/rsl_demo_plugin/session.py` and its tests
+exercise the compatibility boundary.
 
 ## 2. Capability boundary
 
@@ -170,7 +193,7 @@ tests exercise this complete boundary.
 | Probe | Detect platform/version from safe inventory metadata and return a structured probe report. | Run every allowed probe with limits and resolve ambiguity explicitly. |
 | Locate | Select logical artifacts/parser roles or emit structured missing-input diagnostics. | Materialize only those artifacts into a private workspace. |
 | Status parse | Yield resource and relationship observations, scoped completeness markers, retained `SourceRecordEmission` values, and precise evidence locators. | Batch validation, source-record identity assignment, storage, diagnostics. |
-| Trace parse | Map dependency-free core CTF records or raw text into domain events and retained `SourceRecordEmission` values. | Own `bt2`, normalize native messages, retain raw time/source order, enforce quotas, and persist decoder diagnostics. |
+| Trace parse | Map dependency-free core CTF records or raw text into domain events and retained `SourceRecordEmission` values. | When configured, own the `TraceDecoder`, normalize native messages, retain raw time/source order, enforce quotas, and persist decoder diagnostics. The current runtime ships no built-in CTF decoder. |
 | Source-record presentation | Declare source-group metadata, source-type labels/colors/group membership, and optional regex-lane presets; link decoded records to domain events when normalization succeeds. | Validate group/type references, retain matched and unmatched timestamped records, assign stable IDs, validate regexes, page/query records, and implement generic timeline/log navigation. |
 | Reduce | Convert one event into all direct/derived state and edge changes. | Deterministic ordering, interval materialization, checkpointing. |
 | Revert | Invert an event when information permits. | Mark non-invertible state unknown and measure reconstruction coverage. |
@@ -204,6 +227,54 @@ plug-ins use the enum values rather than copying arbitrary capability strings.
 Custom opaque strings are retained only as compatibility extensions and do not
 activate core behavior.
 
+### Core caller for optional capabilities
+
+Core services and adapter code MUST call optional semantic hooks through the
+root-exported `PluginCapabilityExecutor`; they MUST NOT invoke those hooks
+directly. The constructor takes the plug-in, an optional already-validated
+`PluginSchema`, and optional core-owned `PluginCapabilityLimits`. It calls
+`describe()` itself when no schema is supplied.
+
+| Executor call | Validated result |
+|---|---|
+| `apply(event, world)` | `ChangeSet` |
+| `revert(event, world_after)` | `ChangeSet` |
+| `correlate(reader, window)` | `CorrelationExecutionResult` |
+| `check_consistency(world)` | `ConsistencyExecutionResult` |
+| `project_topology(request, world)` | `TopologyExecutionResult` |
+| `project_forwarding(request, world)` | `ForwardingProjectionExecutionResult` |
+| `resolve_forwarding_step(request, world)` | `ForwardingStepExecutionResult` |
+
+Before invocation, the executor requires the corresponding standard manifest
+capability and callable hook. For world-reading hooks it supplies a bounded
+read-only facade that charges `state_of()`, `iter_states()`, `related()`, and
+`iter_relationships()` results against one budget and closes iterators.
+`correlate()` instead receives the caller-supplied bounded/indexed
+`CorrelationReader`; the executor validates the exact `CorrelationWindow` and
+the returned stream. It closes every plug-in output iterator.
+
+All requests, outputs, resource keys, property roots, relationships, causal
+types, status perspectives, topology projection/perspective pairs, forwarding
+IR versions, references, evidence, and diagnostic envelopes are validated
+against the immutable schema and manifest. The default executor ceilings are
+50,000 world reads, 50,000 change items, 50,000 correlation outputs, 10,000
+consistency outputs, 100,000 topology outputs, 100,000 forwarding outputs,
+1,000 diagnostics, 64 evidence items per output, and 4,096 resource references.
+A request's smaller limit still applies; a plug-in cannot enlarge these
+core-owned ceilings.
+
+Recoverable `PluginDiagnostic` values remain in the typed execution result.
+Any non-recoverable diagnostic raises `PluginCapabilityExecutionError` with
+the diagnostics attached. An undeclared capability raises
+`PluginCapabilityUnavailableError`; a malformed, invalid, or over-limit result
+raises `PluginCapabilityOutputError`. Plug-in exceptions are wrapped in this
+execution-error boundary rather than escaping as a partially valid result.
+
+This executable caller makes optional hooks directly testable and reusable; it
+does not itself publish a temporal, topology, or route provider. The current
+core-owned runtime-v2 session still leaves those providers `None` and exposes
+no route catalog.
+
 Every new `InputSpec` sets `parser_kind` explicitly:
 
 | `InputParserKind` | Core dispatch |
@@ -224,13 +295,44 @@ is required for CTF, where `metadata`, data streams, and optional index files mu
 be handed to Babeltrace as one private directory tree. A single materialized file
 path is not a sufficient CTF contract.
 
-The core invokes its `TraceDecoder`, consumes native decoder diagnostics, and
+`CoreArtifactReader` accepts one regular file, directory, tar, or ZIP and
+rejects symbolic-link/junction components, non-regular archive members, unsafe
+or non-portable names, duplicate/case-fold-colliding names, and quota
+violations. Its default limits are 10,000 artifacts, 32 path components, 512
+MiB per artifact, 2 GiB total expanded bytes, and a 1,000:1 compression ratio.
+The plug-in receives opaque logical artifact UUIDs and portable names through
+`DumpInventory`; `open_binary()` returns a new read-only stream, while
+`materialize_private_path()` and `materialize_private_tree()` return
+session-private copies. None exposes the original host path. All access fails
+after the reader closes.
+
+Every runtime-v2 discovery/parser result is validated before normalization.
+The current default ceilings are 10,000 `locate_inputs()` outputs and 2,000,000
+parser outputs. Across one ingestion, the aggregate defaults are 2,000,000
+plug-in/decoder outputs, 2,000,000 decoder outputs, 100,000 diagnostics,
+4,000,000 evidence items, 4,000,000 subject references, 4,000,000
+source-to-event links, 64,000,000 normalized value units, and 256 MiB of UTF-8
+text. One output may contain at most 4,096 evidence items, 4,096 event subjects,
+and 4,096 source-to-event links. One output value is separately bounded to 16
+nested levels, 1,024 items in one container, 4,096 total value units, 65,536
+units for one string/byte atom, and 4,096 bits for one integer. The validator
+rejects booleans masquerading as integers, non-finite floats, reference cycles,
+unsupported value types, undeclared schema references, invalid observation
+bounds, evidence outside the selected input, wrong output classes, and
+non-recoverable diagnostics. It does not coerce, truncate, stringify, or partly
+publish an invalid output.
+
+When a deployment supplies a core `TraceDecoder`, the coordinator consumes its
+decoder diagnostics and
 passes the plugin only an `Iterable[CtfMessage]`. That union represents event,
 stream/packet/activity boundary, discarded-event, and discarded-packet messages
 with stable ordinals, trace/stream identity, clocks, normalized payload/context,
 and evidence. A native `bt2` object or iterator is never plugin input. CTF roles
 use `parse_ctf(spec, messages)`; text-log roles use the separate
 `parse_text_trace(reader, spec)` hook and only the quota-enforced reader.
+The current core-owned runtime-v2 constructor does not install a decoder;
+selecting a CTF `InputSpec` without one fails closed with
+`CTF input requires a core TraceDecoder`.
 Mapped `DomainEvent` records retain the core `SourceRecordRef` (source, trace,
 stream, packet, and message ordinal); a plugin must not hide source identity only
 inside a human locator.
@@ -358,6 +460,9 @@ record unless the capture mechanism proves they were simultaneous. A
 owner, direction, relation type, and capture interval; omission outside that
 scope proves nothing. The core stores observations separately from mutations and
 uses them as reconstruction constraints, never as a fabricated global snapshot.
+The current runtime-v2 ingestion slice validates and retains these markers as
+private normalized ingestion metadata, but does not yet materialize them into
+public relationship intervals or completeness query semantics.
 
 A node plug-in declares raw clock domains and emits anchors with the
 device-specific evidence needed to interpret them. It does not fit a hidden
@@ -532,15 +637,17 @@ perspectives, and a default outside the supported set. The default is never an
 authorization to substitute it when an API caller explicitly selects another
 perspective.
 
-The coordinator calls
-`project_topology(TopologyProjectionRequest, ReadOnlyWorld)`. The request names
-the selected projection and status perspective, optional canonical seed
-resources, a hard `max_records` output bound, and a cumulative
-`max_world_reads` input bound. The world has already been resolved to the
-requested temporal basis and is wrapped by the coordinator to enforce that
-read budget. Output is a streaming iterable of
-`TopologyProjectionRecord` or diagnostics; it must stop at the request bound and
-must not scan outside coordinator-enforced world/query budgets.
+When a host wires this capability, it calls
+`PluginCapabilityExecutor.project_topology(TopologyProjectionRequest,
+ReadOnlyWorld)`. The request names the selected projection and status
+perspective, optional canonical seed resources, a hard `max_records` output
+bound, and a cumulative `max_world_reads` input bound. The world has already
+been resolved to the requested temporal basis and is wrapped by the executor to
+enforce the smaller of request and core limits. The plug-in output is a
+streaming iterable of `TopologyProjectionRecord` or diagnostics; the executor
+returns a validated `TopologyExecutionResult`. This callable boundary is
+implemented even though the current runtime-v2 session does not yet install a
+topology provider.
 
 Each projection record repeats the selected IDs and contains exactly one typed
 payload:
@@ -572,15 +679,25 @@ When a plug-in supplies a normalized topology resource in compact replay form,
 `changes[]` supplies time-ordered updates. Each applied change may update
 `status` and merge `state`. It may also set the optional boolean `exists`
 explicitly. When `exists` is omitted, the core recognizes the generic
-`operation` values `create` and `add` as existence and `delete` and `remove` as
-non-existence; an explicit boolean always takes precedence over that inference.
+`operation` values `create`, `add`, and `insert` as existence and `delete` and
+`remove` as non-existence; an explicit boolean always takes precedence over
+that inference.
 A change with `state_changed: false` is a complete no-op for existence, status,
 and state, even if it describes a failed delete or carries proposed values.
 Replay order is `(time_ns, source_sequence, event_uid/change_id)`.
 `source_sequence` is therefore required whenever one producer can emit several
 changes at the same timestamp. A modify after deletion may update latent state
 for later inspection/recreation, but it does not make the resource exist; only
-an explicit `exists: true` or generic `create`/`add` operation can do that.
+an explicit `exists: true` or generic `create`/`add`/`insert` operation can do
+that.
+
+This order also governs timeline detail, topology change replay, and other
+same-timestamp streams. `event_uid` or `change_id` is the stable final
+tie-breaker; insertion order is never semantic. Order-dependent handles are
+versioned. The current temporal cursor encoding accepts `tt2` and rejects older
+cursor versions, while server-generated cluster IDs contain `server-v2` so a
+client cannot mistake an old-order cluster for the current one. Both remain
+opaque client values; authors must not parse either prefix.
 
 The enclosing `valid_from_ns`/`valid_to_ns` interval remains authoritative and
 half-open. No lifecycle change can make the resource exist before
@@ -1049,34 +1166,51 @@ durable stage and does not reuse partial output created by another plugin build.
 
 Composition is useful: a family plug-in may provide common declarative artifact
 locators and status parsers, while a release adapter overrides resource mappings
-or reducers. Archive codec detection, traversal, extraction, and quota
+or reducers. Archive recognition, traversal, materialization, and quota
 enforcement remain core operations; a plug-in never supplies an archive parser.
-The final bundle still has one recorded, reproducible manifest/hash.
+The current reader supports one regular file, directory, tar, or ZIP container.
+Recursive nested-codec peeling and an outer-to-inner codec-chain record belong
+to the future production ingestion pipeline, not the current runtime-v2
+contract. The final bundle still has one recorded, reproducible manifest/hash.
 
 ## 6. Process and security model
 
-Plugin execution is trusted code in a hostile-input boundary, so isolate it:
+The current local runtime executes an installed plug-in in-process. The
+plug-in is therefore trusted application code, not a sandboxed parser, while
+the dump remains hostile input. Its executable boundary currently provides:
 
-- Disposable Linux process/container per job or bounded job group.
-- Read-only plugin image and read-only artifact handles.
-- Private scratch directory with byte/inode quota.
-- No network, secrets, database socket, or host paths.
-- CPU, memory, file, child-process, output, and wall-time limits.
-- Native Babeltrace failures terminate only the worker.
-- Coordinator validates all output and performs persistence.
+- Read-only selected artifact handles.
+- Session-private scratch copies bounded by the artifact quotas.
+- No original host path through the standard `ArtifactReader`.
+- Count, nesting, value, evidence, and output limits at coordinator/executor
+  validation boundaries.
+- Only core may normalize, publish, or persist validated output.
+
+Production deployment MUST add disposable Linux workers or containers per job
+or bounded job group, no network/secrets/database socket/host paths, and CPU,
+memory, file, child-process, output, inode, and wall-time limits. Native
+Babeltrace failures must terminate only that worker. Worker isolation and a
+built-in/default CTF decoder are not implemented by the current runtime-v2
+slice.
 
 `ArtifactReader.materialize_private_path()` supports a single native input;
 `materialize_private_tree()` reconstructs a selected logical subtree for
 Babeltrace and other multi-file readers. Neither returns an application or
 host-global path.
 
-Core materialization detects each codec layer from observed content, records the
-outer-to-inner chain, and explicitly applies Python 3.12's `filter="data"` at
-every tar layer before a stricter policy: regular files only; normalized relative
-paths; no links/devices/special members/collisions; and streaming quotas for
-members, depth, bytes, and ratios. Plug-in locator or role hints cannot select a
-codec or relax those checks. Plug-ins may not open or extract an archive on
-their own; they consume only validated artifact handles/private trees.
+The current `CoreArtifactReader` recognizes a top-level tar or ZIP by inspected
+content, inventories regular members, and streams selected members to private
+materializations. It never calls `extractall()`. It rejects unsafe or
+non-portable names, links/devices/special members, collisions, and configured
+member/depth/byte/compression-ratio overruns. Plug-in locator or role hints
+cannot select a codec or relax those checks, and plug-ins may not open or
+extract an archive themselves.
+
+If the future nested-codec pipeline uses Python tar extraction rather than the
+current member-streaming reader, every tar layer MUST explicitly apply
+`filter="data"` or `tarfile.data_filter` before the stricter policy above.
+Nested codec detection, codec-chain recording, and that extraction/filter path
+remain future work.
 
 ## 7. Forwarding IR
 
@@ -1499,7 +1633,9 @@ device-semantic cases.
 ### Probe and input discovery
 
 - Exact version, adjacent version, ambiguous version, and missing manifest.
-- Nested archives and unpacked directory form produce equivalent inventory.
+- A top-level tar or ZIP and its unpacked directory form produce equivalent
+  inventory. Add nested-codec equivalence only when the deployment implements
+  and advertises that future pipeline.
 - Renamed internal root with plugin-declared locator still works.
 - Required input missing produces a structured diagnostic.
 
@@ -1509,15 +1645,31 @@ device-semantic cases.
 - Unknown fields are retained or diagnosed according to policy.
 - 100K+ records stream within memory limit.
 - Plug-ins emit compact state deltas; the core lazily reconstructs intervals only for queried resources and preserves failed-event no-mutation semantics.
-- CTF 2 passing and failing Babeltrace corpus cases.
+- When the deployment supplies a core `TraceDecoder`, CTF 2 passing and failing
+  decoder corpus cases. Without one, selecting CTF must fail closed rather than
+  implying built-in decoding.
+
+### Optional capability caller
+
+- Invoke every advertised optional hook through
+  `PluginCapabilityExecutor`, not by calling the plug-in directly.
+- Undeclared capabilities fail before invocation; malformed, undeclared,
+  dangling, non-recoverable, and over-limit outputs fail without a partial
+  result.
+- Bounded world reads and output iterators stop at their configured limits and
+  close the underlying iterators; recoverable diagnostics remain in their typed
+  result envelope.
 
 ### Reducers
 
 - `apply()` changes every linked resource the real callback changes.
 - `revert(apply(world)) == world` for declared exact/invertible events.
 - Partial/non-invertible events return unknown instead of a fabricated inverse.
-- Delete/recreate yields separate incarnations.
+- `create`, `add`, and `insert` all open lifecycle existence; delete/recreate
+  yields separate incarnations.
 - Relationship changes create correct half-open intervals.
+- Equal-timestamp replay is deterministic in
+  `(timestamp, source_sequence, stable event/change ID)` order.
 - Adjacent topology-change windows use `[start_ns,end_ns)` and return a
   boundary event only in the later window.
 
@@ -1601,9 +1753,42 @@ random event sequences.
 - Declarative match references round-trip without core interpretation and retain
   all plugin-resolved candidates, source-resource keys, and evidence.
 
-### Optional runtime adapter
+### Core ingestion runtime
 
-When `plugin.runtime` is present, conformance additionally proves:
+Every ordinary parser plug-in additionally proves:
+
+- core artifact inventory rejects unsafe names, links, special members,
+  collisions, and each configured count/depth/byte/ratio overflow;
+- the plug-in can consume only its selected logical IDs through read-only
+  streams or session-private materializations;
+- capability-gated dispatch, schema references, evidence membership, exact
+  integer/boolean fields, time bounds, and output types are validated;
+- cycles, non-finite values, oversized atoms/containers/streams, and
+  non-recoverable diagnostics fail without partial publication;
+- repeated ingestion of identical content has stable revision/resource/source
+  identity; and
+- the core-owned runtime-v2 session serves its normalized `/v1/workspace` while
+  unsupported temporal/topology/route providers remain `None`.
+
+The repository example owns a compact heterogeneous corpus:
+
+```text
+python -X utf8 -m rsl_demo_generator --write-ingestion-conformance-corpus path/to/runtime-v2-ingestion-conformance.tgz
+python -X utf8 -m rsl_demo_generator --verify-ingestion-conformance-corpus path/to/runtime-v2-ingestion-conformance.tgz
+python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_capability_executor -v
+python -m unittest discover -s state-dump-generator/tests -p "test_runtime_v2_vectors.py" -v
+```
+
+Its embedded and standalone semantic vectors label each case by current
+execution stage. The current status slice is executable through the example
+parser and coordinator. Text, CTF, malformed, unsupported, typed-key,
+relationship, and uncertainty cases remain explicit without claiming a
+built-in CTF decoder or an unimplemented provider.
+
+### Compatibility runtime adapter
+
+When a precomputed-fixture plug-in exposes `plugin.runtime` v1, conformance
+additionally proves:
 
 - the capability ID and every structural session member validate;
 - invalid or unsupported input fails before serving requests;

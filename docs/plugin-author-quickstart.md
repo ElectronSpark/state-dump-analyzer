@@ -17,33 +17,40 @@ The example plug-in:
 5. converts each line into a typed resource observation and a retained source
    record with evidence;
 6. supplies a safe, optional plain-text copy projection for that source
-   record; and
-7. passes the generic author validator and its own golden test.
+   record;
+7. runs through the core-owned runtime-v2 ingestion/workspace test independently
+   of the large demo's compatibility adapter; and
+8. passes the generic author validator and its own golden test.
 
 This repository is still a design/conformance demo. The validator proves the
 plug-in-facing package and protocol shape. The core owns the only web command
-and can load one installed or directly named plug-in at a time; it is not yet a
-production upload and multi-plug-in selection coordinator. The demo publishes
-the same example through normal entry-point discovery and contains no
-application entry point.
+and can load one installed or directly named plug-in at a time. For an ordinary
+parser plug-in, that command now builds a core-owned `runtime.v2` session from
+the standard hooks; authors do not add a path-opening runtime adapter. This is
+not yet a production upload, persistent-storage, or multi-plug-in selection
+coordinator. The demo publishes the same example through normal entry-point
+discovery and contains no application entry point.
 
 ## 1. Run the known-good example
 
 From the repository root, using Python 3.12 in the analyzer environment:
 
 ```text
-python -m pip install -e .
+python -m pip install -e ".[web]"
 python -m pip install -e demo
 router-dump-plugin-validate --list
 python -X utf8 -m rsl_demo_generator --verify-conformance-fixture demo/fixtures/minimal-status.jsonl
 router-dump-plugin-validate demo_router --artifact demo/fixtures/minimal-status.jsonl --node-hint router-1 --metadata platform=demo-router-os --metadata software_version=1
 python -m unittest discover -s demo/tests -v
+python -m unittest tests.test_artifact_core tests.test_ingestion -v
+python -m unittest discover -s state-dump-generator/tests -p "test_runtime_v2_vectors.py" -v
 ```
 
-The first command installs `router-dump-analyzer-core`. The second installs the
-single demo distribution so its `demo_router` entry point is discoverable. Your
-own device plug-in depends only on the core distribution; it does not depend on
-the demo distribution.
+The first command installs `router-dump-analyzer-core` with the optional web
+host needed by the workspace smoke test. The second installs the single demo
+distribution so its `demo_router` entry point is discoverable. Your own device
+plug-in depends only on the core distribution; it does not depend on the demo
+distribution.
 
 The validator must end with:
 
@@ -53,8 +60,11 @@ OK: demo.example-router
 
 The generator verification proves that the tiny JSONL vector exactly matches
 the plug-in-owned `CONFORMANCE_STATUS_RECORDS`; it is not a second hand-written
-mock dump. Do not start a new implementation until these commands work
-unchanged.
+mock dump. The two core tests execute safe artifact access and the standard
+hooks through the core-owned ingestion coordinator, including a `/v1/workspace`
+request for a parse-only plug-in. The standalone vector test checks the
+generator-independent temporal/identity expectations. Do not start a new
+implementation until these commands work unchanged.
 
 The browser bootstrap is core-owned. A node plug-in supplies normalized
 identity, descriptors, counts, time bounds, and capabilities; it does not
@@ -160,11 +170,11 @@ Use the standard `PluginCapability` enum. A capability is a promise that its
 hook is implemented. `AnalyzerPluginBase` raises instead of silently ignoring
 a declared-but-missing hook.
 
-The normal v1 parsing API has no arbitrary runtime-configuration injection
-hook. Keep parser defaults immutable and packaged with the plug-in; do not read
-hidden environment variables. The optional `plugin.runtime.open(input_path)`
-host adapter described below receives only the selected input path. The core
-records `supported_software_versions`, while `probe()` owns the actual version
+The normal parsing API has no arbitrary runtime-configuration injection hook.
+Keep parser defaults immutable and packaged with the plug-in; do not read
+hidden environment variables. In the normal `runtime.v2` path, core receives
+the selected host path and never passes it to the plug-in. The core records
+`supported_software_versions`, while `probe()` owns the actual version
 interpretation and `exact`/`compatible` decision.
 
 ### B. Static schema
@@ -258,6 +268,20 @@ default validator.
 An input can contain several `artifact_ids`. Use that for a logical CTF tree;
 the core performs safe materialization.
 
+The inventory contains portable logical names and opaque artifact UUIDs, not
+the original host path. Parser hooks receive the core `ArtifactReader` and may
+open a fresh read-only binary stream, request one session-private file, or
+request one session-private logical tree for the selected IDs. Those private
+materializations are not the original file, are invalid after the ingestion
+session closes, and must never be retained as application paths.
+
+The current reader accepts one regular file, directory, top-level tar, or
+top-level ZIP. It streams selected members and never calls `extractall()`;
+recursive nested-codec peeling is future work. The local runtime also imports
+installed plug-ins in-process, so plug-in code is trusted and is **not** a
+sandbox. Never load code from the dump, and do not mistake bounded
+artifact/output validation for production worker isolation.
+
 ### E. Parser
 
 `parse_status()` receives a quota-enforced `ArtifactReader`. Stream the file and
@@ -279,6 +303,30 @@ The source emission uses a short bounded `message` for generic hover surfaces
 and may use `copy_text` for an already-safe verbatim export. Malformed input
 yields a stable, namespaced `PluginDiagnostic`; it must not crash the entire
 parser.
+
+Core validates every discovery and parser output before normalization. It
+requires exact dataclass/enumeration shapes, declared resource/property/
+relationship/source types, evidence that refers only to the selected input,
+ordered integer time bounds, and real booleans where a boolean is required.
+Unsupported values, cycles, non-finite floats, oversized integers, strings,
+bytes, containers, nesting, discovery results, or parser streams fail closed;
+core never stringifies or truncates an invalid semantic value.
+
+Those checks share one ingestion-wide budget rather than resetting for each
+yield. The default aggregate ceilings are 2,000,000 outputs, 100,000
+diagnostics, 4,000,000 each of evidence items, event subjects, and event links,
+64,000,000 normalized value units, and 256 MiB of UTF-8 text. Decoder output
+has its own 2,000,000-item ceiling. A single output is also limited to 4,096
+evidence items, subjects, or event links, in addition to the smaller
+per-value depth/container/atom limits. Treat these as hard ceilings, not batch
+size targets; stream much smaller batches in production.
+
+The current coordinator validates and retains
+`RelationshipCollectionObservation` completeness markers as private normalized
+ingestion metadata. It does not yet materialize those markers into public
+relationship intervals or completeness query semantics. Emit honest scoped
+markers now, but do not write a test that assumes the current runtime-v2
+workspace has already applied their absence inference.
 
 ## 4. Know which hooks are optional
 
@@ -308,6 +356,36 @@ Everything else is capability-gated:
 Inherit undeclared hooks from `AnalyzerPluginBase`; they return safe empty
 results. Do not copy placeholder implementations into a new plug-in.
 
+Core callers must not invoke these optional hooks directly. The root package
+exports `PluginCapabilityExecutor`, the executable boundary used by host code
+and by a plug-in's golden tests:
+
+```python
+from router_dump_analyzer import PluginCapabilityExecutor
+
+executor = PluginCapabilityExecutor(plugin)
+changes = executor.apply(event, world)
+correlation = executor.correlate(reader, window)
+```
+
+The executor checks the manifest before calling a hook, gives world-reading
+hooks a core-bounded read-only view, closes bounded output iterators, and
+validates exact request/result shapes and every schema reference. `apply()` and
+`revert()` return a validated `ChangeSet`; the other optional calls return
+typed execution envelopes containing validated values and recoverable
+diagnostics. A missing capability raises
+`PluginCapabilityUnavailableError`, malformed or over-budget output raises
+`PluginCapabilityOutputError`, and any non-recoverable diagnostic raises
+`PluginCapabilityExecutionError` with the diagnostics retained. Correlation is
+the one exception to the world wrapper: the caller supplies the already
+bounded/indexed `CorrelationReader`, and the executor validates its exact
+bounded `CorrelationWindow` and outputs.
+
+Use this executor in tests for every capability you advertise. Do not construct
+it inside the plug-in or treat it as a temporal, topology, or route provider.
+The current runtime-v2 session does not yet wire these optional results into
+those services.
+
 The generic node browser can show a bounded list of plug-in-projected route
 choices, but v1 has no separate route-catalog hook. The coordinator derives
 that capability from `FORWARDING_PROJECTION` or another explicitly versioned
@@ -324,15 +402,28 @@ may set `traceable: false`, leave `trace_query` empty, and supply a bounded
 `trace_unavailable_reason`. Core can still list that row, but it must not invent
 a cross-node candidate or let the browser submit it as a trace.
 
-### Optional host runtime for the core web command
+### Core-owned runtime v2 and the compatibility runtime
 
-Stop here for an ordinary parse-only plug-in. It does **not** need a
-`plugin.runtime` attribute, and `router-dump-plugin-validate` can validate it
-without one.
+Stop here for an ordinary parser plug-in. It does **not** need a
+`plugin.runtime` attribute. The core command inventories its input, calls
+`describe()`, `probe()`, and `locate_inputs()`, dispatches only parser kinds
+whose declared capability and hook agree, validates every output, assigns
+stable identities, reconstructs the normalized dataset, and exposes the basic
+node workspace through a core-owned `router_dump_analyzer.runtime.v2` session.
 
-Add a runtime only when the core web command must open a plug-in-owned dump,
-assembly, or precomputed projection directly. The loaded plug-in instance then
-exposes `runtime` implementing `PluginRuntimeCapability`:
+The current v2 session intentionally supplies only the normalized data
+workspace. Its `temporal_provider`, `topology_provider`, and `route_provider`
+are `None`, its history source has no optional structural index, and its route
+catalog reports unavailable. Do not advertise those views merely because the
+parser emitted similarly named resource properties. Add them only through the
+corresponding executable, versioned provider contracts.
+
+`plugin.runtime` is a compatibility surface for an independently versioned,
+precomputed fixture or assembly that cannot yet enter through the standard
+parser hooks. The bundled 100K-per-node generated demo uses it. New live
+device parsers should not. A compatibility adapter implements
+`PluginRuntimeCapability` and identifies itself as
+`router_dump_analyzer.runtime.v1`:
 
 ```python
 from contextlib import contextmanager
@@ -353,8 +444,9 @@ class MyRuntimeCapability:
             session.close()
 ```
 
-This is only the capability wrapper; `open_my_non_web_session()` represents
-the plug-in's tested session constructor. The complete executable reference is
+This is only the compatibility wrapper;
+`open_my_non_web_session()` represents the fixture adapter's tested session
+constructor. The complete executable reference is
 [`demo/rsl_demo_plugin/session.py`](../demo/rsl_demo_plugin/session.py),
 covered by
 [`demo/tests/test_runtime.py`](../demo/tests/test_runtime.py).
@@ -408,11 +500,11 @@ implementation. Core owns all resource/event traversal after these callbacks.
 `open()` must be a context manager so the core application lifespan can close
 stores, indexes, and caches exactly once.
 
-This adapter supplies data and device policy, not an application. Do not return
+This compatibility adapter supplies precomputed data and device policy, not an
+application. Do not return
 FastAPI, `APIRouter`, middleware, routes, page templates, assets, or browser
-code. The core creates all of those. Selecting a plug-in without this adapter
-with `router-dump-analyzer` fails clearly, even though its ordinary parsing
-contract may still validate successfully.
+code. The core creates all of those. A standard parser plug-in without this
+adapter is served through core-owned runtime v2.
 
 ## 5. Use keys that cannot alias
 
@@ -522,7 +614,7 @@ If your topology adapter emits the compact resource replay shape, start with
 `time_ns`. Use `status: "down"` when the resource still exists but is unusable.
 Use boolean `exists: false` for deletion and `exists: true` for recreation. You
 may instead use the generic `operation` values `delete`/`remove` and
-`create`/`add`; explicit `exists` wins when both are present.
+`create`/`add`/`insert`; explicit `exists` wins when both are present.
 
 Set `state_changed: false` on a failed or proposed update that changed nothing.
 The core then ignores that change's lifecycle, status, and state fields.
@@ -530,6 +622,11 @@ The core then ignores that change's lifecycle, status, and state fields.
 the result, so a create cannot extend a resource outside its declared validity
 window. A delete followed by a create produces an absence gap for the same
 canonical resource ID.
+
+For equal timestamps, core replays by
+`(timestamp_ns, source_sequence, stable event/change ID)`. Emit a real
+`source_sequence` whenever one producer can report more than one item at the
+same instant; never rely on parser iteration order.
 
 Topology change queries use the same half-open rule:
 `start_ns <= change_time_ns < end_ns`. An event on a shared boundary belongs
@@ -785,6 +882,23 @@ router-dump-plugin-validate my_router --artifact path/to/representative-status.t
 python -m unittest discover -s path/to/my_plugin/tests -v
 ```
 
+For the repository example, also keep the compact runtime-v2 corpus and its
+standalone normative vector synchronized:
+
+```text
+python -X utf8 -m rsl_demo_generator --write-ingestion-conformance-corpus path/to/runtime-v2-ingestion-conformance.tgz
+python -X utf8 -m rsl_demo_generator --verify-ingestion-conformance-corpus path/to/runtime-v2-ingestion-conformance.tgz
+python -m unittest tests.test_ingestion tests.test_capability_executor -v
+python -m unittest discover -s state-dump-generator/tests -p "test_runtime_v2_vectors.py" -v
+```
+
+The archive is deliberately compact. Its status member executes through the
+current example parser and core ingestion coordinator. It also carries text,
+CTF, malformed, unsupported, identity, relationship, and uncertainty vectors
+with an `execution_stage`/`support` label. Those labels are normative: this
+repository does **not** claim a built-in CTF decoder, and the CTF cases require
+an explicitly supplied core `TraceDecoder`.
+
 The generic validator checks:
 
 - entry-point target is an instance;
@@ -805,8 +919,10 @@ each case applies to the declared capabilities. Record non-applicable cases in
 the test plan rather than fabricating meaningless tests. Scale parsers must also
 stream 100K+ records within their budget.
 
-The validator also does not require the optional web-runtime adapter. If your
-plug-in exposes `plugin.runtime`, add a separate smoke test that enters
+The validator also does not execute core runtime v2. Exercise
+`IngestionCoordinator` and at least one core `/v1/workspace` request in the
+plug-in's integration suite. If a precomputed-fixture plug-in exposes the
+compatibility `plugin.runtime`, add a separate smoke test that enters
 `runtime.open(input_path)`, calls `validate_runtime_session()`, exercises every
 non-`None` provider, and proves the context closes its resources. Then run the
 core command against that input.
@@ -821,7 +937,7 @@ Common failures:
 | `has no parser_kind` | Set `InputParserKind` on every new `InputSpec`. |
 | `does not declare ...` | Add the matching standard capability. |
 | `describe() must be deterministic` | Build one immutable schema without clocks, randomness, or input state. |
-| `does not expose a 'runtime' capability` | Use the validator for a parse-only plug-in, or add the optional non-web runtime adapter before using the core web command. |
+| `does not expose runtime.v1 and does not implement the standard core-ingestion parser contract` | Export a real `AnalyzerPlugin` instance with `manifest`, `describe()`, `probe()`, and `locate_inputs()`; use runtime.v1 only for a tested precomputed fixture. |
 
 ## Definition of done
 
@@ -836,10 +952,20 @@ A first plug-in is ready for review only when:
 - [ ] status/outcome/effect are not inferred by core or browser code;
 - [ ] observations and events carry evidence and honest quality;
 - [ ] failed events do not mutate state unless device semantics prove a change;
+- [ ] every advertised optional capability passes through
+  `PluginCapabilityExecutor` in a golden test, including its over-budget or
+  malformed-output case;
 - [ ] golden tests cover applicable bad-input and temporal edge cases; and
 - [ ] no plug-in-specific branch was added to core or the browser.
 
-If the plug-in also supplies an input session to the core web command:
+For every ordinary parser plug-in:
+
+- [ ] core-owned runtime v2 can inventory a representative input and serve its
+  normalized `/v1/workspace`;
+- [ ] malformed or over-budget discovery/parser output fails closed; and
+- [ ] unsupported temporal, topology, and route providers remain unavailable.
+
+If a precomputed-fixture plug-in also supplies a compatibility input session:
 
 - [ ] `plugin.runtime.capability_id` equals
   `router_dump_analyzer.runtime.v1`;

@@ -91,7 +91,7 @@ Each non-empty line in `fixtures/minimal-status.jsonl` is one complete
 interface observation:
 
 ```json
-{"kind":"interface","captured_at_ns":1759680000000000000,"ifindex":7,"name":"xe-0/0/0","admin_status":"up","oper_status":"up","description":"core uplink"}
+{"kind":"interface","captured_at_ns":1759680000000000000,"source_sequence":10,"lifecycle":"create","ifindex":7,"name":"xe-0/0/0","admin_status":"up","oper_status":"up","description":"core uplink"}
 ```
 
 The plug-in owns that JSON vocabulary, the typed `ifindex` key, platform and
@@ -99,6 +99,10 @@ version matching, status normalization, resource descriptors, evidence,
 bounded hover text, and safe source-record `copy_text`. The example assumes
 that `ifindex` is stable within one analysis revision and maps `oper_status=up`
 to healthy, `down` to error, and other accepted values to unknown.
+At one timestamp, `source_sequence` establishes producer order before the
+stable record identity tie-breaker. The checked fixture includes create,
+modify, and window-only observations; shared temporal replay also treats
+`insert` as a creation operation.
 
 Core owns safe artifact access, validation, stable record identity, persistence,
 temporal reconstruction, application composition, APIs, selection budgets, and
@@ -119,12 +123,21 @@ validated directly on reload. Dashboard examples rely on presence-aware fields:
 explicit null remains a value, missing stays missing, and numeric statistics do
 not coerce strings or booleans.
 
-## Optional runtime capability
+## Core ingestion and generated-fixture compatibility
 
-The tiny parser can be installed and validated without starting a server. The
-comprehensive generated assembly additionally needs an input adapter, so the
-example plug-in exposes an optional `plugin.runtime` capability with
-`capability_id = "router_dump_analyzer.runtime.v1"`.
+An ordinary live parser needs no `plugin.runtime`. Core-owned runtime v2
+inventories a regular file, directory, tar, or ZIP; passes only logical
+artifact IDs, read-only streams, and session-private materializations; calls
+`describe()`, `probe()`, and `locate_inputs()`; capability-dispatches parsers;
+and validates/normalizes their output. The plug-in never sees the original
+host path.
+
+The comprehensive generated assembly is different: it is a deliberately
+precomputed fixture whose stored projections are validated and loaded instead
+of replayed by the small teaching parser. The example therefore exposes
+`plugin.runtime` with
+`capability_id = "router_dump_analyzer.runtime.v1"` as a compatibility adapter.
+The full 125,000-event-per-node demo remains on this v1 path.
 
 Its `open(input_path)` method is a context manager that yields one non-web
 session. The session exposes six core-consumed surfaces:
@@ -138,12 +151,13 @@ session. The session exposes six core-consumed surfaces:
 5. `topology_provider`, the plug-in's topology projection policy; and
 6. `route_provider`, the plug-in's route/packet policy.
 
-The first three are required by the web runtime; the last three may be `None`
-when a plug-in does not support those views. The core enters and closes the
-session, constructs `NormalizedDataService`, and owns resource/state,
-relationship, table, dashboard, range, redaction, and client-projection
-algorithms. A runtime provider must not return a FastAPI app, `APIRouter`,
-middleware, templates, frontend code, or a substitute query engine.
+The first three are required by the compatibility runtime; the last three may
+be `None` when a plug-in does not support those views. The core enters and
+closes the session, constructs `NormalizedDataService`, and owns
+resource/state, relationship, table, dashboard, range, redaction, and
+client-projection algorithms. A runtime provider must not return a FastAPI app,
+`APIRouter`, middleware, templates, frontend code, or a substitute query
+engine.
 
 The demo assembly cache is likewise only an input adapter. It serializes cold
 materialization without holding the cache-bookkeeping lock, so existing leases
@@ -152,10 +166,21 @@ preserve the caller's current shallow top-level view and keep the shared
 generation alive; core still owns request/session lifecycle and query
 semantics.
 
-`plugin.runtime` is optional for ordinary parse-only plug-ins:
-`router-dump-plugin-validate` validates their normal `AnalyzerPlugin`
-contracts without it. It is required only when that plug-in is selected by the
-core `router-dump-analyzer` web command.
+The current core-built runtime-v2 session for a standard parser exposes the
+first three surfaces itself. Its optional temporal, topology, and route
+providers are `None`, its source has no structural history index, and the
+route catalog is unavailable. Those limitations are explicit; resource names
+or properties do not activate a provider. Because this demo instance has a
+runtime-v1 compatibility adapter for its large archive, core selects that
+adapter for the demo CLI. `tests.test_ingestion` exercises the teaching parser
+through the core v2 coordinator and workspace instead.
+
+Runtime-v2 currently retains validated
+`RelationshipCollectionObservation` markers as private ingestion metadata; it
+does not yet apply their completeness inference to public relationship
+intervals. Likewise, optional semantic hooks are executable and testable
+through core's root-exported `PluginCapabilityExecutor`, but that caller does
+not install the missing temporal, topology, or route providers.
 
 ## Generated mock dumps
 
@@ -166,6 +191,38 @@ are produced by the same deterministic generator. Use the canonical generation
 and verification commands in the
 [`samples/README.md`](../samples/README.md#generate); this section owns only the
 demo-specific projection, evidence, and runtime-loading contract.
+
+### Compact runtime-v2 conformance corpus
+
+The generator also owns a small deterministic heterogeneous archive. Generate
+and byte-verify it without touching the large demo:
+
+```powershell
+python -X utf8 -m rsl_demo_generator `
+  --write-ingestion-conformance-corpus .\demo\fixtures\runtime-v2-ingestion-conformance.tgz
+python -X utf8 -m rsl_demo_generator `
+  --verify-ingestion-conformance-corpus .\demo\fixtures\runtime-v2-ingestion-conformance.tgz
+python -m unittest tests.test_ingestion -v
+python -m unittest discover -s state-dump-generator/tests `
+  -p "test_runtime_v2_vectors.py" -v
+```
+
+The archive contains eight raw/metadata members: current status input, text
+log, synthetic CTF container, malformed status and CTF, an unsupported file,
+the semantic vector, and its manifest. The example plug-in currently selects
+and parses only the status member through runtime-v2 ingestion. The remaining
+members and the standalone
+`state-dump-generator/tests/fixtures/runtime-v2-ingestion-temporal-conformance.json`
+label their required execution stage. In particular, the core has no built-in
+CTF decoder; CTF dispatch requires an explicitly supplied `TraceDecoder`.
+
+The vector covers exact integer timestamps, equal-time `source_sequence`
+ordering, create/modify and insert-as-create lifecycle semantics, a window-only
+uncertain observation, native numeric/UUID/byte/compound keys, exact versus
+rule-resolved relationships, retained status/text/CTF categories, and
+malformed or unsupported artifacts. A label such as
+`requires_plugin_projection` describes a conformance target, not functionality
+silently supplied by core.
 
 ### Canonical source pipeline
 
@@ -303,6 +360,11 @@ forwarding supplies typed `ForwardingCandidateConstraint` and
 attachments, terminal evidence, and device-owned policy or disposition
 semantics. Core evaluates bounded traversal, exact repeated states, endpoint
 reachability, and packet continuity.
+
+Test every advertised optional hook through `PluginCapabilityExecutor` so
+manifest gating, bounded reads/results, schema references, and recoverable
+versus fatal diagnostics exercise the same core boundary as a future host
+integration. Do not call those hooks directly in an author golden test.
 
 Advanced implementations must distinguish complete known-empty scope data from
 incomplete scope evidence. They must also keep immutable packet endpoints

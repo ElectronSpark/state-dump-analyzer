@@ -1,5 +1,37 @@
 """Protocol-neutral Router Dump Analyzer core, runtime, and plug-in contracts."""
 
+from .artifact_core import (
+    ArtifactBoundaryError,
+    ArtifactLimits,
+    CoreArtifactReader,
+    ScopedArtifactReader,
+)
+from .capability_executor import (
+    ConsistencyExecutionResult,
+    CorrelationExecutionResult,
+    ForwardingProjectionExecutionResult,
+    ForwardingStepExecutionResult,
+    PluginCapabilityExecutionError,
+    PluginCapabilityExecutor,
+    PluginCapabilityLimits,
+    PluginCapabilityOutputError,
+    PluginCapabilityUnavailableError,
+    TopologyExecutionResult,
+)
+from .ingestion import (
+    CORE_INGESTION_RUNTIME_CAPABILITY_ID,
+    CoreIngestionRuntime,
+    IngestionCoordinator,
+    IngestionError,
+    IngestionLimits,
+    IngestionResult,
+)
+from .normalized_data import (
+    IndexedHistory,
+    NormalizedDataPolicy,
+    NormalizedDataService,
+    NormalizedDatasetSource,
+)
 from .plugin_api import (
     CORE_PLUGIN_API_VERSION,
     FORWARDING_IR_VERSION,
@@ -10,8 +42,8 @@ from .plugin_loading import (
     load_plugin_module,
 )
 from .runtime import (
-    CoreRuntimeSession,
     PLUGIN_RUNTIME_CAPABILITY_ID,
+    CoreRuntimeSession,
     PluginRuntimeCapability,
     PluginRuntimeCapabilityError,
     PluginRuntimeSession,
@@ -23,31 +55,45 @@ from .runtime import (
     require_plugin_runtime,
     validate_runtime_session,
 )
-from .normalized_data import (
-    IndexedHistory,
-    NormalizedDataPolicy,
-    NormalizedDataService,
-    NormalizedDatasetSource,
-)
 
 __all__ = [
+    "CORE_INGESTION_RUNTIME_CAPABILITY_ID",
     "CORE_PLUGIN_API_VERSION",
-    "CoreRuntimeSession",
     "FORWARDING_IR_VERSION",
     "PLUGIN_ENTRY_POINT_GROUP",
     "PLUGIN_RUNTIME_CAPABILITY_ID",
+    "ArtifactBoundaryError",
+    "ArtifactLimits",
+    "ConsistencyExecutionResult",
+    "CoreArtifactReader",
+    "CoreIngestionRuntime",
+    "CoreRuntimeSession",
+    "CorrelationExecutionResult",
+    "ForwardingProjectionExecutionResult",
+    "ForwardingStepExecutionResult",
+    "IndexedHistory",
+    "IngestionCoordinator",
+    "IngestionError",
+    "IngestionLimits",
+    "IngestionResult",
+    "NormalizedDataPolicy",
+    "NormalizedDataService",
+    "NormalizedDatasetSource",
+    "PluginCapabilityExecutionError",
+    "PluginCapabilityExecutor",
+    "PluginCapabilityLimits",
+    "PluginCapabilityOutputError",
+    "PluginCapabilityUnavailableError",
     "PluginRuntimeCapability",
     "PluginRuntimeCapabilityError",
     "PluginRuntimeSession",
     "RuntimeApplicationFactory",
     "RuntimeApplicationRequest",
-    "IndexedHistory",
-    "NormalizedDataPolicy",
-    "NormalizedDataService",
-    "NormalizedDatasetSource",
     "RuntimeRouteProvider",
     "RuntimeTemporalProvider",
     "RuntimeTopologyProvider",
+    "ScopedArtifactReader",
+    "TopologyExecutionResult",
     "load_plugin_entry_point",
     "load_plugin_module",
     "require_plugin_runtime",

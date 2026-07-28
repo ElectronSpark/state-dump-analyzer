@@ -1258,6 +1258,8 @@ CONFORMANCE_STATUS_RECORDS: tuple[dict[str, Any], ...] = (
     {
         "kind": "interface",
         "captured_at_ns": 1_759_680_000_000_000_000,
+        "source_sequence": 10,
+        "lifecycle": "create",
         "ifindex": 7,
         "name": "xe-0/0/0",
         "admin_status": "up",
@@ -1266,12 +1268,37 @@ CONFORMANCE_STATUS_RECORDS: tuple[dict[str, Any], ...] = (
     },
     {
         "kind": "interface",
+        "captured_at_ns": 1_759_680_000_000_000_000,
+        "source_sequence": 20,
+        "lifecycle": "modify",
+        "ifindex": 7,
+        "name": "xe-0/0/0",
+        "admin_status": "up",
+        "oper_status": "down",
+        "description": "same-timestamp failure update",
+    },
+    {
+        "kind": "interface",
         "captured_at_ns": 1_759_680_000_001_000_000,
+        "source_sequence": 30,
+        "lifecycle": "create",
         "ifindex": 8,
         "name": "xe-0/0/1",
         "admin_status": "up",
         "oper_status": "down",
         "description": "peer link",
+    },
+    {
+        "kind": "interface",
+        "observed_at_min_ns": 1_759_680_000_002_000_000,
+        "observed_at_max_ns": 1_759_680_000_002_500_000,
+        "source_sequence": 40,
+        "lifecycle": "create",
+        "ifindex": 9,
+        "name": "xe-0/0/2",
+        "admin_status": "up",
+        "oper_status": "unknown",
+        "description": "window-only observation",
     },
 )
 
@@ -1527,12 +1554,19 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
                     record = json.loads(raw)
                     (
                         timestamp_ns,
+                        observed_at_min_ns,
+                        observed_at_max_ns,
+                        source_sequence,
+                        lifecycle,
                         ifindex,
                         name,
                         admin_status,
                         oper_status,
                         description,
-                    ) = self._validated_record(record)
+                    ) = self._validated_record(
+                        record,
+                        default_source_sequence=line_number,
+                    )
                 except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
                     yield PluginDiagnostic(
                         stage=DiagnosticStage.STATUS_PARSE,
@@ -1566,20 +1600,28 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
                 }
                 yield SourceRecordEmission(
                     timestamp_ns=timestamp_ns,
-                    timestamp_uncertainty_ns=0,
+                    timestamp_uncertainty_ns=(
+                        0 if timestamp_ns is not None else None
+                    ),
                     source_type="status-json",
                     source_name=STATUS_FILENAME,
                     record_name="interface_status",
                     message=f"{name}: admin={admin_status}, oper={oper_status}",
                     layer=spec.layer,
                     copy_text=raw.decode("utf-8"),
-                    attributes={"line_number": line_number},
+                    attributes={
+                        "line_number": line_number,
+                        "source_sequence": source_sequence,
+                        "lifecycle": lifecycle,
+                        "observed_at_min_ns": observed_at_min_ns,
+                        "observed_at_max_ns": observed_at_max_ns,
+                    },
                     evidence=(evidence,),
                 )
                 yield SnapshotObservation(
                     resource=resource,
-                    observed_at_min_ns=timestamp_ns,
-                    observed_at_max_ns=timestamp_ns,
+                    observed_at_min_ns=observed_at_min_ns,
+                    observed_at_max_ns=observed_at_max_ns,
                     state=PropertyPatch(
                         set_values=properties,
                         field_quality={
@@ -1593,7 +1635,11 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
                         complete=True,
                     ),
                     provenance=Provenance.OBSERVED,
-                    quality=Quality.EXACT,
+                    quality=(
+                        Quality.EXACT
+                        if timestamp_ns is not None
+                        else Quality.BEST_EFFORT
+                    ),
                     evidence=evidence,
                     condition=oper_status,
                     condition_class=self._condition_class(oper_status),
@@ -1602,15 +1648,56 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
     @staticmethod
     def _validated_record(
         record: object,
-    ) -> tuple[int, int, str, str, str, str]:
+        *,
+        default_source_sequence: int = 0,
+    ) -> tuple[
+        int | None,
+        int,
+        int,
+        int,
+        str,
+        int,
+        str,
+        str,
+        str,
+        str,
+    ]:
         if not isinstance(record, dict):
             raise ValueError("record must be a JSON object")
         if record.get("kind") != "interface":
             raise ValueError("kind must be 'interface'")
 
         timestamp_ns = record.get("captured_at_ns")
-        if type(timestamp_ns) is not int:
-            raise ValueError("captured_at_ns must be an integer")
+        if timestamp_ns is not None:
+            if type(timestamp_ns) is not int:
+                raise ValueError("captured_at_ns must be an integer")
+            observed_at_min_ns = timestamp_ns
+            observed_at_max_ns = timestamp_ns
+        else:
+            observed_at_min_ns = record.get("observed_at_min_ns")
+            observed_at_max_ns = record.get("observed_at_max_ns")
+            if (
+                type(observed_at_min_ns) is not int
+                or type(observed_at_max_ns) is not int
+                or observed_at_min_ns > observed_at_max_ns
+            ):
+                raise ValueError(
+                    "a record without captured_at_ns requires an ordered "
+                    "integer observation window"
+                )
+        source_sequence = record.get(
+            "source_sequence",
+            default_source_sequence,
+        )
+        if type(source_sequence) is not int or source_sequence < 0:
+            raise ValueError(
+                "source_sequence must be a non-negative integer"
+            )
+        lifecycle = record.get("lifecycle", "snapshot")
+        if lifecycle not in {"create", "modify", "snapshot"}:
+            raise ValueError(
+                "lifecycle must be create, modify, or snapshot"
+            )
         ifindex = record.get("ifindex")
         if type(ifindex) is not int or ifindex < 0:
             raise ValueError("ifindex must be a non-negative integer")
@@ -1630,6 +1717,10 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
             raise ValueError("description must be a string")
         return (
             timestamp_ns,
+            observed_at_min_ns,
+            observed_at_max_ns,
+            source_sequence,
+            lifecycle,
             ifindex,
             name,
             admin_status,

@@ -1,0 +1,208 @@
+{
+  "cases": [
+    {
+      "artifact": "router-dump-ingestion-conformance-v1/status/minimal-status.jsonl",
+      "case_id": "status.exact-integer-and-source-order",
+      "execution_stage": "current_example_parser",
+      "expected_order": [
+        10,
+        20
+      ],
+      "records": [
+        {
+          "lifecycle": "create",
+          "line": 1,
+          "source_sequence": 10,
+          "timestamp_ns": 1759680000000000000
+        },
+        {
+          "lifecycle": "modify",
+          "line": 2,
+          "source_sequence": 20,
+          "timestamp_ns": 1759680000000000000
+        }
+      ],
+      "timestamp_representation": "json_integer"
+    },
+    {
+      "artifact": "router-dump-ingestion-conformance-v1/status/minimal-status.jsonl",
+      "case_id": "status.create-modify-lifecycle",
+      "execution_stage": "current_example_parser",
+      "first_lifecycle": "create",
+      "following_lifecycle": "modify",
+      "resource_key": {
+        "kind": "INTERFACE",
+        "layer": "interface",
+        "namespace": "demo.example-router",
+        "node": "router-1",
+        "parts": [
+          {
+            "name": "ifindex",
+            "type": "integer",
+            "value": 7
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "temporal.insert-is-creation",
+      "execution_stage": "shared_temporal_core",
+      "expected_exists_after": true,
+      "operation": "insert",
+      "operation_class": "creation"
+    },
+    {
+      "artifact": "router-dump-ingestion-conformance-v1/status/minimal-status.jsonl",
+      "case_id": "status.validity-window-only-uncertainty",
+      "execution_stage": "current_example_parser",
+      "line": 4,
+      "observed_at_max_ns": 1759680000002500000,
+      "observed_at_min_ns": 1759680000002000000,
+      "quality": "best_effort",
+      "timestamp_ns": null
+    },
+    {
+      "case_id": "identity.native-key-types",
+      "execution_stage": "requires_core_ingestion",
+      "keys": {
+        "bytes16": {
+          "kind": "HARDWARE_OBJECT",
+          "parts": [
+            {
+              "encoding": "hex",
+              "name": "opaque_id",
+              "type": "bytes",
+              "value": "00112233445566778899aabbccddeeff"
+            }
+          ]
+        },
+        "compound": {
+          "kind": "TUNNEL_PATH",
+          "parts": [
+            {
+              "name": "group_uuid",
+              "type": "uuid",
+              "value": "123e4567-e89b-12d3-a456-426614174000"
+            },
+            {
+              "name": "path_id",
+              "type": "integer",
+              "value": 3
+            }
+          ]
+        },
+        "numeric": {
+          "kind": "INTERFACE",
+          "parts": [
+            {
+              "name": "ifindex",
+              "type": "integer",
+              "value": 7
+            }
+          ]
+        },
+        "uuid": {
+          "kind": "TUNNEL_GROUP",
+          "parts": [
+            {
+              "name": "group_uuid",
+              "type": "uuid",
+              "value": "123e4567-e89b-12d3-a456-426614174000"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "relationship.exact-compound-key",
+      "execution_stage": "requires_core_ingestion",
+      "relation_type": "member_of",
+      "source_key": {
+        "kind": "TUNNEL_PATH",
+        "parts": [
+          {
+            "name": "group_uuid",
+            "type": "uuid",
+            "value": "123e4567-e89b-12d3-a456-426614174000"
+          },
+          {
+            "name": "path_id",
+            "type": "integer",
+            "value": 3
+          }
+        ]
+      },
+      "target_key": {
+        "kind": "TUNNEL_GROUP",
+        "parts": [
+          {
+            "name": "group_uuid",
+            "type": "uuid",
+            "value": "123e4567-e89b-12d3-a456-426614174000"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "relationship.rule-resolved-target",
+      "execution_stage": "requires_plugin_projection",
+      "match": {
+        "arguments": {
+          "address": {
+            "type": "ipv6",
+            "value": "2001:db8:100::9"
+          },
+          "vrf": {
+            "type": "string",
+            "value": "blue"
+          }
+        },
+        "matcher_id": "demo.ip-prefix-lpm.v1"
+      },
+      "missing_match_is": "unresolved",
+      "relation_type": "resolves_via"
+    },
+    {
+      "case_id": "records.status-log-ctf",
+      "execution_stage": "mixed",
+      "records": [
+        {
+          "artifact": "router-dump-ingestion-conformance-v1/status/minimal-status.jsonl",
+          "source_type": "status-json",
+          "support": "current_example_parser"
+        },
+        {
+          "artifact": "router-dump-ingestion-conformance-v1/logs/router.log",
+          "source_type": "syslog",
+          "support": "requires_text_trace_dispatch"
+        },
+        {
+          "artifact": "router-dump-ingestion-conformance-v1/ctf/routertrace.tgz",
+          "expected_event_count": 2,
+          "source_type": "ctf",
+          "support": "requires_core_ctf_decoder"
+        }
+      ]
+    },
+    {
+      "artifacts": [
+        {
+          "artifact": "router-dump-ingestion-conformance-v1/malformed/truncated-status.jsonl",
+          "expected": "recoverable_parser_diagnostic"
+        },
+        {
+          "artifact": "router-dump-ingestion-conformance-v1/malformed/truncated-ctf.tgz",
+          "expected": "decoder_diagnostic"
+        },
+        {
+          "artifact": "router-dump-ingestion-conformance-v1/unsupported/capture.pcap",
+          "expected": "unselected_unsupported_artifact"
+        }
+      ],
+      "case_id": "artifact.malformed-and-unsupported",
+      "execution_stage": "requires_core_ingestion"
+    }
+  ],
+  "schema_id": "router-dump-ingestion-temporal-conformance",
+  "schema_version": 1
+}

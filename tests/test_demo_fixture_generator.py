@@ -28,7 +28,9 @@ from rsl_demo_generator import (
     AssemblyConfig,
     build_coverage,
     build_demo_fixture,
+    build_ingestion_conformance_corpus,
     ensure_demo_fixture_for_launch,
+    ingestion_temporal_semantic_vector,
     probe_demo_fixture_for_launch,
     validate_demo_fixture,
 )
@@ -36,6 +38,10 @@ from rsl_demo_generator import catalog as generator_catalog
 from rsl_demo_generator._archive import (
     write_deterministic_tgz,
     validate_archive_name,
+)
+from rsl_demo_generator.conformance import (
+    EXPECTATIONS_MEMBER as INGESTION_EXPECTATIONS_MEMBER,
+    MANIFEST_MEMBER as INGESTION_MANIFEST_MEMBER,
 )
 from rsl_demo_generator.assembly import (
     _case_candidate_paths,
@@ -282,6 +288,10 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
             ["--deep-validate"],
             ["--node", DEMO_NODES[0].node_id],
             ["--write-conformance-fixture", str(self.root / "status.jsonl")],
+            [
+                "--write-ingestion-conformance-corpus",
+                str(self.root / "ingestion.tgz"),
+            ],
             ["--output", str(self.root / "replacement.tgz")],
             ["--path-only"],
         )
@@ -2461,6 +2471,52 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
             ),
             0,
         )
+
+    def test_generator_owns_compact_ingestion_corpus_and_cli_round_trip(
+        self,
+    ) -> None:
+        from rsl_demo_generator import __main__ as generator_cli
+
+        expected = build_ingestion_conformance_corpus()
+        self.assertEqual(expected, build_ingestion_conformance_corpus())
+        with tarfile.open(fileobj=io.BytesIO(expected), mode="r:gz") as archive:
+            members = {
+                member.name: _member_bytes(archive, member.name)
+                for member in archive.getmembers()
+                if member.isfile()
+            }
+        manifest = json.loads(members[INGESTION_MANIFEST_MEMBER])
+        self.assertEqual(manifest["format_version"], 1)
+        self.assertEqual(manifest["large_demo_runtime"], "v1-unchanged")
+        self.assertEqual(
+            json.loads(members[INGESTION_EXPECTATIONS_MEMBER]),
+            ingestion_temporal_semantic_vector(),
+        )
+
+        output = self.root / "runtime-v2-ingestion-conformance.tgz"
+        self.assertEqual(
+            generator_cli.main(
+                ["--write-ingestion-conformance-corpus", str(output)]
+            ),
+            0,
+        )
+        self.assertEqual(output.read_bytes(), expected)
+        self.assertEqual(
+            generator_cli.main(
+                ["--verify-ingestion-conformance-corpus", str(output)]
+            ),
+            0,
+        )
+        output.write_bytes(expected + b"tampered")
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                generator_cli.main(
+                    [
+                        "--verify-ingestion-conformance-corpus",
+                        str(output),
+                    ]
+                )
+        self.assertEqual(raised.exception.code, 2)
 
     def test_generator_uses_the_installed_example_policy_facade(
         self,

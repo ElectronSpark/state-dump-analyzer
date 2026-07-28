@@ -326,7 +326,37 @@ the known-good example, including
 validator checks and what remains the responsibility of the plug-in's golden
 tests. A production device plug-in depends only on
 `router-dump-analyzer-core`; the demo distribution is a working reference, not
-a runtime dependency.
+a runtime dependency. Ordinary parser plug-ins need no path-opening runtime:
+the core inventories the input, calls their standard discovery/parser hooks,
+validates the results, and serves the basic normalized workspace through
+runtime v2. The bundled 125,000-event-per-node archive is precomputed and keeps
+its runtime-v1 fixture adapter for compatibility.
+
+For advanced reducers, correlation, consistency, topology, or forwarding,
+host-side tests call the root-exported `PluginCapabilityExecutor`. It is the
+bounded, schema-validating caller for optional hooks; it does not make the
+currently unavailable runtime-v2 temporal, topology, or route providers appear.
+
+The maintained author smoke path is:
+
+```powershell
+python -m pip install -e ".[web]"
+python -m pip install -e demo
+python -X utf8 -m rsl_demo_generator `
+  --verify-conformance-fixture demo/fixtures/minimal-status.jsonl
+router-dump-plugin-validate demo_router `
+  --artifact demo/fixtures/minimal-status.jsonl `
+  --node-hint router-1 `
+  --metadata platform=demo-router-os `
+  --metadata software_version=1
+python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_capability_executor -v
+python -m unittest discover -s demo/tests -v
+python -m unittest discover -s state-dump-generator/tests `
+  -p "test_runtime_v2_vectors.py" -v
+```
+
+See the [demo guide’s compact corpus section](demo/README.md#compact-runtime-v2-conformance-corpus)
+for the separate generate/verify commands and the currently executable subset.
 
 ## Developer workflows
 
@@ -394,7 +424,7 @@ the demo guide owns the current projection and evidence contract.
 | [`demo/router-state-lab-default.scenario.json`](demo/router-state-lab-default.scenario.json) | Canonical human-authored scenario save consumed by future demo generations |
 | [`demo/rsl_demo_generator/`](demo/rsl_demo_generator) | The separate standard-library scenario adapter and scalable mock-dump materializer, with an explicit one-way dependency on the example plug-in's declared fixture semantics |
 | [`frontend/`](frontend) | Core-owned HTML pages, JavaScript, CSS, page manifest, and dependency-free checks |
-| [`demo/fixtures/`](demo/fixtures) | Small plug-in conformance fixtures; the full mock dumps remain generator-owned |
+| [`demo/fixtures/`](demo/fixtures) | Small parser/runtime-v2 conformance fixtures; the full mock dumps remain generator-owned and runtime-v1 compatible |
 | [`samples/`](samples) | Public decoder inputs and fixture documentation |
 | [`scripts/`](scripts) | Environment setup, launchers, and the optional public CTF decoder-fixture fetcher |
 | [`tests/`](tests) | Backend, API, fixture, scale, and frontend regression coverage |
@@ -417,7 +447,12 @@ the demo guide owns the current projection and evidence contract.
 
 Router State Lab is an implementation-oriented design package, deterministic
 conformance corpus, and interactive review demo. It is not yet a production
-analyzer: arbitrary upload ingestion, isolated worker execution, persistent
+analyzer. Core-owned runtime v2 can safely inventory and normalize one local
+file, directory, tar, or ZIP through a standard parser plug-in, but arbitrary
+upload selection, built-in CTF decoding, isolated worker execution, persistent
 multi-user storage, authentication, and deployment hardening remain future
-work. The production direction is documented without presenting those
-capabilities as already implemented.
+work. Runtime-v2 temporal/topology/route providers are also not yet supplied.
+Scoped relationship-collection completeness is retained during ingestion but
+not yet materialized into public relationship interval/query semantics.
+The production direction is documented without presenting those capabilities
+as already implemented.

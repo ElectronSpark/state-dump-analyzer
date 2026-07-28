@@ -6,19 +6,21 @@ import argparse
 import sys
 from pathlib import Path
 
+from rsl_demo_plugin import render_conformance_status_fixture
+
 from . import (
     DEFAULT_ASSEMBLY_NAME,
     DEFAULT_EVENT_COUNT,
     DEFAULT_RESOURCE_COUNT,
     DEFAULT_SEED,
     AssemblyConfig,
+    build_ingestion_conformance_corpus,
     ensure_demo_fixture_for_launch,
     parse_node_selection,
     probe_demo_fixture_for_launch,
     validate_demo_fixture,
 )
 from .assembly import _build_demo_fixture_with_report
-from rsl_demo_plugin import render_conformance_status_fixture
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -33,10 +35,7 @@ def _parser() -> argparse.ArgumentParser:
         "--output",
         type=Path,
         default=Path.cwd() / DEFAULT_ASSEMBLY_NAME,
-        help=(
-            "assembly TGZ to create "
-            f"(default: ./{DEFAULT_ASSEMBLY_NAME})"
-        ),
+        help=(f"assembly TGZ to create (default: ./{DEFAULT_ASSEMBLY_NAME})"),
     )
     parser.add_argument(
         "--events-per-node",
@@ -131,6 +130,24 @@ def _parser() -> argparse.ArgumentParser:
             "fixture records and exit"
         ),
     )
+    operation.add_argument(
+        "--write-ingestion-conformance-corpus",
+        type=Path,
+        metavar="TGZ",
+        help=(
+            "write the compact heterogeneous runtime-v2 ingestion corpus and "
+            "exit; the full-scale demo remains runtime v1"
+        ),
+    )
+    operation.add_argument(
+        "--verify-ingestion-conformance-corpus",
+        type=Path,
+        metavar="TGZ",
+        help=(
+            "verify that a compact ingestion corpus exactly matches the "
+            "standalone generator's normative artifacts and exit"
+        ),
+    )
     return parser
 
 
@@ -138,8 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     launch_operation = (
-        args.check_launchable is not None
-        or args.ensure_launchable is not None
+        args.check_launchable is not None or args.ensure_launchable is not None
     )
     if launch_operation and (
         args.deep_validate
@@ -170,10 +186,27 @@ def main(argv: list[str] | None = None) -> int:
         if fixture.is_symlink() or not fixture.is_file():
             parser.error("conformance fixture must be a regular file")
         if fixture.read_bytes() != render_conformance_status_fixture():
-            parser.error(
-                "conformance fixture differs from the plug-in-owned records"
-            )
+            parser.error("conformance fixture differs from the plug-in-owned records")
         print(f"Validated plug-in conformance vector: {fixture}")
+        return 0
+    if args.write_ingestion_conformance_corpus is not None:
+        output = args.write_ingestion_conformance_corpus.expanduser().resolve()
+        if output.is_symlink():
+            parser.error("ingestion conformance corpus output cannot be a symlink")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(build_ingestion_conformance_corpus())
+        print(f"Generated ingestion conformance corpus: {output}")
+        return 0
+    if args.verify_ingestion_conformance_corpus is not None:
+        corpus = args.verify_ingestion_conformance_corpus.expanduser().resolve()
+        if corpus.is_symlink() or not corpus.is_file():
+            parser.error("ingestion conformance corpus must be a regular file")
+        if corpus.read_bytes() != build_ingestion_conformance_corpus():
+            parser.error(
+                "ingestion conformance corpus differs from the generator-owned "
+                "artifacts"
+            )
+        print(f"Validated ingestion conformance corpus: {corpus}")
         return 0
     if args.validate is not None:
         report = validate_demo_fixture(
@@ -245,10 +278,14 @@ def main(argv: list[str] | None = None) -> int:
         config=config,
         deep_validate=args.deep_validate,
     )
-    printable = str(output).encode(
-        "ascii",
-        errors="backslashreplace",
-    ).decode("ascii")
+    printable = (
+        str(output)
+        .encode(
+            "ascii",
+            errors="backslashreplace",
+        )
+        .decode("ascii")
+    )
     print(
         f"Generated {report.assembly_id}: {printable} "
         f"({len(report.node_ids)} nodes, "

@@ -7204,8 +7204,17 @@ function renderInventory() {
     return;
   }
   const nested = members.filter((item) => item.kind === "nested-archive").length;
-  byId("inventory-summary").textContent = `${inventory.archive || "workspace input"} / ${formatBytes(inventory.compressed_size)} / ${members.length} top-level files / ${nested} nested archives`;
-  byId("inventory-tree").innerHTML = members.map((item) => `<div class="inventory-item"><span>${escapeHtml(item.path)}</span><small>${escapeHtml(`${item.kind} / ${formatBytes(item.size)}`)}</small></div>`).join("");
+  const declaredSize = inventory.compressed_size ?? members.reduce(
+    (total, item) => total + Number(item.size ?? item.uncompressed_size ?? item.compressed_size ?? 0),
+    0,
+  );
+  byId("inventory-summary").textContent = `${inventory.archive || inventory.label || inventory.mode || "workspace input"} / ${formatBytes(declaredSize)} / ${members.length} top-level files / ${nested} nested archives`;
+  byId("inventory-tree").innerHTML = members.map((item) => {
+    const path = item.path || item.logical_path || item.artifact_id || "unnamed artifact";
+    const kind = item.kind || item.media_type || "file";
+    const size = item.size ?? item.uncompressed_size ?? item.compressed_size ?? 0;
+    return `<div class="inventory-item"><span>${escapeHtml(path)}</span><small>${escapeHtml(`${kind} / ${formatBytes(size)}`)}</small></div>`;
+  }).join("");
 }
 
 function explanationSteps(node, depth = 0, result = []) {
@@ -8812,7 +8821,11 @@ function saveReview() {
 
 function renderReview() {
   const saved = loadReview();
-  byId("gap-list").innerHTML = (state.dataset.gaps || []).map((gap) => `<label class="gap-item"><input type="checkbox" value="${escapeHtml(gap.id)}" ${saved.selected.includes(gap.id) ? "checked" : ""}><span><strong>${escapeHtml(gap.title)}</strong><small>${escapeHtml(`${gap.area} / ${gap.detail}`)}</small></span><span class="gap-status">${escapeHtml(gap.status)}</span></label>`).join("");
+  byId("gap-list").innerHTML = (state.dataset.gaps || []).map((gap) => {
+    const area = gap.area || "Runtime";
+    const detail = gap.detail || gap.description || "No additional detail supplied.";
+    return `<label class="gap-item"><input type="checkbox" value="${escapeHtml(gap.id)}" ${saved.selected.includes(gap.id) ? "checked" : ""}><span><strong>${escapeHtml(gap.title || gap.id || "Unspecified gap")}</strong><small>${escapeHtml(`${area} / ${detail}`)}</small></span><span class="gap-status">${escapeHtml(gap.status || "open")}</span></label>`;
+  }).join("");
   byId("review-prompts").innerHTML = `<strong>Questions for reviewers</strong><ul>${(state.dataset.review_prompts || []).map((prompt) => `<li>${escapeHtml(prompt)}</li>`).join("")}</ul>`;
   byId("review-notes").value = saved.notes;
   byId("gap-list").querySelectorAll("input").forEach((input) => input.addEventListener("change", saveReview));
@@ -8827,7 +8840,7 @@ function reviewText() {
   const selected = (state.dataset.gaps || []).filter((gap) => saved.selected.includes(gap.id));
   const workspace = workspaceMetadata();
   const workspaceLabel = workspace.label || workspace.revision_id || workspace.workspace_id || "current workspace";
-  return ["Router State Lab - design review", `Workspace: ${workspaceLabel}`, "", "Prioritized gaps:", ...(selected.length ? selected.map((gap) => `- [${gap.area}] ${gap.title}: ${gap.detail}`) : ["- None selected yet"]), "", "Reviewer notes:", saved.notes.trim() || "(none)"].join("\n");
+  return ["Router State Lab - design review", `Workspace: ${workspaceLabel}`, "", "Prioritized gaps:", ...(selected.length ? selected.map((gap) => `- [${gap.area || "Runtime"}] ${gap.title || gap.id || "Unspecified gap"}: ${gap.detail || gap.description || "No additional detail supplied."}`) : ["- None selected yet"]), "", "Reviewer notes:", saved.notes.trim() || "(none)"].join("\n");
 }
 
 async function copyReview() {
