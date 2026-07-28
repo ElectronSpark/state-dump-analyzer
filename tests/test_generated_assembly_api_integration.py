@@ -8,27 +8,27 @@ from pathlib import Path
 from unittest import mock
 
 from fastapi.testclient import TestClient
-
-from router_dump_analyzer.multi_node_topology import MultiNodeTopologyService
-from router_dump_analyzer.web import runtime_api
 from rsl_demo_generator import (
     COVERAGE_CASES,
     DEMO_NODES,
     AssemblyConfig,
     build_demo_fixture,
 )
-from rsl_demo_generator.catalog import DEFAULT_SCENARIO_SOURCE
 from rsl_demo_generator.assembly import _source_resource_id
+from rsl_demo_generator.catalog import DEFAULT_SCENARIO_SOURCE
 from rsl_demo_plugin.topology_contract import (
     build_topology_contract,
     build_topology_metadata,
     build_topology_profiles,
 )
+
+from router_dump_analyzer import TopologyDomainRole
+from router_dump_analyzer.multi_node_topology import MultiNodeTopologyService
+from router_dump_analyzer.web import runtime_api
 from tests.support.generated_demo import (
     generated_demo_application,
     query_all_route_table_rows,
 )
-
 
 EVENTS_PER_NODE = 120
 RESOURCES_PER_NODE = 120
@@ -437,6 +437,18 @@ class GeneratedAssemblyApiIntegrationTests(unittest.TestCase):
             set(self.descriptors),
         )
         self.assertGreater(len(snapshot["segment_attachments"]), 0)
+        external_segments = [
+            item
+            for item in snapshot["network_segments"]
+            if item["role"] == TopologyDomainRole.EXTERNAL.value
+        ]
+        self.assertTrue(external_segments)
+        self.assertTrue(
+            any(
+                item["plugin_asserted_external"]
+                for item in external_segments
+            )
+        )
 
     def test_route_capabilities_use_only_generated_catalog_descriptors(
         self,

@@ -771,6 +771,17 @@ quality, confidence, provenance, evidence, and unresolved semantics.
 Resource-table preview pagination is independent of the bounded topology claim
 projection and therefore cannot remove a subnet attachment.
 
+Provider output crosses a typed semantic boundary before generic coordination.
+The open plug-in role is retained for display, while
+`TopologyPluginSemanticsDescriptor` exposes only the declared
+`TopologyDomainRole.EXTERNAL` plus complete boolean coverage to core logic.
+Likewise, `InterNodeLinkPresentation` converts the two plug-in claim roles
+`INCLUDE` and `OVERLAY` before branching. `CONFLICT` belongs to core
+aggregation and cannot be supplied by a provider. The wire strings remain
+stable, but core decisions no longer depend directly on opaque dictionaries.
+All merge-critical envelopes pass bounded strict-JSON validation and
+type-preserving comparison; there is no lossy `str()` fallback.
+
 Generated route candidates keep the topology join declarative. Coverage owns
 all forward/reverse candidate sequences; the node plug-in projection owns the
 per-candidate, per-visit forwarding decision and names one exact

@@ -7,8 +7,9 @@ error messages attached to the caller-provided field label.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from enum import Enum
+from math import isfinite
 from typing import Any, Never, cast
 
 
@@ -34,6 +35,163 @@ def bounded_string(
             f"{label} must contain {minimum} to {maximum} characters",
         )
     return value
+
+
+def bounded_mapping(
+    value: object,
+    label: str,
+    *,
+    maximum_items: int = 128,
+    maximum_key_characters: int = 128,
+    allow_none: bool = False,
+    message: str | None = None,
+) -> dict[str, Any]:
+    """Return a shallow copy of one bounded string-keyed mapping.
+
+    Recursive value validation remains the caller's responsibility because
+    different public contracts intentionally permit different scalar sets.
+    Iteration itself is bounded rather than trusting a custom mapping's
+    reported length.
+    """
+
+    if maximum_items < 0 or maximum_key_characters < 1:
+        raise ValueError("mapping bounds are invalid")
+    if value is None and allow_none:
+        return {}
+    if not isinstance(value, Mapping):
+        _raise(message, f"{label} must be a mapping")
+    result: dict[str, Any] = {}
+    for index, (key, nested) in enumerate(value.items()):
+        if index >= maximum_items:
+            _raise(
+                message,
+                f"{label} supports at most {maximum_items} items",
+            )
+        if (
+            not isinstance(key, str)
+            or not key
+            or len(key) > maximum_key_characters
+        ):
+            _raise(
+                message,
+                f"{label} keys must contain 1 to "
+                f"{maximum_key_characters} characters",
+            )
+        result[key] = nested
+    return result
+
+
+def validate_bounded_json_value(
+    value: object,
+    label: str,
+    *,
+    maximum_depth: int = 16,
+    maximum_container_items: int = 1_024,
+    maximum_units: int = 4_096,
+    maximum_atom_units: int = 65_536,
+    maximum_integer_bits: int = 4_096,
+) -> None:
+    """Validate a bounded value accepted by strict JSON serialization.
+
+    The validator fails before serialization for cycles, non-finite floats,
+    non-string mapping keys, and Python-only atoms such as bytes or UUIDs.
+    Tuples are accepted because the standard JSON encoder represents them as
+    arrays; callers that need to distinguish tuple from list must use a typed
+    contract instead.
+    """
+
+    if (
+        maximum_depth < 0
+        or maximum_container_items < 0
+        or maximum_units < 1
+        or maximum_atom_units < 0
+        or maximum_integer_bits < 0
+    ):
+        raise ValueError("JSON value bounds are invalid")
+
+    units = [0]
+    active_container_ids: set[int] = set()
+
+    def validate(nested: object, depth: int) -> None:
+        if depth > maximum_depth:
+            raise ValueError(
+                f"{label} supports at most {maximum_depth} container levels"
+            )
+        units[0] += 1
+        if units[0] > maximum_units:
+            raise ValueError(
+                f"{label} supports at most {maximum_units} value units"
+            )
+
+        if nested is None or type(nested) is bool:
+            return
+        if isinstance(nested, int) and not isinstance(nested, bool):
+            if nested.bit_length() > maximum_integer_bits:
+                raise ValueError(
+                    f"{label} integers exceed {maximum_integer_bits} bits"
+                )
+            return
+        if isinstance(nested, float):
+            if not isfinite(nested):
+                raise ValueError(
+                    f"{label} floats must be finite JSON numbers"
+                )
+            return
+        if isinstance(nested, str):
+            if len(nested) > maximum_atom_units:
+                raise ValueError(
+                    f"{label} strings exceed {maximum_atom_units} characters"
+                )
+            return
+        if isinstance(nested, dict):
+            container_id = id(nested)
+            if container_id in active_container_ids:
+                raise ValueError(f"{label} must not contain reference cycles")
+            active_container_ids.add(container_id)
+            try:
+                for index, (key, child) in enumerate(nested.items()):
+                    if index >= maximum_container_items:
+                        raise ValueError(
+                            f"{label} mappings support at most "
+                            f"{maximum_container_items} items"
+                        )
+                    if not isinstance(key, str):
+                        _raise(None, f"{label} mappings require string keys")
+                    if len(key) > maximum_atom_units:
+                        raise ValueError(
+                            f"{label} mapping keys exceed "
+                            f"{maximum_atom_units} characters"
+                        )
+                    validate(child, depth + 1)
+            finally:
+                active_container_ids.remove(container_id)
+            return
+        if isinstance(nested, Mapping):
+            raise ValueError(
+                f"{label} contains non-JSON mapping type "
+                f"{type(nested).__name__}"
+            )
+        if isinstance(nested, (list, tuple)):
+            container_id = id(nested)
+            if container_id in active_container_ids:
+                raise ValueError(f"{label} must not contain reference cycles")
+            active_container_ids.add(container_id)
+            try:
+                for index, child in enumerate(nested):
+                    if index >= maximum_container_items:
+                        raise ValueError(
+                            f"{label} arrays support at most "
+                            f"{maximum_container_items} items"
+                        )
+                    validate(child, depth + 1)
+            finally:
+                active_container_ids.remove(container_id)
+            return
+        raise ValueError(
+            f"{label} contains non-JSON type {type(nested).__name__}"
+        )
+
+    validate(value, 0)
 
 
 def strict_boolean(
@@ -190,10 +348,12 @@ def validity_bounds(
 
 
 __all__ = [
+    "bounded_mapping",
     "bounded_string",
     "coerce_enum",
     "strict_boolean",
     "strict_integer",
     "typed_tuple",
+    "validate_bounded_json_value",
     "validity_bounds",
 ]

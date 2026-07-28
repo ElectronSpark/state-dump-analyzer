@@ -2945,8 +2945,32 @@ footer button {
   height: 11px;
   overflow: hidden;
   border-radius: 3px;
-  background: color-mix(in srgb, var(--segment-color) 52%, #142431);
   color: #061015;
+}
+
+.status-segment.is-healthy {
+  background: color-mix(in srgb, var(--segment-color) 52%, #142431);
+}
+
+.status-segment.is-degraded {
+  background: color-mix(in srgb, var(--amber) 72%, #142431);
+}
+
+.status-segment.is-error {
+  background: var(--red);
+}
+
+.status-segment.is-absent {
+  border: 1px dashed color-mix(in srgb, var(--muted-2) 72%, transparent);
+  background: color-mix(in srgb, var(--muted-2) 22%, transparent);
+}
+
+.status-segment.is-absent span {
+  color: var(--muted);
+}
+
+.status-segment.is-unknown {
+  background: repeating-linear-gradient(135deg, rgba(245, 184, 91, 0.55) 0 4px, rgba(245, 184, 91, 0.16) 4px 8px);
 }
 
 .timeline-row.compact .status-segment {
@@ -2962,17 +2986,6 @@ footer button {
   font-weight: 800;
   line-height: 11px;
   white-space: nowrap;
-}
-
-.status-segment.status-error,
-.status-segment.status-failed,
-.status-segment.status-failure {
-  background: var(--red);
-}
-
-.status-segment.status-unknown,
-.status-segment.status-ambiguous {
-  background: repeating-linear-gradient(135deg, rgba(245, 184, 91, 0.55) 0 4px, rgba(245, 184, 91, 0.16) 4px 8px);
 }
 
 .status-segment.current {
@@ -3861,18 +3874,38 @@ footer button {
 
 .state-chip {
   padding: 3px 6px;
+  border: 1px solid transparent;
   border-radius: 6px;
-  background: rgba(105, 221, 161, 0.1);
-  color: var(--green);
   font-family: var(--mono);
   font-size: 8px;
 }
 
-.state-chip.state-error,
-.state-chip.state-failed,
-.state-chip.state-failure {
+.state-chip.is-healthy {
+  background: rgba(105, 221, 161, 0.1);
+  color: var(--green);
+}
+
+.state-chip.is-degraded {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.state-chip.is-error {
   background: var(--red-soft);
   color: var(--red);
+}
+
+.state-chip.is-absent {
+  border-color: rgba(96, 123, 139, 0.42);
+  border-style: dashed;
+  background: rgba(96, 123, 139, 0.08);
+  color: var(--muted-2);
+}
+
+.state-chip.is-unknown {
+  border-color: rgba(141, 164, 179, 0.2);
+  background: rgba(141, 164, 179, 0.08);
+  color: var(--muted);
 }
 
 .graph-edge-label {

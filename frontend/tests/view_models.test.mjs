@@ -15,8 +15,83 @@ import {
   replaceAbortController,
   routeEndpointSeedValue,
   routePayloadForwardingPresentation,
+  stateChipClassName,
   statusClassPresentation,
+  statusSegmentClassName,
 } from "../assets/view_models.js";
+
+const DASHBOARD_PARITY_FIXTURE = JSON.parse(readFileSync(
+  new URL("../../tests/fixtures/dashboard-evaluator-parity.json", import.meta.url),
+  "utf8",
+));
+
+function parityRecipeAmount(recipe, bounds) {
+  return Number(bounds[recipe.bound]) + Number(recipe.offset || 0);
+}
+
+function buildParityValue(recipe, bounds) {
+  switch (recipe.kind) {
+    case "literal":
+      return recipe.value;
+    case "signed_zero":
+      return recipe.negative === true ? -0 : 0;
+    case "nonfinite":
+      return {
+        nan: Number.NaN,
+        positive_infinity: Number.POSITIVE_INFINITY,
+        negative_infinity: Number.NEGATIVE_INFINITY,
+      }[recipe.value];
+    case "bigint_bits": {
+      const bits = parityRecipeAmount(recipe, bounds);
+      return 1n << BigInt(bits - 1);
+    }
+    case "nested_sequence": {
+      let value = null;
+      for (let depth = 0; depth < parityRecipeAmount(recipe, bounds); depth += 1) {
+        value = [value];
+      }
+      return value;
+    }
+    case "sequence_items":
+      return Array.from(
+        { length: parityRecipeAmount(recipe, bounds) },
+        (_, index) => index,
+      );
+    case "mapping_items":
+      return Object.fromEntries(Array.from(
+        { length: parityRecipeAmount(recipe, bounds) },
+        (_, index) => [`key-${index}`, index],
+      ));
+    case "comparison_unit_tree": {
+      const targetUnits = parityRecipeAmount(recipe, bounds);
+      const groupCount = Number(bounds.max_container_items);
+      let leafCount = targetUnits - 1 - groupCount;
+      if (leafCount < 0 || leafCount > groupCount * 3) {
+        throw new Error("comparison_unit_tree recipe is not representable");
+      }
+      const groups = Array.from({ length: groupCount }, () => {
+        const groupSize = Math.min(3, leafCount);
+        leafCount -= groupSize;
+        return Array.from({ length: groupSize }, () => 0);
+      });
+      if (leafCount !== 0) {
+        throw new Error("comparison_unit_tree recipe left unused units");
+      }
+      return groups;
+    }
+    case "repeated_string":
+      return "x".repeat(parityRecipeAmount(recipe, bounds));
+    case "unsupported":
+      return Symbol("unsupported dashboard parity value");
+    case "cycle_sequence": {
+      const cycle = [];
+      cycle.push(cycle);
+      return cycle;
+    }
+    default:
+      throw new Error(`unknown dashboard parity recipe: ${recipe.kind}`);
+  }
+}
 
 test("normalized topology status uses one closed server vocabulary", () => {
   const expected = new Map([
@@ -47,6 +122,57 @@ test("every normalized topology status class has explicit component CSS", () => 
     const className = statusClassPresentation({ status_class: statusClass });
     assert.match(css, new RegExp(`\\.topology-node-time\\.${className}::before`));
     assert.match(css, new RegExp(`\\.topology-status\\.${className}(?:\\s|\\{|,)`));
+  }
+});
+
+test("state chips use the shared closed status presentation vocabulary", () => {
+  const expected = new Map([
+    ["absent", "state-chip is-absent"],
+    ["degraded", "state-chip is-degraded"],
+    ["error", "state-chip is-error"],
+    ["healthy", "state-chip is-healthy"],
+    ["unknown", "state-chip is-unknown"],
+  ]);
+  for (const [statusClass, className] of expected) {
+    assert.equal(stateChipClassName({ status_class: statusClass }), className);
+  }
+  for (const deadAlias of ["failed", "failure", "good", "warning", "usable", "unusable"]) {
+    assert.equal(stateChipClassName({ status_class: deadAlias }), "state-chip is-unknown");
+  }
+});
+
+test("every normalized status chip class has explicit component CSS", () => {
+  const css = readFileSync(new URL("../assets/styles.css", import.meta.url), "utf8");
+  for (const statusClass of ["absent", "degraded", "error", "healthy", "unknown"]) {
+    const className = statusClassPresentation({ status_class: statusClass });
+    assert.match(css, new RegExp(`\\.state-chip\\.${className}(?:\\s|\\{|,)`));
+  }
+});
+
+test("timeline status segments use the shared closed status presentation vocabulary", () => {
+  const expected = new Map([
+    ["absent", "status-segment is-absent"],
+    ["degraded", "status-segment is-degraded"],
+    ["error", "status-segment is-error"],
+    ["healthy", "status-segment is-healthy"],
+    ["unknown", "status-segment is-unknown"],
+  ]);
+  for (const [statusClass, className] of expected) {
+    assert.equal(statusSegmentClassName({ status_class: statusClass }), className);
+  }
+  for (const deadAlias of ["failed", "failure", "ambiguous", "good", "warning", "usable", "unusable"]) {
+    assert.equal(
+      statusSegmentClassName({ status_class: deadAlias }),
+      "status-segment is-unknown",
+    );
+  }
+});
+
+test("every normalized timeline status segment has explicit component CSS", () => {
+  const css = readFileSync(new URL("../assets/styles.css", import.meta.url), "utf8");
+  for (const statusClass of ["absent", "degraded", "error", "healthy", "unknown"]) {
+    const className = statusClassPresentation({ status_class: statusClass });
+    assert.match(css, new RegExp(`\\.status-segment\\.${className}(?:\\s|\\{|,)`));
   }
 });
 
@@ -232,6 +358,59 @@ test("invalid local dashboard samples are excluded and signed zero compares equa
     ),
     true,
   );
+});
+
+test("dashboard evaluator follows the shared cross-language parity fixture", () => {
+  const fixture = DASHBOARD_PARITY_FIXTURE;
+  assert.equal(fixture.schema_version, 1);
+  const values = new Map(fixture.values.map((item) => [
+    item.id,
+    buildParityValue(item.recipe, fixture.bounds),
+  ]));
+
+  for (const item of fixture.values) {
+    assert.equal(
+      dashboardComparable(values.get(item.id)) !== null,
+      item.comparable,
+      `comparable case ${item.id}`,
+    );
+  }
+
+  for (const fixtureCase of fixture.equality_cases) {
+    assert.equal(
+      dashboardFilterMatches(
+        { state: { value: values.get(fixtureCase.left) } },
+        {
+          field: "state.value",
+          operator: "eq",
+          value: values.get(fixtureCase.right),
+        },
+      ),
+      fixtureCase.equal,
+      `equality case ${fixtureCase.id}`,
+    );
+  }
+
+  for (const fixtureCase of fixture.filter_cases) {
+    const state = Object.hasOwn(fixtureCase, "actual")
+      ? { value: values.get(fixtureCase.actual) }
+      : {};
+    const expected = Object.hasOwn(fixtureCase, "candidates")
+      ? fixtureCase.candidates.map((item) => values.get(item))
+      : values.get(fixtureCase.expected);
+    assert.equal(
+      dashboardFilterMatches(
+        { state },
+        {
+          field: "state.value",
+          operator: fixtureCase.operator,
+          value: expected,
+        },
+      ),
+      fixtureCase.matches,
+      `filter case ${fixtureCase.id}`,
+    );
+  }
 });
 
 test("serialized dashboard descriptor failures remain visible to the operator", () => {

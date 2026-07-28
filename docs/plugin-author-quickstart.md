@@ -80,6 +80,48 @@ VRF, protocol, or projection names. Adding those fields directly to a device
 plug-in requires a versioned protocol addition, not an extra attribute or
 executable frontend code.
 
+If an optional topology projection emits normalized assembly claims, validate
+the few fields on which the generic core is allowed to act instead of branching
+on your own raw strings:
+
+```python
+from router_dump_analyzer import (
+    InterNodeLinkPresentation,
+    InterNodeRouteTraceRole,
+    TopologyDomainRole,
+    TopologyPluginSemanticsDescriptor,
+)
+
+semantics = TopologyPluginSemanticsDescriptor(
+    role=raw_role,
+    coverage_complete=projection_is_complete,
+)
+external = semantics.external_classification
+normalized_role = (
+    TopologyDomainRole.EXTERNAL.value
+    if external is not None
+    else str(semantics.role)
+)
+
+presentation = InterNodeLinkPresentation(
+    route_trace=InterNodeRouteTraceRole.OVERLAY,
+)
+normalized_presentation = {
+    "route_trace": presentation.route_trace.value,
+}
+```
+
+`role` remains bounded plug-in vocabulary; only `external` with an exact
+`coverage_complete=True` has generic core meaning. An inter-node claim may emit
+`include` or `overlay`. It must never emit `conflict`, which is a core-produced
+response when two valid claims disagree. Keep the entire semantics and
+presentation envelopes JSON-safe and bounded; unsupported objects, binary
+values, non-finite numbers, cycles, and oversized values fail closed. The
+generated example applies the domain-role portion in
+`demo/rsl_demo_plugin/topology_contract.py`; the include/overlay and
+response-only conflict cases are executable in
+`tests/test_multi_node_topology.py`.
+
 To run the generated example through the core-owned server after an assembly
 has been generated, use either discovery mode:
 

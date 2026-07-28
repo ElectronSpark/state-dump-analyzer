@@ -1,0 +1,209 @@
+{
+  "schema_version": 1,
+  "bounds": {
+    "max_depth": 16,
+    "max_container_items": 1024,
+    "max_comparison_units": 4096,
+    "max_atom_units": 65536,
+    "max_integer_bits": 4096
+  },
+  "values": [
+    {
+      "id": "null",
+      "recipe": {"kind": "literal", "value": null},
+      "comparable": true
+    },
+    {
+      "id": "boolean_false",
+      "recipe": {"kind": "literal", "value": false},
+      "comparable": true
+    },
+    {
+      "id": "boolean_true",
+      "recipe": {"kind": "literal", "value": true},
+      "comparable": true
+    },
+    {
+      "id": "integer",
+      "recipe": {"kind": "literal", "value": 7},
+      "comparable": true
+    },
+    {
+      "id": "finite_number",
+      "recipe": {"kind": "literal", "value": 1.25},
+      "comparable": true
+    },
+    {
+      "id": "string_alpha",
+      "recipe": {"kind": "literal", "value": "Alpha"},
+      "comparable": true
+    },
+    {
+      "id": "string_alpha_lower",
+      "recipe": {"kind": "literal", "value": "alpha"},
+      "comparable": true
+    },
+    {
+      "id": "string_two",
+      "recipe": {"kind": "literal", "value": "two"},
+      "comparable": true
+    },
+    {
+      "id": "string_needle",
+      "recipe": {"kind": "literal", "value": "needle"},
+      "comparable": true
+    },
+    {
+      "id": "positive_zero",
+      "recipe": {"kind": "signed_zero", "negative": false},
+      "comparable": true
+    },
+    {
+      "id": "negative_zero",
+      "recipe": {"kind": "signed_zero", "negative": true},
+      "comparable": true
+    },
+    {
+      "id": "nan",
+      "recipe": {"kind": "nonfinite", "value": "nan"},
+      "comparable": true
+    },
+    {
+      "id": "positive_infinity",
+      "recipe": {"kind": "nonfinite", "value": "positive_infinity"},
+      "comparable": true
+    },
+    {
+      "id": "negative_infinity",
+      "recipe": {"kind": "nonfinite", "value": "negative_infinity"},
+      "comparable": true
+    },
+    {
+      "id": "bigint_4096_bits",
+      "recipe": {"kind": "bigint_bits", "bound": "max_integer_bits", "offset": 0},
+      "comparable": true
+    },
+    {
+      "id": "bigint_4097_bits",
+      "recipe": {"kind": "bigint_bits", "bound": "max_integer_bits", "offset": 1},
+      "comparable": false
+    },
+    {
+      "id": "depth_16",
+      "recipe": {"kind": "nested_sequence", "bound": "max_depth", "offset": 0},
+      "comparable": true
+    },
+    {
+      "id": "depth_17",
+      "recipe": {"kind": "nested_sequence", "bound": "max_depth", "offset": 1},
+      "comparable": false
+    },
+    {
+      "id": "sequence_1024_items",
+      "recipe": {"kind": "sequence_items", "bound": "max_container_items", "offset": 0},
+      "comparable": true
+    },
+    {
+      "id": "sequence_1025_items",
+      "recipe": {"kind": "sequence_items", "bound": "max_container_items", "offset": 1},
+      "comparable": false
+    },
+    {
+      "id": "mapping_1024_items",
+      "recipe": {"kind": "mapping_items", "bound": "max_container_items", "offset": 0},
+      "comparable": true
+    },
+    {
+      "id": "mapping_1025_items",
+      "recipe": {"kind": "mapping_items", "bound": "max_container_items", "offset": 1},
+      "comparable": false
+    },
+    {
+      "id": "units_4096",
+      "recipe": {"kind": "comparison_unit_tree", "bound": "max_comparison_units", "offset": 0},
+      "comparable": true
+    },
+    {
+      "id": "units_4097",
+      "recipe": {"kind": "comparison_unit_tree", "bound": "max_comparison_units", "offset": 1},
+      "comparable": false
+    },
+    {
+      "id": "string_65536_units",
+      "recipe": {"kind": "repeated_string", "bound": "max_atom_units", "offset": 0},
+      "comparable": true
+    },
+    {
+      "id": "string_65537_units",
+      "recipe": {"kind": "repeated_string", "bound": "max_atom_units", "offset": 1},
+      "comparable": false
+    },
+    {
+      "id": "sequence_value",
+      "recipe": {"kind": "literal", "value": [1, "two", null]},
+      "comparable": true
+    },
+    {
+      "id": "mapping_order_a",
+      "recipe": {"kind": "literal", "value": {"alpha": 1, "needle": 2}},
+      "comparable": true
+    },
+    {
+      "id": "mapping_order_b",
+      "recipe": {"kind": "literal", "value": {"needle": 2, "alpha": 1}},
+      "comparable": true
+    },
+    {
+      "id": "unsupported",
+      "recipe": {"kind": "unsupported"},
+      "comparable": false
+    },
+    {
+      "id": "cycle",
+      "recipe": {"kind": "cycle_sequence"},
+      "comparable": false
+    }
+  ],
+  "equality_cases": [
+    {"id": "null-self", "left": "null", "right": "null", "equal": true},
+    {"id": "boolean-types", "left": "boolean_true", "right": "integer", "equal": false},
+    {"id": "string-case-sensitive", "left": "string_alpha", "right": "string_alpha_lower", "equal": false},
+    {"id": "signed-zero", "left": "negative_zero", "right": "positive_zero", "equal": true},
+    {"id": "nan-canonical", "left": "nan", "right": "nan", "equal": true},
+    {"id": "infinity-sign", "left": "positive_infinity", "right": "negative_infinity", "equal": false},
+    {"id": "mapping-order", "left": "mapping_order_a", "right": "mapping_order_b", "equal": true},
+    {"id": "bigint-at-boundary", "left": "bigint_4096_bits", "right": "bigint_4096_bits", "equal": true},
+    {"id": "bigint-over-boundary", "left": "bigint_4097_bits", "right": "bigint_4097_bits", "equal": false},
+    {"id": "depth-at-boundary", "left": "depth_16", "right": "depth_16", "equal": true},
+    {"id": "depth-over-boundary", "left": "depth_17", "right": "depth_17", "equal": false},
+    {"id": "container-at-boundary", "left": "sequence_1024_items", "right": "sequence_1024_items", "equal": true},
+    {"id": "container-over-boundary", "left": "sequence_1025_items", "right": "sequence_1025_items", "equal": false},
+    {"id": "units-at-boundary", "left": "units_4096", "right": "units_4096", "equal": true},
+    {"id": "units-over-boundary", "left": "units_4097", "right": "units_4097", "equal": false},
+    {"id": "cycle-fails-closed", "left": "cycle", "right": "cycle", "equal": false},
+    {"id": "unsupported-fails-closed", "left": "unsupported", "right": "unsupported", "equal": false}
+  ],
+  "filter_cases": [
+    {"id": "equal-signed-zero", "actual": "negative_zero", "operator": "eq", "expected": "positive_zero", "matches": true},
+    {"id": "equal-nan", "actual": "nan", "operator": "eq", "expected": "nan", "matches": true},
+    {"id": "not-equal-infinity", "actual": "positive_infinity", "operator": "not_eq", "expected": "negative_infinity", "matches": true},
+    {"id": "equal-mapping-order", "actual": "mapping_order_a", "operator": "eq", "expected": "mapping_order_b", "matches": true},
+    {"id": "bigint-at-boundary-equality", "actual": "bigint_4096_bits", "operator": "eq", "expected": "bigint_4096_bits", "matches": true},
+    {"id": "bigint-over-boundary-equality", "actual": "bigint_4097_bits", "operator": "eq", "expected": "bigint_4097_bits", "matches": false},
+    {"id": "in-valid-candidates", "actual": "string_alpha", "operator": "in", "candidates": ["string_two", "string_alpha"], "matches": true},
+    {"id": "not-in-valid-candidates", "actual": "integer", "operator": "not_in", "candidates": ["string_two", "string_alpha"], "matches": true},
+    {"id": "contains-sequence", "actual": "sequence_value", "operator": "contains", "expected": "string_two", "matches": true},
+    {"id": "contains-string-case-insensitive", "actual": "string_alpha", "operator": "contains", "expected": "string_alpha_lower", "matches": true},
+    {"id": "contains-mapping-token", "actual": "mapping_order_a", "operator": "contains", "expected": "string_needle", "matches": true},
+    {"id": "present-exists", "actual": "null", "operator": "exists", "expected": "boolean_true", "matches": true},
+    {"id": "missing-does-not-exist", "operator": "exists", "expected": "boolean_false", "matches": true},
+    {"id": "invalid-actual-equality", "actual": "cycle", "operator": "eq", "expected": "cycle", "matches": false},
+    {"id": "invalid-actual-inequality", "actual": "cycle", "operator": "not_eq", "expected": "string_alpha", "matches": false},
+    {"id": "invalid-candidate-fails-set", "actual": "string_alpha", "operator": "in", "candidates": ["string_alpha", "unsupported"], "matches": false},
+    {"id": "over-depth-equality", "actual": "depth_17", "operator": "eq", "expected": "depth_17", "matches": false},
+    {"id": "over-container-inequality", "actual": "sequence_1025_items", "operator": "not_eq", "expected": "sequence_1024_items", "matches": false},
+    {"id": "over-units-equality", "actual": "units_4097", "operator": "eq", "expected": "units_4097", "matches": false},
+    {"id": "atom-at-boundary-equality", "actual": "string_65536_units", "operator": "eq", "expected": "string_65536_units", "matches": true},
+    {"id": "atom-over-boundary-inequality", "actual": "string_65537_units", "operator": "not_eq", "expected": "string_alpha", "matches": false}
+  ]
+}

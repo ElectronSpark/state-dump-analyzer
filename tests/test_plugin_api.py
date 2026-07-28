@@ -12,6 +12,7 @@ from uuid import UUID
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+import router_dump_analyzer
 from router_dump_analyzer import plugin_api
 from router_dump_analyzer.plugin_api import (
     AbsoluteTimeSelector,
@@ -60,6 +61,8 @@ from router_dump_analyzer.plugin_api import (
     INPUT_PARSER_HOOKS,
     InputParserKind,
     InputSpec,
+    InterNodeLinkPresentation,
+    InterNodeRouteTraceRole,
     PropertyDescriptor,
     PropertyPatch,
     PLUGIN_CAPABILITY_HOOKS,
@@ -109,6 +112,9 @@ from router_dump_analyzer.plugin_api import (
     TopologyProjectionRequest,
     TopologyResourceRecord,
     TopologyResourcePresentation,
+    TopologyDomainRole,
+    TopologyExternalClassification,
+    TopologyPluginSemanticsDescriptor,
     TopologyTwoParticipantShape,
     TopologyUsability,
     UnknownField,
@@ -1295,6 +1301,57 @@ class PluginApiTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "two-participant shape"):
             TopologyResourcePresentation(two_participant_shape="diagonal")  # type: ignore[arg-type]
+
+    def test_topology_external_and_inter_node_roles_are_typed(self) -> None:
+        self.assertIs(
+            router_dump_analyzer.TopologyDomainRole,
+            TopologyDomainRole,
+        )
+        self.assertIs(
+            router_dump_analyzer.InterNodeRouteTraceRole,
+            InterNodeRouteTraceRole,
+        )
+        semantics = TopologyPluginSemanticsDescriptor(
+            role=TopologyDomainRole.EXTERNAL,
+            coverage_complete=True,
+        )
+        self.assertEqual(
+            semantics.external_classification,
+            TopologyExternalClassification(
+                role=TopologyDomainRole.EXTERNAL,
+                coverage_complete=True,
+            ),
+        )
+        self.assertIsNone(
+            TopologyPluginSemanticsDescriptor(
+                role="plugin-owned-transit-role",
+                coverage_complete=True,
+            ).external_classification
+        )
+        for coverage_complete in (None, False):
+            with self.subTest(coverage_complete=coverage_complete):
+                self.assertIsNone(
+                    TopologyPluginSemanticsDescriptor(
+                        role=TopologyDomainRole.EXTERNAL,
+                        coverage_complete=coverage_complete,
+                    ).external_classification
+                )
+        presentation = InterNodeLinkPresentation(route_trace="overlay")  # type: ignore[arg-type]
+        self.assertIs(
+            presentation.route_trace,
+            InterNodeRouteTraceRole.OVERLAY,
+        )
+        with self.assertRaisesRegex(ValueError, "coverage_complete"):
+            TopologyPluginSemanticsDescriptor(
+                role="external",
+                coverage_complete="yes",  # type: ignore[arg-type]
+            )
+        with self.assertRaisesRegex(ValueError, "route_trace"):
+            InterNodeLinkPresentation(route_trace="mirror")  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "core-produced"):
+            InterNodeLinkPresentation(
+                route_trace=InterNodeRouteTraceRole.CONFLICT
+            )
 
     def test_plugin_source_types_and_regex_lane_presets_are_declarative(self) -> None:
         source_group = SourceRecordGroupDescriptor(

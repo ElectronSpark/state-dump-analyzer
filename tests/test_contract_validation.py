@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import unittest
+from collections import UserDict
 from enum import StrEnum
+from types import MappingProxyType
 
 from router_dump_analyzer.contract_validation import (
+    bounded_mapping,
     bounded_string,
     coerce_enum,
     strict_boolean,
     strict_integer,
     typed_tuple,
+    validate_bounded_json_value,
     validity_bounds,
 )
 
@@ -33,6 +37,78 @@ class ContractValidationTests(unittest.TestCase):
             strict_integer(True, "count")
         with self.assertRaises(ValueError):
             strict_boolean(1, "enabled")
+
+    def test_bounded_mapping_rejects_coercion_and_unbounded_iteration(
+        self,
+    ) -> None:
+        self.assertEqual(
+            bounded_mapping({"role": "external"}, "semantics"),
+            {"role": "external"},
+        )
+        self.assertEqual(
+            bounded_mapping(None, "semantics", allow_none=True),
+            {},
+        )
+        for invalid in (
+            [("role", "external")],
+            {1: "external"},
+            {"": "external"},
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                bounded_mapping(invalid, "semantics")
+        with self.assertRaisesRegex(ValueError, "at most 1"):
+            bounded_mapping(
+                {"one": 1, "two": 2},
+                "semantics",
+                maximum_items=1,
+            )
+
+    def test_bounded_json_value_is_strict_recursive_and_cycle_safe(
+        self,
+    ) -> None:
+        validate_bounded_json_value(
+            {
+                "null": None,
+                "bool": True,
+                "integer": 7,
+                "float": 1.25,
+                "string": "value",
+                "array": [1, {"nested": "value"}],
+                "tuple_encoded_as_array": ("one", "two"),
+            },
+            "semantics",
+        )
+
+        cyclic: list[object] = []
+        cyclic.append(cyclic)
+        invalid_values = (
+            b"not-json",
+            object(),
+            float("nan"),
+            float("inf"),
+            {1: "non-string-key"},
+            {"nested": UserDict({"value": 1})},
+            {"nested": MappingProxyType({"value": 1})},
+            cyclic,
+        )
+        for invalid in invalid_values:
+            with self.subTest(
+                invalid=type(invalid).__name__
+            ), self.assertRaises(ValueError):
+                validate_bounded_json_value(invalid, "semantics")
+
+        with self.assertRaisesRegex(ValueError, "at most 2"):
+            validate_bounded_json_value(
+                [1, 2, 3],
+                "semantics",
+                maximum_container_items=2,
+            )
+        with self.assertRaisesRegex(ValueError, "value units"):
+            validate_bounded_json_value(
+                [[1], [2]],
+                "semantics",
+                maximum_units=3,
+            )
 
     def test_integer_subclass_compatibility_is_explicit(self) -> None:
         value = _IntegerSubclass(7)
@@ -129,6 +205,14 @@ class ContractValidationTests(unittest.TestCase):
             strict_integer(1, "field", minimum=2, maximum=1)
         with self.assertRaisesRegex(ValueError, "tuple bounds"):
             typed_tuple((), "field", str, minimum=2, maximum=1)
+        with self.assertRaisesRegex(ValueError, "mapping bounds"):
+            bounded_mapping({}, "field", maximum_items=-1)
+        with self.assertRaisesRegex(ValueError, "JSON value bounds"):
+            validate_bounded_json_value(
+                {},
+                "field",
+                maximum_depth=-1,
+            )
 
 
 if __name__ == "__main__":

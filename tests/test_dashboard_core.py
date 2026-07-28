@@ -1,12 +1,89 @@
 from __future__ import annotations
 
+import json
 import unittest
+from pathlib import Path
+from typing import Any, cast
 
 from router_dump_analyzer.dashboard_core import (
     DashboardDescriptorValidationError,
+    dashboard_filter_matches,
     evaluate_dashboards,
 )
 from tests.support.normalized_data import static_data_service
+
+_PARITY_FIXTURE_PATH = (
+    Path(__file__).with_name("fixtures") / "dashboard-evaluator-parity.json"
+)
+
+
+def _dashboard_parity_fixture() -> dict[str, Any]:
+    return cast(
+        dict[str, Any],
+        json.loads(_PARITY_FIXTURE_PATH.read_text(encoding="utf-8")),
+    )
+
+
+def _parity_recipe_amount(
+    recipe: dict[str, Any],
+    bounds: dict[str, Any],
+) -> int:
+    return int(bounds[str(recipe["bound"])]) + int(recipe.get("offset", 0))
+
+
+def _build_parity_value(
+    recipe: dict[str, Any],
+    bounds: dict[str, Any],
+) -> Any:
+    kind = str(recipe["kind"])
+    if kind == "literal":
+        return recipe.get("value")
+    if kind == "signed_zero":
+        return -0.0 if recipe.get("negative") is True else 0.0
+    if kind == "nonfinite":
+        return {
+            "nan": float("nan"),
+            "positive_infinity": float("inf"),
+            "negative_infinity": float("-inf"),
+        }[str(recipe["value"])]
+    if kind == "bigint_bits":
+        bits = _parity_recipe_amount(recipe, bounds)
+        return 1 << (bits - 1)
+    if kind == "nested_sequence":
+        value: Any = None
+        for _ in range(_parity_recipe_amount(recipe, bounds)):
+            value = [value]
+        return value
+    if kind == "sequence_items":
+        return list(range(_parity_recipe_amount(recipe, bounds)))
+    if kind == "mapping_items":
+        return {
+            f"key-{index}": index
+            for index in range(_parity_recipe_amount(recipe, bounds))
+        }
+    if kind == "comparison_unit_tree":
+        target_units = _parity_recipe_amount(recipe, bounds)
+        group_count = int(bounds["max_container_items"])
+        leaf_count = target_units - 1 - group_count
+        if leaf_count < 0 or leaf_count > group_count * 3:
+            raise AssertionError("comparison_unit_tree recipe is not representable")
+        groups: list[list[int]] = []
+        for _ in range(group_count):
+            group_size = min(3, leaf_count)
+            groups.append([0] * group_size)
+            leaf_count -= group_size
+        if leaf_count:
+            raise AssertionError("comparison_unit_tree recipe left unused units")
+        return groups
+    if kind == "repeated_string":
+        return "x" * _parity_recipe_amount(recipe, bounds)
+    if kind == "unsupported":
+        return object()
+    if kind == "cycle_sequence":
+        cycle: list[Any] = []
+        cycle.append(cycle)
+        return cycle
+    raise AssertionError(f"unknown dashboard parity recipe: {kind}")
 
 
 class DashboardCoreTests(unittest.TestCase):
@@ -505,6 +582,90 @@ class DashboardCoreTests(unittest.TestCase):
         self.assertEqual(0, result["statistics"][0]["value"])
         self.assertEqual(0, result["statistics"][1]["value"])
         self.assertEqual(0, result["statistics"][1]["sample_count"])
+
+    def test_shared_dashboard_evaluator_parity_fixture(self) -> None:
+        fixture = _dashboard_parity_fixture()
+        self.assertEqual(1, fixture["schema_version"])
+        bounds = fixture["bounds"]
+        values = {
+            str(item["id"]): _build_parity_value(item["recipe"], bounds)
+            for item in fixture["values"]
+        }
+
+        descriptor = [
+            {
+                "dashboard_id": "parity",
+                "statistics": [
+                    {
+                        "statistic_id": "distinct",
+                        "aggregation": "count_distinct",
+                        "field": "state.value",
+                    }
+                ],
+                "tables": [],
+            }
+        ]
+        for item in fixture["values"]:
+            with self.subTest(kind="comparable", case=item["id"]):
+                statistic = evaluate_dashboards(
+                    descriptor,
+                    [
+                        {
+                            "resource_id": "fixture",
+                            "kind": "FIXTURE",
+                            "exists": True,
+                            "state": {"value": values[str(item["id"])]},
+                        }
+                    ],
+                )[0]["statistics"][0]
+                self.assertEqual(
+                    1 if item["comparable"] else 0,
+                    statistic["sample_count"],
+                )
+                self.assertEqual(
+                    1 if item["comparable"] else 0,
+                    statistic["value"],
+                )
+
+        for case in fixture["equality_cases"]:
+            with self.subTest(kind="equality", case=case["id"]):
+                actual = values[str(case["left"])]
+                expected = values[str(case["right"])]
+                self.assertIs(
+                    bool(case["equal"]),
+                    dashboard_filter_matches(
+                        {"state": {"value": actual}},
+                        {
+                            "field": "state.value",
+                            "operator": "eq",
+                            "value": expected,
+                        },
+                    ),
+                )
+
+        for case in fixture["filter_cases"]:
+            with self.subTest(kind="filter", case=case["id"]):
+                state = (
+                    {"value": values[str(case["actual"])]}
+                    if "actual" in case
+                    else {}
+                )
+                expected = (
+                    [values[str(item)] for item in case["candidates"]]
+                    if "candidates" in case
+                    else values[str(case["expected"])]
+                )
+                self.assertIs(
+                    bool(case["matches"]),
+                    dashboard_filter_matches(
+                        {"state": state},
+                        {
+                            "field": "state.value",
+                            "operator": case["operator"],
+                            "value": expected,
+                        },
+                    ),
+                )
 
     def test_unknown_existence_is_not_present_unless_absent_rows_are_requested(
         self,

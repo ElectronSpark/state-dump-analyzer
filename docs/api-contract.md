@@ -796,6 +796,16 @@ and declares complete applicable coverage. Management and loopback exclusion,
 and VPN placement in a separate presentation plane, are likewise plug-in
 decisions.
 
+The typed provider boundary for this normalized envelope is
+`TopologyPluginSemanticsDescriptor`. `role` stays open bounded plug-in
+vocabulary, while `TopologyDomainRole.EXTERNAL` is the only generic
+core-actionable role and requires the literal boolean
+`coverage_complete: true`. The API preserves the wire value `"external"`.
+The entire semantics envelope is bounded and strict-JSON-safe before it is
+compared or returned; scalar types remain distinct in merge-critical
+comparison. Invalid keys, non-finite numbers, Python-only objects, cycles, and
+oversized values fail the request rather than being stringified.
+
 Presentation does not change this model. A plug-in may set the bounded
 `topology_presentation.two_participant_shape` property to `compact_edge` (the
 typed API equivalent is `TopologyResourcePresentation` with
@@ -833,6 +843,14 @@ carry `projection_role: route_trace_compatibility` and are suppressed in the
 physical topology whenever the segment projection is available. They are not
 drawn in parallel with subnet spokes and are not silently treated as segment
 membership.
+
+Each input claim's `presentation.route_trace` is validated through
+`InterNodeLinkPresentation`: accepted plug-in wire values are `"include"` and
+`"overlay"`, with `"include"` as the default. `"conflict"` is not a valid
+plug-in input. It is emitted only by core when the two peer claims disagree;
+that result also uses `projection_role: presentation_conflict` and unknown
+operational state so a presentation disagreement cannot become a physical
+route hop.
 
 ## 5. Route resolution
 

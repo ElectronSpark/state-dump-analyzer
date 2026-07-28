@@ -5,6 +5,7 @@ import re
 import subprocess
 import unittest
 import uuid
+from collections import UserDict
 from itertools import combinations, permutations
 from urllib.parse import parse_qs, urlparse
 
@@ -886,6 +887,181 @@ class MultiNodeTopologyTests(unittest.TestCase):
             "matcher_not_declared_as_exact_connectivity_domain",
         )
 
+    def test_segment_semantics_use_strict_bounded_comparison(self) -> None:
+        demo = generated_topology_demo()
+        matcher_id = demo.contract["network_segment_matchers"][0][
+            "matcher_id"
+        ]
+
+        def claim(
+            node_id: str,
+            index: int,
+            semantics: object,
+        ) -> dict[str, object]:
+            return {
+                "matcher_id": matcher_id,
+                "segment_key": "strict-semantic-domain",
+                "resource_id": f"{node_id}/INTERFACE/{index}",
+                "node_id": node_id,
+                "member_id": f"member:{node_id}",
+                "revision_id": "test-revision",
+                "plugin_set_id": "test-set",
+                "plugin_id": "test.plugin",
+                "plugin_instance_id": "test-instance",
+                "plugin_run_id": f"test-run-{index}",
+                "plugin_version": "1.0",
+                "projection_id": "test.projection",
+                "status_perspective_id": "test.observed",
+                "usable": True,
+                "status": "up",
+                "exists": True,
+                "quality": "exact",
+                "resolved_time": {
+                    "basis_kind": "absolute_time",
+                    "query_time_ns": "1000",
+                },
+                "deep_link": {"href": f"/node?resource={index}"},
+                "plugin_semantics": semantics,
+                "attachment_model": {},
+                "confidence": {"score": 1.0},
+                "inference": {"owner": "plugin"},
+                "evidence": [],
+            }
+
+        semantics = {
+            "network_kind": 1,
+            "role": "plugin-owned-transit",
+            "coverage_complete": True,
+        }
+        differently_typed = {
+            **semantics,
+            "network_kind": "1",
+        }
+        segments, _attachments, _resolutions, _truncated, _attachments_truncated = (
+            demo._assemble_network_segments(
+                [
+                    claim("node-a", 1, semantics),
+                    claim("node-b", 2, differently_typed),
+                ],
+                10,
+                10,
+            )
+        )
+        self.assertEqual(len(segments), 1)
+        self.assertTrue(segments[0]["semantic_conflict"])
+        self.assertEqual(
+            segments[0]["semantic_conflicts"]["network_kind"],
+            [1, "1"],
+        )
+
+        cyclic: list[object] = []
+        cyclic.append(cyclic)
+        invalid_semantics = (
+            {"network_kind": b"not-json"},
+            {"network_kind": object()},
+            {"network_kind": float("nan")},
+            {"network_kind": UserDict({"value": 1})},
+            {"network_kind": list(range(1_025))},
+            {"network_kind": cyclic},
+        )
+        for index, invalid in enumerate(invalid_semantics, start=10):
+            with self.subTest(
+                invalid=type(invalid["network_kind"]).__name__
+            ), self.assertRaisesRegex(
+                MultiNodeTopologyRequestError,
+                "plugin_semantics is not safely comparable",
+            ):
+                demo._assemble_network_segments(
+                    [claim("node-a", index, invalid)],
+                    10,
+                    10,
+                )
+
+    def test_only_declared_external_role_has_core_semantics(self) -> None:
+        demo = generated_topology_demo()
+        matcher_id = demo.contract["network_segment_matchers"][0][
+            "matcher_id"
+        ]
+
+        def claim(
+            segment_key: str,
+            role: object,
+            coverage_complete: object,
+        ) -> dict[str, object]:
+            return {
+                "matcher_id": matcher_id,
+                "segment_key": segment_key,
+                "resource_id": f"node-a/INTERFACE/{segment_key}",
+                "node_id": "node-a",
+                "member_id": "member:node-a",
+                "revision_id": "test-revision",
+                "plugin_set_id": "test-set",
+                "plugin_id": "test.plugin",
+                "plugin_instance_id": "test-instance",
+                "plugin_run_id": "test-run",
+                "plugin_version": "1.0",
+                "projection_id": "test.projection",
+                "status_perspective_id": "test.observed",
+                "usable": True,
+                "status": "up",
+                "exists": True,
+                "quality": "exact",
+                "resolved_time": {
+                    "basis_kind": "absolute_time",
+                    "query_time_ns": "1000",
+                },
+                "deep_link": {"href": "/node"},
+                "plugin_semantics": {
+                    "network_kind": "plugin-owned-kind",
+                    "role": role,
+                    "coverage_complete": coverage_complete,
+                },
+                "attachment_model": {},
+                "confidence": {"score": 1.0},
+                "inference": {"owner": "plugin"},
+                "evidence": [],
+            }
+
+        segments, _attachments, _resolutions, _truncated, _attachments_truncated = (
+            demo._assemble_network_segments(
+                [
+                    claim(
+                        "plugin-owned",
+                        "vendor-private-transit",
+                        True,
+                    ),
+                    claim("external", "external", True),
+                ],
+                10,
+                10,
+            )
+        )
+        by_key = {item["segment_key"]["value"]: item for item in segments}
+        plugin_owned = by_key["plugin-owned"]
+        self.assertEqual(
+            plugin_owned["role"],
+            "vendor-private-transit",
+        )
+        self.assertFalse(plugin_owned["plugin_asserted_external"])
+        self.assertTrue(by_key["external"]["plugin_asserted_external"])
+
+        malformed_values = (
+            ("invalid-role", 7, True),
+            ("invalid-coverage", "external", "yes"),
+        )
+        for segment_key, role, coverage in malformed_values:
+            with self.subTest(
+                segment_key=segment_key
+            ), self.assertRaisesRegex(
+                MultiNodeTopologyRequestError,
+                "invalid plugin_semantics",
+            ):
+                demo._assemble_network_segments(
+                    [claim(segment_key, role, coverage)],
+                    10,
+                    10,
+                )
+
     def test_default_physical_graph_is_connected_but_not_a_full_mesh(self) -> None:
         response = self.client.post(
             "/v1/topologies/query",
@@ -1148,6 +1324,31 @@ class MultiNodeTopologyTests(unittest.TestCase):
             type_conflict["operational"]["reason"],
             "plugin_link_type_mismatch",
         )
+
+        for invalid in ("mirror", "conflict"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(
+                MultiNodeTopologyRequestError,
+                "invalid inter-node presentation",
+            ):
+                demo._join_claims(
+                    [
+                        claim("node-a", invalid),
+                        claim("node-b", "include"),
+                    ],
+                    10,
+                    "test-context",
+                )
+        malformed = claim("node-a", "include")
+        malformed["presentation"] = ["include"]
+        with self.assertRaisesRegex(
+            MultiNodeTopologyRequestError,
+            "invalid inter-node presentation",
+        ):
+            demo._join_claims(
+                [malformed, claim("node-b", "include")],
+                10,
+                "test-context",
+            )
 
     def test_topology_basis_is_strict_and_canonical(self) -> None:
         time_ns = 1_759_680_005_000_000_000

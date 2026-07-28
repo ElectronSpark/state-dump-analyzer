@@ -758,6 +758,21 @@ plug-in asserts `external` and the relevant projection coverage is complete.
 VPN domains belong to a separate projection or presentation plane so an
 overlay is not silently mixed with underlay adjacency.
 
+At the normalized assembly boundary, construct
+`TopologyPluginSemanticsDescriptor` from `plugin_semantics.role` and
+`coverage_complete`. The role field is open, bounded plug-in vocabulary; the
+descriptor returns `TopologyExternalClassification` only for
+`TopologyDomainRole.EXTERNAL` with boolean `coverage_complete=True`. A
+non-null classification therefore proves both declarations. Missing, false,
+integer, or string lookalikes do not prove external coverage. The complete
+`plugin_semantics` envelope must be a bounded string-keyed, strict JSON value:
+non-finite numbers, binary or arbitrary Python objects, reference cycles, and
+values beyond 128 top-level fields, 128-character top-level keys, 16 container
+levels, 1,024 items per nested container, 4,096 total value units,
+65,536-character atoms, or 4,096-bit integers fail before merge.
+Merge-critical equality preserves scalar types, so integer `1` never aliases
+string `"1"`.
+
 The executable v1 `TopologyProjectionDescriptor` declares topology semantics
 and supported status perspectives; it does not yet carry reusable
 browser-profile fields. When the coordinator or assembly profile adapter
@@ -799,6 +814,18 @@ and that it is not subnet-membership evidence; the physical view suppresses it
 when an explicit domain projection is available. Removing either compatibility
 form requires a versioned route schema that can name attachment transitions
 directly.
+
+Validate each such claim with `InterNodeLinkPresentation`. A plug-in may set
+`route_trace` to `InterNodeRouteTraceRole.INCLUDE` or
+`InterNodeRouteTraceRole.OVERLAY`; omission defaults to `include`.
+Serialize the typed result as
+`{"route_trace": presentation.route_trace.value}` rather than placing the
+dataclass itself in the JSON envelope.
+`InterNodeRouteTraceRole.CONFLICT` is response-only and a plug-in declaration
+of it is invalid. When two otherwise valid peer claims disagree, core emits
+wire value `conflict`, projection role `presentation_conflict`, and unknown
+operational status instead of guessing whether the link is a physical route
+hop. These normalized wire strings are stable compatibility values.
 
 A forwarding candidate that crosses a connectivity domain must retain a typed
 declarative topology reference rather than only a derived pairwise line. The

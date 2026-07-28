@@ -117,6 +117,15 @@ The generated runtime examples keep exact topology keys and dashboard
 comparison fields inside the core's documented bounds. Their conformance tests
 also exercise typed exact matching and explicit endpoint-start evidence; copy
 those patterns instead of flattening opaque keys or inferring route symmetry.
+The topology adapter constructs `TopologyPluginSemanticsDescriptor` before it
+emits a normalized domain claim. Arbitrary bounded roles remain plug-in-owned;
+only `TopologyDomainRole.EXTERNAL` plus complete projection coverage authorizes
+the generic core to classify a one-sided domain as external. Inter-node
+presentation claims may use `InterNodeRouteTraceRole.INCLUDE` or
+`InterNodeRouteTraceRole.OVERLAY`; `CONFLICT` is reserved for core aggregation
+output and must not be emitted by a plug-in. This generated fixture uses shared
+segment claims rather than pairwise connector claims; the inter-node role
+boundary is exercised by the core conformance tests.
 The runtime gives core raw topology values only at the plug-in hook; generated
 projection JSON contains the core's already-normalized tagged form and is
 validated directly on reload. Dashboard examples rely on presence-aware fields:

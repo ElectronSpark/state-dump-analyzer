@@ -16,7 +16,9 @@ import {
   rangeSummaryFacts,
   replaceAbortController,
   routePayloadForwardingPresentation,
+  stateChipClassName,
   statusClassPresentation,
+  statusSegmentClassName,
 } from "./view_models.js";
 
 const PALETTE = ["#52e0c4", "#a58bff", "#f5b85b", "#66b8ff", "#ff8eb5", "#9bd66f", "#df9dff"];
@@ -2078,7 +2080,7 @@ function renderTimeline() {
     const statuses = lane.statuses.map((interval, index) => {
       const key = hoverKey("status", lane, index);
       state.hoverModels.set(key, { type: "interval", interval, lane });
-      return `<button class="status-segment status-${safeClass(interval.statusClass)}${intersectsRange(interval.startNs, interval.endNs) ? " in-range" : ""}" data-hover-key="${escapeHtml(key)}" data-start-ns="${interval.startNs}" data-end-ns="${interval.endNs}" data-range-start-ns="${interval.startNs}" data-range-end-ns="${interval.endNs}" data-open-end="${interval.openEnd}" style="${barStyle(interval)};--segment-color:${escapeHtml(layerColor(lane.layer))}" type="button"><span>${escapeHtml(interval.status)}</span></button>`;
+      return `<button class="${statusSegmentClassName({ status_class: interval.statusClass })}${intersectsRange(interval.startNs, interval.endNs) ? " in-range" : ""}" data-hover-key="${escapeHtml(key)}" data-start-ns="${interval.startNs}" data-end-ns="${interval.endNs}" data-range-start-ns="${interval.startNs}" data-range-end-ns="${interval.endNs}" data-open-end="${interval.openEnd}" style="${barStyle(interval)};--segment-color:${escapeHtml(layerColor(lane.layer))}" type="button"><span>${escapeHtml(interval.status)}</span></button>`;
     }).join("");
     const glyphs = buildClientGlyphs(lane).map((glyph) => {
       if (glyph.kind === "cluster") {
@@ -4320,7 +4322,7 @@ function renderResourceBundleTable(container, descriptor) {
         </div>
       </td>
       <td><span class="resource-kind-label">${escapeHtml(humanResourceType(kind))}</span></td>
-      <td><span class="state-chip state-${safeClass(item.status_class)}">${escapeHtml(item.status || "unknown")}</span></td>
+      <td><span class="${stateChipClassName(item)}">${escapeHtml(item.status || "unknown")}</span></td>
       <td><span class="resource-bundle-validity${interval.temporary ? " temporary" : ""}" title="${escapeHtml(interval.exact)}">${escapeHtml(interval.label)}</span></td>
       <td><button class="lane-visibility-toggle" type="button" data-lane-toggle="${escapeHtml(resourceId)}" aria-pressed="${laneSelectedByMode(resourceId)}">${laneSelectedByMode(resourceId) ? "Shown" : "Hidden"}</button></td>
       ${columns.map((column) => `<td>${resourceBundleColumnApplies(column, node, item) ? formatDashboardCell(item, column) : '<span class="dashboard-empty-value">not applicable</span>'}</td>`).join("")}
@@ -4451,7 +4453,7 @@ function renderResourceTables() {
     const tags = presentationTags(item);
     const compact = tags.has("compact") || tags.has("connector");
     const current = item.resource_id === state.selectedResourceId;
-    return `<tr data-resource-id="${escapeHtml(item.resource_id)}" class="${current ? "selected " : ""}${compact ? "resource-connector" : ""}" tabindex="0"><td><strong>${escapeHtml(item.label || resourceLabel(item, item.resource_id))}</strong><small>${escapeHtml(item.resource_id)}${compact ? " / connector" : ""}</small></td><td>${escapeHtml(humanLayer(item.layer))}</td><td>${item.exists === false ? "no" : "yes"}</td><td><span class="state-chip state-${safeClass(item.status_class)}">${escapeHtml(item.status || "unknown")}</span></td><td><button class="lane-visibility-toggle" type="button" data-lane-toggle="${escapeHtml(item.resource_id)}" aria-pressed="${laneSelectedByMode(item.resource_id)}">${laneSelectedByMode(item.resource_id) ? "Shown" : "Hidden"}</button></td>${columns.map((column) => `<td>${formatResourceTableCell(item, column)}</td>`).join("")}</tr>`;
+    return `<tr data-resource-id="${escapeHtml(item.resource_id)}" class="${current ? "selected " : ""}${compact ? "resource-connector" : ""}" tabindex="0"><td><strong>${escapeHtml(item.label || resourceLabel(item, item.resource_id))}</strong><small>${escapeHtml(item.resource_id)}${compact ? " / connector" : ""}</small></td><td>${escapeHtml(humanLayer(item.layer))}</td><td>${item.exists === false ? "no" : "yes"}</td><td><span class="${stateChipClassName(item)}">${escapeHtml(item.status || "unknown")}</span></td><td><button class="lane-visibility-toggle" type="button" data-lane-toggle="${escapeHtml(item.resource_id)}" aria-pressed="${laneSelectedByMode(item.resource_id)}">${laneSelectedByMode(item.resource_id) ? "Shown" : "Hidden"}</button></td>${columns.map((column) => `<td>${formatResourceTableCell(item, column)}</td>`).join("")}</tr>`;
   }).join("")}</tbody></table>${resourcePaginationMarkup(state.resourceQuery)}`;
   container.querySelectorAll("tr[data-resource-id]").forEach((row) => {
     const choose = () => selectResource(row.dataset.resourceId);
@@ -4861,7 +4863,7 @@ function formatDashboardCell(item, column) {
       : undefined;
     const statusClass = declaredStatusClass
       ?? (column.field === "status" ? item.status_class : "unknown");
-    return `<span class="state-chip state-${safeClass(statusClass || "unknown")}">${escapeHtml(value)}</span>`;
+    return `<span class="${stateChipClassName({ status_class: statusClass || "unknown" })}">${escapeHtml(value)}</span>`;
   }
   if (valueFormat === "boolean") return value ? "yes" : "no";
   if (valueFormat === "number") {

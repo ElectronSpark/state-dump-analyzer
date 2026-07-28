@@ -22,11 +22,23 @@ from urllib.parse import quote, urlencode
 
 from router_dump_analyzer.canonical import (
     CanonicalValueError,
+    bounded_value_key,
     canonical_opaque_value,
     opaque_value_json,
 )
+from router_dump_analyzer.contract_validation import (
+    bounded_mapping,
+    validate_bounded_json_value,
+)
 from router_dump_analyzer.normalized_data import contains_time
-from router_dump_analyzer.plugin_api import KeyAtom
+from router_dump_analyzer.plugin_api import (
+    InterNodeLinkPresentation,
+    InterNodeRouteTraceRole,
+    KeyAtom,
+    TopologyDomainRole,
+    TopologyPluginSemanticsDescriptor,
+    TopologyTwoParticipantShape,
+)
 from router_dump_analyzer.temporal_core import (
     RESOURCE_CREATION_OPERATIONS,
     RESOURCE_DELETION_OPERATIONS,
@@ -59,6 +71,109 @@ def _canonical_opaque_key(value: Any) -> tuple[dict[str, Any], str]:
         return canonical_opaque_value(value, key_atom_type=KeyAtom)
     except CanonicalValueError as error:
         raise MultiNodeTopologyRequestError(str(error)) from error
+
+
+def _semantic_comparison_key(
+    value: Any,
+    *,
+    label: str,
+) -> tuple[Any, ...]:
+    """Return one bounded, type-preserving merge key or fail closed."""
+
+    try:
+        validate_bounded_json_value(value, label)
+        return bounded_value_key(value)
+    except (CanonicalValueError, ValueError) as error:
+        raise MultiNodeTopologyRequestError(
+            f"{label} is not safely comparable: {error}"
+        ) from error
+
+
+def _validated_topology_presentation(value: Any) -> dict[str, Any]:
+    try:
+        presentation = bounded_mapping(
+            value,
+            "topology_presentation",
+            allow_none=True,
+        )
+        _semantic_comparison_key(
+            presentation,
+            label="topology_presentation",
+        )
+        shape = TopologyTwoParticipantShape(
+            presentation.get(
+                "two_participant_shape",
+                TopologyTwoParticipantShape.DOMAIN_NODE,
+            )
+        )
+    except (TypeError, ValueError) as error:
+        raise MultiNodeTopologyRequestError(
+            f"invalid topology_presentation: {error}"
+        ) from error
+    presentation["two_participant_shape"] = shape.value
+    return presentation
+
+
+def _validated_plugin_semantics(
+    value: Any,
+) -> tuple[
+    dict[str, Any],
+    tuple[Any, ...],
+    TopologyPluginSemanticsDescriptor,
+]:
+    try:
+        semantics = bounded_mapping(
+            value,
+            "plugin_semantics",
+            allow_none=True,
+        )
+        comparison_key = _semantic_comparison_key(
+            semantics,
+            label="plugin_semantics",
+        )
+        descriptor = TopologyPluginSemanticsDescriptor(
+            role=semantics.get("role"),
+            coverage_complete=semantics.get("coverage_complete"),
+        )
+        _validated_topology_presentation(
+            semantics.get("topology_presentation")
+        )
+    except (TypeError, ValueError) as error:
+        if isinstance(error, MultiNodeTopologyRequestError):
+            raise
+        raise MultiNodeTopologyRequestError(
+            f"invalid plugin_semantics: {error}"
+        ) from error
+    return semantics, comparison_key, descriptor
+
+
+def _validated_inter_node_presentation(
+    value: Any,
+) -> tuple[dict[str, Any], InterNodeRouteTraceRole]:
+    try:
+        presentation = bounded_mapping(
+            value,
+            "inter-node presentation",
+            allow_none=True,
+        )
+        _semantic_comparison_key(
+            presentation,
+            label="inter-node presentation",
+        )
+        descriptor = InterNodeLinkPresentation(
+            route_trace=presentation.get(
+                "route_trace",
+                InterNodeRouteTraceRole.INCLUDE,
+            )
+        )
+    except (TypeError, ValueError) as error:
+        if isinstance(error, MultiNodeTopologyRequestError):
+            raise
+        raise MultiNodeTopologyRequestError(
+            f"invalid inter-node presentation: {error}"
+        ) from error
+    presentation["route_trace"] = descriptor.route_trace.value
+    return presentation, descriptor.route_trace
 
 
 def _integer_ns(value: Any, field: str) -> int:
@@ -800,13 +915,23 @@ class MultiNodeTopologyService:
             "network_segment_limit": segment_limit,
             "segment_attachment_limit": attachment_limit,
         }
-        context_digest = hashlib.sha256(
-            json.dumps(
+        _semantic_comparison_key(
+            context_material,
+            label="topology query context",
+        )
+        try:
+            context_bytes = json.dumps(
                 context_material,
                 sort_keys=True,
                 separators=(",", ":"),
-                default=str,
+                allow_nan=False,
             ).encode("utf-8")
+        except (TypeError, ValueError) as error:
+            raise MultiNodeTopologyRequestError(
+                "topology query context is not canonical JSON"
+            ) from error
+        context_digest = hashlib.sha256(
+            context_bytes
         ).hexdigest()[:24]
         context_id = f"tctx1-{context_digest}"
 
@@ -1863,6 +1988,13 @@ class MultiNodeTopologyService:
         grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
         unresolved_matchers: list[dict[str, Any]] = []
         for claim in claims:
+            (
+                plugin_semantics,
+                plugin_semantics_key,
+                plugin_semantics_descriptor,
+            ) = _validated_plugin_semantics(
+                claim.get("plugin_semantics")
+            )
             matcher_id = str(claim["matcher_id"])
             normalized_segment_key, canonical_segment_key = _canonical_opaque_key(
                 claim["segment_key"]
@@ -1888,6 +2020,13 @@ class MultiNodeTopologyService:
                 continue
             normalized_claim = dict(claim)
             normalized_claim["_normalized_segment_key"] = normalized_segment_key
+            normalized_claim["plugin_semantics"] = plugin_semantics
+            normalized_claim["_plugin_semantics_key"] = (
+                plugin_semantics_key
+            )
+            normalized_claim["_plugin_semantics_descriptor"] = (
+                plugin_semantics_descriptor
+            )
             grouped.setdefault((matcher_id, canonical_segment_key), []).append(
                 normalized_claim
             )
@@ -1926,16 +2065,14 @@ class MultiNodeTopologyService:
             ).hexdigest()[:24]
             segment_id = f"network-segment:{segment_digest}"
 
-            semantic_variants_by_key: dict[str, dict[str, Any]] = {}
+            semantic_variants_by_key: dict[
+                tuple[Any, ...],
+                dict[str, Any],
+            ] = {}
             for item in values:
-                semantics = dict(item.get("plugin_semantics") or {})
+                semantics = item["plugin_semantics"]
                 semantic_variants_by_key.setdefault(
-                    json.dumps(
-                        semantics,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                        default=str,
-                    ),
+                    item["_plugin_semantics_key"],
                     semantics,
                 )
             semantic_variants = list(semantic_variants_by_key.values())
@@ -1947,15 +2084,16 @@ class MultiNodeTopologyService:
             )
             semantic_conflicts: dict[str, list[Any]] = {}
             for field_name in merge_critical_fields:
-                field_variants: dict[str, Any] = {}
+                field_variants: dict[tuple[Any, ...], Any] = {}
                 for semantics in semantic_variants:
                     value = semantics.get(field_name)
                     field_variants.setdefault(
-                        json.dumps(
+                        _semantic_comparison_key(
                             value,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                            default=str,
+                            label=(
+                                "merge-critical plugin_semantics."
+                                f"{field_name}"
+                            ),
                         ),
                         value,
                     )
@@ -1963,11 +2101,8 @@ class MultiNodeTopologyService:
                     semantic_conflicts[field_name] = list(field_variants.values())
             semantic_conflict = bool(semantic_conflicts)
             plugin_semantics = semantic_variants[0] if semantic_variants else {}
-            topology_presentation = dict(
-                plugin_semantics.get("topology_presentation") or {}
-            )
-            topology_presentation.setdefault(
-                "two_participant_shape", "domain_node"
+            topology_presentation = _validated_topology_presentation(
+                plugin_semantics.get("topology_presentation")
             )
 
             existing = [item for item in values if item.get("exists") is True]
@@ -2146,11 +2281,15 @@ class MultiNodeTopologyService:
                 bool(existing)
                 and len(node_ids) == 1
                 and all(
-                    (item.get("plugin_semantics") or {}).get("role") == "external"
-                    and (item.get("plugin_semantics") or {}).get(
-                        "coverage_complete"
+                    (
+                        classification := item[
+                            "_plugin_semantics_descriptor"
+                        ].external_classification
                     )
-                    is True
+                    is not None
+                    and classification.role
+                    is TopologyDomainRole.EXTERNAL
+                    and classification.coverage_complete
                     for item in existing
                 )
             )
@@ -2292,9 +2431,17 @@ class MultiNodeTopologyService:
     ]:
         grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for claim in claims:
+            presentation, route_trace_role = (
+                _validated_inter_node_presentation(
+                    claim.get("presentation")
+                )
+            )
+            normalized_claim = dict(claim)
+            normalized_claim["presentation"] = presentation
+            normalized_claim["_route_trace_role"] = route_trace_role
             grouped.setdefault(
                 (str(claim["matcher_id"]), str(claim["match_key"])), []
-            ).append(claim)
+            ).append(normalized_claim)
         candidates: list[dict[str, Any]] = []
         resolutions: list[dict[str, Any]] = []
         unmatched: list[dict[str, Any]] = []
@@ -2372,6 +2519,7 @@ class MultiNodeTopologyService:
                     str(left.get("combination_policy", "all_claims_usable")),
                     str(right.get("combination_policy", "all_claims_usable")),
                 }
+                operational: dict[str, Any]
                 if len(policies) != 1:
                     operational = {
                         "usable": None,
@@ -2425,16 +2573,15 @@ class MultiNodeTopologyService:
                         collision += 1
                 used_link_ids.add(link_id)
                 link_types = {str(left["link_type"]), str(right["link_type"])}
-                route_trace_roles = {
-                    str(item.get("presentation", {}).get("route_trace", "include"))
-                    for item in (left, right)
+                route_trace_roles: set[InterNodeRouteTraceRole] = {
+                    item["_route_trace_role"] for item in (left, right)
                 }
                 route_trace_role = (
                     next(iter(route_trace_roles))
                     if len(route_trace_roles) == 1
-                    else "conflict"
+                    else InterNodeRouteTraceRole.CONFLICT
                 )
-                if route_trace_role == "conflict":
+                if route_trace_role is InterNodeRouteTraceRole.CONFLICT:
                     # Presentation disagreements fail closed: the coordinator
                     # must never promote a possibly-overlay claim to a physical
                     # route hop or adjacency.
@@ -2458,16 +2605,18 @@ class MultiNodeTopologyService:
                         "link_id": link_id,
                         "projection_role": (
                             "presentation_overlay"
-                            if route_trace_role == "overlay"
+                            if route_trace_role
+                            is InterNodeRouteTraceRole.OVERLAY
                             else "route_trace_compatibility"
-                            if route_trace_role == "include"
+                            if route_trace_role
+                            is InterNodeRouteTraceRole.INCLUDE
                             else "presentation_conflict"
                         ),
                         "presentation": {
                             "physical_topology": (
                                 "suppress_when_network_segments_available"
                             ),
-                            "route_trace": route_trace_role,
+                            "route_trace": route_trace_role.value,
                         },
                         "resolution": resolution,
                         "link_type": (

@@ -511,12 +511,6 @@ RAW_MAPPING_BRANCH_MIGRATION_LEDGER: Counter[BranchFingerprint] = Counter(
             ("absolute_time",),
         ): 1,
         (
-            "src/router_dump_analyzer/multi_node_topology.py",
-            "MultiNodeTopologyService._assemble_network_segments",
-            "role",
-            ("external",),
-        ): 1,
-        (
             "src/router_dump_analyzer/normalized_data.py",
             "NormalizedDataService.dashboard_query",
             "aggregation",
@@ -584,20 +578,7 @@ RAW_MAPPING_BRANCH_MIGRATION_LEDGER: Counter[BranchFingerprint] = Counter(
 # the known topology-v1 compatibility debt; the ledger cannot grow.
 OPAQUE_PAYLOAD_BRANCH_MIGRATION_LEDGER: Counter[
     OpaqueBranchFingerprint
-] = Counter(
-    {
-        (
-            "src/router_dump_analyzer/multi_node_topology.py",
-            "MultiNodeTopologyService._assemble_network_segments",
-            "role",
-        ): 1,
-        (
-            "src/router_dump_analyzer/multi_node_topology.py",
-            "MultiNodeTopologyService._assemble_network_segments",
-            "coverage_complete",
-        ): 1,
-    }
-)
+] = Counter()
 
 OPAQUE_PAYLOAD_FIELD_NAMES = frozenset(
     {
@@ -1282,7 +1263,7 @@ class NodeSemanticBoundaryTests(unittest.TestCase):
 def decide(item):
     semantics = item.get("plugin_semantics") or {}
     if (
-        semantics.get("role") == "external"
+        semantics.get("role") == "vendor-special"
         and semantics.get("coverage_complete") is True
     ):
         return True
@@ -1301,7 +1282,7 @@ def decide(item):
                         "synthetic.py",
                         "decide",
                         "role",
-                        ("external",),
+                        ("vendor-special",),
                     ): 1
                 }
             ),

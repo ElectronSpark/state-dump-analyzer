@@ -57,6 +57,14 @@ export function statusClassPresentation(value, options = {}) {
   ).className;
 }
 
+export function stateChipClassName(value, options = {}) {
+  return `state-chip ${statusClassPresentation(value, options)}`;
+}
+
+export function statusSegmentClassName(value, options = {}) {
+  return `status-segment ${statusClassPresentation(value, options)}`;
+}
+
 export function routeEndpointSeedValue(raw, kind) {
   if (raw === undefined || raw === null) return "";
   if (typeof raw !== "object") return String(raw);

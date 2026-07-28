@@ -9,6 +9,28 @@ from rsl_demo_generator import _scale
 
 
 class ScaleGeneratorOptimizationTests(unittest.TestCase):
+    def test_effect_declares_closed_condition_classes_without_core_inference(
+        self,
+    ) -> None:
+        expected_classes = {
+            "active": "healthy",
+            "degraded": "degraded",
+            "down": "error",
+            "absent": "absent",
+            "vendor-specific": "unknown",
+        }
+
+        for condition, expected_class in expected_classes.items():
+            with self.subTest(condition=condition):
+                effect = _scale._effect(
+                    "node-a/data-bridge-layer/ETG/blue/etg-000000",
+                    "ETG",
+                    "state-change",
+                    {"status": condition},
+                )
+                self.assertEqual(effect["condition"], condition)
+                self.assertEqual(effect["status_class"], expected_class)
+
     def test_buffered_line_writer_preserves_bytes_count_and_digest(self) -> None:
         lines = [
             '{"ascii":1}',

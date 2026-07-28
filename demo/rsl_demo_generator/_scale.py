@@ -605,6 +605,10 @@ def _effect(
         else "healthy"
         if normalized
         in {"active", "ready", "programmed", "standby", "up", "reachable"}
+        else "degraded"
+        if normalized == "degraded"
+        else "absent"
+        if normalized == "absent"
         else "unknown"
     )
     return {

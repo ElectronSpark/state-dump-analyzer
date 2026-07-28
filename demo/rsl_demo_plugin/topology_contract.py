@@ -4,15 +4,19 @@ from __future__ import annotations
 
 from typing import Any
 
+from router_dump_analyzer import (
+    TopologyDomainRole,
+    TopologyPluginSemanticsDescriptor,
+)
 from router_dump_analyzer.multi_node_topology import MultiNodeTopologyRequestError
+from router_dump_analyzer.plugin_api import TopologyTwoParticipantShape
 
-from .assembly_store import DemoAssemblyStore
 from . import (
     GENERATED_TOPOLOGY_FEDERATION_PLUGIN_ID,
     GENERATED_TOPOLOGY_PROFILE,
     GENERATED_TOPOLOGY_SEGMENT_MATCHER_ID,
 )
-
+from .assembly_store import DemoAssemblyStore
 
 DEMO_TOPOLOGY_ID = "demo.fabric.multi-node"
 
@@ -250,6 +254,18 @@ def _install_generated_node_projections(
             classification = str(
                 subnet.get("classification") or "underlay"
             )
+            semantics_descriptor = TopologyPluginSemanticsDescriptor(
+                role=classification,
+                coverage_complete=True,
+            )
+            external_classification = (
+                semantics_descriptor.external_classification
+            )
+            classification = (
+                TopologyDomainRole.EXTERNAL.value
+                if external_classification is not None
+                else str(semantics_descriptor.role)
+            )
             prefix = subnet.get("prefix")
             render_hint = str(
                 subnet.get("render_hint") or "shared_subnet"
@@ -278,24 +294,22 @@ def _install_generated_node_projections(
             declared_presentation = item.get("topology_presentation")
             if not isinstance(declared_presentation, dict):
                 declared_presentation = {}
-            two_participant_shape = str(
-                declared_presentation.get(
-                    "two_participant_shape",
-                    (
-                        "compact_edge"
-                        if render_hint == "direct_line"
-                        else "domain_node"
-                    ),
+            try:
+                two_participant_shape = TopologyTwoParticipantShape(
+                    declared_presentation.get(
+                        "two_participant_shape",
+                        (
+                            TopologyTwoParticipantShape.COMPACT_EDGE
+                            if render_hint == "direct_line"
+                            else TopologyTwoParticipantShape.DOMAIN_NODE
+                        ),
+                    )
                 )
-            )
-            if two_participant_shape not in {
-                "compact_edge",
-                "domain_node",
-            }:
+            except ValueError as error:
                 raise MultiNodeTopologyRequestError(
                     f"generated topology claim for {node_id} has invalid "
                     "two_participant_shape"
-                )
+                ) from error
             segment_claims.append(
                 {
                     "resource_id": resource_id,
@@ -328,7 +342,9 @@ def _install_generated_node_projections(
                         ),
                         "topology_presentation": {
                             "render_hint": render_hint,
-                            "two_participant_shape": two_participant_shape,
+                            "two_participant_shape": (
+                                two_participant_shape.value
+                            ),
                             "reason": declared_presentation.get("reason"),
                         },
                         "coverage_complete": True,

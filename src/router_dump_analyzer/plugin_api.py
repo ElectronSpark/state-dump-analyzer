@@ -23,6 +23,7 @@ from .canonical import (
     validate_named_typed_parts,
 )
 from .contract_validation import (
+    bounded_string,
     coerce_enum,
     strict_boolean,
     strict_integer,
@@ -499,11 +500,129 @@ class TopologyTwoParticipantShape(StrEnum):
     COMPACT_EDGE = "compact_edge"
 
 
+class TopologyDomainRole(StrEnum):
+    """Core-actionable subset of otherwise plug-in-owned domain roles.
+
+    Plug-ins may retain any bounded role string for presentation.  ``EXTERNAL``
+    is the only role whose meaning the generic topology coordinator acts on,
+    and only together with an explicit complete-coverage declaration.
+    """
+
+    EXTERNAL = "external"
+
+
+class InterNodeRouteTraceRole(StrEnum):
+    """How inter-node claims participate in outer L1-L3 route geometry.
+
+    ``CONFLICT`` is a core aggregation sentinel.  A plug-in may declare only
+    ``INCLUDE`` or ``OVERLAY`` for an individual claim.
+    """
+
+    INCLUDE = "include"
+    OVERLAY = "overlay"
+    CONFLICT = "conflict"
+
+
 class StatusSourceCombinationPolicy(StrEnum):
     """Plugin-declared operator for combining topology status sources."""
 
     ALL_REQUIRED_USABLE = "all_required_usable"
     ANY_DECLARED_USABLE = "any_declared_usable"
+
+
+@dataclass(frozen=True, slots=True)
+class TopologyExternalClassification:
+    """Typed result of a plug-in's complete external-domain declaration."""
+
+    role: TopologyDomainRole
+    coverage_complete: bool
+
+    def __post_init__(self) -> None:
+        role = coerce_enum(
+            TopologyDomainRole,
+            self.role,
+            "topology domain role",
+            message="unsupported topology domain role",
+        )
+        object.__setattr__(self, "role", role)
+        strict_boolean(
+            self.coverage_complete,
+            "topology external coverage",
+            message="topology coverage_complete must be a boolean",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TopologyPluginSemanticsDescriptor:
+    """Validated core-actionable fields from a plug-in semantics envelope.
+
+    ``role`` remains open plug-in vocabulary.  The descriptor returns a typed
+    external classification only for the one generic role declared above.
+    """
+
+    role: TopologyDomainRole | str | None = None
+    coverage_complete: bool | None = None
+
+    def __post_init__(self) -> None:
+        if self.role is not None:
+            bounded_string(
+                self.role,
+                "topology semantics role",
+                maximum=128,
+                message=(
+                    "topology plugin_semantics.role must contain "
+                    "1 to 128 characters"
+                ),
+            )
+        if self.coverage_complete is not None:
+            strict_boolean(
+                self.coverage_complete,
+                "topology semantics coverage",
+                message=(
+                    "topology plugin_semantics.coverage_complete must be "
+                    "a boolean"
+                ),
+            )
+
+    @property
+    def external_classification(
+        self,
+    ) -> TopologyExternalClassification | None:
+        if self.role is None:
+            return None
+        try:
+            role = TopologyDomainRole(self.role)
+        except ValueError:
+            return None
+        if self.coverage_complete is not True:
+            return None
+        return TopologyExternalClassification(
+            role=role,
+            coverage_complete=True,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class InterNodeLinkPresentation:
+    """Validated presentation declaration for an inter-node claim."""
+
+    route_trace: InterNodeRouteTraceRole = (
+        InterNodeRouteTraceRole.INCLUDE
+    )
+
+    def __post_init__(self) -> None:
+        route_trace = coerce_enum(
+            InterNodeRouteTraceRole,
+            self.route_trace,
+            "inter-node route-trace role",
+            message="unsupported inter-node route_trace role",
+        )
+        if route_trace is InterNodeRouteTraceRole.CONFLICT:
+            raise ValueError(
+                "inter-node route_trace conflict is core-produced and "
+                "cannot be declared by a plug-in"
+            )
+        object.__setattr__(self, "route_trace", route_trace)
 
 
 @dataclass(frozen=True, slots=True)
