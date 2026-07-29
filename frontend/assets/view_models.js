@@ -65,6 +65,106 @@ export function statusSegmentClassName(value, options = {}) {
   return `status-segment ${statusClassPresentation(value, options)}`;
 }
 
+function timelineBigInt(value) {
+  if (value === null || value === undefined || value === "") return null;
+  try {
+    return BigInt(String(value));
+  } catch (_error) {
+    return null;
+  }
+}
+
+function unavailableReconstructionTimeline() {
+  return {
+    available: false,
+    basisKind: "unknown",
+    coordinateKind: "unknown",
+    axisStartNs: null,
+    axisEndNs: null,
+    valueNs: null,
+    clampedValueNs: null,
+    positionPercent: null,
+    clamped: false,
+  };
+}
+
+export function reconstructionTimelineModel({
+  basisKind,
+  valueNs,
+  startNs,
+  endNs,
+  captureNs,
+} = {}) {
+  const rawKind = String(basisKind || "");
+  const relative = new Set([
+    "relative_to_watermark",
+    "relative_capture_vector",
+    "mixed_capture_vector",
+  ]).has(rawKind);
+  if (!relative && rawKind !== "absolute_time") {
+    return unavailableReconstructionTimeline();
+  }
+
+  const start = timelineBigInt(startNs);
+  const end = timelineBigInt(endNs);
+  const value = timelineBigInt(valueNs);
+  if (start === null || end === null || value === null || start > end) {
+    return unavailableReconstructionTimeline();
+  }
+
+  let axisStart = start;
+  let axisEnd = end;
+  let normalizedKind = "absolute_time";
+  let coordinateKind = "absolute_time";
+  if (relative) {
+    const capture = timelineBigInt(captureNs) ?? end;
+    axisStart = start - capture;
+    axisEnd = 0n;
+    normalizedKind = "relative_to_watermark";
+    coordinateKind = "relative_offset";
+    if (axisStart > axisEnd) return unavailableReconstructionTimeline();
+  }
+
+  const clampedValue = value < axisStart
+    ? axisStart
+    : value > axisEnd ? axisEnd : value;
+  const span = axisEnd - axisStart;
+  const positionUnits = span === 0n
+    ? 500_000n
+    : ((clampedValue - axisStart) * 1_000_000n) / span;
+
+  return {
+    available: true,
+    basisKind: normalizedKind,
+    coordinateKind,
+    axisStartNs: axisStart.toString(),
+    axisEndNs: axisEnd.toString(),
+    valueNs: value.toString(),
+    clampedValueNs: clampedValue.toString(),
+    positionPercent: Number(positionUnits) / 10_000,
+    clamped: value !== clampedValue,
+  };
+}
+
+export function reconstructionTimelineValueAtPosition(model, positionUnits) {
+  if (!model?.available) return null;
+  if (
+    (typeof positionUnits !== "number" || !Number.isInteger(positionUnits))
+    && (typeof positionUnits !== "string" || !/^-?\d+$/.test(positionUnits))
+  ) {
+    return null;
+  }
+  const numericPosition = Number(positionUnits);
+  if (!Number.isSafeInteger(numericPosition)) return null;
+  const axisStart = timelineBigInt(model.axisStartNs);
+  const axisEnd = timelineBigInt(model.axisEndNs);
+  if (axisStart === null || axisEnd === null || axisStart > axisEnd) return null;
+  const clampedPosition = Math.max(0, Math.min(1_000_000, Math.round(numericPosition)));
+  const value = axisStart
+    + ((axisEnd - axisStart) * BigInt(clampedPosition)) / 1_000_000n;
+  return value.toString();
+}
+
 export function routeEndpointSeedValue(raw, kind) {
   if (raw === undefined || raw === null) return "";
   if (typeof raw !== "object") return String(raw);

@@ -953,6 +953,237 @@
   color: #c5b7ff;
 }
 
+.mn-reconstruction-timeline {
+  --reconstruction-position: 0%;
+  --reconstruction-applied-position: 0%;
+  display: grid;
+  gap: 7px;
+  margin: -1px 0 12px;
+  padding: 9px 12px 8px;
+  border: 1px solid rgba(82, 224, 196, 0.18);
+  border-radius: 9px;
+  background: linear-gradient(90deg, rgba(82, 224, 196, 0.045), rgba(7, 22, 32, 0.36));
+}
+
+.mn-reconstruction-time-heading {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+}
+
+.mn-reconstruction-time-heading > span {
+  color: var(--cyan);
+  font: 800 7px/1 var(--mono);
+  letter-spacing: 0.13em;
+}
+
+.mn-reconstruction-time-heading > strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #dcebee;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mn-reconstruction-time-badges {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.mn-reconstruction-time-badges output {
+  padding: 3px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: rgba(7, 22, 32, 0.72);
+  color: var(--muted);
+  font: 800 7px/1 var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.mn-reconstruction-timeline.is-dirty {
+  border-color: rgba(245, 184, 91, 0.34);
+}
+
+.mn-reconstruction-timeline.is-time-dirty #mn-reconstruction-time-state {
+  border-color: rgba(245, 184, 91, 0.32);
+  color: var(--amber);
+}
+
+.mn-reconstruction-timeline.is-pending #mn-reconstruction-time-state {
+  border-color: rgba(82, 224, 196, 0.32);
+  color: var(--cyan);
+}
+
+.mn-reconstruction-time-axis {
+  display: grid;
+  grid-template-columns: minmax(105px, auto) minmax(120px, 1fr) minmax(105px, auto);
+  gap: 10px;
+  align-items: center;
+  color: var(--muted-2);
+  font: 700 7px/1 var(--mono);
+}
+
+.mn-reconstruction-time-axis > span:first-child {
+  text-align: left;
+}
+
+.mn-reconstruction-time-axis > span:last-child {
+  text-align: right;
+}
+
+.mn-reconstruction-time-track {
+  position: relative;
+  height: 28px;
+  min-width: 0;
+  border-radius: 999px;
+  touch-action: pan-y;
+}
+
+.mn-reconstruction-time-track::before {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  left: 0;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(96, 123, 139, 0.28);
+  content: "";
+  transform: translateY(-50%);
+}
+
+.mn-reconstruction-time-progress {
+  position: absolute;
+  top: 50%;
+  bottom: auto;
+  left: 0;
+  width: var(--reconstruction-position);
+  height: 4px;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--cyan) 52%, rgba(96, 123, 139, 0.32));
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.mn-reconstruction-timeline.is-time-dirty .mn-reconstruction-time-progress {
+  background: color-mix(in srgb, var(--amber) 68%, rgba(96, 123, 139, 0.32));
+}
+
+#mn-reconstruction-time-marker {
+  position: absolute;
+  top: 50%;
+  left: var(--reconstruction-applied-position);
+  z-index: 1;
+  width: 2px;
+  height: 15px;
+  border-radius: 999px;
+  background: var(--cyan);
+  box-shadow: 0 0 9px rgba(82, 224, 196, 0.6);
+  transform: translate(-1px, -50%);
+}
+
+#mn-reconstruction-time-marker::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  border: 2px solid #09202a;
+  border-radius: 50%;
+  background: var(--cyan);
+  content: "";
+  transform: translate(-50%, -50%);
+}
+
+#mn-reconstruction-time-input {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  cursor: ew-resize;
+  touch-action: pan-y;
+}
+
+#mn-reconstruction-time-input::-webkit-slider-runnable-track {
+  height: 4px;
+  border: 0;
+  background: transparent;
+}
+
+#mn-reconstruction-time-input::-webkit-slider-thumb {
+  width: 12px;
+  height: 16px;
+  margin-top: -6px;
+  appearance: none;
+  border: 2px solid #09202a;
+  border-radius: 999px;
+  background: var(--cyan);
+  box-shadow: 0 0 0 1px rgba(82, 224, 196, 0.82), 0 0 10px rgba(82, 224, 196, 0.34);
+}
+
+#mn-reconstruction-time-input::-moz-range-track {
+  height: 4px;
+  border: 0;
+  background: transparent;
+}
+
+#mn-reconstruction-time-input::-moz-range-thumb {
+  width: 10px;
+  height: 14px;
+  border: 2px solid #09202a;
+  border-radius: 999px;
+  background: var(--cyan);
+  box-shadow: 0 0 0 1px rgba(82, 224, 196, 0.82), 0 0 10px rgba(82, 224, 196, 0.34);
+}
+
+.mn-reconstruction-timeline.is-time-dirty #mn-reconstruction-time-input::-webkit-slider-thumb {
+  background: var(--amber);
+  box-shadow: 0 0 0 1px rgba(245, 184, 91, 0.9), 0 0 10px rgba(245, 184, 91, 0.36);
+}
+
+.mn-reconstruction-timeline.is-time-dirty #mn-reconstruction-time-input::-moz-range-thumb {
+  background: var(--amber);
+  box-shadow: 0 0 0 1px rgba(245, 184, 91, 0.9), 0 0 10px rgba(245, 184, 91, 0.36);
+}
+
+#mn-reconstruction-time-input:focus-visible {
+  outline: 2px solid rgba(82, 224, 196, 0.82);
+  outline-offset: 3px;
+  border-radius: 999px;
+}
+
+#mn-reconstruction-time-input:disabled {
+  cursor: not-allowed;
+}
+
+.mn-reconstruction-timeline.is-pending #mn-reconstruction-time-input {
+  cursor: progress;
+}
+
+.mn-reconstruction-timeline.is-unavailable .mn-reconstruction-time-progress,
+.mn-reconstruction-timeline.is-unavailable #mn-reconstruction-time-marker,
+.mn-reconstruction-timeline.is-applied-incomparable #mn-reconstruction-time-marker {
+  opacity: 0;
+}
+
+.mn-reconstruction-timeline.is-unavailable #mn-reconstruction-time-input {
+  opacity: 0;
+}
+
+.mn-reconstruction-timeline > small {
+  color: var(--muted-2);
+  font: 600 7px/1.35 var(--mono);
+}
+
 .mn-graph-controls {
   position: absolute;
   z-index: 30;
@@ -5666,6 +5897,34 @@
 
   .mn-map-summary .mn-focus-clear {
     margin-left: 0;
+  }
+
+  .mn-reconstruction-time-heading {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .mn-reconstruction-time-heading > strong {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .mn-reconstruction-time-axis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mn-reconstruction-time-track {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .mn-reconstruction-time-axis > span:first-child {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .mn-reconstruction-time-axis > span:last-child {
+    grid-column: 2;
+    grid-row: 2;
   }
 
   .mn-filter-panel,

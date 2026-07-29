@@ -11,7 +11,7 @@
       content="Reconstruct a historical topology across router state revisions with heterogeneous device plug-ins."
     />
     <link rel="stylesheet" href="/assets/styles.css?v=20260721-multi-node-v1" />
-    <link rel="stylesheet" href="/assets/topology.css?v=20260725-incidence-layout-v34" />
+    <link rel="stylesheet" href="/assets/topology.css?v=20260728-reconstruction-selector-v37" />
   </head>
   <body class="mn-body">
     <div class="app-shell">
@@ -203,6 +203,44 @@
               <p class="mn-map-note">Only reconstructed adjacencies are drawn here. A full route mesh does not imply a full link mesh.</p>
               <div id="mn-map-summary" class="mn-map-summary" aria-live="polite">
                 <span class="mn-summary-chip">Waiting for topology summary</span>
+              </div>
+              <div
+                id="mn-reconstruction-timeline"
+                class="mn-reconstruction-timeline is-unavailable"
+                role="group"
+                aria-labelledby="mn-reconstruction-time-title mn-reconstruction-time-label"
+                aria-describedby="mn-reconstruction-time-description"
+              >
+                <div class="mn-reconstruction-time-heading">
+                  <span id="mn-reconstruction-time-title">RECONSTRUCTED STATUS</span>
+                  <strong id="mn-reconstruction-time-label">Waiting for reconstruction</strong>
+                  <div class="mn-reconstruction-time-badges">
+                    <output id="mn-reconstruction-time-state">not applied</output>
+                    <output id="mn-reconstruction-time-basis">UNKNOWN BASIS</output>
+                  </div>
+                </div>
+                <div class="mn-reconstruction-time-axis">
+                  <span id="mn-reconstruction-time-start">start unknown</span>
+                  <span class="mn-reconstruction-time-track">
+                    <span class="mn-reconstruction-time-progress"></span>
+                    <i id="mn-reconstruction-time-marker" aria-hidden="true"></i>
+                    <input
+                      id="mn-reconstruction-time-input"
+                      type="range"
+                      min="0"
+                      max="1000000"
+                      step="1"
+                      value="0"
+                      aria-label="Select reconstructed status moment"
+                      aria-describedby="mn-reconstruction-time-description"
+                      disabled
+                    />
+                  </span>
+                  <span id="mn-reconstruction-time-end">end unknown</span>
+                </div>
+                <small id="mn-reconstruction-time-description">
+                  Click or drag the timeline to reconstruct a past status moment.
+                </small>
               </div>
               <div class="mn-map-stage mn-link-map-stage" id="mn-map-stage" tabindex="0" aria-label="Interactive link status topology">
                 <div class="mn-graph-controls" role="toolbar" aria-label="Link topology zoom controls">
@@ -566,6 +604,6 @@
     </div>
 
     <div class="toast" id="mn-toast" role="status" aria-live="polite"></div>
-    <script type="module" src="/assets/topology.js?v=20260725-incidence-layout-v34"></script>
+    <script type="module" src="/assets/topology.js?v=20260728-reconstruction-selector-v37"></script>
   </body>
 </html>

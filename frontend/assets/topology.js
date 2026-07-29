@@ -8,6 +8,8 @@ import {
 } from "./shared.js";
 import {
   declaredHealthPresentation,
+  reconstructionTimelineModel,
+  reconstructionTimelineValueAtPosition,
   replaceAbortController,
   routeEndpointSeedValue,
 } from "./view_models.js";
@@ -71,6 +73,7 @@ const state = {
   routeRequestGeneration: 0,
   routeAbortController: null,
   queryControlsDirty: false,
+  reconstructionTimelineCommitTimer: null,
   urlStateApplied: false,
   resizeFrame: null,
   resizeTargets: new Set(),
@@ -5227,6 +5230,274 @@ function renderMetrics() {
     : `Absolute UTC · ${compactTime(basis?.time_ns ?? basis?.requested?.time_ns)}`;
 }
 
+function appliedReconstructionTimelineBasis() {
+  const resolvedBasis = state.query?.resolved_basis || {};
+  const requestedBasis = (
+    resolvedBasis?.requested
+    && typeof resolvedBasis.requested === "object"
+    && !Array.isArray(resolvedBasis.requested)
+  )
+    ? resolvedBasis.requested
+    : state.query?.request?.basis || {};
+  const kind = String(
+    requestedBasis?.kind
+    || state.query?.request?.basis?.kind
+    || resolvedBasis?.kind
+    || "",
+  );
+  const relative = [
+    "relative_to_watermark",
+    "relative_capture_vector",
+    "mixed_capture_vector",
+  ].includes(kind);
+  return {
+    kind,
+    valueNs: relative
+      ? requestedBasis?.offset_ns ?? state.query?.request?.basis?.offset_ns
+      : requestedBasis?.time_ns
+        ?? state.query?.request?.basis?.time_ns
+        ?? resolvedBasis?.time_ns,
+  };
+}
+
+function draftReconstructionTimelineBasis() {
+  const kind = byId("mn-basis-kind")?.value || "";
+  try {
+    if (kind === "absolute_time") {
+      const valueNs = byId("mn-absolute-time")?.value?.trim() || "";
+      return /^-?\d+$/.test(valueNs) ? { kind, valueNs } : { kind, valueNs: null };
+    }
+    const valueNs = parseSecondsToNs(byId("mn-relative-seconds")?.value).toString();
+    return BigInt(valueNs) <= 0n ? { kind, valueNs } : { kind, valueNs: null };
+  } catch (_error) {
+    return { kind, valueNs: null };
+  }
+}
+
+function reconstructionTimelineForBasis(basis) {
+  const bounds = state.capabilities?.time_bounds || {};
+  return reconstructionTimelineModel({
+    basisKind: basis?.kind,
+    valueNs: basis?.valueNs,
+    startNs: bounds?.start_ns,
+    endNs: bounds?.end_ns,
+    captureNs: bounds?.capture_ns ?? state.bootstrap?.workspace?.capture_ns,
+  });
+}
+
+function reconstructionTimelinePositionUnits(model) {
+  if (!model?.available || !Number.isFinite(model.positionPercent)) return 0;
+  return Math.max(0, Math.min(1_000_000, Math.round(model.positionPercent * 10_000)));
+}
+
+function comparableReconstructionTimelines(left, right) {
+  return Boolean(
+    left?.available
+    && right?.available
+    && left.coordinateKind === right.coordinateKind
+    && left.axisStartNs === right.axisStartNs
+    && left.axisEndNs === right.axisEndNs
+  );
+}
+
+function updateReconstructionTimelineSelection(positionUnits) {
+  if (state.pending || !state.query) return;
+  const basis = draftReconstructionTimelineBasis();
+  const model = reconstructionTimelineForBasis(basis);
+  const valueNs = reconstructionTimelineValueAtPosition(model, positionUnits);
+  if (valueNs === null) return;
+  if (basis.kind === "absolute_time") {
+    byId("mn-absolute-time").value = valueNs;
+  } else {
+    byId("mn-relative-seconds").value = nsToSecondsInput(valueNs, "0");
+  }
+  markTopologyQueryDirty({ sync: false });
+}
+
+function scheduleReconstructionTimelineCommit() {
+  if (state.reconstructionTimelineCommitTimer !== null) {
+    clearTimeout(state.reconstructionTimelineCommitTimer);
+  }
+  state.reconstructionTimelineCommitTimer = setTimeout(() => {
+    state.reconstructionTimelineCommitTimer = null;
+    if (!state.pending && state.queryControlsDirty) {
+      byId("mn-query-form").requestSubmit();
+    }
+  }, 220);
+}
+
+function bindReconstructionTimeline() {
+  const input = byId("mn-reconstruction-time-input");
+  let activePointerId = null;
+  let suppressNextClick = false;
+  const selectAtClientX = (clientX) => {
+    const bounds = input.getBoundingClientRect();
+    if (!(bounds.width > 0)) return;
+    const ratio = Math.max(0, Math.min(1, (clientX - bounds.left) / bounds.width));
+    updateReconstructionTimelineSelection(Math.round(ratio * 1_000_000));
+  };
+  const commitSelection = () => {
+    if (!state.queryControlsDirty || state.pending) return;
+    syncUrl();
+    scheduleReconstructionTimelineCommit();
+  };
+  input.addEventListener("input", () => {
+    updateReconstructionTimelineSelection(input.value);
+  });
+  input.addEventListener("change", () => {
+    commitSelection();
+  });
+  input.addEventListener("pointerdown", (event) => {
+    if (event.pointerType === "touch" || !event.isPrimary || event.button !== 0 || input.disabled) return;
+    activePointerId = event.pointerId;
+    suppressNextClick = true;
+    input.setPointerCapture(event.pointerId);
+    input.focus({ preventScroll: true });
+    event.preventDefault();
+    selectAtClientX(event.clientX);
+  });
+  input.addEventListener("pointermove", (event) => {
+    if (event.pointerId !== activePointerId) return;
+    event.preventDefault();
+    selectAtClientX(event.clientX);
+  });
+  input.addEventListener("pointerup", (event) => {
+    if (event.pointerId !== activePointerId) return;
+    event.preventDefault();
+    selectAtClientX(event.clientX);
+    if (input.hasPointerCapture(event.pointerId)) input.releasePointerCapture(event.pointerId);
+    activePointerId = null;
+    commitSelection();
+    setTimeout(() => {
+      suppressNextClick = false;
+    }, 0);
+  });
+  input.addEventListener("pointercancel", (event) => {
+    if (event.pointerId !== activePointerId) return;
+    if (input.hasPointerCapture(event.pointerId)) input.releasePointerCapture(event.pointerId);
+    activePointerId = null;
+    suppressNextClick = false;
+  });
+  input.addEventListener("click", (event) => {
+    if (!suppressNextClick) return;
+    event.preventDefault();
+    suppressNextClick = false;
+  });
+}
+
+function renderReconstructionTimeline() {
+  const timeline = byId("mn-reconstruction-timeline");
+  if (!timeline) return;
+
+  const input = byId("mn-reconstruction-time-input");
+  const applied = Boolean(
+    state.query
+    && state.query?.source_mode !== "error"
+    && state.apiMode !== "error"
+    && state.query?.request,
+  );
+  const appliedModel = applied
+    ? reconstructionTimelineForBasis(appliedReconstructionTimelineBasis())
+    : reconstructionTimelineModel();
+  const draftModel = reconstructionTimelineForBasis(draftReconstructionTimelineBasis());
+  const displayModel = draftModel.available ? draftModel : appliedModel;
+  const comparable = comparableReconstructionTimelines(appliedModel, draftModel);
+  const timeChanged = applied && (!comparable || appliedModel.valueNs !== draftModel.valueNs);
+  const dirty = applied && state.queryControlsDirty;
+  const timeDirty = dirty && timeChanged;
+  const pending = state.pending;
+  const stateLabel = pending
+    ? timeChanged ? "reconstructing" : "updating"
+    : timeDirty ? "selected"
+      : dirty ? "controls pending"
+        : applied ? "applied" : "not applied";
+  const basisLabel = displayModel.basisKind === "relative_to_watermark"
+    ? "PER-NODE WATERMARK"
+    : displayModel.basisKind === "absolute_time" ? "ABSOLUTE UTC" : "UNKNOWN BASIS";
+  const appliedIncomparable = !appliedModel.available || (draftModel.available && !comparable);
+
+  timeline.classList.toggle("is-unavailable", !displayModel.available);
+  timeline.classList.toggle("is-dirty", dirty);
+  timeline.classList.toggle("is-time-dirty", timeDirty || (pending && timeChanged));
+  timeline.classList.toggle("is-pending", pending);
+  timeline.classList.toggle("is-applied-incomparable", appliedIncomparable);
+  timeline.setAttribute("aria-busy", pending ? "true" : "false");
+  byId("mn-reconstruction-time-state").textContent = stateLabel;
+  byId("mn-reconstruction-time-basis").textContent = basisLabel;
+
+  if (!displayModel.available) {
+    timeline.style.setProperty("--reconstruction-position", "0%");
+    timeline.style.setProperty("--reconstruction-applied-position", "0%");
+    input.value = "0";
+    input.disabled = true;
+    input.setAttribute("aria-disabled", "true");
+    input.setAttribute("aria-valuetext", "Reconstructed status time is unavailable");
+    byId("mn-reconstruction-time-label").textContent = pending
+      ? "Reconstructing status…"
+      : "Applied time unavailable";
+    byId("mn-reconstruction-time-start").textContent = "start unknown";
+    byId("mn-reconstruction-time-end").textContent = "end unknown";
+    byId("mn-reconstruction-time-description").textContent = state.apiMode === "error"
+      ? "The failed reconstruction did not produce an applied status moment."
+      : "Run a reconstruction before selecting a past status moment.";
+    return;
+  }
+
+  const position = `${displayModel.positionPercent.toFixed(4).replace(/0+$/, "").replace(/\.$/, "")}%`;
+  const appliedPosition = appliedModel.available
+    ? `${appliedModel.positionPercent.toFixed(4).replace(/0+$/, "").replace(/\.$/, "")}%`
+    : "0%";
+  const valueLabel = compactTime(displayModel.valueNs);
+  const appliedValueLabel = appliedModel.available ? compactTime(appliedModel.valueNs) : "unavailable";
+  const startLabel = compactTime(displayModel.axisStartNs);
+  const endLabel = compactTime(displayModel.axisEndNs);
+  const positionUnits = reconstructionTimelinePositionUnits(displayModel);
+  timeline.style.setProperty("--reconstruction-position", position);
+  timeline.style.setProperty("--reconstruction-applied-position", appliedPosition);
+  input.value = String(positionUnits);
+  input.disabled = !applied || pending || !draftModel.available || !comparable;
+  input.setAttribute("aria-disabled", input.disabled ? "true" : "false");
+  input.setAttribute("aria-valuetext", timeChanged && appliedModel.available
+    ? `${pending ? "Reconstructing" : "Selected"} ${valueLabel}; graph remains at ${appliedValueLabel}`
+    : `${applied ? "Applied" : "Selected"} ${valueLabel}`);
+  input.title = !applied
+    ? "Run the first reconstruction before selecting another moment."
+    : !comparable
+      ? "Apply or restore the pending time basis before selecting on this axis."
+      : pending
+        ? "Reconstruction is in progress."
+        : "Click or drag to reconstruct a past moment. Arrow keys are supported.";
+  const basisSuffix = displayModel.coordinateKind === "relative_offset"
+    ? "from each node watermark"
+    : "absolute UTC";
+  byId("mn-reconstruction-time-label").textContent = timeChanged && appliedModel.available
+    ? `${valueLabel} selected · graph at ${appliedValueLabel}`
+    : `${valueLabel} · ${basisSuffix}`;
+  byId("mn-reconstruction-time-start").textContent = displayModel.coordinateKind === "relative_offset"
+    ? `${startLabel} history`
+    : `start · ${startLabel}`;
+  byId("mn-reconstruction-time-end").textContent = displayModel.coordinateKind === "relative_offset"
+    ? "0.000 s · latest"
+    : `end · ${endLabel}`;
+  const rangeNote = displayModel.clamped
+    ? " The selected request is outside the advertised history, so the handle is clamped to the nearest endpoint."
+    : "";
+  const interactionNote = timeChanged && comparable
+    ? pending
+      ? ` Reconstructing the selected moment; the cyan notch remains at the graph's applied ${appliedValueLabel}.`
+      : ` The amber handle is selected; releasing it or finishing a keyboard change reconstructs it. The cyan notch is the graph's applied ${appliedValueLabel}.`
+    : dirty
+      ? comparable
+        ? " The time is unchanged; other reconstruction controls are pending."
+        : " The pending time basis differs from the graph. Apply or restore that basis before selecting on this timeline."
+      : " Click or drag the handle to reconstruct another moment.";
+  const semanticsNote = displayModel.coordinateKind === "relative_offset"
+    ? "The axis is one common offset from each selected projection watermark, not one simultaneous wall-clock instant."
+    : "The axis is UTC; every node still preserves its own clock mapping and uncertainty.";
+  byId("mn-reconstruction-time-description").textContent =
+    `${semanticsNote}${interactionNote}${rangeNote}`;
+}
+
 function routeNodeSequence(routePath, nodes) {
   const ordered = [];
   for (const [index, ref] of routePathNodeRefs(routePath || {}).entries()) {
@@ -8844,6 +9115,7 @@ function renderAll() {
   renderSourceBanner();
   renderCapabilityNodeIndex();
   renderMetrics();
+  renderReconstructionTimeline();
   renderMap();
   renderNodeDetail();
   renderLinkTable();
@@ -8851,11 +9123,12 @@ function renderAll() {
   renderRouteTables();
 }
 
-function markTopologyQueryDirty() {
+function markTopologyQueryDirty(options = {}) {
   if (!state.query || state.pending) return;
   state.queryControlsDirty = true;
   renderSourceBanner();
-  syncUrl();
+  renderReconstructionTimeline();
+  if (options?.sync !== false) syncUrl();
 }
 
 function syncUrl() {
@@ -8986,6 +9259,10 @@ async function runRouteTrace(event) {
 
 async function runQuery(event) {
   event?.preventDefault();
+  if (state.reconstructionTimelineCommitTimer !== null) {
+    clearTimeout(state.reconstructionTimelineCommitTimer);
+    state.reconstructionTimelineCommitTimer = null;
+  }
   const error = byId("mn-query-error");
   let request;
   try {
@@ -9002,6 +9279,7 @@ async function runQuery(event) {
   state.routeAbortController?.abort();
   state.routeAbortController = null;
   state.pending = true;
+  renderReconstructionTimeline();
   state.routePending = false;
   state.routeBundle = null;
   state.routeTraces = { forward: null, reverse: null };
@@ -9075,6 +9353,7 @@ async function runQuery(event) {
 function bindControls() {
   byId("mn-query-form").addEventListener("submit", runQuery);
   byId("mn-route-form").addEventListener("submit", runRouteTrace);
+  bindReconstructionTimeline();
   byId("mn-basis-kind").addEventListener("change", () => {
     syncBasisFields();
     markTopologyQueryDirty();

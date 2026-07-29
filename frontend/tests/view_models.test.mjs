@@ -12,6 +12,8 @@ import {
   declaredHealthPresentation,
   graphStatusClass,
   rangeSummaryFacts,
+  reconstructionTimelineModel,
+  reconstructionTimelineValueAtPosition,
   replaceAbortController,
   routeEndpointSeedValue,
   routePayloadForwardingPresentation,
@@ -173,6 +175,218 @@ test("every normalized timeline status segment has explicit component CSS", () =
   for (const statusClass of ["absent", "degraded", "error", "healthy", "unknown"]) {
     const className = statusClassPresentation({ status_class: statusClass });
     assert.match(css, new RegExp(`\\.status-segment\\.${className}(?:\\s|\\{|,)`));
+  }
+});
+
+test("reconstruction timeline places and clamps an exact absolute instant", () => {
+  const startNs = "1759680000000000000";
+  const endNs = "1759680000000001000";
+  const midpoint = reconstructionTimelineModel({
+    basisKind: "absolute_time",
+    valueNs: "1759680000000000500",
+    startNs,
+    endNs,
+    captureNs: endNs,
+  });
+  assert.deepEqual(midpoint, {
+    available: true,
+    basisKind: "absolute_time",
+    coordinateKind: "absolute_time",
+    axisStartNs: startNs,
+    axisEndNs: endNs,
+    valueNs: "1759680000000000500",
+    clampedValueNs: "1759680000000000500",
+    positionPercent: 50,
+    clamped: false,
+  });
+
+  const before = reconstructionTimelineModel({
+    basisKind: "absolute_time",
+    valueNs: "1759679999999999999",
+    startNs,
+    endNs,
+  });
+  assert.equal(before.positionPercent, 0);
+  assert.equal(before.clampedValueNs, startNs);
+  assert.equal(before.clamped, true);
+
+  const after = reconstructionTimelineModel({
+    basisKind: "absolute_time",
+    valueNs: "1759680000000001001",
+    startNs,
+    endNs,
+  });
+  assert.equal(after.positionPercent, 100);
+  assert.equal(after.clampedValueNs, endNs);
+  assert.equal(after.clamped, true);
+});
+
+test("reconstruction timeline keeps watermark-relative coordinates relative", () => {
+  const model = reconstructionTimelineModel({
+    basisKind: "relative_to_watermark",
+    valueNs: "-2000",
+    startNs: "1759680000000001000",
+    endNs: "1759680000000005000",
+    captureNs: "1759680000000005000",
+  });
+  assert.deepEqual(model, {
+    available: true,
+    basisKind: "relative_to_watermark",
+    coordinateKind: "relative_offset",
+    axisStartNs: "-4000",
+    axisEndNs: "0",
+    valueNs: "-2000",
+    clampedValueNs: "-2000",
+    positionPercent: 50,
+    clamped: false,
+  });
+
+  const endFallback = reconstructionTimelineModel({
+    basisKind: "relative_to_watermark",
+    valueNs: "0",
+    startNs: "1759680000000001000",
+    endNs: "1759680000000005000",
+  });
+  assert.equal(endFallback.coordinateKind, "relative_offset");
+  assert.equal(endFallback.axisStartNs, "-4000");
+  assert.equal(endFallback.axisEndNs, "0");
+  assert.equal(endFallback.valueNs, "0");
+  assert.equal(endFallback.positionPercent, 100);
+});
+
+test("reconstruction timeline handles degenerate and unavailable ranges safely", () => {
+  const degenerate = reconstructionTimelineModel({
+    basisKind: "absolute_time",
+    valueNs: "1759680000000005000",
+    startNs: "1759680000000005000",
+    endNs: "1759680000000005000",
+  });
+  assert.equal(degenerate.available, true);
+  assert.equal(degenerate.axisStartNs, degenerate.axisEndNs);
+  assert.equal(degenerate.clampedValueNs, degenerate.valueNs);
+  assert.equal(degenerate.positionPercent, 50);
+  assert.equal(degenerate.clamped, false);
+
+  for (const input of [
+    {},
+    { basisKind: "absolute_time", valueNs: "not-an-integer", startNs: "1", endNs: "2" },
+    { basisKind: "absolute_time", valueNs: "1", startNs: "2", endNs: "1" },
+    { basisKind: "relative_to_watermark", valueNs: "-1", startNs: "1" },
+    { basisKind: "unsupported", valueNs: "1", startNs: "0", endNs: "2" },
+  ]) {
+    const unavailable = reconstructionTimelineModel(input);
+    assert.equal(unavailable.available, false);
+    assert.equal(unavailable.coordinateKind, "unknown");
+    assert.equal(unavailable.axisStartNs, null);
+    assert.equal(unavailable.axisEndNs, null);
+    assert.equal(unavailable.valueNs, null);
+    assert.equal(unavailable.clampedValueNs, null);
+    assert.equal(unavailable.positionPercent, null);
+    assert.equal(unavailable.clamped, false);
+  }
+});
+
+test("reconstruction timeline inverse mapping preserves exact BigInt coordinates", () => {
+  const absolute = reconstructionTimelineModel({
+    basisKind: "absolute_time",
+    valueNs: "9007199254740993501",
+    startNs: "9007199254740993001",
+    endNs: "9007199254740994001",
+  });
+  assert.equal(
+    reconstructionTimelineValueAtPosition(absolute, 0),
+    "9007199254740993001",
+  );
+  assert.equal(
+    reconstructionTimelineValueAtPosition(absolute, 500_000),
+    "9007199254740993501",
+  );
+  assert.equal(
+    reconstructionTimelineValueAtPosition(absolute, 1_000_000),
+    "9007199254740994001",
+  );
+
+  const indivisible = reconstructionTimelineModel({
+    basisKind: "absolute_time",
+    valueNs: "9007199254740993001",
+    startNs: "9007199254740993001",
+    endNs: "9007199254740993008",
+  });
+  assert.equal(
+    reconstructionTimelineValueAtPosition(indivisible, 333_333),
+    "9007199254740993003",
+  );
+});
+
+test("reconstruction timeline inverse mapping clamps and fails closed", () => {
+  const model = reconstructionTimelineModel({
+    basisKind: "absolute_time",
+    valueNs: "150",
+    startNs: "100",
+    endNs: "200",
+  });
+  assert.equal(reconstructionTimelineValueAtPosition(model, -1), "100");
+  assert.equal(reconstructionTimelineValueAtPosition(model, 1_000_001), "200");
+  assert.equal(reconstructionTimelineValueAtPosition(model, "500000"), "150");
+
+  for (const invalidPosition of [
+    null,
+    undefined,
+    "",
+    "1.5",
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    {},
+  ]) {
+    assert.equal(
+      reconstructionTimelineValueAtPosition(model, invalidPosition),
+      null,
+    );
+  }
+  assert.equal(
+    reconstructionTimelineValueAtPosition(
+      reconstructionTimelineModel(),
+      500_000,
+    ),
+    null,
+  );
+});
+
+test("reconstruction timeline inverse mapping handles relative and degenerate axes", () => {
+  const relative = reconstructionTimelineModel({
+    basisKind: "relative_to_watermark",
+    valueNs: "-2000",
+    startNs: "1759680000000001000",
+    endNs: "1759680000000005000",
+    captureNs: "1759680000000005000",
+  });
+  assert.equal(
+    reconstructionTimelineValueAtPosition(relative, 0),
+    "-4000",
+  );
+  assert.equal(
+    reconstructionTimelineValueAtPosition(relative, 500_000),
+    "-2000",
+  );
+  assert.equal(
+    reconstructionTimelineValueAtPosition(relative, 1_000_000),
+    "0",
+  );
+  assert.ok(
+    BigInt(reconstructionTimelineValueAtPosition(relative, 1_000_001)) <= 0n,
+  );
+
+  const degenerate = reconstructionTimelineModel({
+    basisKind: "absolute_time",
+    valueNs: "1759680000000005000",
+    startNs: "1759680000000005000",
+    endNs: "1759680000000005000",
+  });
+  for (const position of [-1, 0, 500_000, 1_000_000, 1_000_001]) {
+    assert.equal(
+      reconstructionTimelineValueAtPosition(degenerate, position),
+      "1759680000000005000",
+    );
   }
 });
 

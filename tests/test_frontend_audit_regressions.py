@@ -458,6 +458,92 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
         self.assertIn("renderMap()", select_all)
         self.assertIn("syncUrl()", select_all)
 
+    def test_reconstruction_timeline_uses_the_last_applied_time_basis(self) -> None:
+        timeline = javascript_function(
+            self.script,
+            "renderReconstructionTimeline",
+        )
+        applied_basis = javascript_function(
+            self.script,
+            "appliedReconstructionTimelineBasis",
+        )
+        timeline_for_basis = javascript_function(
+            self.script,
+            "reconstructionTimelineForBasis",
+        )
+        render_all = javascript_function(self.script, "renderAll")
+        mark_dirty = javascript_function(self.script, "markTopologyQueryDirty")
+
+        for element_id in (
+            "mn-reconstruction-timeline",
+            "mn-reconstruction-time-label",
+            "mn-reconstruction-time-basis",
+            "mn-reconstruction-time-marker",
+            "mn-reconstruction-time-start",
+            "mn-reconstruction-time-end",
+        ):
+            self.assertIn(f'id="{element_id}"', self.page)
+
+        self.assertIn("reconstructionTimelineModel(", timeline)
+        self.assertIn("appliedReconstructionTimelineBasis()", timeline)
+        self.assertIn("state.query?.resolved_basis", applied_basis)
+        self.assertIn("state.capabilities?.time_bounds", timeline_for_basis)
+        self.assertIn("renderReconstructionTimeline()", render_all)
+        self.assertIn("renderReconstructionTimeline()", mark_dirty)
+
+    def test_reconstruction_timeline_native_control_previews_and_applies_time(
+        self,
+    ) -> None:
+        update = javascript_function(
+            self.script,
+            "updateReconstructionTimelineSelection",
+        )
+        schedule = javascript_function(
+            self.script,
+            "scheduleReconstructionTimelineCommit",
+        )
+        bind = javascript_function(self.script, "bindReconstructionTimeline")
+        controls = javascript_function(self.script, "bindControls")
+        run_query = javascript_function(self.script, "runQuery")
+        render = javascript_function(
+            self.script,
+            "renderReconstructionTimeline",
+        )
+
+        input_markup = self.page[
+            self.page.index('id="mn-reconstruction-time-input"') :
+        ]
+        input_markup = input_markup[: input_markup.index(">") + 1]
+        self.assertIn('type="range"', input_markup)
+        self.assertIn('min="0"', input_markup)
+        self.assertIn('max="1000000"', input_markup)
+        self.assertIn('step="1"', input_markup)
+        self.assertIn("aria-label=", input_markup)
+
+        self.assertIn("reconstructionTimelineValueAtPosition(", update)
+        self.assertIn('byId("mn-absolute-time").value', update)
+        self.assertIn('byId("mn-relative-seconds").value', update)
+        self.assertIn("markTopologyQueryDirty({ sync: false })", update)
+
+        self.assertIn("clearTimeout(", schedule)
+        self.assertIn("setTimeout(", schedule)
+        self.assertIn('byId("mn-query-form").requestSubmit()', schedule)
+
+        self.assertIn('addEventListener("input"', bind)
+        self.assertIn("updateReconstructionTimelineSelection(", bind)
+        self.assertIn('addEventListener("change"', bind)
+        self.assertIn("scheduleReconstructionTimelineCommit()", bind)
+        self.assertIn("bindReconstructionTimeline()", controls)
+
+        self.assertIn('byId("mn-reconstruction-time-input")', render)
+        self.assertIn("input.value =", render)
+        self.assertIn("input.disabled =", render)
+        self.assertIn('input.setAttribute("aria-valuetext"', render)
+
+        self.assertIn("state.reconstructionTimelineCommitTimer", run_query)
+        self.assertIn("clearTimeout(", run_query)
+        self.assertIn("state.reconstructionTimelineCommitTimer = null", run_query)
+
     def test_route_table_seed_is_pending_until_trace_returns_correlation(self) -> None:
         keys = javascript_function(self.script, "focusedRouteEntryKeys")
         row = javascript_function(self.script, "routeTableRowMarkup")
