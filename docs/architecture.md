@@ -1,7 +1,8 @@
 # Architecture and library decisions
 
-Status: proposed baseline, researched 2026-07-19
-Runtime: Python 3.12 on Linux for the server and analysis workers
+Status: production target plus shipped-prototype notes, updated 2026-07-28
+Runtime: Python 3.12; the local prototype supports Windows and Linux/WSL, while
+the production server and isolated analysis workers target Linux
 
 ## 1. Executive decision
 
@@ -27,10 +28,13 @@ flowchart LR
     API --> EXT["Other tools and future topology analyzer"]
 ```
 
-The default serving store is PostgreSQL because this is a concurrent server,
-the data volume in the brief is moderate, and temporal interval queries fit its
-`int8range`, GiST, JSONB, and `inet` support. Keep original and large extracted
-artifacts in content-addressed filesystem or S3-compatible storage.
+The production serving-store target is PostgreSQL because this is a concurrent
+server, the data volume in the brief is moderate, and temporal interval queries
+fit its `int8range`, GiST, JSONB, and `inet` support. The shipped local
+prototype instead serves immutable in-memory revision/provider data and uses a
+content-keyed SQLite sidecar only for client-safe normalized-event search.
+Keep original and large extracted artifacts in content-addressed filesystem or
+S3-compatible storage in production.
 
 If a revision grows from hundreds of thousands into tens or hundreds of
 millions of records, add immutable Parquet fact datasets, publish them through a
@@ -634,8 +638,10 @@ slice into compact adjacency arrays or `rustworkx`.
 
 Graph queries require seed resources, direction, relation types, depth, and a
 hard result cap. The UI should show collapsed summary nodes when the cap is hit.
-Use Sigma.js/WebGL for an interactive filtered subgraph; do not send the global
-100K-resource graph to the browser.
+The current core browser renders that bounded filtered slice with SVG and DOM
+cards; it never sends the global 100K-resource graph to the browser. A future
+Sigma.js/WebGL migration is an implementation choice justified by profiling,
+not a plug-in capability or a change to the graph contract.
 
 For a timeline lane whose dependency changes over time, intersect relationship
 intervals with the viewport. Pack overlapping target intervals into deterministic
@@ -1217,18 +1223,46 @@ from a source type or label.
 
 ### 9.2 Browser implementation
 
-Recommended browser stack:
+The shipped core frontend is a dependency-free set of HTML pages, CSS, and
+native JavaScript modules under `frontend/`. It uses:
 
-- React and TypeScript for UI composition.
-- TanStack Virtual for vertical lane virtualization.
-- PixiJS 8 for Canvas/WebGL intervals, event bars, clusters, and hit testing.
-- D3 scale/zoom/brush utilities for time transforms and selection.
-- Sigma.js for the filtered dependency graph.
+- semantic DOM controls and direct windowing for the timeline, resource tables,
+  and 100K-scale normalized-event log;
+- SVG layers plus DOM cards for correlation, topology, and route geometry;
+- core-owned pure view-model helpers for exact `BigInt` time transforms,
+  health/status presentation, request supersession, and route/dashboard
+  normalization; and
+- Node's built-in test runner for those same production helpers.
 
-Keep resource labels, sticky time ruler, controls, and accessible detail panels
-as DOM elements. Render timeline marks in one canvas/WebGL surface. Accessibility
-requires a keyboard-navigable event list mirroring the selected viewport; canvas
-marks alone are not accessible.
+Resource labels, sticky rulers, controls, and accessible detail panels remain
+DOM elements. Every graph or timeline interaction has a keyboard-accessible
+control or mirrored event/resource list; visible SVG geometry alone is not an
+accessible data surface. A future Canvas/WebGL renderer or framework migration
+is allowed only behind the same core contracts and after profiling demonstrates
+that the current server-windowed DOM/SVG implementation is the bottleneck.
+Plug-ins cannot select that renderer or provide browser modules.
+
+The primary topology page also contains one core-owned **reconstructed status**
+selector. Its axis comes only from the topology capability response's
+`time_bounds`:
+
+- `absolute_time` uses the advertised UTC `start_ns` through `end_ns`;
+- `relative_to_watermark` uses offsets from `start_ns - capture_ns` through
+  zero, where zero is the latest complete watermark for each selected
+  projection; and
+- a relative axis is a common offset applied independently to each member's
+  watermark, not one simultaneous wall-clock instant.
+
+The selector shows the last successfully applied immutable reconstruction
+separately from a draft handle. Click, drag, and keyboard range-input actions
+edit the existing basis controls; releasing the pointer or committing a
+keyboard change submits a new reconstruction. The graph continues to describe
+the applied response until that request succeeds. The control is disabled
+before the first successful reconstruction, while a request is pending, or
+when the draft and applied basis types/ranges are not comparable. This selector
+is generic core interaction state: a plug-in supplies normalized history and
+watermark evidence through its declared providers but never supplies the
+control, labels, JavaScript, or coordinate transform.
 
 Interaction mapping:
 
@@ -1334,9 +1368,11 @@ Parsing, correlation, reconstruction, APIs, and route logic remain Python 3.12;
 the reusable FastAPI asset host lives in the core's optional `web` boundary,
 and the concrete application composition is also core-owned. A
 Trace Compass-like browser timeline with 100K items still needs browser-native
-Canvas/WebGL code. Dash, Panel, or server-rendered templates can prototype
-dashboards, but they do not remove JavaScript and would make the custom lane
-interaction harder. Keep the JavaScript surface thin and domain-free.
+interaction code; Canvas/WebGL is a profile-gated future option rather than a
+requirement of the shipped DOM/SVG renderer. Dash, Panel, or server-rendered
+templates can prototype dashboards, but they do not remove JavaScript and
+would make the custom lane interaction harder. Keep the JavaScript surface thin
+and domain-free.
 
 ## 10. API surface
 
@@ -1401,8 +1437,8 @@ bucket count, raw context bytes, route recursion, and query duration.
 | Serving data | PostgreSQL + psycopg 3 `COPY`; SQLAlchemy Core/Alembic for schema and ordinary queries | Concurrent server store and temporal/JSON/network indexes. Avoid hot-path ORM entity creation. |
 | Overflow/offline analytics | Parquet + DuckDB; Polars inside plugins when columnar text transforms help | Add after profiling or for export; immutable files, coarse partitions, one publishing coordinator. |
 | In-memory graph | rustworkx | Efficient directed/multigraph traversal and future shortest paths; retain stable external ID mapping. |
-| Timeline | React, TanStack Virtual, PixiJS 8, D3 | Virtualized lanes and custom WebGL level-of-detail rendering. |
-| Dependency graph UI | Sigma.js + Graphology | WebGL filtered subgraphs; server still owns temporal graph queries. |
+| Timeline | Current: dependency-free JavaScript, server-windowed data, direct DOM windowing, and SVG overlays. Profile-gated future: Canvas/WebGL plus a virtual-list/scale library. | The shipped frontend keeps exact time and selection semantics in tested core view models. A renderer migration must preserve the API, keyboard mirror, and plug-in boundary. |
+| Dependency graph UI | Current: core SVG/DOM renderer. Profile-gated future: Sigma.js + Graphology or an equivalent WebGL renderer. | The server owns temporal graph queries and plug-ins provide only validated graph data/presentation descriptors. |
 | Observability | structlog, OpenTelemetry, Prometheus client | Structured job/plugin diagnostics with import/revision correlation IDs. |
 | Testing | pytest, Hypothesis, testcontainers | Golden fixtures, malformed archive properties, reducer round trips, and real database plans. |
 
@@ -1490,8 +1526,9 @@ inspection and additional resource limits.
 
 ### Milestone 3: scalable timeline and graph
 
-- Screen-resolution timeline API, virtualized WebGL lanes, dynamic dependency
-  spans, filtered Sigma graph, and event-to-source navigation.
+- Screen-resolution timeline API, server-windowed virtual lanes, dynamic
+  dependency spans, a bounded filtered graph, and event-to-source navigation.
+  Canvas/WebGL renderers remain profile-gated implementation options.
 
 ### Milestone 4: consistency and forwarding
 

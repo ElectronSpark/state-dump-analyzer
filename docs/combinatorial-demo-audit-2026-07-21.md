@@ -1,5 +1,14 @@
 # Combinatorial demo audit — 2026-07-21
 
+> **Historical snapshot.** This document preserves the findings, repair
+> dispositions, test counts, performance observations, and localhost URLs of
+> the audited 2026-07-21 revision. Words such as “open,” “fixed,” “current,”
+> and “deferred” below describe that audit closure, not the repository at
+> current `HEAD`. Use the [README](../README.md) and
+> [demo guide](../demo/README.md) for current commands, and use the
+> [architecture](architecture.md), [plug-in contract](plugin-contract.md), and
+> executable tests/CI for the current implementation boundary and status.
+
 This audit deliberately separated discovery from repair. No source files were edited until the discovery matrix closed.
 
 ## Coverage

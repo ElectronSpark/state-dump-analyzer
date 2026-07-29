@@ -3,6 +3,15 @@
 Date: 2026-07-22
 Scope: the executable contract, demo server/data adapters, and browser shell
 
+> **Historical snapshot.** The ownership analysis remains useful design
+> rationale, but the evidence and migration statuses in this document are
+> frozen at the audited 2026-07-22 revision. “Pending,” “migrated,” “current,”
+> and “remaining” are not claims about current `HEAD`. If this record conflicts
+> with the current [architecture](architecture.md) or
+> [plug-in contract](plugin-contract.md), those normative documents and the
+> executable tests/CI take precedence. Use the [README](../README.md) and
+> [demo guide](../demo/README.md) for current commands.
+
 ## Outcome
 
 The canonical model is mostly generic, but several demo conveniences currently
@@ -113,6 +122,9 @@ publish.
 - Generic browser behavior is driven by validated descriptors. Plug-ins never
   provide HTML, CSS, JavaScript, SQL, URLs, callbacks, or layout coordinates.
 
-This document records the boundary at audit time. Change a row to **Migrated**
-only after implementation and tests prove that a second plug-in vocabulary can
-use the same core path without a special case.
+This document records the boundary at audit time. At that time, a row qualified
+as **Migrated** only after implementation and tests proved that a second
+plug-in vocabulary could use the same core path without a special case. The
+statuses above are now historical and must not be updated to represent later
+work; record later evidence in the current normative documents or a new dated
+audit.

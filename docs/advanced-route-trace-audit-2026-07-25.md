@@ -1,5 +1,14 @@
 # Advanced route-trace audit — 2026-07-25
 
+> **Historical snapshot.** This document preserves the packet/route boundary,
+> generated registry, counts, measurements, localhost URLs, and integration
+> status of the audited 2026-07-25 revision. Its “implemented,” “remaining,”
+> and “future” language is not a claim about current `HEAD`. Use the
+> [README](../README.md) and [demo guide](../demo/README.md) for current
+> commands; the current [architecture](architecture.md),
+> [plug-in contract](plugin-contract.md), and executable tests/CI supersede
+> this record if behavior or ownership has changed.
+
 ## Status and scope
 
 This document records the executable generic forwarding-packet boundary, its

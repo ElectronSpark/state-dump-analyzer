@@ -1,5 +1,14 @@
 # Exploratory audit ledger — 2026-07-23
 
+> **Historical snapshot.** This ledger preserves the findings, decisions,
+> validation counts, measurements, and localhost URLs of the audited
+> 2026-07-23 revision. Its “fix in this audit,” “recorded,” “remain,” and
+> similar status language is not a current backlog. Use the
+> [README](../README.md) and [demo guide](../demo/README.md) for current
+> commands, and use the [architecture](architecture.md),
+> [plug-in contract](plugin-contract.md), and executable tests/CI for current
+> behavior and ownership.
+
 Scope: the split frontend/backend demo at `http://127.0.0.1:8765`, including
 the multi-node topology and route workbench, the 125K-event node workspace, and
 their HTTP contracts.

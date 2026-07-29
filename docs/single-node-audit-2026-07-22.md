@@ -1,5 +1,14 @@
 # Single-node workspace audit — 2026-07-22
 
+> **Historical snapshot.** This document preserves the defects, repairs,
+> follow-up ideas, generator/cache versions, measurements, test counts, archive
+> names, and localhost URLs of the audited 2026-07-22 revision. They are not
+> current operating instructions or a current backlog. Use the
+> [README](../README.md) and [demo guide](../demo/README.md) for current
+> commands, and use the [architecture](architecture.md),
+> [plug-in contract](plugin-contract.md), and executable tests/CI for current
+> behavior and ownership.
+
 Scope: the full-scale single-node workspace at `http://127.0.0.1:8765/node`,
 its revision APIs, and the scale plug-in fixture. The exploratory pass was
 completed before any implementation changes were made.
@@ -307,6 +316,11 @@ pagination. The rebuilt packed fixture validates at 125,000 matching events,
 10,000 resources, and generator version 7.
 
 ## Potential improvements
+
+The numbered list below is the improvement backlog captured at audit closure.
+The follow-up sections in this record describe what had changed by the end of
+that audit; neither section should be treated as the backlog for current
+`HEAD`.
 
 These are recorded separately from correctness fixes so they do not silently
 expand core semantics.

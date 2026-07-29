@@ -54,12 +54,15 @@ To choose another port or avoid opening a browser:
 ### Linux or WSL
 
 ```bash
-conda env create --file environment.yml
 ./launch.sh
 ```
 
-Open [http://127.0.0.1:8770](http://127.0.0.1:8770) if the browser does not
-open automatically. Use `./launch.sh --port 8877` to select another port.
+Like the Windows launcher, `launch.sh` creates the
+`state-dump-generator` Conda environment when it is missing. It does not open a
+browser by default. Open
+[http://127.0.0.1:8770](http://127.0.0.1:8770), use
+`./launch.sh --open` to open it automatically, or use
+`./launch.sh --port 8877` to select another port.
 
 The editor is unauthenticated and deliberately refuses non-loopback bind
 addresses. It is for local authoring, not network deployment.
@@ -94,7 +97,8 @@ An attempted event may also be retained as a log without changing the snapshot.
 
 ## Command-line workflow
 
-Install the package in a Python 3.12 environment:
+The commands in this section assume the current directory is
+`state-dump-generator/`. Install the package in a Python 3.12 environment:
 
 ```bash
 python -m pip install -e .
@@ -133,7 +137,8 @@ python -m state_dump_generator serve --port 8877 --open
 `new` refuses to overwrite an existing file unless `--force` is supplied.
 `validate` emits a machine-readable JSON report and returns a nonzero status
 for an invalid project. `generate` validates before writing and replaces its
-regular-file destination atomically.
+regular-file destination atomically. It refuses an output path that traverses
+a symbolic link or Windows junction.
 
 ### Validate, preview, and compile the canonical demo save
 

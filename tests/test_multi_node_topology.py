@@ -1891,7 +1891,7 @@ class MultiNodeTopologyTests(unittest.TestCase):
         self.assertIn("Multi-node topology", primary.text)
         self.assertEqual(primary.text, alias.text)
         self.assertIn("single-node analysis workspace", node.text)
-        self.assertIn("20260725-incidence-layout-v34", primary.text)
+        self.assertIn("20260728-reconstruction-selector-v37", primary.text)
         self.assertIn("control-plane only / not installed", primary.text)
         topology_script = self.client.get("/assets/topology.js")
         topology_styles = self.client.get("/assets/topology.css")

@@ -45,16 +45,17 @@ python -m state_dump_generator generate `
 ```
 
 That neutral assembly is not the full demo input. After running the
-repository's normal demo setup, use the separate demo materializer for the
-scalable fixture:
+repository's normal demo setup, activate its environment and use the separate
+demo materializer for the scalable fixture:
 
 ```powershell
+conda activate router-dump-analyzer-demo
 python -X utf8 -m rsl_demo_generator --write-conformance-fixture demo/fixtures/minimal-status.jsonl
 python -X utf8 -m rsl_demo_generator --verify-conformance-fixture demo/fixtures/minimal-status.jsonl
-python -X utf8 -m rsl_demo_generator --output demo/fixtures/router-state-lab-demo.tgz
-python -X utf8 -m rsl_demo_generator --check-launchable demo/fixtures/router-state-lab-demo.tgz
-python -X utf8 -m rsl_demo_generator --ensure-launchable demo/fixtures/router-state-lab-demo.tgz
-python -X utf8 -m rsl_demo_generator --validate demo/fixtures/router-state-lab-demo.tgz --deep-validate
+$demoArchive = python -X utf8 -m rsl_demo_generator `
+  --ensure-launchable demo/fixtures/router-state-lab-demo.tgz --path-only
+python -X utf8 -m rsl_demo_generator --check-launchable $demoArchive
+python -X utf8 -m rsl_demo_generator --validate $demoArchive --deep-validate
 ```
 
 The generator belongs to the example plug-in distribution and does not start a
@@ -62,8 +63,16 @@ server. After generation, the core-owned application can open the archive
 through the installed example plug-in:
 
 ```powershell
-router-dump-analyzer --plugin demo_router --input demo/fixtures/router-state-lab-demo.tgz --no-browser
+router-dump-analyzer --plugin demo_router --input $demoArchive --no-browser
 ```
+
+Open `http://127.0.0.1:8765/` for the multi-node reconstruction or
+`http://127.0.0.1:8765/node` for a node-local timeline. On the fabric page, the
+**Reconstructed status** bar above the link graph selects another historical
+query: click, drag, or use arrow/**Home**/**End** keys. The amber handle is the
+new selection while the cyan notch remains at the graph's applied time until
+the debounced reconstruction completes. Relative mode applies one offset to
+each node's own projection watermark; it is not simultaneous UTC.
 
 For a source checkout, the equivalent direct target is
 `--plugin-module rsl_demo_plugin`; the module loader defaults
@@ -79,7 +88,9 @@ generation does not depend on a downloaded fixture.
 
 The first demo command renders the tiny JSONL vector from
 `ExampleRouterPlugin`-owned records; the second fails if its checked-in bytes
-drift. `--check-launchable` is the fast launcher probe: it verifies the
+drift. `--ensure-launchable --path-only` prints the exact preferred or recovery
+archive selected without making callers parse progress text.
+`--check-launchable` is the fast launcher probe: it verifies the
 canonical full-scale node inventory, coverage metadata, current authoring-save
 SHA-256 digest, current generator/demo-plug-in materializer fingerprint, and
 one bounded, checksum-matching opaque pack per node without decoding those
@@ -139,6 +150,15 @@ The CTF trace comes from:
 
 The Babeltrace repository's REUSE declaration licenses `tests/data/*` as
 CC0-1.0. The fetch script leaves the source files unchanged.
+
+To refetch and verify the pinned bytes at their default destination:
+
+```powershell
+python .\scripts\fetch_babeltrace_sample.py
+```
+
+See [`external/ctf2-smalltrace/SOURCE.md`](external/ctf2-smalltrace/SOURCE.md)
+for the pinned URLs, sizes, and SHA-256 digests.
 
 Useful expanded corpora:
 

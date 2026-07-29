@@ -1,5 +1,14 @@
 # Comprehensive security, correctness, and ownership audit — 2026-07-26
 
+> **Historical snapshot.** This document preserves the findings, remediation
+> state, commit reference, test counts, timings, and live-smoke observations of
+> the audited 2026-07-26 revision and its stated 2026-07-27 follow-up. It is
+> not a current readiness report or backlog for current `HEAD`. Use the
+> [README](../README.md) and [demo guide](../demo/README.md) for current
+> commands, and use the [architecture](architecture.md),
+> [plug-in contract](plugin-contract.md), and executable tests/CI for the
+> current implementation boundary and status.
+
 ## Status and scope
 
 This record captures the remediation of the independent 2026-07-26 audit

@@ -29,9 +29,21 @@ demo.
 From the repository root:
 
 ```powershell
-python -m pip install -e ".[web]"
-python -m pip install -e "./demo"
+.\scripts\setup_demo.cmd
 .\scripts\launch_demo.cmd -NoBrowser
+```
+
+The setup script creates or updates the `router-dump-analyzer-demo` Conda
+environment, installs the core and this demo as separate editable
+distributions, and runs their Python suites.
+
+Open `http://127.0.0.1:8765/` for the multi-node fabric or
+`http://127.0.0.1:8765/node` for the individual-node temporal workspace. The
+root page is canonical; `/topology` remains a compatibility alias. If port
+8765 is occupied, use:
+
+```powershell
+.\scripts\launch_demo.cmd -Port 8876 -NoBrowser
 ```
 
 The launcher first checks that the archive contains the canonical full-scale
@@ -43,22 +55,28 @@ unsuitable, source-stale, or materializer-stale archive with the exact bounded
 generator owner manifest. Unknown files, final symlinks, and non-regular
 preferred paths remain untouched; the launcher uses the fixed
 `router-state-lab-demo.generated.tgz` recovery sibling and passes that selected
-path to the core. For an already generated assembly, load the installed
-plug-in entry point directly:
+path to the core. For a manual launch, activate the setup environment and ask
+the generator for that selected path before loading the installed plug-in entry
+point directly:
 
 ```powershell
+conda activate router-dump-analyzer-demo
+$demoArchive = python -X utf8 -m rsl_demo_generator `
+  --ensure-launchable demo/fixtures/router-state-lab-demo.tgz --path-only
 router-dump-analyzer --plugin demo_router `
-  --input demo/fixtures/router-state-lab-demo.tgz `
+  --input $demoArchive `
   --no-browser
 ```
 
-During source-tree development, bypass installed entry-point discovery without
-changing ownership:
+In that activated environment, source-tree development can bypass installed
+entry-point discovery without changing ownership:
 
 ```powershell
+$demoArchive = python -X utf8 -m rsl_demo_generator `
+  --ensure-launchable demo/fixtures/router-state-lab-demo.tgz --path-only
 python -m router_dump_analyzer `
   --plugin-module rsl_demo_plugin `
-  --input demo/fixtures/router-state-lab-demo.tgz `
+  --input $demoArchive `
   --no-browser
 ```
 
@@ -311,6 +329,17 @@ The canonical save uses `2025-10-05 16:00:00 UTC` as its base and a `+720 s`
 capture point. In the node workspace, compare moments immediately before and
 after these authoring offsets; per-node clock offsets remain visible in the
 generated evidence.
+
+The fabric page can reconstruct the same revisions. After its first query, use
+the **Reconstructed status** bar above the link graph: click or drag, or focus
+the range control and use the arrow, **Home**, and **End** keys. Its amber
+handle is the selected time and its cyan notch is the time still applied to the
+graph; releasing or finishing a keyboard change starts the reconstruction
+after a short debounce. With the default relative basis, an offset is applied
+separately to each node's projection watermark and does not imply simultaneous
+wall clocks. Select **Absolute UTC instant** in the reconstruction controls
+when you want one global scenario instant. A pending change between these two
+bases must be reconstructed before the bar can use the new axis.
 
 | Offset | Expected reconstruction |
 |---|---|

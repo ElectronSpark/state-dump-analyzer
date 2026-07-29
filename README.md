@@ -65,16 +65,16 @@ Anaconda, then run these commands from PowerShell in the repository root:
 ```
 
 The setup script creates or updates the Python 3.12 environment and runs the
-test suite. It installs the core and demo as separate editable distributions;
-the core distribution owns the generic browser assets, while its optional
-`web` extra supplies FastAPI and Uvicorn hosting support. The synthetic plug-in
-and fixtures remain demo-only. Before every normal launch, a fast outer-archive
-check confirms that the input contains the complete canonical full-scale node
-set, one checksum-matching generated dump pack per node, the SHA-256 digest of
-the canonical authoring save, and the fingerprint of the demo materializer
-that interpreted it. A missing archive is generated, while an unsuitable,
-source-stale, or materializer-stale generator-owned archive is rebuilt
-atomically. An
+core and demo Python suites. It installs the core and demo as separate editable
+distributions; the core distribution owns the generic browser assets, while
+its optional `web` extra supplies FastAPI and Uvicorn hosting support. The
+synthetic plug-in and fixtures remain demo-only. Before every normal launch, a
+fast outer-archive check confirms that the input contains the complete
+canonical full-scale node set, one checksum-matching generated dump pack per
+node, the SHA-256 digest of the canonical authoring save, and the fingerprint
+of the demo materializer that interpreted it. A missing archive is generated,
+while an unsuitable, source-stale, or materializer-stale generator-owned
+archive is rebuilt atomically. An
 unowned file, symlink, directory, or unreadable archive at the preferred path
 is never overwritten; the launcher preserves it and selects the fixed
 `router-state-lab-demo.generated.tgz` sibling before opening
@@ -99,20 +99,28 @@ add `-ValidateFixture`. The launcher passes the exact preferred or recovery
 path selected by the generator to the core. The server then stays attached to
 the terminal by design; press `Ctrl+C` to stop it.
 
-After the assembly exists, the equivalent core-owned command is:
+For a manual core-owned launch, activate the environment created by the setup
+script, then ask the generator for the safe preferred or recovery path before
+starting the server:
 
 ```powershell
+conda activate router-dump-analyzer-demo
+$demoArchive = python -X utf8 -m rsl_demo_generator `
+  --ensure-launchable demo/fixtures/router-state-lab-demo.tgz --path-only
 router-dump-analyzer --plugin demo_router `
-  --input demo/fixtures/router-state-lab-demo.tgz `
+  --input $demoArchive `
   --port 8876 --no-browser
 ```
 
-For source-tree development, the same loader can address the module directly:
+In that activated environment, the same loader can address the source-tree
+module directly:
 
 ```powershell
+$demoArchive = python -X utf8 -m rsl_demo_generator `
+  --ensure-launchable demo/fixtures/router-state-lab-demo.tgz --path-only
 python -m router_dump_analyzer `
   --plugin-module rsl_demo_plugin `
-  --input demo/fixtures/router-state-lab-demo.tgz `
+  --input $demoArchive `
   --no-browser
 ```
 
@@ -150,6 +158,7 @@ server stays in the foreground until you press `Ctrl+C`.
 | URL | Purpose |
 |---|---|
 | `http://127.0.0.1:8765/` | Multi-node topology and route tracing |
+| `http://127.0.0.1:8765/topology` | Compatibility alias for the topology home |
 | `http://127.0.0.1:8765/node` | Individual-node temporal workspace |
 | `http://127.0.0.1:8765/docs` | Interactive API documentation |
 | `http://127.0.0.1:8765/health` | Server and fixture health |
@@ -173,23 +182,35 @@ to open its node workspace with the same reconstruction context.
 2. **Explore the network model.** Toggle subnets, interfaces, subinterfaces,
    VLANs, and LAGs. Compare physical/subnet connectivity with the focused route
    graph and inspect how each inferred element was calculated.
-3. **Travel through time.** Open a node, click a moment, or drag horizontally
-   across the timeline to select a range. The resource state, relationships,
-   findings, and normalized event list follow the selected time.
-4. **Follow causality.** Expand temporal correlations to see dependencies and
+3. **Reconstruct another fabric moment.** After the first topology
+   reconstruction, use the **Reconstructed status** bar immediately above the
+   link graph. Click or drag its handle, or focus it and use the arrow,
+   **Home**, and **End** keys. The amber handle is the newly selected moment;
+   the cyan notch remains at the moment currently shown by the graph until the
+   short automatic reconstruction finishes. The control is disabled while a
+   reconstruction is running. In **Relative to each watermark** mode the axis
+   is one common offset from each selected node's watermark, not a claim that
+   their wall clocks are simultaneous. If you change between absolute and
+   relative time in the query controls, run that reconstruction before using
+   the bar on the new axis.
+4. **Travel through one node's history.** Open a node, click a moment, or drag
+   horizontally across the timeline to select a range. The resource state,
+   relationships, findings, and normalized event list follow the selected
+   time.
+5. **Follow causality.** Expand temporal correlations to see dependencies and
    dependents. Ctrl-click a timeline mark to find its normalized log row; in the
    log, use ordinary click/Ctrl-click/Shift-click/drag selection and
    double-click or **Reveal in timeline** to navigate back. Press **Esc** to
    clear the focused selection, event, moment, or range.
-5. **Inspect scale without losing detail.** On any node, browse the virtualized
+6. **Inspect scale without losing detail.** On any node, browse the virtualized
    125K-plus-event log, zoom-aware density lane, 7.5K-plus-resource tables,
    unmatched-log lanes, route tables, neighbor data, and plug-in-defined
    dashboards. Local inventory rows without a plug-in-declared cross-node
    candidate remain visible but explicitly non-traceable.
-6. **Resolve a node-local route.** In the node workspace, choose one of that
+7. **Resolve a node-local route.** In the node workspace, choose one of that
    node plug-in's advertised route decisions and basis values. The browser does
    not invent a destination or silently fall back to another node's resolver.
-7. **Look for disagreement.** Review delayed or failed updates, changing next
+8. **Look for disagreement.** Review delayed or failed updates, changing next
    hops, asymmetric forwarding, and differences between control-plane,
    forwarding, and hardware-layer reachability.
 
@@ -308,9 +329,11 @@ clock alignment, or cross-layer evidence is insufficient, the result remains
 
 See the [architecture](docs/architecture.md) for the complete ownership model,
 temporal algorithms, storage recommendation, security boundary, and delivery
-sequence. The [advanced route-trace audit](docs/advanced-route-trace-audit-2026-07-25.md)
-records the implemented packet boundary, scenario coverage, and remaining demo
-integration work.
+sequence. The dated
+[advanced route-trace audit](docs/advanced-route-trace-audit-2026-07-25.md)
+preserves the packet-boundary and scenario-coverage evidence from its audited
+revision; use the current architecture, contracts, and tests for present
+behavior and remaining work.
 
 ## Build a device plug-in
 
@@ -399,6 +422,12 @@ Open `http://127.0.0.1:4173`. The development server proxies API and
 documentation requests to `http://127.0.0.1:8765`. See the
 [frontend guide](frontend/README.md) for details.
 
+If the backend uses a nondefault port, tell the frontend server explicitly:
+
+```powershell
+npm --prefix frontend run serve -- --backend http://127.0.0.1:8876 --port 4174
+```
+
 ### Regenerate fixtures
 
 The launcher creates a missing assembly and safely replaces an exact
@@ -424,6 +453,7 @@ the demo guide owns the current projection and evidence contract.
 | [`demo/router-state-lab-default.scenario.json`](demo/router-state-lab-default.scenario.json) | Canonical human-authored scenario save consumed by future demo generations |
 | [`demo/rsl_demo_generator/`](demo/rsl_demo_generator) | The separate standard-library scenario adapter and scalable mock-dump materializer, with an explicit one-way dependency on the example plug-in's declared fixture semantics |
 | [`frontend/`](frontend) | Core-owned HTML pages, JavaScript, CSS, page manifest, and dependency-free checks |
+| [`state-dump-generator/`](state-dump-generator) | Independent GNS2-style scenario editor and topology-free per-node dump generator |
 | [`demo/fixtures/`](demo/fixtures) | Small parser/runtime-v2 conformance fixtures; the full mock dumps remain generator-owned and runtime-v1 compatible |
 | [`samples/`](samples) | Public decoder inputs and fixture documentation |
 | [`scripts/`](scripts) | Environment setup, launchers, and the optional public CTF decoder-fixture fetcher |

@@ -708,6 +708,55 @@ The capabilities response always includes the concrete `assembly_id`. A
 }
 ```
 
+The same response advertises the complete coordinate contract for historical
+reconstruction:
+
+```json
+{
+  "defaults": {
+    "basis": {
+      "kind": "relative_to_watermark",
+      "offset_ns": "0"
+    },
+    "clock_policy": "best_effort"
+  },
+  "time_bounds": {
+    "start_ns": "1759680000000000000",
+    "end_ns": "1759680600000000000",
+    "capture_ns": "1759680600000000000"
+  },
+  "absolute_clock_domains": ["utc"],
+  "time_bases": [
+    {"kind": "absolute_time", "required": ["time_ns"]},
+    {"kind": "relative_to_watermark", "required": ["offset_ns"]}
+  ]
+}
+```
+
+All three bounds are decimal-string nanoseconds. They describe the history
+window advertised for this immutable assembly; they are not plug-in-provided
+pixel coordinates. The generic core browser maps an absolute selector across
+`[start_ns,end_ns]`. For a watermark-relative selector it maps the same history
+window to `[start_ns - capture_ns,0]` and submits the selected value as
+`offset_ns`. The subtraction and inverse range mapping use integer arithmetic,
+so JavaScript clients must not coerce these values through `Number`.
+
+After a successful query, `resolved_basis.requested` is the selector applied to
+the displayed graph. The form and range handle may contain a newer draft
+selector, but moving that handle does not relabel the existing graph: click,
+drag, or keyboard commit submits another reconstruction, and only its successful
+response becomes the new applied basis. Clients should show applied and draft
+positions separately and disable the range while a request is pending or while
+the two axes are incomparable.
+
+For `relative_to_watermark`, one displayed offset is resolved independently
+against every selected projection watermark. A resulting
+`relative_capture_vector` or `mixed_capture_vector` is never labeled as UTC or
+one simultaneous moment. This selector and its coordinate transform are
+core-browser behavior. A node or federation plug-in supplies the declared
+history/watermark evidence and semantic projection; it does not supply the
+range control, executable frontend code, or a replacement time interpretation.
+
 `presentation_roles` is a bounded array of opaque, declared role tokens. The
 generic browser uses the exact `vpn` token to offer a VPN-oriented view; it
 does not infer VPN meaning from profile, plug-in, projection, protocol, VRF, or
@@ -2219,6 +2268,14 @@ All non-success responses use:
   }
 }
 ```
+
+The structured envelope above is the production `/v1` target. The current
+in-process FastAPI adapter still returns FastAPI's `{"detail": ...}` body for
+some executable demo routes. That transitional body is core-owned
+implementation debt, not a plug-in extension point: plug-ins must not construct
+HTTP errors, and clients must not infer semantic error codes by parsing
+`detail`. Migration is complete only when every route maps its typed core error
+to the envelope above.
 
 Required status mappings include `400 invalid_request`, `404 not_found`, `409`
 for stale selection/revision conflicts, `413` for upload/result limits, `422`
