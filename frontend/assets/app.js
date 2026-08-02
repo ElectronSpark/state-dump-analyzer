@@ -12,6 +12,11 @@ import {
   dashboardFilterMatches,
   dashboardRowIncluded,
   dashboardStatisticEvaluation,
+  controlPlaneCollectionPageDecision,
+  durableMutationDisposition,
+  durableReportMemberValidation,
+  durableReportRequestBody,
+  durableReviewControlAvailability,
   graphStatusClass,
   rangeSummaryFacts,
   replaceAbortController,
@@ -20,9 +25,50 @@ import {
   statusClassPresentation,
   statusSegmentClassName,
 } from "./view_models.js";
+import {
+  eventChangesState,
+  eventEffects,
+  eventFailed,
+  eventMarkClass,
+  normalizedEventOutcome,
+  resourceEffectStatusClass,
+} from "./timeline_models.js";
+import {
+  ControlPlaneRequestError,
+  DurableReviewJournalCapacityError,
+  DurableReviewJournalError,
+  StaleDurableReviewConnectionError,
+  awaitCurrentDurableReview,
+  beginReviewOperation,
+  buildDurableAnnotationMarkerIndex,
+  completePendingReviewMutation,
+  discardPendingReviewMutationsForScope,
+  durableConditionalRequestOptions,
+  durableCreationRequestOptions,
+  durableMutationPayloadIdentity,
+  durableMutationScopeKey,
+  durableReadPostRequestOptions,
+  durableReviewScopesEqual,
+  durableReviewTokenMatches,
+  loadPendingReviewMutations,
+  finishReviewOperation,
+  listAllDurableAnnotations,
+  listControlPlaneCollection,
+  loadThenCommitConfirmedState,
+  loadDurableReviewConfig,
+  reconcileControlPlaneVersionConflict,
+  reconcilePendingReviewMutations,
+  resetPendingReviewMutations,
+  reservePendingReviewMutation,
+  requestDurableReview,
+  savePendingReviewMutations,
+  saveDurableReviewConfig as persistDurableReviewConfig,
+} from "./durable_review_controller.js";
 
 const PALETTE = ["#52e0c4", "#a58bff", "#f5b85b", "#66b8ff", "#ff8eb5", "#9bd66f", "#df9dff"];
 const REVIEW_STORAGE_KEY = "router-state-lab-review-v2";
+const DURABLE_REVIEW_STORAGE_KEY = "router-state-lab-durable-review-scope-v1";
+const DURABLE_REVIEW_PENDING_STORAGE_KEY = "router-state-lab-durable-review-pending-v1";
 const DASHBOARD_LAYOUT_STORAGE_KEY_PREFIX = "router-state-lab-plugin-dashboards-v2";
 const LANE_WIDTH = 280;
 const HOVER_OPEN_DELAY_MS = 150;
@@ -35,6 +81,15 @@ const EVENT_LOG_PAGE_CACHE_LIMIT = 12;
 const EVENT_LOG_FILTER_DELAY_MS = 220;
 const MAX_EVENT_LOG_SELECTION_RANGES = 128;
 const MAX_EVENT_LOG_SELECTION_ITEMS = 5000;
+const DURABLE_REVIEW_PAGE_SIZE = 5000;
+const MAX_DURABLE_REVIEW_RECORDS = 20000;
+const CONTROL_PLANE_REQUEST_TIMEOUT_MS = 30_000;
+const CONTROL_PLANE_REPORT_TIMEOUT_MS = 60_000;
+const MAX_PENDING_REVIEW_MUTATIONS = 128;
+const MAX_TOTAL_PENDING_REVIEW_MUTATIONS = 256;
+const CONTROL_PLANE_COLLECTION_PAGE_SIZE = 5_000;
+const MAX_CONTROL_PLANE_COLLECTION_RECORDS = 20_000;
+const MAX_DURABLE_REPORT_REVISIONS = 128;
 const DENSITY_PAGE_CACHE_LIMIT = 12;
 const MAX_RESOURCE_ROWS = 500;
 const MAX_LANE_PICKER_ROWS = 300;
@@ -103,6 +158,28 @@ const state = {
   hiddenTimelineEntryIds: new Set(),
   hiddenEventProjectionsByResource: new Map(),
   markedTimelineEntryIds: new Set(),
+  localMarkedTimelineEntryIds: new Set(),
+  durableReview: {
+    status: "local",
+    config: null,
+    catalogRevisionId: "",
+    revisions: [],
+    sessions: [],
+    snapshots: [],
+    reportScope: null,
+    canWrite: false,
+    annotations: new Map(),
+    annotationIdsByEntry: new Map(),
+    markedEntryIds: new Set(),
+    pendingCorrelationSubjects: [],
+    pendingMutations: new Map(),
+    pendingJournalBlocked: false,
+    pendingJournalError: "",
+    pendingJournalRecovery: "",
+    operations: new Map(),
+    connectionSequence: 0,
+    detail: "Add the four scope values to persist markers and correlations.",
+  },
   customRecordLaneSequence: 0,
   layerMeta: new Map(),
   activeLayers: new Set(),
@@ -714,6 +791,1109 @@ function revisionPath(suffix) {
   return `/v1/revisions/${encodeURIComponent(revisionId)}/${suffix}`;
 }
 
+function durableReviewConfigFromInputs() {
+  const values = {
+    tenantId: byId("durable-review-tenant")?.value.trim() || "",
+    projectId: byId("durable-review-project")?.value.trim() || "",
+    workspaceId: byId("durable-review-workspace")?.value.trim() || "",
+    principalId: byId("durable-review-principal")?.value.trim() || "",
+  };
+  return Object.values(values).every(Boolean) ? values : null;
+}
+
+function savedDurableReviewConfig() {
+  return loadDurableReviewConfig(localStorage, DURABLE_REVIEW_STORAGE_KEY);
+}
+
+function saveDurableReviewConfig(config) {
+  // A blocked localStorage must not disable the explicit in-memory scope.
+  persistDurableReviewConfig(localStorage, DURABLE_REVIEW_STORAGE_KEY, config);
+}
+
+function populateDurableReviewInputs(config) {
+  if (!config) return;
+  byId("durable-review-tenant").value = config.tenantId;
+  byId("durable-review-project").value = config.projectId;
+  byId("durable-review-workspace").value = config.workspaceId;
+  byId("durable-review-principal").value = config.principalId;
+}
+
+function durableReviewScopePath(config = state.durableReview.config) {
+  if (!config) throw new Error("Durable review is not configured.");
+  return `/v1/control-plane/projects/${encodeURIComponent(config.projectId)}/workspaces/${encodeURIComponent(config.workspaceId)}`;
+}
+
+function durableReviewConnectionToken() {
+  const config = state.durableReview.config;
+  const catalogRevisionId = state.durableReview.catalogRevisionId;
+  if (!config || !catalogRevisionId) return null;
+  return Object.freeze({
+    sequence: state.durableReview.connectionSequence,
+    tenantId: config.tenantId,
+    projectId: config.projectId,
+    workspaceId: config.workspaceId,
+    principalId: config.principalId,
+    catalogRevisionId,
+  });
+}
+
+function durableReviewTokenConfig(token) {
+  if (!token) throw new StaleDurableReviewConnectionError();
+  return {
+    tenantId: token.tenantId,
+    projectId: token.projectId,
+    workspaceId: token.workspaceId,
+    principalId: token.principalId,
+  };
+}
+
+function durableReviewTokenIsCurrent(token, { requireReady = true } = {}) {
+  return durableReviewTokenMatches(token, {
+    sequence: state.durableReview.connectionSequence,
+    config: state.durableReview.config,
+    catalogRevisionId: state.durableReview.catalogRevisionId,
+    status: state.durableReview.status,
+  }, { requireReady });
+}
+
+async function controlPlaneRequest(path, {
+  method = "GET",
+  body = null,
+  mutate = null,
+  responseType = "json",
+  headers = {},
+  reviewConfig = state.durableReview.config,
+  timeoutMs = CONTROL_PLANE_REQUEST_TIMEOUT_MS,
+} = {}) {
+  return requestDurableReview(path, {
+    config: reviewConfig,
+    method,
+    body,
+    mutate,
+    responseType,
+    headers,
+    timeoutMs,
+    fetchImpl: (...values) => window.fetch(...values),
+    createAbortController: () => new AbortController(),
+    setTimer: (...values) => window.setTimeout(...values),
+    clearTimer: (value) => window.clearTimeout(value),
+  });
+}
+
+async function listAllControlPlaneCollection(path, {
+  reviewConfig,
+  connectionSequence = null,
+  label = "control-plane collection",
+  maximumRecords = MAX_CONTROL_PLANE_COLLECTION_RECORDS,
+} = {}) {
+  const assertCurrentConnection = () => {
+    if (
+      connectionSequence !== null
+      && connectionSequence !== state.durableReview.connectionSequence
+    ) {
+      throw new StaleDurableReviewConnectionError();
+    }
+  };
+  return listControlPlaneCollection(path, {
+    request: (target) => controlPlaneRequest(target, { reviewConfig }),
+    origin: window.location.origin,
+    pageDecision: controlPlaneCollectionPageDecision,
+    pageSize: CONTROL_PLANE_COLLECTION_PAGE_SIZE,
+    maximumRecords,
+    assertCurrent: assertCurrentConnection,
+    label,
+  });
+}
+
+function isDurableReviewReady() {
+  return state.durableReview.status === "ready"
+    && Boolean(state.durableReview.catalogRevisionId)
+    && Boolean(state.durableReview.config);
+}
+
+function isDurableReviewWritable() {
+  return isDurableReviewReady()
+    && state.durableReview.canWrite === true
+    && state.durableReview.pendingJournalBlocked !== true;
+}
+
+function durableReviewUnavailable(error) {
+  return error instanceof ControlPlaneRequestError
+    && [0, 401, 503].includes(error.status);
+}
+
+function durableReviewOperationBusy(name) {
+  return state.durableReview.operations.has(name);
+}
+
+function beginDurableReviewOperation(name, conflicts = [name]) {
+  const owner = beginReviewOperation(
+    state.durableReview.operations,
+    name,
+    conflicts,
+    () => randomIdempotencyKey(`ui-${name}`),
+  );
+  if (!owner) return null;
+  syncDurableReviewControls();
+  return owner;
+}
+
+function finishDurableReviewOperation(name, owner) {
+  if (!finishReviewOperation(state.durableReview.operations, name, owner)) return;
+  syncDurableReviewControls();
+}
+
+function pendingJournalOptions() {
+  return {
+    maximumEntries: MAX_TOTAL_PENDING_REVIEW_MUTATIONS,
+    maximumPerScopeEntries: MAX_PENDING_REVIEW_MUTATIONS,
+  };
+}
+
+function restorePendingMutationMap(snapshot) {
+  state.durableReview.pendingMutations.clear();
+  snapshot.forEach((value, key) => {
+    state.durableReview.pendingMutations.set(key, value);
+  });
+}
+
+function blockPendingMutationJournal(error, recovery = "all") {
+  state.durableReview.pendingJournalBlocked = true;
+  state.durableReview.pendingJournalError = String(
+    error?.message || "The unresolved mutation journal is unavailable.",
+  ).slice(0, 512);
+  state.durableReview.pendingJournalRecovery = recovery;
+  syncDurableReviewControls();
+}
+
+function clearPendingMutationJournalBlock() {
+  state.durableReview.pendingJournalBlocked = false;
+  state.durableReview.pendingJournalError = "";
+  state.durableReview.pendingJournalRecovery = "";
+}
+
+function recoverPendingMutationCapacity(scopeKey = "") {
+  if (state.durableReview.pendingJournalRecovery === "global") {
+    if (state.durableReview.pendingMutations.size < MAX_TOTAL_PENDING_REVIEW_MUTATIONS) {
+      clearPendingMutationJournalBlock();
+    }
+    return;
+  }
+  if (state.durableReview.pendingJournalRecovery !== "scope" || !scopeKey) return;
+  const scopeCount = [...state.durableReview.pendingMutations.values()].filter(
+    (pending) => pending?.scopeKey === scopeKey,
+  ).length;
+  if (scopeCount < MAX_PENDING_REVIEW_MUTATIONS) {
+    clearPendingMutationJournalBlock();
+  }
+}
+
+function persistPendingMutationJournal() {
+  return savePendingReviewMutations(
+    localStorage,
+    DURABLE_REVIEW_PENDING_STORAGE_KEY,
+    state.durableReview.pendingMutations,
+    pendingJournalOptions(),
+  );
+}
+
+async function pendingDurableReviewMutation(token, kind, payload, idPrefix) {
+  if (state.durableReview.pendingJournalBlocked) {
+    throw new DurableReviewJournalError(
+      state.durableReview.pendingJournalError
+      || "Reset the unresolved mutation journal before writing.",
+    );
+  }
+  const payloadIdentity = await durableMutationPayloadIdentity(payload);
+  if (!durableReviewTokenIsCurrent(token)) {
+    throw new StaleDurableReviewConnectionError();
+  }
+  const priorSize = state.durableReview.pendingMutations.size;
+  let pending;
+  try {
+    pending = reservePendingReviewMutation(
+      state.durableReview.pendingMutations,
+      token,
+      kind,
+      payloadIdentity,
+      idPrefix,
+      {
+        maximumEntries: MAX_PENDING_REVIEW_MUTATIONS,
+        maximumTotalEntries: MAX_TOTAL_PENDING_REVIEW_MUTATIONS,
+        createId: randomIdempotencyKey,
+      },
+    );
+  } catch (error) {
+    if (error instanceof DurableReviewJournalCapacityError) {
+      blockPendingMutationJournal(error, error.capacity);
+    }
+    throw error;
+  }
+  if (state.durableReview.pendingMutations.size !== priorSize) {
+    try {
+      persistPendingMutationJournal();
+    } catch (error) {
+      completePendingReviewMutation(state.durableReview.pendingMutations, pending);
+      blockPendingMutationJournal(error);
+      throw error;
+    }
+  }
+  return pending;
+}
+
+function completeDurableReviewMutation(pending) {
+  const snapshot = new Map(state.durableReview.pendingMutations);
+  const removed = completePendingReviewMutation(
+    state.durableReview.pendingMutations,
+    pending,
+  );
+  if (!removed) return false;
+  try {
+    persistPendingMutationJournal();
+  } catch (error) {
+    restorePendingMutationMap(snapshot);
+    blockPendingMutationJournal(error);
+    return false;
+  }
+  return true;
+}
+
+function reconcilePendingDurableReviewMutations(
+  connectionToken,
+  { annotations = [], report = null } = {},
+) {
+  if (!durableReviewTokenIsCurrent(connectionToken)) return;
+  const scopeKey = durableMutationScopeKey(connectionToken);
+  const annotationIds = new Set(
+    annotations.map((item) => String(item?.annotation_id || "")).filter(Boolean),
+  );
+  const correlationIds = new Set(
+    (report?.correlations?.manual_event_correlations || [])
+      .map((item) => String(
+        item?.correlation?.correlation_id || item?.correlation_id || "",
+      ))
+      .filter(Boolean),
+  );
+  const snapshot = new Map(state.durableReview.pendingMutations);
+  const reconciled = reconcilePendingReviewMutations(
+    state.durableReview.pendingMutations,
+    scopeKey,
+    { annotationIds, correlationIds },
+  );
+  if (!reconciled) return;
+  try {
+    persistPendingMutationJournal();
+  } catch (error) {
+    restorePendingMutationMap(snapshot);
+    blockPendingMutationJournal(error);
+    return;
+  }
+  recoverPendingMutationCapacity(scopeKey);
+}
+
+function syncDurableReviewControls() {
+  const status = byId("durable-review-state");
+  const detail = byId("durable-review-detail");
+  if (!status || !detail) return;
+  const labels = {
+    local: "Browser-only markers",
+    connecting: "Connecting",
+    ready: "Durable review connected",
+    error: "Browser-only fallback",
+  };
+  const ready = isDurableReviewReady();
+  const serverWritable = ready && state.durableReview.canWrite === true;
+  const journalBlocked = state.durableReview.pendingJournalBlocked === true;
+  const connecting = durableReviewOperationBusy("connect");
+  const markerBusy = durableReviewOperationBusy("marker");
+  const correlationBusy = durableReviewOperationBusy("correlation");
+  const reportBusy = durableReviewOperationBusy("report");
+  const selectionCount = eventLogSelectionCount();
+  const selectionOverLimit = selectionCount > MAX_EVENT_LOG_SELECTION_ITEMS
+    || state.eventLogSelectionRanges.length > MAX_EVENT_LOG_SELECTION_RANGES;
+  const selectionActionReady = selectionCount > 0 && !selectionOverLimit;
+  const availability = durableReviewControlAvailability({
+    ready,
+    writable: serverWritable,
+    journalBlocked,
+    connecting,
+    markerBusy,
+    correlationBusy,
+    reportBusy,
+    selectionReady: selectionActionReady,
+  });
+  status.dataset.state = journalBlocked
+    ? "error"
+    : ready && !serverWritable
+    ? "readonly"
+    : state.durableReview.status;
+  status.textContent = journalBlocked
+    ? "Mutation journal needs attention"
+    : ready && !serverWritable
+    ? "Durable review read only"
+    : labels[state.durableReview.status] || labels.local;
+  detail.textContent = journalBlocked
+    ? `${state.durableReview.pendingJournalError} ${state.durableReview.pendingJournalRecovery === "scope"
+      ? "Discard the connected scope's unresolved writes or reset all scopes before another durable write."
+      : "Explicitly reset unresolved writes across all scopes before another durable write."}`
+    : state.durableReview.detail;
+  const connect = byId("durable-review-connect");
+  if (connect) {
+    connect.disabled = availability.connectDisabled;
+    connect.setAttribute("aria-busy", String(connecting));
+  }
+  ["durable-review-tenant", "durable-review-project", "durable-review-workspace", "durable-review-principal"]
+    .forEach((id) => {
+      const control = byId(id);
+      if (control) control.disabled = availability.connectDisabled;
+    });
+  ["durable-review-copy-report", "durable-review-download-report"].forEach((id) => {
+    const control = byId(id);
+    if (!control) return;
+    control.disabled = availability.reportDisabled;
+    control.setAttribute("aria-busy", String(reportBusy));
+  });
+  byId("durable-review-report-scope").disabled = availability.reportScopeDisabled;
+  const discardJournal = byId("durable-review-discard-pending");
+  const connectionToken = durableReviewConnectionToken();
+  const currentScopeKey = connectionToken
+    ? durableMutationScopeKey(connectionToken)
+    : "";
+  const currentScopePendingCount = currentScopeKey
+    ? [...state.durableReview.pendingMutations.values()].filter(
+      (pending) => pending?.scopeKey === currentScopeKey,
+    ).length
+    : 0;
+  if (discardJournal) {
+    discardJournal.disabled = connecting
+      || markerBusy
+      || correlationBusy
+      || reportBusy
+      || currentScopePendingCount === 0;
+    discardJournal.textContent = "Discard unresolved scope writes";
+    discardJournal.title = currentScopePendingCount
+      ? `Discard ${currentScopePendingCount.toLocaleString()} unresolved writes for the connected scope. Server-side outcomes are not changed.`
+      : "The connected scope has no unresolved writes.";
+  }
+  const resetJournal = byId("durable-review-reset-pending");
+  if (resetJournal) {
+    resetJournal.disabled = connecting
+      || markerBusy
+      || correlationBusy
+      || reportBusy
+      || (!journalBlocked && state.durableReview.pendingMutations.size === 0);
+    resetJournal.title = "Forget every unresolved browser identity across every review scope. Server-side outcomes are not changed.";
+  }
+  ["event-selection-mark", "event-selection-unmark"].forEach((id) => {
+    const control = byId(id);
+    if (!control) return;
+    control.disabled = availability.markerDisabled;
+    control.setAttribute("aria-busy", String(markerBusy));
+    control.title = journalBlocked
+      ? "Reset or reconcile the unresolved mutation journal before writing."
+      : availability.durableReadOnly
+      ? "This durable review identity is read only. Use browser-only mode for local markers."
+      : selectionOverLimit
+        ? `Actions support at most ${MAX_EVENT_LOG_SELECTION_ITEMS.toLocaleString()} rows across ${MAX_EVENT_LOG_SELECTION_RANGES} ranges.`
+        : "";
+  });
+  const correlate = byId("event-selection-correlate");
+  if (correlate) {
+    correlate.disabled = availability.correlationDisabled;
+    correlate.setAttribute("aria-busy", String(correlationBusy));
+    correlate.title = journalBlocked
+      ? "Reset or reconcile the unresolved mutation journal before writing."
+      : ready && !serverWritable
+      ? "This durable review identity is read only."
+      : !ready
+        ? "Connect an explicit writable durable review scope to create a correlation."
+        : selectionOverLimit
+          ? `Actions support at most ${MAX_EVENT_LOG_SELECTION_ITEMS.toLocaleString()} rows across ${MAX_EVENT_LOG_SELECTION_RANGES} ranges.`
+          : "";
+  }
+}
+
+function selectedDurableReportScope() {
+  const option = byId("durable-review-report-scope")?.selectedOptions?.[0];
+  if (!option?.dataset.kind || !option.dataset.id) {
+    return state.durableReview.catalogRevisionId
+      ? { kind: "revision", id: state.durableReview.catalogRevisionId }
+      : null;
+  }
+  return { kind: option.dataset.kind, id: option.dataset.id };
+}
+
+function syncDurableReportScopeNote() {
+  const note = byId("durable-review-scope-note");
+  if (!note) return;
+  const selected = selectedDurableReportScope();
+  if (!selected) {
+    note.textContent = "Connect to select an immutable revision or a multi-revision session.";
+    return;
+  }
+  if (selected.kind === "session") {
+    const session = state.durableReview.sessions.find(
+      (item) => String(item.session_id) === selected.id,
+    );
+    const memberCount = Array.isArray(session?.members) ? session.members.length : 0;
+    note.textContent = `AI report resolves the current membership of live session ${selected.id} (${memberCount.toLocaleString()} immutable ${memberCount === 1 ? "revision" : "revisions"} as last loaded). Choose a snapshot for a reproducible frozen revision vector. This page still renders only the active node revision.`;
+    return;
+  }
+  if (selected.kind === "snapshot") {
+    const snapshot = state.durableReview.snapshots.find(
+      (item) => String(item.snapshot_id) === selected.id,
+    );
+    const memberCount = Array.isArray(snapshot?.members) ? snapshot.members.length : 0;
+    note.textContent = `AI report uses immutable snapshot ${selected.id} from session ${snapshot?.session_id || "unknown"} version ${snapshot?.session_version ?? "unknown"} (${memberCount.toLocaleString()} ${memberCount === 1 ? "revision" : "revisions"}).`;
+    return;
+  }
+  const active = selected.id === state.durableReview.catalogRevisionId;
+  note.textContent = active
+    ? "AI report and row subjects use this page's exact active catalog revision."
+    : `AI report uses immutable revision ${selected.id}. This page does not render or create subjects for that other revision.`;
+}
+
+function renderDurableReportScopes() {
+  const select = byId("durable-review-report-scope");
+  if (!select) return;
+  const prior = state.durableReview.reportScope;
+  select.replaceChildren();
+  const revisionGroup = document.createElement("optgroup");
+  revisionGroup.label = "Immutable revisions";
+  state.durableReview.revisions.forEach((revision) => {
+    const revisionId = String(revision.revision_id || "");
+    if (!revisionId) return;
+    const option = document.createElement("option");
+    option.dataset.kind = "revision";
+    option.dataset.id = revisionId;
+    option.value = `revision:${revisionId}`;
+    const active = revisionId === state.durableReview.catalogRevisionId;
+    const source = String(revision.metadata?.source_revision_id || revisionId);
+    option.textContent = `${active ? "Active page - " : ""}${revision.node_id || "node"} - ${source}`;
+    revisionGroup.appendChild(option);
+  });
+  if (revisionGroup.children.length) select.appendChild(revisionGroup);
+  const validationSuffix = (validation) => {
+    if (validation.valid) return "";
+    if (validation.reason === "oversized") {
+      return ` (exceeds ${MAX_DURABLE_REPORT_REVISIONS}-revision report limit)`;
+    }
+    if (validation.reason === "duplicate") return " (duplicate revisions)";
+    if (validation.reason === "invalid") return " (invalid member)";
+    return " (empty)";
+  };
+  const snapshotGroup = document.createElement("optgroup");
+  snapshotGroup.label = "Immutable session snapshots";
+  state.durableReview.snapshots.forEach((snapshot) => {
+    const snapshotId = String(snapshot.snapshot_id || "");
+    if (!snapshotId) return;
+    const validation = durableReportMemberValidation(
+      snapshot.members,
+      MAX_DURABLE_REPORT_REVISIONS,
+    );
+    const option = document.createElement("option");
+    option.dataset.kind = "snapshot";
+    option.dataset.id = snapshotId;
+    option.value = `snapshot:${snapshotId}`;
+    option.textContent = `${snapshot.session_id || "session"} v${snapshot.session_version ?? "?"} snapshot - ${validation.memberCount} ${validation.memberCount === 1 ? "revision" : "revisions"}${validationSuffix(validation)}`;
+    option.disabled = !validation.valid;
+    snapshotGroup.appendChild(option);
+  });
+  if (snapshotGroup.children.length) select.appendChild(snapshotGroup);
+  const sessionGroup = document.createElement("optgroup");
+  sessionGroup.label = "Live multi-revision sessions";
+  state.durableReview.sessions.forEach((session) => {
+    const sessionId = String(session.session_id || "");
+    if (!sessionId) return;
+    const members = Array.isArray(session.members) ? session.members : [];
+    const validation = durableReportMemberValidation(
+      members,
+      MAX_DURABLE_REPORT_REVISIONS,
+    );
+    const option = document.createElement("option");
+    option.dataset.kind = "session";
+    option.dataset.id = sessionId;
+    option.value = `session:${sessionId}`;
+    option.textContent = `${session.label || sessionId} - ${validation.memberCount} ${validation.memberCount === 1 ? "revision" : "revisions"}${validationSuffix(validation)}`;
+    option.disabled = !validation.valid;
+    sessionGroup.appendChild(option);
+  });
+  if (sessionGroup.children.length) select.appendChild(sessionGroup);
+  const available = [...select.options].filter((option) => !option.disabled);
+  const preferred = available.find(
+    (option) => option.dataset.kind === prior?.kind && option.dataset.id === prior?.id,
+  ) || available.find(
+    (option) => option.dataset.kind === "revision"
+      && option.dataset.id === state.durableReview.catalogRevisionId,
+  ) || available[0];
+  if (preferred) {
+    preferred.selected = true;
+    state.durableReview.reportScope = {
+      kind: preferred.dataset.kind,
+      id: preferred.dataset.id,
+    };
+  } else {
+    const option = document.createElement("option");
+    option.textContent = "No reportable revisions, snapshots, or sessions";
+    select.appendChild(option);
+    state.durableReview.reportScope = null;
+  }
+  syncDurableReportScopeNote();
+}
+
+function setDurableReviewStatus(status, detail) {
+  state.durableReview.status = status;
+  state.durableReview.detail = detail;
+  syncDurableReviewControls();
+}
+
+function clearDurableReviewMarkers() {
+  for (const entryId of state.durableReview.markedEntryIds) {
+    if (!state.localMarkedTimelineEntryIds.has(entryId)) {
+      state.markedTimelineEntryIds.delete(entryId);
+    }
+    forgetTimelineEntryProjection(entryId);
+  }
+  state.durableReview.annotations.clear();
+  state.durableReview.annotationIdsByEntry.clear();
+  state.durableReview.markedEntryIds.clear();
+}
+
+function entryIdForReviewSubject(subject) {
+  if (subject?.kind === "event" && subject.subject_id) {
+    return normalizedLogEntryId(String(subject.subject_id));
+  }
+  if (subject?.kind === "source_record" && subject.subject_id) {
+    return sourceLogEntryId(String(subject.subject_id));
+  }
+  return "";
+}
+
+function reviewSubjectKey(subject) {
+  return [
+    String(subject?.revision_id || ""),
+    String(subject?.kind || ""),
+    String(subject?.subject_id || ""),
+    String(subject?.start_ns ?? ""),
+    String(subject?.end_ns ?? ""),
+  ].join("\u001f");
+}
+
+function exactReviewSubject(item) {
+  const kind = String(item?.stream_kind || "event");
+  const uid = String(item?.uid || "");
+  if (!uid || !["event", "source"].includes(kind)) return null;
+  return {
+    revision_id: state.durableReview.catalogRevisionId,
+    kind: kind === "source" ? "source_record" : "event",
+    subject_id: uid,
+  };
+}
+
+function rememberDurableAnnotation(
+  annotation,
+  connectionToken = durableReviewConnectionToken(),
+) {
+  if (!durableReviewTokenIsCurrent(connectionToken)) return false;
+  const projection = buildDurableAnnotationMarkerIndex(
+    [annotation],
+    connectionToken.catalogRevisionId,
+    entryIdForReviewSubject,
+  );
+  projection.annotations.forEach((value, annotationId) => {
+    state.durableReview.annotations.set(annotationId, value);
+  });
+  projection.annotationIdsByEntry.forEach((annotationIds, entryId) => {
+    if (!state.durableReview.annotationIdsByEntry.has(entryId)) {
+      state.durableReview.annotationIdsByEntry.set(entryId, new Set());
+    }
+    annotationIds.forEach(
+      (annotationId) => state.durableReview.annotationIdsByEntry.get(entryId).add(annotationId),
+    );
+  });
+  projection.markedEntryIds.forEach((entryId) => {
+    state.durableReview.markedEntryIds.add(entryId);
+    state.markedTimelineEntryIds.add(entryId);
+  });
+  return true;
+}
+
+function durableReportValidationMessage(label, validation) {
+  if (validation.reason === "oversized") {
+    return `${label} contains ${validation.memberCount.toLocaleString()} revisions; this UI supports at most ${MAX_DURABLE_REPORT_REVISIONS.toLocaleString()} per report.`;
+  }
+  if (validation.reason === "duplicate") {
+    return `${label} contains duplicate revisions and is not reportable.`;
+  }
+  if (validation.reason === "invalid") {
+    return `${label} contains an invalid revision member.`;
+  }
+  return `${label} contains no revision members.`;
+}
+
+async function validateDurableReportScope(reportScope, connectionToken) {
+  if (reportScope.kind === "revision") return reportScope;
+  const config = durableReviewTokenConfig(connectionToken);
+  let record;
+  if (reportScope.kind === "session") {
+    record = await awaitCurrentDurableReview(
+      () => controlPlaneRequest(
+        `${durableReviewScopePath(config)}/sessions/${encodeURIComponent(reportScope.id)}`,
+        { reviewConfig: config },
+      ),
+      () => durableReviewTokenIsCurrent(connectionToken),
+    );
+    const index = state.durableReview.sessions.findIndex(
+      (item) => String(item.session_id || "") === reportScope.id,
+    );
+    if (index >= 0) state.durableReview.sessions[index] = record;
+  } else if (reportScope.kind === "snapshot") {
+    record = state.durableReview.snapshots.find(
+      (item) => String(item.snapshot_id || "") === reportScope.id,
+    );
+  } else {
+    throw new Error("Unsupported durable report scope.");
+  }
+  const validation = durableReportMemberValidation(
+    record?.members,
+    MAX_DURABLE_REPORT_REVISIONS,
+  );
+  if (!validation.valid) {
+    if (reportScope.kind === "session") renderDurableReportScopes();
+    throw new Error(
+      durableReportValidationMessage(
+        reportScope.kind === "session"
+          ? `Live session ${reportScope.id}`
+          : `Snapshot ${reportScope.id}`,
+        validation,
+      ),
+    );
+  }
+  if (reportScope.kind === "session") syncDurableReportScopeNote();
+  return reportScope;
+}
+
+async function durableCorrelationReport(
+  format = "json",
+  scopeOverride = null,
+  connectionToken = durableReviewConnectionToken(),
+) {
+  if (!durableReviewTokenIsCurrent(connectionToken)) {
+    throw new Error("Connect a durable review scope before generating a report.");
+  }
+  const config = durableReviewTokenConfig(connectionToken);
+  const target = new URL(
+    `${durableReviewScopePath(config)}/correlation-report`,
+    window.location.origin,
+  );
+  target.searchParams.set("format", format);
+  const reportScope = scopeOverride || selectedDurableReportScope();
+  if (!reportScope) throw new Error("Select a report revision, snapshot, or session.");
+  const isCurrent = () => durableReviewTokenIsCurrent(connectionToken);
+  const validatedScope = await awaitCurrentDurableReview(
+    () => validateDurableReportScope(reportScope, connectionToken),
+    isCurrent,
+  );
+  return awaitCurrentDurableReview(
+    () => controlPlaneRequest(`${target.pathname}${target.search}`, {
+      ...durableReadPostRequestOptions({
+        body: durableReportRequestBody(validatedScope),
+      }),
+      responseType: format === "markdown" ? "text" : "json",
+      reviewConfig: config,
+      timeoutMs: CONTROL_PLANE_REPORT_TIMEOUT_MS,
+    }),
+    isCurrent,
+  );
+}
+
+function hydrateDurableReviewProjections(report, connectionToken) {
+  if (!durableReviewTokenIsCurrent(connectionToken)) return false;
+  const observations = report?.observations || {};
+  const events = Array.isArray(observations.events) ? observations.events : [];
+  const sources = Array.isArray(observations.source_records)
+    ? observations.source_records
+    : [];
+  events.forEach((entry) => {
+    const uid = String(entry.event_uid || entry.event_id || "");
+    const entryId = normalizedLogEntryId(uid);
+    if (!uid || !state.durableReview.markedEntryIds.has(entryId)) return;
+    rememberTimelineEntryProjection({
+      entry_id: entryId,
+      stream_kind: "event",
+      uid,
+      timestamp_ns: String(entry.time_ns ?? entry.timestamp_ns ?? entry.start_ns ?? "0"),
+      resource_ids: eventResourceRefs(entry),
+      entry,
+    });
+  });
+  sources.forEach((entry) => {
+    const uid = sourceRecordUid(entry);
+    const entryId = sourceLogEntryId(uid);
+    if (!uid || !state.durableReview.markedEntryIds.has(entryId)) return;
+    rememberTimelineEntryProjection({
+      entry_id: entryId,
+      stream_kind: "source",
+      uid,
+      timestamp_ns: String(entry.time_ns ?? entry.timestamp_ns ?? "0"),
+      resource_ids: [],
+      entry,
+    });
+  });
+  return true;
+}
+
+async function loadDurableReviewAnnotations(
+  connectionToken = durableReviewConnectionToken(),
+) {
+  if (!durableReviewTokenIsCurrent(connectionToken)) return false;
+  const config = durableReviewTokenConfig(connectionToken);
+  const isCurrent = () => durableReviewTokenIsCurrent(connectionToken);
+  const result = await loadThenCommitConfirmedState(
+    () => awaitCurrentDurableReview(
+      () => listAllDurableAnnotations(
+        `${durableReviewScopePath(config)}/annotations`,
+        {
+          request: (target) => controlPlaneRequest(target, { reviewConfig: config }),
+          origin: window.location.origin,
+          isCurrent,
+          pageSize: DURABLE_REVIEW_PAGE_SIZE,
+          maximumRecords: MAX_DURABLE_REVIEW_RECORDS,
+        },
+      ),
+      isCurrent,
+    ),
+    (confirmed) => {
+      // A timeout, abort, malformed page, or repeated watermark conflict never
+      // enters this commit and therefore leaves the last confirmed truth intact.
+      const projection = buildDurableAnnotationMarkerIndex(
+        confirmed.items,
+        connectionToken.catalogRevisionId,
+        entryIdForReviewSubject,
+      );
+      clearDurableReviewMarkers();
+      state.durableReview.annotations = projection.annotations;
+      state.durableReview.annotationIdsByEntry = projection.annotationIdsByEntry;
+      state.durableReview.markedEntryIds = projection.markedEntryIds;
+      projection.markedEntryIds.forEach((entryId) => {
+        state.markedTimelineEntryIds.add(entryId);
+      });
+    },
+  );
+  reconcilePendingDurableReviewMutations(connectionToken, {
+    annotations: result.items,
+  });
+  let correlationCount = null;
+  let projectionWarning = "";
+  try {
+    const report = await awaitCurrentDurableReview(
+      () => durableCorrelationReport("json", {
+        kind: "revision",
+        id: connectionToken.catalogRevisionId,
+      }, connectionToken),
+      isCurrent,
+    );
+    hydrateDurableReviewProjections(report, connectionToken);
+    reconcilePendingDurableReviewMutations(connectionToken, { report });
+    const declaredCount = Number(report?.summary?.manual_correlation_count);
+    if (Number.isSafeInteger(declaredCount) && declaredCount >= 0) {
+      correlationCount = declaredCount;
+    }
+  } catch (error) {
+    if (!durableReviewTokenIsCurrent(connectionToken)) return false;
+    const reason = String(error?.message || "unknown report error")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 240);
+    projectionWarning = ` Report projection warning: ${reason}. Durable row markers remain exact, but unloaded timeline projections and the manual-correlation count may be incomplete.`;
+  }
+  if (!durableReviewTokenIsCurrent(connectionToken)) return false;
+  rerenderTimelinePreservingScroll();
+  renderEventTableWindow();
+  const markerCount = state.durableReview.markedEntryIds.size;
+  const countCopy = `${markerCount.toLocaleString()} durable ${markerCount === 1 ? "marker" : "markers"}`;
+  const correlationCopy = correlationCount === null
+    ? ""
+    : `; ${correlationCount.toLocaleString()} manual ${correlationCount === 1 ? "correlation" : "correlations"}`;
+  const accessCopy = state.durableReview.canWrite
+    ? ""
+    : "Read-only durable connection; marker and correlation writes are disabled. ";
+  state.durableReview.detail = `${accessCopy}${countCopy}${correlationCopy} for active page revision ${connectionToken.catalogRevisionId}. Report scope is selected separately.${projectionWarning}`;
+  return true;
+}
+
+async function connectDurableReview({ quiet = false } = {}) {
+  // Correlation subjects are captured under the previously active scope.
+  // Never carry that mutable dialog state through any reconnect attempt.
+  closeManualCorrelationDialog();
+  const config = durableReviewConfigFromInputs();
+  if (!config) {
+    state.durableReview.connectionSequence += 1;
+    state.durableReview.config = null;
+    state.durableReview.catalogRevisionId = "";
+    state.durableReview.revisions = [];
+    state.durableReview.sessions = [];
+    state.durableReview.snapshots = [];
+    state.durableReview.reportScope = null;
+    state.durableReview.canWrite = false;
+    clearDurableReviewMarkers();
+    renderDurableReportScopes();
+    setDurableReviewStatus(
+      "local",
+      "Add the four scope values to persist markers and correlations.",
+    );
+    if (!quiet) byId("durable-review-setup").open = true;
+    return;
+  }
+  const operationOwner = beginDurableReviewOperation(
+    "connect",
+    ["connect", "marker", "correlation", "report"],
+  );
+  if (!operationOwner) {
+    if (!quiet) showToast("Wait for the current durable review action to finish.");
+    return;
+  }
+  const previousConnection = {
+    token: durableReviewConnectionToken(),
+    config: state.durableReview.config,
+    catalogRevisionId: state.durableReview.catalogRevisionId,
+    revisions: state.durableReview.revisions,
+    sessions: state.durableReview.sessions,
+    snapshots: state.durableReview.snapshots,
+    reportScope: state.durableReview.reportScope,
+  };
+  const requestedPreviousScope = previousConnection.token
+    ? {
+      ...config,
+      catalogRevisionId: previousConnection.token.catalogRevisionId,
+    }
+    : null;
+  let preservePreviousOnFailure = durableReviewScopesEqual(
+    previousConnection.token,
+    requestedPreviousScope,
+  );
+  const sequence = ++state.durableReview.connectionSequence;
+  state.durableReview.config = config;
+  saveDurableReviewConfig(config);
+  state.durableReview.catalogRevisionId = "";
+  state.durableReview.revisions = [];
+  state.durableReview.sessions = [];
+  state.durableReview.snapshots = [];
+  state.durableReview.canWrite = false;
+  if (!preservePreviousOnFailure) clearDurableReviewMarkers();
+  setDurableReviewStatus("connecting", "Validating tenant, project, workspace, and revision...");
+  try {
+    const context = await controlPlaneRequest("/v1/control-plane/context", {
+      reviewConfig: config,
+    });
+    if (sequence !== state.durableReview.connectionSequence) return;
+    const workspaces = await listAllControlPlaneCollection(
+      `/v1/control-plane/projects/${encodeURIComponent(config.projectId)}/workspaces`,
+      {
+        reviewConfig: config,
+        connectionSequence: sequence,
+        label: "Workspace catalog",
+      },
+    );
+    if (!workspaces.some(
+      (item) => String(item.workspace_id) === config.workspaceId,
+    )) {
+      throw new ControlPlaneRequestError(
+        "The explicit workspace is not present in this project.",
+        404,
+      );
+    }
+    const [revisions, sessions, snapshots] = await Promise.all([
+      listAllControlPlaneCollection(`${durableReviewScopePath(config)}/revisions`, {
+        reviewConfig: config,
+        connectionSequence: sequence,
+        label: "Revision catalog",
+      }),
+      listAllControlPlaneCollection(`${durableReviewScopePath(config)}/sessions`, {
+        reviewConfig: config,
+        connectionSequence: sequence,
+        label: "Session catalog",
+      }),
+      listAllControlPlaneCollection(`${durableReviewScopePath(config)}/snapshots`, {
+        reviewConfig: config,
+        connectionSequence: sequence,
+        label: "Session snapshot catalog",
+      }),
+    ]);
+    const sourceRevisionId = String(workspaceMetadata().revision_id || "");
+    const direct = revisions.filter(
+      (item) => String(item.revision_id || "") === sourceRevisionId,
+    );
+    let matches = direct.length ? direct : revisions.filter(
+      (item) => String(item.metadata?.source_revision_id || "") === sourceRevisionId,
+    );
+    if (matches.length > 1) {
+      const nodeId = workspaceNodeId();
+      const nodeMatches = matches.filter(
+        (item) => String(item.node_id || "") === nodeId,
+      );
+      if (nodeMatches.length) matches = nodeMatches;
+    }
+    if (matches.length !== 1) {
+      throw new ControlPlaneRequestError(
+        matches.length
+          ? "This node revision maps to multiple catalog revisions in the explicit workspace."
+          : "This node revision is not published in the explicit workspace.",
+        409,
+      );
+    }
+    if (sequence !== state.durableReview.connectionSequence) return;
+    state.durableReview.catalogRevisionId = String(matches[0].revision_id);
+    state.durableReview.revisions = revisions;
+    state.durableReview.sessions = sessions;
+    state.durableReview.snapshots = snapshots;
+    state.durableReview.canWrite = context?.can_write === true;
+    const candidateScope = {
+      ...config,
+      catalogRevisionId: state.durableReview.catalogRevisionId,
+    };
+    preservePreviousOnFailure = durableReviewScopesEqual(
+      previousConnection.token,
+      candidateScope,
+    );
+    if (!preservePreviousOnFailure) clearDurableReviewMarkers();
+    state.durableReview.status = "ready";
+    renderDurableReportScopes();
+    const connectionToken = durableReviewConnectionToken();
+    if (!connectionToken) throw new StaleDurableReviewConnectionError();
+    const loaded = await loadDurableReviewAnnotations(connectionToken);
+    if (!loaded || !durableReviewTokenIsCurrent(connectionToken)) return;
+    setDurableReviewStatus("ready", state.durableReview.detail);
+    renderEventLogSelectionToolbar();
+    if (!quiet) {
+      showToast(
+        state.durableReview.canWrite
+          ? "Durable review connected to the exact catalog revision."
+          : "Durable review connected read-only; report actions remain available.",
+      );
+    }
+  } catch (error) {
+    if (sequence !== state.durableReview.connectionSequence) return;
+    const unavailable = durableReviewUnavailable(error);
+    if (preservePreviousOnFailure && previousConnection.token) {
+      state.durableReview.config = previousConnection.config;
+      state.durableReview.catalogRevisionId = previousConnection.catalogRevisionId;
+      state.durableReview.revisions = previousConnection.revisions;
+      state.durableReview.sessions = previousConnection.sessions;
+      state.durableReview.snapshots = previousConnection.snapshots;
+      state.durableReview.reportScope = previousConnection.reportScope;
+      // Preserve the last confirmed projection, but never preserve an old
+      // authorization decision after a failed context/scope refresh.
+      state.durableReview.canWrite = false;
+      renderDurableReportScopes();
+      setDurableReviewStatus(
+        "error",
+        `${unavailable ? "Control plane unavailable" : "Scope refresh failed"}: ${error.message}. Showing the last confirmed durable markers for this same scope.`,
+      );
+    } else {
+      clearDurableReviewMarkers();
+      state.durableReview.catalogRevisionId = "";
+      state.durableReview.revisions = [];
+      state.durableReview.sessions = [];
+      state.durableReview.snapshots = [];
+      state.durableReview.reportScope = null;
+      state.durableReview.canWrite = false;
+      renderDurableReportScopes();
+      setDurableReviewStatus(
+        "error",
+        `${unavailable ? "Control plane unavailable" : "Scope could not connect"}: ${error.message}. Markers remain browser-only.`,
+      );
+    }
+    renderEventLogSelectionToolbar();
+    if (!quiet) showToast("Durable review could not connect: " + error.message);
+  } finally {
+    finishDurableReviewOperation("connect", operationOwner);
+  }
+}
+
+function disconnectDurableReview() {
+  state.durableReview.connectionSequence += 1;
+  state.durableReview.operations.clear();
+  closeManualCorrelationDialog();
+  try {
+    localStorage.removeItem(DURABLE_REVIEW_STORAGE_KEY);
+  } catch (_error) {
+    // The in-memory disconnect still applies when storage is unavailable.
+  }
+  state.durableReview.config = null;
+  state.durableReview.catalogRevisionId = "";
+  state.durableReview.revisions = [];
+  state.durableReview.sessions = [];
+  state.durableReview.snapshots = [];
+  state.durableReview.reportScope = null;
+  state.durableReview.canWrite = false;
+  clearDurableReviewMarkers();
+  renderDurableReportScopes();
+  setDurableReviewStatus(
+    "local",
+    "Browser-only markers are active. Submit the explicit scope to reconnect.",
+  );
+  rerenderTimelinePreservingScroll();
+  renderEventTableWindow();
+  renderEventLogSelectionToolbar();
+  showToast("Durable review disconnected; local markers remain.");
+}
+
+function discardPendingDurableReviewMutations() {
+  const snapshot = new Map(state.durableReview.pendingMutations);
+  const connectionToken = durableReviewConnectionToken();
+  if (!connectionToken) {
+    showToast("Connect the review scope whose unresolved writes should be discarded.");
+    return;
+  }
+  let discarded = 0;
+  try {
+    discarded = discardPendingReviewMutationsForScope(
+      state.durableReview.pendingMutations,
+      connectionToken,
+    );
+    persistPendingMutationJournal();
+  } catch (error) {
+    restorePendingMutationMap(snapshot);
+    blockPendingMutationJournal(error);
+    showToast("Could not reset unresolved durable writes: " + error.message);
+    return;
+  }
+  recoverPendingMutationCapacity(durableMutationScopeKey(connectionToken));
+  state.durableReview.detail = discarded
+    ? `Explicitly discarded ${discarded.toLocaleString()} unresolved durable ${discarded === 1 ? "write" : "writes"}. Server-side outcomes were not changed.`
+    : "The unresolved durable mutation journal is empty.";
+  syncDurableReviewControls();
+  renderEventLogSelectionToolbar();
+  showToast(state.durableReview.detail);
+}
+
+function resetAllPendingDurableReviewMutations() {
+  const warning = "Reset unresolved writes for every review scope in this browser? This forgets retry identities only; it cannot undo server-side outcomes.";
+  if (!window.confirm(warning)) return;
+  const snapshot = new Map(state.durableReview.pendingMutations);
+  let discarded;
+  try {
+    discarded = resetPendingReviewMutations(
+      localStorage,
+      DURABLE_REVIEW_PENDING_STORAGE_KEY,
+      state.durableReview.pendingMutations,
+    );
+  } catch (error) {
+    restorePendingMutationMap(snapshot);
+    blockPendingMutationJournal(error);
+    showToast("Could not reset unresolved durable writes: " + error.message);
+    return;
+  }
+  clearPendingMutationJournalBlock();
+  state.durableReview.detail = discarded
+    ? `Explicitly reset ${discarded.toLocaleString()} unresolved durable ${discarded === 1 ? "write" : "writes"} across all browser scopes. Server-side outcomes were not changed.`
+    : "The unresolved durable mutation journal is empty.";
+  syncDurableReviewControls();
+  renderEventLogSelectionToolbar();
+  showToast(state.durableReview.detail);
+}
+
 function eventSubject(event) {
   return event?.subjects?.[0] || event?.subject || {};
 }
@@ -835,27 +2015,6 @@ function sourceRecordMatchesEvent(record) {
   return Boolean(record?.matched_event_uid);
 }
 
-function normalizedEventOutcome(event) {
-  if (event?.failure === true || event?.failed === true) return "failure";
-  const value = event?.outcome;
-  if (typeof value !== "string") return "unknown";
-  const normalized = value.toLowerCase();
-  return ["success", "failure", "unknown"].includes(normalized) ? normalized : "unknown";
-}
-
-function eventFailed(event) {
-  if (event?.failure === true || event?.failed === true) return true;
-  return normalizedEventOutcome(event) === "failure";
-}
-
-function eventChangesState(event) {
-  if (event?.state_changed !== undefined) return Boolean(event.state_changed);
-  const declared = eventEffects(event)
-    .map((effect) => effect.state_changed)
-    .filter((value) => value !== undefined && value !== null);
-  return declared.length ? declared.some(Boolean) : null;
-}
-
 function eventStatus(event, resourceId = null) {
   if (event?.resulting_status !== undefined && event.resulting_status !== null) {
     return formatValue(event.resulting_status);
@@ -940,10 +2099,6 @@ function eventResourceRefs(event) {
   return [...new Set(subjects.map((subject) => canonicalResourceForSubject(subject, event)).filter(Boolean))];
 }
 
-function eventEffects(event) {
-  return Array.isArray(event?.effects) ? event.effects.filter((effect) => effect && typeof effect === "object") : [];
-}
-
 function effectResourceId(effect) {
   const identifier = effect?.resource_id ?? effect?.resource_uid ?? effect?.resource;
   return canonicalResourceId(identifier);
@@ -972,17 +2127,6 @@ function resourceEffectCondition(effect, resourceId = effectResourceId(effect)) 
   const kind = effect?.kind || record?.kind || "UNKNOWN";
   const field = resourceKindDescriptor(kind)?.condition_field;
   return field ? dashboardFieldValue(stateValue, field) ?? null : null;
-}
-
-function resourceEffectStatusClass(effect, event = null) {
-  // Accept both transport spellings used by workspace adapters and the public
-  // plug-in contract spelling.  Neither value is inferred from condition text.
-  let declared;
-  if (effect && Object.prototype.hasOwnProperty.call(effect, "status_class")) declared = effect.status_class;
-  else if (effect && Object.prototype.hasOwnProperty.call(effect, "condition_class")) declared = effect.condition_class;
-  else if (event && Object.prototype.hasOwnProperty.call(event, "status_class")) declared = event.status_class;
-  else if (event && Object.prototype.hasOwnProperty.call(event, "condition_class")) declared = event.condition_class;
-  return typeof declared === "string" && declared ? declared : "unknown";
 }
 
 function normalizeMark(raw, lane) {
@@ -1599,15 +2743,6 @@ function barStyle(interval) {
   const left = timelinePercent(interval.startNs);
   const right = timelinePercent(interval.endNs);
   return `left:${left}%;width:${Math.max(0.15, right - left)}%`;
-}
-
-function eventMarkClass(mark) {
-  if (mark.failure) return "failure";
-  const effectType = String(mark.effectType || "unknown").toLowerCase();
-  if (["created", "create"].includes(effectType)) return "create";
-  if (["deleted", "delete"].includes(effectType)) return "delete";
-  if (["modified", "modify", "unchanged"].includes(effectType)) return "modify";
-  return "unknown";
 }
 
 function hoverKey(kind, lane, id) {
@@ -3699,6 +4834,12 @@ function clearTimelineSelection({ announce = true } = {}) {
 function handleEscapeKey(event) {
   if (event.key !== "Escape" || event.repeat || event.isComposing) return;
   closeCorrelationHover();
+  const correlationDialog = byId("correlation-dialog");
+  if (correlationDialog?.open) {
+    event.preventDefault();
+    closeManualCorrelationDialog();
+    return;
+  }
   if (state.eventLogDrag) {
     event.preventDefault();
     finishEventLogDrag(null, true);
@@ -8477,6 +9618,7 @@ function renderEventLogSelectionToolbar() {
   } else {
     byId("event-selection-detail").textContent = "";
   }
+  syncDurableReviewControls();
 }
 
 function eventLogSelectionRequestBody() {
@@ -8602,10 +9744,508 @@ async function copyEventLogSelectionText() {
   }
 }
 
-async function applyEventLogTimelineAction(action) {
+function applyLocalMarkerSelection(items, marked) {
+  items.forEach((item) => {
+    const projection = rememberTimelineEntryProjection(item);
+    if (marked) {
+      state.localMarkedTimelineEntryIds.add(projection.entryId);
+      state.markedTimelineEntryIds.add(projection.entryId);
+    } else {
+      state.localMarkedTimelineEntryIds.delete(projection.entryId);
+      if (state.durableReview.markedEntryIds.has(projection.entryId)) {
+        state.markedTimelineEntryIds.add(projection.entryId);
+      } else {
+        state.markedTimelineEntryIds.delete(projection.entryId);
+      }
+      forgetTimelineEntryProjection(projection.entryId);
+    }
+  });
+}
+
+function uniqueReviewSubjects(items, { eventsOnly = false } = {}) {
+  const byKey = new Map();
+  items.forEach((item) => {
+    const subject = exactReviewSubject(item);
+    if (!subject || (eventsOnly && subject.kind !== "event")) return;
+    byKey.set(reviewSubjectKey(subject), subject);
+  });
+  return [...byKey.values()];
+}
+
+function randomIdempotencyKey(prefix) {
+  const nonce = typeof globalThis.crypto?.randomUUID === "function"
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}-${nonce}`;
+}
+
+async function durableReviewRecord(
+  collection,
+  recordId,
+  connectionToken,
+) {
+  const config = durableReviewTokenConfig(connectionToken);
+  try {
+    return await awaitCurrentDurableReview(
+      () => controlPlaneRequest(
+        `${durableReviewScopePath(config)}/${collection}/${encodeURIComponent(recordId)}`,
+        { reviewConfig: config },
+      ),
+      () => durableReviewTokenIsCurrent(connectionToken),
+    );
+  } catch (error) {
+    if (error instanceof ControlPlaneRequestError && error.status === 404) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function createDurableMarkerAnnotation(items, connectionToken) {
+  if (!durableReviewTokenIsCurrent(connectionToken) || !isDurableReviewWritable()) {
+    throw new StaleDurableReviewConnectionError();
+  }
+  const config = durableReviewTokenConfig(connectionToken);
+  const subjects = uniqueReviewSubjects(items).filter((subject) => {
+    const entryId = entryIdForReviewSubject(subject);
+    return !state.durableReview.annotationIdsByEntry.has(entryId);
+  });
+  if (!subjects.length) return 0;
+  const requestBody = {
+    kind: "marker",
+    subjects,
+    title: `Timeline review marker (${subjects.length})`,
+    body: "Selected in the normalized event log.",
+    tags: ["single-node-ui", "timeline-marker"],
+  };
+  const pending = await pendingDurableReviewMutation(
+    connectionToken,
+    "timeline-marker",
+    requestBody,
+    "annotation",
+  );
+  let annotation;
+  try {
+    annotation = await controlPlaneRequest(
+      `${durableReviewScopePath(config)}/annotations`,
+      durableCreationRequestOptions({
+        idempotencyKey: pending.idempotencyKey,
+        body: {
+          ...requestBody,
+          annotation_id: pending.recordId,
+        },
+        reviewConfig: config,
+      }),
+    );
+  } catch (error) {
+    if (durableMutationDisposition(error) === "discard") {
+      completeDurableReviewMutation(pending);
+      throw error;
+    }
+    try {
+      annotation = await durableReviewRecord(
+        "annotations",
+        pending.recordId,
+        connectionToken,
+      );
+    } catch (_reconciliationError) {
+      throw error;
+    }
+    if (!annotation) throw error;
+  }
+  completeDurableReviewMutation(pending);
+  if (!durableReviewTokenIsCurrent(connectionToken)) return subjects.length;
+  rememberDurableAnnotation(annotation, connectionToken);
+  subjects.forEach((subject) => {
+    const entryId = entryIdForReviewSubject(subject);
+    state.localMarkedTimelineEntryIds.delete(entryId);
+  });
+  return subjects.length;
+}
+
+async function removeDurableMarkerAnnotations(items, connectionToken) {
+  if (!durableReviewTokenIsCurrent(connectionToken) || !isDurableReviewWritable()) {
+    throw new StaleDurableReviewConnectionError();
+  }
+  const config = durableReviewTokenConfig(connectionToken);
+  const selectedSubjects = uniqueReviewSubjects(items);
+  const selectedKeys = new Set(selectedSubjects.map(reviewSubjectKey));
+  const selectedEntryIds = new Set(
+    selectedSubjects.map(entryIdForReviewSubject).filter(Boolean),
+  );
+  const affected = [...state.durableReview.annotations.values()].filter(
+    (annotation) => annotation.kind === "marker"
+      && (annotation.subjects || []).some(
+        (subject) => selectedKeys.has(reviewSubjectKey(subject)),
+      ),
+  );
+  try {
+    for (const annotation of affected) {
+      const remaining = (annotation.subjects || []).filter(
+        (subject) => !selectedKeys.has(reviewSubjectKey(subject)),
+      );
+      const path = `${durableReviewScopePath(config)}/annotations/${encodeURIComponent(annotation.annotation_id)}`;
+      if (remaining.length) {
+        await controlPlaneRequest(path, durableConditionalRequestOptions({
+          method: "PATCH",
+          version: annotation.version,
+          body: { subjects: remaining },
+          reviewConfig: config,
+        }));
+      } else {
+        await controlPlaneRequest(path, durableConditionalRequestOptions({
+          method: "DELETE",
+          version: annotation.version,
+          reviewConfig: config,
+        }));
+      }
+    }
+  } catch (error) {
+    let reconciled = false;
+    try {
+      reconciled = await loadDurableReviewAnnotations(connectionToken);
+    } catch (_reconciliationError) {
+      // Preserve the last known durable state when reconciliation is unavailable.
+    }
+    if (
+      reconciled
+      && [...selectedEntryIds].every(
+        (entryId) => !state.durableReview.markedEntryIds.has(entryId),
+      )
+    ) {
+      return selectedKeys.size;
+    }
+    throw error;
+  }
+  if (!durableReviewTokenIsCurrent(connectionToken)) {
+    return selectedKeys.size;
+  }
+  items.forEach((item) => {
+    const subject = exactReviewSubject(item);
+    if (!subject) return;
+    state.localMarkedTimelineEntryIds.delete(entryIdForReviewSubject(subject));
+  });
+  try {
+    await loadDurableReviewAnnotations(connectionToken);
+  } catch (_reloadError) {
+    if (durableReviewTokenIsCurrent(connectionToken)) {
+      for (const entryId of selectedEntryIds) {
+        state.durableReview.markedEntryIds.delete(entryId);
+        state.durableReview.annotationIdsByEntry.delete(entryId);
+        if (!state.localMarkedTimelineEntryIds.has(entryId)) {
+          state.markedTimelineEntryIds.delete(entryId);
+        }
+        forgetTimelineEntryProjection(entryId);
+      }
+      state.durableReview.detail = "Markers were removed durably. The full annotation index will refresh on reconnect.";
+      rerenderTimelinePreservingScroll();
+      renderEventTableWindow();
+      syncDurableReviewControls();
+    }
+  }
+  return selectedKeys.size;
+}
+
+async function applyDurableMarkerAction(items, marked, connectionToken) {
+  try {
+    return marked
+      ? await createDurableMarkerAnnotation(items, connectionToken)
+      : await removeDurableMarkerAnnotations(items, connectionToken);
+  } catch (error) {
+    await reconcileControlPlaneVersionConflict(error, {
+      isCurrent: () => durableReviewTokenIsCurrent(connectionToken),
+      reload: () => loadDurableReviewAnnotations(connectionToken),
+    });
+    throw error;
+  }
+}
+
+async function createDurableCorrelation(
+  subjects,
+  linkType,
+  rationale,
+  connectionToken,
+) {
+  if (!durableReviewTokenIsCurrent(connectionToken) || !isDurableReviewWritable()) {
+    throw new StaleDurableReviewConnectionError();
+  }
+  const config = durableReviewTokenConfig(connectionToken);
+  const requestBody = {
+    subjects,
+    edges: subjects.slice(0, -1).map((_subject, index) => ({
+      source_ordinal: index,
+      target_ordinal: index + 1,
+      link_type: linkType,
+      directed: true,
+    })),
+    rationale,
+    tags: ["manual", "single-node-ui"],
+  };
+  const pending = await pendingDurableReviewMutation(
+    connectionToken,
+    "manual-correlation",
+    requestBody,
+    "correlation",
+  );
+  let correlation;
+  try {
+    correlation = await controlPlaneRequest(
+      `${durableReviewScopePath(config)}/correlations`,
+      durableCreationRequestOptions({
+        idempotencyKey: pending.idempotencyKey,
+        body: {
+          ...requestBody,
+          correlation_id: pending.recordId,
+        },
+        reviewConfig: config,
+      }),
+    );
+  } catch (error) {
+    if (durableMutationDisposition(error) === "discard") {
+      completeDurableReviewMutation(pending);
+      throw error;
+    }
+    try {
+      correlation = await durableReviewRecord(
+        "correlations",
+        pending.recordId,
+        connectionToken,
+      );
+    } catch (_reconciliationError) {
+      throw error;
+    }
+    if (!correlation) throw error;
+  }
+  completeDurableReviewMutation(pending);
+  if (durableReviewTokenIsCurrent(connectionToken)) {
+    try {
+      await loadDurableReviewAnnotations(connectionToken);
+    } catch (_reloadError) {
+      state.durableReview.detail = "Correlation saved. Marker and correlation counts will refresh on reconnect.";
+      syncDurableReviewControls();
+    }
+  }
+  return correlation;
+}
+
+async function openManualCorrelationDialog() {
+  if (!isDurableReviewWritable()) {
+    byId("durable-review-setup").open = true;
+    showToast(
+      state.durableReview.pendingJournalBlocked
+        ? "Reset the unresolved mutation journal before creating a correlation."
+        : isDurableReviewReady()
+        ? "This durable review identity is read only."
+        : "Connect a writable durable review scope before creating a correlation.",
+    );
+    return;
+  }
   try {
     const payload = await resolveEventLogSelection();
+    const subjects = uniqueReviewSubjects(payload.items || [], { eventsOnly: true });
+    if (subjects.length < 2) {
+      throw new Error("Select at least two normalized events; source records are not correlation endpoints.");
+    }
+    if (subjects.length > 1024) {
+      throw new Error("A manual correlation supports at most 1,024 exact event subjects.");
+    }
+    state.durableReview.pendingCorrelationSubjects = subjects;
+    const ignored = (payload.items || []).length - subjects.length;
+    byId("correlation-selection-summary").textContent = `${subjects.length.toLocaleString()} exact events will be connected in displayed order${ignored > 0 ? `; ${ignored.toLocaleString()} source or duplicate ${ignored === 1 ? "row is" : "rows are"} excluded` : ""}.`;
+    byId("correlation-dialog").showModal();
+    byId("correlation-link-type").focus();
+  } catch (error) {
+    showToast("Could not prepare correlation: " + error.message);
+  }
+}
+
+function closeManualCorrelationDialog() {
+  const dialog = byId("correlation-dialog");
+  if (dialog.open) dialog.close();
+  state.durableReview.pendingCorrelationSubjects = [];
+}
+
+async function saveManualCorrelation(event) {
+  event.preventDefault();
+  const subjects = state.durableReview.pendingCorrelationSubjects;
+  if (!isDurableReviewWritable() || subjects.length < 2) {
+    closeManualCorrelationDialog();
+    showToast("The durable review scope or event selection changed.");
+    return;
+  }
+  const linkType = byId("correlation-link-type").value.trim();
+  const rationale = byId("correlation-rationale").value.trim();
+  if (!linkType) {
+    byId("correlation-link-type").focus();
+    return;
+  }
+  const operationOwner = beginDurableReviewOperation(
+    "correlation",
+    ["connect", "marker", "correlation", "report"],
+  );
+  if (!operationOwner) {
+    showToast("Wait for the current durable review write to finish.");
+    return;
+  }
+  const connectionToken = durableReviewConnectionToken();
+  if (!connectionToken) {
+    finishDurableReviewOperation("correlation", operationOwner);
+    closeManualCorrelationDialog();
+    return;
+  }
+  const submit = byId("correlation-submit");
+  submit.disabled = true;
+  submit.setAttribute("aria-busy", "true");
+  try {
+    await createDurableCorrelation(
+      subjects,
+      linkType,
+      rationale,
+      connectionToken,
+    );
+    if (!durableReviewTokenIsCurrent(connectionToken)) return;
+    closeManualCorrelationDialog();
+    byId("correlation-rationale").value = "";
+    showToast(`Saved a durable correlation across ${subjects.length.toLocaleString()} events.`);
+  } catch (error) {
+    if (error?.ambiguous && durableReviewTokenIsCurrent(connectionToken)) {
+      state.durableReview.detail = "Correlation outcome is uncertain. Retry without changing the form to reuse the same operation identity, or reconnect to reconcile it.";
+      syncDurableReviewControls();
+    } else if (
+      durableReviewUnavailable(error)
+      && durableReviewTokenIsCurrent(connectionToken)
+    ) {
+      setDurableReviewStatus(
+        "error",
+        `Control plane unavailable: ${error.message}. Correlations require a durable connection.`,
+      );
+    }
+    showToast("Could not save correlation: " + error.message);
+  } finally {
+    submit.disabled = false;
+    submit.setAttribute("aria-busy", "false");
+    finishDurableReviewOperation("correlation", operationOwner);
+  }
+}
+
+async function copyDurableCorrelationReport() {
+  const operationOwner = beginDurableReviewOperation(
+    "report",
+    ["connect", "marker", "correlation", "report"],
+  );
+  if (!operationOwner) return;
+  const connectionToken = durableReviewConnectionToken();
+  try {
+    const markdown = await durableCorrelationReport(
+      "markdown",
+      null,
+      connectionToken,
+    );
+    if (!durableReviewTokenIsCurrent(connectionToken)) return;
+    await writeClipboardText(markdown);
+    showToast("Copied the AI-friendly correlation report.");
+  } catch (error) {
+    showToast("Could not copy correlation report: " + error.message);
+  } finally {
+    finishDurableReviewOperation("report", operationOwner);
+  }
+}
+
+async function downloadDurableCorrelationReport() {
+  const operationOwner = beginDurableReviewOperation(
+    "report",
+    ["connect", "marker", "correlation", "report"],
+  );
+  if (!operationOwner) return;
+  const connectionToken = durableReviewConnectionToken();
+  try {
+    const markdown = await durableCorrelationReport(
+      "markdown",
+      null,
+      connectionToken,
+    );
+    if (!durableReviewTokenIsCurrent(connectionToken)) return;
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    const reportScope = selectedDurableReportScope();
+    const safeScope = String(reportScope?.id || state.durableReview.catalogRevisionId)
+      .replace(/[^a-zA-Z0-9._-]+/g, "-")
+      .slice(0, 120);
+    anchor.download = `correlation-report-${safeScope || "review"}.md`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    showToast("Downloaded the AI-friendly correlation report.");
+  } catch (error) {
+    showToast("Could not download correlation report: " + error.message);
+  } finally {
+    finishDurableReviewOperation("report", operationOwner);
+  }
+}
+
+async function applyEventLogTimelineAction(action) {
+  const durableMarkerAction = ["mark", "unmark"].includes(action);
+  const operationOwner = durableMarkerAction
+    ? beginDurableReviewOperation(
+      "marker",
+      ["connect", "marker", "correlation", "report"],
+    )
+    : null;
+  if (durableMarkerAction && !operationOwner) {
+    showToast("Wait for the current review write to finish.");
+    return;
+  }
+  const durableAtStart = durableMarkerAction && isDurableReviewReady();
+  const writableAtStart = durableMarkerAction && isDurableReviewWritable();
+  const connectionToken = writableAtStart
+    ? durableReviewConnectionToken()
+    : null;
+  try {
+    if (durableAtStart && !writableAtStart) {
+      throw new Error(
+        state.durableReview.pendingJournalBlocked
+          ? "Reset the unresolved mutation journal before another durable write."
+          : "This durable review identity is read only.",
+      );
+    }
+    const payload = await resolveEventLogSelection();
     const items = payload.items || [];
+    if (writableAtStart) {
+      if (!durableReviewTokenIsCurrent(connectionToken)) {
+        throw new StaleDurableReviewConnectionError();
+      }
+      try {
+        await applyDurableMarkerAction(
+          items,
+          action === "mark",
+          connectionToken,
+        );
+        if (!durableReviewTokenIsCurrent(connectionToken)) {
+          throw new StaleDurableReviewConnectionError();
+        }
+      } catch (error) {
+        if (error?.ambiguous && durableReviewTokenIsCurrent(connectionToken)) {
+          state.durableReview.detail = "Marker outcome is uncertain. The last confirmed durable markers remain visible; retry to reuse the same operation identity or reconnect to reconcile.";
+          syncDurableReviewControls();
+        } else if (
+          durableReviewUnavailable(error)
+          && durableReviewTokenIsCurrent(connectionToken)
+        ) {
+          setDurableReviewStatus(
+            "error",
+            `Control plane unavailable: ${error.message}. The last confirmed durable markers remain visible.`,
+          );
+        }
+        throw error;
+      }
+    } else if (action === "mark") {
+      applyLocalMarkerSelection(items, true);
+    } else if (action === "unmark") {
+      applyLocalMarkerSelection(items, false);
+    }
     items.forEach((item) => {
       const entryId = String(
         item.entry_id || `${String(item.stream_kind || "event")}:${String(item.uid || "")}`,
@@ -8615,11 +10255,22 @@ async function applyEventLogTimelineAction(action) {
         state.hiddenTimelineEntryIds.add(projection.entryId);
       }
       if (action === "show") state.hiddenTimelineEntryIds.delete(entryId);
-      if (action === "mark") {
-        const projection = rememberTimelineEntryProjection(item);
-        state.markedTimelineEntryIds.add(projection.entryId);
+      if (
+        action === "mark"
+        && (
+          state.localMarkedTimelineEntryIds.has(entryId)
+          || state.durableReview.markedEntryIds.has(entryId)
+        )
+      ) {
+        state.markedTimelineEntryIds.add(entryId);
       }
-      if (action === "unmark") state.markedTimelineEntryIds.delete(entryId);
+      if (
+        action === "unmark"
+        && !state.localMarkedTimelineEntryIds.has(entryId)
+        && !state.durableReview.markedEntryIds.has(entryId)
+      ) {
+        state.markedTimelineEntryIds.delete(entryId);
+      }
       forgetTimelineEntryProjection(entryId);
     });
     pruneServerEventLogOwnedCaches();
@@ -8634,6 +10285,10 @@ async function applyEventLogTimelineAction(action) {
     showToast(`${verb} ${items.length.toLocaleString()} selected ${items.length === 1 ? "item" : "items"} in the timeline.`);
   } catch (error) {
     showToast("Could not update timeline items: " + error.message);
+  } finally {
+    if (operationOwner) {
+      finishDurableReviewOperation("marker", operationOwner);
+    }
   }
 }
 
@@ -8852,6 +10507,38 @@ async function copyReview() {
   showToast("Review summary copied.");
 }
 
+function initializeDurableReviewSetup() {
+  const config = savedDurableReviewConfig();
+  populateDurableReviewInputs(config);
+  state.durableReview.config = config;
+  let journalDetail = "";
+  try {
+    state.durableReview.pendingMutations = loadPendingReviewMutations(
+      localStorage,
+      DURABLE_REVIEW_PENDING_STORAGE_KEY,
+      pendingJournalOptions(),
+    );
+    state.durableReview.pendingJournalBlocked = false;
+    state.durableReview.pendingJournalError = "";
+    state.durableReview.pendingJournalRecovery = "";
+    if (state.durableReview.pendingMutations.size) {
+      journalDetail = ` ${state.durableReview.pendingMutations.size.toLocaleString()} unresolved durable ${state.durableReview.pendingMutations.size === 1 ? "write was" : "writes were"} restored for reconciliation.`;
+    }
+  } catch (error) {
+    state.durableReview.pendingMutations = new Map();
+    state.durableReview.pendingJournalBlocked = true;
+    state.durableReview.pendingJournalError = String(error.message).slice(0, 512);
+    state.durableReview.pendingJournalRecovery = "all";
+    journalDetail = ` ${state.durableReview.pendingJournalError}`;
+  }
+  setDurableReviewStatus(
+    "local",
+    config
+      ? `Saved explicit scope found; connecting without blocking the local workspace.${journalDetail}`
+      : `Add the four scope values to persist markers and correlations.${journalDetail}`,
+  );
+}
+
 function applyTimelineZoom(rawValue, { announce = false } = {}) {
   const control = byId("timeline-zoom");
   const zoom = Number(rawValue);
@@ -9044,7 +10731,34 @@ function bindControls() {
   byId("event-selection-show").addEventListener("click", () => applyEventLogTimelineAction("show"));
   byId("event-selection-mark").addEventListener("click", () => applyEventLogTimelineAction("mark"));
   byId("event-selection-unmark").addEventListener("click", () => applyEventLogTimelineAction("unmark"));
+  byId("event-selection-correlate").addEventListener("click", openManualCorrelationDialog);
   byId("event-selection-clear").addEventListener("click", () => clearEventLogSelection({ announce: true }));
+  byId("durable-review-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    connectDurableReview();
+  });
+  byId("durable-review-local").addEventListener("click", disconnectDurableReview);
+  byId("durable-review-discard-pending").addEventListener(
+    "click",
+    discardPendingDurableReviewMutations,
+  );
+  byId("durable-review-reset-pending").addEventListener(
+    "click",
+    resetAllPendingDurableReviewMutations,
+  );
+  byId("durable-review-copy-report").addEventListener("click", copyDurableCorrelationReport);
+  byId("durable-review-download-report").addEventListener("click", downloadDurableCorrelationReport);
+  byId("durable-review-report-scope").addEventListener("change", () => {
+    state.durableReview.reportScope = selectedDurableReportScope();
+    syncDurableReportScopeNote();
+  });
+  byId("correlation-form").addEventListener("submit", saveManualCorrelation);
+  ["correlation-cancel", "correlation-cancel-icon"].forEach(
+    (id) => byId(id).addEventListener("click", closeManualCorrelationDialog),
+  );
+  byId("correlation-dialog").addEventListener("close", () => {
+    state.durableReview.pendingCorrelationSubjects = [];
+  });
   ["open-review", "open-review-footer"].forEach((id) => byId(id).addEventListener("click", openReview));
   byId("close-review").addEventListener("click", closeReview); byId("drawer-scrim").addEventListener("click", closeReview);
   ["copy-review", "copy-review-top"].forEach((id) => byId(id).addEventListener("click", copyReview));
@@ -9091,6 +10805,7 @@ function discoverPresentation() {
 async function initialize() {
   try {
     state.dataset = await api(bootstrapDatasetPath());
+    initializeDurableReviewSetup();
     const workspace = workspaceMetadata();
     const timeBounds = workspace.time_bounds && typeof workspace.time_bounds === "object"
       ? workspace.time_bounds
@@ -9142,6 +10857,7 @@ async function initialize() {
     initializeDashboardLayout();
     markDashboardsPending(state.cursorNs);
     fillSummary(); renderIncidentSummary(); renderLayerToggles(); renderTimeline(); renderRangeSummary(); renderFindings(); renderTopologyResults(); renderInventory(); configureRouteControls(); renderReview(); renderEventLayerFilter(); syncEventLogIncludeControls(); renderEventTable(); renderPluginDashboards(); bindControls();
+    if (state.durableReview.config) void connectDurableReview({ quiet: true });
     let incident = null;
     for (const candidate of state.eventByUid.values()) {
       incident = candidate;

@@ -1,0 +1,26 @@
+[
+  {
+    "name": "lossless-nanoseconds-and-unicode",
+    "value": {
+      "schema_version": "router_dump_analyzer.correlation_report.v2",
+      "observations": [
+        {
+          "event_uid": "événement",
+          "timestamp_ns": "9007199254740993"
+        }
+      ]
+    },
+    "canonical": "{\"observations\":[{\"event_uid\":\"événement\",\"timestamp_ns\":\"9007199254740993\"}],\"schema_version\":\"router_dump_analyzer.correlation_report.v2\"}"
+  },
+  {
+    "name": "nested-order-and-escaping",
+    "value": {
+      "z": null,
+      "a": {
+        "quote": "a\\\"b",
+        "line": "one\ntwo"
+      }
+    },
+    "canonical": "{\"a\":{\"line\":\"one\\ntwo\",\"quote\":\"a\\\\\\\"b\"},\"z\":null}"
+  }
+]

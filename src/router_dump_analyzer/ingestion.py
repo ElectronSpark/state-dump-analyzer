@@ -30,6 +30,10 @@ from .canonical import canonical_json, opaque_value_json
 from .plugin_api import (
     CORE_PLUGIN_API_VERSION,
     INPUT_PARSER_HOOKS,
+    MAX_DIAGNOSTIC_EVIDENCE_ITEMS,
+    MAX_PROBE_DIAGNOSTICS,
+    MAX_TIMESTAMP_NS,
+    MIN_TIMESTAMP_NS,
     AnalyzerPlugin,
     ConditionClass,
     CtfDiscardedEvents,
@@ -40,7 +44,6 @@ from .plugin_api import (
     CtfStreamActivityBoundary,
     CtfStreamBoundary,
     DiagnosticOrigin,
-    DiagnosticSeverity,
     DiagnosticStage,
     DomainEvent,
     DumpInventory,
@@ -54,8 +57,6 @@ from .plugin_api import (
     PluginManifest,
     PluginSchema,
     ProbeMatchKind,
-    ProbeReport,
-    ProbeResult,
     PropertyPatch,
     Provenance,
     Quality,
@@ -69,6 +70,9 @@ from .plugin_api import (
     StatusPerspectiveRef,
     TraceDecoder,
     UnknownField,
+    validate_plugin_diagnostic,
+    validate_probe_report,
+    validate_probe_result,
 )
 from .revision_store import (
     AssemblyDescriptor,
@@ -85,13 +89,11 @@ MAX_OUTPUT_ATOM_UNITS = 65_536
 MAX_OUTPUT_INTEGER_BITS = 4_096
 MAX_TOTAL_OUTPUTS = 2_000_000
 MAX_DECODER_OUTPUTS = 2_000_000
-MAX_DIAGNOSTICS = 100_000
 MAX_EVIDENCE_ITEMS = 4_000_000
 MAX_SUBJECT_REFERENCES = 4_000_000
 MAX_EVENT_LINKS = 4_000_000
 MAX_TOTAL_VALUE_UNITS = 64_000_000
 MAX_TOTAL_TEXT_BYTES = 256 * 1024 * 1024
-MAX_EVIDENCE_PER_OUTPUT = 4_096
 MAX_SUBJECTS_PER_EVENT = 4_096
 MAX_EVENT_LINKS_PER_RECORD = 4_096
 
@@ -108,20 +110,20 @@ class IngestionLimits:
     max_parsed_outputs: int = MAX_PARSED_OUTPUTS
     max_total_outputs: int = MAX_TOTAL_OUTPUTS
     max_decoder_outputs: int = MAX_DECODER_OUTPUTS
-    max_diagnostics: int = MAX_DIAGNOSTICS
+    max_diagnostics: int = MAX_PROBE_DIAGNOSTICS
     max_evidence_items: int = MAX_EVIDENCE_ITEMS
     max_subject_references: int = MAX_SUBJECT_REFERENCES
     max_event_links: int = MAX_EVENT_LINKS
     max_total_value_units: int = MAX_TOTAL_VALUE_UNITS
     max_total_text_bytes: int = MAX_TOTAL_TEXT_BYTES
-    max_evidence_per_output: int = MAX_EVIDENCE_PER_OUTPUT
+    max_evidence_per_output: int = MAX_DIAGNOSTIC_EVIDENCE_ITEMS
     max_subjects_per_event: int = MAX_SUBJECTS_PER_EVENT
     max_event_links_per_record: int = MAX_EVENT_LINKS_PER_RECORD
-    artifact_limits: ArtifactLimits = field(
-        default_factory=ArtifactLimits
-    )
+    artifact_limits: ArtifactLimits = field(default_factory=ArtifactLimits)
 
     def __post_init__(self) -> None:
+        if type(self.artifact_limits) is not ArtifactLimits:
+            raise ValueError("artifact_limits must be an exact ArtifactLimits")
         for name in (
             "max_located_inputs",
             "max_parsed_outputs",
@@ -184,14 +186,10 @@ def _json_value(
     if _active is None:
         _active = set()
     if _depth > MAX_OUTPUT_DEPTH:
-        raise IngestionError(
-            "plug-in output exceeds the maximum value depth"
-        )
+        raise IngestionError("plug-in output exceeds the maximum value depth")
     _units[0] += 1
     if _units[0] > MAX_OUTPUT_UNITS:
-        raise IngestionError(
-            "plug-in output exceeds the maximum value unit count"
-        )
+        raise IngestionError("plug-in output exceeds the maximum value unit count")
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, Enum):
@@ -203,27 +201,19 @@ def _json_value(
         )
     if isinstance(value, int):
         if value.bit_length() > MAX_OUTPUT_INTEGER_BITS:
-            raise IngestionError(
-                "plug-in output contains an oversized integer"
-            )
+            raise IngestionError("plug-in output contains an oversized integer")
         return value
     if isinstance(value, float):
         if not isfinite(value):
-            raise IngestionError(
-                "plug-in output contains a non-finite float"
-            )
+            raise IngestionError("plug-in output contains a non-finite float")
         return value
     if isinstance(value, str):
         if len(value) > MAX_OUTPUT_ATOM_UNITS:
-            raise IngestionError(
-                "plug-in output contains an oversized string"
-            )
+            raise IngestionError("plug-in output contains an oversized string")
         return value
     if isinstance(value, bytes):
         if len(value) > MAX_OUTPUT_ATOM_UNITS:
-            raise IngestionError(
-                "plug-in output contains oversized bytes"
-            )
+            raise IngestionError("plug-in output contains oversized bytes")
         return {
             "type": "bytes",
             "encoding": "hex",
@@ -237,9 +227,7 @@ def _json_value(
     if is_mapping or is_sequence or is_record:
         container_id = id(value)
         if container_id in _active:
-            raise IngestionError(
-                "plug-in output contains a reference cycle"
-            )
+            raise IngestionError("plug-in output contains a reference cycle")
         _active.add(container_id)
         try:
             if is_mapping:
@@ -248,9 +236,7 @@ def _json_value(
                         "plug-in output mapping exceeds the item limit"
                     )
                 if any(not isinstance(key, str) for key in value):
-                    raise IngestionError(
-                        "plug-in output mappings require string keys"
-                    )
+                    raise IngestionError("plug-in output mappings require string keys")
                 return {
                     key: _json_value(
                         item,
@@ -276,9 +262,7 @@ def _json_value(
                 ]
             descriptors = fields(value)
             if len(descriptors) > MAX_OUTPUT_CONTAINER_ITEMS:
-                raise IngestionError(
-                    "plug-in output record exceeds the field limit"
-                )
+                raise IngestionError("plug-in output record exceeds the field limit")
             return {
                 descriptor.name: _json_value(
                     getattr(value, descriptor.name),
@@ -291,8 +275,7 @@ def _json_value(
         finally:
             _active.remove(container_id)
     raise IngestionError(
-        f"plug-in output contains unsupported value type "
-        f"{type(value).__name__}"
+        f"plug-in output contains unsupported value type {type(value).__name__}"
     )
 
 
@@ -330,8 +313,7 @@ def _output_cardinality(value: Any) -> tuple[int, int, int]:
         )
     elif isinstance(value, RelationshipObservation):
         evidence_count = 1 + sum(
-            len(item.evidence)
-            for item in value.attributes.unknown_fields
+            len(item.evidence) for item in value.attributes.unknown_fields
         )
     elif isinstance(value, RelationshipCollectionObservation):
         evidence_count = 1
@@ -384,8 +366,7 @@ class _IngestionBudget:
             normalized = _json_value(
                 {
                     "artifact_ids": [
-                        str(artifact_id)
-                        for artifact_id in value.artifact_ids
+                        str(artifact_id) for artifact_id in value.artifact_ids
                     ],
                     "role": value.role,
                     "node": value.node,
@@ -417,15 +398,12 @@ class _IngestionBudget:
             self.outputs += 1
             if self.outputs > self.limits.max_total_outputs:
                 raise IngestionError(
-                    "plug-in and decoder outputs exceeded the aggregate "
-                    "output limit"
+                    "plug-in and decoder outputs exceeded the aggregate output limit"
                 )
         if decoder:
             self.decoder_outputs += 1
             if self.decoder_outputs > self.limits.max_decoder_outputs:
-                raise IngestionError(
-                    "CTF decoder exceeded the configured output limit"
-                )
+                raise IngestionError("CTF decoder exceeded the configured output limit")
         if isinstance(value, PluginDiagnostic):
             self.diagnostics += 1
             if self.diagnostics > self.limits.max_diagnostics:
@@ -434,32 +412,20 @@ class _IngestionBudget:
                 )
         evidence, subjects, links = _output_cardinality(value)
         if evidence > self.limits.max_evidence_per_output:
-            raise IngestionError(
-                f"{label} exceeds the per-output evidence limit"
-            )
+            raise IngestionError(f"{label} exceeds the per-output evidence limit")
         if subjects > self.limits.max_subjects_per_event:
-            raise IngestionError(
-                f"{label} exceeds the per-event subject limit"
-            )
+            raise IngestionError(f"{label} exceeds the per-event subject limit")
         if links > self.limits.max_event_links_per_record:
-            raise IngestionError(
-                f"{label} exceeds the per-record event-link limit"
-            )
+            raise IngestionError(f"{label} exceeds the per-record event-link limit")
         self.evidence_items += evidence
         self.subject_references += subjects
         self.event_links += links
         if self.evidence_items > self.limits.max_evidence_items:
-            raise IngestionError(
-                "evidence references exceeded the aggregate limit"
-            )
+            raise IngestionError("evidence references exceeded the aggregate limit")
         if self.subject_references > self.limits.max_subject_references:
-            raise IngestionError(
-                "event subjects exceeded the aggregate limit"
-            )
+            raise IngestionError("event subjects exceeded the aggregate limit")
         if self.event_links > self.limits.max_event_links:
-            raise IngestionError(
-                "source-to-event links exceeded the aggregate limit"
-            )
+            raise IngestionError("source-to-event links exceeded the aggregate limit")
 
 
 def _resource_identity(resource: ResourceKey) -> tuple[str, dict[str, Any]]:
@@ -515,9 +481,7 @@ def _patch(
     result = dict(current) if not patch.complete else {}
     unknown = dict(current_unknown) if not patch.complete else {}
     field_quality = dict(current_quality) if not patch.complete else {}
-    field_provenance = (
-        dict(current_provenance) if not patch.complete else {}
-    )
+    field_provenance = dict(current_provenance) if not patch.complete else {}
     for name in patch.remove_fields:
         result.pop(name, None)
         unknown.pop(name, None)
@@ -560,6 +524,7 @@ def _exact_optional_integer(
     label: str,
     *,
     minimum: int | None = None,
+    maximum: int | None = None,
 ) -> int | None:
     if value is None:
         return None
@@ -567,6 +532,8 @@ def _exact_optional_integer(
         raise IngestionError(f"{label} must be an integer or null")
     if minimum is not None and value < minimum:
         raise IngestionError(f"{label} must be at least {minimum}")
+    if maximum is not None and value > maximum:
+        raise IngestionError(f"{label} must be at most {maximum}")
     if value.bit_length() > MAX_OUTPUT_INTEGER_BITS:
         raise IngestionError(f"{label} exceeds the integer size limit")
     return value
@@ -580,19 +547,21 @@ def _time_bounds(
     minimum = _exact_optional_integer(
         minimum_ns,
         f"{label}.observed_at_min_ns",
+        minimum=MIN_TIMESTAMP_NS,
+        maximum=MAX_TIMESTAMP_NS,
     )
     maximum = _exact_optional_integer(
         maximum_ns,
         f"{label}.observed_at_max_ns",
+        minimum=MIN_TIMESTAMP_NS,
+        maximum=MAX_TIMESTAMP_NS,
     )
     if (minimum is None) != (maximum is None):
         raise IngestionError(
             f"{label} observation bounds must both be present or absent"
         )
     if minimum is not None and maximum is not None and minimum > maximum:
-        raise IngestionError(
-            f"{label} observation minimum exceeds its maximum"
-        )
+        raise IngestionError(f"{label} observation minimum exceeds its maximum")
     return minimum, maximum
 
 
@@ -625,13 +594,13 @@ def _validate_evidence(
     if type(evidence) is not Evidence:
         raise IngestionError(f"{label} must be an exact Evidence")
     if evidence.artifact_id not in artifact_ids:
-        raise IngestionError(
-            f"{label} references an artifact outside its input"
-        )
+        raise IngestionError(f"{label} references an artifact outside its input")
     _bounded_text(evidence.locator, f"{label}.locator", maximum=4_096)
     _exact_optional_integer(
         evidence.raw_timestamp_ns,
         f"{label}.raw_timestamp_ns",
+        minimum=MIN_TIMESTAMP_NS,
+        maximum=MAX_TIMESTAMP_NS,
     )
     if evidence.clock_domain is not None:
         _bounded_text(
@@ -675,16 +644,13 @@ class _SchemaIndex:
                 for descriptor in schema.resource_kinds
             },
             relationship_types=frozenset(
-                descriptor.relation_type
-                for descriptor in schema.relationship_types
+                descriptor.relation_type for descriptor in schema.relationship_types
             ),
             source_types=frozenset(
-                descriptor.source_type
-                for descriptor in schema.source_record_types
+                descriptor.source_type for descriptor in schema.source_record_types
             ),
             perspective_ids=frozenset(
-                descriptor.perspective_id
-                for descriptor in schema.status_perspectives
+                descriptor.perspective_id for descriptor in schema.status_perspectives
             ),
         )
 
@@ -711,8 +677,7 @@ def _validate_resource(
     actual_fields = tuple(name for name, _value in resource.parts)
     if actual_fields != expected_fields:
         raise IngestionError(
-            f"{label} key fields do not match the declared order for "
-            f"{resource.kind!r}"
+            f"{label} key fields do not match the declared order for {resource.kind!r}"
         )
     _json_value(resource)
     return resource
@@ -738,35 +703,22 @@ def _validate_patch(
     if not isinstance(patch.field_quality, Mapping):
         raise IngestionError(f"{label}.field_quality must be a mapping")
     if not isinstance(patch.field_provenance, Mapping):
-        raise IngestionError(
-            f"{label}.field_provenance must be a mapping"
-        )
+        raise IngestionError(f"{label}.field_provenance must be a mapping")
     if any(not isinstance(name, str) for name in patch.set_values):
-        raise IngestionError(
-            f"{label}.set_values keys must be strings"
-        )
+        raise IngestionError(f"{label}.set_values keys must be strings")
     if any(not isinstance(name, str) for name in patch.remove_fields):
+        raise IngestionError(f"{label}.remove_fields values must be strings")
+    if any(type(item) is not UnknownField for item in patch.unknown_fields):
         raise IngestionError(
-            f"{label}.remove_fields values must be strings"
-        )
-    if any(
-        type(item) is not UnknownField for item in patch.unknown_fields
-    ):
-        raise IngestionError(
-            f"{label}.unknown_fields values must be exact UnknownField "
-            "records"
+            f"{label}.unknown_fields values must be exact UnknownField records"
         )
     set_names = set(patch.set_values)
     remove_names = set(patch.remove_fields)
     unknown_names = {item.name for item in patch.unknown_fields}
     if len(remove_names) != len(patch.remove_fields):
-        raise IngestionError(
-            f"{label}.remove_fields contains duplicate names"
-        )
+        raise IngestionError(f"{label}.remove_fields contains duplicate names")
     if len(unknown_names) != len(patch.unknown_fields):
-        raise IngestionError(
-            f"{label}.unknown_fields contains duplicate names"
-        )
+        raise IngestionError(f"{label}.unknown_fields contains duplicate names")
     if overlap := (
         (set_names & remove_names)
         | (set_names & unknown_names)
@@ -776,16 +728,10 @@ def _validate_patch(
             f"{label} mentions fields in incompatible operations: "
             + ", ".join(sorted(overlap))
         )
-    metadata_names = set(patch.field_quality) | set(
-        patch.field_provenance
-    )
+    metadata_names = set(patch.field_quality) | set(patch.field_provenance)
     if any(not isinstance(name, str) for name in metadata_names):
-        raise IngestionError(
-            f"{label} field metadata keys must be strings"
-        )
-    if unrelated := metadata_names - (
-        set_names | remove_names | unknown_names
-    ):
+        raise IngestionError(f"{label} field metadata keys must be strings")
+    if unrelated := metadata_names - (set_names | remove_names | unknown_names):
         raise IngestionError(
             f"{label} field metadata references unmentioned fields: "
             + ", ".join(sorted(unrelated))
@@ -793,15 +739,11 @@ def _validate_patch(
     mentioned = {
         *(str(name).split(".", 1)[0] for name in patch.set_values),
         *(str(name).split(".", 1)[0] for name in patch.remove_fields),
-        *(
-            str(unknown.name).split(".", 1)[0]
-            for unknown in patch.unknown_fields
-        ),
+        *(str(unknown.name).split(".", 1)[0] for unknown in patch.unknown_fields),
     }
     if unknown := mentioned - allowed_roots:
         raise IngestionError(
-            f"{label} references undeclared properties: "
-            + ", ".join(sorted(unknown))
+            f"{label} references undeclared properties: " + ", ".join(sorted(unknown))
         )
     for name in (
         *patch.set_values,
@@ -825,27 +767,18 @@ def _validate_patch(
             maximum=8_192,
             allow_empty=True,
         )
-        for evidence_index, evidence in enumerate(
-            unknown_field.evidence
-        ):
+        for evidence_index, evidence in enumerate(unknown_field.evidence):
             _validate_evidence(
                 evidence,
                 artifact_ids=artifact_ids,
-                label=(
-                    f"{label}.unknown_fields[{index}].evidence"
-                    f"[{evidence_index}]"
-                ),
+                label=(f"{label}.unknown_fields[{index}].evidence[{evidence_index}]"),
             )
     for name, quality in patch.field_quality.items():
         if not isinstance(quality, Quality):
-            raise IngestionError(
-                f"{label}.field_quality[{name!r}] is invalid"
-            )
+            raise IngestionError(f"{label}.field_quality[{name!r}] is invalid")
     for name, provenance in patch.field_provenance.items():
         if not isinstance(provenance, Provenance):
-            raise IngestionError(
-                f"{label}.field_provenance[{name!r}] is invalid"
-            )
+            raise IngestionError(f"{label}.field_provenance[{name!r}] is invalid")
     _json_value(patch)
     return patch
 
@@ -859,13 +792,10 @@ def _validate_perspective(
     if perspective is None:
         return None
     if type(perspective) is not StatusPerspectiveRef:
-        raise IngestionError(
-            f"{label} must be an exact StatusPerspectiveRef or null"
-        )
+        raise IngestionError(f"{label} must be an exact StatusPerspectiveRef or null")
     if perspective.perspective_id not in schema_index.perspective_ids:
         raise IngestionError(
-            f"{label} references undeclared perspective "
-            f"{perspective.perspective_id!r}"
+            f"{label} references undeclared perspective {perspective.perspective_id!r}"
         )
     _json_value(perspective)
     return perspective
@@ -879,42 +809,18 @@ def _validate_diagnostic(
     expected_origin: DiagnosticOrigin | None = None,
     expected_stage: DiagnosticStage | None = None,
 ) -> PluginDiagnostic:
-    if type(diagnostic) is not PluginDiagnostic:
-        raise IngestionError(f"{label} must be an exact PluginDiagnostic")
-    if not isinstance(diagnostic.stage, DiagnosticStage):
-        raise IngestionError(f"{label}.stage is invalid")
-    if not isinstance(diagnostic.severity, DiagnosticSeverity):
-        raise IngestionError(f"{label}.severity is invalid")
-    if not isinstance(diagnostic.origin, DiagnosticOrigin):
-        raise IngestionError(f"{label}.origin is invalid")
-    if (
-        expected_origin is not None
-        and diagnostic.origin is not expected_origin
-    ):
-        raise IngestionError(
-            f"{label}.origin must be {expected_origin.value!r}"
-        )
-    if (
-        expected_stage is not None
-        and diagnostic.stage is not expected_stage
-    ):
-        raise IngestionError(
-            f"{label}.stage must be {expected_stage.value!r}"
-        )
-    if type(diagnostic.recoverable) is not bool:
-        raise IngestionError(f"{label}.recoverable must be a boolean")
-    if not isinstance(diagnostic.evidence, tuple):
-        raise IngestionError(f"{label}.evidence must be a tuple")
-    _bounded_text(diagnostic.code, f"{label}.code", maximum=256)
-    _bounded_text(diagnostic.message, f"{label}.message", maximum=8_192)
-    for index, evidence in enumerate(diagnostic.evidence):
-        _validate_evidence(
-            evidence,
+    try:
+        validated = validate_plugin_diagnostic(
+            diagnostic,
+            label=label,
+            expected_origin=expected_origin,
+            expected_stage=expected_stage,
             artifact_ids=artifact_ids,
-            label=f"{label}.evidence[{index}]",
         )
+    except ValueError as error:
+        raise IngestionError(str(error)) from error
     _json_value(diagnostic.details)
-    return diagnostic
+    return validated
 
 
 def _validate_parser_output(
@@ -949,9 +855,7 @@ def _validate_parser_output(
         )
         _validate_patch(
             output.state,
-            allowed_roots=schema_index.property_roots_by_kind[
-                resource.kind
-            ],
+            allowed_roots=schema_index.property_roots_by_kind[resource.kind],
             artifact_ids=artifact_ids,
             label=f"{label}.state",
         )
@@ -1005,10 +909,7 @@ def _validate_parser_output(
                 for name in (
                     *output.attributes.set_values,
                     *output.attributes.remove_fields,
-                    *(
-                        item.name
-                        for item in output.attributes.unknown_fields
-                    ),
+                    *(item.name for item in output.attributes.unknown_fields),
                 )
             ),
             artifact_ids=artifact_ids,
@@ -1070,30 +971,36 @@ def _validate_parser_output(
             not isinstance(output.event_uid, bytes)
             or not 1 <= len(output.event_uid) <= 256
         ):
-            raise IngestionError(
-                f"{label}.event_uid must contain 1 to 256 bytes"
-            )
+            raise IngestionError(f"{label}.event_uid must contain 1 to 256 bytes")
         _exact_optional_integer(
             output.timestamp_ns,
             f"{label}.timestamp_ns",
+            minimum=MIN_TIMESTAMP_NS,
+            maximum=MAX_TIMESTAMP_NS,
         )
         uncertainty = _exact_optional_integer(
             output.timestamp_uncertainty_ns,
             f"{label}.timestamp_uncertainty_ns",
             minimum=0,
+            maximum=MAX_TIMESTAMP_NS,
         )
         if output.timestamp_ns is None and uncertainty is not None:
+            raise IngestionError(f"{label} cannot have uncertainty without a timestamp")
+        if (
+            output.timestamp_ns is not None
+            and uncertainty is not None
+            and (
+                output.timestamp_ns - uncertainty < MIN_TIMESTAMP_NS
+                or output.timestamp_ns + uncertainty > MAX_TIMESTAMP_NS
+            )
+        ):
             raise IngestionError(
-                f"{label} cannot have uncertainty without a timestamp"
+                f"{label} timestamp uncertainty interval must fit signed 64-bit"
             )
         if type(output.source_sequence) is not int:
-            raise IngestionError(
-                f"{label}.source_sequence must be an integer"
-            )
+            raise IngestionError(f"{label}.source_sequence must be an integer")
         if output.source_sequence < 0:
-            raise IngestionError(
-                f"{label}.source_sequence must be non-negative"
-            )
+            raise IngestionError(f"{label}.source_sequence must be non-negative")
         _bounded_text(
             output.event_type,
             f"{label}.event_type",
@@ -1127,22 +1034,16 @@ def _validate_parser_output(
         )
         _json_value(output.attributes)
         if type(output.source) is not SourceRecordRef:
-            raise IngestionError(
-                f"{label}.source must be an exact SourceRecordRef"
-            )
+            raise IngestionError(f"{label}.source must be an exact SourceRecordRef")
         _bounded_text(
             output.source.source_id,
             f"{label}.source.source_id",
             maximum=1_024,
         )
         if type(output.source.message_ordinal) is not int:
-            raise IngestionError(
-                f"{label}.source.message_ordinal must be an integer"
-            )
+            raise IngestionError(f"{label}.source.message_ordinal must be an integer")
         if output.source.message_ordinal < 0:
-            raise IngestionError(
-                f"{label}.source.message_ordinal must be non-negative"
-            )
+            raise IngestionError(f"{label}.source.message_ordinal must be non-negative")
         for field_name, value in (
             ("trace_uid", output.source.trace_uid),
             ("stream_uid", output.source.stream_uid),
@@ -1163,26 +1064,35 @@ def _validate_parser_output(
     if not isinstance(output.evidence, tuple):
         raise IngestionError(f"{label}.evidence must be a tuple")
     if not isinstance(output.matched_event_uids, tuple):
-        raise IngestionError(
-            f"{label}.matched_event_uids must be a tuple"
-        )
-    _exact_optional_integer(
+        raise IngestionError(f"{label}.matched_event_uids must be a tuple")
+    timestamp = _exact_optional_integer(
         output.timestamp_ns,
         f"{label}.timestamp_ns",
+        minimum=MIN_TIMESTAMP_NS,
+        maximum=MAX_TIMESTAMP_NS,
     )
     uncertainty = _exact_optional_integer(
         output.timestamp_uncertainty_ns,
         f"{label}.timestamp_uncertainty_ns",
         minimum=0,
+        maximum=MAX_TIMESTAMP_NS,
     )
-    if output.timestamp_ns is None and uncertainty is not None:
+    if timestamp is None and uncertainty is not None:
+        raise IngestionError(f"{label} cannot have uncertainty without a timestamp")
+    if (
+        timestamp is not None
+        and uncertainty is not None
+        and (
+            timestamp - uncertainty < MIN_TIMESTAMP_NS
+            or timestamp + uncertainty > MAX_TIMESTAMP_NS
+        )
+    ):
         raise IngestionError(
-            f"{label} cannot have uncertainty without a timestamp"
+            f"{label} timestamp uncertainty interval must fit signed 64-bit"
         )
     if output.source_type not in schema_index.source_types:
         raise IngestionError(
-            f"{label} references undeclared source type "
-            f"{output.source_type!r}"
+            f"{label} references undeclared source type {output.source_type!r}"
         )
     _bounded_text(
         output.source_name,
@@ -1206,29 +1116,21 @@ def _validate_parser_output(
             f"{label}.layer",
             maximum=256,
         )
-    if (
-        output.copy_text is not None
-        and (
-            not isinstance(output.copy_text, str)
-            or "\x00" in output.copy_text
-            or len(output.copy_text.encode("utf-8")) > 65_536
-        )
+    if output.copy_text is not None and (
+        not isinstance(output.copy_text, str)
+        or "\x00" in output.copy_text
+        or len(output.copy_text.encode("utf-8")) > 65_536
     ):
-        raise IngestionError(
-            f"{label}.copy_text exceeds its safe text contract"
-        )
+        raise IngestionError(f"{label}.copy_text exceeds its safe text contract")
     event_links = (
         *((output.matched_event_uid,) if output.matched_event_uid else ()),
         *output.matched_event_uids,
     )
     if any(
-        not isinstance(event_uid, bytes)
-        or not 1 <= len(event_uid) <= 256
+        not isinstance(event_uid, bytes) or not 1 <= len(event_uid) <= 256
         for event_uid in event_links
     ):
-        raise IngestionError(
-            f"{label} contains an invalid matched event identifier"
-        )
+        raise IngestionError(f"{label} contains an invalid matched event identifier")
     for index, evidence in enumerate(output.evidence):
         _validate_evidence(
             evidence,
@@ -1253,9 +1155,7 @@ def _validate_ctf_message(
         CtfStreamActivityBoundary,
     )
     if type(message) not in allowed:
-        raise IngestionError(
-            f"{label} must be an exact dependency-free CtfMessage"
-        )
+        raise IngestionError(f"{label} must be an exact dependency-free CtfMessage")
     typed = cast(CtfMessage, message)
     for field_name in ("trace_uid", "stream_uid"):
         _bounded_text(
@@ -1265,9 +1165,7 @@ def _validate_ctf_message(
         )
     message_ordinal = typed.message_ordinal
     if type(message_ordinal) is not int or message_ordinal < 0:
-        raise IngestionError(
-            f"{label}.message_ordinal must be a non-negative integer"
-        )
+        raise IngestionError(f"{label}.message_ordinal must be a non-negative integer")
     clock_domain = typed.clock_domain
     if clock_domain is not None:
         _bounded_text(
@@ -1294,15 +1192,27 @@ def _validate_ctf_message(
         timestamp = _exact_optional_integer(
             event_record.timestamp_ns,
             f"{label}.timestamp_ns",
+            minimum=MIN_TIMESTAMP_NS,
+            maximum=MAX_TIMESTAMP_NS,
         )
         uncertainty = _exact_optional_integer(
             event_record.timestamp_uncertainty_ns,
             f"{label}.timestamp_uncertainty_ns",
             minimum=0,
+            maximum=MAX_TIMESTAMP_NS,
         )
         if timestamp is None and uncertainty is not None:
+            raise IngestionError(f"{label} cannot have uncertainty without a timestamp")
+        if (
+            timestamp is not None
+            and uncertainty is not None
+            and (
+                timestamp - uncertainty < MIN_TIMESTAMP_NS
+                or timestamp + uncertainty > MAX_TIMESTAMP_NS
+            )
+        ):
             raise IngestionError(
-                f"{label} cannot have uncertainty without a timestamp"
+                f"{label} timestamp uncertainty interval must fit signed 64-bit"
             )
         _exact_optional_integer(
             event_record.packet_sequence,
@@ -1319,6 +1229,8 @@ def _validate_ctf_message(
         _exact_optional_integer(
             boundary.timestamp_ns,
             f"{label}.timestamp_ns",
+            minimum=MIN_TIMESTAMP_NS,
+            maximum=MAX_TIMESTAMP_NS,
         )
         if isinstance(boundary, CtfPacketBoundary):
             _exact_optional_integer(
@@ -1333,6 +1245,8 @@ def _validate_ctf_message(
         _exact_optional_integer(
             activity.timestamp_ns,
             f"{label}.timestamp_ns",
+            minimum=MIN_TIMESTAMP_NS,
+            maximum=MAX_TIMESTAMP_NS,
         )
     else:
         assert isinstance(
@@ -1351,41 +1265,21 @@ def _validate_ctf_message(
             label,
         )
         if begin is not None and end is not None and begin > end:
-            raise IngestionError(
-                f"{label} begin timestamp exceeds end timestamp"
-            )
+            raise IngestionError(f"{label} begin timestamp exceeds end timestamp")
     return typed
 
 
 def _schema_dataset(schema: PluginSchema) -> dict[str, Any]:
-    resource_kinds = [
-        _json_value(item) for item in schema.resource_kinds
-    ]
-    relationship_types = [
-        _json_value(item) for item in schema.relationship_types
-    ]
-    causal_link_types = [
-        _json_value(item) for item in schema.causal_link_types
-    ]
+    resource_kinds = [_json_value(item) for item in schema.resource_kinds]
+    relationship_types = [_json_value(item) for item in schema.relationship_types]
+    causal_link_types = [_json_value(item) for item in schema.causal_link_types]
     dashboards = [_json_value(item) for item in schema.dashboards]
-    resource_table_views = [
-        _json_value(item) for item in schema.resource_table_views
-    ]
-    source_record_groups = [
-        _json_value(item) for item in schema.source_record_groups
-    ]
-    source_record_types = [
-        _json_value(item) for item in schema.source_record_types
-    ]
-    record_lane_presets = [
-        _json_value(item) for item in schema.record_lane_presets
-    ]
-    status_perspectives = [
-        _json_value(item) for item in schema.status_perspectives
-    ]
-    topology_projections = [
-        _json_value(item) for item in schema.topology_projections
-    ]
+    resource_table_views = [_json_value(item) for item in schema.resource_table_views]
+    source_record_groups = [_json_value(item) for item in schema.source_record_groups]
+    source_record_types = [_json_value(item) for item in schema.source_record_types]
+    record_lane_presets = [_json_value(item) for item in schema.record_lane_presets]
+    status_perspectives = [_json_value(item) for item in schema.status_perspectives]
+    topology_projections = [_json_value(item) for item in schema.topology_projections]
     return {
         "kind_descriptors": resource_kinds,
         "relationship_descriptors": relationship_types,
@@ -1455,17 +1349,13 @@ def _build_dataset(
     node_id: str,
     snapshots: Sequence[SnapshotObservation],
     relationship_observations: Sequence[RelationshipObservation],
-    relationship_collections: Sequence[
-        RelationshipCollectionObservation
-    ],
+    relationship_collections: Sequence[RelationshipCollectionObservation],
     events: Sequence[DomainEvent],
     source_records: Sequence[_ParsedSourceRecord],
     diagnostics: Sequence[PluginDiagnostic],
 ) -> dict[str, Any]:
     resources_by_key: dict[ResourceKey, dict[str, Any]] = {}
-    snapshots_by_key: dict[ResourceKey, list[SnapshotObservation]] = (
-        defaultdict(list)
-    )
+    snapshots_by_key: dict[ResourceKey, list[SnapshotObservation]] = defaultdict(list)
     for observation in snapshots:
         snapshots_by_key[observation.resource].append(observation)
     for relationship_observation in relationship_observations:
@@ -1486,8 +1376,7 @@ def _build_dataset(
         resources_by_key.setdefault(resource, {})
 
     resource_ids = {
-        resource: _resource_identity(resource)[0]
-        for resource in resources_by_key
+        resource: _resource_identity(resource)[0] for resource in resources_by_key
     }
     resources: list[dict[str, Any]] = []
     state_intervals: list[dict[str, Any]] = []
@@ -1532,9 +1421,7 @@ def _build_dataset(
             )
             valid_from = observation.observed_at_min_ns
             next_observation = (
-                observations[index + 1]
-                if index + 1 < len(observations)
-                else None
+                observations[index + 1] if index + 1 < len(observations) else None
             )
             valid_to = (
                 next_observation.observed_at_min_ns
@@ -1546,57 +1433,45 @@ def _build_dataset(
             if observation.observed_at_max_ns is not None:
                 time_values.append(observation.observed_at_max_ns)
             interval = {
-                    "resource": identifier,
-                    "valid_from_ns": (
-                        str(valid_from)
-                        if valid_from is not None
-                        else None
-                    ),
-                    "valid_to_ns": (
-                        str(valid_to) if valid_to is not None else None
-                    ),
-                    "observed_at_min_ns": (
-                        str(observation.observed_at_min_ns)
-                        if observation.observed_at_min_ns is not None
-                        else None
-                    ),
-                    "observed_at_max_ns": (
-                        str(observation.observed_at_max_ns)
-                        if observation.observed_at_max_ns is not None
-                        else None
-                    ),
-                    "status": (
-                        str(observation.condition)
-                        if isinstance(
-                            observation.condition,
-                            (str, int, float, bool),
-                        )
-                        else observation.condition_class.value
-                    ),
-                    "status_class": observation.condition_class.value,
-                    "condition": _json_value(observation.condition),
-                    "properties": dict(current),
-                    "unknown_fields": list(current_unknown.values()),
-                    "field_quality": dict(current_field_quality),
-                    "field_provenance": dict(
-                        current_field_provenance
-                    ),
-                    "provenance": observation.provenance.value,
-                    "quality": observation.quality.value,
-                    "evidence": [_evidence(observation.evidence)],
-                    "perspective_ref": (
-                        _json_value(observation.perspective_ref)
-                        if observation.perspective_ref is not None
-                        else None
-                    ),
-                }
+                "resource": identifier,
+                "valid_from_ns": (str(valid_from) if valid_from is not None else None),
+                "valid_to_ns": (str(valid_to) if valid_to is not None else None),
+                "observed_at_min_ns": (
+                    str(observation.observed_at_min_ns)
+                    if observation.observed_at_min_ns is not None
+                    else None
+                ),
+                "observed_at_max_ns": (
+                    str(observation.observed_at_max_ns)
+                    if observation.observed_at_max_ns is not None
+                    else None
+                ),
+                "status": (
+                    str(observation.condition)
+                    if isinstance(
+                        observation.condition,
+                        (str, int, float, bool),
+                    )
+                    else observation.condition_class.value
+                ),
+                "status_class": observation.condition_class.value,
+                "condition": _json_value(observation.condition),
+                "properties": dict(current),
+                "unknown_fields": list(current_unknown.values()),
+                "field_quality": dict(current_field_quality),
+                "field_provenance": dict(current_field_provenance),
+                "provenance": observation.provenance.value,
+                "quality": observation.quality.value,
+                "evidence": [_evidence(observation.evidence)],
+                "perspective_ref": (
+                    _json_value(observation.perspective_ref)
+                    if observation.perspective_ref is not None
+                    else None
+                ),
+            }
             state_intervals.append(interval)
             resource_intervals.append(interval)
-        first_seen = (
-            observations[0].observed_at_min_ns
-            if observations
-            else None
-        )
+        first_seen = observations[0].observed_at_min_ns if observations else None
         if observations:
             lifecycle_intervals.append(
                 {
@@ -1617,31 +1492,17 @@ def _build_dataset(
                 "label": _resource_label(resource),
                 "key": identity,
                 "placeholder": not observations,
-                "state": (
-                    dict(latest["properties"])
-                    if latest is not None
-                    else {}
-                ),
+                "state": (dict(latest["properties"]) if latest is not None else {}),
                 "unknown_fields": (
-                    list(latest["unknown_fields"])
-                    if latest is not None
-                    else []
+                    list(latest["unknown_fields"]) if latest is not None else []
                 ),
                 "field_quality": (
-                    dict(latest["field_quality"])
-                    if latest is not None
-                    else {}
+                    dict(latest["field_quality"]) if latest is not None else {}
                 ),
                 "field_provenance": (
-                    dict(latest["field_provenance"])
-                    if latest is not None
-                    else {}
+                    dict(latest["field_provenance"]) if latest is not None else {}
                 ),
-                "status": (
-                    latest.get("status")
-                    if latest is not None
-                    else "unknown"
-                ),
+                "status": (latest.get("status") if latest is not None else "unknown"),
                 "status_class": (
                     latest.get("status_class")
                     if latest is not None
@@ -1689,9 +1550,7 @@ def _build_dataset(
         relationship_field_quality: dict[str, str] = {}
         relationship_field_provenance: dict[str, str] = {}
         latest_interval: dict[str, Any] | None = None
-        for index, relationship_observation in enumerate(
-            ordered_relationships
-        ):
+        for index, relationship_observation in enumerate(ordered_relationships):
             (
                 relationship_state,
                 relationship_unknown,
@@ -1718,60 +1577,40 @@ def _build_dataset(
                 "type": relation_type,
                 "relation_type": relation_type,
                 "present": relationship_observation.present,
-                "valid_from_ns": (
-                    str(valid_from) if valid_from is not None else None
-                ),
-                "valid_to_ns": (
-                    str(valid_to) if valid_to is not None else None
-                ),
+                "valid_from_ns": (str(valid_from) if valid_from is not None else None),
+                "valid_to_ns": (str(valid_to) if valid_to is not None else None),
                 "observed_at_min_ns": (
                     str(relationship_observation.observed_at_min_ns)
-                    if relationship_observation.observed_at_min_ns
-                    is not None
+                    if relationship_observation.observed_at_min_ns is not None
                     else None
                 ),
                 "observed_at_max_ns": (
                     str(relationship_observation.observed_at_max_ns)
-                    if relationship_observation.observed_at_max_ns
-                    is not None
+                    if relationship_observation.observed_at_max_ns is not None
                     else None
                 ),
                 "attributes": dict(relationship_state),
-                "unknown_fields": list(
-                    relationship_unknown.values()
-                ),
+                "unknown_fields": list(relationship_unknown.values()),
                 "field_quality": dict(relationship_field_quality),
-                "field_provenance": dict(
-                    relationship_field_provenance
-                ),
+                "field_provenance": dict(relationship_field_provenance),
                 "provenance": relationship_observation.provenance.value,
                 "quality": relationship_observation.quality.value,
-                "evidence": [
-                    _evidence(relationship_observation.evidence)
-                ],
+                "evidence": [_evidence(relationship_observation.evidence)],
                 "perspective_ref": (
-                    _json_value(
-                        relationship_observation.perspective_ref
-                    )
-                    if relationship_observation.perspective_ref
-                    is not None
+                    _json_value(relationship_observation.perspective_ref)
+                    if relationship_observation.perspective_ref is not None
                     else None
                 ),
             }
             if valid_from is not None:
                 time_values.append(valid_from)
             if relationship_observation.observed_at_max_ns is not None:
-                time_values.append(
-                    relationship_observation.observed_at_max_ns
-                )
+                time_values.append(relationship_observation.observed_at_max_ns)
             relationship_intervals.append(interval)
             latest_interval = interval
         # Unknown presence is not an active edge. A current relationship is
         # asserted only by an explicit latest `present=True` observation.
-        if (
-            ordered_relationships[-1].present is True
-            and latest_interval is not None
-        ):
+        if ordered_relationships[-1].present is True and latest_interval is not None:
             relationships.append(dict(latest_interval))
 
     normalized_events: list[dict[str, Any]] = []
@@ -1790,9 +1629,7 @@ def _build_dataset(
             {
                 "event_uid": event.event_uid.hex(),
                 "timestamp_ns": (
-                    str(event.timestamp_ns)
-                    if event.timestamp_ns is not None
-                    else None
+                    str(event.timestamp_ns) if event.timestamp_ns is not None else None
                 ),
                 "timestamp_uncertainty_ns": (
                     str(event.timestamp_uncertainty_ns)
@@ -1815,15 +1652,9 @@ def _build_dataset(
                     for subject in event.subjects
                 ],
                 "resource_id": (
-                    resource_ids[event.subjects[0]]
-                    if event.subjects
-                    else None
+                    resource_ids[event.subjects[0]] if event.subjects else None
                 ),
-                "layer": (
-                    event.subjects[0].layer
-                    if event.subjects
-                    else None
-                ),
+                "layer": (event.subjects[0].layer if event.subjects else None),
                 "provenance": event.provenance.value,
                 "quality": event.quality.value,
                 "evidence": _evidence(event.evidence),
@@ -1846,9 +1677,7 @@ def _build_dataset(
         emission = parsed_record.emission
         if emission.timestamp_ns is not None:
             time_values.append(emission.timestamp_ns)
-        matched = [
-            value.hex() for value in emission.matched_event_uids
-        ]
+        matched = [value.hex() for value in emission.matched_event_uids]
         if emission.matched_event_uid is not None:
             matched.insert(0, emission.matched_event_uid.hex())
         matched = list(dict.fromkeys(matched))
@@ -1880,9 +1709,7 @@ def _build_dataset(
                 "attributes": _json_value(emission.attributes),
                 "matched_event_uid": matched[0] if matched else None,
                 "matched_event_uids": matched,
-                "evidence": [
-                    _evidence(item) for item in emission.evidence
-                ],
+                "evidence": [_evidence(item) for item in emission.evidence],
                 "copy_text": emission.copy_text,
             }
         )
@@ -1934,12 +1761,7 @@ def _build_dataset(
             time_values.append(item.observed_at_max_ns)
 
     schema_fields = _schema_dataset(schema)
-    layer_names = sorted(
-        {
-            resource.layer
-            for resource in resources_by_key
-        }
-    )
+    layer_names = sorted({resource.layer for resource in resources_by_key})
     timeline_start = min(time_values) if time_values else 0
     timeline_end = max(time_values) if time_values else timeline_start
     matched_event_uids = {
@@ -1947,9 +1769,7 @@ def _build_dataset(
         for record in normalized_source_records
         for event_uid in record["matched_event_uids"]
     }
-    normalized_diagnostics = [
-        _json_value(item) for item in diagnostics
-    ]
+    normalized_diagnostics = [_json_value(item) for item in diagnostics]
     runtime_gaps = [
         {
             "id": "runtime-v2-temporal-query",
@@ -2093,27 +1913,19 @@ def _build_dataset(
         "summary": {
             "parse": {
                 "artifacts": len(inventory.artifacts),
-                "errors": sum(
-                    item.severity.value == "error"
-                    for item in diagnostics
-                ),
+                "errors": sum(item.severity.value == "error" for item in diagnostics),
                 "diagnostics": len(diagnostics),
                 "matched_events": len(matched_event_uids),
             },
             "consistency": {"pass": 0, "fail": 0, "unknown": 0},
         },
         "coverage": {
-            "exact_outputs": sum(
-                item.quality.value == "exact"
-                for item in snapshots
-            ),
+            "exact_outputs": sum(item.quality.value == "exact" for item in snapshots),
             "best_effort_outputs": sum(
-                item.quality.value == "best_effort"
-                for item in snapshots
+                item.quality.value == "best_effort" for item in snapshots
             ),
             "unknown_outputs": sum(
-                item.quality.value == "unknown"
-                for item in snapshots
+                item.quality.value == "unknown" for item in snapshots
             ),
         },
         "topology_capabilities": {
@@ -2153,33 +1965,21 @@ def _fingerprint(
                 "plugin_id": manifest.plugin_id,
                 "plugin_version": manifest.plugin_version,
                 "core_api_version": manifest.core_api_version,
-                "supported_platforms": list(
-                    manifest.supported_platforms
-                ),
-                "supported_software_versions": (
-                    manifest.supported_software_versions
-                ),
+                "supported_platforms": list(manifest.supported_platforms),
+                "supported_software_versions": (manifest.supported_software_versions),
                 "capabilities": sorted(
                     str(capability.value)
                     if isinstance(capability, PluginCapability)
                     else str(capability)
                     for capability in manifest.capabilities
                 ),
-                "reconstruction_default": (
-                    manifest.reconstruction_default.value
-                ),
-                "forwarding_ir_versions": list(
-                    manifest.forwarding_ir_versions
-                ),
+                "reconstruction_default": (manifest.reconstruction_default.value),
+                "forwarding_ir_versions": list(manifest.forwarding_ir_versions),
             }
         ).encode("utf-8")
     )
     add(canonical_json(_json_value(schema)).encode("utf-8"))
-    add(
-        canonical_json(_json_value(reader.inventory.node_hint)).encode(
-            "utf-8"
-        )
-    )
+    add(canonical_json(_json_value(reader.inventory.node_hint)).encode("utf-8"))
     add(canonical_json(_json_value(reader.inventory.metadata)).encode("utf-8"))
     logical_path_by_id = {
         artifact.artifact_id: artifact.logical_path.as_posix()
@@ -2198,9 +1998,7 @@ def _fingerprint(
             canonical_json(
                 {
                     "logical_path": artifact.logical_path.as_posix(),
-                    "parent_logical_path": parent_path_by_id[
-                        artifact.artifact_id
-                    ],
+                    "parent_logical_path": parent_path_by_id[artifact.artifact_id],
                     "media_type": artifact.media_type,
                     "compressed_size": artifact.compressed_size,
                     "uncompressed_size": artifact.uncompressed_size,
@@ -2230,9 +2028,7 @@ def _fingerprint(
                     ),
                     "options": _json_value(spec.options),
                     "parser_kind": (
-                        spec.parser_kind.value
-                        if spec.parser_kind is not None
-                        else None
+                        spec.parser_kind.value if spec.parser_kind is not None else None
                     ),
                 }
                 for spec in specs
@@ -2259,17 +2055,14 @@ class IngestionCoordinator:
         manifest = getattr(plugin, "manifest", None)
         required = ("describe", "probe", "locate_inputs")
         if manifest is None or any(
-            not callable(getattr(plugin, name, None))
-            for name in required
+            not callable(getattr(plugin, name, None)) for name in required
         ):
             raise IngestionError(
                 "core ingestion requires an AnalyzerPlugin with manifest, "
                 "describe(), probe(), and locate_inputs()"
             )
         if not isinstance(manifest, PluginManifest):
-            raise IngestionError(
-                "core ingestion requires a PluginManifest"
-            )
+            raise IngestionError("core ingestion requires a PluginManifest")
         if manifest.core_api_version != CORE_PLUGIN_API_VERSION:
             raise IngestionError(
                 "plug-in core API version is incompatible with this core"
@@ -2294,12 +2087,9 @@ class IngestionCoordinator:
     ) -> tuple[tuple[InputSpec, ...], tuple[PluginDiagnostic, ...]]:
         specs: list[InputSpec] = []
         diagnostics: list[PluginDiagnostic] = []
-        artifact_ids = {
-            item.artifact_id for item in inventory.artifacts
-        }
+        artifact_ids = {item.artifact_id for item in inventory.artifacts}
         artifacts_by_id = {
-            artifact.artifact_id: artifact
-            for artifact in inventory.artifacts
+            artifact.artifact_id: artifact for artifact in inventory.artifacts
         }
         iterator = iter(plugin.locate_inputs(inventory))
         try:
@@ -2323,8 +2113,7 @@ class IngestionCoordinator:
                     diagnostics.append(output)
                     if not output.recoverable:
                         raise IngestionError(
-                            f"locate_inputs() failed: {output.code}: "
-                            f"{output.message}"
+                            f"locate_inputs() failed: {output.code}: {output.message}"
                         )
                     continue
                 if type(output) is not InputSpec:
@@ -2357,30 +2146,20 @@ class IngestionCoordinator:
                     maximum=256,
                 )
                 _json_value(output.options)
-                if (
-                    not isinstance(output.artifact_ids, tuple)
-                    or any(
-                        not isinstance(artifact_id, UUID)
-                        for artifact_id in output.artifact_ids
-                    )
+                if not isinstance(output.artifact_ids, tuple) or any(
+                    not isinstance(artifact_id, UUID)
+                    for artifact_id in output.artifact_ids
                 ):
                     raise IngestionError(
                         "InputSpec.artifact_ids must be a tuple of UUIDs"
                     )
                 if not output.artifact_ids:
-                    raise IngestionError(
-                        "InputSpec requires at least one artifact"
-                    )
-                if len(output.artifact_ids) != len(
-                    set(output.artifact_ids)
-                ):
-                    raise IngestionError(
-                        "InputSpec repeats an artifact identifier"
-                    )
+                    raise IngestionError("InputSpec requires at least one artifact")
+                if len(output.artifact_ids) != len(set(output.artifact_ids)):
+                    raise IngestionError("InputSpec repeats an artifact identifier")
                 if unknown := set(output.artifact_ids) - artifact_ids:
                     raise IngestionError(
-                        "InputSpec references "
-                        f"{len(unknown)} unknown artifact(s)"
+                        f"InputSpec references {len(unknown)} unknown artifact(s)"
                     )
                 if output.logical_root is not None:
                     if not isinstance(
@@ -2394,9 +2173,7 @@ class IngestionCoordinator:
                         output.logical_root.as_posix()
                     )
                     for artifact_id in output.artifact_ids:
-                        logical_path = artifacts_by_id[
-                            artifact_id
-                        ].logical_path
+                        logical_path = artifacts_by_id[artifact_id].logical_path
                         try:
                             logical_path.relative_to(logical_root)
                         except ValueError as error:
@@ -2423,9 +2200,7 @@ class IngestionCoordinator:
             if callable(close):
                 close()
         if not specs:
-            raise IngestionError(
-                "locate_inputs() selected no parser inputs"
-            )
+            raise IngestionError("locate_inputs() selected no parser inputs")
         return tuple(specs), tuple(diagnostics)
 
     def _parse(
@@ -2475,10 +2250,7 @@ class IngestionCoordinator:
                         )
                     budget.consume(
                         output,
-                        label=(
-                            f"{spec.dispatch_hook}[{input_ordinal}:"
-                            f"{ordinal}]"
-                        ),
+                        label=(f"{spec.dispatch_hook}[{input_ordinal}:{ordinal}]"),
                     )
                     _validate_parser_output(
                         output,
@@ -2490,10 +2262,7 @@ class IngestionCoordinator:
                             if spec.parser_kind is InputParserKind.STATUS
                             else DiagnosticStage.TRACE_MAP
                         ),
-                        label=(
-                            f"{spec.dispatch_hook}[{input_ordinal}:"
-                            f"{ordinal}]"
-                        ),
+                        label=(f"{spec.dispatch_hook}[{input_ordinal}:{ordinal}]"),
                     )
                     if isinstance(output, SnapshotObservation):
                         snapshots.append(output)
@@ -2557,9 +2326,7 @@ class IngestionCoordinator:
             else:
                 assert spec.parser_kind is InputParserKind.CTF
                 if self.trace_decoder is None:
-                    raise IngestionError(
-                        "CTF input requires a core TraceDecoder"
-                    )
+                    raise IngestionError("CTF input requires a core TraceDecoder")
 
                 def decoded_messages(
                     input_spec: InputSpec,
@@ -2567,14 +2334,14 @@ class IngestionCoordinator:
                     decoder_reader: Any = scoped_reader,
                 ) -> Iterator[CtfMessage]:
                     assert self.trace_decoder is not None
-                    decoder_iterator = iter(self.trace_decoder.iter_ctf(
-                        decoder_reader,
-                        input_spec,
-                    ))
+                    decoder_iterator = iter(
+                        self.trace_decoder.iter_ctf(
+                            decoder_reader,
+                            input_spec,
+                        )
+                    )
                     try:
-                        for decoder_ordinal, message in enumerate(
-                            decoder_iterator
-                        ):
+                        for decoder_ordinal, message in enumerate(decoder_iterator):
                             label = (
                                 f"trace_decoder[{decoder_input_ordinal}:"
                                 f"{decoder_ordinal}]"
@@ -2587,16 +2354,10 @@ class IngestionCoordinator:
                                 )
                                 _validate_diagnostic(
                                     message,
-                                    artifact_ids=set(
-                                        input_spec.artifact_ids
-                                    ),
+                                    artifact_ids=set(input_spec.artifact_ids),
                                     label=label,
-                                    expected_origin=(
-                                        DiagnosticOrigin.CORE_DECODER
-                                    ),
-                                    expected_stage=(
-                                        DiagnosticStage.TRACE_DECODE
-                                    ),
+                                    expected_origin=(DiagnosticOrigin.CORE_DECODER),
+                                    expected_stage=(DiagnosticStage.TRACE_DECODE),
                                 )
                                 diagnostics.append(message)
                                 if not message.recoverable:
@@ -2608,9 +2369,7 @@ class IngestionCoordinator:
                                 continue
                             validated = _validate_ctf_message(
                                 message,
-                                artifact_ids=set(
-                                    input_spec.artifact_ids
-                                ),
+                                artifact_ids=set(input_spec.artifact_ids),
                                 label=label,
                             )
                             budget.consume(
@@ -2655,9 +2414,7 @@ class IngestionCoordinator:
         budget = _IngestionBudget(self.limits)
         schema = selected.describe()
         if type(schema) is not PluginSchema:
-            raise IngestionError(
-                "describe() must return an exact PluginSchema"
-            )
+            raise IngestionError("describe() must return an exact PluginSchema")
         budget.consume(schema, label="describe", output=False)
         schema_index = _SchemaIndex.build(schema)
         serialized_metadata = _json_value(metadata or {})
@@ -2669,94 +2426,41 @@ class IngestionCoordinator:
             metadata=safe_metadata,
             limits=self.limits.artifact_limits,
         ) as reader:
-            report = selected.probe(reader.inventory)
-            if type(report) is not ProbeReport:
-                raise IngestionError(
-                    "probe() must return an exact ProbeReport"
-                )
+            raw_report = selected.probe(reader.inventory)
             inventory_artifact_ids = {
                 item.artifact_id for item in reader.inventory.artifacts
             }
-            if not isinstance(report.diagnostics, tuple):
-                raise IngestionError(
-                    "probe diagnostics must be a tuple"
+            try:
+                report = validate_probe_report(
+                    raw_report,
+                    artifact_ids=inventory_artifact_ids,
+                    maximum_diagnostics=self.limits.max_diagnostics,
+                    maximum_evidence_items=(self.limits.max_evidence_per_output),
                 )
+            except ValueError as error:
+                raise IngestionError(f"probe report is invalid: {error}") from error
             probe_diagnostics = tuple(report.diagnostics)
             for index, diagnostic in enumerate(probe_diagnostics):
                 budget.consume(
                     diagnostic,
                     label=f"probe.diagnostics[{index}]",
                 )
-                _validate_diagnostic(
-                    diagnostic,
-                    artifact_ids=inventory_artifact_ids,
-                    label=f"probe.diagnostics[{index}]",
-                    expected_origin=DiagnosticOrigin.PLUGIN,
-                    expected_stage=DiagnosticStage.PROBE,
-                )
                 if not diagnostic.recoverable:
                     raise IngestionError(
-                        f"probe() failed: {diagnostic.code}: "
-                        f"{diagnostic.message}"
+                        f"probe() failed: {diagnostic.code}: {diagnostic.message}"
                     )
             if report.result is not None:
-                if type(report.result) is not ProbeResult:
-                    raise IngestionError(
-                        "probe result must be an exact ProbeResult or null"
-                    )
+                try:
+                    probe_result = validate_probe_result(report.result)
+                except ValueError as error:
+                    raise IngestionError(f"probe result is invalid: {error}") from error
                 budget.consume(
-                    report.result,
+                    probe_result,
                     label="probe.result",
                     output=False,
                 )
-                confidence = report.result.confidence
-                if (
-                    isinstance(confidence, bool)
-                    or not isinstance(confidence, (int, float))
-                    or not isfinite(float(confidence))
-                    or not 0 <= float(confidence) <= 1
-                ):
-                    raise IngestionError(
-                        "probe confidence must be finite and between 0 and 1"
-                    )
-                try:
-                    match_kind = ProbeMatchKind(
-                        report.result.match_kind
-                    )
-                except (TypeError, ValueError) as error:
-                    raise IngestionError(
-                        "probe match kind is invalid"
-                    ) from error
-                if (
-                    not isinstance(report.result.reasons, tuple)
-                    or len(report.result.reasons) > 128
-                ):
-                    raise IngestionError(
-                        "probe reasons must be a bounded tuple"
-                    )
-                for index, reason in enumerate(report.result.reasons):
-                    _bounded_text(
-                        reason,
-                        f"probe.reasons[{index}]",
-                        maximum=1_024,
-                    )
-                for field_name, value in (
-                    (
-                        "detected_platform",
-                        report.result.detected_platform,
-                    ),
-                    (
-                        "detected_software_version",
-                        report.result.detected_software_version,
-                    ),
-                ):
-                    if value is not None:
-                        _bounded_text(
-                            value,
-                            f"probe.{field_name}",
-                            maximum=256,
-                        )
-                _json_value(report.result)
+                match_kind = ProbeMatchKind(probe_result.match_kind)
+                _json_value(probe_result)
             else:
                 match_kind = ProbeMatchKind.NONE
             if report.result is None or match_kind is ProbeMatchKind.NONE:
@@ -2850,9 +2554,7 @@ class IngestionCoordinator:
             relationship_observations=tuple(relationships),
             relationship_collections=tuple(collections),
             events=tuple(events),
-            source_records=tuple(
-                item.emission for item in source_records
-            ),
+            source_records=tuple(item.emission for item in source_records),
         )
 
 
@@ -2934,9 +2636,7 @@ class IngestedDatasetSource:
         if selection:
             node_id = selection.get("node_id")
             if node_id is not None:
-                return dict(
-                    self.store.dataset_for_node(str(node_id))
-                )
+                return dict(self.store.dataset_for_node(str(node_id)))
         selected = revision_id or self.store.default_revision_id
         return dict(self.store.dataset_for_revision(selected))
 
@@ -2970,11 +2670,7 @@ class IngestedDataPolicy:
         dataset: Mapping[str, Any],
     ) -> Mapping[str, Any]:
         metadata = dataset.get("_ingestion")
-        return (
-            deepcopy(dict(metadata))
-            if isinstance(metadata, Mapping)
-            else {}
-        )
+        return deepcopy(dict(metadata)) if isinstance(metadata, Mapping) else {}
 
     def workspace_metadata(
         self,
@@ -3001,14 +2697,11 @@ class IngestedDataPolicy:
             "capabilities": capabilities,
             "node_id": str(metadata.get("node_id") or "unknown-node"),
             "node_label": str(
-                metadata.get("node_label") or metadata.get("node_id")
-                or "Unknown node"
+                metadata.get("node_label") or metadata.get("node_id") or "Unknown node"
             ),
             "label": str(metadata.get("name") or "Parsed dump"),
             "event_count": len(dataset.get("events", ())),
-            "matched_event_count": int(
-                metadata.get("matched_event_count") or 0
-            ),
+            "matched_event_count": int(metadata.get("matched_event_count") or 0),
             "resource_count": len(dataset.get("resources", ())),
             "source_record_count": len(dataset.get("source_records", ())),
         }
@@ -3035,9 +2728,7 @@ class IngestedDataPolicy:
         event: Mapping[str, Any],
     ) -> Mapping[str, Any]:
         event_uid = str(event.get("event_uid") or "")
-        return deepcopy(
-            self._source_by_event_uid.get(event_uid, {})
-        )
+        return deepcopy(self._source_by_event_uid.get(event_uid, {}))
 
 
 @dataclass(slots=True)

@@ -26,6 +26,7 @@ import json
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping
+from hashlib import sha256
 from math import isfinite
 from typing import Any
 from uuid import UUID
@@ -318,6 +319,45 @@ def canonical_json(value: Any) -> str:
     """Return stable compact JSON for an already normalized value."""
 
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def strict_canonical_json(value: Any) -> str:
+    """Return UTF-8-oriented canonical JSON and reject non-JSON floats.
+
+    This is a separate profile from :func:`canonical_json` so existing
+    content-addressed formats retain their established escaping and digest
+    bytes.  New exported documents can opt into this stricter profile without
+    silently changing any persisted identity.
+    """
+
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as error:
+        raise CanonicalValueError("value is not strict canonical JSON") from error
+
+
+def strict_canonical_json_bytes(value: Any) -> bytes:
+    """Return the UTF-8 bytes of :func:`strict_canonical_json`."""
+
+    return strict_canonical_json(value).encode("utf-8")
+
+
+def canonical_json_sha256(value: Any) -> str:
+    """Hash the established escaped canonical JSON profile."""
+
+    return sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def strict_canonical_json_sha256(value: Any) -> str:
+    """Hash the strict UTF-8 canonical JSON profile."""
+
+    return sha256(strict_canonical_json_bytes(value)).hexdigest()
 
 
 def opaque_value_json(

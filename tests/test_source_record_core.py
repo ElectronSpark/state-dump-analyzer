@@ -4,23 +4,24 @@ import sys
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "demo"))
 
+from rsl_demo_plugin.source_records import (
+    SOURCE_RECORD_DESCRIPTORS,
+    SOURCE_RECORD_GROUP_DESCRIPTORS,
+)
+
 from router_dump_analyzer.source_record_core import (
+    MAX_SOURCE_QUERY_LIMIT,
+    MAX_SOURCE_QUERY_OFFSET,
     compile_record_pattern,
     project_source_record_text_selection,
     query_source_records,
     record_lanes_for_window,
     source_record_event_uids,
 )
-from rsl_demo_plugin.source_records import (
-    SOURCE_RECORD_DESCRIPTORS,
-    SOURCE_RECORD_GROUP_DESCRIPTORS,
-)
-
 
 RECORDS = [
     {
@@ -100,6 +101,112 @@ class SourceRecordCoreTests(unittest.TestCase):
         self.assertEqual(result["count"], 2)
         self.assertEqual(result["offset"], 0)
         self.assertEqual(result["limit"], 1)
+
+    def test_query_preserves_page_defaults_and_accepts_exact_boundaries(self) -> None:
+        defaults = query_source_records(RECORDS, {})
+        maximums = query_source_records(
+            RECORDS,
+            {
+                "offset": str(MAX_SOURCE_QUERY_OFFSET),
+                "limit": str(MAX_SOURCE_QUERY_LIMIT),
+            },
+        )
+
+        self.assertEqual(defaults["offset"], 0)
+        self.assertEqual(defaults["limit"], 100)
+        self.assertEqual(maximums["offset"], MAX_SOURCE_QUERY_OFFSET)
+        self.assertEqual(maximums["limit"], MAX_SOURCE_QUERY_LIMIT)
+        self.assertEqual(maximums["items"], [])
+
+    def test_query_rejects_page_values_instead_of_clamping_them(self) -> None:
+        invalid_ranges = (
+            ("offset", -1, "offset must be at least 0"),
+            (
+                "offset",
+                MAX_SOURCE_QUERY_OFFSET + 1,
+                f"offset must be no greater than {MAX_SOURCE_QUERY_OFFSET}",
+            ),
+            ("limit", 0, "limit must be at least 1"),
+            (
+                "limit",
+                MAX_SOURCE_QUERY_LIMIT + 1,
+                f"limit must be no greater than {MAX_SOURCE_QUERY_LIMIT}",
+            ),
+        )
+        for field, value, message in invalid_ranges:
+            for supplied in (value, str(value)):
+                with (
+                    self.subTest(field=field, supplied=supplied),
+                    self.assertRaisesRegex(ValueError, f"^{message}$"),
+                ):
+                    query_source_records(RECORDS, {field: supplied})
+
+    def test_query_rejects_noncanonical_page_value_shapes_for_both_fields(self) -> None:
+        for field in ("offset", "limit"):
+            for value in (True, 1.5, None, "+1", "01", "-0", " 1", "１"):
+                with (
+                    self.subTest(field=field, value=value),
+                    self.assertRaisesRegex(
+                        ValueError,
+                        f"^{field} must be an integer or decimal integer string$",
+                    ),
+                ):
+                    query_source_records(RECORDS, {field: value})
+
+    def test_source_record_times_use_exact_signed_64_bounds(self) -> None:
+        minimum = -(1 << 63)
+        maximum = (1 << 63) - 1
+        result = query_source_records(
+            [
+                {**RECORDS[0], "timestamp_ns": str(minimum)},
+                {**RECORDS[1], "timestamp_ns": str(maximum)},
+            ],
+            {"start_ns": str(minimum), "end_ns": str(maximum)},
+        )
+        self.assertEqual(result["count"], 2)
+
+        for field, value, message in (
+            ("start_ns", minimum - 1, f"start_ns must be at least {minimum}"),
+            ("end_ns", maximum + 1, f"end_ns must be no greater than {maximum}"),
+        ):
+            with (
+                self.subTest(field=field),
+                self.assertRaisesRegex(ValueError, f"^{message}$"),
+            ):
+                query_source_records(RECORDS, {field: value})
+
+        with self.assertRaisesRegex(
+            ValueError,
+            f"timestamp_ns must be no greater than {maximum}",
+        ):
+            query_source_records(
+                [{**RECORDS[0], "timestamp_ns": maximum + 1}],
+                {},
+            )
+
+    def test_timeline_lane_window_rejects_out_of_range_times_precisely(self) -> None:
+        minimum = -(1 << 63)
+        maximum = (1 << 63) - 1
+        rule = [{"lane_id": "all", "label": "All", "pattern": ".+"}]
+        for start_ns, end_ns, message in (
+            (
+                minimum - 1,
+                0,
+                f"start_ns must be at least {minimum}",
+            ),
+            (
+                0,
+                maximum + 1,
+                f"end_ns must be no greater than {maximum}",
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, f"^{message}$"):
+                record_lanes_for_window(
+                    RECORDS,
+                    rule,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
+                )
 
     def test_query_rejects_coerced_request_shapes(self) -> None:
         invalid_queries = [

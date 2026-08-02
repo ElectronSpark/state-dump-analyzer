@@ -10,7 +10,7 @@
       name="description"
       content="Interactive temporal router dump analysis workspace."
     />
-    <link rel="stylesheet" href="/assets/styles.css?v=20260724-event-selection-v2" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260801-round8-v1" />
   </head>
   <body>
     <div class="app-shell">
@@ -480,6 +480,67 @@
             <span id="event-source-group-controls" class="source-record-group-controls"></span>
             <output id="event-log-status" aria-live="polite">Preparing stream…</output>
           </div>
+          <details class="durable-review-setup" id="durable-review-setup">
+            <summary>
+              <span>Durable review</span>
+              <strong id="durable-review-state" data-state="local">Browser-only markers</strong>
+            </summary>
+            <div class="durable-review-body">
+              <p>
+                Local/trusted-header development setup: typed tenant and reviewer IDs
+                are sent as headers, not authenticated here. Production deployments
+                must replace this with trusted proxy or authentication middleware.
+                Values are saved only in this browser and never inferred from plug-in data.
+                The active dump must already be published into that workspace by the
+                ingestion pipeline; opening a legacy runtime does not publish it. The
+                server reports whether the verified identity may write; read-only
+                identities can inspect and export reports but cannot change review data.
+              </p>
+              <form class="durable-review-form" id="durable-review-form">
+                <label>
+                  Tenant
+                  <input id="durable-review-tenant" autocomplete="organization" maxlength="256" required />
+                </label>
+                <label>
+                  Project
+                  <input id="durable-review-project" autocomplete="off" maxlength="256" required />
+                </label>
+                <label>
+                  Workspace
+                  <input id="durable-review-workspace" autocomplete="off" maxlength="256" required />
+                </label>
+                <label>
+                  Reviewer
+                  <input id="durable-review-principal" autocomplete="username" maxlength="256" required />
+                </label>
+                <button id="durable-review-connect" type="submit">Connect</button>
+                <button id="durable-review-local" type="button">Use browser only</button>
+              </form>
+              <div class="durable-review-report-scope">
+                <label>
+                  Correlation report scope
+                  <select id="durable-review-report-scope" disabled>
+                    <option value="">Connect to load revisions, snapshots, and sessions</option>
+                  </select>
+                </label>
+                <span id="durable-review-scope-note">
+                  This page renders only its active node revision. Report scope may include
+                  other immutable revisions without inventing timeline subjects. Session
+                  snapshots freeze a reproducible revision vector; live sessions resolve
+                  their current membership when each report is generated.
+                </span>
+              </div>
+              <div class="durable-review-actions">
+                <button id="durable-review-copy-report" type="button" disabled>Copy AI report</button>
+                <button id="durable-review-download-report" type="button" disabled>Download report</button>
+                <button id="durable-review-discard-pending" type="button" disabled>Discard unresolved scope writes</button>
+                <button id="durable-review-reset-pending" type="button" disabled>Reset all unresolved writes</button>
+                <span id="durable-review-detail" role="status" aria-live="polite">
+                  Add the four scope values to persist markers and correlations.
+                </span>
+              </div>
+            </div>
+          </details>
           <div class="event-selection-toolbar" id="event-selection-toolbar" role="toolbar" aria-label="Selected event-log row actions" hidden>
             <div class="event-selection-summary">
               <strong id="event-selection-count">No rows selected</strong>
@@ -492,6 +553,7 @@
               <button id="event-selection-show" type="button">Show marks</button>
               <button id="event-selection-mark" type="button">Add review marker</button>
               <button id="event-selection-unmark" type="button">Remove marker</button>
+              <button id="event-selection-correlate" type="button">Correlate events</button>
               <button id="event-selection-clear" type="button">Clear selection</button>
             </div>
           </div>
@@ -561,7 +623,33 @@
     <div class="drawer-scrim" id="drawer-scrim" hidden></div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <div class="timeline-hover" id="timeline-hover" role="dialog" aria-label="Timeline details" hidden></div>
+    <dialog class="correlation-dialog" id="correlation-dialog" aria-labelledby="correlation-dialog-title">
+      <form id="correlation-form" method="dialog">
+        <div class="correlation-dialog-heading">
+          <div>
+            <p class="eyebrow">MANUAL CORRELATION</p>
+            <h2 id="correlation-dialog-title">Relate selected events</h2>
+          </div>
+          <button class="icon-button" id="correlation-cancel-icon" type="button" aria-label="Close correlation dialog">x</button>
+        </div>
+        <p id="correlation-selection-summary">
+          Select at least two normalized events.
+        </p>
+        <label>
+          Link type
+          <input id="correlation-link-type" maxlength="128" value="manually-correlated" required />
+        </label>
+        <label>
+          Rationale
+          <textarea id="correlation-rationale" maxlength="16000" rows="5" placeholder="Why should these events be treated as related?"></textarea>
+        </label>
+        <div class="correlation-dialog-actions">
+          <button id="correlation-cancel" type="button">Cancel</button>
+          <button class="primary-action" id="correlation-submit" type="submit">Save correlation</button>
+        </div>
+      </form>
+    </dialog>
 
-    <script type="module" src="/assets/app.js?v=20260724-lane-visibility-v4"></script>
+    <script type="module" src="/assets/app.js?v=20260801-round8-v1"></script>
   </body>
 </html>

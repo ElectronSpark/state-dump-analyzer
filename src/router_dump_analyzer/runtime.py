@@ -188,8 +188,7 @@ def validate_runtime_session(session: Any) -> PluginRuntimeSession:
     for name, provider, contract in optional_providers:
         if provider is not None and not isinstance(provider, contract):
             raise PluginRuntimeCapabilityError(
-                f"runtime session {name} does not implement its provider "
-                "contract"
+                f"runtime session {name} does not implement its provider contract"
             )
     return session
 
@@ -216,8 +215,7 @@ def require_plugin_runtime(plugin: Any) -> PluginRuntimeCapability:
             ) from error
     if not isinstance(runtime, PluginRuntimeCapability):
         raise PluginRuntimeCapabilityError(
-            "plug-in runtime must expose capability_id and "
-            "open(input_path)"
+            "plug-in runtime must expose capability_id and open(input_path)"
         )
     if runtime.capability_id != PLUGIN_RUNTIME_CAPABILITY_ID:
         raise PluginRuntimeCapabilityError(
@@ -236,6 +234,14 @@ class RuntimeApplicationRequest:
     input_path: Path
     frontend_root: Path | None = None
     serve_frontend: bool = True
+    control_plane: Any | None = None
+    control_plane_identity_resolver: Any | None = None
+    manage_control_plane_lifecycle: bool = False
+    expose_api_docs: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.expose_api_docs) is not bool:
+            raise TypeError("expose_api_docs must be a boolean")
 
 
 class RuntimeApplicationFactory(Protocol):
@@ -266,8 +272,13 @@ def create_runtime_application(
     from contextlib import asynccontextmanager
 
     from .web.app import create_web_app
+    from .web.control_plane_api import (
+        ControlPlaneAccessDenialReporter,
+        control_plane_router,
+    )
     from .web.frontend_host import FrontendHost
     from .web.runtime_api import (
+        analysis_health_projection,
         api_router,
         reset_runtime_api_caches,
         start_runtime_warmup,
@@ -282,28 +293,39 @@ def create_runtime_application(
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         frontend_host.validate_if_enabled()
-        with request.runtime.open(request.input_path) as opened_session:
-            plugin_session = validate_runtime_session(opened_session)
-            core_session = CoreRuntimeSession(
-                plugin_session=plugin_session,
-                data_service=NormalizedDataService(
-                    plugin_session.data_source,
-                    plugin_session.data_policy,
-                ),
-            )
-            application.state.runtime_session = core_session
-            reset_runtime_api_caches()
-            with activate_runtime_session(core_session):
-                warmup = start_runtime_warmup()
-            try:
-                yield
-            finally:
-                if warmup is not None:
-                    import asyncio
-
-                    await asyncio.to_thread(warmup.join)
+        if request.control_plane is not None and request.manage_control_plane_lifecycle:
+            request.control_plane.start()
+        try:
+            with request.runtime.open(request.input_path) as opened_session:
+                plugin_session = validate_runtime_session(opened_session)
+                core_session = CoreRuntimeSession(
+                    plugin_session=plugin_session,
+                    data_service=NormalizedDataService(
+                        plugin_session.data_source,
+                        plugin_session.data_policy,
+                    ),
+                )
+                application.state.runtime_session = core_session
                 reset_runtime_api_caches()
-                application.state.runtime_session = None
+                with activate_runtime_session(core_session):
+                    warmup = start_runtime_warmup()
+                try:
+                    yield
+                finally:
+                    if warmup is not None:
+                        import asyncio
+
+                        await asyncio.to_thread(warmup.join)
+                    reset_runtime_api_caches()
+                    application.state.runtime_session = None
+        finally:
+            if (
+                request.control_plane is not None
+                and request.manage_control_plane_lifecycle
+            ):
+                import asyncio
+
+                await asyncio.to_thread(request.control_plane.close)
 
     application = create_web_app(
         api_router=api_router,
@@ -315,7 +337,17 @@ def create_runtime_application(
             "plug-in runtime."
         ),
         lifespan=lifespan,
+        expose_api_docs=request.expose_api_docs,
     )
+    application.include_router(control_plane_router)
+    application.state.control_plane = request.control_plane
+    application.state.control_plane_identity_resolver = (
+        request.control_plane_identity_resolver
+    )
+    application.state.control_plane_access_denial_reporter = (
+        ControlPlaneAccessDenialReporter()
+    )
+    application.state.analysis_health_projector = analysis_health_projection
 
     @application.middleware("http")
     async def bind_runtime_session(

@@ -93,6 +93,11 @@ router-dump-analyzer --plugin ENTRY_POINT_NAME --input PATH
 router-dump-analyzer --plugin-module PACKAGE[.MODULE][:ATTRIBUTE] --input PATH
 ```
 
+The analysis application's OpenAPI JSON, Swagger UI, and ReDoc routes are
+disabled by default. The core CLI accepts an explicit `--expose-api-docs` only
+on a loopback bind; a plug-in cannot enable those routes or weaken that host
+policy.
+
 `--plugin` resolves exactly one installed
 `router_dump_analyzer.plugins` entry point. `--plugin-module` is a
 source/development path that imports the named module; `ATTRIBUTE` defaults to
@@ -185,6 +190,139 @@ middleware, routes, templates, HTML, JavaScript, or CSS. A standard parser
 without runtime v1 is served through core-owned runtime v2. The installable
 precomputed-fixture example in `demo/rsl_demo_plugin/session.py` and its tests
 exercise the compatibility boundary.
+
+### Durable admission, sessions, and review remain core-owned
+
+The optional `router-dump-ingest` command, API-only `router-dump-server`, and
+`/v1/control-plane` queue invoke the same standard `AnalyzerPlugin` hooks. They
+do not define another plug-in kind or optional capability. A deployment
+constructs an explicit
+`PluginRegistry` from installed entry points or explicitly named development
+modules. Uploaded data cannot install code, extend that registry, or choose a
+plug-in outside it.
+
+For each admitted artifact, core:
+
+1. streams and hashes the bytes under its upload limit;
+2. persists the upload/import plus the complete fixture-admission request and
+   operation ID in an explicit tenant/project/workspace scope, then records
+   the catalog result idempotently;
+3. safely inventories the admitted artifact for every allowlisted
+   deterministic `probe()`;
+4. records the sorted candidate set and its `probe_set_hash`;
+5. either applies the configured exact selection policy or waits for a client
+   to echo the probe-set hash and exact plug-in ID/version/package identity,
+   then stores that selection's scope-bound idempotent request/response
+   receipt;
+6. runs ordinary input discovery and parser dispatch under a leased queue
+   claim; and
+7. durably stages the validated canonical dataset plus an exact publication
+   operation; and
+8. publishes that operation idempotently as a new immutable catalog revision.
+
+A lost fixture-admission response replays the exact staged operation without
+creating a second fixture. A retry before publication is staged may invoke the
+same plug-in again. Publication-only recovery replays the staged catalog
+operation without invoking the plug-in. Therefore `describe()`, `probe()`,
+`locate_inputs()`, parsing, IDs, and normalized output MUST remain
+deterministic for the same bytes and immutable package/configuration. Plug-ins
+MUST NOT use wall-clock time, randomness, mutable global state, tenant
+metadata, or queue attempt number to change semantics.
+
+Admission and publication catalog calls have a separate core deadline after
+plug-in output is staged. Production mode enforces it in a disposable spawned
+process; the built-in catalog reopens its durable database there and also
+bounds lock/database waits through commit. An external deployment publisher
+must be spawn-picklable or reconstruct its client during unpickling and should
+apply the supplied remaining budget to RPC work. An ambiguous expiry preserves
+the exact outbox and artifact pin. It MUST NOT cause the parser to run again
+during publication-only recovery and does not add any plug-in timeout hook.
+
+Plug-ins do not receive tenant, project, workspace, session, principal,
+idempotency key, lease, annotation, or HTTP response objects. They do not open
+the upload/catalog/review SQLite databases or content store. Multi-revision
+sessions, immutable session snapshots, review annotations, manual
+correlations, soft deletion, audit rows, and deterministic report rendering
+are generic core mechanics over already validated revision-qualified
+identities.
+The core assigns the report-only `CorrelationReportProvenanceClass` values;
+plug-ins continue to use `Provenance` only for normalized facts and never label
+their own report section as user assertion or core corroboration.
+At the AI-facing report boundary, core recursively converts Unicode `Cc`,
+`Cn`, `Cs`, `Zl`, and `Zp` characters, every `Cf` character except U+200C ZWNJ
+and U+200D ZWJ, every `Zs` separator except ordinary ASCII space, and U+115F,
+U+1160, U+17B4, U+17B5, U+2800, U+3164, U+FFA0, U+13441, and U+13442 in
+plug-in strings and object keys to visible `\\uNNNN` or
+supplementary `\\UNNNNNNNN` text. Core doubles caller-supplied backslashes
+before conversion, so literal escape-looking values and keys remain distinct
+from actual unsafe characters in canonical JSON and its digest. This property
+rule covers the complete Unicode TAG block and future unassigned invisible
+code points. U+16FE4 KHITAN SMALL SCRIPT FILLER
+remains valid as a legitimate cluster-layout control inside visibly anchored
+text. Combining grapheme joiner, unregistered or misplaced variation
+selectors, U+FFFC OBJECT REPLACEMENT CHARACTER, and private-use (`Co`) text
+may remain in a bounded source display label, but core makes each such
+character explicit in the AI-facing projection while preserving surrounding
+visible text. U+FE0E/U+FE0F remain raw only when the exact adjacent
+base-selector pair is registered in the vendored Unicode 15 emoji-variation
+table. Each pair inside a ZWJ sequence is evaluated independently;
+standalone, repeated-on-one-base, and unregistered selectors are escaped.
+Every selector remains rejected in identifiers.
+Plug-ins MUST NOT encode meaning only through invisible or private-use glyphs.
+
+The only durable-admission context exposed through `ArtifactInventory` is an
+optional caller-supplied node hint and bounded JSON import metadata. The
+headless command names these `--node-hint` and `--metadata-json`; HTTP names
+them `X-Node-Hint` and `X-Import-Metadata`. Probe and parsing receive the same
+values. Core does not mix tenant/project/workspace, fixture/import, principal,
+queue, or authorization coordinates into that metadata.
+
+Cross-node exact matching follows the same division. A node or federation
+plug-in declares a bounded matcher identity, type-preserving opaque key,
+evidence, and payload meaning. Core's `exact_match_claims()` groups only exact
+keys and emits bounded cross-partition candidates with
+matched/ambiguous/unmatched state; it accepts at most 100,000 claims by
+default and materializes at most 1,000 candidate pairs unless the caller sets
+smaller or explicitly bounded limits. The exact non-configurable ceilings are
+100,000 input claims and 100,000 materialized candidates; both
+`max_claims` and `max_candidates` may be set from zero through that ceiling,
+and a larger request fails before grouping/materialization. Retained claim
+payload, evidence, and provenance must be bounded JSON-safe values. Core's
+`corroborate_events()` emits
+independent facts only from explicit causal links, exact shared source-record
+or resource identity, and uncertain time ordering. Core MUST NOT infer a match
+from labels, similar strings, close timestamps, or vendor payload fields, and
+the caller—not the utility—owns policy aggregation.
+
+Generic evidence and provenance supplied to `ExactMatchClaim`,
+`ExplicitCausalLink`, `ResolvedEventRef`, or `CorroborationFact` are value
+snapshots, not shared object references. Core validates and recursively
+detaches their bounded JSON containers at construction and snapshots resolved
+events again when `corroborate_events()` begins. Plug-ins must compare values,
+not Python object identity, and must not expect a later mutation of a supplied
+dictionary or list to rewrite a match result or hashed report.
+
+Plug-ins may import the complete reusable construction/result vocabulary from
+`router_dump_analyzer`: `MatcherId`, `ExactMatchClaim`,
+`ExactMatchCandidate`, `ExactMatchGroup`, `ExactMatchResult`,
+`ExactMatchState`, `EventIdentity`, `SourceRecordIdentity`,
+`ExplicitCausalLink`, `ResolvedEventRef`, `CorroborationFact`,
+`CorroborationOutcome`, `CorroborationReasonCode`, `TemporalRelation`, and
+`CorroborationError`, plus both functions. Do not reach into
+`router_dump_analyzer.corroboration` for these public types.
+
+The implemented local store/queue is transactional and restart-recoverable.
+Its durable `ControlPlane`, API-only server, and headless command execute
+plug-in probe and ingestion in deadline-bounded, killable spawned children.
+`router-dump-server` fixes its repeatable installed-entry-point or direct-module
+allowlist at construction, requires a host-owned identity resolver (or the
+loopback trusted-header development adapter), and mounts no plug-in-owned
+routes, analysis runtime, frontend, or assets. This is fault
+isolation, not a plug-in sandbox, distributed queue, authentication layer,
+authorization service, or TLS endpoint. Exact operator routes and limits are
+documented in
+[`control-plane.md`](control-plane.md); none is an extension point for a
+plug-in.
 
 ## 2. Capability boundary
 
@@ -300,6 +438,9 @@ rejects symbolic-link/junction components, non-regular archive members, unsafe
 or non-portable names, duplicate/case-fold-colliding names, and quota
 violations. Its default limits are 10,000 artifacts, 32 path components, 512
 MiB per artifact, 2 GiB total expanded bytes, and a 1,000:1 compression ratio.
+Durable candidate probing and the later parser run use the same
+`ArtifactLimits` instance from the registered `IngestionCoordinator`; selection
+never substitutes a looser reader default.
 The plug-in receives opaque logical artifact UUIDs and portable names through
 `DumpInventory`; `open_binary()` returns a new read-only stream, while
 `materialize_private_path()` and `materialize_private_tree()` return
@@ -321,6 +462,22 @@ unsupported value types, undeclared schema references, invalid observation
 bounds, evidence outside the selected input, wrong output classes, and
 non-recoverable diagnostics. It does not coerce, truncate, stringify, or partly
 publish an invalid output.
+
+Every core-declared temporal nanosecond coordinate is an exact signed `int64`
+(`-2^63` through `2^63-1`), or `None` only where its type explicitly permits
+unknown time. This includes source, evidence, and CTF timestamps; mutation,
+observation, and validity bounds; `AbsoluteTimeSelector.time_ns`;
+`RelativeToWatermarkSelector.offset_ns`; reconstruction watermark and resolved
+basis bounds; topology and connector validity; and capability outputs.
+Uncertainty values and paired bounds must remain valid inside that same range.
+
+`DomainEvent.timestamp_uncertainty_ns` is either absent or an exact integer
+from zero through `2^63-1`, and uncertainty cannot exist without a timestamp.
+The complete `timestamp_ns ± timestamp_uncertainty_ns` interval must also fit
+signed `int64`. Public constructors enforce their local contract for authors,
+and the ingestion host revalidates the complete nested output so a forged or
+subsequently mutated dataclass cannot poison a durable revision and fail only
+when a report is read.
 
 When a deployment supplies a core `TraceDecoder`, the coordinator consumes its
 decoder diagnostics and
@@ -479,6 +636,11 @@ Absolute and relative external queries use core-owned temporal selector types:
   negative offset from the latest complete `ReconstructionWatermark` for the
   exact `WatermarkScope(node_id, status_perspective_id,
   topology_projection_id)`.
+
+Both selector coordinates use the signed-`int64` rule above. Relative selector
+resolution also performs checked arithmetic: if `watermark + offset_ns` would
+leave the signed-64 range, the query fails closed instead of wrapping or
+silently changing the requested instant.
 
 A watermark is not the greatest event timestamp. It means reconstruction is
 complete through that point for exactly the named node, status perspective, and
@@ -1170,26 +1332,93 @@ reserves tagged objects:
 
 Map keys are strings and canonical output sorts them. Reject non-finite floats,
 invalid UTF-8 text, excessive depth, and oversized property values. Arrow carries
-timestamps as signed `int64`; public JSON APIs encode nanoseconds and other
-unsafe 64-bit integers as decimal strings. This conversion is owned by the core,
-not reimplemented differently by each plugin.
+declared timestamps as signed `int64`; public JSON APIs encode core-owned
+nanoseconds and other unsafe 64-bit integers as decimal strings. This conversion
+is owned by the core, not reimplemented differently by each plugin. A key ending
+in `_ns` inside an opaque plug-in mapping is not thereby a core timestamp: the
+correlation-report wire preserves that key's bounded JSON value and type.
 
 ## 5. Version selection
 
 Probe results contain confidence and reasons, but confidence is not permission to
 guess. Each result also carries the plug-in-owned `match_kind` (`exact`,
 `compatible`, or `none`); the core does not parse or compare vendor software
-version strings. The core policy should be:
+version strings. In the implemented durable queue, `none` is excluded; no
+remaining candidate fails the import; exactly one remaining candidate is
+selected only when `auto_select` is enabled; and every multi-candidate set
+waits for an explicit choice unless the caller supplied a preferred plug-in ID
+that matched exactly once. Confidence orders candidates but never selects
+among several candidates.
 
-1. One exact platform/version match: select it.
-2. Multiple exact matches: fail as ambiguous unless configuration resolves it.
-3. Only compatible-range matches: show candidates and require operator choice.
-4. No match: keep the import at `PROBED` with diagnostics.
+`validate_probe_report()` is the single complete executable contract at every
+boundary and delegates its optional result to `validate_probe_result()`.
+Confidence is a finite number from `0` through `1`. `reasons` contains 1 to 128
+non-empty strings of at most 1,024 characters. Optional `detected_platform` and
+`detected_software_version` strings contain 1 to 256 characters. Probe
+diagnostics are exact `PluginDiagnostic` values with plug-in origin, probe
+stage, bounded code/message/evidence, and evidence restricted to the probed
+inventory. The same `validate_plugin_diagnostic()` contract is reused by
+parser ingestion and optional-capability execution, with each runtime adding
+only its contextual aggregate budgets. NUL is rejected. A forged or mutated
+dataclass is revalidated by the host and process parent; author validation and
+durable ingestion do not carry separate field bounds.
 
-Persist the candidate-set/inventory hash with the exact selected plugin ID,
-version, distribution hash, and configuration hash. Selection and resume calls
-are idempotent; a stale or concurrent choice is rejected. Resuming validates the
-durable stage and does not reuse partial output created by another plugin build.
+Core persists the sorted candidate-set hash with the exact selected plug-in ID,
+version, and executable identity. A trusted loader may register an immutable
+package/artifact digest. Otherwise core fingerprints the defining import scope.
+A regular package uses its first regular ancestor only when no namespace
+ancestor precedes it. If any PEP 420 namespace precedes the defining module,
+the first namespace ancestor is the boundary even when a later component is a
+regular package. Every one of that namespace portion's runtime `__path__`
+search locations participates in import-precedence order. A runtime search path
+that no longer contains the defining module fails closed rather than narrowing
+to one file. Both
+forms use `package-sha256:<digest>` over a deterministic, bounded sequence of
+filesystem entries. A genuine top-level module has no package scope and uses
+the distinct `module-sha256:<digest>` identity over that module file; core never labels a
+one-file fallback as a package identity. Registry-derived package and module
+identities are recalculated immediately before probe and ingestion.
+Sourceless `.pyc`/`.pyo` modules have no core-derived identity: Python bytecode
+may embed a build-host source path, so hashing it would violate relocation
+stability. A trusted loader MUST provide an immutable artifact digest if such a
+deployment is intended for durable execution.
+
+The bounds are shared across every search location: 4,096 fingerprinted
+entries (regular files, ordinary directories, or aliases), 8,192 examined
+paths, 32 MiB per file, 128 MiB total, and 4,096 UTF-8 bytes per relative path.
+Empty directories participate because they can change namespace imports and
+resource-existence checks. Each file read is capped at its opened-handle size
+plus a one-byte growth sentinel; handle and path identities must remain stable,
+so concurrent growth cannot consume past the declared limits. Search-root
+ordering is encoded without host paths, so
+relocation does not change an identity while import-precedence changes do.
+The first namespace ancestor is a deliberately conservative boundary so a
+parent-relative helper cannot escape the identity. Authors who need a narrower
+scope should publish the exported plug-in and its helpers under a top-level
+regular package rather than below a shared namespace.
+Contained symbolic-link or
+Windows-junction aliases are recorded by package-relative target but never
+traversed; their canonical targets are fingerprinted normally. This makes
+contained cycles finite and installation-path independent. Aliases that
+escape the package root, changing files, and over-bound packages fail closed.
+Actual VCS/cache directories are pruned before traversal. The basename is not
+a general exemption: a regular file or contained alias named `.git`, `.hg`,
+`.svn`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, or `.ruff_cache`
+participates in identity, and an escaping alias with such a name still fails
+closed. Registries fail closed by default when no executable file is
+inspectable. A compatibility-only local/test embedding may explicitly pass
+`allow_manifest_identity=True`; the headless CLI and every durable
+`ControlPlane` reject that fallback before state is created.
+
+Explicit selection requires an idempotency header and the client must echo all
+four returned values. Core durably binds the scope, key, request digest, and
+selected import. Replaying the exact request returns the current descriptor
+even after the state advances; reusing a key for another request is rejected.
+A fresh key may confirm the same stored exact selection but cannot change it.
+Resume is allowed only from a failed durable job within its attempt budget. It
+re-enters fixture admission or revision publication when that exact operation
+was already staged and never reuses partial output created by another
+registered identity.
 
 Composition is useful: a family plug-in may provide common declarative artifact
 locators and status parsers, while a release adapter overrides resource mappings
@@ -1197,14 +1426,48 @@ or reducers. Archive recognition, traversal, materialization, and quota
 enforcement remain core operations; a plug-in never supplies an archive parser.
 The current reader supports one regular file, directory, tar, or ZIP container.
 Recursive nested-codec peeling and an outer-to-inner codec-chain record belong
-to the future production ingestion pipeline, not the current runtime-v2
-contract. The final bundle still has one recorded, reproducible manifest/hash.
+to a future nested-codec extension, not the current runtime-v2 or durable
+ingestion contract. The final bundle still has one recorded, reproducible
+manifest/hash.
 
 ## 6. Process and security model
 
-The current local runtime executes an installed plug-in in-process. The
-plug-in is therefore trusted application code, not a sandboxed parser, while
-the dump remains hostile input. Its executable boundary currently provides:
+The plug-in remains trusted application code, not a sandboxed parser, while
+the dump remains hostile input. The optional durable profile uses
+transactional SQLite queue claims, renewable fenced leases, heartbeats, and
+restart recovery. Queue coordination workers are application threads, but
+both the complete allowlisted probe and selected ingestion run in a fresh
+child created with Python's `spawn` start method. `DurableIngestionPipeline`,
+the durable `ControlPlane`, `router-dump-server`, and `router-dump-ingest`
+default to this process mode. An embedding may explicitly select `inline` only
+for trusted local/test code. Inline execution is synchronous and deliberately
+makes no timeout or
+bounded-shutdown promise; core does not create an unkillable helper thread and
+misreport its queue wait as cancellation. Only process mode is a killable fault
+boundary.
+
+The default child deadline is 300 seconds, validated within 0.05 through
+86,400 seconds. It covers child startup, plug-in execution, bounded result
+transfer, and clean exit; the headless command caps it to the command's
+per-import timeout. On timeout core terminates, waits two seconds, kills if
+needed, waits two more seconds, and reaps the child. The import records
+`plugin_execution_timeout`. Startup, crash, invalid child protocol, or
+reported execution failures record `plugin_execution_failed`. Any partial
+ingestion spool file is removed and no partial revision is published.
+
+Child IPC is canonical JSON metadata bounded to 1 MiB. The ingestion child
+writes its canonical dataset into one unique parent-selected spool path and
+returns revision/node identity, SHA-256, byte size, and counts. The parent
+renews the fenced lease, verifies regular-file status, size, and digest, then
+content-addresses and publication-stages the dataset. Registry-derived
+package identities are re-hashed inside the child immediately before probe or
+ingestion. Loader-supplied immutable identities remain trusted loader
+assertions.
+
+The plug-in and custom coordinator object graph MUST be importable and
+spawn-picklable. A child process is a killable fault boundary, not a security
+sandbox: it inherits the host user's filesystem, network, environment, and OS
+privileges. The executable boundary currently also provides:
 
 - Read-only selected artifact handles.
 - Session-private scratch copies bounded by the artifact quotas.
@@ -1213,12 +1476,14 @@ the dump remains hostile input. Its executable boundary currently provides:
   validation boundaries.
 - Only core may normalize, publish, or persist validated output.
 
-Production deployment MUST add disposable Linux workers or containers per job
-or bounded job group, no network/secrets/database socket/host paths, and CPU,
-memory, file, child-process, output, inode, and wall-time limits. Native
-Babeltrace failures must terminate only that worker. Worker isolation and a
-built-in/default CTF decoder are not implemented by the current runtime-v2
-slice.
+Production deployment MUST add disposable, hardened Linux workers or
+containers per job or bounded job group, no
+network/secrets/database socket/host paths, and CPU, memory, file,
+child-process, output, inode, and wall-time limits. Native Babeltrace failures
+must terminate only that worker. The shipped child-process boundary supplies
+kill/reap and a wall deadline but not those sandbox/resource controls; a
+built-in/default CTF decoder is also not implemented by the current
+runtime-v2 slice.
 
 `ArtifactReader.materialize_private_path()` supports a single native input;
 `materialize_private_tree()` reconstructs a selected logical subtree for
@@ -1657,6 +1922,12 @@ router-dump-plugin-validate ENTRY_POINT --artifact REPRESENTATIVE_PATH --node-hi
 This is a structural smoke test, not a substitute for the following
 device-semantic cases.
 
+The command's closed prose remains exact, while every plug-in/loader-owned
+fragment is projected through the shared bounded public-text policy before it
+is printed. Oversized text, probable host or traversal paths, unsafe invisible
+text, and ambiguous display characters cannot leak through validator stdout;
+plug-ins MUST use structured diagnostics rather than parse exception prose.
+
 ### Probe and input discovery
 
 - Exact version, adjacent version, ambiguous version, and missing manifest.
@@ -1796,6 +2067,14 @@ Every ordinary parser plug-in additionally proves:
   identity; and
 - the core-owned runtime-v2 session serves its normalized `/v1/workspace` while
   unsupported temporal/topology/route providers remain `None`.
+
+The same representative fixture SHOULD also pass once through
+`router-dump-ingest` with the plug-in as the explicit allowlist. That smoke
+proves queue-time probe/discovery/parser determinism and immutable catalog
+publication; it does not require the plug-in to implement or inspect any
+control-plane object. Core's own durable contract suites cover tenant scope,
+idempotency, optimistic versions, leases/recovery, sessions/snapshots,
+annotations, reports, and HTTP translation.
 
 The repository example owns a compact heterogeneous corpus:
 

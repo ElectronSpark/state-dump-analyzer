@@ -4,8 +4,10 @@ param(
     [int]$Port = 8765,
     [string]$BindAddress = "127.0.0.1",
     [string]$FrontendDir = "",
+    [string]$ControlPlaneDir = "",
     [switch]$NoBrowser,
     [switch]$ApiOnly,
+    [switch]$TrustControlPlaneHeaders,
     [switch]$RebuildFixture,
     [switch]$ValidateFixture
 )
@@ -20,6 +22,12 @@ else {
     (Resolve-Path -LiteralPath $FrontendDir).Path
 }
 $FrontendManifest = Join-Path $FrontendRoot "frontend-manifest.json"
+$ControlPlaneRoot = if ([string]::IsNullOrWhiteSpace($ControlPlaneDir)) {
+    Join-Path $RepositoryRoot ".runtime\control-plane"
+}
+else {
+    [System.IO.Path]::GetFullPath($ControlPlaneDir)
+}
 $FixtureAssemblyArgument = "demo\fixtures\router-state-lab-demo.tgz"
 $PreviousPythonUtf8 = $env:PYTHONUTF8
 $PreviousPythonIoEncoding = $env:PYTHONIOENCODING
@@ -122,10 +130,14 @@ try {
         "--input", $SelectedFixture,
         "--host", $BindAddress,
         "--port", [string]$Port,
-        "--frontend-dir", $FrontendRoot
+        "--frontend-dir", $FrontendRoot,
+        "--control-plane-dir", $ControlPlaneRoot
     )
     if ($ApiOnly) {
         $CoreArguments += "--api-only"
+    }
+    if ($TrustControlPlaneHeaders) {
+        $CoreArguments += "--trust-control-plane-headers"
     }
     if ($NoBrowser) {
         $CoreArguments += "--no-browser"
@@ -133,6 +145,7 @@ try {
 
     Write-Host "Using generated assembly: $SelectedFixture"
     Write-Host "Single-node and fabric views read this same generated assembly."
+    Write-Host "Durable sessions, imports, and review data: $ControlPlaneRoot"
     if ($ApiOnly) {
         Write-Host "Starting Router State Lab backend API at http://${BindAddress}:$Port"
         Write-Host "Run 'npm --prefix frontend run serve -- --backend http://${BindAddress}:$Port' in another terminal for the split frontend."

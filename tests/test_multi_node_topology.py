@@ -16,11 +16,11 @@ from tests.support.generated_demo import (
     generated_demo_application,
     generated_demo_runtime_session,
 )
+
 configure_generated_demo_for_tests()
 
-from rsl_demo_plugin.data import (
-    REVISION_ID,
-)
+from rsl_demo_plugin.topology_contract import DEMO_TOPOLOGY_ID
+
 from router_dump_analyzer.multi_node_topology import (
     MultiNodeTopologyRequestError,
     MultiNodeTopologyService,
@@ -28,10 +28,10 @@ from router_dump_analyzer.multi_node_topology import (
     _status_at,
     _status_window_at,
 )
+from router_dump_analyzer.plugin_api import FederationMatchState
 from router_dump_analyzer.topology_core import (
     resolve_connectivity_domain_reference,
 )
-from rsl_demo_plugin.topology_contract import DEMO_TOPOLOGY_ID
 
 _RUNTIME_SESSION = None
 
@@ -1349,6 +1349,98 @@ class MultiNodeTopologyTests(unittest.TestCase):
                 10,
                 "test-context",
             )
+
+    def test_inter_node_join_uses_typed_bounded_exact_matching(self) -> None:
+        demo = generated_topology_demo()
+
+        def claim(
+            node_id: str,
+            match_key: object,
+            resource_suffix: str,
+        ) -> dict[str, object]:
+            return {
+                "matcher_id": "test.connector.exact.v1",
+                "match_key": match_key,
+                "member_id": f"member:{node_id}",
+                "node_id": node_id,
+                "revision_id": "test-revision",
+                "resource_id": f"{node_id}/INTERFACE/{resource_suffix}",
+                "plugin_set_id": f"{node_id}.set",
+                "plugin_id": f"test.{node_id}",
+                "plugin_instance_id": f"test.{node_id}.instance",
+                "plugin_run_id": f"test.{node_id}.run",
+                "plugin_version": "1.0",
+                "projection_id": f"test.{node_id}.projection",
+                "status_perspective_id": f"test.{node_id}.observed",
+                "link_type": "ethernet",
+                "directed": False,
+                "combination_policy": "all_claims_usable",
+                "presentation": {"route_trace": "include"},
+                "usable": True,
+                "status": "up",
+                "exists": True,
+                "resolved_time": {
+                    "basis_kind": "absolute_time",
+                    "query_time_ns": "1000",
+                },
+                "deep_link": {"href": f"/node?node_id={node_id}"},
+            }
+
+        links, resolutions, unmatched, truncated = demo._join_claims(
+            [
+                claim("node-a", "1", "string"),
+                claim("node-b", "1", "string"),
+                claim("node-a", 1, "integer"),
+                claim("node-b", 1, "integer"),
+                claim("node-c", "ambiguous", "first"),
+                claim("node-a", "ambiguous", "second"),
+                claim("node-b", "ambiguous", "third"),
+                claim("node-a", "local-only", "unmatched"),
+            ],
+            100,
+            "test-context",
+        )
+
+        self.assertFalse(truncated)
+        self.assertEqual(len(links), 5)
+        self.assertEqual(len({link["link_id"] for link in links}), 5)
+        by_key = {
+            (item["match_key"], item["candidate_count"]): item
+            for item in resolutions
+        }
+        self.assertTrue(
+            {item["resolution"] for item in resolutions}.issubset(
+                {state.value for state in FederationMatchState}
+            )
+        )
+        self.assertEqual(by_key[("ambiguous", 3)]["resolution"], "ambiguous")
+        self.assertEqual(by_key[("local-only", 0)]["resolution"], "unresolved")
+        self.assertEqual(len(unmatched), 1)
+        # String "1" and integer 1 have the same display text but remain two
+        # exact-match groups and therefore never create cross-type candidates.
+        self.assertEqual(
+            sum(
+                item["candidate_count"]
+                for item in resolutions
+                if item["match_key"] == "1"
+            ),
+            2,
+        )
+
+        limited_links, limited_resolutions, _unmatched, limited = (
+            demo._join_claims(
+                [
+                    claim("node-c", "ambiguous", "first"),
+                    claim("node-a", "ambiguous", "second"),
+                    claim("node-b", "ambiguous", "third"),
+                ],
+                1,
+                "test-context",
+            )
+        )
+        self.assertTrue(limited)
+        self.assertEqual(len(limited_links), 1)
+        self.assertEqual(limited_resolutions[0]["candidate_count"], 3)
 
     def test_topology_basis_is_strict_and_canonical(self) -> None:
         time_ns = 1_759_680_005_000_000_000

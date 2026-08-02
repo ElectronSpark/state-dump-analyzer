@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import threading
 import webbrowser
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
 
 from .plugin_loading import load_plugin_entry_point, load_plugin_module
+from .public_text import bounded_public_error_detail
 from .runtime import (
     RuntimeApplicationFactory,
     RuntimeApplicationRequest,
@@ -17,9 +20,9 @@ from .runtime import (
     require_plugin_runtime,
 )
 
-
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+_CLI_ERROR_FALLBACK = "analyzer configuration or startup failed"
 
 
 def _port(value: str) -> int:
@@ -30,10 +33,36 @@ def _port(value: str) -> int:
             "port must be an integer from 1 through 65535"
         ) from error
     if not 1 <= port <= 65535:
-        raise argparse.ArgumentTypeError(
-            "port must be an integer from 1 through 65535"
-        )
+        raise argparse.ArgumentTypeError("port must be an integer from 1 through 65535")
     return port
+
+
+def _add_repeatable_plugin_allowlist_arguments(
+    parser: argparse.ArgumentParser,
+) -> None:
+    """Add the shared installed-or-module plug-in allowlist selector."""
+
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument(
+        "--plugin",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "allowlisted installed router_dump_analyzer.plugins entry point; "
+            "repeat to allow multiple candidates"
+        ),
+    )
+    selection.add_argument(
+        "--plugin-module",
+        action="append",
+        default=[],
+        metavar="PACKAGE[:ATTRIBUTE]",
+        help=(
+            "allowlisted direct plug-in module; ATTRIBUTE defaults to plugin; "
+            "repeat to allow multiple candidates"
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,6 +108,38 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do not open the analyzer URL in the default browser",
     )
+    parser.add_argument(
+        "--control-plane-dir",
+        type=Path,
+        help=(
+            "enable durable project/workspace/session, review, and upload "
+            "APIs using this state directory"
+        ),
+    )
+    parser.add_argument(
+        "--trust-control-plane-headers",
+        action="store_true",
+        help=(
+            "development only: trust caller-supplied tenant/principal headers; "
+            "required when exposing the built-in control plane off loopback"
+        ),
+    )
+    parser.add_argument(
+        "--control-plane-retention-policy",
+        type=Path,
+        help=(
+            "versioned retention-policy JSON used for ingestion quotas and "
+            "maintenance; requires --control-plane-dir"
+        ),
+    )
+    parser.add_argument(
+        "--expose-api-docs",
+        action="store_true",
+        help=(
+            "explicitly expose /docs, /redoc, and /openapi.json; allowed "
+            "only on a loopback listener"
+        ),
+    )
     return parser
 
 
@@ -92,6 +153,10 @@ class LaunchConfiguration:
     no_browser: bool
     frontend_dir: Path | None = None
     api_only: bool = False
+    control_plane_dir: Path | None = None
+    trust_control_plane_headers: bool = False
+    control_plane_retention_policy: Path | None = None
+    expose_api_docs: bool = False
 
 
 def parse_args(argv: Sequence[str] | None = None) -> LaunchConfiguration:
@@ -99,6 +164,15 @@ def parse_args(argv: Sequence[str] | None = None) -> LaunchConfiguration:
     host = str(namespace.host).strip()
     if not host:
         build_parser().error("--host must be non-empty")
+    if namespace.expose_api_docs and not _is_loopback_host(host):
+        build_parser().error("--expose-api-docs is allowed only on a loopback host")
+    if (
+        namespace.control_plane_retention_policy is not None
+        and namespace.control_plane_dir is None
+    ):
+        build_parser().error(
+            "--control-plane-retention-policy requires --control-plane-dir"
+        )
     return LaunchConfiguration(
         plugin_name=namespace.plugin,
         plugin_module=namespace.plugin_module,
@@ -108,7 +182,21 @@ def parse_args(argv: Sequence[str] | None = None) -> LaunchConfiguration:
         no_browser=namespace.no_browser,
         frontend_dir=namespace.frontend_dir,
         api_only=namespace.api_only,
+        control_plane_dir=namespace.control_plane_dir,
+        trust_control_plane_headers=namespace.trust_control_plane_headers,
+        control_plane_retention_policy=(namespace.control_plane_retention_policy),
+        expose_api_docs=namespace.expose_api_docs,
     )
+
+
+def _is_loopback_host(value: str) -> bool:
+    normalized = value.strip().removeprefix("[").removesuffix("]")
+    if normalized.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 
 
 def _load_selected_plugin(
@@ -125,7 +213,16 @@ def _load_selected_plugin(
 
 def _browser_url(host: str, port: int) -> str:
     browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    if ":" in browser_host and not browser_host.startswith("["):
+        browser_host = f"[{browser_host}]"
     return f"http://{browser_host}:{port}"
+
+
+def _listener_authority(host: str, port: int) -> str:
+    normalized = host.strip().removeprefix("[").removesuffix("]")
+    if ":" in normalized:
+        normalized = f"[{normalized}]"
+    return f"{normalized}:{port}"
 
 
 def _schedule_browser(
@@ -156,6 +253,8 @@ def run(
     server_runner: Callable[..., None] = _run_uvicorn,
     browser_opener: Callable[[str], Any] = webbrowser.open,
 ) -> None:
+    if configuration.expose_api_docs and not _is_loopback_host(configuration.host):
+        raise ValueError("API documentation may be exposed only on a loopback host")
     input_path = configuration.input_path.expanduser().resolve()
     if not input_path.exists():
         raise FileNotFoundError(f"analyzer input does not exist: {input_path}")
@@ -166,32 +265,91 @@ def run(
     )
     runtime = require_plugin_runtime(plugin)
     factory = application_factory or create_runtime_application
-    application = factory(
-        RuntimeApplicationRequest(
-            runtime=runtime,
-            input_path=input_path,
-            frontend_root=(
-                configuration.frontend_dir.expanduser().resolve()
-                if configuration.frontend_dir is not None
-                else None
-            ),
-            serve_frontend=not configuration.api_only,
+    control_plane = None
+    identity_resolver = None
+    if configuration.control_plane_dir is not None:
+        from .control_plane import ControlPlane
+        from .ingestion_pipeline import PluginRegistry
+        from .maintenance_cli import load_policy
+        from .web.control_plane_api import TrustedHeaderIdentityResolver
+
+        if (
+            not _is_loopback_host(configuration.host)
+            and not configuration.trust_control_plane_headers
+        ):
+            raise RuntimeError(
+                "the built-in trusted-header control plane may bind only to "
+                "loopback; use an authenticated ASGI deployment, or pass "
+                "--trust-control-plane-headers explicitly for a controlled "
+                "development network"
+            )
+
+        retention_policy = (
+            load_policy(configuration.control_plane_retention_policy).ingestion
+            if configuration.control_plane_retention_policy is not None
+            else None
         )
-    )
-    if not configuration.no_browser:
-        _schedule_browser(
-            (
-                f"{_browser_url(configuration.host, configuration.port)}/docs"
-                if configuration.api_only
-                else _browser_url(configuration.host, configuration.port)
+        control_plane = ControlPlane(
+            configuration.control_plane_dir.expanduser().resolve(),
+            registry=PluginRegistry(
+                (plugin,),
+                require_executable_identity=True,
             ),
-            browser_opener,
+            retention_policy=retention_policy,
         )
-    server_runner(
-        application,
-        host=configuration.host,
-        port=configuration.port,
-    )
+        authority = _listener_authority(
+            configuration.host,
+            configuration.port,
+        )
+        authorities = (
+            (authority, authority.rsplit(":", 1)[0])
+            if configuration.port == 80
+            else (authority,)
+        )
+        identity_resolver = TrustedHeaderIdentityResolver(
+            allowed_hosts=authorities,
+            allowed_origins=tuple(
+                f"http://{allowed_authority}" for allowed_authority in authorities
+            ),
+        )
+    try:
+        application = factory(
+            RuntimeApplicationRequest(
+                runtime=runtime,
+                input_path=input_path,
+                frontend_root=(
+                    configuration.frontend_dir.expanduser().resolve()
+                    if configuration.frontend_dir is not None
+                    else None
+                ),
+                serve_frontend=not configuration.api_only,
+                control_plane=control_plane,
+                control_plane_identity_resolver=identity_resolver,
+                manage_control_plane_lifecycle=control_plane is not None,
+                expose_api_docs=configuration.expose_api_docs,
+            )
+        )
+        if not configuration.no_browser:
+            _schedule_browser(
+                (
+                    f"{_browser_url(configuration.host, configuration.port)}/docs"
+                    if configuration.api_only and configuration.expose_api_docs
+                    else (
+                        f"{_browser_url(configuration.host, configuration.port)}/health"
+                        if configuration.api_only
+                        else _browser_url(configuration.host, configuration.port)
+                    )
+                ),
+                browser_opener,
+            )
+        server_runner(
+            application,
+            host=configuration.host,
+            port=configuration.port,
+        )
+    finally:
+        if control_plane is not None:
+            control_plane.close()
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -200,6 +358,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     host = str(namespace.host).strip()
     if not host:
         parser.error("--host must be non-empty")
+    if namespace.expose_api_docs and not _is_loopback_host(host):
+        parser.error("--expose-api-docs is allowed only on a loopback host")
+    if (
+        namespace.control_plane_retention_policy is not None
+        and namespace.control_plane_dir is None
+    ):
+        parser.error("--control-plane-retention-policy requires --control-plane-dir")
     configuration = LaunchConfiguration(
         plugin_name=namespace.plugin,
         plugin_module=namespace.plugin_module,
@@ -209,11 +374,19 @@ def main(argv: Sequence[str] | None = None) -> None:
         no_browser=namespace.no_browser,
         frontend_dir=namespace.frontend_dir,
         api_only=namespace.api_only,
+        control_plane_dir=namespace.control_plane_dir,
+        trust_control_plane_headers=namespace.trust_control_plane_headers,
+        control_plane_retention_policy=(namespace.control_plane_retention_policy),
+        expose_api_docs=namespace.expose_api_docs,
     )
     try:
         run(configuration)
     except (LookupError, OSError, RuntimeError, TypeError, ValueError) as error:
-        parser.exit(1, f"router-dump-analyzer: error: {error}\n")
+        detail = bounded_public_error_detail(
+            str(error),
+            fallback=_CLI_ERROR_FALLBACK,
+        )
+        parser.exit(1, f"router-dump-analyzer: error: {detail}\n")
 
 
 if __name__ == "__main__":

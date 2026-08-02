@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import argparse
 import mimetypes
+from collections.abc import Iterable
 from dataclasses import dataclass
 from importlib import metadata
 from itertools import islice
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable
+from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from .plugin_api import (
@@ -23,6 +24,8 @@ from .plugin_api import (
     PLUGIN_ENTRY_POINT_GROUP,
     AnalyzerPluginBase,
     ArtifactInfo,
+    DiagnosticOrigin,
+    DiagnosticStage,
     DumpInventory,
     InputSpec,
     PluginCapability,
@@ -30,14 +33,15 @@ from .plugin_api import (
     PluginManifest,
     PluginSchema,
     ProbeMatchKind,
-    ProbeReport,
-    ProbeResult,
     ReconstructionSupport,
+    validate_plugin_diagnostic,
+    validate_probe_report,
 )
 from .plugin_loading import load_plugin_entry_point
-
+from .public_text import bounded_public_error_detail
 
 _MAX_DISCOVERY_OUTPUTS = 1_000
+_MAX_PUBLIC_DIAGNOSTIC_CHARACTERS = 1_024
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +71,45 @@ def _has_text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _public_dynamic_text(value: object, *, fallback: str) -> str:
+    """Project one plug-in/caller-owned fragment for public CLI display.
+
+    Closed validator prose stays outside this helper so useful stable context
+    is never replaced merely because one untrusted fragment is unsafe.
+    """
+
+    try:
+        rendered = value if type(value) is str else str(value)
+    except Exception:  # noqa: BLE001 - hostile diagnostic rendering is data.
+        return fallback
+    return str(
+        bounded_public_error_detail(
+            rendered,
+            fallback=fallback,
+            maximum_characters=_MAX_PUBLIC_DIAGNOSTIC_CHARACTERS,
+        )
+    )
+
+
+def _public_dynamic_repr(value: object, *, fallback: str) -> str:
+    try:
+        rendered = repr(value)
+    except Exception:  # noqa: BLE001 - hostile diagnostic rendering is data.
+        return fallback
+    return _public_dynamic_text(rendered, fallback=fallback)
+
+
+def _public_exception_summary(error: Exception) -> str:
+    try:
+        summary = f"{type(error).__name__}: {error}"
+    except Exception:  # noqa: BLE001 - hostile exception rendering is data.
+        summary = ""
+    return _public_dynamic_text(
+        summary,
+        fallback="plug-in exception details unavailable",
+    )
+
+
 def _bounded_outputs(
     values: Iterable[InputSpec | PluginDiagnostic],
 ) -> tuple[tuple[InputSpec | PluginDiagnostic, ...], bool]:
@@ -92,19 +135,27 @@ def _validate_inventory_calls(
         except Exception as error:  # noqa: BLE001 - report plug-in boundary errors.
             errors.append(
                 f"probe() must handle {label}; "
-                f"raised {type(error).__name__}: {error}"
+                f"raised {_public_exception_summary(error)}"
             )
         else:
-            if not isinstance(report, ProbeReport):
-                errors.append(f"probe({label}) must return ProbeReport")
-            elif report.result is not None and not isinstance(
-                report.result,
-                ProbeResult,
-            ):
-                errors.append(f"probe({label}) returned an invalid result")
-            elif require_match and (
-                report.result is None
-                or report.result.match_kind == ProbeMatchKind.NONE
+            inventory_artifact_ids = {
+                artifact.artifact_id for artifact in inventory.artifacts
+            }
+            try:
+                valid_report = validate_probe_report(
+                    report,
+                    artifact_ids=inventory_artifact_ids,
+                )
+            except ValueError as error:
+                valid_report = None
+                detail = _public_dynamic_text(
+                    error,
+                    fallback="invalid report details unavailable",
+                )
+                errors.append(f"probe({label}) returned an invalid report: {detail}")
+            if valid_report is not None and require_match and (
+                valid_report.result is None
+                or valid_report.result.match_kind == ProbeMatchKind.NONE
             ):
                 errors.append(
                     f"probe({label}) returned no match; use a representative "
@@ -119,7 +170,7 @@ def _validate_inventory_calls(
     except Exception as error:  # noqa: BLE001 - report plug-in boundary errors.
         errors.append(
             f"locate_inputs() must handle {label}; "
-            f"raised {type(error).__name__}: {error}"
+            f"raised {_public_exception_summary(error)}"
         )
         return
 
@@ -138,7 +189,22 @@ def _validate_inventory_calls(
 
     inventory_artifact_ids = {artifact.artifact_id for artifact in inventory.artifacts}
     for index, output in enumerate(outputs):
-        if isinstance(output, PluginDiagnostic):
+        if type(output) is PluginDiagnostic:
+            try:
+                validate_plugin_diagnostic(
+                    output,
+                    label=f"locate_inputs({label}) output {index}",
+                    expected_origin=DiagnosticOrigin.PLUGIN,
+                    expected_stage=DiagnosticStage.LOCATE,
+                    artifact_ids=inventory_artifact_ids,
+                )
+            except ValueError as error:
+                errors.append(
+                    _public_dynamic_text(
+                        error,
+                        fallback="invalid plug-in diagnostic details unavailable",
+                    )
+                )
             continue
         if not isinstance(output, InputSpec):
             errors.append(
@@ -197,15 +263,26 @@ def validate_plugin(
             errors=("entry point must resolve to an object with a PluginManifest",),
         )
 
-    plugin_id = manifest.plugin_id if _has_text(manifest.plugin_id) else "<invalid-plugin-id>"
+    plugin_id = (
+        _public_dynamic_text(
+            manifest.plugin_id,
+            fallback="<invalid-plugin-id>",
+        )
+        if _has_text(manifest.plugin_id)
+        else "<invalid-plugin-id>"
+    )
     if not _has_text(manifest.plugin_id):
         errors.append("manifest.plugin_id must be a non-empty string")
     if not _has_text(manifest.plugin_version):
         errors.append("manifest.plugin_version must be a non-empty string")
     if manifest.core_api_version != CORE_PLUGIN_API_VERSION:
+        supplied_version = _public_dynamic_repr(
+            manifest.core_api_version,
+            fallback="<unavailable>",
+        )
         errors.append(
             "manifest.core_api_version "
-            f"{manifest.core_api_version!r} does not match core API "
+            f"{supplied_version} does not match core API "
             f"{CORE_PLUGIN_API_VERSION!r}"
         )
     if (
@@ -253,7 +330,7 @@ def validate_plugin(
             first_schema = describe()
             second_schema = describe()
         except Exception as error:  # noqa: BLE001 - report plug-in boundary errors.
-            errors.append(f"describe() raised {type(error).__name__}: {error}")
+            errors.append(f"describe() raised {_public_exception_summary(error)}")
         else:
             if not isinstance(first_schema, PluginSchema):
                 errors.append("describe() must return PluginSchema")
@@ -284,7 +361,10 @@ def validate_plugin(
         )
 
     custom_capabilities = sorted(
-        str(value)
+        _public_dynamic_text(
+            value,
+            fallback="<unavailable custom capability>",
+        )
         for value in manifest.capabilities
         if not isinstance(value, PluginCapability)
     )
@@ -404,7 +484,19 @@ def main(argv: list[str] | None = None) -> int:
                 if entry_point.dist is not None
                 else "<unknown distribution>"
             )
-            print(f"{entry_point.name}\t{distribution}\t{entry_point.value}")
+            name = _public_dynamic_text(
+                entry_point.name,
+                fallback="<invalid entry point>",
+            )
+            public_distribution = _public_dynamic_text(
+                distribution,
+                fallback="<invalid distribution>",
+            )
+            target = _public_dynamic_text(
+                entry_point.value,
+                fallback="<invalid target>",
+            )
+            print(f"{name}\t{public_distribution}\t{target}")
         return 0
     if not arguments.entry_point:
         _parser().error("provide ENTRY_POINT or use --list")
@@ -416,8 +508,12 @@ def main(argv: list[str] | None = None) -> int:
             node_hint=arguments.node_hint,
             metadata_items=arguments.metadata,
         )
-    except (LookupError, RuntimeError, TypeError, ValueError) as error:
-        print(f"ERROR: {error}")
+    except (LookupError, OSError, RuntimeError, TypeError, ValueError) as error:
+        detail = _public_dynamic_text(
+            error,
+            fallback="plug-in validation request failed",
+        )
+        print(f"ERROR: {detail}")
         return 2
 
     result = validate_plugin(
@@ -427,8 +523,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     for warning in result.warnings:
         print(f"WARNING: {warning}")
-    for error in result.errors:
-        print(f"ERROR: {error}")
+    for validation_error in result.errors:
+        print(f"ERROR: {validation_error}")
     if result.ok:
         print(f"OK: {result.plugin_id}")
         return 0

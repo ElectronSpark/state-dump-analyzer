@@ -80,4 +80,35 @@ npm --prefix frontend run serve -- --backend http://127.0.0.1:8876 --port 4174
 Use `npm --prefix frontend run check` to validate the manifest, local asset
 references, JavaScript syntax, single-source frontend boundary, and the
 framework-free helper tests under `frontend/tests/`, without installing
-packages.
+packages. `durable_review_controller.test.mjs` executes timeout/abort,
+pagination, stale-connection, mutation-lock, ambiguous-result reconciliation,
+atomic watermark restart, confirmed-marker replacement, persistent-journal
+reload/tamper/capacity recovery, and blocked-storage behavior against injected
+browser primitives. Source-text checks cover module wiring and HTML ownership
+only; production behavior is exercised through imported functions.
+`timeline_models.test.mjs` imports the same closed event outcome, state-change,
+effect-status, and mark classifiers used by `app.js`; those timeline decisions
+therefore have direct behavioral tests instead of depending on source-text
+inspection of the page entry point.
+The same executable suite captures the actual `fetch()` initialization to
+verify `Idempotency-Key` and `If-Match` propagation, and exercises current,
+stale, and failed-refresh `409` reconciliation paths. Durable POST creation,
+version-guarded PATCH/DELETE, and read-only report POST options are built by
+tested helpers: empty or malformed idempotency/version tokens fail before a
+request can be sent, and mutation ambiguity cannot depend on duplicated
+header spelling at individual UI call sites. The tested scoped adapter then
+binds tenant/principal headers and carries those helpers through the actual
+transport; retryable failures and both conditional mutation methods are
+exercised end to end with an injected `fetch` implementation. The unresolved
+mutation journal gives distinct writes distinct operation identities while an
+unchanged exact payload reuses its identity until reconciliation. The journal
+is validated and persisted across reload, bounded per scope and globally, and
+offers separate current-scope discard and warned all-scope reset actions.
+Operation identities are checked across every UI scope sharing the server's
+tenant/project/workspace review namespace, so a principal or revision change
+cannot hide a colliding stored identity.
+Annotation hydration reads every bounded page and probes the safety-cap
+boundary under one audit watermark. It restarts once on concurrent mutation,
+then fails visibly while preserving the last confirmed same-scope marker index
+instead of installing a partial one. Every guarded asynchronous read checks its
+immutable connection token both before and after the await.

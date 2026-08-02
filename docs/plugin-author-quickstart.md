@@ -22,14 +22,14 @@ The example plug-in:
    of the large demo's compatibility adapter; and
 8. passes the generic author validator and its own golden test.
 
-This repository is still a design/conformance demo. The validator proves the
-plug-in-facing package and protocol shape. The core owns the only web command
-and can load one installed or directly named plug-in at a time. For an ordinary
-parser plug-in, that command now builds a core-owned `runtime.v2` session from
-the standard hooks; authors do not add a path-opening runtime adapter. This is
-not yet a production upload, persistent-storage, or multi-plug-in selection
-coordinator. The demo publishes the same example through normal entry-point
-discovery and contains no application entry point.
+The validator proves the plug-in-facing package and protocol shape. The core
+owns both the web command and the durable headless ingestion command. For an
+ordinary parser plug-in, core builds `runtime.v2` from the standard hooks;
+authors do not add a path-opening runtime adapter. The optional single-host
+control plane can persist uploads and revisions and probe several allowlisted
+plug-ins, but this adds no tenant, queue, session, annotation, report, HTTP, or
+database hook to the plug-in contract. The demo publishes the same example
+through normal entry-point discovery and contains no application entry point.
 
 ## 1. Run the known-good example
 
@@ -44,6 +44,7 @@ router-dump-plugin-validate demo_router --artifact demo/fixtures/minimal-status.
 python -m unittest discover -s demo/tests -v
 python -m unittest tests.test_artifact_core tests.test_ingestion -v
 python -m unittest discover -s state-dump-generator/tests -p "test_runtime_v2_vectors.py" -v
+python -X utf8 -m router_dump_analyzer.pipeline_cli --plugin demo_router --state-dir .runtime/plugin-author-state --tenant author-smoke --project example --workspace first-run --input demo/fixtures/minimal-status.jsonl --node-hint router-1 --pretty
 ```
 
 The first command installs `router-dump-analyzer-core` with the optional web
@@ -58,13 +59,27 @@ The validator must end with:
 OK: demo.example-router
 ```
 
+Validator diagnostics preserve bounded safe plug-in detail, but core replaces
+oversized text, host/traversal paths, unsafe invisible text, and ambiguous
+display characters before writing to the terminal or CI log. Do not depend on
+private exception text as a machine-readable validator interface.
+
+Durable executable identity fingerprints every ordinary package file. Only an
+actual VCS/cache **directory** named `.git`, `.hg`, `.svn`, `__pycache__`,
+`.mypy_cache`, `.pytest_cache`, or `.ruff_cache` is pruned. A regular file or
+contained alias with one of those names still participates in identity; an
+escaping alias fails closed.
+
 The generator verification proves that the tiny JSONL vector exactly matches
 the plug-in-owned `CONFORMANCE_STATUS_RECORDS`; it is not a second hand-written
 mock dump. The two core tests execute safe artifact access and the standard
 hooks through the core-owned ingestion coordinator, including a `/v1/workspace`
 request for a parse-only plug-in. The standalone vector test checks the
-generator-independent temporal/identity expectations. Do not start a new
-implementation until these commands work unchanged.
+generator-independent temporal/identity expectations. The final command admits
+that same vector through the durable core queue, publishes one immutable
+catalog revision, and emits a bounded JSON result. Its
+`.runtime/plugin-author-state` directory is disposable local smoke state. Do not start
+a new implementation until these commands work unchanged.
 
 The browser bootstrap is core-owned. A node plug-in supplies normalized
 identity, descriptors, counts, time bounds, and capabilities; it does not
@@ -130,6 +145,11 @@ python -m pip install -e ".[web]"
 router-dump-analyzer --plugin demo_router --input demo/fixtures/router-state-lab-demo.tgz --no-browser
 python -m router_dump_analyzer --plugin-module rsl_demo_plugin --input demo/fixtures/router-state-lab-demo.tgz --no-browser
 ```
+
+Both launch forms leave `/openapi.json`, `/docs`, and `/redoc` absent by
+default. For local API exploration, add `--expose-api-docs` on a loopback
+listener. Core rejects that option for every non-loopback bind, including
+`0.0.0.0` and `::`.
 
 `--plugin` selects an installed entry-point name.
 `--plugin-module PACKAGE[:ATTRIBUTE]` imports a module-level instance directly;
@@ -247,7 +267,32 @@ are deliberately scoped to plug-in-owned containers such as `state`, `key`,
 `properties`, `attributes`, `before`, `after`, and `result`; they never delete
 a same-named core field such as an event's `action`, a resource's
 `resource_id`, or the workspace `revision_id`. Do not try to hide a core
-envelope field by declaring a colliding property name.
+envelope field by declaring a colliding property name. Conversely, names inside
+those opaque containers are not interpreted from their spelling: a plug-in key
+ending in `_ns` keeps its bounded JSON value and type in correlation reports.
+At the final AI-facing report boundary, core renders Unicode `Cc`, `Cn`, `Cs`,
+`Zl`, and `Zp` characters, every `Cf` character except U+200C ZWNJ and U+200D
+ZWJ, every `Zs` separator except ordinary ASCII space, and the assigned
+invisible or blank characters U+115F, U+1160, U+17B4, U+17B5, U+2800, U+3164,
+U+FFA0, U+13441, and U+13442 in every string and object key as visible `\\uNNNN` or
+supplementary `\\UNNNNNNNN` text. This applies
+recursively to opaque plug-in metadata and covers the complete Unicode TAG
+block. Existing backslashes are doubled before conversion, so a literal
+`\uNNNN`/`\UNNNNNNNN` value or object key never collapses onto the escaped
+form of an actual unsafe character. U+16FE4 KHITAN SMALL SCRIPT FILLER retains its legitimate cluster-layout
+semantics inside visibly anchored text. Combining grapheme joiner,
+unregistered or misplaced variation selectors, U+FFFC OBJECT REPLACEMENT
+CHARACTER, and private-use (`Co`) text remain valid in bounded source display
+labels, but the report renders those characters as visible escapes while
+preserving surrounding text. U+FE0E/U+FE0F remain raw only when paired with
+the immediately preceding base in Unicode's registered emoji-variation table;
+standalone/repeated selectors escape and every selector remains invalid in
+identities. Do not depend on private-use or invisible formatting as the sole
+semantic identity.
+Do not emit `provenance_class`: core assigns the closed report-only
+`CorrelationReportProvenanceClass` after separating plug-in facts, human
+assertions, and core corroboration. Your normalized facts still use the
+plug-in contract's `Provenance` enum.
 
 Keep public metadata typed. `evidence`, `provenance`, `unknown_fields`, and
 `incarnation` are bounded normalized envelopes, not extension dictionaries.
@@ -288,6 +333,20 @@ and route or packet explanation text.
 - a `ProbeResult` with confidence, reasons, detected values, and
   `ProbeMatchKind.EXACT` or `COMPATIBLE`.
 
+`ProbeResult` validates itself at construction, and the core's shared
+`validate_probe_report()` contract revalidates the complete report during
+author validation, durable selection, and direct ingestion. Confidence must be
+finite from `0` through `1`; provide 1 to 128 non-empty reasons of at most
+1,024 characters each. Optional detected platform and software-version strings
+are non-empty and at most 256 characters. Probe diagnostics use the same
+`validate_plugin_diagnostic()` field and evidence bounds as parser and optional
+capability diagnostics; they must have plug-in origin and probe stage. NUL is
+rejected everywhere. The durable selector also inventories with the exact
+`ArtifactLimits` configured on the registered ingestion coordinator, so a
+candidate cannot pass selection under looser artifact quotas and then fail
+every ingestion attempt. Do not rely on a value passing probing but failing
+later ingestion.
+
 An empty inventory is normal input and must not raise.
 
 Do not open artifacts, archives, or host paths during probing.
@@ -319,10 +378,12 @@ session closes, and must never be retained as application paths.
 
 The current reader accepts one regular file, directory, top-level tar, or
 top-level ZIP. It streams selected members and never calls `extractall()`;
-recursive nested-codec peeling is future work. The local runtime also imports
-installed plug-ins in-process, so plug-in code is trusted and is **not** a
-sandbox. Never load code from the dump, and do not mistake bounded
-artifact/output validation for production worker isolation.
+recursive nested-codec peeling is future work. Plug-in code is trusted and is
+**not** sandboxed. Durable control-plane probe and ingestion do run in
+killable, deadline-bounded child processes, but those children retain the host
+user's filesystem, network, environment, and OS privileges. Never load code
+from the dump, and do not mistake bounded artifact/output validation or this
+fault boundary for a hardened production sandbox.
 
 ### E. Parser
 
@@ -548,6 +609,109 @@ FastAPI, `APIRouter`, middleware, routes, page templates, assets, or browser
 code. The core creates all of those. A standard parser plug-in without this
 adapter is served through core-owned runtime v2.
 
+### Durable admission does not change the plug-in
+
+`router-dump-ingest` and the optional `/v1/control-plane` upload queue use the
+same `describe()`, `probe()`, `locate_inputs()`, and parser hooks. A deployment
+constructs an explicit `PluginRegistry`; uploaded bytes cannot install or
+select code outside that allowlist. Core records the complete deterministic
+probe set and, when selection is needed, requires the client to echo the
+probe-set hash plus your exact plug-in ID, version, and returned package
+identity. A trusted loader may supply an immutable artifact digest. Otherwise
+the durable CLI/server derives an executable digest from the complete bounded
+import scope and fails closed if it cannot do so. Packages use
+`package-sha256:<digest>`. If a PEP 420 namespace precedes your plug-in, all
+search locations of its first namespace ancestor participate even when your
+plug-in then enters a regular subpackage. A genuine top-level module uses
+`module-sha256:<digest>` and is never presented as a one-file package. Core
+does not derive identities from sourceless `.pyc`/`.pyo` files because their
+embedded build paths are not relocation-stable; a trusted loader must supply
+an immutable artifact digest for that deployment. Core recalculates either
+registry-derived identity immediately before execution.
+Programmatic
+registries have the same fail-closed default. A compatibility-only embedding
+must spell `PluginRegistry(..., allow_manifest_identity=True)` to enable a
+manifest-only fallback, and that registry is deliberately rejected before
+durable state is created.
+
+For ordinary entry-point packages this is automatic. Keep every package or
+namespace search root inspectable and stable while it is loaded: across the
+complete scope, at most 4,096 fingerprint entries (regular files, ordinary
+directories, or validated contained link/junction aliases), at most 8,192
+examined paths, 32 MiB per
+regular file, 128 MiB total, and portable relative paths. Generated caches and
+version-control directories are ignored. The first namespace ancestor is a
+deliberately conservative boundary so parent-relative helpers cannot escape the
+identity. For the narrowest durable identity, put the exported plug-in and its
+helpers under a top-level regular package rather than below a large shared
+namespace. Do
+not replace a package's runtime `__path__` after registration; adding a valid
+search root changes its executable identity, while dropping the defining root
+is rejected.
+
+The durable servers and headless command invoke both probe and ingestion in a
+fresh child created with Python's `spawn` start method. Keep the exported
+plug-in and any custom coordinator importable and spawn-picklable: define
+their classes/functions at module scope, avoid non-picklable captured state,
+and open files, sockets, native iterators, or thread-affine objects inside the
+called hook rather than retaining them on the plug-in object. The default
+child deadline is 300 seconds; `router-dump-ingest --timeout` may lower it.
+A timeout or crashed/invalid child fails the import without publishing a
+partial revision and removes its partial staged dataset.
+An embedding may explicitly choose synchronous `inline` execution only for
+trusted local/tests. Inline mode has no timeout or bounded-cancellation claim;
+process mode is the only killable boundary.
+
+Your plug-in must remain deterministic across a retry and must not write to the
+catalog, upload store, session store, review overlay, or HTTP response. It does
+not receive tenant/project/workspace, fixture/import, or principal identity and
+does not decide which user may select it. It receives only the same optional
+node hint and caller-supplied bounded import metadata during probe and parsing.
+The headless flags are `--node-hint` and `--metadata-json`; HTTP uses
+`X-Node-Hint` and JSON-object `X-Import-Metadata`. Core owns content
+addressing, idempotency, queue leases, progress, immutable publication,
+multi-revision sessions, human annotations, cross-node exact-match mechanics,
+and correlation-report envelopes.
+
+Before probing, core stages the complete fixture-admission request and
+operation ID. After parsing, it stages the complete
+revision-publication request and operation ID. A lost catalog response at
+either boundary is replayed exactly; publication replay does not invoke your
+plug-in again. Explicit selection is also a durable idempotent receipt, so the
+same key/request remains a valid retry after processing advances.
+Catalog admission/publication has a separate core-owned deadline and, in the
+production default, a killable spawned-process boundary. It does not interrupt
+your hook or expose a new hook; it bounds catalog/RPC work after plug-in output
+has been staged, retaining the exact outbox and pin when expiry leaves the
+external outcome ambiguous. This affects only the core/deployment publisher;
+it adds no plug-in method or state.
+
+To test durable admission for your package, replace `demo_router` and the
+fixture in the final command of step 1. Repeat `--plugin` to admit several
+installed candidates, or repeat `--plugin-module` during source development;
+the two selector forms are mutually exclusive. `--no-auto-select` should leave
+an applicable fixture in `awaiting_selection` and exit with status 2 rather
+than allowing the plug-in to choose itself. The full operator contract is in
+[`control-plane.md`](control-plane.md).
+
+To verify that your installed entry point can participate in the production
+API-only composition, start the core server with an explicit allowlist and a
+deployment identity resolver:
+
+```text
+router-dump-server --plugin demo_router --state-dir .runtime/plugin-server \
+  --trust-control-plane-headers --host 127.0.0.1
+```
+
+After the known-good check, replace `demo_router` with your installed entry
+point. This command does not load an analysis input or frontend. It uses the
+same standard hooks and process boundary, and uploaded bytes cannot add another
+plug-in. `--plugin-module PACKAGE[:ATTRIBUTE]` is the mutually exclusive
+source-development form. The shown trusted-header mode is only a loopback
+development adapter, never a plug-in feature or production authentication; a
+production host uses `--identity-resolver-module PACKAGE:ATTRIBUTE` backed by
+verified credentials.
+
 ## 5. Use keys that cannot alias
 
 The plug-in owns key meaning and ordering. The core owns canonical encoding and
@@ -637,10 +801,24 @@ For trace normalization:
 
 1. derive `DomainEvent.event_uid` with
    `derive_event_uid(plugin_id, parser_id, source_ref, local_discriminator)`;
-2. emit a `SourceRecordEmission` for retained input when requested;
-3. set its `matched_event_uid` or `matched_event_uids` when normalization
+2. keep `timestamp_ns` inside signed `int64`; use `None` when time is unknown,
+   and provide uncertainty only as a non-negative signed-`int64` value beside
+   a known timestamp, with the complete uncertainty interval still inside
+   signed `int64`;
+3. emit a `SourceRecordEmission` for retained input when requested;
+4. set its `matched_event_uid` or `matched_event_uids` when normalization
    succeeded; and
-4. keep unmatched records rather than inventing domain events.
+5. keep unmatched records rather than inventing domain events.
+
+Every nanosecond coordinate declared by the core contract is an exact signed
+64-bit integer (`-2^63` through `2^63-1`), or `None` only where that field
+explicitly permits unknown time. This applies not just to `DomainEvent`, but to
+source/evidence/CTF timestamps, mutation and observation times, validity
+bounds, temporal selectors, reconstruction watermarks and resolved bases,
+topology/connector validity, and capability outputs. Uncertainty and paired
+bounds must remain valid inside the same range. A
+`RelativeToWatermarkSelector.offset_ns` must also be zero or negative, and the
+core fails closed if adding it to its scoped watermark would overflow.
 
 The helper uses a versioned, length-delimited SHA-256 encoding of the canonical
 source identity. Use `local_discriminator` only when one source record produces
@@ -727,7 +905,9 @@ Put mechanics in core when they apply identically to every plug-in:
   including fail-closed missing/ambiguous/truncated/unusable results;
 - immutable flow direction, exact endpoint-goal matching, and bidirectional
   reachability aggregation;
-- budgets, validation, authorization, and generic rendering.
+- tenant/project/workspace scope mechanics, optimistic concurrency,
+  idempotency, budgets, validation, and generic rendering. Deployment
+  authentication and role authorization remain outside the plug-in.
 
 Dashboard comparison is likewise bounded: 16 nested container levels, 1,024
 items per container, 4,096 comparison units, 65,536-character/byte atoms, and

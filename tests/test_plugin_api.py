@@ -8,13 +8,17 @@ from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from uuid import UUID
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 import router_dump_analyzer
 from router_dump_analyzer import plugin_api
 from router_dump_analyzer.plugin_api import (
+    INPUT_PARSER_CAPABILITIES,
+    INPUT_PARSER_HOOKS,
+    MAX_TIMESTAMP_NS,
+    MIN_TIMESTAMP_NS,
+    PLUGIN_CAPABILITY_HOOKS,
     AbsoluteTimeSelector,
     AnalyzerPlugin,
     AnalyzerPluginBase,
@@ -33,7 +37,10 @@ from router_dump_analyzer.plugin_api import (
     DashboardStatisticDescriptor,
     DashboardTableDescriptor,
     DashboardValueFormat,
-    derive_event_uid,
+    DiagnosticOrigin,
+    DiagnosticSeverity,
+    DiagnosticStage,
+    DomainEvent,
     Evidence,
     FederatedConnectorClaim,
     FederationLinkerPlugin,
@@ -47,74 +54,75 @@ from router_dump_analyzer.plugin_api import (
     ForwardingMember,
     ForwardingMemberActivity,
     ForwardingMemberSelection,
+    ForwardingMutation,
+    ForwardingOperation,
     ForwardingPolicyDecision,
     ForwardingPolicyScope,
     ForwardingPolicyVerdict,
-    ForwardingTraversalStateKey,
-    KeyAtom,
-    ForwardingMutation,
-    ForwardingOperation,
     ForwardingProjectionRequest,
+    ForwardingTraversalStateKey,
     GlobalResourceRef,
     IconRenderMode,
-    INPUT_PARSER_CAPABILITIES,
-    INPUT_PARSER_HOOKS,
     InputParserKind,
     InputSpec,
     InterNodeLinkPresentation,
     InterNodeRouteTraceRole,
+    KeyAtom,
+    NextHopGroup,
+    Outcome,
+    PathGroupMode,
+    PluginCapability,
+    PluginDiagnostic,
+    PluginManifest,
+    PluginSchema,
+    ProbeMatchKind,
+    ProbeReport,
+    ProbeResult,
     PropertyDescriptor,
     PropertyPatch,
-    PLUGIN_CAPABILITY_HOOKS,
-    PluginCapability,
-    PluginManifest,
-    ProbeMatchKind,
-    ProbeResult,
     Provenance,
     Quality,
-    RecordLanePreset,
     ReconstructionSupport,
     ReconstructionWatermark,
+    RecordLanePreset,
     RelationDirection,
-    RelativeToWatermarkSelector,
-    ResolvedNodeBasis,
     RelationshipCollectionObservation,
     RelationshipMutation,
     RelationshipObservation,
-    RelationshipView,
     RelationshipTypeDescriptor,
+    RelationshipView,
+    RelativeToWatermarkSelector,
+    ResolutionContribution,
+    ResolvedNodeBasis,
     ResourceEffect,
     ResourceIconDescriptor,
-    ResourceKindDescriptor,
     ResourceKey,
+    ResourceKindDescriptor,
     ResourceStateView,
     ResourceTableRelationLevelDescriptor,
     ResourceTableViewDescriptor,
-    PluginSchema,
-    NextHopGroup,
-    PathGroupMode,
-    ResolutionContribution,
-    SourceRecordGroupDescriptor,
-    SourceRecordEmission,
-    SourceRecordTypeDescriptor,
     SnapshotObservation,
+    SourceRecordEmission,
+    SourceRecordGroupDescriptor,
+    SourceRecordRef,
+    SourceRecordTypeDescriptor,
     StateMutation,
     StatusPerspectiveDescriptor,
     StatusPerspectiveRef,
     StatusPerspectiveRole,
     StatusSourceCombinationPolicy,
+    TopologyDomainRole,
     TopologyEndpointRecord,
     TopologyEndpointReference,
+    TopologyExternalClassification,
     TopologyLinkRecord,
     TopologyMatchReference,
+    TopologyPluginSemanticsDescriptor,
     TopologyProjectionDescriptor,
     TopologyProjectionRecord,
     TopologyProjectionRequest,
-    TopologyResourceRecord,
     TopologyResourcePresentation,
-    TopologyDomainRole,
-    TopologyExternalClassification,
-    TopologyPluginSemanticsDescriptor,
+    TopologyResourceRecord,
     TopologyTwoParticipantShape,
     TopologyUsability,
     UnknownField,
@@ -122,6 +130,9 @@ from router_dump_analyzer.plugin_api import (
     WatermarkScope,
     WorldBasis,
     WorldBasisKind,
+    derive_event_uid,
+    validate_plugin_diagnostic,
+    validate_probe_report,
 )
 
 
@@ -136,7 +147,50 @@ class PluginApiTests(unittest.TestCase):
                     if inspect.isfunction(member):
                         typing.get_type_hints(member)
 
-    def test_topology_projection_declares_status_combination_and_tri_state_existence(self) -> None:
+    def test_domain_event_timestamps_are_signed_int64_at_construction(self) -> None:
+        def event(timestamp_ns: int | None, uncertainty_ns: int | None) -> DomainEvent:
+            return DomainEvent(
+                event_uid=b"event",
+                timestamp_ns=timestamp_ns,
+                timestamp_uncertainty_ns=uncertainty_ns,
+                source_sequence=0,
+                event_type="test.event",
+                action=None,
+                outcome=Outcome.SUCCESS,
+                attributes={},
+                subjects=(),
+                provenance=Provenance.OBSERVED,
+                quality=Quality.EXACT,
+                source=SourceRecordRef(source_id="test", message_ordinal=0),
+                evidence=Evidence(
+                    artifact_id=UUID(int=1),
+                    locator="line:1",
+                    raw_timestamp_ns=None,
+                    clock_domain=None,
+                ),
+            )
+
+        for timestamp_ns in (-(1 << 63), (1 << 63) - 1):
+            with self.subTest(timestamp_ns=timestamp_ns):
+                self.assertEqual(event(timestamp_ns, 0).timestamp_ns, timestamp_ns)
+        with self.assertRaisesRegex(ValueError, "signed 64-bit"):
+            event(1 << 63, 0)
+        with self.assertRaisesRegex(ValueError, "signed 64-bit"):
+            event(-(1 << 63) - 1, 0)
+        with self.assertRaisesRegex(ValueError, "non-negative signed 64-bit"):
+            event(0, -1)
+        with self.assertRaisesRegex(ValueError, "non-negative signed 64-bit"):
+            event(0, 1 << 63)
+        with self.assertRaisesRegex(ValueError, "without a timestamp"):
+            event(None, 0)
+        with self.assertRaisesRegex(ValueError, "interval must fit"):
+            event((1 << 63) - 1, 1)
+        with self.assertRaisesRegex(ValueError, "interval must fit"):
+            event(-(1 << 63), 1)
+
+    def test_topology_projection_declares_status_combination_and_tri_state_existence(
+        self,
+    ) -> None:
         descriptor = TopologyProjectionDescriptor(
             projection_id="synthetic.topology",
             label="Synthetic topology",
@@ -214,8 +268,7 @@ class PluginApiTests(unittest.TestCase):
         )
         self.assertEqual(
             uid.hex(),
-            "19ba7a9f8dedf47a0bbf89a4fd6a63db"
-            "a2f5ec18c9c19a9500135c83a9a4e3d3",
+            "19ba7a9f8dedf47a0bbf89a4fd6a63dba2f5ec18c9c19a9500135c83a9a4e3d3",
         )
         self.assertEqual(
             uid,
@@ -238,7 +291,9 @@ class PluginApiTests(unittest.TestCase):
                 True,  # type: ignore[arg-type]
             )
 
-    def test_manifest_normalizes_standard_capabilities_and_preserves_extensions(self) -> None:
+    def test_manifest_normalizes_standard_capabilities_and_preserves_extensions(
+        self,
+    ) -> None:
         manifest = PluginManifest(
             plugin_id="example.router",
             plugin_version="1.0.0",
@@ -283,11 +338,7 @@ class PluginApiTests(unittest.TestCase):
             ("resolve_forwarding_step",),
         )
         self.assertEqual(
-            tuple(
-                inspect.signature(
-                    AnalyzerPlugin.resolve_forwarding_step
-                ).parameters
-            ),
+            tuple(inspect.signature(AnalyzerPlugin.resolve_forwarding_step).parameters),
             ("self", "request", "world"),
         )
         self.assertEqual(set(INPUT_PARSER_HOOKS), set(InputParserKind))
@@ -342,9 +393,7 @@ class PluginApiTests(unittest.TestCase):
 
         self.assertIn(SourceRecordEmission, typing.get_args(status_output.__value__))
         self.assertIn(SourceRecordEmission, typing.get_args(trace_output.__value__))
-        source_fields = {
-            field.name for field in dataclass_fields(SourceRecordEmission)
-        }
+        source_fields = {field.name for field in dataclass_fields(SourceRecordEmission)}
         self.assertIn("copy_text", source_fields)
         self.assertIn("matched_event_uids", source_fields)
 
@@ -531,9 +580,12 @@ class PluginApiTests(unittest.TestCase):
             ),
         )
         for type_tag, value, message in invalid:
-            with self.subTest(type_tag=type_tag, value=value), self.assertRaisesRegex(
-                ValueError,
-                message,
+            with (
+                self.subTest(type_tag=type_tag, value=value),
+                self.assertRaisesRegex(
+                    ValueError,
+                    message,
+                ),
             ):
                 KeyAtom(type_tag, value)  # type: ignore[arg-type]
 
@@ -553,12 +605,76 @@ class PluginApiTests(unittest.TestCase):
             match_kind=ProbeMatchKind.EXACT,
         )
         self.assertEqual(exact.match_kind, ProbeMatchKind.EXACT)
+        invalid_fields = (
+            (
+                {"confidence": True, "reasons": ("invalid",)},
+                "confidence",
+            ),
+            (
+                {"confidence": float("nan"), "reasons": ("invalid",)},
+                "confidence",
+            ),
+            (
+                {"confidence": 0.5, "reasons": ()},
+                "probe reasons",
+            ),
+            (
+                {"confidence": 0.5, "reasons": ("",)},
+                "probe reason 0",
+            ),
+            (
+                {"confidence": 0.5, "reasons": ("contains\x00nul",)},
+                "NUL",
+            ),
+            (
+                {
+                    "confidence": 0.5,
+                    "reasons": ("invalid",),
+                    "detected_platform": "x" * 257,
+                },
+                "detected_platform",
+            ),
+        )
+        for fields, message in invalid_fields:
+            with (
+                self.subTest(fields=fields),
+                self.assertRaisesRegex(
+                    ValueError,
+                    message,
+                ),
+            ):
+                ProbeResult(**fields)
         with self.assertRaisesRegex(ValueError, "probe match kind"):
             ProbeResult(
                 confidence=0.5,
                 reasons=("invalid",),
                 match_kind="range-parse-in-core",  # type: ignore[arg-type]
             )
+
+    def test_probe_report_uses_the_declared_diagnostic_contract(self) -> None:
+        diagnostic = PluginDiagnostic(
+            stage=DiagnosticStage.PROBE,
+            severity=DiagnosticSeverity.WARNING,
+            code="example.probe-warning",
+            message="bounded warning",
+            recoverable=True,
+            origin=DiagnosticOrigin.PLUGIN,
+        )
+        report = ProbeReport(
+            result=ProbeResult(confidence=0.5, reasons=("recognized",)),
+            diagnostics=(diagnostic,),
+        )
+        self.assertIs(validate_probe_report(report), report)
+        self.assertIs(validate_plugin_diagnostic(diagnostic), diagnostic)
+
+        object.__setattr__(diagnostic, "message", "x" * 8_193)
+        with self.assertRaisesRegex(ValueError, "message"):
+            validate_plugin_diagnostic(diagnostic)
+        with self.assertRaisesRegex(
+            ValueError,
+            r"probe\.diagnostics\[0\]\.message",
+        ):
+            validate_probe_report(report)
 
     def test_status_perspective_refs_are_optional_and_core_qualifiable(self) -> None:
         local = StatusPerspectiveRef("hardware-observed")
@@ -630,7 +746,9 @@ class PluginApiTests(unittest.TestCase):
         self.assertIsInstance(primary.parts[0][1], UUID)
         self.assertIsInstance(primary.parts[1][1], int)
 
-    def test_resource_presentation_is_generic_and_empty_change_set_is_valid(self) -> None:
+    def test_resource_presentation_is_generic_and_empty_change_set_is_valid(
+        self,
+    ) -> None:
         icon = ResourceIconDescriptor(
             path="M4 12h16M12 4v16",
             render_mode=IconRenderMode.STROKE,
@@ -640,9 +758,7 @@ class PluginApiTests(unittest.TestCase):
             kind="SYNTHETIC_CONNECTOR",
             label="Synthetic connector",
             key_fields=("id",),
-            properties=(
-                PropertyDescriptor("condition", "Condition", "string"),
-            ),
+            properties=(PropertyDescriptor("condition", "Condition", "string"),),
             display_name_fields=("id",),
             default_table_fields=("condition",),
             condition_field="condition",
@@ -873,7 +989,9 @@ class PluginApiTests(unittest.TestCase):
             relationship_types=(owns,),
             resource_table_views=(view,),
         )
-        self.assertEqual(schema.resource_table_views[0].levels[0].relation_types, ("owns",))
+        self.assertEqual(
+            schema.resource_table_views[0].levels[0].relation_types, ("owns",)
+        )
 
         with self.assertRaisesRegex(ValueError, "unknown resource kinds"):
             PluginSchema(
@@ -916,7 +1034,9 @@ class PluginApiTests(unittest.TestCase):
                 ),
             )
 
-    def test_plugin_topology_projections_reference_declared_status_perspectives(self) -> None:
+    def test_plugin_topology_projections_reference_declared_status_perspectives(
+        self,
+    ) -> None:
         intended = StatusPerspectiveDescriptor(
             perspective_id="control-intended",
             label="Control-plane intent",
@@ -949,13 +1069,17 @@ class PluginApiTests(unittest.TestCase):
             "hardware-observed",
         )
 
-        with self.assertRaisesRegex(ValueError, "status perspective identifiers must be unique"):
+        with self.assertRaisesRegex(
+            ValueError, "status perspective identifiers must be unique"
+        ):
             PluginSchema(
                 resource_kinds=(),
                 relationship_types=(),
                 status_perspectives=(intended, intended),
             )
-        with self.assertRaisesRegex(ValueError, "topology projection identifiers must be unique"):
+        with self.assertRaisesRegex(
+            ValueError, "topology projection identifiers must be unique"
+        ):
             PluginSchema(
                 resource_kinds=(),
                 relationship_types=(),
@@ -1017,7 +1141,9 @@ class PluginApiTests(unittest.TestCase):
             requested_time_ns=absolute.time_ns,
             resolved_at_min_ns=resolved.absolute_min_ns,
             resolved_at_max_ns=resolved.absolute_max_ns,
-            capture_ranges=(CaptureRange("node-a", 1, 1, clock_domain="node-a-monotonic"),),
+            capture_ranges=(
+                CaptureRange("node-a", 1, 1, clock_domain="node-a-monotonic"),
+            ),
             provenance=Provenance.RECONSTRUCTED,
             quality=Quality.BEST_EFFORT,
             clock_domain="utc",
@@ -1077,6 +1203,48 @@ class PluginApiTests(unittest.TestCase):
             reason_code="clock_unaligned",
         )
         self.assertEqual(unaligned.reason_code, "clock_unaligned")
+
+        # Every public selector and resolved-coordinate contract uses the same
+        # signed 64-bit nanosecond domain as the temporal core.
+        self.assertEqual(
+            AbsoluteTimeSelector(MIN_TIMESTAMP_NS, "utc").time_ns,
+            MIN_TIMESTAMP_NS,
+        )
+        self.assertEqual(
+            AbsoluteTimeSelector(MAX_TIMESTAMP_NS, "utc").time_ns,
+            MAX_TIMESTAMP_NS,
+        )
+        self.assertEqual(
+            RelativeToWatermarkSelector(MIN_TIMESTAMP_NS, scope).offset_ns,
+            MIN_TIMESTAMP_NS,
+        )
+        for invalid in (MIN_TIMESTAMP_NS - 1, MAX_TIMESTAMP_NS + 1, True):
+            with (
+                self.subTest(selector_value=invalid),
+                self.assertRaisesRegex(ValueError, "signed 64-bit"),
+            ):
+                AbsoluteTimeSelector(invalid, "utc")  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "signed 64-bit"):
+            RelativeToWatermarkSelector(MIN_TIMESTAMP_NS - 1, scope)
+        with self.assertRaisesRegex(ValueError, "signed 64-bit"):
+            ReconstructionWatermark(
+                scope=scope,
+                local_time_ns=MAX_TIMESTAMP_NS + 1,
+                clock_domain="node-a-monotonic",
+                provenance=Provenance.RECONSTRUCTED,
+                quality=Quality.UNKNOWN,
+            )
+        with self.assertRaisesRegex(ValueError, "signed 64-bit"):
+            ResolvedNodeBasis(
+                node_id="node-a",
+                local_clock_domain="node-a-monotonic",
+                local_min_ns=MIN_TIMESTAMP_NS - 1,
+                local_max_ns=0,
+                absolute_min_ns=None,
+                absolute_max_ns=None,
+                mapping_method=None,
+                quality=Quality.UNKNOWN,
+            )
 
     def test_topology_projection_hook_is_bounded_typed_and_generic(self) -> None:
         local = ResourceKey(
@@ -1150,7 +1318,9 @@ class PluginApiTests(unittest.TestCase):
             (remote,),
         )
         project_signature = inspect.signature(AnalyzerPlugin.project_topology)
-        self.assertEqual(tuple(project_signature.parameters), ("self", "request", "world"))
+        self.assertEqual(
+            tuple(project_signature.parameters), ("self", "request", "world")
+        )
 
         with self.assertRaisesRegex(ValueError, "exactly one"):
             TopologyEndpointReference()
@@ -1198,7 +1368,9 @@ class PluginApiTests(unittest.TestCase):
                 exists="maybe",  # type: ignore[arg-type]
             )
 
-    def test_multi_access_media_reuses_resource_and_attachment_link_records(self) -> None:
+    def test_multi_access_media_reuses_resource_and_attachment_link_records(
+        self,
+    ) -> None:
         segment = ResourceKey(
             namespace="test",
             node="node-a",
@@ -1268,15 +1440,16 @@ class PluginApiTests(unittest.TestCase):
         self.assertEqual(records[0].payload.role, "connectivity-domain")
         self.assertTrue(
             all(
-                isinstance(record.payload, TopologyLinkRecord)
-                for record in records[1:]
+                isinstance(record.payload, TopologyLinkRecord) for record in records[1:]
             )
         )
         self.assertTrue(
             all(record.payload.target.resource == segment for record in records[1:])
         )
 
-    def test_topology_resource_can_declare_safe_two_participant_presentation(self) -> None:
+    def test_topology_resource_can_declare_safe_two_participant_presentation(
+        self,
+    ) -> None:
         segment = ResourceKey(
             namespace="test",
             node="node-a",
@@ -1349,9 +1522,7 @@ class PluginApiTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "route_trace"):
             InterNodeLinkPresentation(route_trace="mirror")  # type: ignore[arg-type]
         with self.assertRaisesRegex(ValueError, "core-produced"):
-            InterNodeLinkPresentation(
-                route_trace=InterNodeRouteTraceRole.CONFLICT
-            )
+            InterNodeLinkPresentation(route_trace=InterNodeRouteTraceRole.CONFLICT)
 
     def test_plugin_source_types_and_regex_lane_presets_are_declarative(self) -> None:
         source_group = SourceRecordGroupDescriptor(
@@ -1486,9 +1657,7 @@ class PluginApiTests(unittest.TestCase):
             text="Hardware member 11 is the selected primary.",
             quality=Quality.EXACT,
             resource_references=(group_key, member_key),
-            topology_references=(
-                TopologyEndpointReference(resource=member_key),
-            ),
+            topology_references=(TopologyEndpointReference(resource=member_key),),
             evidence=(evidence,),
         )
         member = ForwardingMember(

@@ -10,12 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 CORE_SOURCE = ROOT / "src" / "router_dump_analyzer"
 PLUGIN_API_PY = CORE_SOURCE / "plugin_api.py"
 APP_JS = ROOT / "frontend" / "assets" / "app.js"
-TEMPORAL_TOPOLOGY_PY = (
-    ROOT / "src" / "router_dump_analyzer" / "temporal_topology.py"
-)
-CORE_RUNTIME_API_PY = (
-    ROOT / "src" / "router_dump_analyzer" / "web" / "runtime_api.py"
-)
+TIMELINE_MODELS_JS = ROOT / "frontend" / "assets" / "timeline_models.js"
+TEMPORAL_TOPOLOGY_PY = ROOT / "src" / "router_dump_analyzer" / "temporal_topology.py"
+CORE_RUNTIME_API_PY = ROOT / "src" / "router_dump_analyzer" / "web" / "runtime_api.py"
 
 # These names have device-, protocol-, or fixture-owned meaning.  They may
 # appear in contract docstrings, but not in executable core literals/imports.
@@ -72,9 +69,7 @@ PLUGIN_OWNED_TOKEN_PATTERN = re.compile(
     + r")(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
-PLUGIN_OWNED_CASED_TOKEN_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9])LAG(?![A-Za-z0-9])"
-)
+PLUGIN_OWNED_CASED_TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9])LAG(?![A-Za-z0-9])")
 DEMO_TOKEN_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])demo(?![A-Za-z0-9])",
     re.IGNORECASE,
@@ -576,9 +571,7 @@ RAW_MAPPING_BRANCH_MIGRATION_LEDGER: Counter[BranchFingerprint] = Counter(
 # Opaque extension maps may be retained or forwarded by core, but core must
 # not decide behavior from their undeclared fields.  These two exact reads are
 # the known topology-v1 compatibility debt; the ledger cannot grow.
-OPAQUE_PAYLOAD_BRANCH_MIGRATION_LEDGER: Counter[
-    OpaqueBranchFingerprint
-] = Counter()
+OPAQUE_PAYLOAD_BRANCH_MIGRATION_LEDGER: Counter[OpaqueBranchFingerprint] = Counter()
 
 OPAQUE_PAYLOAD_FIELD_NAMES = frozenset(
     {
@@ -597,8 +590,13 @@ OPAQUE_PAYLOAD_NAME_PATTERN = re.compile(
 
 def javascript_function(source: str, name: str) -> str:
     start = source.index(f"function {name}(")
-    match = re.search(r"\nfunction [A-Za-z0-9_$]+\(", source[start + 1 :])
-    return source[start:] if match is None else source[start : start + 1 + match.start()]
+    match = re.search(
+        r"\n(?:export\s+)?function [A-Za-z0-9_$]+\(",
+        source[start + 1 :],
+    )
+    return (
+        source[start:] if match is None else source[start : start + 1 + match.start()]
+    )
 
 
 class _ExecutableLiteralVisitor(ast.NodeVisitor):
@@ -734,8 +732,7 @@ def _declared_contract_branch_values(
             for statement in node.body
             if isinstance(statement, (ast.Assign, ast.AnnAssign))
             for value in (statement.value,)
-            if isinstance(value, ast.Constant)
-            and isinstance(value.value, str)
+            if isinstance(value, ast.Constant) and isinstance(value.value, str)
         }
         enum_values[node.name] = values
 
@@ -755,22 +752,16 @@ def _declared_contract_branch_values(
                 if isinstance(item, ast.Name)
             }
             for enum_name in annotation_names.intersection(enum_values):
-                field_values[statement.target.id].update(
-                    enum_values[enum_name]
-                )
+                field_values[statement.target.id].update(enum_values[enum_name])
             # Literal["..."] annotations also declare closed vocabulary.
             field_values[statement.target.id].update(
                 item.value
                 for item in ast.walk(statement.annotation)
-                if isinstance(item, ast.Constant)
-                and isinstance(item.value, str)
+                if isinstance(item, ast.Constant) and isinstance(item.value, str)
             )
 
     return (
-        {
-            field_name: frozenset(values)
-            for field_name, values in field_values.items()
-        },
+        {field_name: frozenset(values) for field_name, values in field_values.items()},
         frozenset((*enum_values, *descriptor_names)),
     )
 
@@ -821,10 +812,7 @@ def _mapping_field(node: ast.expr) -> str | None:
             and isinstance(node.args[0].value, str)
         ):
             return node.args[0].value
-        if (
-            _called_name(node) in {"bool", "str"}
-            and node.args
-        ):
+        if _called_name(node) in {"bool", "str"} and node.args:
             return _mapping_field(node.args[0])
         if (
             isinstance(node.func, ast.Attribute)
@@ -858,8 +846,7 @@ def _raw_string_values(node: ast.expr) -> tuple[str, ...]:
             sorted(
                 item.value
                 for item in node.elts
-                if isinstance(item, ast.Constant)
-                and isinstance(item.value, str)
+                if isinstance(item, ast.Constant) and isinstance(item.value, str)
             )
         )
     return ()
@@ -877,6 +864,14 @@ def _match_string_values(node: ast.pattern) -> tuple[str, ...]:
     )
 
 
+def _stored_target_names(target: ast.expr) -> tuple[str, ...]:
+    return tuple(
+        item.id
+        for item in ast.walk(target)
+        if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Store)
+    )
+
+
 def _assignment_targets(node: ast.AST) -> tuple[str, ...]:
     targets: list[ast.expr] = []
     if isinstance(node, ast.Assign):
@@ -885,12 +880,7 @@ def _assignment_targets(node: ast.AST) -> tuple[str, ...]:
         targets.append(node.target)
     result: list[str] = []
     for target in targets:
-        result.extend(
-            item.id
-            for item in ast.walk(target)
-            if isinstance(item, ast.Name)
-            and isinstance(item.ctx, ast.Store)
-        )
+        result.extend(_stored_target_names(target))
     return tuple(result)
 
 
@@ -898,6 +888,40 @@ def _assignment_value(node: ast.AST) -> ast.expr | None:
     if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
         return node.value
     return None
+
+
+def _iteration_target_origins(
+    node: ast.For | ast.AsyncFor | ast.comprehension,
+    origins_by_name: dict[str, frozenset[str]],
+) -> dict[str, frozenset[str]]:
+    """Trace names bound from iterating an opaque mapping's keys or values."""
+
+    origins = _opaque_origins(node.iter, origins_by_name)
+    if not origins:
+        return {}
+    method = (
+        node.iter.func.attr
+        if isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Attribute)
+        else None
+    )
+    target = node.target
+    if (
+        method == "items"
+        and isinstance(target, (ast.List, ast.Tuple))
+        and len(target.elts) == 2
+    ):
+        return {
+            **{
+                name: frozenset({"<payload-key>"})
+                for name in _stored_target_names(target.elts[0])
+            },
+            **{
+                name: frozenset({"<payload-value>"})
+                for name in _stored_target_names(target.elts[1])
+            },
+        }
+    marker = "<payload-key>" if method in {None, "keys"} else "<payload-value>"
+    return {name: frozenset({marker}) for name in _stored_target_names(target)}
 
 
 def _opaque_origins(
@@ -910,6 +934,22 @@ def _opaque_origins(
 
     if ignore_comparisons and isinstance(node, ast.Compare):
         return frozenset()
+    if isinstance(node, ast.Compare):
+        membership_fields: set[str] = set()
+        operands = (node.left, *node.comparators)
+        for left, operator, right in zip(operands, node.ops, operands[1:]):
+            if not isinstance(operator, (ast.In, ast.NotIn)):
+                continue
+            if not (isinstance(left, ast.Constant) and isinstance(left.value, str)):
+                continue
+            if _opaque_origins(
+                right,
+                origins_by_name,
+                ignore_comparisons=ignore_comparisons,
+            ):
+                membership_fields.add(left.value)
+        if membership_fields:
+            return frozenset(membership_fields)
     if isinstance(node, ast.Name):
         if OPAQUE_PAYLOAD_NAME_PATTERN.search(node.id):
             return frozenset({"<payload>"})
@@ -920,7 +960,7 @@ def _opaque_origins(
             return frozenset()
         if (
             isinstance(node.func, ast.Attribute)
-            and node.func.attr == "get"
+            and node.func.attr in {"get", "pop", "setdefault"}
             and node.args
             and isinstance(node.args[0], ast.Constant)
             and isinstance(node.args[0].value, str)
@@ -935,6 +975,48 @@ def _opaque_origins(
                 return frozenset({"<payload>"})
             if receiver_origins:
                 return frozenset({field_name})
+        if (
+            _called_name(node) in {"getattr", "hasattr"}
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+            and _opaque_origins(
+                node.args[0],
+                origins_by_name,
+                ignore_comparisons=ignore_comparisons,
+            )
+        ):
+            return frozenset({node.args[1].value})
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "getitem"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+            and _opaque_origins(
+                node.args[0],
+                origins_by_name,
+                ignore_comparisons=ignore_comparisons,
+            )
+        ):
+            return frozenset({node.args[1].value})
+        if isinstance(node.func, ast.Attribute):
+            receiver_origins = _opaque_origins(
+                node.func.value,
+                origins_by_name,
+                ignore_comparisons=ignore_comparisons,
+            )
+            argument_origins = frozenset().union(
+                *(
+                    _opaque_origins(
+                        child,
+                        origins_by_name,
+                        ignore_comparisons=ignore_comparisons,
+                    )
+                    for child in (*node.args, *(item.value for item in node.keywords))
+                )
+            )
+            return receiver_origins.union(argument_origins)
         return frozenset().union(
             *(
                 _opaque_origins(
@@ -945,6 +1027,16 @@ def _opaque_origins(
                 for child in ast.iter_child_nodes(node)
             )
         )
+    if isinstance(node, ast.Attribute):
+        receiver_origins = _opaque_origins(
+            node.value,
+            origins_by_name,
+            ignore_comparisons=ignore_comparisons,
+        )
+        if node.attr in OPAQUE_PAYLOAD_FIELD_NAMES:
+            return frozenset({"<payload>"})
+        if receiver_origins:
+            return frozenset({node.attr})
     if (
         isinstance(node, ast.Subscript)
         and isinstance(node.slice, ast.Constant)
@@ -968,11 +1060,7 @@ def _opaque_origins(
         )
         for child in ast.iter_child_nodes(node)
     ]
-    return (
-        frozenset().union(*child_origins)
-        if child_origins
-        else frozenset()
-    )
+    return frozenset().union(*child_origins) if child_origins else frozenset()
 
 
 def _scope_opaque_origins(
@@ -980,13 +1068,54 @@ def _scope_opaque_origins(
     scopes: dict[ast.AST, str],
 ) -> dict[str, dict[str, frozenset[str]]]:
     assignments: defaultdict[str, list[ast.AST]] = defaultdict(list)
+    iterations: defaultdict[
+        str,
+        list[ast.For | ast.AsyncFor | ast.comprehension],
+    ] = defaultdict(list)
+    local_bindings: defaultdict[str, set[str]] = defaultdict(set)
+    all_scopes = set(scopes.values())
     for node in ast.walk(tree):
         if _assignment_value(node) is not None:
             assignments[scopes[node]].append(node)
+            local_bindings[scopes[node]].update(_assignment_targets(node))
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            iterations[scopes[node]].append(node)
+            local_bindings[scopes[node]].update(_stored_target_names(node.target))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            outer_scope = scopes[node]
+            body_scope = (
+                node.name if outer_scope == "<module>" else f"{outer_scope}.{node.name}"
+            )
+            arguments = node.args
+            local_bindings[body_scope].update(
+                argument.arg
+                for argument in (
+                    *arguments.posonlyargs,
+                    *arguments.args,
+                    *arguments.kwonlyargs,
+                )
+            )
+            if arguments.vararg is not None:
+                local_bindings[body_scope].add(arguments.vararg.arg)
+            if arguments.kwarg is not None:
+                local_bindings[body_scope].add(arguments.kwarg.arg)
 
     result: dict[str, dict[str, frozenset[str]]] = {}
-    for scope, nodes in assignments.items():
-        known: dict[str, frozenset[str]] = {}
+    ordered_scopes = sorted(
+        all_scopes | assignments.keys() | iterations.keys(),
+        key=lambda scope: (-1 if scope == "<module>" else scope.count("."), scope),
+    )
+    for scope in ordered_scopes:
+        nodes = assignments[scope]
+        if scope == "<module>":
+            parent_scope = None
+        elif "." in scope:
+            parent_scope = scope.rsplit(".", 1)[0]
+        else:
+            parent_scope = "<module>"
+        known = dict(result.get(parent_scope, {}))
+        for name in local_bindings[scope]:
+            known.pop(name, None)
         changed = True
         while changed:
             changed = False
@@ -1001,8 +1130,33 @@ def _scope_opaque_origins(
                     if combined != known.get(name):
                         known[name] = frozenset(combined)
                         changed = True
+            for node in iterations[scope]:
+                for name, origins in _iteration_target_origins(
+                    node,
+                    known,
+                ).items():
+                    combined = known.get(name, frozenset()).union(origins)
+                    if combined != known.get(name):
+                        known[name] = frozenset(combined)
+                        changed = True
         result[scope] = known
     return result
+
+
+def _mapping_pattern_fields(
+    pattern: ast.pattern,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Return mapping-pattern keys and their directly matched text values."""
+
+    result: list[tuple[str, tuple[str, ...]]] = []
+    for candidate in ast.walk(pattern):
+        if not isinstance(candidate, ast.MatchMapping):
+            continue
+        for key, value_pattern in zip(candidate.keys, candidate.patterns):
+            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                continue
+            result.append((key.value, _match_string_values(value_pattern)))
+    return tuple(result)
 
 
 def _semantic_mapping_branch_debt(
@@ -1074,6 +1228,38 @@ def _semantic_mapping_branch_debt(
                             tuple(sorted(set(raw_values))),
                         )
                     ] += 1
+            subject_origins = _opaque_origins(
+                node.subject,
+                origins_by_scope.get(scope, {}),
+            )
+            if subject_origins:
+                for case in node.cases:
+                    for pattern_field, pattern_values in _mapping_pattern_fields(
+                        case.pattern,
+                    ):
+                        opaque_debt[(relative_path, scope, pattern_field)] += 1
+                        raw_values = tuple(
+                            sorted(
+                                {
+                                    value
+                                    for value in pattern_values
+                                    if value
+                                    not in DECLARED_CONTRACT_BRANCH_VALUES.get(
+                                        pattern_field,
+                                        frozenset(),
+                                    )
+                                }
+                            )
+                        )
+                        if raw_values:
+                            raw_debt[
+                                (
+                                    relative_path,
+                                    scope,
+                                    pattern_field,
+                                    raw_values,
+                                )
+                            ] += 1
 
         decision_expressions: tuple[ast.AST, ...] = ()
         if isinstance(node, (ast.If, ast.IfExp, ast.While, ast.Assert)):
@@ -1102,9 +1288,7 @@ def _semantic_mapping_branch_debt(
     return raw_debt, opaque_debt
 
 
-def _counter_excess[
-    Key: tuple[str, ...]
-](
+def _counter_excess[Key: tuple[str, ...]](
     actual: Counter[Key],
     ledger: Counter[Key],
 ) -> Counter[Key]:
@@ -1115,16 +1299,20 @@ class NodeSemanticBoundaryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.script = APP_JS.read_text(encoding="utf-8")
+        cls.timeline_models = TIMELINE_MODELS_JS.read_text(encoding="utf-8")
 
     def test_event_semantics_use_only_normalized_contract_fields(self) -> None:
-        failed = javascript_function(self.script, "eventFailed")
-        changed = javascript_function(self.script, "eventChangesState")
+        failed = javascript_function(self.timeline_models, "eventFailed")
+        changed = javascript_function(self.timeline_models, "eventChangesState")
         effect_condition = javascript_function(self.script, "resourceEffectCondition")
-        effect_class = javascript_function(self.script, "resourceEffectStatusClass")
+        effect_class = javascript_function(
+            self.timeline_models,
+            "resourceEffectStatusClass",
+        )
         normalize = javascript_function(self.script, "normalizeMark")
         interval = javascript_function(self.script, "normalizeInterval")
         derive = javascript_function(self.script, "deriveLaneIntervals")
-        mark_class = javascript_function(self.script, "eventMarkClass")
+        mark_class = javascript_function(self.timeline_models, "eventMarkClass")
 
         self.assertIn("normalizedEventOutcome(event)", failed)
         self.assertNotRegex(failed, r"status|rejected|accepted")
@@ -1138,8 +1326,13 @@ class NodeSemanticBoundaryTests(unittest.TestCase):
         self.assertNotIn("return stateValue", effect_condition)
         self.assertIn('hasOwnProperty.call(effect, "status_class")', effect_class)
         self.assertIn('hasOwnProperty.call(effect, "condition_class")', effect_class)
-        self.assertLess(effect_class.index('"status_class"'), effect_class.index('"condition_class"'))
-        self.assertNotRegex(effect_class, r"healthy|failed|active|down|includes\(|match\(")
+        self.assertLess(
+            effect_class.index('"status_class"'),
+            effect_class.index('"condition_class"'),
+        )
+        self.assertNotRegex(
+            effect_class, r"healthy|failed|active|down|includes\(|match\("
+        )
         self.assertLess(
             normalize.index("effect?.state_changed"),
             normalize.index("raw?.state_changed"),
@@ -1149,7 +1342,7 @@ class NodeSemanticBoundaryTests(unittest.TestCase):
             normalize.index("raw?.effect_type"),
         )
         self.assertIn("condition_field", interval)
-        self.assertIn('raw?.status_class', interval)
+        self.assertIn("raw?.status_class", interval)
         self.assertNotRegex(interval, r"includes\(|match\(")
         self.assertIn("mark.effectType", derive)
         self.assertNotIn("mark.action", derive)
@@ -1158,16 +1351,18 @@ class NodeSemanticBoundaryTests(unittest.TestCase):
         self.assertNotIn("!mark.failure", derive)
         self.assertNotIn("if (mark.failure)", derive)
         self.assertIn("resourceEffectStatusClass(mark.effect, mark.event)", derive)
-        self.assertIn("mark.effectType", mark_class)
+        self.assertIn("mark?.effectType", mark_class)
         self.assertNotIn("mark.action", mark_class)
 
-    def test_relationship_labels_and_direction_come_from_plugin_descriptors(self) -> None:
+    def test_relationship_labels_and_direction_come_from_plugin_descriptors(
+        self,
+    ) -> None:
         presentation = javascript_function(self.script, "relationshipPresentation")
         hover = javascript_function(self.script, "graphEdgeHoverHtml")
         graph = javascript_function(self.script, "normalizedGraph")
 
         self.assertIn("relationshipTypeDescriptor(rawType)", presentation)
-        self.assertIn('Unknown relationship', presentation)
+        self.assertIn("Unknown relationship", presentation)
         self.assertIn("descriptor.directed", presentation)
         self.assertIn("descriptor?.structural", presentation)
         self.assertIn("presentation.displayLabel", hover)
@@ -1200,7 +1395,9 @@ class NodeSemanticBoundaryTests(unittest.TestCase):
         self.assertNotIn("RESOURCE_TYPE_ACRONYMS", self.script)
         self.assertNotRegex(formatter, r"ETG|EVPN|MPLS|SRV6|ISIS")
 
-    def test_tagged_values_render_readably_but_do_not_participate_in_identity(self) -> None:
+    def test_tagged_values_render_readably_but_do_not_participate_in_identity(
+        self,
+    ) -> None:
         readable = javascript_function(self.script, "readableTypedValue")
         identity = javascript_function(self.script, "canonicalResourceId")
         subject = javascript_function(self.script, "canonicalResourceForSubject")
@@ -1219,29 +1416,33 @@ class NodeSemanticBoundaryTests(unittest.TestCase):
     def test_temporal_topology_does_not_treat_failure_as_no_mutation(self) -> None:
         source = TEMPORAL_TOPOLOGY_PY.read_text(encoding="utf-8")
         event_projection = source[
-            source.index("def _perspective_status_events(") :
-            source.index("def _perspective_state_at(")
+            source.index("def _perspective_status_events(") : source.index(
+                "def _perspective_state_at("
+            )
         ]
         changes_projection = source[
-            source.index("def event_changes()") :
-            source.index("def mutation_changes()")
+            source.index("def event_changes()") : source.index("def mutation_changes()")
         ]
 
         self.assertNotIn('event.get("outcome") == "failure"', event_projection)
-        self.assertIn('"applied": bool(event.get("state_changed", False))', changes_projection)
+        self.assertIn(
+            '"applied": bool(event.get("state_changed", False))', changes_projection
+        )
         self.assertNotIn('event.get("outcome") != "failure"', changes_projection)
 
         state_projection = source[
-            source.index("def _perspective_state_at(") :
-            source.index("def _unknown_resource(")
+            source.index("def _perspective_state_at(") : source.index(
+                "def _unknown_resource("
+            )
         ]
         self.assertNotIn("if native and exists is None", state_projection)
 
     def test_node_workspace_adapter_preserves_plugin_vocabulary(self) -> None:
         source = CORE_RUNTIME_API_PY.read_text(encoding="utf-8")
         adapter = source[
-            source.index("def _node_workspace_dataset(") :
-            source.index('@api_router.get("/v1/nodes/{node_id}/workspace")')
+            source.index("def _node_workspace_dataset(") : source.index(
+                '@api_router.get("/v1/nodes/{node_id}/workspace")'
+            )
         ]
 
         self.assertNotIn('or "RESOURCE"', adapter)
@@ -1249,7 +1450,7 @@ class NodeSemanticBoundaryTests(unittest.TestCase):
         self.assertNotIn('or "related_to"', adapter)
         self.assertNotRegex(
             adapter,
-            r'(?:kind|relation_type|projection_id|perspective_id)\.replace\(',
+            r"(?:kind|relation_type|projection_id|perspective_id)\.replace\(",
         )
         self.assertIn('item.get("kind") or "unknown"', adapter)
         self.assertIn('item.get("status_perspective_label")', adapter)
@@ -1300,6 +1501,255 @@ def decide(item):
                 }
             ),
         )
+
+    def test_structural_guard_detects_opaque_mapping_key_dispatch(
+        self,
+    ) -> None:
+        source = """
+def project(plugin_payload):
+    result = {}
+    for key, nested in plugin_payload.items():
+        if key.endswith("_ns"):
+            result[key] = str(nested)
+        else:
+            result[key] = nested
+    return result
+
+def select(plugin_data):
+    return {
+        key: value
+        for key, value in plugin_data.items()
+        if key.startswith("vendor_")
+    }
+"""
+        raw_debt, opaque_debt = _semantic_mapping_branch_debt(
+            source,
+            relative_path="synthetic.py",
+        )
+
+        self.assertEqual(raw_debt, Counter())
+        self.assertEqual(
+            opaque_debt,
+            Counter(
+                {
+                    ("synthetic.py", "project", "<payload-key>"): 1,
+                    ("synthetic.py", "select", "<payload-key>"): 1,
+                }
+            ),
+        )
+
+    def test_structural_guard_detects_opaque_attribute_dispatch(self) -> None:
+        source = """
+def decide(item, plugin_payload):
+    semantics = item.plugin_semantics
+    if semantics.role.casefold() == "vendor-special":
+        return True
+    if plugin_payload.enabled:
+        return True
+    match plugin_payload.mode:
+        case "active":
+            return True
+        case _:
+            return False
+"""
+        raw_debt, opaque_debt = _semantic_mapping_branch_debt(
+            source,
+            relative_path="synthetic.py",
+        )
+
+        self.assertEqual(raw_debt, Counter())
+        self.assertEqual(
+            opaque_debt,
+            Counter(
+                {
+                    ("synthetic.py", "decide", "enabled"): 1,
+                    ("synthetic.py", "decide", "mode"): 1,
+                    ("synthetic.py", "decide", "role"): 1,
+                }
+            ),
+        )
+
+    def test_structural_guard_covers_accessor_and_presence_dispatch(self) -> None:
+        sources = {
+            "pop": 'if plugin_payload.pop("enabled", False): return True',
+            "setdefault": (
+                'if plugin_payload.setdefault("enabled", False): return True'
+            ),
+            "getattr": 'if getattr(plugin_payload, "enabled", False): return True',
+            "hasattr": 'if hasattr(plugin_payload, "enabled"): return True',
+            "getitem": ('if operator.getitem(plugin_payload, "enabled"): return True'),
+            "membership": 'if "enabled" in plugin_payload: return True',
+        }
+        for style, body in sources.items():
+            with self.subTest(style=style):
+                _raw, opaque = _semantic_mapping_branch_debt(
+                    f"def decide(plugin_payload):\n    {body}\n    return False\n",
+                    relative_path="synthetic.py",
+                )
+                self.assertEqual(
+                    opaque,
+                    Counter({("synthetic.py", "decide", "enabled"): 1}),
+                )
+
+    def test_structural_guard_preserves_payload_provenance_in_closures(self) -> None:
+        source = """
+def decide(item):
+    details = item.get("plugin_semantics") or {}
+    def nested():
+        local = details
+        if local.get("enabled"):
+            return True
+        return False
+    if nested():
+        return True
+    return False
+"""
+        _raw, opaque = _semantic_mapping_branch_debt(
+            source,
+            relative_path="synthetic.py",
+        )
+        self.assertEqual(
+            opaque,
+            Counter({("synthetic.py", "decide.nested", "enabled"): 1}),
+        )
+
+    def test_structural_guard_detects_mapping_pattern_dispatch(self) -> None:
+        source = """
+def decide(plugin_payload):
+    match plugin_payload:
+        case {"mode": "vendor-special", "enabled": True}:
+            return True
+        case _:
+            return False
+"""
+        raw, opaque = _semantic_mapping_branch_debt(
+            source,
+            relative_path="synthetic.py",
+        )
+        self.assertEqual(
+            raw,
+            Counter(
+                {
+                    (
+                        "synthetic.py",
+                        "decide",
+                        "mode",
+                        ("vendor-special",),
+                    ): 1,
+                }
+            ),
+        )
+        self.assertEqual(
+            opaque,
+            Counter(
+                {
+                    ("synthetic.py", "decide", "enabled"): 1,
+                    ("synthetic.py", "decide", "mode"): 1,
+                }
+            ),
+        )
+
+    def test_structural_guard_traces_declared_payload_into_generic_aliases(
+        self,
+    ) -> None:
+        generic_names = (
+            "payload",
+            "data",
+            "semantics",
+            "metadata",
+            "attributes",
+            "details",
+            "options",
+            "config",
+            "context",
+        )
+        decision_templates = {
+            "get": '    if {name}.get("enabled"):\n        return True',
+            "subscript": '    if {name}["enabled"]:\n        return True',
+            "alias": (
+                '    local = {name}\n    if local.get("enabled"):\n        return True'
+            ),
+            "attribute": "    if {name}.enabled:\n        return True",
+        }
+        for name in generic_names:
+            for style, template in decision_templates.items():
+                with self.subTest(name=name, style=style):
+                    source = (
+                        "def decide(item):\n"
+                        f'    {name} = item.get("plugin_semantics") or {{}}\n'
+                        f"{template.format(name=name)}\n"
+                        "    return False\n"
+                    )
+                    raw_debt, opaque_debt = _semantic_mapping_branch_debt(
+                        source,
+                        relative_path="synthetic.py",
+                    )
+                    self.assertEqual(raw_debt, Counter())
+                    self.assertEqual(
+                        opaque_debt,
+                        Counter({("synthetic.py", "decide", "enabled"): 1}),
+                    )
+
+    def test_structural_guard_does_not_guess_untyped_generic_parameters(
+        self,
+    ) -> None:
+        """A bare mapping needs declared-field or nominal-type provenance."""
+
+        generic_names = (
+            "payload",
+            "data",
+            "semantics",
+            "metadata",
+            "attributes",
+            "details",
+            "options",
+            "config",
+            "context",
+        )
+        decision_templates = {
+            "get": '    if {name}.get("enabled"):\n        return True',
+            "subscript": '    if {name}["enabled"]:\n        return True',
+            "alias": (
+                '    local = {name}\n    if local.get("enabled"):\n        return True'
+            ),
+            "attribute": "    if {name}.enabled:\n        return True",
+        }
+        for name in generic_names:
+            for style, template in decision_templates.items():
+                with self.subTest(name=name, style=style):
+                    source = (
+                        f"def decide({name}):\n"
+                        f"{template.format(name=name)}\n"
+                        "    return False\n"
+                    )
+                    self.assertEqual(
+                        _semantic_mapping_branch_debt(
+                            source,
+                            relative_path="synthetic.py",
+                        ),
+                        (Counter(), Counter()),
+                    )
+
+    def test_structural_guard_allows_opaque_mapping_copy_without_decision(
+        self,
+    ) -> None:
+        source = """
+def project(plugin_payload):
+    result = {}
+    for key, nested in plugin_payload.items():
+        result[key] = nested
+    return result
+
+def copy(plugin_data):
+    return {key: value for key, value in plugin_data.items()}
+"""
+        raw_debt, opaque_debt = _semantic_mapping_branch_debt(
+            source,
+            relative_path="synthetic.py",
+        )
+
+        self.assertEqual(raw_debt, Counter())
+        self.assertEqual(opaque_debt, Counter())
 
     def test_structural_guard_allows_declared_enum_boundary(self) -> None:
         source = """
@@ -1407,15 +1857,10 @@ def decide(item):
             for scope, literal in _executable_literals(path):
                 occurrence = (relative, scope, literal)
                 if (
-                    (
-                        PLUGIN_OWNED_TOKEN_PATTERN.search(literal)
-                        or PLUGIN_OWNED_CASED_TOKEN_PATTERN.search(literal)
-                    )
-                    and occurrence not in ALLOWED_PROTOCOL_DISCLOSURES
-                ):
-                    literal_violations.append(
-                        f"{relative}:{scope}: {literal!r}"
-                    )
+                    PLUGIN_OWNED_TOKEN_PATTERN.search(literal)
+                    or PLUGIN_OWNED_CASED_TOKEN_PATTERN.search(literal)
+                ) and occurrence not in ALLOWED_PROTOCOL_DISCLOSURES:
+                    literal_violations.append(f"{relative}:{scope}: {literal!r}")
                 if DEMO_TOKEN_PATTERN.search(literal):
                     demo_literals[occurrence] += 1
 
@@ -1430,9 +1875,7 @@ def decide(item):
                     for token in (*PLUGIN_OWNED_TOKENS, "demo")
                 }
                 if components & owned_components:
-                    import_violations.append(
-                        f"{relative}: imports {import_name!r}"
-                    )
+                    import_violations.append(f"{relative}: imports {import_name!r}")
 
         self.assertEqual(
             literal_violations,
@@ -1476,8 +1919,7 @@ def decide(item):
             {
                 relative
                 for relative, _scope, _literal in generated_literals
-                if relative
-                != "src/router_dump_analyzer/multi_node_route.py"
+                if relative != "src/router_dump_analyzer/multi_node_route.py"
             }
         )
 
@@ -1490,8 +1932,7 @@ def decide(item):
         self.assertEqual(
             over_budget,
             {},
-            "generated-projection compatibility references grew: "
-            + repr(over_budget),
+            "generated-projection compatibility references grew: " + repr(over_budget),
         )
         self.assertEqual(
             wrong_files,

@@ -55,7 +55,34 @@ unsuitable, source-stale, or materializer-stale archive with the exact bounded
 generator owner manifest. Unknown files, final symlinks, and non-regular
 preferred paths remain untouched; the launcher uses the fixed
 `router-state-lab-demo.generated.tgz` recovery sibling and passes that selected
-path to the core. For a manual launch, activate the setup environment and ask
+path to the core. It also enables core-owned durable state at
+`.runtime\control-plane` by default. Use `-ControlPlaneDir PATH` on Windows or
+`--control-plane-dir PATH` on Linux/WSL to choose another location. Binding a
+non-loopback host requires the corresponding explicit
+`-TrustControlPlaneHeaders` or `--trust-control-plane-headers`
+development-only override.
+
+On the node page, expand **Durable review** above the normalized event log.
+Enter explicit tenant, project, workspace, and reviewer IDs; the UI labels
+this as trusted-header local development and stores those values only in the
+browser. The active dump must already have been published into that explicit
+workspace through the core ingestion pipeline: launching the browser server
+does not add its startup input to the durable catalog. The UI resolves the
+page's active runtime revision to exactly one catalog revision before
+persisting markers. If durable state is absent, unauthorized, or cannot
+resolve that revision unambiguously, existing browser-only markers continue
+to work and no durable write is attempted. Selected event/source-record rows
+can be marked or unmarked; two or more selected events can be saved as one
+ordered manual correlation. A resolved read-only identity can inspect markers
+and generate reports but cannot change annotations or correlations.
+Correlation reports can target explicit revisions, a mutable session, or an
+immutable session snapshot and can be copied or downloaded, while the page
+itself continues to render only its active revision. Ambiguous durable writes
+retain their bounded retry identity across reload. The panel separates
+connected-scope discard from a warned all-scope reset; neither action changes
+an outcome that may already exist on the server.
+
+For a manual launch, activate the setup environment and ask
 the generator for that selected path before loading the installed plug-in entry
 point directly:
 
@@ -65,8 +92,13 @@ $demoArchive = python -X utf8 -m rsl_demo_generator `
   --ensure-launchable demo/fixtures/router-state-lab-demo.tgz --path-only
 router-dump-analyzer --plugin demo_router `
   --input $demoArchive `
+  --control-plane-dir .\.runtime\control-plane `
   --no-browser
 ```
+
+The analysis application does not expose OpenAPI JSON, Swagger UI, or ReDoc
+by default. Add `--expose-api-docs` only on a loopback listener when those
+development endpoints are needed; a non-loopback bind is rejected.
 
 In that activated environment, source-tree development can bypass installed
 entry-point discovery without changing ownership:
@@ -77,8 +109,81 @@ $demoArchive = python -X utf8 -m rsl_demo_generator `
 python -m router_dump_analyzer `
   --plugin-module rsl_demo_plugin `
   --input $demoArchive `
+  --control-plane-dir .\.runtime\control-plane `
   --no-browser
 ```
+
+To exercise the demo's ordinary parser through the durable core queue, use the
+small conformance fixture rather than the precomputed runtime-v1 assembly:
+
+```powershell
+$env:PYTHONUTF8 = "1"
+router-dump-ingest --plugin demo_router `
+  --state-dir .\.runtime\demo-headless `
+  --tenant demo-tenant `
+  --project plugin-conformance `
+  --workspace first-run `
+  --input .\demo\fixtures\minimal-status.jsonl `
+  --node-hint router-1 `
+  --output .\artifacts\demo-ingestion.json `
+  --pretty
+```
+
+This creates the project/workspace if absent, content-addresses the upload,
+durably stages its fixture admission, probes the installed demo entry point,
+parses through the standard runtime-v2 hooks, then durably stages and
+publishes one immutable catalog revision. A replay after either lost catalog
+response uses the same operation ID; publication replay does not parse again.
+Probe and parsing run in fresh `spawn` child processes with the core's bounded
+deadline (300 seconds by default, capped by the command's `--timeout`). The
+demo plug-in and coordinator are module-level, importable, and spawn-picklable
+for this reason. A timeout/crash is killed and reaped and cannot publish a
+partial dataset; the child remains trusted host-user code rather than a
+security sandbox.
+The `.runtime\demo-headless` directory is disposable local state. Repeat
+`--input` to exercise several independently versioned fixtures in one
+workspace.
+
+To serve that state without opening the demo analysis or frontend, run the
+core-owned API-only server on loopback:
+
+```powershell
+router-dump-server --plugin demo_router `
+  --state-dir .\.runtime\demo-headless `
+  --trust-control-plane-headers `
+  --port 8876
+```
+
+This trusted-header mode is development-only. A real deployment replaces it
+with `--identity-resolver-module PACKAGE:ATTRIBUTE`, whose synchronous callable
+verifies credentials and returns `ControlPlaneIdentity`. The plug-in selector
+is an immutable allowlist; repeat `--plugin` for additional installed
+candidates, or use repeatable `--plugin-module` during source development, but
+never mix the two forms. This process has root health and control-plane APIs,
+not the demo UI, analysis routes, or static assets. OpenAPI/Swagger/ReDoc are
+disabled by default; `--expose-api-docs` is accepted only on loopback.
+
+The demo does not implement that queue, catalog, tenant model,
+multi-revision session, annotation store, correlation report, HTTP endpoint,
+or headless command/server. All are core-owned and are documented in the
+[durable control-plane guide](../docs/control-plane.md). The demo supplies only
+recognition, parsing, normalized device semantics, and its fixture adapters.
+If plug-in-owned labels or metadata later enter an AI-facing report, the core
+recursively renders Unicode line/paragraph separators, NEL, every non-ASCII
+space separator (including NBSP), ZWSP, BOM, bidi formatting controls, and
+assigned blank Hangul fillers, Khmer inherent-vowel characters, the Braille
+blank glyph, and Egyptian hieroglyph blanks as visible `\\uNNNN` text. ZWNJ,
+ZWJ, and the Khitan small-script filler retain their shaping semantics.
+Combining grapheme joiner, unregistered or misplaced variation selectors,
+U+FFFC OBJECT REPLACEMENT CHARACTER, and private-use characters may remain in
+bounded source labels, but the report makes those characters explicit while
+preserving surrounding text. U+FE0E/U+FE0F remain raw only as an exact
+Unicode-registered adjacent base-selector pair; repeated or standalone
+selectors are escaped, while independent valid pairs across a ZWJ sequence
+remain intact. Every selector remains invalid in catalog identifiers. Literal backslash
+escape-looking text remains distinct from actual escaped Unicode in the core
+report. The demo has no report formatter and must not encode device meaning
+only through invisible or private-use text.
 
 The launchers create missing or unsuitable generated fixtures before starting
 the server. Their automatic bounded check hashes each opaque node pack but does
@@ -117,6 +222,11 @@ version matching, status normalization, resource descriptors, evidence,
 bounded hover text, and safe source-record `copy_text`. The example assumes
 that `ifindex` is stable within one analysis revision and maps `oper_status=up`
 to healthy, `down` to error, and other accepted values to unknown.
+The generic validator preserves useful safe diagnostics from this plug-in but
+bounds or replaces unsafe exception/path/display text before it reaches a
+terminal or CI log. The package fingerprint includes ordinary files and
+contained aliases even if their basename resembles `.git` or `__pycache__`;
+only actual metadata/cache directories are pruned.
 At one timestamp, `source_sequence` establishes producer order before the
 stable record identity tie-breaker. The checked fixture includes create,
 modify, and window-only observations; shared temporal replay also treats
@@ -158,6 +268,10 @@ artifact IDs, read-only streams, and session-private materializations; calls
 `describe()`, `probe()`, and `locate_inputs()`; capability-dispatches parsers;
 and validates/normalizes their output. The plug-in never sees the original
 host path.
+The example probe deliberately uses one short reason and bounded detected
+platform/version strings; the shared core contract requires finite confidence
+from 0 through 1, 1 to 128 reasons (1,024 characters each), and detected text
+no longer than 256 characters.
 
 The comprehensive generated assembly is different: it is a deliberately
 precomputed fixture whose stored projections are validated and loaded instead
@@ -250,6 +364,10 @@ rule-resolved relationships, retained status/text/CTF categories, and
 malformed or unsupported artifacts. A label such as
 `requires_plugin_projection` describes a conformance target, not functionality
 silently supplied by core.
+Normalized domain-event timestamps stay inside signed `int64`; their optional
+uncertainty is non-negative and the complete uncertainty interval also stays
+inside signed `int64`. The public event constructor and
+the runtime-v2 host both enforce that narrower temporal contract.
 
 ### Canonical source pipeline
 

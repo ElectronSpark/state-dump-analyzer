@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  controlPlaneCollectionPageDecision,
   dashboardComparable,
   dashboardDescriptorErrorMessage,
   dashboardFieldLookup,
@@ -10,6 +11,10 @@ import {
   dashboardRowIncluded,
   dashboardStatisticEvaluation,
   declaredHealthPresentation,
+  durableMutationDisposition,
+  durableReportMemberValidation,
+  durableReportRequestBody,
+  durableReviewControlAvailability,
   graphStatusClass,
   rangeSummaryFacts,
   reconstructionTimelineModel,
@@ -647,4 +652,151 @@ test("dashboard row inclusion preserves tri-state existence semantics", () => {
   assert.equal(dashboardRowIncluded({ kind: "ETG" }, ["ETG"]), false);
   assert.equal(dashboardRowIncluded({ kind: "ETG", exists: null }, ["ETG"], true), true);
   assert.equal(dashboardRowIncluded({ kind: "ETE", exists: true }, ["ETG"], true), false);
+});
+
+test("control-plane pagination follows declared offsets and fails closed", () => {
+  assert.deepEqual(
+    controlPlaneCollectionPageDecision({
+      payload: { items: [{ id: 1 }], next_offset: null },
+      offset: 0,
+      requestedLimit: 5,
+      accumulatedCount: 0,
+      maximumCount: 10,
+    }),
+    {
+      complete: true,
+      capExceeded: false,
+      nextOffset: null,
+      totalCount: 1,
+    },
+  );
+  assert.deepEqual(
+    controlPlaneCollectionPageDecision({
+      payload: { items: [{ id: 1 }, { id: 2 }], next_offset: 7 },
+      offset: 5,
+      requestedLimit: 2,
+      accumulatedCount: 5,
+      maximumCount: 10,
+    }),
+    {
+      complete: false,
+      capExceeded: false,
+      nextOffset: 7,
+      totalCount: 7,
+    },
+  );
+  assert.equal(
+    controlPlaneCollectionPageDecision({
+      payload: { items: [{ id: 1 }], next_offset: 10 },
+      offset: 9,
+      requestedLimit: 1,
+      accumulatedCount: 9,
+      maximumCount: 10,
+    }).capExceeded,
+    true,
+  );
+  assert.throws(
+    () => controlPlaneCollectionPageDecision({
+      payload: { items: [{ id: 1 }], next_offset: 5 },
+      offset: 5,
+      requestedLimit: 1,
+      accumulatedCount: 0,
+      maximumCount: 10,
+    }),
+    /does not advance/,
+  );
+  assert.throws(
+    () => controlPlaneCollectionPageDecision({
+      payload: { next_offset: null },
+      offset: 0,
+      requestedLimit: 1,
+      accumulatedCount: 0,
+      maximumCount: 10,
+    }),
+    /items array/,
+  );
+});
+
+test("durable report scopes cover revisions, live sessions, and snapshots", () => {
+  assert.deepEqual(
+    durableReportRequestBody({ kind: "revision", id: "rev-a" }),
+    { revision_ids: ["rev-a"] },
+  );
+  assert.deepEqual(
+    durableReportRequestBody({ kind: "session", id: "session-a" }),
+    { session_id: "session-a" },
+  );
+  assert.deepEqual(
+    durableReportRequestBody({ kind: "snapshot", id: "snapshot-a" }),
+    { snapshot_id: "snapshot-a" },
+  );
+  assert.throws(
+    () => durableReportRequestBody({ kind: "unknown", id: "value" }),
+    /unsupported report scope kind/,
+  );
+});
+
+test("durable report member validation rejects unsafe revision vectors", () => {
+  const member = (revisionId) => ({ revision_id: revisionId });
+  assert.deepEqual(
+    durableReportMemberValidation([member("r1"), member("r2")], 2),
+    { valid: true, memberCount: 2, reason: null },
+  );
+  assert.equal(durableReportMemberValidation([], 2).reason, "empty");
+  assert.equal(
+    durableReportMemberValidation([member("r1"), member("r1")], 2).reason,
+    "duplicate",
+  );
+  assert.equal(
+    durableReportMemberValidation([member("r1"), member("r2"), member("r3")], 2).reason,
+    "oversized",
+  );
+  assert.equal(durableReportMemberValidation([member("")], 2).reason, "invalid");
+});
+
+test("durable mutation disposition retains only ambiguous outcomes", () => {
+  assert.equal(durableMutationDisposition({ ambiguous: true }), "retain");
+  assert.equal(durableMutationDisposition({ ambiguous: false }), "discard");
+  assert.equal(durableMutationDisposition(new Error("known failure")), "discard");
+});
+
+test("durable review controls enforce read-only and report-write exclusion", () => {
+  const base = {
+    ready: true,
+    writable: true,
+    connecting: false,
+    markerBusy: false,
+    correlationBusy: false,
+    reportBusy: false,
+    selectionReady: true,
+  };
+  const readOnly = durableReviewControlAvailability({
+    ...base,
+    writable: false,
+  });
+  assert.equal(readOnly.reportDisabled, false);
+  assert.equal(readOnly.markerDisabled, true);
+  assert.equal(readOnly.correlationDisabled, true);
+
+  const reportBusy = durableReviewControlAvailability({
+    ...base,
+    reportBusy: true,
+  });
+  assert.equal(reportBusy.markerDisabled, true);
+  assert.equal(reportBusy.correlationDisabled, true);
+
+  const markerBusy = durableReviewControlAvailability({
+    ...base,
+    markerBusy: true,
+  });
+  assert.equal(markerBusy.reportDisabled, true);
+  assert.equal(markerBusy.reportScopeDisabled, true);
+
+  const journalBlocked = durableReviewControlAvailability({
+    ...base,
+    journalBlocked: true,
+  });
+  assert.equal(journalBlocked.reportDisabled, false);
+  assert.equal(journalBlocked.markerDisabled, true);
+  assert.equal(journalBlocked.correlationDisabled, true);
 });

@@ -5,11 +5,13 @@ from uuid import UUID
 
 from router_dump_analyzer.canonical import (
     CanonicalValueError,
+    canonical_json_sha256,
     canonical_normalized_opaque_value,
     canonical_opaque_value,
     normalized_opaque_value_json,
     opaque_value_json,
     packet_value_json,
+    strict_canonical_json_sha256,
 )
 from router_dump_analyzer.multi_node_route import (
     MultiNodeRouteRequestError,
@@ -27,6 +29,16 @@ from router_dump_analyzer.plugin_api import (
 
 
 class CanonicalTypedValueTests(unittest.TestCase):
+    def test_canonical_digest_profiles_are_centralized_and_explicit(self) -> None:
+        value = {"label": "路由器"}
+
+        self.assertEqual(len(canonical_json_sha256(value)), 64)
+        self.assertEqual(len(strict_canonical_json_sha256(value)), 64)
+        self.assertNotEqual(
+            canonical_json_sha256(value),
+            strict_canonical_json_sha256(value),
+        )
+
     def test_packet_profile_retains_the_established_wire_format(self) -> None:
         identifier = UUID("7ff7d7dc-88c7-44df-8578-72b049c22500")
 

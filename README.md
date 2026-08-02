@@ -20,10 +20,16 @@ SRv6, EVPN multihoming, MPLS/L2/L3 VPNs, failover, packet evolution, and
 cross-layer inconsistency.
 
 > [!IMPORTANT]
-> The bundled launchers review the generated synthetic dump. The core command
-> can load an installed or directly named runtime-capable plug-in and an input
-> path, but it does not yet accept arbitrary uploads or perform production
-> multi-plug-in selection.
+> The bundled launchers review the generated synthetic dump. The core also has
+> an opt-in durable single-host control plane for upload queues, multi-plug-in
+> selection, tenant/project/workspace catalogs, multi-revision sessions, and
+> human review. Its HTTP boundary accepts a host-supplied verified identity and
+> enforces roles/scopes, but the built-in local adapter is not authentication.
+> The project does not provide TLS, distributed storage, or a hardened
+> plug-in sandbox/container. Durable probe and ingestion calls do run in
+> bounded, killable child processes by default, but those children inherit the
+> host user's operating-system privileges and are fault isolation, not a
+> security boundary.
 
 ## Start here
 
@@ -32,6 +38,7 @@ cross-layer inconsistency.
 | Run the bundled demo | [Run the demo](#run-the-demo) |
 | Learn what to inspect | [What to try](#what-to-try) |
 | Build a device plug-in | [Plug-in author quickstart](docs/plugin-author-quickstart.md) |
+| Run durable uploads, sessions, or review | [Durable control plane](docs/control-plane.md) |
 | Integrate with the API | [API payload contract](docs/api-contract.md) |
 | Understand the design | [Architecture and library decisions](docs/architecture.md) |
 | Regenerate sample data | [Sample input guide](samples/README.md) |
@@ -68,8 +75,16 @@ The setup script creates or updates the Python 3.12 environment and runs the
 core and demo Python suites. It installs the core and demo as separate editable
 distributions; the core distribution owns the generic browser assets, while
 its optional `web` extra supplies FastAPI and Uvicorn hosting support. The
-synthetic plug-in and fixtures remain demo-only. Before every normal launch, a
-fast outer-archive check confirms that the input contains the complete
+synthetic plug-in and fixtures remain demo-only. The launcher enables the
+local durable control plane by default at `.runtime\control-plane`; use
+`-ControlPlaneDir PATH` to choose another state directory. On Windows, its
+resolved path must fit within 131 UTF-16 code units so the complete private
+ingestion staging path remains within the portable legacy-compatible budget,
+even on hosts with optional long-path support. The listener remains loopback-only
+unless the explicitly unsafe
+`-TrustControlPlaneHeaders` development switch is also supplied. Before every
+normal launch, a fast outer-archive check confirms that the input contains the
+complete
 canonical full-scale node set, one checksum-matching generated dump pack per
 node, the SHA-256 digest of the canonical authoring save, and the fingerprint
 of the demo materializer that interpreted it. A missing archive is generated,
@@ -109,6 +124,7 @@ $demoArchive = python -X utf8 -m rsl_demo_generator `
   --ensure-launchable demo/fixtures/router-state-lab-demo.tgz --path-only
 router-dump-analyzer --plugin demo_router `
   --input $demoArchive `
+  --control-plane-dir .\.runtime\control-plane `
   --port 8876 --no-browser
 ```
 
@@ -121,6 +137,7 @@ $demoArchive = python -X utf8 -m rsl_demo_generator `
 python -m router_dump_analyzer `
   --plugin-module rsl_demo_plugin `
   --input $demoArchive `
+  --control-plane-dir .\.runtime\control-plane `
   --no-browser
 ```
 
@@ -151,7 +168,10 @@ The Linux launcher does not open a browser by default. Open
 The WSL launcher performs the same automatic multi-node suitability check.
 Use `--validate-fixture` for the additional full integrity check or
 `--rebuild-fixture` to regenerate and internally validate the corpus. The
-server stays in the foreground until you press `Ctrl+C`.
+server stays in the foreground until you press `Ctrl+C`. It enables durable
+local state at `.runtime/control-plane`; choose another directory with
+`--control-plane-dir PATH`. A non-loopback `--host` also requires the explicit
+development-only `--trust-control-plane-headers` override.
 
 ### Main URLs
 
@@ -160,11 +180,17 @@ server stays in the foreground until you press `Ctrl+C`.
 | `http://127.0.0.1:8765/` | Multi-node topology and route tracing |
 | `http://127.0.0.1:8765/topology` | Compatibility alias for the topology home |
 | `http://127.0.0.1:8765/node` | Individual-node temporal workspace |
-| `http://127.0.0.1:8765/docs` | Interactive API documentation |
+| `http://127.0.0.1:8765/docs` | Interactive API documentation; available only after a loopback launch with `--expose-api-docs` |
 | `http://127.0.0.1:8765/health` | Server and fixture health |
+| `http://127.0.0.1:8765/v1/control-plane/health` | Session-independent durable worker and queue health |
+| `http://127.0.0.1:8765/v1/control-plane/diagnostics/operational-events` | Process-local operational counters; requires `control-plane:admin` |
+| `http://127.0.0.1:8765/v1/control-plane/context` | Durable control-plane context; requires `X-Tenant-ID` and an enabled state directory (the bundled launcher enables one) |
 
 The topology page is the normal entry point. Select a device or endpoint there
 to open its node workspace with the same reconstruction context.
+The analysis application keeps OpenAPI JSON, Swagger UI, and ReDoc disabled by
+default. A loopback launch may opt in with `--expose-api-docs`; the command
+rejects that option for `0.0.0.0`, `::`, and every other non-loopback bind.
 
 ## What to try
 
@@ -213,6 +239,23 @@ to open its node workspace with the same reconstruction context.
 8. **Look for disagreement.** Review delayed or failed updates, changing next
    hops, asymmetric forwarding, and differences between control-plane,
    forwarding, and hardware-layer reachability.
+9. **Persist a review.** First admit the active dump through
+   `router-dump-ingest` into the intended project and workspace; starting the
+   browser server does not publish its startup input into the durable catalog.
+   Then expand **Durable review** above the normalized event log and enter
+   explicit tenant, project, workspace, and reviewer IDs. The page labels this
+   as trusted-header local development and resolves its active runtime
+   revision to exactly one catalog revision. If none or more than one match,
+   it keeps markers browser-only and performs no durable writes. Once
+   connected, select event/source rows to add or remove markers; select two or
+   more events to create a manual correlation. A read-only identity can still
+   inspect durable markers and generate reports, but mutation controls stay
+   disabled. Choose explicit revisions, a mutable session, or an immutable
+   session snapshot when copying or downloading the AI-friendly correlation
+   report. Ambiguous writes keep their retry identity across browser reloads;
+   the panel can discard unresolved writes for the connected scope or, with an
+   explicit warning, reset every browser scope. The node page still renders
+   only its active revision.
 
 Topology and route-path graphs support node dragging, background panning,
 touchpad gestures, pinch zoom, and Ctrl-wheel zoom. Hover or keyboard-focus
@@ -319,7 +362,7 @@ own device and protocol meaning.
 
 | Owner | Responsibilities |
 |---|---|
-| Core | The `router-dump-analyzer` executable, plug-in loading, FastAPI routes and lifecycle, frontend hosting, immutable revisions, safe archive inventory, source records, generic temporal storage, uncertainty, bounded queries, pagination, API contracts, collision-safe client publication and redaction, exact connectivity-domain/attachment joins over plug-in-declared keys, LPM, bounded recursive/multipath traversal, exact packet-state continuity and MTU arithmetic over matching declared bases, immutable flow direction, exact endpoint-goal and typed-policy comparison, bidirectional aggregation, cycle/limit handling, and the reusable browser application |
+| Core | The `router-dump-analyzer`, API-only `router-dump-server`, `router-dump-ingest`, `router-dump-maintain`, and read-only `router-dump-health` executables, plug-in loading, FastAPI routes and lifecycle, frontend hosting, tenant/project/workspace catalog, immutable fixtures and revisions, mutable multi-revision sessions, immutable session snapshots, durable upload queue and selection, admission quotas, bounded audited retention, review annotations and reports, safe archive inventory, source records, generic temporal storage, uncertainty, bounded queries, pagination, API contracts, collision-safe client publication and redaction, exact connectivity-domain/attachment joins over plug-in-declared keys, conservative cross-node corroboration, LPM, bounded recursive/multipath traversal, exact packet-state continuity and MTU arithmetic over matching declared bases, immutable flow direction, exact endpoint-goal and typed-policy comparison, bidirectional aggregation, cycle/limit handling, and the reusable browser application |
 | Device plug-ins | Dump recognition, input parsing, resource types and typed/compound keys, state transitions, relationships, forwarding-object projection, candidate paths and directional decisions, candidate rank/group semantics, connectivity-domain matcher/key meaning, packet-layer/action/overhead and disposition semantics, typed policy scopes, endpoint attachments and local terminal classification, topology classifications, consistency rules, route-resolution text, icons, and dashboard descriptors |
 | Federation/linker plug-ins | Matching endpoint and boundary claims between members, preserving or explicitly mapping compatible packet/scope contracts, and explaining inter-node connectivity without assuming every device uses the same plug-in |
 
@@ -381,6 +424,214 @@ python -m unittest discover -s state-dump-generator/tests `
 See the [demo guide’s compact corpus section](demo/README.md#compact-runtime-v2-conformance-corpus)
 for the separate generate/verify commands and the currently executable subset.
 
+## Durable ingestion and review
+
+The optional control plane keeps uploaded fixtures and published revisions in
+an explicit `tenant -> project -> workspace` catalog. A mutable session selects
+any number of exact fixture/revision pairs—including several revisions of the
+same node—while an immutable snapshot freezes one selected vector. Review
+annotations and manual event correlations live in a separate mutable overlay,
+so they never rewrite normalized history. Reports are deterministic,
+AI-friendly canonical JSON or Markdown and keep plug-in facts, human
+assertions, and conservative core corroboration separate. Each report requires
+one explicit bounded revision, session, or snapshot selector; omission never
+widens to the complete workspace. The v2 report wire encodes every declared
+core-owned nanosecond as a decimal string while preserving opaque plug-in
+payload keys and JSON value types. Cross-clock comparisons are labeled unknown
+rather than inventing an order. Unicode line/paragraph separators, NEL, every
+non-ASCII space separator (including NBSP), ZWSP, BOM, directional controls,
+and assigned blank Hangul fillers, Khmer inherent-vowel characters, the
+Braille blank glyph, and Egyptian hieroglyph blanks are made visible as escaped text
+throughout AI-facing exports. Combining grapheme joiner, unregistered or
+misplaced variation selectors, U+FFFC OBJECT REPLACEMENT CHARACTER, and
+private-use characters are also made explicit without rejecting the
+surrounding display label. U+FE0E/U+FE0F remain raw only when the immediately
+preceding base-selector pair is registered in the vendored Unicode 15 emoji
+variation table; each pair inside a ZWJ sequence is checked independently and
+repeated selectors on one base do not pass. All selectors remain invalid in
+identifiers. ZWNJ and ZWJ retain their shaping semantics. Literal backslash
+escape sequences stay distinct from escaped
+unsafe characters in canonical reports and their SHA-256 digests. The Khitan small-script filler retains its legitimate cluster-layout
+semantics inside visibly anchored text. Corroboration snapshots its
+bounded evidence so caller mutation cannot change a completed report.
+
+For a headless multi-fixture run:
+
+```powershell
+$env:PYTHONUTF8 = "1"
+router-dump-ingest --plugin demo_router `
+  --state-dir .\.runtime\control-plane `
+  --tenant example-tenant `
+  --project lab-project `
+  --workspace regression-2026-07 `
+  --input .\demo\fixtures\minimal-status.jsonl `
+  --node-hint router-1 `
+  --output .\artifacts\ingestion-result.json `
+  --pretty
+```
+
+Repeat `--input` for additional fixtures. The optional node hint and bounded
+JSON metadata are plug-in-visible parsing inputs; catalog and identity scope
+remain core-private. Run an analysis-independent, API-only service with an
+allowlisted installed plug-in and a deployment-owned identity resolver:
+
+```powershell
+router-dump-server --plugin your_plugin `
+  --state-dir .\.runtime\control-plane `
+  --identity-resolver-module deployment.identity:resolve_control_plane_identity `
+  --host 0.0.0.0 --port 8765
+```
+
+Repeat `--plugin` for more installed candidates; source development may repeat
+the mutually exclusive `--plugin-module PACKAGE[:ATTRIBUTE]` form. This server
+serves aggregate root `/health` and `/v1/control-plane`: it accepts no startup
+dump and mounts no analysis routes, frontend, or assets. OpenAPI, Swagger UI,
+and ReDoc are disabled by default. `--expose-api-docs` enables them only on a
+loopback listener; a non-loopback configuration is rejected. The resolver
+target must be a synchronous module-level
+callable that verifies credentials and returns a `ControlPlaneIdentity`. For
+loopback development only, replace the resolver option with
+`--trust-control-plane-headers`; the trusted-header adapter cannot be enabled
+on a non-loopback listener.
+The two health routes intentionally require no tenant identity and return only
+bounded aggregate serving/queue/telemetry status; they never expose scope IDs,
+paths, event fields, credentials, or exception text.
+The separate operational-diagnostics route is authenticated, requires the
+exact `control-plane:admin` role, sets `Cache-Control: no-store`, and exposes
+only process-local counters. It is an advisory troubleshooting snapshot, not
+a durable audit or compliance record, and resets when the process restarts.
+
+To mount the same control-plane routes beside one browser analysis, add
+`--control-plane-dir .\.runtime\control-plane` to `router-dump-analyzer`; the
+routes then appear under `/v1/control-plane`.
+On the default loopback listener this explicitly installs the local
+trusted-header development adapter. A non-loopback listener is rejected unless
+the unsafe development override is supplied; production ASGI hosting must
+install a resolver backed by verified credentials.
+The local adapter allowlists the exact listener host and mutation origin. It
+is safe against local DNS rebinding but still is not authentication.
+Fixture admission and revision publication are independently staged before
+their catalog calls. Recovery replays either exact operation idempotently; a
+lost publication response does not run the plug-in a second time. Catalog
+calls have their own deadline and, in the production-default `process` mode,
+run in a disposable spawned child. A publisher that ignores its context is
+terminated, killed if necessary, and reaped at the deadline. The built-in
+SQLite catalog reopens its durable database in that child and also bounds lock
+and database waits cooperatively. An ambiguous timeout keeps the exact outbox
+retryable, pins its artifact, and degrades health immediately until it is
+reconciled. Custom production publishers must be spawn-picklable (or implement
+pickling that reconstructs their client); trusted embeddings may explicitly
+select synchronous publisher `inline` mode, which has no enforced-cancellation
+claim. The browser
+follows bounded catalog/review pages, honors the context's `can_write` result,
+and reconciles ambiguous marker/correlation responses by stable client record
+and operation IDs. Annotation pages are bound to one audit watermark; one
+concurrent-change restart is allowed, after which the last confirmed
+same-scope marker view remains visible.
+Plug-in registries fingerprint the complete bounded import scope and fail
+closed by default when no executable identity can be derived. Packages use
+`package-sha256:`. When any PEP 420 namespace precedes the defining module,
+every search location of the first namespace ancestor participates in
+import-precedence order, even if the plug-in later enters a regular subpackage.
+A genuine top-level
+module uses the distinct `module-sha256:` identity instead of being mislabeled
+as a one-file package. Sourceless `.pyc`/`.pyo` modules fail closed because
+embedded build paths are not relocation-stable; their loader must supply an
+immutable artifact digest. Registry-derived identities are recalculated immediately
+before plug-in execution. The manifest-only
+compatibility fallback is available only to an explicitly opted-out local/test
+embedding (`allow_manifest_identity=True`) and cannot back durable execution.
+The durable servers and `router-dump-ingest` run plug-in probe and parsing in
+spawned child processes with a bounded deadline (300 seconds by default).
+Timeouts are killed and reaped, become durable import failures, and never
+publish a partial dataset. Plug-ins must therefore be importable and
+spawn-picklable. This protects the control-plane process from a hung or crashed
+plug-in; it does not remove the plug-in's filesystem, network, or host-user
+access. Programmatic embeddings may explicitly choose synchronous `inline`
+execution for trusted local/tests, but it has no timeout or bounded-cancellation
+claim; process mode is the only killable boundary.
+Client-visible failures use closed safe code/message pairs; arbitrary plug-in
+exception text stays in private diagnostics with no HTTP route.
+
+Retention is disabled by default. A versioned JSON policy can enforce logical
+tenant/workspace byte and import-count quotas even while deletion stays off.
+Preview one workspace without starting workers:
+
+```powershell
+router-dump-maintain `
+  --state-dir .\.runtime\control-plane `
+  --tenant example-tenant `
+  --project lab-project `
+  --workspace regression-2026-07 `
+  --policy .\retention-policy.json `
+  --output .\artifacts\retention-preview.json `
+  --pretty
+```
+
+The preview is deliberately lock-free and does not walk host orphan storage;
+its ingestion result says
+`host_storage_orphan_inventory="not_observed"`. Destructive execution performs
+the existing bounded host scan and reports `"bounded_host_scan"`, so zero
+preview counts cannot be mistaken for complete host coverage.
+
+For a read-only CI or operator check that does not load a plug-in or analysis
+session:
+
+```powershell
+router-dump-health --state-dir .\.runtime\control-plane --pretty
+```
+
+It reports pending, user-selection, and stalled queue counts. Exit `0` is
+healthy, `2` is degraded, and `1` means the state could not be inspected.
+
+Destructive maintenance additionally requires `--execute`, `--actor`, and a
+stable `--operation-id`; the HTTP equivalent requires the separate admin role
+and `Idempotency-Key`. Catalog, review, and ingestion journals make exact
+replay crash-resumable while rejecting changed actor, policy, or clock inputs
+before mutation. See the
+[retention guide](docs/control-plane.md#7-retention-quotas-and-maintenance)
+for the policy example and safeguards.
+The explicit destructive host pass also reclaims only exact, stale
+core-generated blob/dataset `.partial` and `.corrupt-...` crash artifacts under
+activity/install locks; live publications and arbitrary dotfiles are preserved.
+Anonymous programmatic runs resume any older same-scope pending cleanup journal
+before creating another plan.
+
+Core also emits bounded best-effort operational events through the standard
+Python logger `router_dump_analyzer.operations`. Records use schema
+`rda.operational.v1` and cover ingestion catalog calls and failures, worker
+failure/exit signals, retention planning/truncation, cleanup batches, replay,
+completion, and centrally translated control-plane access denials.
+The fixed-capacity handoff never blocks ingestion or retention and may drop
+telemetry; durable queue, outbox, cleanup-progress, and audit rows remain the
+source of truth. Both health routes publish aggregate accepted, dropped,
+delivery-failure, queue-depth/capacity, and logging-worker-liveness counters;
+any observed loss degrades health without exposing event payloads. Events never
+include dump content, filesystem paths, raw tenant/identity/header values, or
+exception text. Access-denial events use closed phase/reason/route fields,
+geometric/time coalescing, permanent admitted-key state, a permanent overflow
+bucket after the key bound is full, and an independent global token-bucket
+admission ceiling. New keys cannot reset first-occurrence eligibility through
+eviction. An optional process-random HMAC token is derived only from the
+trusted resolved tenant and is emitted only when bounded candidate state
+proves that tenant is a strict majority of the sampled window; uncertainty
+omits the token. Phase and reason are exact closed enums and are revalidated at
+the reporter and operational-record boundaries. Intentional sampling, global
+admission suppression, overflow observations, and real enqueue loss have
+separate process-local counters. Anonymous health keeps its aggregate-only
+schema; the protected diagnostics endpoint exposes the payload-free per-event
+and sampling breakdown. A deployment configures handlers, formatting, and
+export through ordinary Python logging rather than a plug-in hook.
+
+Integer-bearing API inputs use an explicit domain rather than inheriting one
+generic bound. Nanosecond instants use signed 64-bit bounds and are normally
+returned as decimal strings. Browser-visible numeric paging offsets are
+limited to `0..9007199254740991` (`2^53-1`), with smaller route-specific caps
+where declared; `2^53` is rejected instead of being echoed imprecisely.
+The [durable control-plane guide](docs/control-plane.md) documents the exact
+state machine, route table, optimistic concurrency, idempotency, recovery,
+security boundary, and core-versus-plug-in ownership.
+
 ## Developer workflows
 
 ### Run the checks
@@ -388,6 +639,7 @@ for the separate generate/verify commands and the currently executable subset.
 With `router-dump-analyzer-demo` activated:
 
 ```powershell
+python -m pip install -e .\state-dump-generator
 python -m ruff check --select E9,F63,F7,F82 src demo state-dump-generator/src tests demo/tests state-dump-generator/tests
 python -m mypy --python-version 3.12 --ignore-missing-imports --check-untyped-defs src/router_dump_analyzer/canonical.py src/router_dump_analyzer/route_trace_core.py src/router_dump_analyzer/topology_core.py
 python -m unittest discover -s tests -v
@@ -449,6 +701,7 @@ the demo guide owns the current projection and evidence contract.
 | Path | Contents |
 |---|---|
 | [`src/router_dump_analyzer/`](src/router_dump_analyzer) | Protocol-neutral core contracts and engines, the only CLI/FastAPI application and routes, runtime lifecycle, plug-in loaders, and frontend host |
+| [`docs/control-plane.md`](docs/control-plane.md) | Durable catalog, queue, sessions, review overlay, reports, HTTP/CLI use, and operational boundary |
 | [`demo/rsl_demo_plugin/`](demo/rsl_demo_plugin) | The standalone example plug-in: parser and presentation policy, non-web fixture input/session providers, and topology/route fixture policy; no executable or web application |
 | [`demo/router-state-lab-default.scenario.json`](demo/router-state-lab-default.scenario.json) | Canonical human-authored scenario save consumed by future demo generations |
 | [`demo/rsl_demo_generator/`](demo/rsl_demo_generator) | The separate standard-library scenario adapter and scalable mock-dump materializer, with an explicit one-way dependency on the example plug-in's declared fixture semantics |
@@ -465,6 +718,7 @@ the demo guide owns the current projection and evidence contract.
 | Document | Use it for |
 |---|---|
 | [Architecture and library decisions](docs/architecture.md) | System boundaries, temporal model, reconstruction, performance, and security |
+| [Durable control plane](docs/control-plane.md) | Local durable ingestion, catalogs, sessions, annotations, reports, routes, and operations |
 | [API payload contract](docs/api-contract.md) | External state, topology, history, timeline, correlation, and route APIs |
 | [Plug-in author quickstart](docs/plugin-author-quickstart.md) | A linear, copy-paste path to a first plug-in |
 | [Plug-in contract and lifecycle](docs/plugin-contract.md) | Normative hooks, identity, provenance, topology, routes, and conformance |
@@ -476,13 +730,27 @@ the demo guide owns the current projection and evidence contract.
 ## Current scope
 
 Router State Lab is an implementation-oriented design package, deterministic
-conformance corpus, and interactive review demo. It is not yet a production
-analyzer. Core-owned runtime v2 can safely inventory and normalize one local
-file, directory, tar, or ZIP through a standard parser plug-in, but arbitrary
-upload selection, built-in CTF decoding, isolated worker execution, persistent
-multi-user storage, authentication, and deployment hardening remain future
-work. Runtime-v2 temporal/topology/route providers are also not yet supplied.
-Scoped relationship-collection completeness is retained during ingestion but
-not yet materialized into public relationship interval/query semantics.
-The production direction is documented without presenting those capabilities
-as already implemented.
+conformance corpus, interactive review demo, and durable single-host ingestion
+profile. Core-owned runtime v2 safely inventories and normalizes a local file,
+directory, tar, or ZIP through a standard parser plug-in. The optional control
+plane adds bounded raw-body uploads, deterministic multi-plug-in probing and
+selection, content-addressed artifacts, a transactional SQLite queue,
+tenant/project/workspace catalogs, immutable fixture/revision publication,
+crash-recoverable fixture-admission and revision-publication outboxes,
+multi-revision sessions and snapshots,
+an audited mutable review overlay, admission quotas, and bounded audited
+single-host retention.
+
+That is not a claim of a complete multi-host service. Built-in CTF decoding,
+hardened plug-in sandboxes/containers with OS resource and network controls,
+credential authentication, TLS, distributed databases/object storage/queues,
+full telemetry export/alerting, distributed retention, and backup remain
+deployment or future work. The shipped durable profile does provide a bounded
+non-blocking operational event channel and killable, deadline-bounded
+child processes for plug-in probe and parsing, but they run as the host user
+and are not a security sandbox. The HTTP boundary can enforce roles and
+project/workspace scopes returned by a host identity resolver; the CLI's
+loopback adapter merely trusts headers. Runtime-v2 temporal/topology/route
+providers are also not yet supplied. Scoped relationship-collection
+completeness is retained during ingestion but not yet materialized into public
+relationship interval/query semantics.

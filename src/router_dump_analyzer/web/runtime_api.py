@@ -6,14 +6,29 @@ import json
 import threading
 from bisect import bisect_left, bisect_right
 from collections import Counter
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractContextManager
 from contextvars import copy_context
-from typing import Any, AsyncIterator
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any, NoReturn
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, Query, Request
+from fastapi import HTTPException as FastAPIHTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
+from fastapi.routing import APIRoute
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from router_dump_analyzer.history_search_core import HistorySearchCapacityError
+from router_dump_analyzer.multi_node_route import MultiNodeRouteRequestError
+from router_dump_analyzer.multi_node_topology import MultiNodeTopologyRequestError
+from router_dump_analyzer.plugin_api import MAX_TIMESTAMP_NS, MIN_TIMESTAMP_NS
+from router_dump_analyzer.public_text import (
+    bounded_public_error_detail,
+)
 from router_dump_analyzer.source_record_core import (
+    SourceRecordRequestError,
     project_source_record_for_log,
     project_source_record_text_selection,
     query_source_records,
@@ -21,14 +36,18 @@ from router_dump_analyzer.source_record_core import (
     source_record_event_uids,
     source_record_haystack,
 )
-from router_dump_analyzer.history_search_core import HistorySearchCapacityError
 from router_dump_analyzer.temporal_core import (
     TEMPORAL_ORDER_VERSION,
     temporal_integer,
     temporal_order_key,
 )
-from router_dump_analyzer.value_core import parse_decimal_integer
+from router_dump_analyzer.temporal_topology import TemporalTopologyRequestError
+from router_dump_analyzer.value_core import (
+    MAX_JSON_SAFE_INTEGER,
+    parse_decimal_integer,
+)
 from router_dump_analyzer.web.runtime_context import current_runtime_session
+from router_dump_analyzer.web.service_api import service_router
 
 
 def _data_service() -> Any:
@@ -153,6 +172,172 @@ MAX_EVENT_LOG_SEARCH_LENGTH = 256
 MAX_EVENT_LOG_UID_LENGTH = 256
 MAX_EVENT_LOG_SELECTION_RANGES = 128
 MAX_EVENT_LOG_SELECTION_ITEMS = 5_000
+_MAX_PUBLIC_ERROR_DETAIL_CHARACTERS = 1_024
+
+
+class _RuntimeHTTPResponse(FastAPIHTTPException):
+    """An HTTP response explicitly owned by this adapter."""
+
+    def __init__(
+        self,
+        status_code: int,
+        detail: Any = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(
+            status_code=status_code,
+            detail=bounded_public_error_detail(
+                detail,
+                fallback="analysis request was rejected",
+                maximum_characters=_MAX_PUBLIC_ERROR_DETAIL_CHARACTERS,
+            ),
+            headers=headers,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeApiErrorPolicy:
+    status_code: int
+    public_detail: str
+    expose_message: bool = False
+
+
+# This inventory is deliberately exact. MRO resolution chooses the most
+# specific declared policy independently of table order, while message
+# exposure remains an exact-class capability. A new subclass therefore cannot
+# inherit permission to publish arbitrary exception text.
+_RUNTIME_API_ERROR_POLICY_BY_CLASS: Mapping[
+    type[Exception], _RuntimeApiErrorPolicy
+] = MappingProxyType(
+    {
+        TemporalTopologyRequestError: _RuntimeApiErrorPolicy(
+            422,
+            "temporal topology request was rejected",
+            expose_message=True,
+        ),
+        MultiNodeRouteRequestError: _RuntimeApiErrorPolicy(
+            422,
+            "route trace request was rejected",
+            expose_message=True,
+        ),
+        MultiNodeTopologyRequestError: _RuntimeApiErrorPolicy(
+            422,
+            "topology request was rejected",
+            expose_message=True,
+        ),
+        SourceRecordRequestError: _RuntimeApiErrorPolicy(
+            422,
+            "source-record request was rejected",
+            expose_message=True,
+        ),
+        # Bare built-ins can originate in storage, paths, plug-ins, or
+        # integration code. They are never a caller-validation contract.
+        ValueError: _RuntimeApiErrorPolicy(
+            500,
+            "internal analysis operation failed",
+        ),
+        TypeError: _RuntimeApiErrorPolicy(
+            500,
+            "internal analysis operation failed",
+        ),
+        TimeoutError: _RuntimeApiErrorPolicy(504, "analysis operation timed out"),
+    }
+)
+
+_RUNTIME_API_REQUEST_ERROR_ROOTS = (
+    TemporalTopologyRequestError,
+    MultiNodeTopologyRequestError,
+    SourceRecordRequestError,
+)
+
+
+def _runtime_api_error_policy(
+    error: Exception,
+) -> _RuntimeApiErrorPolicy | None:
+    """Resolve the nearest explicitly declared policy through the error MRO."""
+
+    for error_class in type(error).__mro__:
+        policy = _RUNTIME_API_ERROR_POLICY_BY_CLASS.get(error_class)
+        if policy is not None:
+            return policy
+    return None
+
+
+def _bounded_runtime_public_error_detail(
+    error: Exception,
+    policy: _RuntimeApiErrorPolicy,
+) -> str:
+    """Return exact safe request text or the policy's closed fallback."""
+
+    fallback = policy.public_detail
+    if (
+        not policy.expose_message
+        or _RUNTIME_API_ERROR_POLICY_BY_CLASS.get(type(error)) is not policy
+    ):
+        return fallback
+    return bounded_public_error_detail(
+        str(error),
+        fallback=fallback,
+        maximum_characters=_MAX_PUBLIC_ERROR_DETAIL_CHARACTERS,
+    )
+
+
+def _raise_runtime_api_error(error: Exception) -> NoReturn:
+    if type(error) is _RuntimeHTTPResponse:
+        raise error
+    if isinstance(error, RequestValidationError):
+        raise _RuntimeHTTPResponse(
+            status_code=422,
+            detail="request validation failed",
+        ) from error
+    if isinstance(error, StarletteHTTPException):
+        # This translator is entered only after a data/provider operation was
+        # caught by `_runtime_api_call`. A framework HTTPException raised there
+        # is not endpoint-owned validation and must not smuggle arbitrary status
+        # or detail through the public boundary.
+        raise _RuntimeHTTPResponse(
+            status_code=500,
+            detail="internal analysis operation failed",
+        ) from error
+    policy = _runtime_api_error_policy(error)
+    if policy is None:
+        raise error
+    raise _RuntimeHTTPResponse(
+        status_code=policy.status_code,
+        detail=_bounded_runtime_public_error_detail(error, policy),
+    ) from error
+
+
+def _runtime_api_call(
+    operation: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    try:
+        return operation(*args, **kwargs)
+    except Exception as error:  # noqa: BLE001 - closed policy re-raises unknowns
+        _raise_runtime_api_error(error)
+
+
+class _BoundedRuntimeApiRoute(APIRoute):
+    """Apply the public error policy to the complete request lifecycle.
+
+    The route handler returned by FastAPI includes dependency resolution and
+    Python argument evaluation.  Keeping the fence here therefore covers
+    provider acquisition as well as the selected provider method calls that
+    use ``_runtime_api_call`` directly.
+    """
+
+    def get_route_handler(self) -> Callable[[Request], Any]:
+        original = super().get_route_handler()
+
+        async def bounded(request: Request) -> Any:
+            try:
+                return await original(request)
+            except Exception as error:  # noqa: BLE001 - closed boundary policy
+                _raise_runtime_api_error(error)
+
+        return bounded
 
 
 def _body_integer(
@@ -160,14 +345,14 @@ def _body_integer(
     field: str,
     default: int,
     *,
-    minimum: int | None = None,
-    maximum: int | None = None,
+    minimum: int | None,
+    maximum: int | None,
 ) -> int:
-    """Read one integer-shaped JSON field without accepting null/bool/float.
+    """Read one explicitly bounded integer-shaped JSON field.
 
-    Nanosecond values are commonly transported as decimal strings so browsers
-    do not lose precision. The core endpoints accept those strings, but
-    malformed JSON shapes are client errors rather than server errors.
+    Bounds are mandatory at every call site. A deliberately unbounded side
+    must therefore be written as ``None`` instead of inheriting a semantically
+    unrelated domain by omission.
     """
 
     if field not in body:
@@ -176,21 +361,37 @@ def _body_integer(
         try:
             value = parse_decimal_integer(body[field], field)
         except ValueError as error:
-            raise HTTPException(
+            raise _RuntimeHTTPResponse(
                 status_code=422,
-                detail=str(error),
+                detail=f"{field} must be an integer or decimal integer string",
             ) from error
     if minimum is not None and value < minimum:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail=f"{field} must be at least {minimum}",
         )
     if maximum is not None and value > maximum:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail=f"{field} must be at most {maximum}",
         )
     return value
+
+
+def _body_timestamp_ns(
+    body: dict[str, Any],
+    field: str,
+    default: int,
+) -> int:
+    """Read one signed-64-bit nanosecond field from a JSON request body."""
+
+    return _body_integer(
+        body,
+        field,
+        default,
+        minimum=MIN_TIMESTAMP_NS,
+        maximum=MAX_TIMESTAMP_NS,
+    )
 
 
 def _body_string_list(body: dict[str, Any], field: str) -> list[str]:
@@ -200,7 +401,7 @@ def _body_string_list(body: dict[str, Any], field: str) -> list[str]:
     if not isinstance(raw, list) or any(
         not isinstance(item, str) or not item for item in raw
     ):
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail=f"{field} must be an array of non-empty strings",
         )
@@ -212,7 +413,7 @@ def _body_object_list(body: dict[str, Any], field: str) -> list[dict[str, Any]]:
         return []
     raw = body[field]
     if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail=f"{field} must be an array of objects",
         )
@@ -224,7 +425,7 @@ def _body_boolean(body: dict[str, Any], field: str, default: bool = False) -> bo
         return default
     raw = body[field]
     if not isinstance(raw, bool):
-        raise HTTPException(status_code=422, detail=f"{field} must be a boolean")
+        raise _RuntimeHTTPResponse(status_code=422, detail=f"{field} must be a boolean")
     return raw
 
 
@@ -252,7 +453,9 @@ async def _bind_request_revision_scope(
 
 api_router = APIRouter(
     dependencies=[Depends(_bind_request_revision_scope)],
+    route_class=_BoundedRuntimeApiRoute,
 )
+api_router.include_router(service_router)
 
 
 def _require_revision_store():
@@ -260,7 +463,7 @@ def _require_revision_store():
 
     store = revision_store()
     if store is None:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=503,
             detail="analysis input is not open",
         )
@@ -272,7 +475,7 @@ def _require_revision(revision_id: str) -> None:
     try:
         store.revision(revision_id)
     except KeyError as error:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=404,
             detail="unknown node revision",
         ) from error
@@ -283,7 +486,7 @@ def _temporal_topology(revision_id: str | None = None) -> Any:
 
     provider = current_runtime_session().temporal_provider
     if provider is None:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=501,
             detail="the loaded plug-in does not provide temporal topology",
         )
@@ -293,7 +496,7 @@ def _temporal_topology(revision_id: str | None = None) -> Any:
 
     service = provider.for_revision(revision_id, _data_service())
     if not isinstance(service, TemporalTopologyService):
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=500,
             detail="temporal provider returned a non-core query service",
         )
@@ -301,25 +504,19 @@ def _temporal_topology(revision_id: str | None = None) -> Any:
 
 
 def _temporal_topology_query(body: dict[str, Any]) -> dict[str, Any]:
-    try:
-        revision_id = current_revision_id(load_dataset())
-        return _temporal_topology(revision_id).query(body)
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+    revision_id = current_revision_id(load_dataset())
+    return _runtime_api_call(_temporal_topology(revision_id).query, body)
 
 
 def _temporal_topology_changes_query(body: dict[str, Any]) -> dict[str, Any]:
-    try:
-        revision_id = current_revision_id(load_dataset())
-        return _temporal_topology(revision_id).query_changes(body)
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+    revision_id = current_revision_id(load_dataset())
+    return _runtime_api_call(_temporal_topology(revision_id).query_changes, body)
 
 
 def _multi_node_topology() -> Any:
     provider = current_runtime_session().topology_provider
     if provider is None:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=501,
             detail="the loaded plug-in does not provide multi-node topology",
         )
@@ -329,7 +526,7 @@ def _multi_node_topology() -> Any:
 
     service = provider.get()
     if not isinstance(service, MultiNodeTopologyService):
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=500,
             detail="topology provider returned a non-core query service",
         )
@@ -339,7 +536,7 @@ def _multi_node_topology() -> Any:
 def _multi_node_route() -> Any:
     provider = current_runtime_session().route_provider
     if provider is None:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=501,
             detail="the loaded plug-in does not provide route tracing",
         )
@@ -347,24 +544,21 @@ def _multi_node_route() -> Any:
 
     service = provider.get()
     if not isinstance(service, MultiNodeRouteService):
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=500,
             detail="route provider returned a non-core query service",
         )
     return service
 
 
-def _multi_node_call(operation, *args):
-    try:
-        return operation(*args)
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+def _multi_node_call(operation: Callable[..., Any], *args: Any) -> Any:
+    return _runtime_api_call(operation, *args)
 
 
 def _require_topology_assembly(assembly_id: str) -> None:
     store = _require_revision_store()
     if assembly_id != store.assembly.assembly_id:
-        raise HTTPException(status_code=404, detail="unknown topology assembly")
+        raise _RuntimeHTTPResponse(status_code=404, detail="unknown topology assembly")
 
 
 def _active_topology_assembly_id() -> str:
@@ -461,7 +655,7 @@ def _correlation_payload(body: dict[str, Any]) -> dict[str, Any]:
     dataset = load_dataset()
     if has_indexed_history(dataset):
         return _indexed_correlation_payload(dataset, body)
-    timestamp_ns = _body_integer(
+    timestamp_ns = _body_timestamp_ns(
         body,
         "time_ns",
         int(_analysis_metadata(dataset)["capture_ns"]),
@@ -476,10 +670,10 @@ def _correlation_payload(body: dict[str, Any]) -> dict[str, Any]:
     requested_roots = _body_string_list(body, "resource_ids")
     direction_value = body.get("direction", "both")
     if not isinstance(direction_value, str):
-        raise HTTPException(status_code=422, detail="direction must be a string")
+        raise _RuntimeHTTPResponse(status_code=422, detail="direction must be a string")
     direction = direction_value
     if direction not in {"incoming", "outgoing", "both"}:
-        raise HTTPException(status_code=422, detail="direction must be incoming, outgoing or both")
+        raise _RuntimeHTTPResponse(status_code=422, detail="direction must be incoming, outgoing or both")
     depth = _body_integer(body, "depth", 3, minimum=0, maximum=20)
     max_nodes = _body_integer(
         body,
@@ -587,24 +781,24 @@ def _indexed_correlation_payload(
 
     runtime = history_runtime(dataset)
     if runtime is None:  # pragma: no cover - guarded by the caller
-        raise HTTPException(status_code=500, detail="scale indexes are unavailable")
-    timestamp_ns = _body_integer(
+        raise _RuntimeHTTPResponse(status_code=500, detail="scale indexes are unavailable")
+    timestamp_ns = _body_timestamp_ns(
         body,
         "time_ns",
         int(_analysis_metadata(dataset)["capture_ns"]),
     )
     direction_value = body.get("direction", "both")
     if not isinstance(direction_value, str):
-        raise HTTPException(status_code=422, detail="direction must be a string")
+        raise _RuntimeHTTPResponse(status_code=422, detail="direction must be a string")
     direction = direction_value
     if direction not in {"incoming", "outgoing", "both"}:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail="direction must be incoming, outgoing or both",
         )
     depth = _body_integer(body, "depth", 3, minimum=0, maximum=20)
     if depth < 0 or depth > 20:
-        raise HTTPException(status_code=422, detail="depth must be between 0 and 20")
+        raise _RuntimeHTTPResponse(status_code=422, detail="depth must be between 0 and 20")
     relation_types = set(_body_string_list(body, "relation_types"))
     requested_roots = _body_string_list(body, "resource_ids")
     defaulted = not requested_roots
@@ -780,12 +974,17 @@ def _indexed_correlation_payload(
     }
 
 
-@api_router.get("/health")
-def health() -> dict[str, Any]:
-    revision_store = _require_revision_store()
-    dataset = load_dataset(revision_store.default_revision_id)
+def analysis_health_projection() -> dict[str, Any]:
+    """Project the opened analysis session for the shared health route.
+
+    The shared service boundary validates this result and converts every
+    exception or malformed provider value into a stable degraded response.
+    """
+
+    opened_revision_store = revision_store()
+    dataset = load_dataset(opened_revision_store.default_revision_id)
     runtime = history_runtime(dataset)
-    search_status = (
+    search_status: Any = (
         runtime.event_search.status_snapshot()
         if runtime is not None
         else {
@@ -795,50 +994,38 @@ def health() -> dict[str, Any]:
             "backend": "eager",
         }
     )
-    response = {
-        "status": "ok",
+    metadata = _analysis_metadata(dataset)
+    revisions = tuple(opened_revision_store.assembly.revisions)
+    return {
+        "analysis_ready": True,
         "revision_id": current_revision_id(dataset),
-        "mode": str(_analysis_metadata(dataset).get("mode", "analysis")),
-        "event_count": int(_analysis_metadata(dataset).get("event_count", 0)),
-        "matched_event_count": int(
-            _analysis_metadata(dataset).get(
-                "matched_event_count",
-                _analysis_metadata(dataset).get("event_count", 0),
-            )
+        "mode": metadata.get("mode", "analysis"),
+        "event_count": metadata.get("event_count", 0),
+        "matched_event_count": metadata.get(
+            "matched_event_count",
+            metadata.get("event_count", 0),
         ),
-        "resource_count": int(_analysis_metadata(dataset).get("resource_count", 0)),
-        "source_record_count": int(
-            _analysis_metadata(dataset).get(
-                "source_record_count",
-                len(dataset.get("source_records", [])),
-            )
+        "resource_count": metadata.get("resource_count", 0),
+        "source_record_count": metadata.get(
+            "source_record_count",
+            len(dataset.get("source_records", [])),
         ),
-        "history_search_ready": bool(search_status["ready"]),
-        "history_search_document_count": int(search_status["document_count"]),
-        "history_search_storage": str(search_status["storage"]),
-        "history_search_backend": str(search_status["backend"]),
-    }
-    if revision_store is not None:
-        response["assembly"] = {
-            "assembly_id": revision_store.assembly.assembly_id,
-            "node_count": len(revision_store.assembly.revisions),
+        "history_search_ready": search_status["ready"],
+        "history_search_document_count": search_status["document_count"],
+        "history_search_storage": search_status["storage"],
+        "history_search_backend": search_status["backend"],
+        "assembly": {
+            "assembly_id": opened_revision_store.assembly.assembly_id,
+            "node_count": len(revisions),
             "coverage_case_count": len(
-                revision_store.assembly.coverage_case_ids
+                opened_revision_store.assembly.coverage_case_ids
             ),
-            "events_per_node_min": min(
-                item.event_count for item in revision_store.assembly.revisions
-            ),
-            "resources_per_node_min": min(
-                item.resource_count for item in revision_store.assembly.revisions
-            ),
-            "resources_per_node_max": max(
-                item.resource_count for item in revision_store.assembly.revisions
-            ),
-            "loaded_revision_ids": list(
-                revision_store.loaded_revision_ids()
-            ),
-        }
-    return response
+            "events_per_node_min": min(item.event_count for item in revisions),
+            "resources_per_node_min": min(item.resource_count for item in revisions),
+            "resources_per_node_max": max(item.resource_count for item in revisions),
+            "loaded_revision_ids": list(opened_revision_store.loaded_revision_ids()),
+        },
+    }
 
 
 def _client_workspace_json() -> bytes:
@@ -1221,34 +1408,42 @@ def node_workspace_dataset(
     plugin_id: str | None = None,
     projection_id: str | None = None,
     status_perspective_id: str | None = None,
-    time_ns: int | None = None,
+    time_ns: int | None = Query(
+        default=None,
+        ge=MIN_TIMESTAMP_NS,
+        le=MAX_TIMESTAMP_NS,
+    ),
     basis_kind: str | None = None,
-    basis_offset_ns: int | None = None,
+    basis_offset_ns: int | None = Query(
+        default=None,
+        ge=MIN_TIMESTAMP_NS,
+        le=MAX_TIMESTAMP_NS,
+    ),
     clock_domain: str = "utc",
     clock_policy: str = "best_effort",
 ) -> dict[str, Any]:
     """Return one exact member revision used by the fabric view."""
 
     if basis_kind not in {None, "absolute_time", "relative_to_watermark"}:
-        raise HTTPException(status_code=422, detail="unsupported node workspace basis_kind")
+        raise _RuntimeHTTPResponse(status_code=422, detail="unsupported node workspace basis_kind")
     if time_ns is not None and basis_offset_ns is not None:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail="time_ns and basis_offset_ns cannot both be supplied",
         )
     if basis_kind == "absolute_time":
         if time_ns is None:
-            raise HTTPException(
+            raise _RuntimeHTTPResponse(
                 status_code=422,
                 detail="absolute_time requires time_ns",
             )
         if basis_offset_ns is not None:
-            raise HTTPException(
+            raise _RuntimeHTTPResponse(
                 status_code=422,
                 detail="absolute_time does not accept basis_offset_ns",
             )
     elif basis_kind == "relative_to_watermark" and time_ns is not None:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail="relative_to_watermark does not accept time_ns",
         )
@@ -1260,7 +1455,7 @@ def node_workspace_dataset(
         descriptor = store.revision_for_node(node_id)
         client = client_dataset(node_id=node_id)
     except KeyError as error:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=404,
             detail="unknown topology member",
         ) from error
@@ -1570,34 +1765,56 @@ def resources(
     return {"items": items, "count": len(items), "next_cursor": None}
 
 
+def _validate_resource_table_view_id(
+    dataset: dict[str, Any],
+    view_id: str | None,
+) -> None:
+    """Reject an unknown caller-owned view before entering data-service code."""
+
+    if view_id is None:
+        return
+    descriptors = (
+        dataset.get("resource_table_view_descriptors")
+        or dataset.get("schema", {}).get("resource_table_views", [])
+    )
+    if not any(
+        isinstance(item, dict) and item.get("view_id") == view_id
+        for item in descriptors
+    ):
+        raise _RuntimeHTTPResponse(status_code=400, detail="unknown resource table view")
+
+
 @api_router.get("/v1/revisions/{revision_id:path}/resources/at")
 def resource_tables_at(
     revision_id: str,
-    time_ns: int | None = None,
+    time_ns: int | None = Query(
+        default=None,
+        ge=MIN_TIMESTAMP_NS,
+        le=MAX_TIMESTAMP_NS,
+    ),
     kind: list[str] = Query(default=[]),
     layer: list[str] = Query(default=[]),
     search: str | None = None,
     view: str | None = None,
     limit: int = Query(default=500, ge=1, le=1000),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=MAX_JSON_SAFE_INTEGER),
 ) -> dict[str, Any]:
     _require_revision(revision_id)
     dataset = load_dataset()
+    _validate_resource_table_view_id(dataset, view)
     timestamp_ns = int(
         _analysis_metadata(dataset)["capture_ns"] if time_ns is None else time_ns
     )
-    try:
-        return resources_at(
-            timestamp_ns,
-            kinds=set(kind) or None,
-            layers=set(layer) or None,
-            search=search,
-            limit=limit if has_indexed_history(dataset) or view else None,
-            offset=offset,
-            view_id=view,
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+    return _runtime_api_call(
+        resources_at,
+        timestamp_ns,
+        kinds=set(kind) or None,
+        layers=set(layer) or None,
+        search=search,
+        limit=limit if has_indexed_history(dataset) or view else None,
+        offset=offset,
+        view_id=view,
+    )
 
 
 @api_router.post("/v1/revisions/{revision_id:path}/resources/query")
@@ -1609,34 +1826,39 @@ def resource_tables_query(
     dataset = load_dataset()
     view_id = body.get("view_id")
     if view_id is not None and not isinstance(view_id, str):
-        raise HTTPException(status_code=422, detail="view_id must be a string")
+        raise _RuntimeHTTPResponse(status_code=422, detail="view_id must be a string")
+    _validate_resource_table_view_id(dataset, view_id)
     kinds = _body_string_list(body, "kinds")
     layers = _body_string_list(body, "layers")
     if "search" in body and body["search"] is not None and not isinstance(
         body["search"], str
     ):
-        raise HTTPException(status_code=422, detail="search must be a string or null")
-    timestamp_ns = _body_integer(
+        raise _RuntimeHTTPResponse(status_code=422, detail="search must be a string or null")
+    timestamp_ns = _body_timestamp_ns(
         body,
         "time_ns",
         int(_analysis_metadata(dataset)["capture_ns"]),
     )
-    offset = _body_integer(body, "offset", 0, minimum=0)
+    offset = _body_integer(
+        body,
+        "offset",
+        0,
+        minimum=0,
+        maximum=MAX_JSON_SAFE_INTEGER,
+    )
     limit = None
     if "limit" in body:
         limit = _body_integer(body, "limit", 500, minimum=1, maximum=1000)
-    try:
-        return resources_at(
-            timestamp_ns,
-            kinds=set(kinds) or None,
-            layers=set(layers) or None,
-            search=body.get("search"),
-            limit=limit if has_indexed_history(dataset) or view_id else None,
-            offset=offset,
-            view_id=view_id,
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+    return _runtime_api_call(
+        resources_at,
+        timestamp_ns,
+        kinds=set(kinds) or None,
+        layers=set(layers) or None,
+        search=body.get("search"),
+        limit=limit if has_indexed_history(dataset) or view_id else None,
+        offset=offset,
+        view_id=view_id,
+    )
 
 
 @api_router.post("/v1/revisions/{revision_id:path}/dashboards/query")
@@ -1653,7 +1875,7 @@ def dashboards_query(
 
     _require_revision(revision_id)
     dataset = load_dataset()
-    timestamp_ns = _body_integer(
+    timestamp_ns = _body_timestamp_ns(
         body,
         "time_ns",
         int(_analysis_metadata(dataset)["capture_ns"]),
@@ -1739,7 +1961,7 @@ def _bounded_history_filter_values(
 ) -> list[str]:
     values = _body_string_list(body, field)
     if len(values) > MAX_EVENT_LOG_FILTER_VALUES:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail=(
                 f"{field} must contain at most "
@@ -1747,7 +1969,7 @@ def _bounded_history_filter_values(
             ),
         )
     if any(len(value) > MAX_EVENT_LOG_FILTER_LENGTH for value in values):
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail=(
                 f"{field} values must be at most "
@@ -1764,14 +1986,14 @@ def _selected_history_range(
     if not supplied:
         return None
     if len(supplied) != 2:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail="start_ns and end_ns must be supplied together",
         )
-    start_ns = _body_integer(body, "start_ns", 0)
-    end_ns = _body_integer(body, "end_ns", 0)
+    start_ns = _body_timestamp_ns(body, "start_ns", 0)
+    end_ns = _body_timestamp_ns(body, "end_ns", 0)
     if end_ns < start_ns:
-        raise HTTPException(status_code=422, detail="end_ns must be >= start_ns")
+        raise _RuntimeHTTPResponse(status_code=422, detail="end_ns must be >= start_ns")
     return start_ns, end_ns
 
 
@@ -1780,11 +2002,11 @@ def _event_log_locate(body: dict[str, Any]) -> tuple[str, str] | None:
         return None
     raw = body["locate"]
     if not isinstance(raw, dict):
-        raise HTTPException(status_code=422, detail="locate must be an object")
+        raise _RuntimeHTTPResponse(status_code=422, detail="locate must be an object")
     kind = raw.get("kind")
     uid = raw.get("uid")
     if kind not in {"event", "source"}:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail="locate.kind must be event or source",
         )
@@ -1793,7 +2015,7 @@ def _event_log_locate(body: dict[str, Any]) -> tuple[str, str] | None:
         or not uid
         or len(uid) > MAX_EVENT_LOG_UID_LENGTH
     ):
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail=(
                 "locate.uid must be a non-empty string no longer than "
@@ -2123,19 +2345,20 @@ def event_density_query(
 
     _require_revision(revision_id)
     if "start_ns" not in body or "end_ns" not in body:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail="start_ns and end_ns are required",
         )
-    start_ns = _body_integer(body, "start_ns", 0)
-    end_ns = _body_integer(body, "end_ns", 0)
+    start_ns = _body_timestamp_ns(body, "start_ns", 0)
+    end_ns = _body_timestamp_ns(body, "end_ns", 0)
     if end_ns < start_ns:
-        raise HTTPException(status_code=422, detail="end_ns must be >= start_ns")
+        raise _RuntimeHTTPResponse(status_code=422, detail="end_ns must be >= start_ns")
     requested_bin_count = _body_integer(
         body,
         "bin_count",
         180,
         minimum=1,
+        maximum=MAX_JSON_SAFE_INTEGER,
     )
     integer_span = end_ns - start_ns + 1
     bin_count = min(requested_bin_count, MAX_DENSITY_BINS, integer_span)
@@ -2308,9 +2531,9 @@ def event_log_query(
     if raw_search is None:
         raw_search = ""
     if not isinstance(raw_search, str):
-        raise HTTPException(status_code=422, detail="search must be a string")
+        raise _RuntimeHTTPResponse(status_code=422, detail="search must be a string")
     if len(raw_search) > MAX_EVENT_LOG_SEARCH_LENGTH:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail=(
                 "search must be at most "
@@ -2349,11 +2572,13 @@ def event_log_query(
     if source_types_supplied:
         unknown_source_types = set(source_types) - known_source_types
         if unknown_source_types:
-            raise HTTPException(
+            raise _RuntimeHTTPResponse(
                 status_code=422,
-                detail=(
+                detail=bounded_public_error_detail(
                     "event-log query references unknown source types: "
-                    + ", ".join(sorted(unknown_source_types))
+                    + ", ".join(sorted(unknown_source_types)),
+                    fallback="event-log query references unknown source types",
+                    maximum_characters=_MAX_PUBLIC_ERROR_DETAIL_CHARACTERS,
                 ),
             )
     selected_source_types = set(source_types)
@@ -2595,11 +2820,11 @@ def event_detail(revision_id: str, event_uid: str) -> dict[str, Any]:
         item = runtime.event_by_uid.get(event_uid)
         if item is not None:
             return redact_event_for_client(item, dataset)
-        raise HTTPException(status_code=404, detail="event not found")
+        raise _RuntimeHTTPResponse(status_code=404, detail="event not found")
     for item in dataset["events"]:
         if item["event_uid"] == event_uid:
             return redact_event_for_client(item, dataset)
-    raise HTTPException(status_code=404, detail="event not found")
+    raise _RuntimeHTTPResponse(status_code=404, detail="event not found")
 
 
 @api_router.post("/v1/revisions/{revision_id:path}/source-records/query")
@@ -2616,14 +2841,12 @@ def source_records_query(
         for item in dataset.get("source_record_descriptors", [])
         if item.get("source_type")
     }
-    try:
-        result = query_source_records(
-            dataset.get("source_records", []),
-            body,
-            known_source_types=known_source_types,
-        )
-    except (TypeError, ValueError) as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+    result = _runtime_api_call(
+        query_source_records,
+        dataset.get("source_records", []),
+        body,
+        known_source_types=known_source_types,
+    )
     result["items"] = [
         {
             key: value
@@ -2672,12 +2895,12 @@ def _event_log_selection_ranges(
 ) -> list[tuple[int, int]]:
     raw_ranges = body.get("selection_ranges")
     if not isinstance(raw_ranges, list) or not raw_ranges:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail="selection_ranges must be a non-empty array",
         )
     if len(raw_ranges) > MAX_EVENT_LOG_SELECTION_RANGES:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail=(
                 "selection_ranges must contain at most "
@@ -2687,14 +2910,26 @@ def _event_log_selection_ranges(
     parsed: list[tuple[int, int]] = []
     for raw in raw_ranges:
         if not isinstance(raw, dict):
-            raise HTTPException(
+            raise _RuntimeHTTPResponse(
                 status_code=422,
                 detail="each selection range must be an object",
             )
-        start = _body_integer(raw, "start", 0, minimum=0)
-        end = _body_integer(raw, "end", 0, minimum=0)
+        start = _body_integer(
+            raw,
+            "start",
+            0,
+            minimum=0,
+            maximum=MAX_JSON_SAFE_INTEGER,
+        )
+        end = _body_integer(
+            raw,
+            "end",
+            0,
+            minimum=0,
+            maximum=MAX_JSON_SAFE_INTEGER,
+        )
         if end < start:
-            raise HTTPException(
+            raise _RuntimeHTTPResponse(
                 status_code=422,
                 detail="selection range end must be >= start",
             )
@@ -2708,7 +2943,7 @@ def _event_log_selection_ranges(
             merged[-1][1] = max(merged[-1][1], end)
     total = sum(end - start + 1 for start, end in merged)
     if total > MAX_EVENT_LOG_SELECTION_ITEMS:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail=(
                 "selection contains "
@@ -3332,18 +3567,18 @@ def timeline_query(
 ) -> dict[str, Any]:
     _require_revision(revision_id)
     dataset = load_dataset()
-    start_ns = _body_integer(
+    start_ns = _body_timestamp_ns(
         body,
         "start_ns",
         int(_analysis_metadata(dataset)["timeline_start_ns"]),
     )
-    end_ns = _body_integer(
+    end_ns = _body_timestamp_ns(
         body,
         "end_ns",
         int(_analysis_metadata(dataset)["timeline_end_ns"]),
     )
     if end_ns < start_ns:
-        raise HTTPException(status_code=422, detail="end_ns must be >= start_ns")
+        raise _RuntimeHTTPResponse(status_code=422, detail="end_ns must be >= start_ns")
     layers = set(_body_string_list(body, "layers"))
     kinds = set(_body_string_list(body, "kinds"))
     requested_id_values = _body_string_list(body, "resource_ids")
@@ -3428,7 +3663,7 @@ def timeline_query(
         history_dropped_ids = history_candidate_ids[expansion_capacity:]
         requested_id_values = [*accepted_base, *history_expanded_ids]
     if runtime is not None and len(requested_id_values) > MAX_TIMELINE_RESOURCE_LANES:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail=(
                 "full-scale timeline queries are limited to "
@@ -3439,7 +3674,7 @@ def timeline_query(
     if "search" in body and body["search"] is not None and not isinstance(
         body["search"], str
     ):
-        raise HTTPException(status_code=422, detail="search must be a string or null")
+        raise _RuntimeHTTPResponse(status_code=422, detail="search must be a string or null")
     search = str(body.get("search") or "").casefold()
     if runtime is not None:
         filtered: list[dict[str, Any]] = []
@@ -3581,6 +3816,7 @@ def timeline_query(
         "cluster_window_ns",
         20_000_000,
         minimum=0,
+        maximum=MAX_TIMESTAMP_NS,
     )
     requested_max_glyphs = _body_integer(
         body,
@@ -3599,7 +3835,7 @@ def timeline_query(
     glyph_budget = min(requested_max_glyphs, max(1, viewport_pixels * 4))
     selected_event_uid = body.get("selected_event_uid")
     if selected_event_uid is not None and not isinstance(selected_event_uid, str):
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail="selected_event_uid must be a string or null",
         )
@@ -3634,16 +3870,16 @@ def timeline_query(
     cursor_time_ns = None
     if "cursor_time_ns" in body and body["cursor_time_ns"] is not None:
         cursor_time_ns = str(
-            _body_integer(body, "cursor_time_ns", start_ns)
+            _body_timestamp_ns(body, "cursor_time_ns", start_ns)
         )
     selected_range = body.get("range")
     if selected_range is not None and not isinstance(selected_range, dict):
-        raise HTTPException(status_code=422, detail="range must be an object or null")
+        raise _RuntimeHTTPResponse(status_code=422, detail="range must be an object or null")
     if isinstance(selected_range, dict):
         for key in ("start_ns", "end_ns"):
             if key in selected_range:
                 selected_range[key] = str(
-                    _body_integer(selected_range, key, start_ns)
+                    _body_timestamp_ns(selected_range, key, start_ns)
                 )
         selected_range = {
             key: str(value) if key.endswith("_ns") and value is not None else value
@@ -3662,17 +3898,15 @@ def timeline_query(
         minimum=0,
         maximum=5_000,
     )
-    try:
-        record_lanes = record_lanes_for_window(
-            dataset.get("source_records", []),
-            record_lane_rules,
-            start_ns=start_ns,
-            end_ns=end_ns,
-            known_source_types=known_source_types,
-            max_marks=max_record_marks,
-        )
-    except (TypeError, ValueError) as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+    record_lanes = _runtime_api_call(
+        record_lanes_for_window,
+        dataset.get("source_records", []),
+        record_lane_rules,
+        start_ns=start_ns,
+        end_ns=end_ns,
+        known_source_types=known_source_types,
+        max_marks=max_record_marks,
+    )
     return {
         "revision_id": revision_id,
         "start_ns": str(start_ns),
@@ -3733,28 +3967,34 @@ def timeline_cluster_detail(
     _require_revision(revision_id)
     identifier = body.get("resource_id")
     if not isinstance(identifier, str) or not identifier:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422, detail="resource_id must be a non-empty canonical string"
         )
     dataset = load_dataset()
-    start_ns = _body_integer(
+    start_ns = _body_timestamp_ns(
         body, "start_ns", int(_analysis_metadata(dataset)["timeline_start_ns"])
     )
-    end_ns = _body_integer(
+    end_ns = _body_timestamp_ns(
         body, "end_ns", int(_analysis_metadata(dataset)["timeline_end_ns"])
     )
     if end_ns < start_ns:
-        raise HTTPException(status_code=422, detail="end_ns must be >= start_ns")
-    offset = _body_integer(body, "offset", 0, minimum=0)
+        raise _RuntimeHTTPResponse(status_code=422, detail="end_ns must be >= start_ns")
+    offset = _body_integer(
+        body,
+        "offset",
+        0,
+        minimum=0,
+        maximum=MAX_JSON_SAFE_INTEGER,
+    )
     limit = _body_integer(body, "limit", 100, minimum=1, maximum=200)
     runtime = history_runtime(dataset)
     if runtime is not None:
         if identifier not in runtime.resource_by_id:
-            raise HTTPException(status_code=404, detail="resource not found")
+            raise _RuntimeHTTPResponse(status_code=404, detail="resource not found")
         candidates = runtime.events_by_resource.get(identifier, [])
     else:
         if not any(resource_id(item) == identifier for item in dataset["resources"]):
-            raise HTTPException(status_code=404, detail="resource not found")
+            raise _RuntimeHTTPResponse(status_code=404, detail="resource not found")
         candidates = [
             item
             for item in dataset["events"]
@@ -3801,18 +4041,18 @@ def selected_range_summary(
 ) -> dict[str, Any]:
     _require_revision(revision_id)
     dataset = load_dataset()
-    start_ns = _body_integer(
+    start_ns = _body_timestamp_ns(
         body,
         "start_ns",
         int(_analysis_metadata(dataset)["timeline_start_ns"]),
     )
-    end_ns = _body_integer(
+    end_ns = _body_timestamp_ns(
         body,
         "end_ns",
         int(_analysis_metadata(dataset)["timeline_end_ns"]),
     )
     if end_ns < start_ns:
-        raise HTTPException(status_code=422, detail="end_ns must be >= start_ns")
+        raise _RuntimeHTTPResponse(status_code=422, detail="end_ns must be >= start_ns")
     return range_summary(start_ns, end_ns)
 
 
@@ -3858,21 +4098,21 @@ def _resolve_route_payload(
     route_id = body.get("route_id")
     basis = body.get("basis_kind")
     if not isinstance(route_id, str) or not route_id:
-        raise HTTPException(status_code=422, detail="route_id is required")
+        raise _RuntimeHTTPResponse(status_code=422, detail="route_id is required")
     advertised_basis = {
         str(item.get("basis_kind"))
         for item in capability.get("basis_kinds", [])
         if isinstance(item, dict) and item.get("basis_kind")
     }
     if not isinstance(basis, str) or basis not in advertised_basis:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail="basis_kind must be one of the plug-in-advertised values",
         )
     try:
         row = route_row(route_id, dataset)
     except KeyError as error:
-        raise HTTPException(
+        raise _RuntimeHTTPResponse(
             status_code=422,
             detail="route_id was not advertised for this node revision",
         ) from error
@@ -3993,6 +4233,7 @@ def start_runtime_warmup() -> threading.Thread | None:
 
 
 __all__ = [
+    "analysis_health_projection",
     "api_router",
     "reset_runtime_api_caches",
     "start_runtime_warmup",

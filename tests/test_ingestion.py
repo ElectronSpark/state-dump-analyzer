@@ -200,16 +200,10 @@ class InvalidBoundaryPlugin(ParseOnlyPlugin):
 
     def parse_status(self, reader, spec):
         for output in super().parse_status(reader, spec):
-            if (
-                self.failure == "time"
-                and isinstance(output, SnapshotObservation)
-            ):
+            if self.failure == "time" and isinstance(output, SnapshotObservation):
                 yield replace(output, observed_at_min_ns=1.5)
                 return
-            if (
-                self.failure == "property"
-                and isinstance(output, SnapshotObservation)
-            ):
+            if self.failure == "property" and isinstance(output, SnapshotObservation):
                 yield replace(
                     output,
                     state=PropertyPatch(
@@ -218,10 +212,7 @@ class InvalidBoundaryPlugin(ParseOnlyPlugin):
                     ),
                 )
                 return
-            if (
-                self.failure == "cycle"
-                and isinstance(output, SourceRecordEmission)
-            ):
+            if self.failure == "cycle" and isinstance(output, SourceRecordEmission):
                 cycle: dict[str, object] = {}
                 cycle["self"] = cycle
                 yield replace(output, attributes=cycle)
@@ -432,12 +423,8 @@ class RichObservationPlugin(ParseOnlyPlugin):
                                     evidence=(output.evidence,),
                                 ),
                             ),
-                            field_quality={
-                                "oper_status": Quality.AMBIGUOUS
-                            },
-                            field_provenance={
-                                "oper_status": Provenance.OBSERVED
-                            },
+                            field_quality={"oper_status": Quality.AMBIGUOUS},
+                            field_provenance={"oper_status": Provenance.OBSERVED},
                             complete=False,
                         ),
                         quality=Quality.AMBIGUOUS,
@@ -604,10 +591,7 @@ class UnknownEvidenceEscapePlugin(RichObservationPlugin):
     def parse_status(self, reader, spec):
         assert self.other_artifact_id is not None
         for output in super().parse_status(reader, spec):
-            if (
-                isinstance(output, SnapshotObservation)
-                and output.state.unknown_fields
-            ):
+            if isinstance(output, SnapshotObservation) and output.state.unknown_fields:
                 unknown = output.state.unknown_fields[0]
                 escaped = replace(
                     unknown,
@@ -738,6 +722,20 @@ class TemporalEventPlugin(ParseOnlyPlugin):
             )
 
 
+class ForgedEventTimestampPlugin(TemporalEventPlugin):
+    def __init__(self, field_name: str) -> None:
+        self.field_name = field_name
+
+    def parse_text_trace(self, reader, spec):
+        for output in super().parse_text_trace(reader, spec):
+            if self.field_name == "interval":
+                object.__setattr__(output, "timestamp_ns", (1 << 63) - 1)
+                object.__setattr__(output, "timestamp_uncertainty_ns", 1)
+            else:
+                object.__setattr__(output, self.field_name, 1 << 63)
+            yield output
+
+
 class CoreIngestionTests(unittest.TestCase):
     def _fixture(self, directory: str) -> Path:
         path = Path(directory) / "status.jsonl"
@@ -823,12 +821,7 @@ class CoreIngestionTests(unittest.TestCase):
             result.dataset["inventory"]["members"][0]["size"],
             0,
         )
-        self.assertTrue(
-            all(
-                item.get("area")
-                for item in result.dataset["gaps"]
-            )
-        )
+        self.assertTrue(all(item.get("area") for item in result.dataset["gaps"]))
         self.assertNotIn("demo", result.dataset)
         self.assertEqual(
             result.dataset["_ingestion"]["node_id"],
@@ -946,9 +939,7 @@ class CoreIngestionTests(unittest.TestCase):
             "observed",
         )
         self.assertEqual(result.dataset["relationships"], [])
-        relationship_intervals = result.dataset[
-            "relationship_intervals"
-        ]
+        relationship_intervals = result.dataset["relationship_intervals"]
         self.assertEqual(
             relationship_intervals[-1]["present"],
             None,
@@ -958,9 +949,7 @@ class CoreIngestionTests(unittest.TestCase):
             "290",
         )
         self.assertEqual(
-            relationship_intervals[-1]["perspective_ref"][
-                "perspective_id"
-            ],
+            relationship_intervals[-1]["perspective_ref"]["perspective_id"],
             "interface-observed",
         )
         self.assertEqual(
@@ -1009,17 +998,13 @@ class CoreIngestionTests(unittest.TestCase):
             (root / "trace.ctf").write_bytes(b"opaque")
             cases = (
                 (
-                    IngestionCoordinator(
-                        limits=IngestionLimits(max_total_outputs=2)
-                    ),
+                    IngestionCoordinator(limits=IngestionLimits(max_total_outputs=2)),
                     ParseOnlyPlugin(),
                     fixture,
                     "aggregate output limit",
                 ),
                 (
-                    IngestionCoordinator(
-                        limits=IngestionLimits(max_evidence_items=1)
-                    ),
+                    IngestionCoordinator(limits=IngestionLimits(max_evidence_items=1)),
                     ParseOnlyPlugin(),
                     fixture,
                     "evidence references",
@@ -1041,9 +1026,7 @@ class CoreIngestionTests(unittest.TestCase):
                     "text-byte limit",
                 ),
                 (
-                    IngestionCoordinator(
-                        limits=IngestionLimits(max_diagnostics=1)
-                    ),
+                    IngestionCoordinator(limits=IngestionLimits(max_diagnostics=1)),
                     DiagnosticFloodPlugin(),
                     fixture,
                     "diagnostics exceeded",
@@ -1121,9 +1104,9 @@ class CoreIngestionTests(unittest.TestCase):
                     self.subTest(message=message),
                     self.assertRaisesRegex(IngestionError, message),
                 ):
-                    IngestionCoordinator(
-                        trace_decoder=decoder
-                    ).ingest(AllParserPlugin(), root)
+                    IngestionCoordinator(trace_decoder=decoder).ingest(
+                        AllParserPlugin(), root
+                    )
 
     def test_input_node_root_and_reader_scope_are_enforced_pre_parse(
         self,
@@ -1207,6 +1190,34 @@ class CoreIngestionTests(unittest.TestCase):
             [b"a".hex(), b"c".hex(), b"b".hex(), b"z".hex()],
         )
 
+    def test_forged_event_timestamp_overflow_fails_at_ingestion_boundary(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._fixture(directory)
+            (root / "router.log").write_text("events\n", encoding="utf-8")
+            for field_name in ("timestamp_ns", "timestamp_uncertainty_ns"):
+                with (
+                    self.subTest(field_name=field_name),
+                    self.assertRaisesRegex(
+                        IngestionError,
+                        "must be at most 9223372036854775807",
+                    ),
+                ):
+                    IngestionCoordinator().ingest(
+                        ForgedEventTimestampPlugin(field_name),
+                        root,
+                    )
+            with self.assertRaisesRegex(
+                IngestionError,
+                "uncertainty interval must fit signed 64-bit",
+            ):
+                IngestionCoordinator().ingest(
+                    ForgedEventTimestampPlugin("interval"),
+                    root,
+                )
+
     def test_all_declared_parser_kinds_have_a_core_dispatch_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1223,10 +1234,7 @@ class CoreIngestionTests(unittest.TestCase):
             self.assertEqual(len(result.events), 1)
             self.assertEqual(len(result.source_records), 4)
             self.assertEqual(
-                [
-                    record["source_type"]
-                    for record in result.dataset["source_records"]
-                ],
+                [record["source_type"] for record in result.dataset["source_records"]],
                 ["status-json", "status-json", "text-log", "ctf-event"],
             )
             self.assertEqual(
@@ -1258,9 +1266,7 @@ class CoreIngestionTests(unittest.TestCase):
                 self.assertIs(validate_runtime_session(session), session)
                 self.assertEqual(
                     session.revision_store.default_revision_id,
-                    session.data_source.revision_id(
-                        session.data_source.load_dataset()
-                    ),
+                    session.data_source.revision_id(session.data_source.load_dataset()),
                 )
 
             application = create_runtime_application(
@@ -1292,13 +1298,10 @@ class CoreIngestionTests(unittest.TestCase):
                 self.assertFalse(capabilities["worker_isolation"])
                 self.assertFalse(capabilities["execution_timeout"])
                 revision_id = workspace["workspace"]["revision_id"]
-                advertised = client.get(
-                    f"/v1/revisions/{revision_id}/capabilities"
-                )
+                advertised = client.get(f"/v1/revisions/{revision_id}/capabilities")
                 self.assertEqual(advertised.status_code, 200)
                 limitation_ids = {
-                    item["id"]
-                    for item in advertised.json()["limitations"]
+                    item["id"] for item in advertised.json()["limitations"]
                 }
                 self.assertIn(
                     "runtime-v2-temporal-query",
@@ -1308,9 +1311,7 @@ class CoreIngestionTests(unittest.TestCase):
                     "runtime-v2-worker-isolation",
                     limitation_ids,
                 )
-                routes = client.get(
-                    f"/v1/revisions/{revision_id}/routes/capabilities"
-                )
+                routes = client.get(f"/v1/revisions/{revision_id}/routes/capabilities")
                 self.assertEqual(routes.status_code, 200)
                 self.assertFalse(routes.json()["available"])
                 topology = client.get(

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from urllib.parse import quote
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from router_dump_analyzer.ingestion_pipeline import WorkerHealthSnapshot
+from router_dump_analyzer.web.runtime_api import api_router
 from tests.support.generated_demo import (
     configure_generated_demo_for_tests,
     generated_demo_application,
@@ -36,6 +40,7 @@ class DemoAppTests(unittest.TestCase):
     def test_health_and_single_page_application_are_available(self) -> None:
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
+        self.assertEqual(health.headers["cache-control"], "no-store")
         health_payload = health.json()
         self.assertEqual(health_payload["mode"], "full-scale-100k-plus")
         self.assertEqual(health_payload["revision_id"], REVISION_ID)
@@ -51,8 +56,8 @@ class DemoAppTests(unittest.TestCase):
         self.assertIn("Router State Lab", page.text)
         self.assertIn("single-node analysis workspace", page.text)
         self.assertIn("no-store", page.headers["cache-control"])
-        self.assertIn("styles.css?v=20260724-event-selection-v2", page.text)
-        self.assertIn("app.js?v=20260724-lane-visibility-v4", page.text)
+        self.assertIn("styles.css?v=20260801-round8-v1", page.text)
+        self.assertIn("app.js?v=20260801-round8-v1", page.text)
         self.assertIn('id="correlation-panel-toggle"', page.text)
         self.assertIn('id="correlation-back-to-top"', page.text)
         self.assertIn('id="dashboard-index"', page.text)
@@ -67,6 +72,113 @@ class DemoAppTests(unittest.TestCase):
         self.assertIn("bindCorrelationPanelControls", script.text)
         self.assertIn("no-store", script.headers["cache-control"])
         self.assertEqual(script.headers["pragma"], "no-cache")
+
+    def test_health_exposes_degraded_ingestion_worker_supervision(self) -> None:
+        state = self.client.app.state
+        had_control_plane = hasattr(state, "control_plane")
+        prior_control_plane = getattr(state, "control_plane", None)
+        worker_health = WorkerHealthSnapshot(
+            started=True,
+            live_workers=2,
+            total_claim_errors=2,
+            consecutive_claim_errors=1,
+            last_claim_error_at_ns=9_007_199_254_740_993,
+            last_claim_error="RuntimeError",
+            total_iteration_errors=3,
+            consecutive_iteration_errors=2,
+            last_iteration_error_at_ns=9_007_199_254_740_995,
+            last_iteration_error="ValueError",
+        )
+        state.control_plane = SimpleNamespace(
+            ingestion=SimpleNamespace(
+                limits=SimpleNamespace(max_workers=2),
+                worker_health=lambda: worker_health,
+            )
+        )
+        try:
+            response = self.client.get("/health")
+        finally:
+            if had_control_plane:
+                state.control_plane = prior_control_plane
+            else:
+                del state.control_plane
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        payload = response.json()
+        self.assertEqual(payload["status"], "degraded")
+        workers = payload["ingestion_workers"]
+        self.assertFalse(workers["healthy"])
+        self.assertTrue(workers["started"])
+        self.assertEqual(workers["configured_workers"], 2)
+        self.assertEqual(workers["live_workers"], 2)
+        self.assertEqual(workers["total_claim_errors"], 2)
+        self.assertEqual(workers["consecutive_claim_errors"], 1)
+        self.assertEqual(workers["last_claim_error_at_ns"], "9007199254740993")
+        self.assertEqual(workers["last_claim_error"], "RuntimeError")
+        self.assertEqual(workers["total_iteration_errors"], 3)
+        self.assertEqual(workers["consecutive_iteration_errors"], 2)
+        self.assertEqual(
+            workers["last_iteration_error_at_ns"],
+            "9007199254740995",
+        )
+        self.assertEqual(workers["last_iteration_error"], "ValueError")
+
+    def test_health_does_not_require_an_analysis_session(self) -> None:
+        worker_health = WorkerHealthSnapshot(
+            started=True,
+            live_workers=1,
+            total_claim_errors=0,
+            consecutive_claim_errors=0,
+            last_claim_error_at_ns=None,
+            last_claim_error=None,
+            total_iteration_errors=0,
+            consecutive_iteration_errors=0,
+            last_iteration_error_at_ns=None,
+            last_iteration_error=None,
+        )
+        application = FastAPI()
+        application.include_router(api_router)
+        application.state.control_plane = SimpleNamespace(
+            ingestion=SimpleNamespace(
+                limits=SimpleNamespace(
+                    max_workers=1,
+                    stalled_import_seconds=900.0,
+                ),
+                worker_health=lambda: worker_health,
+            )
+        )
+        with TestClient(application) as client:
+            response = client.get("/health")
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["status"], "ok")
+        self.assertFalse(payload["analysis_ready"])
+        self.assertIsNone(payload["revision_id"])
+        self.assertEqual(payload["mode"], "control-plane")
+        self.assertTrue(payload["control_plane"]["configured"])
+        self.assertTrue(payload["ingestion_workers"]["healthy"])
+
+    def test_analysis_health_observation_failure_is_a_degraded_200(self) -> None:
+        private = "private-analysis-health-dump-content"
+        state = self.client.app.state
+        original = state.analysis_health_projector
+
+        def fail() -> object:
+            raise RuntimeError(private)
+
+        state.analysis_health_projector = fail
+        try:
+            response = self.client.get("/health")
+        finally:
+            state.analysis_health_projector = original
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        payload = response.json()
+        self.assertEqual(payload["status"], "degraded")
+        self.assertFalse(payload["analysis_ready"])
+        self.assertEqual(payload["analysis_observation_error"], "RuntimeError")
+        self.assertNotIn(private, response.text)
 
     def test_node_workspace_basis_selector_is_unambiguous(self) -> None:
         workspace = self._workspace()
@@ -207,9 +319,7 @@ class DemoAppTests(unittest.TestCase):
         )
         basis = capability["basis_kinds"][0]["basis_kind"]
 
-        advertised = self.client.get(
-            f"/v1/revisions/{REVISION_ID}/routes/capabilities"
-        )
+        advertised = self.client.get(f"/v1/revisions/{REVISION_ID}/routes/capabilities")
         self.assertEqual(advertised.status_code, 200, advertised.text)
         self.assertEqual(
             advertised.json()["default_route_id"],
@@ -249,12 +359,8 @@ class DemoAppTests(unittest.TestCase):
     def test_specialized_revision_capabilities_are_not_swallowed_by_catchall(
         self,
     ) -> None:
-        generic = self.client.get(
-            f"/v1/revisions/{REVISION_ID}/capabilities"
-        )
-        topology = self.client.get(
-            f"/v1/revisions/{REVISION_ID}/topology/capabilities"
-        )
+        generic = self.client.get(f"/v1/revisions/{REVISION_ID}/capabilities")
+        topology = self.client.get(f"/v1/revisions/{REVISION_ID}/topology/capabilities")
         multi_node = self.client.get(
             f"/v1/revisions/{REVISION_ID}/multi-node/capabilities"
         )
@@ -416,10 +522,7 @@ class DemoAppTests(unittest.TestCase):
             payload["demo"]["event_count"],
         )
         self.assertTrue(
-            all(
-                item["uid"].startswith("node-b/")
-                for item in event_payload["items"]
-            )
+            all(item["uid"].startswith("node-b/") for item in event_payload["items"])
         )
 
     def test_unknown_slash_qualified_revision_is_rejected(self) -> None:

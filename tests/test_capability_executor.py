@@ -16,6 +16,8 @@ from router_dump_analyzer.capability_executor import (
 from router_dump_analyzer.plugin_api import (
     CORE_PLUGIN_API_VERSION,
     FORWARDING_IR_VERSION,
+    MAX_TIMESTAMP_NS,
+    MIN_TIMESTAMP_NS,
     AnalyzerPluginBase,
     CausalLink,
     CausalLinkTypeDescriptor,
@@ -454,6 +456,65 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
             "exact ChangeSet",
         ):
             executor.apply(EVENT, _World())  # type: ignore[arg-type]
+
+    def test_all_capability_temporal_coordinates_are_signed_64_bit(self) -> None:
+        plugin = _Plugin()
+        executor = PluginCapabilityExecutor(plugin)
+
+        # Mutation validation is shared by apply/revert and accepts both exact
+        # signed-64 endpoints while rejecting the first value outside them.
+        for value in (MIN_TIMESTAMP_NS, MAX_TIMESTAMP_NS):
+            plugin.apply_output = ChangeSet(
+                state=(replace(_state_mutation(), effective_time_ns=value),),
+            )
+            self.assertIs(executor.apply(EVENT, _World()), plugin.apply_output)  # type: ignore[arg-type]
+        plugin.apply_output = ChangeSet(
+            state=(
+                replace(
+                    _state_mutation(),
+                    effective_time_ns=MAX_TIMESTAMP_NS + 1,
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(PluginCapabilityOutputError, "signed 64-bit"):
+            executor.apply(EVENT, _World())  # type: ignore[arg-type]
+
+        # Correlation adds clock anchors and request windows to the same domain.
+        plugin.correlation_output = (
+            ClockAnchor(
+                left_clock_domain="left",
+                left_raw_ns=MIN_TIMESTAMP_NS - 1,
+                right_clock_domain="right",
+                right_raw_ns=0,
+                uncertainty_ns=0,
+                method="opaque",
+                provenance=Provenance.CORRELATED,
+                quality=Quality.BEST_EFFORT,
+            ),
+        )
+        with self.assertRaisesRegex(PluginCapabilityOutputError, "signed 64-bit"):
+            executor.correlate(
+                object(),  # type: ignore[arg-type]
+                CorrelationWindow(0, 1, max_events=1, max_world_reads=1),
+            )
+
+        # Consistency findings may carry deeply nested world-basis coordinates;
+        # do not trust construction-time validation at an executable boundary.
+        plugin.consistency_output = (
+            ConsistencyFinding(
+                rule_id="opaque.rule",
+                severity=DiagnosticSeverity.WARNING,
+                result=FindingResult.UNKNOWN,
+                summary="Out-of-range world basis",
+                resources=(RESOURCE,),
+                provenance=Provenance.RECONSTRUCTED,
+                quality=Quality.UNKNOWN,
+                basis=replace(BASIS, requested_time_ns=MAX_TIMESTAMP_NS + 1),
+                evidence=(EVIDENCE,),
+            ),
+        )
+        with self.assertRaisesRegex(PluginCapabilityOutputError, "signed 64-bit"):
+            executor.check_consistency(_World())  # type: ignore[arg-type]
 
     def test_change_set_schema_references_and_limits_are_enforced(self) -> None:
         plugin = _Plugin()

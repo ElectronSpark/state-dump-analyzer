@@ -8,7 +8,6 @@ from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 from uuid import UUID
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -16,10 +15,13 @@ from router_dump_analyzer.plugin_api import (
     CORE_PLUGIN_API_VERSION,
     AnalyzerPluginBase,
     ArtifactInfo,
+    DiagnosticSeverity,
+    DiagnosticStage,
     DumpInventory,
     InputParserKind,
     InputSpec,
     PluginCapability,
+    PluginDiagnostic,
     PluginManifest,
     PluginSchema,
     ProbeMatchKind,
@@ -88,6 +90,40 @@ class LegacyDispatchPlugin(MinimalPlugin):
         )
 
 
+class ForgedProbePlugin(MinimalPlugin):
+    def probe(self, inventory: DumpInventory) -> ProbeReport:
+        result = ProbeResult(
+            confidence=1.0,
+            reasons=("initially valid",),
+            detected_platform="example-router",
+        )
+        object.__setattr__(result, "detected_platform", "x" * 257)
+        return ProbeReport(result=result)
+
+
+class ForgedProbeDiagnosticPlugin(MinimalPlugin):
+    def probe(self, inventory: DumpInventory) -> ProbeReport:
+        del inventory
+        diagnostic = PluginDiagnostic(
+            stage=DiagnosticStage.PROBE,
+            severity=DiagnosticSeverity.WARNING,
+            code="example.forged",
+            message="initially valid",
+            recoverable=True,
+        )
+        object.__setattr__(diagnostic, "message", "x" * 8_193)
+        return ProbeReport(result=None, diagnostics=(diagnostic,))
+
+
+class ExplodingProbePlugin(MinimalPlugin):
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+    def probe(self, inventory: DumpInventory) -> ProbeReport:
+        del inventory
+        raise RuntimeError(self.message)
+
+
 class MismatchedDispatchPlugin(MinimalPlugin):
     manifest = manifest(PluginCapability.TEXT_TRACE_PARSE)
 
@@ -143,6 +179,51 @@ class PluginValidationTests(unittest.TestCase):
     def test_minimal_plugin_passes(self) -> None:
         result = validate_plugin(MinimalPlugin())
         self.assertTrue(result.ok, result.errors)
+
+    def test_probe_validation_rechecks_the_canonical_contract(self) -> None:
+        result = validate_plugin(ForgedProbePlugin())
+        self.assertFalse(result.ok)
+        self.assertTrue(
+            any("detected_platform" in error for error in result.errors),
+            result.errors,
+        )
+
+    def test_probe_diagnostics_use_the_same_bounded_contract(self) -> None:
+        result = validate_plugin(ForgedProbeDiagnosticPlugin())
+        self.assertFalse(result.ok)
+        self.assertTrue(
+            any("probe.diagnostics[0].message" in error for error in result.errors),
+            result.errors,
+        )
+
+    def test_untrusted_hook_diagnostics_use_the_public_display_policy(self) -> None:
+        safe = validate_plugin(ExplodingProbePlugin("decoder rejected frame 4"))
+        self.assertTrue(
+            any(
+                "RuntimeError: decoder rejected frame 4" in error
+                for error in safe.errors
+            ),
+            safe.errors,
+        )
+
+        cases = (
+            ("x" * 2_000, "plug-in exception details unavailable"),
+            (
+                r"decoder failed at C:\private\tenant\decoder.py",
+                "plug-in exception details unavailable",
+            ),
+            ("decoder\x00failed", "plug-in exception details unavailable"),
+            ("state\u034fchanged", r"state\u034fchanged"),
+        )
+        for supplied, expected in cases:
+            with self.subTest(supplied=repr(supplied[:40])):
+                result = validate_plugin(ExplodingProbePlugin(supplied))
+                diagnostic = next(
+                    error for error in result.errors if error.startswith("probe()")
+                )
+                self.assertIn(expected, diagnostic)
+                self.assertNotIn(supplied, diagnostic)
+                self.assertLessEqual(len(diagnostic), 1_200)
 
     def test_declared_capability_requires_override(self) -> None:
         result = validate_plugin(MissingOverridePlugin())
@@ -223,6 +304,42 @@ class PluginValidationTests(unittest.TestCase):
             "failed to load entry point 'broken': ImportError: missing vendor decoder",
             output.getvalue(),
         )
+
+    def test_cli_stdout_projects_untrusted_loader_diagnostics(self) -> None:
+        cases = (
+            ("x" * 2_000, "plug-in validation request failed"),
+            (
+                r"decoder failed at C:\private\tenant\decoder.py",
+                "plug-in validation request failed",
+            ),
+            ("decoder\x00failed", "plug-in validation request failed"),
+            ("state\u034fchanged", r"state\u034fchanged"),
+        )
+        for supplied, expected in cases:
+            class BrokenEntryPoint:
+                name = "broken"
+
+                def __init__(self, message: str) -> None:
+                    self.message = message
+
+                def load(self):
+                    raise ImportError(self.message)
+
+            output = io.StringIO()
+            with (
+                self.subTest(supplied=repr(supplied[:40])),
+                patch(
+                    "router_dump_analyzer.plugin_validation._entry_points",
+                    return_value=(BrokenEntryPoint(supplied),),
+                ),
+                redirect_stdout(output),
+            ):
+                return_code = main(["broken"])
+            rendered = output.getvalue()
+            self.assertEqual(return_code, 2)
+            self.assertIn(expected, rendered)
+            self.assertNotIn(supplied, rendered)
+            self.assertLessEqual(len(rendered), 1_100)
 
     def test_cli_builds_and_checks_representative_inventory(self) -> None:
         class InstalledEntryPoint:

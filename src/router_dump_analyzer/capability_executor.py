@@ -17,6 +17,9 @@ from typing import Any, cast
 from uuid import UUID
 
 from .plugin_api import (
+    MAX_TIMESTAMP_NS,
+    MIN_TIMESTAMP_NS,
+    AbsoluteTimeSelector,
     Adjacency,
     AnalyzerPlugin,
     CaptureRange,
@@ -28,7 +31,6 @@ from .plugin_api import (
     CorrelationWindow,
     DiagnosticOrigin,
     DiagnosticSeverity,
-    DiagnosticStage,
     DomainEvent,
     Evidence,
     FailoverGroup,
@@ -52,12 +54,15 @@ from .plugin_api import (
     Provenance,
     Quality,
     ReadOnlyWorld,
+    ReconstructionWatermark,
     ReconstructionCoverage,
+    RelativeToWatermarkSelector,
     RelationshipMutation,
     RelationshipOperation,
     RelationshipView,
     ResourceKey,
     ResourceStateView,
+    ResolvedNodeBasis,
     StateMutation,
     StatusPerspectiveRef,
     TopologyEndpointRecord,
@@ -73,6 +78,7 @@ from .plugin_api import (
     VrfForwardingState,
     WorldBasis,
     WorldBasisKind,
+    validate_plugin_diagnostic,
 )
 
 
@@ -476,11 +482,10 @@ class PluginCapabilityExecutor:
             or len(value.locator) > 4_096
         ):
             raise ValueError(f"{label}.locator must contain 1 to 4096 characters")
-        for field_name, item in (
-            ("raw_timestamp_ns", value.raw_timestamp_ns),
-        ):
-            if item is not None and type(item) is not int:
-                raise ValueError(f"{label}.{field_name} must be an integer or None")
+        self._optional_time(
+            value.raw_timestamp_ns,
+            f"{label}.raw_timestamp_ns",
+        )
         if value.clock_domain is not None and (
             not isinstance(value.clock_domain, str)
             or not value.clock_domain
@@ -510,31 +515,13 @@ class PluginCapabilityExecutor:
         return cast(tuple[Evidence, ...], value)
 
     def _diagnostic(self, value: Any, label: str) -> PluginDiagnostic:
-        if type(value) is not PluginDiagnostic:
-            raise ValueError(f"{label} must be an exact PluginDiagnostic")
-        if not isinstance(value.stage, DiagnosticStage):
-            raise TypeError(f"{label}.stage is invalid")
-        if not isinstance(value.severity, DiagnosticSeverity):
-            raise TypeError(f"{label}.severity is invalid")
-        if value.origin is not DiagnosticOrigin.PLUGIN:
-            raise ValueError(f"{label}.origin must be plugin")
-        if type(value.recoverable) is not bool:
-            raise ValueError(f"{label}.recoverable must be a boolean")
-        if (
-            not isinstance(value.code, str)
-            or not value.code
-            or len(value.code) > 256
-        ):
-            raise ValueError(f"{label}.code must contain 1 to 256 characters")
-        if (
-            not isinstance(value.message, str)
-            or not value.message
-            or len(value.message) > 8_192
-        ):
-            raise ValueError(f"{label}.message must contain 1 to 8192 characters")
-        self._evidence_tuple(value.evidence, f"{label}.evidence")
-        _validate_value(value.details, f"{label}.details")
-        return value
+        diagnostic = validate_plugin_diagnostic(
+            value,
+            label=label,
+            expected_origin=DiagnosticOrigin.PLUGIN,
+            maximum_evidence_items=self.limits.max_evidence_per_output,
+        )
+        return diagnostic
 
     def _diagnostics(
         self,
@@ -633,9 +620,12 @@ class PluginCapabilityExecutor:
     def _optional_time(value: Any, label: str, *, nonnegative: bool = False) -> None:
         if value is None:
             return
-        if type(value) is not int or (nonnegative and value < 0):
-            qualifier = "a non-negative integer" if nonnegative else "an integer"
-            raise ValueError(f"{label} must be {qualifier} or None")
+        minimum = 0 if nonnegative else MIN_TIMESTAMP_NS
+        if type(value) is not int or not minimum <= value <= MAX_TIMESTAMP_NS:
+            qualifier = "a non-negative " if nonnegative else "a "
+            raise ValueError(
+                f"{label} must be {qualifier}signed 64-bit integer or None"
+            )
 
     def _common_fact(
         self,
@@ -735,8 +725,14 @@ class PluginCapabilityExecutor:
         ):
             if type(clock_ns) is not int:
                 raise ValueError(f"{label}.{field_name} must be an integer")
-        if type(value.uncertainty_ns) is not int or value.uncertainty_ns < 0:
+            self._optional_time(clock_ns, f"{label}.{field_name}")
+        if type(value.uncertainty_ns) is not int:
             raise ValueError(f"{label}.uncertainty_ns must be non-negative")
+        self._optional_time(
+            value.uncertainty_ns,
+            f"{label}.uncertainty_ns",
+            nonnegative=True,
+        )
         self._common_fact(
             provenance=value.provenance,
             quality=value.quality,
@@ -1100,6 +1096,12 @@ class PluginCapabilityExecutor:
             "resolved_at_max_ns",
         ):
             self._optional_time(getattr(value, field_name), f"{label}.{field_name}")
+        if (
+            value.resolved_at_min_ns is not None
+            and value.resolved_at_max_ns is not None
+            and value.resolved_at_min_ns > value.resolved_at_max_ns
+        ):
+            raise ValueError(f"{label} resolved bounds are reversed")
         if not isinstance(value.capture_ranges, tuple) or len(
             value.capture_ranges
         ) > 1_024:
@@ -1109,9 +1111,79 @@ class PluginCapabilityExecutor:
                 raise ValueError(
                     f"{label}.capture_ranges[{index}] must be an exact CaptureRange"
                 )
+            self._optional_time(
+                item.observed_at_min_ns,
+                f"{label}.capture_ranges[{index}].observed_at_min_ns",
+            )
+            self._optional_time(
+                item.observed_at_max_ns,
+                f"{label}.capture_ranges[{index}].observed_at_max_ns",
+            )
+            if (
+                item.observed_at_min_ns is not None
+                and item.observed_at_max_ns is not None
+                and item.observed_at_min_ns > item.observed_at_max_ns
+            ):
+                raise ValueError(
+                    f"{label}.capture_ranges[{index}] bounds are reversed"
+                )
             self._evidence_tuple(
                 item.evidence,
                 f"{label}.capture_ranges[{index}].evidence",
+            )
+        selector = value.selector
+        if selector is not None:
+            if type(selector) is AbsoluteTimeSelector:
+                self._optional_time(
+                    selector.time_ns,
+                    f"{label}.selector.time_ns",
+                )
+            elif type(selector) is RelativeToWatermarkSelector:
+                self._optional_time(
+                    selector.offset_ns,
+                    f"{label}.selector.offset_ns",
+                )
+                if selector.offset_ns > 0:
+                    raise ValueError(
+                        f"{label}.selector.offset_ns must be zero or negative"
+                    )
+            else:
+                raise ValueError(f"{label}.selector is invalid")
+        if not isinstance(value.node_resolutions, tuple):
+            raise ValueError(f"{label}.node_resolutions must be a tuple")
+        for index, resolution in enumerate(value.node_resolutions):
+            if type(resolution) is not ResolvedNodeBasis:
+                raise ValueError(
+                    f"{label}.node_resolutions[{index}] must be an exact "
+                    "ResolvedNodeBasis"
+                )
+            for field_name in (
+                "local_min_ns",
+                "local_max_ns",
+                "absolute_min_ns",
+                "absolute_max_ns",
+            ):
+                self._optional_time(
+                    getattr(resolution, field_name),
+                    f"{label}.node_resolutions[{index}].{field_name}",
+                )
+        watermark = value.watermark
+        if watermark is not None:
+            if type(watermark) is not ReconstructionWatermark:
+                raise ValueError(
+                    f"{label}.watermark must be an exact ReconstructionWatermark"
+                )
+            self._optional_time(
+                watermark.local_time_ns,
+                f"{label}.watermark.local_time_ns",
+            )
+            self._optional_time(
+                watermark.absolute_min_ns,
+                f"{label}.watermark.absolute_min_ns",
+            )
+            self._optional_time(
+                watermark.absolute_max_ns,
+                f"{label}.watermark.absolute_max_ns",
             )
         return value
 

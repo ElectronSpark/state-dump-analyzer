@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from hashlib import sha256
@@ -30,10 +30,49 @@ from .contract_validation import (
     typed_tuple,
     validity_bounds,
 )
+from .temporal_core import MAX_TEMPORAL_NS, MIN_TEMPORAL_NS
 
 CORE_PLUGIN_API_VERSION = "1.0"
 FORWARDING_IR_VERSION = "1.0"
 PLUGIN_ENTRY_POINT_GROUP = "router_dump_analyzer.plugins"
+MIN_TIMESTAMP_NS = MIN_TEMPORAL_NS
+MAX_TIMESTAMP_NS = MAX_TEMPORAL_NS
+
+
+def _exact_temporal_ns(
+    value: object,
+    label: str,
+    *,
+    optional: bool = False,
+    nonnegative: bool = False,
+) -> int | None:
+    """Validate an exact signed-64 nanosecond coordinate."""
+
+    if value is None and optional:
+        return None
+    minimum = 0 if nonnegative else MIN_TIMESTAMP_NS
+    if type(value) is not int or not minimum <= value <= MAX_TIMESTAMP_NS:
+        qualifier = "non-negative " if nonnegative else ""
+        nullable = " or None" if optional else ""
+        raise ValueError(
+            f"{label} must be a {qualifier}signed 64-bit integer{nullable}"
+        )
+    return value
+
+MAX_PROBE_REASONS = 128
+MAX_PROBE_REASON_LENGTH = 1_024
+MAX_PROBE_DETECTED_TEXT_LENGTH = 256
+MAX_PROBE_DIAGNOSTICS = 100_000
+MAX_DIAGNOSTIC_CODE_LENGTH = 256
+MAX_DIAGNOSTIC_MESSAGE_LENGTH = 8_192
+MAX_DIAGNOSTIC_EVIDENCE_ITEMS = 4_096
+MAX_EVIDENCE_LOCATOR_LENGTH = 4_096
+MAX_EVIDENCE_CLOCK_DOMAIN_LENGTH = 256
+MAX_DIAGNOSTIC_DETAILS_DEPTH = 16
+MAX_DIAGNOSTIC_DETAILS_CONTAINER_ITEMS = 1_024
+MAX_DIAGNOSTIC_DETAILS_UNITS = 4_096
+MAX_DIAGNOSTIC_DETAILS_ATOM_UNITS = 65_536
+MAX_DIAGNOSTIC_DETAILS_INTEGER_BITS = 4_096
 
 type Scalar = None | bool | int | float | str | bytes | UUID
 type Value = Scalar | tuple[Value, ...] | Mapping[str, Value]
@@ -91,15 +130,11 @@ class KeyAtom:
 
         if self.type_tag in {"opaque_int", "opaque_uint", "ipv4"}:
             if type(value) is not int:
-                raise ValueError(
-                    f"key atom {self.type_tag} payload must be an integer"
-                )
+                raise ValueError(f"key atom {self.type_tag} payload must be an integer")
             if self.type_tag == "opaque_uint" and value < 0:
                 raise ValueError("key atom opaque_uint payload must be non-negative")
             if self.type_tag == "ipv4" and not 0 <= value <= 0xFFFFFFFF:
-                raise ValueError(
-                    "key atom ipv4 payload must be between 0 and 2^32 - 1"
-                )
+                raise ValueError("key atom ipv4 payload must be between 0 and 2^32 - 1")
             return
 
         if self.type_tag in {"ipv6", "uuid"}:
@@ -120,7 +155,10 @@ class KeyAtom:
             raise ValueError(
                 "plugin-namespaced key atom payload must be int, str, bytes, or UUID"
             )
-        if isinstance(value, (str, bytes)) and len(value) > _KEY_ATOM_MAX_PAYLOAD_LENGTH:
+        if (
+            isinstance(value, (str, bytes))
+            and len(value) > _KEY_ATOM_MAX_PAYLOAD_LENGTH
+        ):
             raise ValueError("plugin-namespaced key atom payload exceeds 4096 units")
 
 
@@ -196,21 +234,19 @@ REQUIRED_PLUGIN_HOOKS = (
     "locate_inputs",
 )
 
-PLUGIN_CAPABILITY_HOOKS: Mapping[PluginCapability, tuple[str, ...]] = (
-    MappingProxyType(
-        {
-            PluginCapability.STATUS_PARSE: ("parse_status",),
-            PluginCapability.CTF_PARSE: ("parse_ctf",),
-            PluginCapability.TEXT_TRACE_PARSE: ("parse_text_trace",),
-            PluginCapability.EVENT_REDUCTION: ("apply",),
-            PluginCapability.EVENT_REVERSION: ("revert",),
-            PluginCapability.CORRELATION: ("correlate",),
-            PluginCapability.CONSISTENCY_CHECK: ("check_consistency",),
-            PluginCapability.TOPOLOGY_PROJECTION: ("project_topology",),
-            PluginCapability.FORWARDING_PROJECTION: ("project_forwarding",),
-            PluginCapability.FORWARDING_TRACE: ("resolve_forwarding_step",),
-        }
-    )
+PLUGIN_CAPABILITY_HOOKS: Mapping[PluginCapability, tuple[str, ...]] = MappingProxyType(
+    {
+        PluginCapability.STATUS_PARSE: ("parse_status",),
+        PluginCapability.CTF_PARSE: ("parse_ctf",),
+        PluginCapability.TEXT_TRACE_PARSE: ("parse_text_trace",),
+        PluginCapability.EVENT_REDUCTION: ("apply",),
+        PluginCapability.EVENT_REVERSION: ("revert",),
+        PluginCapability.CORRELATION: ("correlate",),
+        PluginCapability.CONSISTENCY_CHECK: ("check_consistency",),
+        PluginCapability.TOPOLOGY_PROJECTION: ("project_topology",),
+        PluginCapability.FORWARDING_PROJECTION: ("project_forwarding",),
+        PluginCapability.FORWARDING_TRACE: ("resolve_forwarding_step",),
+    }
 )
 
 INPUT_PARSER_HOOKS: Mapping[InputParserKind, str] = MappingProxyType(
@@ -570,8 +606,7 @@ class TopologyPluginSemanticsDescriptor:
                 "topology semantics role",
                 maximum=128,
                 message=(
-                    "topology plugin_semantics.role must contain "
-                    "1 to 128 characters"
+                    "topology plugin_semantics.role must contain 1 to 128 characters"
                 ),
             )
         if self.coverage_complete is not None:
@@ -579,8 +614,7 @@ class TopologyPluginSemanticsDescriptor:
                 self.coverage_complete,
                 "topology semantics coverage",
                 message=(
-                    "topology plugin_semantics.coverage_complete must be "
-                    "a boolean"
+                    "topology plugin_semantics.coverage_complete must be a boolean"
                 ),
             )
 
@@ -606,9 +640,7 @@ class TopologyPluginSemanticsDescriptor:
 class InterNodeLinkPresentation:
     """Validated presentation declaration for an inter-node claim."""
 
-    route_trace: InterNodeRouteTraceRole = (
-        InterNodeRouteTraceRole.INCLUDE
-    )
+    route_trace: InterNodeRouteTraceRole = InterNodeRouteTraceRole.INCLUDE
 
     def __post_init__(self) -> None:
         route_trace = coerce_enum(
@@ -641,8 +673,7 @@ class WatermarkScope:
                 "watermark status_perspective_id must contain 1 to 128 characters"
             )
         if self.topology_projection_id is not None and (
-            not self.topology_projection_id
-            or len(self.topology_projection_id) > 128
+            not self.topology_projection_id or len(self.topology_projection_id) > 128
         ):
             raise ValueError(
                 "watermark topology_projection_id must contain 1 to 128 characters"
@@ -662,8 +693,7 @@ class AbsoluteTimeSelector:
     )
 
     def __post_init__(self) -> None:
-        if not isinstance(self.time_ns, int) or isinstance(self.time_ns, bool):
-            raise ValueError("absolute time_ns must be an integer, not a boolean")
+        _exact_temporal_ns(self.time_ns, "absolute time_ns")
         if not self.clock_domain or len(self.clock_domain) > 256:
             raise ValueError("absolute clock_domain must contain 1 to 256 characters")
         try:
@@ -685,8 +715,7 @@ class RelativeToWatermarkSelector:
     )
 
     def __post_init__(self) -> None:
-        if not isinstance(self.offset_ns, int) or isinstance(self.offset_ns, bool):
-            raise ValueError("relative offset_ns must be an integer, not a boolean")
+        _exact_temporal_ns(self.offset_ns, "relative offset_ns")
         if self.offset_ns > 0:
             raise ValueError("relative offset_ns must be zero or negative")
         try:
@@ -734,9 +763,7 @@ class PluginManifest:
         """Return whether the manifest advertises one standard or custom capability."""
 
         candidate = (
-            capability.value
-            if isinstance(capability, PluginCapability)
-            else capability
+            capability.value if isinstance(capability, PluginCapability) else capability
         )
         return any(
             (item.value if isinstance(item, PluginCapability) else item) == candidate
@@ -842,7 +869,9 @@ class ResourceIconDescriptor:
             or values[2] <= 0
             or values[3] <= 0
         ):
-            raise ValueError("icon view_box must contain four finite values with positive size")
+            raise ValueError(
+                "icon view_box must contain four finite values with positive size"
+            )
         width = float(self.stroke_width)
         if not math.isfinite(width) or not 0.25 <= width <= 8:
             raise ValueError("icon stroke_width must be between 0.25 and 8")
@@ -1017,19 +1046,29 @@ class ResourceTableRelationLevelDescriptor:
 
     def __post_init__(self) -> None:
         if not self.label or len(self.label) > 120:
-            raise ValueError("resource table relation label must contain 1 to 120 characters")
+            raise ValueError(
+                "resource table relation label must contain 1 to 120 characters"
+            )
         if not self.relation_types:
-            raise ValueError("resource table relation levels require at least one relationship type")
+            raise ValueError(
+                "resource table relation levels require at least one relationship type"
+            )
         if len(self.relation_types) != len(set(self.relation_types)):
-            raise ValueError("resource table relation types must be unique within a level")
+            raise ValueError(
+                "resource table relation types must be unique within a level"
+            )
         for relation_type in self.relation_types:
             _validate_dashboard_id(relation_type, "resource table relationship type")
         if len(self.target_kinds) != len(set(self.target_kinds)):
-            raise ValueError("resource table target kinds must be unique within a level")
+            raise ValueError(
+                "resource table target kinds must be unique within a level"
+            )
         try:
             RelationDirection(self.direction)
         except (TypeError, ValueError) as error:
-            raise ValueError("unsupported resource table relationship direction") from error
+            raise ValueError(
+                "unsupported resource table relationship direction"
+            ) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -1052,21 +1091,31 @@ class ResourceTableViewDescriptor:
     def __post_init__(self) -> None:
         _validate_dashboard_id(self.view_id, "resource table view_id")
         if not self.label or len(self.label) > 120:
-            raise ValueError("resource table view label must contain 1 to 120 characters")
+            raise ValueError(
+                "resource table view label must contain 1 to 120 characters"
+            )
         if len(self.description) > 500:
-            raise ValueError("resource table view description must be at most 500 characters")
+            raise ValueError(
+                "resource table view description must be at most 500 characters"
+            )
         if not self.root_kinds:
             raise ValueError("resource table views require at least one root kind")
         if len(self.root_kinds) != len(set(self.root_kinds)):
             raise ValueError("resource table root kinds must be unique")
         if not 1 <= len(self.levels) <= 3:
-            raise ValueError("resource table views require between one and three relationship levels")
+            raise ValueError(
+                "resource table views require between one and three relationship levels"
+            )
         if not 0 <= self.default_expanded_depth <= len(self.levels):
-            raise ValueError("resource table default_expanded_depth exceeds the relationship depth")
+            raise ValueError(
+                "resource table default_expanded_depth exceeds the relationship depth"
+            )
         if not 1 <= self.max_roots <= 500:
             raise ValueError("resource table max_roots must be between 1 and 500")
         if not 1 <= self.max_children_per_node <= 100:
-            raise ValueError("resource table max_children_per_node must be between 1 and 100")
+            raise ValueError(
+                "resource table max_children_per_node must be between 1 and 100"
+            )
         if (
             not isinstance(self.max_nodes, int)
             or isinstance(self.max_nodes, bool)
@@ -1161,9 +1210,13 @@ class SourceRecordGroupDescriptor:
     def __post_init__(self) -> None:
         _validate_dashboard_id(self.group_id, "source record group_id")
         if not self.label or len(self.label) > 120:
-            raise ValueError("source record group label must contain 1 to 120 characters")
+            raise ValueError(
+                "source record group label must contain 1 to 120 characters"
+            )
         if len(self.description) > 500:
-            raise ValueError("source record group description must be at most 500 characters")
+            raise ValueError(
+                "source record group description must be at most 500 characters"
+            )
         if not isinstance(self.default_included, bool):
             raise ValueError("source record group default_included must be a boolean")
         if self.copy_action_label is not None and (
@@ -1219,18 +1272,20 @@ class StatusPerspectiveDescriptor:
         _validate_dashboard_id(self.perspective_id, "status perspective_id")
         _validate_dashboard_id(self.layer_id, "status layer_id")
         if not self.label or len(self.label) > 120:
-            raise ValueError("status perspective label must contain 1 to 120 characters")
+            raise ValueError(
+                "status perspective label must contain 1 to 120 characters"
+            )
         if len(self.description) > 500:
-            raise ValueError("status perspective description must be at most 500 characters")
+            raise ValueError(
+                "status perspective description must be at most 500 characters"
+            )
         try:
             StatusPerspectiveRole(self.role)
         except (TypeError, ValueError) as error:
             raise ValueError("unsupported status perspective role") from error
 
 
-_SCHEMA_DIGEST_PATTERN = re.compile(
-    r"^(?:[a-z][a-z0-9._-]{0,31}:)?[0-9a-f]{16,128}$"
-)
+_SCHEMA_DIGEST_PATTERN = re.compile(r"^(?:[a-z][a-z0-9._-]{0,31}:)?[0-9a-f]{16,128}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1293,9 +1348,7 @@ class ConnectorMatchPolicyDescriptor:
         if not isinstance(self.argument_names, tuple):
             raise ValueError("connector match argument_names must be a tuple")
         if not 1 <= len(self.argument_names) <= 32:
-            raise ValueError(
-                "connector match policies require 1 to 32 argument names"
-            )
+            raise ValueError("connector match policies require 1 to 32 argument names")
         if len(self.argument_names) != len(set(self.argument_names)):
             raise ValueError("connector match argument names must be unique")
         for name in self.argument_names:
@@ -1306,7 +1359,9 @@ class ConnectorMatchPolicyDescriptor:
                     "exact-token connector match policies must not name a linker"
                 )
         elif self.linker_plugin_id is None:
-            raise ValueError("linker connector match policies require a linker_plugin_id")
+            raise ValueError(
+                "linker connector match policies require a linker_plugin_id"
+            )
         if self.linker_plugin_id is not None:
             _validate_dashboard_id(
                 self.linker_plugin_id,
@@ -1330,9 +1385,13 @@ class TopologyProjectionDescriptor:
     def __post_init__(self) -> None:
         _validate_dashboard_id(self.projection_id, "topology projection_id")
         if not self.label or len(self.label) > 120:
-            raise ValueError("topology projection label must contain 1 to 120 characters")
+            raise ValueError(
+                "topology projection label must contain 1 to 120 characters"
+            )
         if len(self.description) > 500:
-            raise ValueError("topology projection description must be at most 500 characters")
+            raise ValueError(
+                "topology projection description must be at most 500 characters"
+            )
         if not self.supported_status_perspective_ids:
             raise ValueError(
                 "topology projections require at least one supported status perspective"
@@ -1359,7 +1418,9 @@ class TopologyProjectionDescriptor:
         try:
             StatusSourceCombinationPolicy(self.status_source_combination_policy)
         except (TypeError, ValueError) as error:
-            raise ValueError("unsupported topology status source combination policy") from error
+            raise ValueError(
+                "unsupported topology status source combination policy"
+            ) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -1418,25 +1479,19 @@ class PluginSchema:
     topology_projections: tuple[TopologyProjectionDescriptor, ...] = ()
 
     def __post_init__(self) -> None:
-        resource_kind_ids = [
-            descriptor.kind for descriptor in self.resource_kinds
-        ]
+        resource_kind_ids = [descriptor.kind for descriptor in self.resource_kinds]
         if len(resource_kind_ids) != len(set(resource_kind_ids)):
             raise ValueError("plugin resource kind identifiers must be unique")
         relationship_type_ids = [
             descriptor.relation_type for descriptor in self.relationship_types
         ]
         if len(relationship_type_ids) != len(set(relationship_type_ids)):
-            raise ValueError(
-                "plugin relationship type identifiers must be unique"
-            )
+            raise ValueError("plugin relationship type identifiers must be unique")
         causal_link_type_ids = [
             descriptor.link_type for descriptor in self.causal_link_types
         ]
         if len(causal_link_type_ids) != len(set(causal_link_type_ids)):
-            raise ValueError(
-                "plugin causal link type identifiers must be unique"
-            )
+            raise ValueError("plugin causal link type identifiers must be unique")
         dashboard_ids = [dashboard.dashboard_id for dashboard in self.dashboards]
         if len(dashboard_ids) != len(set(dashboard_ids)):
             raise ValueError("plugin dashboard identifiers must be unique")
@@ -1444,8 +1499,13 @@ class PluginSchema:
         referenced_kinds = {
             kind
             for dashboard in self.dashboards
-            for widget in (*dashboard.statistics, *dashboard.tables)
-            for kind in widget.resource_kinds
+            for statistic in dashboard.statistics
+            for kind in statistic.resource_kinds
+        } | {
+            kind
+            for dashboard in self.dashboards
+            for table in dashboard.tables
+            for kind in table.resource_kinds
         }
         if unknown := referenced_kinds - resource_kinds:
             raise ValueError(
@@ -1456,7 +1516,9 @@ class PluginSchema:
         if len(view_ids) != len(set(view_ids)):
             raise ValueError("plugin resource table view identifiers must be unique")
         if sum(view.default_selected for view in self.resource_table_views) > 1:
-            raise ValueError("only one plugin resource table view may be selected by default")
+            raise ValueError(
+                "only one plugin resource table view may be selected by default"
+            )
         view_resource_kinds = {
             kind
             for view in self.resource_table_views
@@ -1482,7 +1544,9 @@ class PluginSchema:
                 "plugin resource table views reference unknown relationship types: "
                 + ", ".join(sorted(unknown))
             )
-        source_types = [descriptor.source_type for descriptor in self.source_record_types]
+        source_types = [
+            descriptor.source_type for descriptor in self.source_record_types
+        ]
         if len(source_types) != len(set(source_types)):
             raise ValueError("plugin source record types must be unique")
         source_group_ids = [
@@ -1562,10 +1626,82 @@ class ProbeResult:
     match_kind: ProbeMatchKind = ProbeMatchKind.COMPATIBLE
 
     def __post_init__(self) -> None:
-        try:
-            ProbeMatchKind(self.match_kind)
-        except (TypeError, ValueError) as error:
-            raise ValueError("unsupported probe match kind") from error
+        validate_probe_result(self)
+
+
+def validate_probe_result(value: object) -> ProbeResult:
+    """Validate one probe result at every plug-in execution boundary.
+
+    Constructing :class:`ProbeResult` performs the same validation, while
+    callers must invoke this function again for values returned by untrusted
+    plug-in code because frozen dataclasses can still be forged with low-level
+    Python mechanisms. Keeping these bounds here prevents the authoring CLI,
+    direct ingestion, and durable worker from accepting different contracts.
+    """
+
+    if type(value) is not ProbeResult:
+        raise ValueError("probe result must be an exact ProbeResult")
+    try:
+        confidence = value.confidence
+        reasons_value = value.reasons
+        match_kind_value = value.match_kind
+        detected_values = (
+            value.detected_platform,
+            value.detected_software_version,
+        )
+    except AttributeError as error:
+        raise ValueError("probe result is incomplete") from error
+    try:
+        normalized_confidence = float(confidence)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(
+            "probe confidence must be finite and between 0 and 1"
+        ) from error
+    if (
+        isinstance(confidence, bool)
+        or not isinstance(confidence, (int, float))
+        or not math.isfinite(normalized_confidence)
+        or not 0 <= normalized_confidence <= 1
+    ):
+        raise ValueError("probe confidence must be finite and between 0 and 1")
+    try:
+        match_kind = ProbeMatchKind(match_kind_value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("unsupported probe match kind") from error
+    object.__setattr__(value, "match_kind", match_kind)
+
+    reasons = typed_tuple(
+        reasons_value,
+        "probe reasons",
+        str,
+        minimum=1,
+        maximum=MAX_PROBE_REASONS,
+        bounds_message=(f"probe reasons must contain 1 to {MAX_PROBE_REASONS} items"),
+        item_message="probe reasons must contain only strings",
+    )
+    for index, reason in enumerate(reasons):
+        bounded_string(
+            reason,
+            f"probe reason {index}",
+            maximum=MAX_PROBE_REASON_LENGTH,
+        )
+        if "\x00" in reason:
+            raise ValueError(f"probe reason {index} must not contain NUL")
+    for field_name, detected in zip(
+        ("detected_platform", "detected_software_version"),
+        detected_values,
+        strict=True,
+    ):
+        if detected is None:
+            continue
+        bounded_string(
+            detected,
+            f"probe {field_name}",
+            maximum=MAX_PROBE_DETECTED_TEXT_LENGTH,
+        )
+        if "\x00" in detected:
+            raise ValueError(f"probe {field_name} must not contain NUL")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -1719,6 +1855,226 @@ class PluginDiagnostic:
     origin: DiagnosticOrigin = DiagnosticOrigin.PLUGIN
 
 
+def _validate_contract_evidence(
+    value: object,
+    *,
+    label: str,
+    artifact_ids: Collection[UUID] | None,
+) -> Evidence:
+    """Validate the context-free portion of one diagnostic evidence locator."""
+
+    if type(value) is not Evidence:
+        raise ValueError(f"{label} must be an exact Evidence")
+    if not isinstance(value.artifact_id, UUID):
+        raise ValueError(f"{label}.artifact_id must be a UUID")
+    if artifact_ids is not None and value.artifact_id not in artifact_ids:
+        raise ValueError(f"{label} references an artifact outside its input")
+    bounded_string(
+        value.locator,
+        f"{label}.locator",
+        maximum=MAX_EVIDENCE_LOCATOR_LENGTH,
+    )
+    if "\x00" in value.locator:
+        raise ValueError(f"{label}.locator must not contain NUL")
+    _exact_temporal_ns(
+        value.raw_timestamp_ns,
+        f"{label}.raw_timestamp_ns",
+        optional=True,
+    )
+    if value.clock_domain is not None:
+        bounded_string(
+            value.clock_domain,
+            f"{label}.clock_domain",
+            maximum=MAX_EVIDENCE_CLOCK_DOMAIN_LENGTH,
+        )
+        if "\x00" in value.clock_domain:
+            raise ValueError(f"{label}.clock_domain must not contain NUL")
+    if value.excerpt_sha256 is not None and (
+        not isinstance(value.excerpt_sha256, str)
+        or len(value.excerpt_sha256) != 64
+        or any(
+            character not in "0123456789abcdefABCDEF"
+            for character in value.excerpt_sha256
+        )
+    ):
+        raise ValueError(f"{label}.excerpt_sha256 must be a 64-digit hex digest")
+    return value
+
+
+def _validate_diagnostic_details(value: object, *, label: str) -> None:
+    """Validate the bounded ``Properties`` grammar used by diagnostics."""
+
+    units = [0]
+    active_container_ids: set[int] = set()
+
+    def validate(nested: object, depth: int) -> None:
+        if depth > MAX_DIAGNOSTIC_DETAILS_DEPTH:
+            raise ValueError(
+                f"{label} exceeds {MAX_DIAGNOSTIC_DETAILS_DEPTH} container levels"
+            )
+        units[0] += 1
+        if units[0] > MAX_DIAGNOSTIC_DETAILS_UNITS:
+            raise ValueError(
+                f"{label} exceeds {MAX_DIAGNOSTIC_DETAILS_UNITS} value units"
+            )
+        if nested is None or type(nested) is bool or isinstance(nested, UUID):
+            return
+        if type(nested) is int:
+            if nested.bit_length() > MAX_DIAGNOSTIC_DETAILS_INTEGER_BITS:
+                raise ValueError(
+                    f"{label} contains an integer exceeding "
+                    f"{MAX_DIAGNOSTIC_DETAILS_INTEGER_BITS} bits"
+                )
+            return
+        if type(nested) is float:
+            if not math.isfinite(nested):
+                raise ValueError(f"{label} contains a non-finite float")
+            return
+        if isinstance(nested, (str, bytes)):
+            if len(nested) > MAX_DIAGNOSTIC_DETAILS_ATOM_UNITS:
+                raise ValueError(
+                    f"{label} contains an atom exceeding "
+                    f"{MAX_DIAGNOSTIC_DETAILS_ATOM_UNITS} units"
+                )
+            return
+        if isinstance(nested, tuple):
+            if len(nested) > MAX_DIAGNOSTIC_DETAILS_CONTAINER_ITEMS:
+                raise ValueError(
+                    f"{label} contains a tuple exceeding "
+                    f"{MAX_DIAGNOSTIC_DETAILS_CONTAINER_ITEMS} items"
+                )
+            container_id = id(nested)
+            if container_id in active_container_ids:
+                raise ValueError(f"{label} contains a reference cycle")
+            active_container_ids.add(container_id)
+            try:
+                for child in nested:
+                    validate(child, depth + 1)
+            finally:
+                active_container_ids.remove(container_id)
+            return
+        if isinstance(nested, Mapping):
+            if len(nested) > MAX_DIAGNOSTIC_DETAILS_CONTAINER_ITEMS:
+                raise ValueError(
+                    f"{label} contains a mapping exceeding "
+                    f"{MAX_DIAGNOSTIC_DETAILS_CONTAINER_ITEMS} items"
+                )
+            container_id = id(nested)
+            if container_id in active_container_ids:
+                raise ValueError(f"{label} contains a reference cycle")
+            active_container_ids.add(container_id)
+            try:
+                for key, child in nested.items():
+                    if not isinstance(key, str):
+                        raise ValueError(f"{label} mappings require string keys")
+                    if len(key) > MAX_DIAGNOSTIC_DETAILS_ATOM_UNITS:
+                        raise ValueError(
+                            f"{label} mapping keys exceed "
+                            f"{MAX_DIAGNOSTIC_DETAILS_ATOM_UNITS} characters"
+                        )
+                    validate(child, depth + 1)
+            finally:
+                active_container_ids.remove(container_id)
+            return
+        raise ValueError(f"{label} contains unsupported type {type(nested).__name__}")
+
+    validate(value, 0)
+
+
+def validate_plugin_diagnostic(
+    value: object,
+    *,
+    label: str = "diagnostic",
+    expected_origin: DiagnosticOrigin | None = None,
+    expected_stage: DiagnosticStage | None = None,
+    artifact_ids: Collection[UUID] | None = None,
+    maximum_evidence_items: int = MAX_DIAGNOSTIC_EVIDENCE_ITEMS,
+) -> PluginDiagnostic:
+    """Validate one diagnostic's shared plug-in boundary contract.
+
+    Runtime-specific validators may additionally inspect the opaque ``details``
+    mapping and charge aggregate budgets.  The typed fields, text bounds, and
+    evidence envelope are deliberately defined once here so author validation,
+    probing, direct ingestion, and optional-capability execution cannot drift.
+    """
+
+    if type(maximum_evidence_items) is not int or maximum_evidence_items < 0:
+        raise ValueError("maximum_evidence_items must be a non-negative integer")
+    if type(value) is not PluginDiagnostic:
+        raise ValueError(f"{label} must be an exact PluginDiagnostic")
+    if not isinstance(value.stage, DiagnosticStage):
+        raise ValueError(f"{label}.stage is invalid")
+    if not isinstance(value.severity, DiagnosticSeverity):
+        raise ValueError(f"{label}.severity is invalid")
+    if not isinstance(value.origin, DiagnosticOrigin):
+        raise ValueError(f"{label}.origin is invalid")
+    if expected_origin is not None and value.origin is not expected_origin:
+        raise ValueError(f"{label}.origin must be {expected_origin.value!r}")
+    if expected_stage is not None and value.stage is not expected_stage:
+        raise ValueError(f"{label}.stage must be {expected_stage.value!r}")
+    if type(value.recoverable) is not bool:
+        raise ValueError(f"{label}.recoverable must be a boolean")
+    bounded_string(
+        value.code,
+        f"{label}.code",
+        maximum=MAX_DIAGNOSTIC_CODE_LENGTH,
+    )
+    if "\x00" in value.code:
+        raise ValueError(f"{label}.code must not contain NUL")
+    bounded_string(
+        value.message,
+        f"{label}.message",
+        maximum=MAX_DIAGNOSTIC_MESSAGE_LENGTH,
+    )
+    if "\x00" in value.message:
+        raise ValueError(f"{label}.message must not contain NUL")
+    if not isinstance(value.evidence, tuple):
+        raise ValueError(f"{label}.evidence must be a tuple")
+    if len(value.evidence) > maximum_evidence_items:
+        raise ValueError(f"{label}.evidence exceeds the configured evidence limit")
+    for index, evidence in enumerate(value.evidence):
+        _validate_contract_evidence(
+            evidence,
+            label=f"{label}.evidence[{index}]",
+            artifact_ids=artifact_ids,
+        )
+    if not isinstance(value.details, Mapping):
+        raise ValueError(f"{label}.details must be a mapping")
+    _validate_diagnostic_details(value.details, label=f"{label}.details")
+    return value
+
+
+def validate_probe_report(
+    value: object,
+    *,
+    artifact_ids: Collection[UUID] | None = None,
+    maximum_diagnostics: int = MAX_PROBE_DIAGNOSTICS,
+    maximum_evidence_items: int = MAX_DIAGNOSTIC_EVIDENCE_ITEMS,
+) -> ProbeReport:
+    """Validate a complete probe report at every executable boundary."""
+
+    if type(maximum_diagnostics) is not int or maximum_diagnostics < 0:
+        raise ValueError("maximum_diagnostics must be a non-negative integer")
+    if type(value) is not ProbeReport:
+        raise ValueError("probe report must be an exact ProbeReport")
+    if value.result is not None:
+        validate_probe_result(value.result)
+    if not isinstance(value.diagnostics, tuple):
+        raise ValueError("probe diagnostics must be a tuple")
+    if len(value.diagnostics) > maximum_diagnostics:
+        raise ValueError("probe diagnostics exceed the configured diagnostic limit")
+    for index, diagnostic in enumerate(value.diagnostics):
+        validate_plugin_diagnostic(
+            diagnostic,
+            label=f"probe.diagnostics[{index}]",
+            expected_origin=DiagnosticOrigin.PLUGIN,
+            expected_stage=DiagnosticStage.PROBE,
+            artifact_ids=artifact_ids,
+            maximum_evidence_items=maximum_evidence_items,
+        )
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class UnknownField:
     name: str
@@ -1752,8 +2108,10 @@ class PropertyPatch:
             raise ValueError("remove_fields contains duplicate names")
         if len(unknown_names) != len(self.unknown_fields):
             raise ValueError("unknown_fields contains duplicate names")
-        overlap = (set_names & remove_names) | (set_names & unknown_names) | (
-            remove_names & unknown_names
+        overlap = (
+            (set_names & remove_names)
+            | (set_names & unknown_names)
+            | (remove_names & unknown_names)
         )
         if overlap:
             raise ValueError(
@@ -1853,20 +2211,20 @@ def derive_event_uid(
     ):
         if not isinstance(value, str) or not value:
             raise ValueError(f"{label} must be a non-empty string")
-    for label, value in (
+    for numeric_label, numeric_value in (
         ("source.message_ordinal", source.message_ordinal),
         ("source.packet_sequence", source.packet_sequence),
     ):
-        if value is not None and (
-            not isinstance(value, int) or isinstance(value, bool)
+        if numeric_value is not None and (
+            not isinstance(numeric_value, int) or isinstance(numeric_value, bool)
         ):
-            raise ValueError(f"{label} must be an integer or None")
-    for label, value in (
+            raise ValueError(f"{numeric_label} must be an integer or None")
+    for optional_label, optional_value in (
         ("source.trace_uid", source.trace_uid),
         ("source.stream_uid", source.stream_uid),
     ):
-        if value is not None and not isinstance(value, str):
-            raise ValueError(f"{label} must be a string or None")
+        if optional_value is not None and not isinstance(optional_value, str):
+            raise ValueError(f"{optional_label} must be a string or None")
     if isinstance(local_discriminator, bool) or (
         local_discriminator is not None
         and not isinstance(local_discriminator, (int, str, bytes, UUID))
@@ -1919,6 +2277,38 @@ class DomainEvent:
     quality: Quality
     source: SourceRecordRef
     evidence: Evidence
+
+    def __post_init__(self) -> None:
+        if self.timestamp_ns is not None and (
+            type(self.timestamp_ns) is not int
+            or not MIN_TIMESTAMP_NS <= self.timestamp_ns <= MAX_TIMESTAMP_NS
+        ):
+            raise ValueError(
+                "event timestamp_ns must be a signed 64-bit integer or None"
+            )
+        if self.timestamp_uncertainty_ns is not None and (
+            type(self.timestamp_uncertainty_ns) is not int
+            or not 0 <= self.timestamp_uncertainty_ns <= MAX_TIMESTAMP_NS
+        ):
+            raise ValueError(
+                "event timestamp_uncertainty_ns must be a non-negative "
+                "signed 64-bit integer or None"
+            )
+        if self.timestamp_ns is None and self.timestamp_uncertainty_ns is not None:
+            raise ValueError(
+                "event cannot have timestamp uncertainty without a timestamp"
+            )
+        if (
+            self.timestamp_ns is not None
+            and self.timestamp_uncertainty_ns is not None
+            and (
+                self.timestamp_ns - self.timestamp_uncertainty_ns < MIN_TIMESTAMP_NS
+                or self.timestamp_ns + self.timestamp_uncertainty_ns > MAX_TIMESTAMP_NS
+            )
+        ):
+            raise ValueError(
+                "event timestamp uncertainty interval must fit signed 64-bit"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2163,20 +2553,18 @@ class ReconstructionWatermark:
     evidence: tuple[Evidence, ...] = ()
 
     def __post_init__(self) -> None:
-        if not isinstance(self.local_time_ns, int) or isinstance(
-            self.local_time_ns, bool
-        ):
-            raise ValueError("watermark local_time_ns must be an integer, not a boolean")
+        _exact_temporal_ns(self.local_time_ns, "watermark local_time_ns")
         if not self.clock_domain or len(self.clock_domain) > 256:
             raise ValueError("watermark clock_domain must contain 1 to 256 characters")
         if (self.absolute_min_ns is None) != (self.absolute_max_ns is None):
-            raise ValueError("watermark absolute bounds must both be present or both be absent")
-        if any(
-            value is not None
-            and (not isinstance(value, int) or isinstance(value, bool))
-            for value in (self.absolute_min_ns, self.absolute_max_ns)
+            raise ValueError(
+                "watermark absolute bounds must both be present or both be absent"
+            )
+        for label, value in (
+            ("watermark absolute_min_ns", self.absolute_min_ns),
+            ("watermark absolute_max_ns", self.absolute_max_ns),
         ):
-            raise ValueError("watermark absolute bounds must be integers")
+            _exact_temporal_ns(value, label, optional=True)
         if (
             self.absolute_min_ns is not None
             and self.absolute_max_ns is not None
@@ -2186,7 +2574,9 @@ class ReconstructionWatermark:
         if self.mapping_method is not None and (
             not self.mapping_method or len(self.mapping_method) > 256
         ):
-            raise ValueError("watermark mapping_method must contain 1 to 256 characters")
+            raise ValueError(
+                "watermark mapping_method must contain 1 to 256 characters"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2215,12 +2605,16 @@ class ResolvedNodeBasis:
                 raise ValueError(
                     f"resolved node {label} bounds must both be present or both be absent"
                 )
-            if any(
-                value is not None
-                and (not isinstance(value, int) or isinstance(value, bool))
-                for value in (minimum, maximum)
-            ):
-                raise ValueError(f"resolved node {label} bounds must be integers")
+            _exact_temporal_ns(
+                minimum,
+                f"resolved node {label} minimum",
+                optional=True,
+            )
+            _exact_temporal_ns(
+                maximum,
+                f"resolved node {label} maximum",
+                optional=True,
+            )
             if minimum is not None and maximum is not None and minimum > maximum:
                 raise ValueError(f"resolved node {label} bounds are reversed")
         if self.local_min_ns is not None and not self.local_clock_domain:
@@ -2234,9 +2628,7 @@ class ResolvedNodeBasis:
         if self.mapping_method is not None and (
             not self.mapping_method or len(self.mapping_method) > 256
         ):
-            raise ValueError(
-                "resolved mapping_method must contain 1 to 256 characters"
-            )
+            raise ValueError("resolved mapping_method must contain 1 to 256 characters")
         if self.reason_code is not None and (
             not self.reason_code or len(self.reason_code) > 128
         ):
@@ -2360,7 +2752,9 @@ class TopologyEndpointReference:
             )
         if self.resource is not None and not isinstance(self.resource, ResourceKey):
             raise ValueError("topology endpoint resource must be a ResourceKey")
-        if self.match is not None and not isinstance(self.match, TopologyMatchReference):
+        if self.match is not None and not isinstance(
+            self.match, TopologyMatchReference
+        ):
             raise ValueError("topology endpoint match must be a TopologyMatchReference")
 
 
@@ -2474,9 +2868,7 @@ class TopologyProjectionRecord:
             strict_boolean(
                 self.exists,
                 "topology projection existence",
-                message=(
-                    "topology projection existence must be boolean or unknown"
-                ),
+                message=("topology projection existence must be boolean or unknown"),
             )
         if not isinstance(
             self.payload,
@@ -2494,6 +2886,16 @@ class TopologyProjectionRecord:
             minimum_type_message="topology validity bounds must be integers",
             maximum_type_message="topology validity bounds must be integers",
             order_message="topology validity bounds are reversed",
+        )
+        _exact_temporal_ns(
+            self.valid_from_ns,
+            "topology valid_from_ns",
+            optional=True,
+        )
+        _exact_temporal_ns(
+            self.valid_to_ns,
+            "topology valid_to_ns",
+            optional=True,
         )
 
 
@@ -2544,9 +2946,7 @@ def _connector_argument_units(value: KeyValue, depth: int = 0) -> int:
             raise ValueError(
                 "connector claim argument tuples support at most 32 values"
             )
-        return 1 + sum(
-            _connector_argument_units(item, depth + 1) for item in value
-        )
+        return 1 + sum(_connector_argument_units(item, depth + 1) for item in value)
     raise ValueError(
         "connector claim arguments must use KeyValue scalars, KeyAtom, or tuples"
     )
@@ -2585,12 +2985,8 @@ class ConnectorClaim:
             minimum=1,
             maximum=32,
             tuple_message="connector claim arguments must be a tuple",
-            bounds_message=(
-                "connector claims require 1 to 32 typed arguments"
-            ),
-            item_message=(
-                "connector claim arguments must be (name, KeyValue) pairs"
-            ),
+            bounds_message=("connector claims require 1 to 32 typed arguments"),
+            item_message=("connector claim arguments must be (name, KeyValue) pairs"),
         )
         names: list[str] = []
         total_units = 0
@@ -2640,13 +3036,19 @@ class ConnectorClaim:
             "connector claim validity",
             allow_partial=True,
             exact_integers=False,
-            minimum_type_message=(
-                "connector claim valid_from_ns must be an integer"
-            ),
-            maximum_type_message=(
-                "connector claim valid_to_ns must be an integer"
-            ),
+            minimum_type_message=("connector claim valid_from_ns must be an integer"),
+            maximum_type_message=("connector claim valid_to_ns must be an integer"),
             order_message="connector claim validity bounds are reversed",
+        )
+        _exact_temporal_ns(
+            self.valid_from_ns,
+            "connector claim valid_from_ns",
+            optional=True,
+        )
+        _exact_temporal_ns(
+            self.valid_to_ns,
+            "connector claim valid_to_ns",
+            optional=True,
         )
         typed_tuple(
             self.evidence,
@@ -2654,12 +3056,8 @@ class ConnectorClaim:
             Evidence,
             maximum=64,
             tuple_message="connector claim evidence must be a tuple",
-            bounds_message=(
-                "connector claims support at most 64 evidence items"
-            ),
-            item_message=(
-                "connector claim evidence must contain Evidence values"
-            ),
+            bounds_message=("connector claims support at most 64 evidence items"),
+            item_message=("connector claim evidence must contain Evidence values"),
         )
 
 
@@ -2672,9 +3070,7 @@ class FederatedConnectorClaim:
 
     def __post_init__(self) -> None:
         if not isinstance(self.endpoint, GlobalResourceRef):
-            raise ValueError(
-                "federated connector endpoint must be a GlobalResourceRef"
-            )
+            raise ValueError("federated connector endpoint must be a GlobalResourceRef")
         if not isinstance(self.claim, ConnectorClaim):
             raise ValueError("federated connector claim must be a ConnectorClaim")
         if self.endpoint.resource != self.claim.endpoint:
@@ -2729,12 +3125,8 @@ class FederationMatchCandidate:
             Evidence,
             maximum=64,
             tuple_message="federation candidate evidence must be a tuple",
-            bounds_message=(
-                "federation candidates support at most 64 evidence items"
-            ),
-            item_message=(
-                "federation candidate evidence must contain Evidence values"
-            ),
+            bounds_message=("federation candidates support at most 64 evidence items"),
+            item_message=("federation candidate evidence must contain Evidence values"),
         )
 
 
@@ -2783,12 +3175,9 @@ class FederationLinkResult:
                 candidate.endpoint.resource,
             ),
             tuple_message="federation result candidates must be a tuple",
-            bounds_message=(
-                "federation results support at most 64 candidates"
-            ),
+            bounds_message=("federation results support at most 64 candidates"),
             item_message=(
-                "federation result candidates must be "
-                "FederationMatchCandidate values"
+                "federation result candidates must be FederationMatchCandidate values"
             ),
             duplicate_message="federation result candidates must be unique",
         )
@@ -2838,12 +3227,8 @@ class FederationLinkResult:
             Evidence,
             maximum=64,
             tuple_message="federation result evidence must be a tuple",
-            bounds_message=(
-                "federation results support at most 64 evidence items"
-            ),
-            item_message=(
-                "federation result evidence must contain Evidence values"
-            ),
+            bounds_message=("federation results support at most 64 evidence items"),
+            item_message=("federation result evidence must contain Evidence values"),
         )
 
 
@@ -2880,12 +3265,9 @@ class FederationLinkRequest:
                 claim.claim.claim_id,
             ),
             tuple_message="federation request claims must be a tuple",
-            bounds_message=(
-                "federation requests support at most 100000 claims"
-            ),
+            bounds_message=("federation requests support at most 100000 claims"),
             item_message=(
-                "federation request claims must be "
-                "FederatedConnectorClaim values"
+                "federation request claims must be FederatedConnectorClaim values"
             ),
             duplicate_message="federation request claims must be unique",
         )
@@ -2917,9 +3299,7 @@ class FederationLinkRequest:
             minimum=1,
             maximum=64,
             exact=False,
-            message=(
-                "federation max_candidates_per_result must be between 1 and 64"
-            ),
+            message=("federation max_candidates_per_result must be between 1 and 64"),
         )
 
 
@@ -3058,9 +3438,13 @@ class RoutePresentationDescriptor:
         except (TypeError, ValueError) as error:
             raise ValueError("unsupported route presentation style") from error
         if not isinstance(self.label, str) or not self.label or len(self.label) > 120:
-            raise ValueError("route presentation label must contain 1 to 120 characters")
+            raise ValueError(
+                "route presentation label must contain 1 to 120 characters"
+            )
         if not isinstance(self.description, str) or len(self.description) > 500:
-            raise ValueError("route presentation description must be at most 500 characters")
+            raise ValueError(
+                "route presentation description must be at most 500 characters"
+            )
         if not isinstance(self.topology_references, tuple):
             raise ValueError("route presentation topology references must be a tuple")
         if not 1 <= len(self.topology_references) <= 64:
@@ -3077,8 +3461,7 @@ class RoutePresentationDescriptor:
         if len(self.anchor_resources) > 64:
             raise ValueError("route presentations support at most 64 anchor resources")
         if any(
-            not isinstance(resource, ResourceKey)
-            for resource in self.anchor_resources
+            not isinstance(resource, ResourceKey) for resource in self.anchor_resources
         ):
             raise ValueError("route presentation anchors must be ResourceKey values")
         if len(self.anchor_resources) != len(set(self.anchor_resources)):
@@ -3087,7 +3470,9 @@ class RoutePresentationDescriptor:
             RoutePresentationScope(self.scope) is RoutePresentationScope.SPAN
             and len(self.anchor_resources) < 2
         ):
-            raise ValueError("span route presentations require at least two anchor resources")
+            raise ValueError(
+                "span route presentations require at least two anchor resources"
+            )
         if not isinstance(self.facts, Mapping):
             raise ValueError("route presentation facts must be a mapping")
         if len(self.facts) > 64:
@@ -3175,12 +3560,8 @@ class ResolutionContribution:
             bounds_message=(
                 "resolution contributions support at most 64 resource references"
             ),
-            item_message=(
-                "resolution resource references must be ResourceKey values"
-            ),
-            duplicate_message=(
-                "resolution resource references must be unique"
-            ),
+            item_message=("resolution resource references must be ResourceKey values"),
+            duplicate_message=("resolution resource references must be unique"),
         )
         typed_tuple(
             self.topology_references,
@@ -3250,9 +3631,7 @@ class ForwardingSizeObservation:
             minimum=0,
             maximum=2**63 - 1,
             exact=False,
-            message=(
-                "forwarding size_bytes must be a non-negative 64-bit integer"
-            ),
+            message=("forwarding size_bytes must be a non-negative 64-bit integer"),
         )
         strict_boolean(
             self.complete,
@@ -3281,9 +3660,7 @@ class ForwardingMtuConstraint:
             minimum=1,
             maximum=2**63 - 1,
             exact=False,
-            message=(
-                "forwarding MTU limit_bytes must be a positive 64-bit integer"
-            ),
+            message=("forwarding MTU limit_bytes must be a positive 64-bit integer"),
         )
         if self.resource is not None and not isinstance(self.resource, ResourceKey):
             raise ValueError("forwarding MTU resource must be a ResourceKey or None")
@@ -3375,9 +3752,7 @@ class ForwardingPacketState:
             maximum=256,
             unique_key=lambda layer: layer.layer_id,
             tuple_message="forwarding packet layers must be a tuple",
-            bounds_message=(
-                "forwarding packet states support at most 256 layers"
-            ),
+            bounds_message=("forwarding packet states support at most 256 layers"),
             item_message=(
                 "forwarding packet states require ForwardingPacketLayer values"
             ),
@@ -3550,8 +3925,7 @@ class ForwardingSteeringRule:
             or not 0 <= self.priority <= 2**31 - 1
         ):
             raise ValueError(
-                "forwarding steering priority must be a non-negative "
-                "32-bit integer"
+                "forwarding steering priority must be a non-negative 32-bit integer"
             )
         if self.expected_before is not None and not isinstance(
             self.expected_before,
@@ -3566,8 +3940,7 @@ class ForwardingSteeringRule:
             ResourceKey,
         ):
             raise ValueError(
-                "forwarding steering selected_candidate must be a "
-                "ResourceKey or None"
+                "forwarding steering selected_candidate must be a ResourceKey or None"
             )
         if self.packet_after is not None and not isinstance(
             self.packet_after,
@@ -3628,8 +4001,7 @@ class ForwardingStepRequest:
             )
         if not isinstance(self.packet_state, ForwardingPacketState):
             raise ValueError(
-                "forwarding step request packet_state must be a "
-                "ForwardingPacketState"
+                "forwarding step request packet_state must be a ForwardingPacketState"
             )
         _validate_forwarding_parts(
             self.lookup_context,
@@ -3641,12 +4013,10 @@ class ForwardingStepRequest:
             ResourceKey,
         ):
             raise ValueError(
-                "forwarding step request ingress_resource must be a "
-                "ResourceKey or None"
+                "forwarding step request ingress_resource must be a ResourceKey or None"
             )
         if not isinstance(self.steering_rules, tuple) or any(
-            not isinstance(rule, ForwardingSteeringRule)
-            for rule in self.steering_rules
+            not isinstance(rule, ForwardingSteeringRule) for rule in self.steering_rules
         ):
             raise ValueError(
                 "forwarding step request steering_rules must contain "
@@ -3689,13 +4059,10 @@ class ForwardingStepResult:
         _validate_opaque_id(self.step_id, "forwarding step result step_id")
         if not isinstance(self.transition, ForwardingPacketTransition):
             raise ValueError(
-                "forwarding step result transition must be a "
-                "ForwardingPacketTransition"
+                "forwarding step result transition must be a ForwardingPacketTransition"
             )
         if self.transition.step_id != self.step_id:
-            raise ValueError(
-                "forwarding step result transition step_id does not match"
-            )
+            raise ValueError("forwarding step result transition step_id does not match")
         for label, resource in (
             ("selected_candidate", self.selected_candidate),
             ("next_forwarding_object", self.next_forwarding_object),
@@ -3778,9 +4145,7 @@ class ForwardingPolicyScope:
 
     def __post_init__(self) -> None:
         if not isinstance(self.contract_id, str):
-            raise ValueError(
-                "forwarding policy scope contract_id must be a string"
-            )
+            raise ValueError("forwarding policy scope contract_id must be a string")
         _validate_dashboard_id(
             self.contract_id,
             "forwarding policy scope contract_id",
@@ -3824,8 +4189,7 @@ class ForwardingCandidateConstraint:
             raise ValueError("unsupported forwarding constraint kind") from error
         if not isinstance(self.candidate_scope, ForwardingPolicyScope):
             raise ValueError(
-                "forwarding candidate constraint scope must be a "
-                "ForwardingPolicyScope"
+                "forwarding candidate constraint scope must be a ForwardingPolicyScope"
             )
         if not isinstance(self.traffic_classes, frozenset):
             raise ValueError(
@@ -3915,8 +4279,7 @@ class ForwardingPolicyDecision:
         if self.traffic_class is not None:
             if not isinstance(self.traffic_class, str):
                 raise ValueError(
-                    "forwarding policy decision traffic class must be a "
-                    "string or None"
+                    "forwarding policy decision traffic class must be a string or None"
                 )
             _validate_dashboard_id(
                 self.traffic_class,
@@ -3940,8 +4303,7 @@ class ForwardingPolicyDecision:
             )
         if not isinstance(self.ingress_scopes_complete, bool):
             raise ValueError(
-                "forwarding policy decision ingress_scopes_complete must be "
-                "a boolean"
+                "forwarding policy decision ingress_scopes_complete must be a boolean"
             )
 
         applies = self.constraint.applies_to(self.traffic_class)
@@ -4017,8 +4379,7 @@ class ForwardingTraversalStateKey:
         )
         if not isinstance(self.status_perspective, StatusPerspectiveRef):
             raise ValueError(
-                "forwarding traversal status_perspective must be a "
-                "StatusPerspectiveRef"
+                "forwarding traversal status_perspective must be a StatusPerspectiveRef"
             )
         if not isinstance(self.forwarding_object, ResourceKey):
             raise ValueError(
@@ -4051,16 +4412,13 @@ class ForwardingTraversalStateKey:
                 "ForwardingPacketState or None"
             )
         if not isinstance(self.policy_scopes, frozenset):
-            raise ValueError(
-                "forwarding traversal policy_scopes must be a frozenset"
-            )
+            raise ValueError("forwarding traversal policy_scopes must be a frozenset")
         if len(self.policy_scopes) > 64:
             raise ValueError(
                 "forwarding traversal states support at most 64 policy scopes"
             )
         if any(
-            not isinstance(scope, ForwardingPolicyScope)
-            for scope in self.policy_scopes
+            not isinstance(scope, ForwardingPolicyScope) for scope in self.policy_scopes
         ):
             raise ValueError(
                 "forwarding traversal policy_scopes must contain "
@@ -4086,11 +4444,7 @@ class ForwardingCycleReport:
             ("first_seen_step", self.first_seen_step),
             ("repeated_at_step", self.repeated_at_step),
         ):
-            if (
-                not isinstance(value, int)
-                or isinstance(value, bool)
-                or value < 0
-            ):
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise ValueError(
                     f"forwarding cycle {label} must be a non-negative integer"
                 )
@@ -4101,16 +4455,13 @@ class ForwardingCycleReport:
         if not isinstance(self.cycle_states, tuple):
             raise ValueError("forwarding cycle states must be a tuple")
         if not 2 <= len(self.cycle_states) <= 4_097:
-            raise ValueError(
-                "forwarding cycles require 2 to 4097 traversal states"
-            )
+            raise ValueError("forwarding cycles require 2 to 4097 traversal states")
         if any(
             not isinstance(state, ForwardingTraversalStateKey)
             for state in self.cycle_states
         ):
             raise ValueError(
-                "forwarding cycle states must be "
-                "ForwardingTraversalStateKey values"
+                "forwarding cycle states must be ForwardingTraversalStateKey values"
             )
         if self.cycle_states[0] != self.cycle_states[-1]:
             raise ValueError(
@@ -4120,10 +4471,7 @@ class ForwardingCycleReport:
             raise ValueError(
                 "forwarding cycle must stop at the first repeated state key"
             )
-        if (
-            self.repeated_at_step - self.first_seen_step
-            != len(self.cycle_states) - 1
-        ):
+        if self.repeated_at_step - self.first_seen_step != len(self.cycle_states) - 1:
             raise ValueError(
                 "forwarding cycle step span must match the reported cycle states"
             )
@@ -4138,8 +4486,7 @@ class ForwardingCycleReport:
             for contribution in self.contributions
         ):
             raise ValueError(
-                "forwarding cycle contributions must be "
-                "ResolutionContribution values"
+                "forwarding cycle contributions must be ResolutionContribution values"
             )
 
 
@@ -4161,9 +4508,7 @@ class ForwardingMember:
         if self.role is not None and (
             not isinstance(self.role, str) or not self.role or len(self.role) > 128
         ):
-            raise ValueError(
-                "forwarding member role must contain 1 to 128 characters"
-            )
+            raise ValueError("forwarding member role must contain 1 to 128 characters")
         for label, value in (("weight", self.weight), ("priority", self.priority)):
             if value is not None and (
                 not isinstance(value, int)
@@ -4199,9 +4544,7 @@ class ForwardingMember:
                 "forwarding member contributions must be ResolutionContribution values"
             )
         if not isinstance(self.policy_constraints, tuple):
-            raise ValueError(
-                "forwarding member policy_constraints must be a tuple"
-            )
+            raise ValueError("forwarding member policy_constraints must be a tuple")
         if len(self.policy_constraints) > 64:
             raise ValueError(
                 "forwarding members support at most 64 candidate constraints"
@@ -4215,8 +4558,7 @@ class ForwardingMember:
                 "ForwardingCandidateConstraint values"
             )
         constraint_ids = [
-            constraint.constraint_id
-            for constraint in self.policy_constraints
+            constraint.constraint_id for constraint in self.policy_constraints
         ]
         if len(constraint_ids) != len(set(constraint_ids)):
             raise ValueError(
@@ -4271,9 +4613,7 @@ class NextHopGroup:
         if len(self.members) > 4_096:
             raise ValueError("next-hop groups support at most 4096 members")
         if any(not isinstance(member, ForwardingMember) for member in self.members):
-            raise ValueError(
-                "next-hop group members must be ForwardingMember values"
-            )
+            raise ValueError("next-hop group members must be ForwardingMember values")
         if self.hash_policy is not None and (
             not isinstance(self.hash_policy, str)
             or not self.hash_policy
@@ -4287,9 +4627,7 @@ class NextHopGroup:
         if len(self.attributes) > 256:
             raise ValueError("next-hop groups support at most 256 attributes")
         if not isinstance(self.unresolved_dependencies, tuple):
-            raise ValueError(
-                "next-hop group unresolved_dependencies must be a tuple"
-            )
+            raise ValueError("next-hop group unresolved_dependencies must be a tuple")
         if len(self.unresolved_dependencies) > 4_096:
             raise ValueError(
                 "next-hop groups support at most 4096 unresolved dependencies"
@@ -4301,12 +4639,8 @@ class NextHopGroup:
             raise ValueError(
                 "next-hop group unresolved dependencies must be ResourceKey values"
             )
-        if len(self.unresolved_dependencies) != len(
-            set(self.unresolved_dependencies)
-        ):
-            raise ValueError(
-                "next-hop group unresolved dependencies must be unique"
-            )
+        if len(self.unresolved_dependencies) != len(set(self.unresolved_dependencies)):
+            raise ValueError("next-hop group unresolved dependencies must be unique")
         if self.mode is not None:
             try:
                 mode = PathGroupMode(self.mode)
@@ -4450,7 +4784,9 @@ class ForwardingMutation:
             if self.record is None:
                 raise ValueError("forwarding upsert requires a record")
             if self.record.key != self.key:
-                raise ValueError("forwarding upsert record key does not match mutation key")
+                raise ValueError(
+                    "forwarding upsert record key does not match mutation key"
+                )
         elif self.record is not None:
             raise ValueError("forwarding delete must not include a record")
 
@@ -4498,7 +4834,9 @@ class AnalyzerPluginBase:
         self,
         inventory: DumpInventory,
     ) -> Iterable[InputSpec | PluginDiagnostic]:
-        raise NotImplementedError("locate_inputs() is required for every analyzer plugin")
+        raise NotImplementedError(
+            "locate_inputs() is required for every analyzer plugin"
+        )
 
     def parse_status(
         self,
@@ -4552,9 +4890,7 @@ class AnalyzerPluginBase:
         self,
         reader: CorrelationReader,
         window: CorrelationWindow,
-    ) -> Iterable[
-        CausalLink | RelationshipMutation | ClockAnchor | PluginDiagnostic
-    ]:
+    ) -> Iterable[CausalLink | RelationshipMutation | ClockAnchor | PluginDiagnostic]:
         self._require_capability_override(
             PluginCapability.CORRELATION,
             "correlate",

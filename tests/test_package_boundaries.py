@@ -277,7 +277,11 @@ class PackageBoundaryTests(unittest.TestCase):
         for path in _python_files(CORE_SOURCE):
             is_web_adapter = (
                 CORE_WEB in path.parents
-                or path.name in {"cli.py", "runtime.py"}
+                or path.name in {
+                    "cli.py",
+                    "control_plane_server.py",
+                    "runtime.py",
+                }
             )
             for line, import_name in _literal_imports(path):
                 absolute_root = _absolute_import_root(import_name)

@@ -9,16 +9,21 @@ matches into timeline lanes with stable navigation identifiers.
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
-from .value_core import parse_decimal_integer
-
+from .temporal_core import temporal_integer
+from .value_core import MAX_JSON_SAFE_INTEGER, parse_decimal_integer
 
 MAX_RECORD_LANES = 8
 MAX_RECORD_PATTERN_LENGTH = 160
 MAX_RECORD_HAYSTACK_LENGTH = 4096
 MAX_RECORD_LANE_MARKS = 5_000
 MAX_SOURCE_QUERY_LIMIT = 500
+# Page coordinates cross a JSON boundary and are emitted as numbers.  Keeping
+# the offset in JavaScript's exact-integer domain prevents a successful query
+# from returning a coordinate that changes value in a browser round trip.
+MAX_SOURCE_QUERY_OFFSET = MAX_JSON_SAFE_INTEGER
 MAX_PROJECTED_IDENTIFIER_LENGTH = 256
 MAX_PROJECTED_MESSAGE_LENGTH = 1_024
 MAX_COPY_TEXT_FRAGMENT_BYTES = 65_536
@@ -26,11 +31,46 @@ MAX_COPY_TEXT_ITEMS = 5_000
 MAX_COPY_TEXT_TOTAL_BYTES = 1_048_576
 
 _LANE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
-_SAFE_RECORD_ESCAPES = frozenset(
-    "AbBdDsSwWZ"
-    "fnrtv"
-    "\\.^$*+?{}[]()|-"
-)
+_SAFE_RECORD_ESCAPES = frozenset("AbBdDsSwWZfnrtv\\.^$*+?{}[]()|-")
+
+
+class SourceRecordRequestError(ValueError):
+    """A caller-owned source-record query or lane rule is invalid."""
+
+
+def _request_integer(value: Any, field: str) -> int:
+    try:
+        return parse_decimal_integer(value, field)
+    except ValueError as error:
+        raise SourceRecordRequestError(
+            f"{field} must be an integer or decimal integer string"
+        ) from error
+
+
+def _bounded_request_integer(
+    value: Any,
+    field: str,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    parsed = _request_integer(value, field)
+    if parsed < minimum:
+        raise SourceRecordRequestError(f"{field} must be at least {minimum}")
+    if parsed > maximum:
+        raise SourceRecordRequestError(
+            f"{field} must be no greater than {maximum}"
+        )
+    return parsed
+
+
+def _request_nanoseconds(value: Any, field: str) -> int:
+    """Parse one exact signed-64 time while retaining precise range errors."""
+
+    try:
+        return temporal_integer(value, field)
+    except ValueError as error:
+        raise SourceRecordRequestError(str(error)) from error
 
 
 def _bounded_text(value: Any, limit: int = MAX_RECORD_HAYSTACK_LENGTH) -> str:
@@ -48,7 +88,7 @@ def _boolean_field(
         return default
     value = values[field]
     if not isinstance(value, bool):
-        raise ValueError(f"{field} must be a boolean")
+        raise SourceRecordRequestError(f"{field} must be a boolean")
     return value
 
 
@@ -60,9 +100,9 @@ def _string_array_field(
         return ()
     supplied = values[field]
     if not isinstance(supplied, list):
-        raise ValueError(f"{field} must be an array of strings")
+        raise SourceRecordRequestError(f"{field} must be an array of strings")
     if any(not isinstance(item, str) or not item for item in supplied):
-        raise ValueError(f"{field} must be an array of non-empty strings")
+        raise SourceRecordRequestError(f"{field} must be an array of non-empty strings")
     return tuple(dict.fromkeys(supplied))
 
 
@@ -73,14 +113,14 @@ def _source_record_timestamp_ns(record: dict[str, Any]) -> int | None:
     if value is None:
         return None
     try:
-        return parse_decimal_integer(value, "timestamp_ns")
+        return temporal_integer(value, "timestamp_ns")
     except ValueError as error:
         identifier = _bounded_text(
             record.get("source_record_uid") or "<unknown>",
             MAX_PROJECTED_IDENTIFIER_LENGTH,
         )
         raise ValueError(
-            f"source record {identifier!r} has an invalid timestamp_ns"
+            f"source record {identifier!r} has an invalid timestamp_ns: {error}"
         ) from error
 
 
@@ -96,9 +136,7 @@ def source_record_event_uids(record: dict[str, Any]) -> tuple[str, ...]:
     plural = record.get("matched_event_uids")
     if isinstance(plural, (list, tuple)):
         values.extend(
-            str(value)
-            for value in plural
-            if value is not None and str(value)
+            str(value) for value in plural if value is not None and str(value)
         )
     singular = record.get("matched_event_uid")
     if singular is not None and str(singular):
@@ -171,9 +209,7 @@ def project_source_record_for_log(record: dict[str, Any]) -> dict[str, Any]:
         record,
         timestamp_ns=timestamp_ns if timestamp_ns is not None else 0,
     )
-    projection["timestamp_ns"] = (
-        str(timestamp_ns) if timestamp_ns is not None else None
-    )
+    projection["timestamp_ns"] = str(timestamp_ns) if timestamp_ns is not None else None
     return projection
 
 
@@ -208,8 +244,7 @@ def project_source_record_text_selection(
         raise ValueError(f"max_items must be between 1 and {MAX_COPY_TEXT_ITEMS}")
     if max_total_bytes < 1 or max_total_bytes > MAX_COPY_TEXT_TOTAL_BYTES:
         raise ValueError(
-            "max_total_bytes must be between 1 and "
-            f"{MAX_COPY_TEXT_TOTAL_BYTES}"
+            f"max_total_bytes must be between 1 and {MAX_COPY_TEXT_TOTAL_BYTES}"
         )
 
     materialized = list(records)
@@ -230,9 +265,7 @@ def project_source_record_text_selection(
 
     for raw in selection:
         if not isinstance(raw, dict):
-            omitted.append(
-                {"selection_id": "invalid", "reason": "invalid_selection"}
-            )
+            omitted.append({"selection_id": "invalid", "reason": "invalid_selection"})
             continue
         kind = str(raw.get("kind") or "")
         uid = str(raw.get("uid") or "")
@@ -375,7 +408,7 @@ def _validate_safe_record_pattern(value: str) -> None:
     for index, character in enumerate(value):
         if escaped:
             if character not in _SAFE_RECORD_ESCAPES:
-                raise ValueError(
+                raise SourceRecordRequestError(
                     "record lane pattern contains an unsupported escape"
                 )
             escaped = False
@@ -383,7 +416,7 @@ def _validate_safe_record_pattern(value: str) -> None:
                 class_has_content = True
             else:
                 if branch_ended:
-                    raise ValueError(
+                    raise SourceRecordRequestError(
                         "record lane end anchor must terminate its alternative"
                     )
                 atom_available = True
@@ -397,7 +430,7 @@ def _validate_safe_record_pattern(value: str) -> None:
         if in_class:
             if character == "]":
                 if not class_has_content:
-                    raise ValueError(
+                    raise SourceRecordRequestError(
                         "record lane character classes must not be empty"
                     )
                 in_class = False
@@ -408,7 +441,7 @@ def _validate_safe_record_pattern(value: str) -> None:
             continue
 
         if branch_ended and character != "|":
-            raise ValueError(
+            raise SourceRecordRequestError(
                 "record lane end anchor must terminate its alternative"
             )
         if character == "[":
@@ -416,31 +449,29 @@ def _validate_safe_record_pattern(value: str) -> None:
             class_has_content = False
             continue
         if character in "()":
-            raise ValueError(
-                "record lane patterns do not support groups; "
-                "use top-level alternatives"
+            raise SourceRecordRequestError(
+                "record lane patterns do not support groups; use top-level alternatives"
             )
         if character in "{}":
-            raise ValueError(
+            raise SourceRecordRequestError(
                 "record lane patterns do not support counted repetition"
             )
         if character in "*+?":
             if not atom_available:
-                raise ValueError(
+                raise SourceRecordRequestError(
                     "record lane quantifiers must follow one fixed-width atom"
                 )
             quantifier_count += 1
             if quantifier_count > 1:
-                raise ValueError(
-                    "record lane alternatives support at most one "
-                    "quantified atom"
+                raise SourceRecordRequestError(
+                    "record lane alternatives support at most one quantified atom"
                 )
             atom_available = False
             branch_has_content = True
             continue
         if character == "|":
             if not branch_has_content:
-                raise ValueError(
+                raise SourceRecordRequestError(
                     "record lane pattern alternatives must not be empty"
                 )
             atom_available = False
@@ -450,7 +481,7 @@ def _validate_safe_record_pattern(value: str) -> None:
             continue
         if character == "^":
             if branch_has_content:
-                raise ValueError(
+                raise SourceRecordRequestError(
                     "record lane start anchor must begin its alternative"
                 )
             branch_has_content = True
@@ -459,7 +490,7 @@ def _validate_safe_record_pattern(value: str) -> None:
         if character == "$":
             next_character = value[index + 1] if index + 1 < len(value) else None
             if next_character not in (None, "|"):
-                raise ValueError(
+                raise SourceRecordRequestError(
                     "record lane end anchor must terminate its alternative"
                 )
             branch_has_content = True
@@ -471,11 +502,17 @@ def _validate_safe_record_pattern(value: str) -> None:
         branch_has_content = True
 
     if escaped:
-        raise ValueError("record lane pattern must not end with an escape")
+        raise SourceRecordRequestError(
+            "record lane pattern must not end with an escape"
+        )
     if in_class:
-        raise ValueError("record lane pattern has an unterminated character class")
+        raise SourceRecordRequestError(
+            "record lane pattern has an unterminated character class"
+        )
     if not branch_has_content:
-        raise ValueError("record lane pattern alternatives must not be empty")
+        raise SourceRecordRequestError(
+            "record lane pattern alternatives must not be empty"
+        )
 
 
 def compile_record_pattern(
@@ -486,21 +523,21 @@ def compile_record_pattern(
     """Compile the deterministic regex subset exposed by the core."""
 
     if not isinstance(pattern, str):
-        raise ValueError("record lane pattern must be a string")
+        raise SourceRecordRequestError("record lane pattern must be a string")
     if not isinstance(case_sensitive, bool):
-        raise ValueError("case_sensitive must be a boolean")
+        raise SourceRecordRequestError("case_sensitive must be a boolean")
     value = pattern
     if not value:
-        raise ValueError("record lane pattern must not be empty")
+        raise SourceRecordRequestError("record lane pattern must not be empty")
     if len(value) > MAX_RECORD_PATTERN_LENGTH:
-        raise ValueError(
+        raise SourceRecordRequestError(
             f"record lane pattern must be at most {MAX_RECORD_PATTERN_LENGTH} characters"
         )
     _validate_safe_record_pattern(value)
     try:
         return re.compile(value, 0 if case_sensitive else re.IGNORECASE)
     except re.error as error:
-        raise ValueError(f"invalid record lane pattern: {error.msg}") from error
+        raise SourceRecordRequestError("record lane pattern is invalid") from error
 
 
 def normalize_record_lane_rule(
@@ -509,7 +546,7 @@ def normalize_record_lane_rule(
     known_source_types: set[str] | None = None,
 ) -> tuple[dict[str, Any], re.Pattern[str]]:
     if not isinstance(raw, dict):
-        raise ValueError("record lane rule must be an object")
+        raise SourceRecordRequestError("record lane rule must be an object")
     lane_id = raw.get("lane_id")
     if (
         not isinstance(lane_id, str)
@@ -517,30 +554,31 @@ def normalize_record_lane_rule(
         or len(lane_id) > 128
         or _LANE_ID_PATTERN.fullmatch(lane_id) is None
     ):
-        raise ValueError(
+        raise SourceRecordRequestError(
             "record lane_id must be a lowercase dotted, dashed, or underscored identifier"
         )
     label_value = raw.get("label", lane_id)
     if not isinstance(label_value, str):
-        raise ValueError("record lane label must be a string")
+        raise SourceRecordRequestError("record lane label must be a string")
     label = label_value.strip()
     if not label or len(label) > 120:
-        raise ValueError("record lane label must contain 1 to 120 characters")
+        raise SourceRecordRequestError(
+            "record lane label must contain 1 to 120 characters"
+        )
     source_types = _string_array_field(raw, "source_types")
     if known_source_types is not None:
         unknown = set(source_types) - known_source_types
         if unknown:
-            raise ValueError(
-                "record lane references unknown source types: "
-                + ", ".join(sorted(unknown))
+            raise SourceRecordRequestError(
+                "record lane references unknown source types"
             )
     case_sensitive = _boolean_field(raw, "case_sensitive", default=False)
     pattern = raw.get("pattern")
     if not isinstance(pattern, str):
-        raise ValueError("record lane pattern must be a string")
+        raise SourceRecordRequestError("record lane pattern must be a string")
     description = raw.get("description", "")
     if not isinstance(description, str):
-        raise ValueError("record lane description must be a string")
+        raise SourceRecordRequestError("record lane description must be a string")
     compiled = compile_record_pattern(pattern, case_sensitive=case_sensitive)
     normalized = {
         "lane_id": lane_id,
@@ -577,33 +615,24 @@ def query_source_records(
     """Filter and page retained records without applying domain semantics."""
 
     if not isinstance(body, dict):
-        raise ValueError("source-record query must be an object")
+        raise SourceRecordRequestError("source-record query must be an object")
     start = body.get("start_ns")
     end = body.get("end_ns")
-    start_ns = (
-        parse_decimal_integer(start, "start_ns")
-        if start is not None
-        else None
-    )
-    end_ns = (
-        parse_decimal_integer(end, "end_ns")
-        if end is not None
-        else None
-    )
+    start_ns = _request_nanoseconds(start, "start_ns") if start is not None else None
+    end_ns = _request_nanoseconds(end, "end_ns") if end is not None else None
     if start_ns is not None and end_ns is not None and end_ns < start_ns:
-        raise ValueError("end_ns must be >= start_ns")
+        raise SourceRecordRequestError("end_ns must be >= start_ns")
     source_types = set(_string_array_field(body, "source_types"))
-    if known_source_types is not None and (unknown := source_types - known_source_types):
-        raise ValueError(
-            "source-record query references unknown source types: "
-            + ", ".join(sorted(unknown))
+    if known_source_types is not None and source_types - known_source_types:
+        raise SourceRecordRequestError(
+            "source-record query references unknown source types"
         )
     matched = body.get("matched")
     if matched is not None and not isinstance(matched, bool):
-        raise ValueError("matched must be a boolean or null")
+        raise SourceRecordRequestError("matched must be a boolean or null")
     regex_value = body.get("pattern")
     if regex_value is not None and not isinstance(regex_value, str):
-        raise ValueError("pattern must be a string or null")
+        raise SourceRecordRequestError("pattern must be a string or null")
     case_sensitive = _boolean_field(body, "case_sensitive", default=False)
     compiled = (
         compile_record_pattern(
@@ -615,18 +644,19 @@ def query_source_records(
     )
     search_value = body.get("search")
     if search_value is not None and not isinstance(search_value, str):
-        raise ValueError("search must be a string or null")
+        raise SourceRecordRequestError("search must be a string or null")
     search = (search_value or "").casefold()
-    offset = max(
-        0,
-        parse_decimal_integer(body.get("offset", 0), "offset"),
+    offset = _bounded_request_integer(
+        body.get("offset", 0),
+        "offset",
+        minimum=0,
+        maximum=MAX_SOURCE_QUERY_OFFSET,
     )
-    limit = max(
-        1,
-        min(
-            parse_decimal_integer(body.get("limit", 100), "limit"),
-            MAX_SOURCE_QUERY_LIMIT,
-        ),
+    limit = _bounded_request_integer(
+        body.get("limit", 100),
+        "limit",
+        minimum=1,
+        maximum=MAX_SOURCE_QUERY_LIMIT,
     )
 
     selected: list[dict[str, Any]] = []
@@ -648,9 +678,12 @@ def query_source_records(
             unplaced_count += 1
             if has_time_window:
                 continue
-        elif start_ns is not None and timestamp_ns < start_ns:
-            continue
-        elif end_ns is not None and timestamp_ns > end_ns:
+        elif (
+            start_ns is not None
+            and timestamp_ns < start_ns
+            or end_ns is not None
+            and timestamp_ns > end_ns
+        ):
             continue
         selected.append(record)
 
@@ -677,9 +710,16 @@ def record_lanes_for_window(
 ) -> list[dict[str, Any]]:
     """Project retained records into bounded, regex-selected timeline lanes."""
 
+    start_ns = _request_nanoseconds(start_ns, "start_ns")
+    end_ns = _request_nanoseconds(end_ns, "end_ns")
+    if end_ns < start_ns:
+        raise SourceRecordRequestError("end_ns must be >= start_ns")
+
     rules = list(raw_rules)
     if len(rules) > MAX_RECORD_LANES:
-        raise ValueError(f"timeline supports at most {MAX_RECORD_LANES} record lanes")
+        raise SourceRecordRequestError(
+            f"timeline supports at most {MAX_RECORD_LANES} record lanes"
+        )
     record_window: list[tuple[dict[str, Any], int]] = []
     unplaced_records: list[dict[str, Any]] = []
     for record in records:
@@ -688,9 +728,7 @@ def record_lanes_for_window(
             unplaced_records.append(record)
         elif start_ns <= timestamp_ns <= end_ns:
             record_window.append((record, timestamp_ns))
-    prepared: list[
-        tuple[dict[str, Any], list[tuple[dict[str, Any], int]], int]
-    ] = []
+    prepared: list[tuple[dict[str, Any], list[tuple[dict[str, Any], int]], int]] = []
     for raw_rule in rules:
         rule, compiled = normalize_record_lane_rule(
             raw_rule,
@@ -702,9 +740,7 @@ def record_lanes_for_window(
             if _record_matches(record, rule, compiled)
         ]
         unplaced_count = sum(
-            1
-            for record in unplaced_records
-            if _record_matches(record, rule, compiled)
+            1 for record in unplaced_records if _record_matches(record, rule, compiled)
         )
         prepared.append((rule, matched_records, unplaced_count))
 
@@ -723,9 +759,7 @@ def record_lanes_for_window(
     while remaining > 0:
         pending = [
             index
-            for index, (_rule, matched_records, _unplaced_count) in enumerate(
-                prepared
-            )
+            for index, (_rule, matched_records, _unplaced_count) in enumerate(prepared)
             if allocations[index] < len(matched_records)
         ]
         if not pending:

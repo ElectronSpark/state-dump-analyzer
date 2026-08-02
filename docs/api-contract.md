@@ -1,16 +1,21 @@
 # API payload contract
 
-Status: normative design fragment for `/v1`
+Status: normative `/v1` contract with implemented-surface notes
 Encoding: UTF-8 JSON; Arrow/Parquet exports use equivalent typed columns
 
 The endpoint list in `architecture.md` is intentionally compact. This document
-fixes the payload rules other tools need before implementation and should be
-translated directly into Pydantic models/OpenAPI components.
+fixes the payload rules other tools need. Sections that describe a target
+rather than a shipped provider say so explicitly. The durable
+`/v1/control-plane` catalog, ingestion, session, annotation, and report surface
+is implemented; its operational guide is
+[`control-plane.md`](control-plane.md).
 
 ## 1. Global rules
 
-- Every analysis read is scoped to one immutable `revision_id`; a response that
-  accepts `latest` resolves it once and returns the concrete ID.
+- Every analysis-data read is scoped to one immutable `revision_id`; a response
+  that accepts `latest` resolves it once and returns the concrete ID.
+  Control-plane catalog/list/mutation routes are instead scoped by trusted
+  tenant plus project/workspace and return or select exact revision IDs.
 - A `revision_id` is opaque and may contain `/`. Clients must URL-encode the
   complete ID when placing it in a revision-scoped URL and must not split it
   into path components. Servers expose path-aware
@@ -19,8 +24,13 @@ translated directly into Pydantic models/OpenAPI components.
   has parsed that path parameter; raw-path prefix matching is forbidden because
   overlapping IDs such as `a` and `a/inventory` are both valid.
 - Nanosecond timestamps, counters that may exceed JavaScript's safe integer, and
-  numeric key parts are decimal strings in JSON. Small counts and page sizes are
-  ordinary JSON integers.
+  numeric key parts are decimal strings in JSON. Nanosecond request fields use
+  the signed 64-bit domain. Browser-visible numeric paging offsets use the
+  independent exact range `0..9007199254740991` (`2^53-1`), unless a route
+  declares a smaller cap; `2^53` is rejected rather than rounded or echoed.
+  Every other integer input has an explicit field-specific minimum and maximum
+  (or a documented deliberately unbounded side), never an inherited timestamp
+  default. Small counts and page sizes are ordinary JSON integers.
 - Half-open intervals use `start_ns` inclusive and `end_ns` exclusive; `null`
   means unbounded. Unknown time is not encoded as zero.
 - `provenance` is one of `observed`, `event_derived`, `reconstructed`,
@@ -136,6 +146,11 @@ router-dump-analyzer --plugin ENTRY_POINT_NAME --input PATH
 router-dump-analyzer --plugin-module PACKAGE[.MODULE][:ATTRIBUTE] --input PATH
 ```
 
+`/openapi.json`, `/docs`, and `/redoc` are absent by default. An operator may
+enable them with `--expose-api-docs` only when the analysis listener is bound
+to loopback. The CLI rejects the option for `0.0.0.0`, `::`, and every other
+non-loopback host; programmatic launcher configuration enforces the same rule.
+
 The installed-name form resolves the
 `router_dump_analyzer.plugins` entry-point group. The direct-module form is for
 source/development use and defaults `ATTRIBUTE` to `plugin`.
@@ -175,6 +190,13 @@ non-finite floats, and configured artifact/discovery/output/nesting/size
 overruns before the revision is exposed. It neither truncates a semantic value
 nor publishes a valid prefix of an invalid parser stream.
 
+Probe selection is not a weaker preflight. The durable registry uses the
+registered coordinator's `ArtifactLimits`, and author validation, durable
+selection, and direct ingestion all call the same complete probe-report and
+diagnostic validators. A forged result or malformed diagnostic therefore
+cannot be selectable and then fail only after consuming the ingestion retry
+budget.
+
 Optional semantic hooks have an executable Python caller but no plug-in-owned
 HTTP surface. Host code imports `PluginCapabilityExecutor` from
 `router_dump_analyzer` and uses its `apply`, `revert`, `correlate`,
@@ -191,6 +213,502 @@ Runtime-v2 ingestion also validates and retains scoped
 `RelationshipCollectionObservation` markers as private normalized metadata.
 Their collection-completeness inference is not yet materialized into the public
 relationship intervals or API payloads in this document.
+
+### 1.3 Durable control-plane boundary
+
+The implemented control-plane router is independent of the initial
+single-input browser workspace. It is mounted at `/v1/control-plane` when the
+server is started with `--control-plane-dir PATH`; otherwise its routes return
+`503`. The core CLI installs `TrustedHeaderIdentityResolver` for this local
+profile and permits it on loopback by default. A non-loopback bind is rejected
+unless the caller explicitly adds `--trust-control-plane-headers`; that flag
+is a development override, not an authenticated deployment.
+
+Every request requires `X-Tenant-ID`; every mutation also requires
+`X-Principal-ID`. The host must install a `ControlPlaneIdentityResolver` that
+returns a verified `ControlPlaneIdentity` containing tenant, principal,
+roles, and optional project/workspace allowlists. The router checks the
+headers against that resolved identity, requires `control-plane:read` or
+`control-plane:write`, and hides disallowed project/workspace scope as `404`.
+Retention routes additionally require `control-plane:admin`. The CLI's
+explicit local adapter trusts headers and grants all three roles; it is
+not authentication. A production deployment verifies credentials upstream,
+strips client-supplied identity headers, and constructs the resolver result.
+The local adapter accepts only the configured exact `Host`, and a mutation's
+optional `Origin` must match the configured HTTP origin exactly.
+
+The production-shaped core entry point hosts this surface without a startup
+analysis or browser application:
+
+```text
+router-dump-server --plugin NAME [--plugin NAME ...] --state-dir PATH \
+  --identity-resolver-module PACKAGE:ATTRIBUTE --host HOST --port PORT
+```
+
+`--plugin-module PACKAGE[:ATTRIBUTE]` is the mutually exclusive source-tree
+development selector and is also repeatable. The server requires exactly one
+identity mode; `--trust-control-plane-headers` replaces the resolver only on a
+loopback bind. The module resolver is synchronous and returns a verified
+`ControlPlaneIdentity`. This API-only application mounts aggregate root
+`/health` and `/v1/control-plane`; it has no input argument, analysis-data
+routes, frontend, or static assets. OpenAPI JSON, Swagger UI, and ReDoc are
+absent by default. The server CLI exposes them only after an explicit
+`--expose-api-docs` on a loopback bind and rejects that option on non-loopback
+listeners. The durable plug-in allowlist is fixed at construction and cannot
+be expanded by an upload.
+
+`GET /context` returns the resolved `principal_id` and `can_write` alongside
+the visible project page:
+
+```json
+{
+  "enabled": true,
+  "tenant_id": "tenant-a",
+  "principal_id": "analyst@example",
+  "can_write": false,
+  "can_admin": false,
+  "limit": 1000,
+  "offset": 0,
+  "next_offset": null,
+  "projects": []
+}
+```
+
+`can_write: false` does not imply that reads or explicitly selected report
+generation are unavailable. It means all mutation routes require a different
+authorized identity and return `403` for this one.
+
+Create/admit mutations accept `Idempotency-Key`. Plug-in selection requires
+that header. Session update/delete, session member/snapshot mutation,
+annotation/correlation patch/delete, and import cancellation require
+`If-Match` with the current non-negative integer version. The executable
+accepts exactly one strong, quoted, canonical non-negative decimal validator
+such as `"3"` and emits `ETag: "4"` on versioned object responses. It rejects
+bare integers, weak validators, wildcards, lists, signs, whitespace, and
+leading zeroes. Missing required preconditions return `428`; stale versions
+or conflicting idempotency keys return `409`.
+
+The scope hierarchy is:
+
+```text
+tenant
+`-- project
+    `-- workspace
+        |-- immutable fixtures
+        |   `-- immutable analysis revisions
+        |-- mutable sessions -> immutable revision-set snapshots
+        |-- durable imports
+        `-- mutable annotations/correlations -> append-only review audit
+```
+
+All paths below are relative to `/v1/control-plane`.
+
+| Method | Path | Implemented purpose |
+|---|---|---|
+| `GET` | `/health` | Session-independent durable worker and queue health; no tenant identity required. |
+| `GET` | `/diagnostics/operational-events` | Payload-free process diagnostics; requires `control-plane:admin`. |
+| `GET` | `/context` | Confirm enablement, resolved principal, `can_write`, and list visible tenant projects. |
+| `GET, POST` | `/projects` | List or create tenant projects. |
+| `GET, POST` | `/projects/{project_id}/workspaces` | List or create project workspaces. |
+| `GET` | `/projects/{project_id}/workspaces/{workspace_id}/fixtures` | List immutable fixtures. |
+| `GET` | `/projects/{project_id}/workspaces/{workspace_id}/revisions` | List immutable revisions; optional `node_id` or `fixture_id`. |
+| `GET, POST` | `/projects/{project_id}/workspaces/{workspace_id}/sessions` | List or create mutable sessions. |
+| `GET, PATCH, DELETE` | `/projects/{project_id}/workspaces/{workspace_id}/sessions/{session_id}` | Read, update, or permanently delete one session. |
+| `PUT, DELETE` | `/projects/{project_id}/workspaces/{workspace_id}/sessions/{session_id}/members/{member_id}` | Add/replace or remove one exact fixture/revision member. |
+| `POST` | `/projects/{project_id}/workspaces/{workspace_id}/sessions/{session_id}/snapshots` | Freeze the current member vector. |
+| `GET` | `/projects/{project_id}/workspaces/{workspace_id}/snapshots` | List immutable snapshots; optional `session_id`. |
+| `GET` | `/projects/{project_id}/workspaces/{workspace_id}/snapshots/{snapshot_id}` | Read one immutable snapshot in workspace scope. |
+| `GET, POST` | `/projects/{project_id}/workspaces/{workspace_id}/imports` | List or raw-body upload imports. |
+| `GET` | `/projects/{project_id}/workspaces/{workspace_id}/imports/{import_id}` | Read import state. |
+| `GET` | `.../imports/{import_id}/candidates` | Read the deterministic probe candidates. |
+| `GET` | `.../imports/{import_id}/events` | Page stored progress events. |
+| `GET` | `.../imports/{import_id}/events/stream` | Stream progress as SSE. |
+| `POST` | `.../imports/{import_id}/selection` | Select an exact candidate from the current probe set. |
+| `POST` | `.../imports/{import_id}/resume` | Requeue a failed import within its attempt budget. |
+| `POST` | `.../imports/{import_id}/cancel` | Cancel an eligible non-terminal import. |
+| `GET, POST` | `/projects/{project_id}/workspaces/{workspace_id}/annotations` | List or create annotations. |
+| `GET, PATCH, DELETE` | `.../annotations/{annotation_id}` | Read, update, or tombstone an annotation. |
+| `GET, POST` | `/projects/{project_id}/workspaces/{workspace_id}/correlations` | List or create manual event correlations. |
+| `GET, PATCH, DELETE` | `.../correlations/{correlation_id}` | Read, update, or tombstone a correlation. |
+| `GET` | `/projects/{project_id}/workspaces/{workspace_id}/review-audit` | Page append-only review mutations. |
+| `POST` | `/projects/{project_id}/workspaces/{workspace_id}/correlation-report` | Download deterministic JSON or Markdown. |
+| `POST` | `/projects/{project_id}/workspaces/{workspace_id}/retention/preview` | Return a bounded, non-mutating catalog/review/ingestion inventory. |
+| `POST` | `/projects/{project_id}/workspaces/{workspace_id}/retention/execute` | Run an admin-only, idempotent maintenance saga. |
+| `GET` | `/projects/{project_id}/workspaces/{workspace_id}/retention/audit` | Return bounded store-specific retention journals. |
+
+Here, an abbreviated `...` preserves the same project/workspace prefix.
+
+Retention preview and execute accept a closed object with optional `catalog`
+and `review` policy objects. Cutoffs use canonical decimal strings. The router
+derives catalog external-reference protection itself and rejects a caller
+attempt to assert it. Execute requires `Idempotency-Key`; exact replay returns
+the completed prior result or resumes its first incomplete phase. The saga
+freezes its effective clock; reuse with another actor, policy, or explicit
+clock conflicts before mutation. Retention-result `evaluated_at_ns` fields are
+canonical decimal strings. Every result also declares `observation_mode`.
+Preview returns `best_effort_preview`: each store read is safe and bounded,
+but the catalog, review, and ingestion inventories are independent snapshots
+and a concurrent maintenance saga may advance between them. It is advisory and
+must not be treated as an executable deletion plan. Execute returns
+`coordinated_execution` and retains the ordered, durable saga guarantees below.
+The nested ingestion report additionally declares
+`host_storage_orphan_inventory`: preview returns `not_observed`, while execute
+returns `bounded_host_scan`. A zero preview orphan count therefore does not
+claim that host storage was scanned. Legacy completed execution journals
+replay as `bounded_host_scan`.
+Ingestion retention and admission quotas come from the server's versioned
+retention-policy file, not from an HTTP request. Audit retrieval accepts a
+bounded `limit` and returns the independent catalog, review, and ingestion
+journals for that workspace. Preview does not wait for either the cross-store
+mutation fence or the destructive ingestion-operation lock, is
+workspace-scoped, and never scans host storage. Execute additionally advances independent durable
+spool/blob/dataset/fixture host-reaper cursors monotonically in global
+relative-path lexical order to EOF, then resets each completed
+cycle. The host scan contributes `truncated: true` while at least one root has
+more of its current cycle to inspect; workspace history may independently make
+the aggregate report truncated. Exact unreferenced content-addressed objects
+become eligible only after the configured orphan grace. An exact top-level core
+fixture directory uses the same grace and requires absence of its fixture ID
+from every tenant's ingestion rows; its children are not separate scan entries.
+Discovery runs outside the upload fence; candidate identity plus applicable
+global row-and-pin state are checked again under that fence and the identity is
+journalled for crash-safe apply.
+
+Retention execution commits an immutable plan and then checkpoints one
+per-item outcome row in batches of at most 32. Operational logs may summarize
+each committed batch and identify every database selection or host-root scan
+that truncated at its bound, but those best-effort events are not a resume
+cursor or audit API; the journal and response remain authoritative.
+
+Catalog artifact-pin release is monotonic across process restart. Legacy
+databases receive one transactional, versioned ownership backfill; ordinary
+construction never recreates a pin from a completed import after the catalog
+has released it. A later execute call can therefore resume the catalog saga
+and converge the import row and unreferenced artifacts.
+
+For an already pin-aware legacy database, the existing pin table is
+authoritative. That older format has no release tombstone, so a missing pin
+cannot be distinguished from an interrupted historical backfill. Upgrade
+preserves the absence and never synthesizes ownership from completed import
+rows.
+
+Project and workspace creation accept a required `label`, optional caller
+chosen ID, and optional bounded `metadata` object:
+
+```json
+{"project_id":"lab","label":"Lab","metadata":{"owner":"qa"}}
+```
+
+```json
+{"workspace_id":"run-42","label":"Regression 42","metadata":{}}
+```
+
+A session creation has the same label/optional-ID/metadata shape. A session
+member `PUT` body is:
+
+```json
+{
+  "fixture_id": "fixture-...",
+  "revision_id": "revision-...",
+  "role": "before",
+  "make_default": true
+}
+```
+
+The member ID is the final path component. The exact fixture/revision must
+belong to the workspace. A session can contain multiple revisions of the same
+node because member identity is independent of node identity.
+
+`PATCH .../sessions/{session_id}` requires at least one of `label` or
+`metadata`; a supplied metadata object replaces the previous object. It
+increments the session version and returns the new `ETag`. `DELETE` requires
+the same optimistic preconditions, returns the removed descriptor with
+`Cache-Control: no-store`, and conflicts when immutable snapshots still
+reference the session. Snapshots are content-addressed immutable copies of the
+member vector, default member, and source session version.
+
+An import upload is **not multipart**. Its request body is the artifact bytes;
+`original_name` is a required query parameter, `auto_select` defaults to
+`true`, `preferred_plugin_id` is optional, and `Content-Type` is retained.
+`X-Node-Hint` optionally supplies a node hint and `X-Import-Metadata`
+optionally supplies a bounded JSON object. Only those caller-supplied parsing
+inputs are visible to plug-in inventory/probe and parsing; tenant, project,
+workspace, fixture, import, and principal coordinates remain core-private.
+It returns `202` with an `ImportDescriptor`. Import states are the closed
+values:
+
+All other JSON-bearing control-plane mutation requests are bounded to 1 MiB
+before model parsing. Oversized bodies return `413`; excessively nested JSON
+or import-metadata headers return `422`. The streamed artifact upload keeps
+its independent 8 GiB limit and is not buffered through the JSON boundary.
+
+```text
+admitting, queued, probing, awaiting_selection, ready, ingesting,
+publishing, completed, failed, cancelled
+```
+
+`admitting` means the upload bytes and exact fixture-catalog request are
+durably staged but the idempotent catalog receipt is not yet confirmed.
+`publishing` means parsing and canonical dataset storage are complete and the
+durable revision-publication outbox is replaying one exact idempotent catalog
+operation. Resuming either stage replays its exact operation ID. Resuming a
+publication failure does not invoke the plug-in again.
+
+Catalog admission and publication use a deadline distinct from plug-in
+execution. A deadline expiration has the closed public code
+`catalog_execution_timeout`; it is an ambiguous outcome, so the exact
+operation remains resumable and its content-addressed artifact stays pinned
+until catalog reconciliation. Queue health reports unresolved catalog
+timeouts as `catalog_attention_imports` immediately.
+
+The descriptor exposes `attempt_count`, configured `max_attempts`, and
+`attempts_remaining`. When `error` is non-null, that object repeats
+`attempts_remaining` and derives `retryable` from the configured budget rather
+than a hard-coded attempt count.
+
+Selection repeats the exact candidate identity from the current candidate
+response:
+
+```json
+{
+  "probe_set_hash": "sha256:<64 lowercase hex characters>",
+  "plugin_id": "example.router",
+  "plugin_version": "1.2.3",
+  "package_hash": "package-sha256:<64 lowercase hex characters>"
+}
+```
+
+`package_hash` is the field's compatibility name. It is an opaque exact
+registry identity. A trusted loader can provide an immutable package/artifact
+digest; otherwise the durable CLI and server control plane derive a bounded
+`package-sha256:` digest from the complete regular- or namespace-package import
+scope. Every search location for the first PEP 420 namespace ancestor
+participates in import-precedence order even if a later component is a regular
+package. A genuine top-level module receives a
+distinct `module-sha256:` digest. Registry-derived identities are revalidated
+immediately before execution. Sourceless `.pyc`/`.pyo` modules require a
+trusted loader-supplied artifact digest because embedded build paths are not
+relocation-stable. Programmatic
+registries share that fail-closed default. A compatibility-only local/test
+embedding must explicitly enable `allow_manifest_identity=True`; durable
+commands and control planes reject that manifest-only registry.
+
+The durable servers and headless command execute both probe and ingestion in
+fresh `spawn` child processes. The default child deadline is 300 seconds; the
+headless command further caps it to the requested per-import `--timeout`.
+Timeout includes spawn, plug-in execution, bounded result transfer, and clean
+exit. A timed-out child is terminated, then killed if it does not exit, and is
+reaped. Its import becomes `failed` with
+`error.code="plugin_execution_timeout"`. Child startup/crash/protocol or
+plug-in execution failures use `error.code="plugin_execution_failed"`.
+Partial staged output is removed and neither case publishes a revision.
+
+Programmatic embeddings may explicitly request synchronous `inline` execution
+for trusted local/tests. That mode has no timeout or bounded cancellation
+claim; only the default process mode is killable. Admission and publication
+catalog calls have an independent deadline and execution-mode override; null
+values inherit their plug-in equivalents. Production process mode includes
+spawn, publisher work, result transfer, and exit in the enforced budget, then
+terminates/kills/reaps an uncooperative child. The built-in SQLite publisher
+reopens its durable catalog in the child and also bounds lock/busy waits through
+commit. A custom publisher must be spawn-picklable (or reconstruct its client
+when unpickled) and should apply the supplied remaining budget to real RPC
+connect/read/commit work. Trusted publisher `inline` mode remains cooperative
+only. An ambiguous expiry retains the exact idempotent outbox and artifact pin
+for reconciliation; isolated startup/protocol/provider failures use
+`catalog_execution_failed`.
+
+Probe/ingestion objects must therefore be importable and spawn-picklable.
+This child boundary is killable fault isolation, not a security sandbox: it
+does not remove the plug-in's host-user filesystem, network, environment, or
+operating-system privileges. Ingestion returns only bounded JSON metadata
+through IPC; the parent verifies the child-written canonical dataset's file
+type, byte size, and SHA-256 under its current fenced lease before
+content-addressed installation.
+
+The selection `Idempotency-Key` is a header, not a JSON field. Core persists a
+scope-bound request digest and response. Repeating the exact key and request
+returns the current import descriptor even after the import has advanced;
+reusing that key for another request conflicts. A new key may be attached to
+the already stored exact selection, but cannot change it.
+
+Stored import events are ordered by `sequence`. Polling accepts
+`after_sequence` and a `limit` up to 1,000. SSE uses the stored event type as
+`event`, the sequence as `id`, emits keep-alives while idle, and emits `end`
+after a terminal import has no more events.
+
+Import lists are ordered by `(created_at_ns DESC, import_id DESC)`, default to
+100 rows, and cap at 500. Their continuation is the tuple:
+
+```json
+{
+  "before_created_at_ns": "1750000000000000000",
+  "before_import_id": "import-..."
+}
+```
+
+Clients copy both `next_cursor` fields into the next query. Supplying only one
+field is invalid, and the tuple prevents tied creation timestamps from
+skipping or repeating an import. Numeric cursor and event-sequence components
+use canonical ASCII decimal syntax: no sign, whitespace, leading zeroes,
+Unicode digits, or floating-point form.
+
+A workspace admits at most 1,000 non-terminal imports by default. The check is
+transactional and occurs after an exact upload-idempotency lookup, so retrying
+an already admitted request remains valid at the cap. `completed`, `failed`,
+and `cancelled` history does not consume it. A new request at the configured
+cap conflicts.
+
+Project, workspace, fixture, revision, session, and snapshot collections use
+`limit`/`offset`, default to 1,000, cap at 5,000, and return `next_offset`.
+Annotation and correlation collections accept the same bounded
+`limit`/`offset` inputs. Soft deleted records are omitted unless
+`include_deleted=true`. The review-audit feed uses `after_sequence`; its page
+also defaults to 1,000 and caps at 5,000.
+Numeric `offset`, `next_offset`, and sequence coordinates never exceed
+`9007199254740991`; larger request values fail with `422`. Route-specific
+limits such as the event log's 10,000,000 offset cap remain stricter.
+
+Each annotation-list response also returns `audit_watermark` as a canonical
+non-negative decimal string. The page rows and watermark come from one SQLite
+read transaction. A client that continues an offset scan sends that first
+value as `expected_audit_watermark` on every later page, including any
+safety-cap probe. An `offset > 0` request without that precondition returns
+`428`. If any review-overlay mutation changes the scope watermark, the endpoint
+returns `409` instead of allowing a mixed-revision collection.
+Leading-zero, signed, whitespace-padded, non-ASCII, floating-point, negative,
+or greater-than-signed-64-bit expected values return `422`.
+
+Annotation `kind` is `marker`, `note`, or `tag`. Each annotation has one to
+5,000 exact subjects, optional title/body, and up to 64 unique tags:
+
+```json
+{
+  "annotation_id": "review-1",
+  "kind": "note",
+  "subjects": [
+    {
+      "revision_id": "revision-...",
+      "node_id": "node-a",
+      "kind": "event",
+      "subject_id": "event-..."
+    }
+  ],
+  "title": "Check convergence",
+  "body": "Observed later than the peer withdrawal.",
+  "tags": ["incident-42"]
+}
+```
+
+Subject `kind` is `event`, `source_record`, `resource`, `relationship`, or
+`time_range`. Object subjects use `subject_id`; a time range uses ordered
+`start_ns` and `end_ns` bounds in the current write API and omits `subject_id`.
+Control-plane write requests accept canonical decimal strings for those two
+values (and exact integers for non-browser compatibility). Responses
+serialize declared core timestamp and interval fields as decimal strings.
+Opaque plug-in or caller-owned mappings are not interpreted by suffix, so a
+metadata key such as `hold_down_ns` retains its original JSON value and type.
+Subject existence is checked against the exact immutable revision before a
+write commits.
+
+A manual correlation has two to 1,024 event subjects and one to 4,096 edges.
+An edge names distinct subject-array ordinals, a plug-in/user-owned
+`link_type`, and optional `directed` (default `true`). The object also accepts
+`rationale`, tags, and optional finite `confidence` from zero through one.
+
+Report selection is exactly one of explicit revisions, one current session,
+or one immutable snapshot:
+
+```json
+{"revision_ids":["revision-a","revision-b"]}
+```
+
+```json
+{"session_id":"review"}
+```
+
+```json
+{"snapshot_id":"revision-set-..."}
+```
+
+The selectors are mutually exclusive and one non-empty selector is required;
+there is no all-workspace fallback. Query `format=json` (default) returns canonical
+`router_dump_analyzer.correlation_report.v2`; `format=markdown` returns the
+derived human/AI-readable text. Both return
+`ETag: "sha256:<report-digest>"` and a download filename. A session is read at
+report time; a snapshot always uses its frozen vector. Empty selectors,
+sessions, or snapshots are rejected rather than widened. Each report reads
+review rows and their audit watermark from one transactional snapshot.
+Default report bounds are 128 selected revisions, 8 GiB of aggregate
+serialized revision datasets, 20,000 selected manual-correlation edges, and
+10,000 projected event/source observations.
+The report-owned `provenance_class` field uses the closed
+`CorrelationReportProvenanceClass` values `plugin_inferred`, `user_asserted`,
+and `core_corroboration`. It is separate from the plug-in fact `Provenance`
+enum; plug-ins do not assign report provenance classes.
+Every declared core-owned v2 report timestamp and interval bound is a
+canonical decimal string. The `_ns` suffix does not reserve a key inside an
+opaque plug-in mapping; such keys retain their original JSON values and types.
+Every AI-facing string and object key passes one recursive core sanitizer.
+The rule is principally Unicode-property based: control, unassigned,
+surrogate, line-separator, and paragraph-separator categories (`Cc`, `Cn`,
+`Cs`, `Zl`, and `Zp`), every format (`Cf`) character except U+200C ZWNJ and
+U+200D ZWJ, every `Zs` separator except ordinary ASCII space, and the assigned
+invisible or blank characters U+115F, U+1160, U+17B4, U+17B5, U+2800, U+3164,
+U+FFA0, U+13441, and U+13442 are rendered as visible `\\uNNNN` or supplementary
+`\\UNNNNNNNN` text. Ordinary tab and line breaks
+remain valid report prose. This covers the complete Unicode TAG block, future
+unassigned invisible code points, opaque plug-in metadata, and review labels.
+U+16FE4 KHITAN SMALL SCRIPT FILLER remains valid as a legitimate cluster-layout
+control inside visibly anchored text.
+Combining grapheme joiner, unregistered or misplaced variation selectors,
+U+FFFC OBJECT REPLACEMENT CHARACTER, and private-use (`Co`) text may remain in
+bounded source display labels. The report renders those characters as visible
+escapes while retaining surrounding text. U+FE0E/U+FE0F remain raw only when
+the exact adjacent base-selector pair is present in the vendored Unicode 15
+emoji-variation table. Multiple valid pairs across ZWJ sequences remain
+intact; standalone, repeated-on-one-base, and unregistered selectors escape.
+The stronger identifier boundary rejects every selector. Caller-supplied backslashes are
+doubled before unsafe characters become escapes, so a literal `\uNNNN` or
+`\UNNNNNNNN` string remains canonically and cryptographically distinct from
+the corresponding Unicode character; object keys retain the same distinction.
+Human review identifiers, titles, tags,
+authors, and link types reject C0/DEL controls and bidi formatting controls;
+annotation bodies and correlation rationales may retain ordinary tab and line
+breaks but reject other C0/DEL controls.
+Temporal corroboration across missing or different clock domains remains
+`unknown` with `shared_resource_clock_unaligned`; it is never inferred from
+raw numeric ordering alone.
+
+Import descriptors, events, SSE, and CLI output expose one closed public
+failure code/message. Arbitrary plug-in exception text is private diagnostic
+state and has no HTTP route.
+
+The control-plane and single-runtime routes use FastAPI `{"detail": ...}`
+errors. Framework request-shape failures return one fixed bounded `422` detail
+instead of echoing FastAPI's caller input. Adapter-owned safe `4xx` details
+remain specific. Only
+exact, explicitly declared public-domain validation/conflict exceptions may
+publish their bounded, control-free message. Bare `ValueError` and `TypeError`
+are internal faults: they return a closed `500` detail and never expose their
+message, including filesystem or storage paths. Runtime temporal-topology,
+multi-node topology/route, and source-record request errors have their own
+declared exact classes; an undeclared subclass may inherit a status through
+MRO but never permission to publish text. Runtime request nanoseconds use the
+same signed 64-bit minimum and maximum as normalized core timestamps. The
+shared decimal parser exposes closed grammar/below-minimum/above-maximum/
+bit-limit reasons, so adapter-owned numeric fields and strong numeric ETags
+retain precise range diagnostics without parsing exception prose. Public-text
+projection selects a closed fallback for drive/UNC/POSIX paths, environment or
+home expansion, Windows root-relative paths, and `../` or `..\` traversal;
+boundary-aware detection preserves ordinary route/resource keys.
+routes map an unverifiable
+identity to `401`, resolved/header or role mismatch to
+`403`, absent/out-of-scope data to `404`, conflicts to `409`, oversize uploads
+to `413`, invalid bounded input to `422`, missing preconditions to `428`,
+unconfigured control plane or identity resolver to `503`, and timeouts to
+`504`. The complete operational, recovery, security, and core/plug-in
+ownership rules are in [`control-plane.md`](control-plane.md).
 
 ## 2. Time basis
 
@@ -1719,7 +2237,8 @@ Expansion is offset-paginated in deterministic
 `(timestamp_ns, source_sequence, event_uid)` order. The canonical `resource_id`
 is the returned lane resource, and
 `start_ns`/`end_ns` are the returned cluster envelope. `limit` is bounded to
-1..200. Because these bounds identify point events rather than a state-validity
+1..200; `offset` is bounded to `0..9007199254740991`. Because these bounds
+identify point events rather than a state-validity
 interval, event instants equal to either envelope boundary are included. These
 fields are submitted unchanged; clients must not derive resource
 identity by parsing either `lane_id` or `cluster_id`:
@@ -1795,6 +2314,14 @@ record name, decoded message/attributes, and optional `matched_event_uid` plus
 `copy_text` is deliberately absent from this ordinary query.
 Paging and ordering are core behavior. Source labels, decoding, normalization
 links, and recommended regex presets belong to the selected plug-in.
+`start_ns`, `end_ns`, and every retained source-record `timestamp_ns` use the
+exact signed 64-bit nanosecond domain. Their grammar errors and lower/upper
+range errors are reported distinctly. `offset` and `limit` accept only an
+integer or canonical decimal-integer string. `offset` is enforced from zero
+through JavaScript's exact-integer maximum (`9007199254740991`); `limit` is
+enforced from 1 through 500. Values outside either range are rejected rather
+than clamped, and every returned `offset`/`next_offset` JSON number is exactly
+round-trippable by the browser.
 
 A timeline query may include up to eight `record_lane_rules`:
 
@@ -1968,8 +2495,118 @@ tokenizers may truncate text at NUL. `MATCH` never defines the result: every
 candidate and exception still passes a parameterized
 `instr(safe_text, search)` check, while empty, short, and parser-rejected needles
 take the exact scan
-path. `/health` exposes the non-sensitive serving state as
+path. Root `/health` exposes the non-sensitive serving state as
 `history_search_backend` without disclosing the cache path or revision identity.
+It remains available without an opened analysis session, reports
+`analysis_ready=false` in that case, and includes the same durable worker/queue
+projection as `/v1/control-plane/health`. Queue health includes state counts,
+pending versus intentional `awaiting_selection` counts, oldest pending update,
+stall threshold/count, bounded error class labels, and unexpected worker exits.
+Nanosecond values are decimal strings. Either endpoint returns HTTP 200 with
+`status="degraded"` for an observable unhealthy dependency so load balancers
+can read the payload instead of receiving an unrelated session exception. The
+shared health projection is total: a failing store/provider or malformed
+counter becomes a stable bounded observation error, never private exception
+text or an HTTP 500 from the health serializer.
+
+Service telemetry is not an HTTP response schema. Core emits a closed
+`rda.operational.v1` record on `router_dump_analyzer.operations` for bounded
+ingestion/catalog, worker, retention lifecycle, and control-plane access-denial
+events. The handoff is
+fixed-capacity and non-blocking, so records may be dropped and cannot be used
+as durable progress. Fields exclude dump content, filesystem paths, tenant
+labels, raw plug-in values, credentials/headers, concrete URLs, and exception
+text. Access denials use closed phase/reason/route fields and are translated
+exactly once without changing the HTTP response, including concealed scope
+`404` responses. The allowed phase-to-reason pairs are:
+
+- `request_source`: `host_rejected`, `origin_rejected`;
+- `identity_verification`: `identity_verification_failed`;
+- `identity_binding`: `tenant_required`, `tenant_binding_mismatch`,
+  `principal_required`, `principal_binding_mismatch`;
+- `role_authorization`: `required_role_missing`; and
+- `scope_authorization`: `project_scope_denied`, `workspace_scope_denied`,
+  `project_creation_scope_denied`, `workspace_creation_scope_denied`.
+
+The decision constructor, reporter boundary, and event validator enforce this
+closed vocabulary. A process-random HMAC derived only from a trusted resolved
+tenant is optional within-run correlation and is never a sampling key. It is
+included only when the bounded candidate algorithm's lower bound proves one
+tenant is a strict majority of the current sample window; otherwise it is
+omitted. This is a conservative proof, not a best guess.
+
+Admitted sample keys are retained for the process lifetime. When their bounded
+table is full, unseen keys share one permanent `sampling_scope="overflow"`
+state instead of evicting an admitted key. Geometric/time coalescing is also
+subject to an independent global token-bucket ceiling. Per-event suppression,
+global suppression, overflow observations/emissions, invalid decisions, and
+actual enqueue loss are accounted separately. Deployments configure standard
+Python logging handlers/exporters; plug-ins do not define or emit this core
+vocabulary, and upstream authentication remains the durable credential-audit
+boundary.
+
+Root and control-plane health add a payload-free `operational_events` object
+containing process-local accepted, dropped, delivery-failure, queue
+depth/capacity, and worker-liveness values. Any loss or delivery failure makes
+that component and aggregate status degraded. The emitter never catches
+`KeyboardInterrupt` or `SystemExit` at the producer boundary. Both health
+routes intentionally require no tenant identity and expose only these
+aggregate operational values—never project/workspace IDs, paths, event fields,
+or exception text. Per-declared-event loss/suppression diagnostics remain
+process-local and are not added to these anonymous responses.
+
+The protected diagnostics projection is:
+
+```http
+GET /v1/control-plane/diagnostics/operational-events
+```
+
+```json
+{
+  "schema": "rda.operational-diagnostics.v1",
+  "status": "ok",
+  "operational_events": {
+    "accepted_events": 12,
+    "dropped_events": 0,
+    "delivery_failures": 0,
+    "queue_depth": 0,
+    "queue_capacity": 1024,
+    "worker_alive": true,
+    "event_classes": [
+      {
+        "event": "control_plane.access.denied",
+        "accepted_events": 2,
+        "queue_full_drops": 0,
+        "rejected_events": 0,
+        "delivery_failures": 0
+      }
+    ]
+  },
+  "access_denial_sampling": {
+    "observed_denials": 8,
+    "emitted_events": 2,
+    "intentionally_suppressed": 6,
+    "enqueue_failures": 0,
+    "invalid_denials": 0,
+    "admitted_keys": 3,
+    "key_capacity": 1024,
+    "overflow_observations": 0,
+    "overflow_emitted_events": 0,
+    "global_suppressed": 0
+  }
+}
+```
+
+The caller must resolve to `control-plane:admin`. The response sets
+`Cache-Control: no-store`; snapshot failures return bounded `503`. The
+`event_classes` array contains one row for every closed event name, not only
+the example row. `status` is `degraded` when aggregate operational drops or
+delivery failures, access-denial enqueue failures, or invalid denial objects
+have been observed; otherwise it is `ok`. Counters above `2^53-1` are decimal
+strings. This is an
+advisory, process-local snapshot that may change while read and resets on
+restart. It contains no event fields, tenant correlation, request data, or
+queue contents and is not a durable security/compliance audit.
 
 The visible density query is:
 
@@ -2007,9 +2644,16 @@ POST /v1/revisions/rev-01/resources/query
   "kinds": ["ETG", "ETE", "DTE", "GLUE"],
   "layers": ["data-bridge"],
   "search": "blue",
+  "offset": 0,
   "limit": 200
 }
 ```
+
+`POST .../resources/query` and `GET .../resources/at` accept `offset` only in
+`0..9007199254740991`; the response echoes an exact JSON number in that same
+range. `time_ns` instead uses the signed 64-bit nanosecond domain. The generic
+integer adapter has no timestamp defaults: every non-time field declares its
+own lower and upper bounds.
 
 Every item includes its canonical resource ID, descriptor kind, existence and
 status at the requested time, active typed relationships, last accepted change,
@@ -2216,13 +2860,14 @@ validity spans clipped to the lifecycles of both endpoint resources. The point
 cursor, pinned event, and selected range are independent client state; the
 request does not imply that selecting a range clears either of the others.
 
-## 8. Future upload-coordinator plug-in selection and resume
+## 8. Durable upload-coordinator plug-in selection and resume
 
-The current core executable selects one plug-in before application startup with
-`--plugin` or `--plugin-module` and opens the explicit `--input` path. The
-payloads below specify a future durable upload/probe coordinator; they are not a
-plug-in-provided route and are not required by the current single-runtime
-command.
+The optional control plane implements durable upload/probe selection while the
+plain core executable still supports one startup plug-in/input. Start the
+API-only `router-dump-server`, start the browser server with
+`--control-plane-dir`, or use `router-dump-ingest`; section 1.3 and
+[`control-plane.md`](control-plane.md) are the exact route and operational
+contract. These are core-owned routes, never plug-in-provided routes.
 
 Candidate response records the probe set:
 
@@ -2230,28 +2875,42 @@ Candidate response records the probe set:
 {
   "import_id": "imp-01",
   "state": "awaiting_selection",
-  "inventory_hash": "sha256:...",
-  "probe_set_hash": "sha256:...",
+  "probe_set_hash": "sha256:<64 lowercase hex characters>",
   "candidates": [
-    {"plugin_id": "router-family-2025", "plugin_version": "1.4.0", "package_hash": "sha256:...", "confidence": 0.94, "reasons": ["exact manifest platform"]}
+    {"plugin_id": "router-family-2025", "plugin_version": "1.4.0", "package_hash": "package-sha256:<64 lowercase hex characters>", "confidence": 0.94, "reasons": ["exact manifest platform"]}
   ]
 }
 ```
 
-Selection includes optimistic-concurrency identity and an idempotency key:
+Selection includes the current probe-set identity and exact package identity:
 
 ```json
 {
-  "probe_set_hash": "sha256:...",
+  "probe_set_hash": "sha256:<64 lowercase hex characters>",
   "plugin_id": "router-family-2025",
   "plugin_version": "1.4.0",
-  "package_hash": "sha256:...",
-  "idempotency_key": "select-imp-01-attempt-1"
+  "package_hash": "package-sha256:<64 lowercase hex characters>"
 }
 ```
 
-A stale selection returns `409 stale_probe_set`. `POST .../resume` is idempotent
-and returns the durable job resource.
+The request supplies `Idempotency-Key` as a required header. A stale probe set,
+changed package identity, or conflicting repeated key returns `409`. The
+selection receipt is durable: replaying the exact key and request returns the
+current descriptor even after processing has advanced. A new key can confirm
+the same stored exact identity but cannot replace it.
+`POST .../resume` requeues only a failed job within its configured attempt
+budget and returns the durable import descriptor. It restores `admitting` or
+`publishing` when an exact staged catalog operation needs replay; publication
+recovery never re-runs parsing.
+
+The shown `package-sha256:` value is core's bounded digest of a complete
+package import scope; `module-sha256:` is the corresponding top-level-module
+form. A trusted loader may instead provide an immutable package/artifact
+digest. All registries fail closed by default if none is
+available. A manifest-only fallback requires the explicit local/test
+`allow_manifest_identity=True` compatibility opt-out and is rejected by
+durable headless/server execution. Clients still treat `package_hash` as
+opaque and echo the exact candidate field.
 
 ## 9. Errors and pagination
 

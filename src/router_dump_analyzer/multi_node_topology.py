@@ -15,8 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
-from itertools import combinations
+from collections.abc import Iterator, Mapping
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -30,8 +29,16 @@ from router_dump_analyzer.contract_validation import (
     bounded_mapping,
     validate_bounded_json_value,
 )
+from router_dump_analyzer.corroboration import (
+    CorroborationError,
+    ExactMatchClaim,
+    ExactMatchState,
+    MatcherId,
+    exact_match_claims,
+)
 from router_dump_analyzer.normalized_data import contains_time
 from router_dump_analyzer.plugin_api import (
+    FederationMatchState,
     InterNodeLinkPresentation,
     InterNodeRouteTraceRole,
     KeyAtom,
@@ -42,6 +49,8 @@ from router_dump_analyzer.plugin_api import (
 from router_dump_analyzer.temporal_core import (
     RESOURCE_CREATION_OPERATIONS,
     RESOURCE_DELETION_OPERATIONS,
+    checked_temporal_add,
+    checked_temporal_subtract,
     distinct_temporal_states,
     temporal_integer,
     temporal_order_key,
@@ -50,6 +59,13 @@ from router_dump_analyzer.temporal_core import (
 
 class MultiNodeTopologyRequestError(ValueError):
     """A multi-node request cannot be executed by the advertised providers."""
+
+
+_FEDERATION_STATE_BY_EXACT_MATCH_STATE = {
+    ExactMatchState.MATCHED: FederationMatchState.MATCHED,
+    ExactMatchState.AMBIGUOUS: FederationMatchState.AMBIGUOUS,
+    ExactMatchState.UNMATCHED: FederationMatchState.UNRESOLVED,
+}
 
 
 def _normalize_opaque_key(value: Any) -> dict[str, Any]:
@@ -182,6 +198,24 @@ def _integer_ns(value: Any, field: str) -> int:
     except ValueError as error:
         raise MultiNodeTopologyRequestError(
             f"{field} must be an integer nanosecond value"
+        ) from error
+
+
+def _integer_ns_add(left: int, right: int, field: str) -> int:
+    try:
+        return checked_temporal_add(left, right, field)
+    except ValueError as error:
+        raise MultiNodeTopologyRequestError(
+            f"{field} exceeds the signed 64-bit nanosecond range"
+        ) from error
+
+
+def _integer_ns_subtract(left: int, right: int, field: str) -> int:
+    try:
+        return checked_temporal_subtract(left, right, field)
+    except ValueError as error:
+        raise MultiNodeTopologyRequestError(
+            f"{field} exceeds the signed 64-bit nanosecond range"
         ) from error
 
 
@@ -1454,6 +1488,7 @@ class MultiNodeTopologyService:
             "status_perspective_id": perspective_id,
         }
         common = dict(scope)
+        query_time: int | None
         kind = str(basis.get("kind", "relative_to_watermark"))
         if kind == "relative_to_scope_end":
             kind = "relative_to_watermark"
@@ -1529,20 +1564,26 @@ class MultiNodeTopologyService:
                 absolute_min = (
                     None
                     if absolute_min_raw is None
-                    else _integer_ns(
-                        absolute_min_raw,
-                        "watermark.absolute_min_ns",
+                    else _integer_ns_add(
+                        _integer_ns(
+                            absolute_min_raw,
+                            "watermark.absolute_min_ns",
+                        ),
+                        offset,
+                        "resolved relative absolute minimum",
                     )
-                    + offset
                 )
                 absolute_max = (
                     None
                     if absolute_max_raw is None
-                    else _integer_ns(
-                        absolute_max_raw,
-                        "watermark.absolute_max_ns",
+                    else _integer_ns_add(
+                        _integer_ns(
+                            absolute_max_raw,
+                            "watermark.absolute_max_ns",
+                        ),
+                        offset,
+                        "resolved relative absolute maximum",
                     )
-                    + offset
                 )
                 if (
                     absolute_min is not None
@@ -1552,33 +1593,65 @@ class MultiNodeTopologyService:
                     raise MultiNodeTopologyRequestError(
                         "watermark absolute bounds are reversed"
                     )
-                local_time = local_watermark + offset
+                local_time = _integer_ns_add(
+                    local_watermark,
+                    offset,
+                    "resolved relative local time",
+                )
                 query_time = (
                     None
                     if query_watermark is None
-                    else query_watermark + offset
+                    else _integer_ns_add(
+                        query_watermark,
+                        offset,
+                        "resolved relative query time",
+                    )
                 )
                 if absolute_min is None and clock:
                     if query_time is None:
-                        query_time = (
-                            local_time
-                            - _integer_ns(
+                        query_time = _integer_ns_subtract(
+                            local_time,
+                            _integer_ns(
                                 clock["local_minus_absolute_ns"],
                                 "clock.local_minus_absolute_ns",
-                            )
+                            ),
+                            "resolved relative query time",
                         )
                     clock_uncertainty = _integer_ns(
                         clock["uncertainty_ns"],
                         "clock.uncertainty_ns",
                     )
-                    absolute_min = query_time - clock_uncertainty
-                    absolute_max = query_time + clock_uncertainty
-                elif query_time is None and absolute_min is not None:
-                    query_time = (absolute_min + absolute_max) // 2
+                    if clock_uncertainty < 0:
+                        raise MultiNodeTopologyRequestError(
+                            "clock.uncertainty_ns must be zero or positive"
+                        )
+                    absolute_min = _integer_ns_subtract(
+                        query_time,
+                        clock_uncertainty,
+                        "resolved absolute minimum",
+                    )
+                    absolute_max = _integer_ns_add(
+                        query_time,
+                        clock_uncertainty,
+                        "resolved absolute maximum",
+                    )
+                elif (
+                    query_time is None
+                    and absolute_min is not None
+                    and absolute_max is not None
+                ):
+                    query_time = _integer_ns_add(
+                        absolute_min,
+                        (absolute_max - absolute_min) // 2,
+                        "resolved query time",
+                    )
                 uncertainty = (
                     None
-                    if absolute_min is None
-                    else max(0, (absolute_max - absolute_min) // 2)
+                    if absolute_min is None or absolute_max is None
+                    else _integer_ns(
+                        max(0, (absolute_max - absolute_min) // 2),
+                        "resolved uncertainty",
+                    )
                 )
                 quality = str(
                     watermark.get("quality")
@@ -1646,8 +1719,16 @@ class MultiNodeTopologyService:
                 projection.get("watermark_lag_ns", 0),
                 "projection.watermark_lag_ns",
             )
-            watermark = self.capture_ns - lag
-            query_time = watermark + offset
+            watermark = _integer_ns_subtract(
+                self.capture_ns,
+                lag,
+                "legacy projection watermark",
+            )
+            query_time = _integer_ns_add(
+                watermark,
+                offset,
+                "resolved relative query time",
+            )
             basis_kind = "relative_capture_vector"
         else:
             raise MultiNodeTopologyRequestError(
@@ -1674,19 +1755,38 @@ class MultiNodeTopologyService:
             clock["uncertainty_ns"],
             "clock.uncertainty_ns",
         )
+        if uncertainty < 0:
+            raise MultiNodeTopologyRequestError(
+                "clock.uncertainty_ns must be zero or positive"
+            )
         local_offset = _integer_ns(
             clock["local_minus_absolute_ns"],
             "clock.local_minus_absolute_ns",
+        )
+        local_time = _integer_ns_add(
+            query_time,
+            local_offset,
+            "resolved local time",
+        )
+        absolute_min = _integer_ns_subtract(
+            query_time,
+            uncertainty,
+            "resolved absolute minimum",
+        )
+        absolute_max = _integer_ns_add(
+            query_time,
+            uncertainty,
+            "resolved absolute maximum",
         )
         result = {
             **common,
             "basis_kind": basis_kind,
             "kind": basis_kind,
             "query_time_ns": str(query_time),
-            "local_time_ns": str(query_time + local_offset),
+            "local_time_ns": str(local_time),
             "local_clock_domain": clock["clock_domain"],
-            "absolute_min_ns": str(query_time - uncertainty),
-            "absolute_max_ns": str(query_time + uncertainty),
+            "absolute_min_ns": str(absolute_min),
+            "absolute_max_ns": str(absolute_max),
             "uncertainty_ns": str(uncertainty),
             "resolution": "exact" if uncertainty == 0 else "bounded",
             "mapping_method": clock["mapping_method"],
@@ -1702,11 +1802,15 @@ class MultiNodeTopologyService:
                 {
                     "watermark_query_time_ns": str(watermark),
                     "watermark_local_time_ns": str(
-                        watermark + local_offset
+                        _integer_ns_add(
+                            watermark,
+                            local_offset,
+                            "watermark local time",
+                        )
                     ),
                     "watermark_scope": scope,
                     "watermark_source": "legacy_capture_lag",
-                    "relative_offset_ns": str(query_time - watermark),
+                    "relative_offset_ns": str(offset),
                 }
             )
         return result
@@ -1985,9 +2089,11 @@ class MultiNodeTopologyService:
             str(item["matcher_id"]): item
             for item in self.contract.get("network_segment_matchers", [])
         }
-        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        claims_by_identity: dict[tuple[str, str], dict[str, Any]] = {}
         unresolved_matchers: list[dict[str, Any]] = []
-        for claim in claims:
+
+        exact_claims: list[ExactMatchClaim] = []
+        for claim_index, claim in enumerate(claims):
             (
                 plugin_semantics,
                 plugin_semantics_key,
@@ -1996,14 +2102,16 @@ class MultiNodeTopologyService:
                 claim.get("plugin_semantics")
             )
             matcher_id = str(claim["matcher_id"])
-            normalized_segment_key, canonical_segment_key = _canonical_opaque_key(
-                claim["segment_key"]
-            )
+            (
+                normalized_segment_key,
+                canonical_segment_key,
+            ) = _canonical_opaque_key(claim["segment_key"])
             matcher_contract = matcher_contracts.get(matcher_id)
             if (
                 matcher_contract is None
                 or matcher_contract.get("match_semantics") != "exact_token"
-                or matcher_contract.get("result_shape") != "connectivity_domain"
+                or matcher_contract.get("result_shape")
+                != "connectivity_domain"
             ):
                 unresolved_matchers.append(
                     {
@@ -2011,7 +2119,9 @@ class MultiNodeTopologyService:
                         "segment_key": normalized_segment_key,
                         "typed_key": canonical_segment_key,
                         "resolution": "unsupported_matcher_contract",
-                        "reason_code": "matcher_not_declared_as_exact_connectivity_domain",
+                        "reason_code": (
+                            "matcher_not_declared_as_exact_connectivity_domain"
+                        ),
                         "member_id": claim.get("member_id"),
                         "node_id": claim.get("node_id"),
                         "resource_id": claim.get("resource_id"),
@@ -2019,7 +2129,9 @@ class MultiNodeTopologyService:
                 )
                 continue
             normalized_claim = dict(claim)
-            normalized_claim["_normalized_segment_key"] = normalized_segment_key
+            normalized_claim["_normalized_segment_key"] = (
+                normalized_segment_key
+            )
             normalized_claim["plugin_semantics"] = plugin_semantics
             normalized_claim["_plugin_semantics_key"] = (
                 plugin_semantics_key
@@ -2027,18 +2139,41 @@ class MultiNodeTopologyService:
             normalized_claim["_plugin_semantics_descriptor"] = (
                 plugin_semantics_descriptor
             )
-            grouped.setdefault((matcher_id, canonical_segment_key), []).append(
-                normalized_claim
+            partition_id = str(claim["node_id"])
+            claim_id = f"segment-claim-{claim_index}"
+            claims_by_identity[(partition_id, claim_id)] = normalized_claim
+            exact_claims.append(
+                ExactMatchClaim(
+                    claim_id=claim_id,
+                    partition_id=partition_id,
+                    matcher_id=MatcherId(matcher_id),
+                    match_key=claim["segment_key"],
+                )
             )
 
-        groups = sorted(grouped.items())
-        selected_groups = groups[:segment_limit]
-        segments_truncated = len(groups) > len(selected_groups)
+        try:
+            match_result = exact_match_claims(
+                exact_claims,
+                max_candidates=0,
+            )
+        except CorroborationError as error:
+            raise MultiNodeTopologyRequestError(
+                f"invalid network-segment exact-match claims: {error}"
+            ) from error
+
+        selected_groups = match_result.groups[:segment_limit]
+        segments_truncated = len(match_result.groups) > len(selected_groups)
         attachments: list[dict[str, Any]] = []
         segments: list[dict[str, Any]] = []
         resolutions: list[dict[str, Any]] = unresolved_matchers
 
-        for (matcher_id, canonical_segment_key), values in selected_groups:
+        for group in selected_groups:
+            matcher_id = group.matcher_id.value
+            canonical_segment_key = group.typed_key
+            values = [
+                claims_by_identity[(claim.partition_id, claim.claim_id)]
+                for claim in group.claims
+            ]
             segment_key = values[0]["_normalized_segment_key"]
             matcher_contract = matcher_contracts.get(matcher_id, {})
             matcher_contract_version = str(
@@ -2429,53 +2564,114 @@ class MultiNodeTopologyService:
         list[dict[str, Any]],
         bool,
     ]:
-        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
-        for claim in claims:
-            presentation, route_trace_role = (
-                _validated_inter_node_presentation(
-                    claim.get("presentation")
-                )
+        def claim_identity(claim: dict[str, Any]) -> tuple[Any, ...]:
+            node_id = str(claim["node_id"])
+            return (
+                self._node_order.get(node_id, len(self._node_order)),
+                node_id,
+                str(claim.get("member_id", "")),
+                str(claim.get("resource_id", "")),
+                str(claim.get("plugin_set_id", "")),
+                str(claim.get("plugin_id", "")),
+                str(claim.get("projection_id", "")),
+                str(claim.get("status_perspective_id", "")),
             )
-            normalized_claim = dict(claim)
-            normalized_claim["presentation"] = presentation
-            normalized_claim["_route_trace_role"] = route_trace_role
-            grouped.setdefault(
-                (str(claim["matcher_id"]), str(claim["match_key"])), []
-            ).append(normalized_claim)
+
+        claims_by_identity: dict[tuple[str, str], dict[str, Any]] = {}
+        # Duplicate snapshots of the same qualified endpoint never represented
+        # a second candidate in the legacy topology join. Preserve that public
+        # behavior while delegating grouping and cross-partition cardinality to
+        # the reusable core exact matcher.
+        seen_claims: set[tuple[str, str, tuple[Any, ...]]] = set()
+
+        def exact_claim_stream() -> Iterator[ExactMatchClaim]:
+            for claim in claims:
+                presentation, route_trace_role = (
+                    _validated_inter_node_presentation(
+                        claim.get("presentation")
+                    )
+                )
+                normalized_claim = dict(claim)
+                normalized_claim["presentation"] = presentation
+                normalized_claim["_route_trace_role"] = route_trace_role
+                matcher_id = str(claim["matcher_id"])
+                typed_key = _canonical_opaque_key(claim["match_key"])[1]
+                identity = claim_identity(claim)
+                deduplication_key = (matcher_id, typed_key, identity)
+                if deduplication_key in seen_claims:
+                    continue
+                seen_claims.add(deduplication_key)
+                partition_id = str(claim["node_id"])
+                claim_digest = hashlib.sha256(
+                    json.dumps(
+                        [matcher_id, typed_key, identity],
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+                claim_id = f"claim-{claim_digest}"
+                claim_key = (partition_id, claim_id)
+                if claim_key in claims_by_identity:
+                    raise MultiNodeTopologyRequestError(
+                        "inter-node exact-match claim identity collision"
+                    )
+                claims_by_identity[claim_key] = normalized_claim
+                yield ExactMatchClaim(
+                    claim_id=claim_id,
+                    partition_id=partition_id,
+                    matcher_id=MatcherId(matcher_id),
+                    match_key=claim["match_key"],
+                )
+
+        try:
+            match_result = exact_match_claims(
+                exact_claim_stream(),
+                max_candidates=limit,
+            )
+        except CorroborationError as error:
+            raise MultiNodeTopologyRequestError(
+                f"invalid inter-node exact-match claims: {error}"
+            ) from error
+
+        candidates_by_group: dict[
+            tuple[MatcherId, str],
+            list[tuple[dict[str, Any], dict[str, Any]]],
+        ] = {}
+        for candidate in match_result.candidates:
+            left = claims_by_identity[
+                (candidate.left.partition_id, candidate.left.claim_id)
+            ]
+            right = claims_by_identity[
+                (candidate.right.partition_id, candidate.right.claim_id)
+            ]
+            ordered_pair = tuple(sorted((left, right), key=claim_identity))
+            candidates_by_group.setdefault(
+                (candidate.matcher_id, candidate.typed_key), []
+            ).append((ordered_pair[0], ordered_pair[1]))
+
         candidates: list[dict[str, Any]] = []
         resolutions: list[dict[str, Any]] = []
         unmatched: list[dict[str, Any]] = []
         linker = self.contract["federation_plugin"]
-        for (matcher_id, match_key), values in sorted(grouped.items()):
-            def claim_identity(claim: dict[str, Any]) -> tuple[Any, ...]:
-                node_id = str(claim["node_id"])
-                return (
-                    self._node_order.get(node_id, len(self._node_order)),
-                    node_id,
-                    str(claim.get("member_id", "")),
-                    str(claim.get("resource_id", "")),
-                    str(claim.get("plugin_set_id", "")),
-                    str(claim.get("plugin_id", "")),
-                    str(claim.get("projection_id", "")),
-                    str(claim.get("status_perspective_id", "")),
-                )
-
-            pair_by_identity: dict[
-                tuple[tuple[Any, ...], tuple[Any, ...]],
-                tuple[dict[str, Any], dict[str, Any]],
-            ] = {}
-            ordered_values = sorted(values, key=claim_identity)
-            for first, second in combinations(ordered_values, 2):
-                if first["node_id"] == second["node_id"]:
-                    continue
-                left, right = sorted((first, second), key=claim_identity)
-                identity = (claim_identity(left), claim_identity(right))
-                pair_by_identity.setdefault(identity, (left, right))
-            cross_node_pairs = [
-                pair_by_identity[identity]
-                for identity in sorted(pair_by_identity)
+        for group in match_result.groups:
+            matcher_id = group.matcher_id.value
+            values = [
+                claims_by_identity[(claim.partition_id, claim.claim_id)]
+                for claim in group.claims
             ]
-            if not cross_node_pairs:
+            match_key = str(values[0]["match_key"])
+            link_match_key = match_key
+            if not isinstance(values[0]["match_key"], str):
+                typed_key_digest = hashlib.sha256(
+                    group.typed_key.encode("utf-8")
+                ).hexdigest()[:16]
+                link_match_key = f"{match_key}:typed-{typed_key_digest}"
+            cross_node_pairs = candidates_by_group.get(
+                (group.matcher_id, group.typed_key),
+                [],
+            )
+            resolution_state = _FEDERATION_STATE_BY_EXACT_MATCH_STATE[group.state]
+            resolution = resolution_state.value
+            if resolution_state is FederationMatchState.UNRESOLVED:
                 unresolved = [
                     {
                         "member_id": item["member_id"],
@@ -2484,7 +2680,7 @@ class MultiNodeTopologyService:
                         "resource_id": item["resource_id"],
                         "matcher_id": matcher_id,
                         "match_key": match_key,
-                        "resolution": "unresolved",
+                        "resolution": resolution,
                         "reason_code": "no_compatible_remote_claim",
                     }
                     for item in values
@@ -2494,20 +2690,19 @@ class MultiNodeTopologyService:
                     {
                         "matcher_id": matcher_id,
                         "match_key": match_key,
-                        "resolution": "unresolved",
+                        "resolution": resolution,
                         "candidate_count": 0,
                         "claims": unresolved,
                         "linker_plugin_provenance": linker,
                     }
                 )
                 continue
-            resolution = "matched" if len(cross_node_pairs) == 1 else "ambiguous"
             resolutions.append(
                 {
                     "matcher_id": matcher_id,
                     "match_key": match_key,
                     "resolution": resolution,
-                    "candidate_count": len(cross_node_pairs),
+                    "candidate_count": group.candidate_count,
                     "claims": [self._claim_endpoint(item) for item in values],
                     "linker_plugin_provenance": linker,
                 }
@@ -2545,7 +2740,7 @@ class MultiNodeTopologyService:
                         "reason": "plugin_claim_status_incomplete",
                     }
                 base_link_id = (
-                    f"{matcher_id}:{match_key}:"
+                    f"{matcher_id}:{link_match_key}:"
                     f"{left['node_id']}:{right['node_id']}"
                 )
                 occurrence = base_link_occurrences.get(base_link_id, 0)
@@ -2679,7 +2874,7 @@ class MultiNodeTopologyService:
                                 self._claim_endpoint(left),
                                 self._claim_endpoint(right),
                             ]
-                            if resolution == "ambiguous"
+                            if resolution_state is FederationMatchState.AMBIGUOUS
                             else []
                         ),
                         "time_alignment": {
@@ -2714,7 +2909,7 @@ class MultiNodeTopologyService:
             candidates[:limit],
             resolutions,
             unmatched,
-            len(candidates) > limit,
+            match_result.candidates_truncated,
         )
 
     @staticmethod

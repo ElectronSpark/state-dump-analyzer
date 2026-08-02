@@ -17,7 +17,6 @@ from starlette.middleware.gzip import GZipMiddleware
 
 from .frontend_host import FrontendHost
 
-
 Lifespan = Callable[[FastAPI], AbstractAsyncContextManager[Any]]
 _FRONTEND_CONTENT_SECURITY_POLICY = "; ".join(
     (
@@ -61,14 +60,22 @@ def create_web_app(
         "runtime and plug-in providers."
     ),
     host: FrontendHost,
+    mount_frontend: bool = True,
+    expose_api_docs: bool = False,
 ) -> FastAPI:
     """Build a web application without importing a concrete plug-in/runtime."""
+
+    if type(expose_api_docs) is not bool:
+        raise TypeError("expose_api_docs must be a boolean")
 
     application = FastAPI(
         title=title,
         version=version,
         description=description,
         lifespan=lifespan,
+        openapi_url="/openapi.json" if expose_api_docs else None,
+        docs_url="/docs" if expose_api_docs else None,
+        redoc_url="/redoc" if expose_api_docs else None,
     )
     application.add_middleware(
         GZipMiddleware,
@@ -98,19 +105,20 @@ def create_web_app(
             response.headers["Expires"] = "0"
         return response
 
-    application.mount("/assets", host, name="frontend-assets")
+    if mount_frontend:
+        application.mount("/assets", host, name="frontend-assets")
 
-    def frontend_page(request: Request):
-        return host.page_response(request.url.path)
+        def frontend_page(request: Request):
+            return host.page_response(request.url.path)
 
-    for frontend_route in host.page_routes:
-        application.add_api_route(
-            frontend_route,
-            frontend_page,
-            methods=["GET"],
-            include_in_schema=False,
-            name=f"frontend-page-{frontend_route.strip('/') or 'index'}",
-        )
+        for frontend_route in host.page_routes:
+            application.add_api_route(
+                frontend_route,
+                frontend_page,
+                methods=["GET"],
+                include_in_schema=False,
+                name=f"frontend-page-{frontend_route.strip('/') or 'index'}",
+            )
     application.include_router(api_router)
     return application
 

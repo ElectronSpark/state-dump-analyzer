@@ -3,6 +3,13 @@ from __future__ import annotations
 import unittest
 
 from router_dump_analyzer.normalized_data import overlaps_range
+from router_dump_analyzer.temporal_core import (
+    MAX_TEMPORAL_NS,
+    MIN_TEMPORAL_NS,
+    checked_temporal_add,
+    checked_temporal_subtract,
+    temporal_integer,
+)
 from router_dump_analyzer.temporal_topology import (
     TemporalTopologyRequestError,
     TemporalTopologyService,
@@ -20,6 +27,23 @@ class TemporalBoundaryTests(unittest.TestCase):
         self.assertTrue(overlaps_range(None, None, 10, 20))
         self.assertFalse(_overlaps_window(0, 10, 10, 20))
         self.assertFalse(_overlaps_window(20, 30, 10, 20))
+
+    def test_shared_temporal_integer_and_arithmetic_are_signed_64(self) -> None:
+        self.assertEqual(temporal_integer(str(MIN_TEMPORAL_NS), "time"), MIN_TEMPORAL_NS)
+        self.assertEqual(temporal_integer(str(MAX_TEMPORAL_NS), "time"), MAX_TEMPORAL_NS)
+        self.assertEqual(checked_temporal_add(MAX_TEMPORAL_NS, 0, "time"), MAX_TEMPORAL_NS)
+        self.assertEqual(
+            checked_temporal_subtract(MIN_TEMPORAL_NS, 0, "time"),
+            MIN_TEMPORAL_NS,
+        )
+        for operation in (
+            lambda: temporal_integer(str(MAX_TEMPORAL_NS + 1), "time"),
+            lambda: temporal_integer(str(MIN_TEMPORAL_NS - 1), "time"),
+            lambda: checked_temporal_add(MAX_TEMPORAL_NS, 1, "time"),
+            lambda: checked_temporal_subtract(MIN_TEMPORAL_NS, 1, "time"),
+        ):
+            with self.assertRaises(ValueError):
+                operation()
 
 
 class TemporalReplayOrderingTests(unittest.TestCase):

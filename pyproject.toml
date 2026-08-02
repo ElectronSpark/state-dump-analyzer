@@ -26,6 +26,10 @@ test = [
 
 [project.scripts]
 router-dump-analyzer = "router_dump_analyzer.cli:main"
+router-dump-ingest = "router_dump_analyzer.pipeline_cli:main"
+router-dump-maintain = "router_dump_analyzer.maintenance_cli:main"
+router-dump-health = "router_dump_analyzer.health_cli:main"
+router-dump-server = "router_dump_analyzer.server_cli:main"
 router-dump-plugin-validate = "router_dump_analyzer.plugin_validation:main"
 
 [tool.hatch.build.targets.wheel]

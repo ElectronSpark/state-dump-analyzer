@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from router_dump_analyzer.cli import (
     LaunchConfiguration,
+    main,
     parse_args,
     run,
 )
@@ -17,6 +21,9 @@ from router_dump_analyzer.runtime import (
     RuntimeApplicationRequest,
     create_runtime_application,
     require_plugin_runtime,
+)
+from router_dump_analyzer.web.control_plane_api import (
+    ControlPlaneAccessDenialReporter,
 )
 from tests.support.normalized_data import StaticDataPolicy, StaticDatasetSource
 
@@ -74,6 +81,11 @@ class CoreCliTests(unittest.TestCase):
                 "--port",
                 "8876",
                 "--no-browser",
+                "--control-plane-dir",
+                "durable-state",
+                "--trust-control-plane-headers",
+                "--control-plane-retention-policy",
+                "retention.json",
             ]
         )
 
@@ -83,6 +95,77 @@ class CoreCliTests(unittest.TestCase):
         self.assertEqual(parsed.host, "0.0.0.0")
         self.assertEqual(parsed.port, 8876)
         self.assertTrue(parsed.no_browser)
+        self.assertEqual(parsed.control_plane_dir, Path("durable-state"))
+        self.assertTrue(parsed.trust_control_plane_headers)
+        self.assertFalse(parsed.expose_api_docs)
+        self.assertEqual(
+            parsed.control_plane_retention_policy,
+            Path("retention.json"),
+        )
+
+        with self.assertRaises(SystemExit) as missing_control_plane:
+            parse_args(
+                [
+                    "--plugin-module",
+                    "package.plugin:example",
+                    "--input",
+                    "fixture.tgz",
+                    "--control-plane-retention-policy",
+                    "retention.json",
+                ]
+            )
+        self.assertEqual(missing_control_plane.exception.code, 2)
+
+        with self.assertRaises(SystemExit) as unsafe_docs:
+            parse_args(
+                [
+                    "--plugin-module",
+                    "package.plugin:example",
+                    "--input",
+                    "fixture.tgz",
+                    "--host",
+                    "0.0.0.0",
+                    "--expose-api-docs",
+                ]
+            )
+        self.assertEqual(unsafe_docs.exception.code, 2)
+
+        loopback_docs = parse_args(
+            [
+                "--plugin-module",
+                "package.plugin:example",
+                "--input",
+                "fixture.tgz",
+                "--expose-api-docs",
+            ]
+        )
+        self.assertTrue(loopback_docs.expose_api_docs)
+
+    def test_control_plane_refuses_implicit_header_trust_off_loopback(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = Path(temporary_directory) / "fixture.tgz"
+            fixture.touch()
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "trusted-header control plane may bind only to loopback",
+            ):
+                run(
+                    LaunchConfiguration(
+                        plugin_name=None,
+                        plugin_module="package.plugin",
+                        input_path=fixture,
+                        host="0.0.0.0",
+                        port=8876,
+                        no_browser=True,
+                        control_plane_dir=Path(temporary_directory) / "state",
+                    ),
+                    module_loader=lambda _target: _Plugin(),
+                    entry_point_loader=lambda name: self.fail(name),
+                    application_factory=lambda request: self.fail(request),
+                    server_runner=lambda app, **kwargs: self.fail((app, kwargs)),
+                )
 
     def test_run_loads_module_requires_runtime_and_calls_core_factory(self) -> None:
         plugin = _Plugin()
@@ -121,6 +204,7 @@ class CoreCliTests(unittest.TestCase):
                     no_browser=True,
                     frontend_dir=frontend,
                     api_only=True,
+                    expose_api_docs=True,
                 ),
                 entry_point_loader=entry_point_loader,
                 module_loader=module_loader,
@@ -135,6 +219,7 @@ class CoreCliTests(unittest.TestCase):
         self.assertEqual(request.input_path, fixture.resolve())
         self.assertEqual(request.frontend_root, frontend.resolve())
         self.assertFalse(request.serve_frontend)
+        self.assertTrue(request.expose_api_docs)
         self.assertEqual(
             calls[2],
             ("server", (application, "127.0.0.1", 8876)),
@@ -150,8 +235,6 @@ class CoreCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             fixture = Path(temporary_directory) / "fixture.tgz"
             fixture.touch()
-            from unittest.mock import patch
-
             with patch(
                 "router_dump_analyzer.cli._schedule_browser",
                 immediate_browser,
@@ -166,9 +249,7 @@ class CoreCliTests(unittest.TestCase):
                         no_browser=False,
                     ),
                     entry_point_loader=lambda name: (
-                        plugin
-                        if name == "demo_router"
-                        else self.fail(name)
+                        plugin if name == "demo_router" else self.fail(name)
                     ),
                     module_loader=lambda target: self.fail(target),
                     application_factory=lambda request: object(),
@@ -176,6 +257,100 @@ class CoreCliTests(unittest.TestCase):
                 )
 
         self.assertEqual(opened, ["http://127.0.0.1:8765"])
+
+    def test_api_only_browser_targets_live_endpoint_for_docs_policy(
+        self,
+    ) -> None:
+        plugin = _Plugin()
+        opened: list[str] = []
+
+        def immediate_browser(url: str, _opener) -> None:
+            opened.append(url)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = Path(temporary_directory) / "fixture.tgz"
+            fixture.touch()
+            with patch(
+                "router_dump_analyzer.cli._schedule_browser",
+                immediate_browser,
+            ):
+                run(
+                    LaunchConfiguration(
+                        plugin_name="demo_router",
+                        plugin_module=None,
+                        input_path=fixture,
+                        host="127.0.0.1",
+                        port=8765,
+                        no_browser=False,
+                        api_only=True,
+                    ),
+                    entry_point_loader=lambda _name: plugin,
+                    application_factory=lambda _request: object(),
+                    server_runner=lambda _app, **_kwargs: None,
+                )
+                run(
+                    LaunchConfiguration(
+                        plugin_name="demo_router",
+                        plugin_module=None,
+                        input_path=fixture,
+                        host="127.0.0.1",
+                        port=8765,
+                        no_browser=False,
+                        api_only=True,
+                        expose_api_docs=True,
+                    ),
+                    entry_point_loader=lambda _name: plugin,
+                    application_factory=lambda _request: object(),
+                    server_runner=lambda _app, **_kwargs: None,
+                )
+
+        self.assertEqual(
+            opened,
+            [
+                "http://127.0.0.1:8765/health",
+                "http://127.0.0.1:8765/docs",
+            ],
+        )
+
+    def test_programmatic_api_docs_opt_in_fails_off_loopback(self) -> None:
+        with self.assertRaisesRegex(ValueError, "only on a loopback host"):
+            run(
+                LaunchConfiguration(
+                    plugin_name="demo_router",
+                    plugin_module=None,
+                    input_path=Path("fixture.tgz"),
+                    host="0.0.0.0",
+                    port=8765,
+                    no_browser=True,
+                    expose_api_docs=True,
+                ),
+                entry_point_loader=lambda name: self.fail(name),
+                application_factory=lambda request: self.fail(request),
+                server_runner=lambda app, **kwargs: self.fail((app, kwargs)),
+            )
+
+    def test_main_redacts_missing_input_absolute_host_path(self) -> None:
+        stderr = io.StringIO()
+        private_path = Path(r"C:\private\tenant\missing-dump.tgz")
+        with (
+            redirect_stderr(stderr),
+            self.assertRaises(SystemExit) as stopped,
+        ):
+            main(
+                [
+                    "--plugin",
+                    "demo_router",
+                    "--input",
+                    str(private_path),
+                    "--no-browser",
+                ]
+            )
+
+        self.assertEqual(stopped.exception.code, 1)
+        rendered = stderr.getvalue()
+        self.assertIn("analyzer configuration or startup failed", rendered)
+        self.assertNotIn("private", rendered)
+        self.assertNotIn("missing-dump.tgz", rendered)
 
     def test_runtime_capability_and_core_application_factory(self) -> None:
         self.assertIsInstance(_Session(), PluginRuntimeSession)
@@ -198,6 +373,10 @@ class CoreCliTests(unittest.TestCase):
         else:
             application = create_runtime_application(request)
             self.assertEqual(application.title, "Router Dump Analyzer API")
+            self.assertIsInstance(
+                application.state.control_plane_access_denial_reporter,
+                ControlPlaneAccessDenialReporter,
+            )
 
             def route_paths(routes) -> set[str]:
                 paths: set[str] = set()
@@ -216,6 +395,28 @@ class CoreCliTests(unittest.TestCase):
             paths = route_paths(application.routes)
             self.assertIn("/health", paths)
             self.assertIn("/v1/workspace", paths)
+            self.assertNotIn("/openapi.json", paths)
+            self.assertNotIn("/docs", paths)
+            self.assertNotIn("/redoc", paths)
+
+            documented_application = create_runtime_application(
+                RuntimeApplicationRequest(
+                    runtime=_Runtime(),
+                    input_path=Path("fixture.tgz"),
+                    expose_api_docs=True,
+                )
+            )
+            documented_paths = route_paths(documented_application.routes)
+            self.assertIn("/openapi.json", documented_paths)
+            self.assertIn("/docs", documented_paths)
+            self.assertIn("/redoc", documented_paths)
+
+            with self.assertRaisesRegex(TypeError, "expose_api_docs"):
+                RuntimeApplicationRequest(
+                    runtime=_Runtime(),
+                    input_path=Path("fixture.tgz"),
+                    expose_api_docs=1,  # type: ignore[arg-type]
+                )
 
             api_only_application = create_runtime_application(
                 RuntimeApplicationRequest(

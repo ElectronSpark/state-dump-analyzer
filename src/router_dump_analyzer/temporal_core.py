@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from .canonical import CanonicalValueError, bounded_value_key
-from .value_core import parse_decimal_integer
+from .value_core import parse_canonical_decimal_integer
 
 RESOURCE_CREATION_OPERATIONS = frozenset({"create", "add", "insert"})
 RESOURCE_DELETION_OPERATIONS = frozenset({"delete", "remove"})
@@ -14,6 +14,13 @@ RESOURCE_DELETION_OPERATIONS = frozenset({"delete", "remove"})
 # Ordering-dependent cursors and cluster handles must change version whenever
 # the canonical temporal order changes.
 TEMPORAL_ORDER_VERSION = 2
+
+# Every public nanosecond coordinate uses the same signed-64 domain as the
+# plug-in contract and durable stores.  Keeping the invariant here prevents
+# topology, route, and history adapters from acquiring subtly different
+# integer ranges.
+MIN_TEMPORAL_NS = -(1 << 63)
+MAX_TEMPORAL_NS = (1 << 63) - 1
 
 _TEMPORAL_STATE_FIELDS = (
     "exists",
@@ -25,9 +32,30 @@ _TEMPORAL_STATE_FIELDS = (
 
 
 def temporal_integer(value: Any, field: str) -> int:
-    """Parse one exact decimal integer without accepting floats or coercions."""
+    """Parse one exact signed-64 nanosecond integer without coercion."""
 
-    return parse_decimal_integer(value, field)
+    return parse_canonical_decimal_integer(
+        value,
+        field,
+        minimum=MIN_TEMPORAL_NS,
+        maximum=MAX_TEMPORAL_NS,
+    )
+
+
+def checked_temporal_add(left: int, right: int, field: str) -> int:
+    """Add two nanosecond values and reject signed-64 overflow."""
+
+    if type(left) is not int or type(right) is not int:
+        raise ValueError(f"{field} operands must be exact integers")
+    return temporal_integer(left + right, field)
+
+
+def checked_temporal_subtract(left: int, right: int, field: str) -> int:
+    """Subtract two nanosecond values and reject signed-64 overflow."""
+
+    if type(left) is not int or type(right) is not int:
+        raise ValueError(f"{field} operands must be exact integers")
+    return temporal_integer(left - right, field)
 
 
 def temporal_order_key(
@@ -90,9 +118,13 @@ def distinct_temporal_states(
 
 
 __all__ = [
+    "MAX_TEMPORAL_NS",
+    "MIN_TEMPORAL_NS",
     "RESOURCE_CREATION_OPERATIONS",
     "RESOURCE_DELETION_OPERATIONS",
     "TEMPORAL_ORDER_VERSION",
+    "checked_temporal_add",
+    "checked_temporal_subtract",
     "distinct_temporal_states",
     "temporal_integer",
     "temporal_order_key",

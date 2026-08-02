@@ -1,13 +1,17 @@
 # Architecture and library decisions
 
-Status: production target plus shipped-prototype notes, updated 2026-07-28
+Status: distributed-production target plus implemented local-profile notes,
+updated 2026-08-01
 Runtime: Python 3.12; the local prototype supports Windows and Linux/WSL, while
 the production server and isolated analysis workers target Linux
 
 ## 1. Executive decision
 
-Start as a modular monolith with isolated workers, not as microservices and not
-as a graph-database product.
+The distributed-production target starts as a modular monolith with isolated
+workers, not as microservices and not as a graph-database product. The shipped
+single-host profile uses the same modular boundary: queue coordination remains
+in-process, while durable plug-in probe and ingestion run in deadline-bounded,
+killable child processes.
 
 ```mermaid
 flowchart LR
@@ -28,13 +32,18 @@ flowchart LR
     API --> EXT["Other tools and future topology analyzer"]
 ```
 
-The production serving-store target is PostgreSQL because this is a concurrent
-server, the data volume in the brief is moderate, and temporal interval queries
-fit its `int8range`, GiST, JSONB, and `inet` support. The shipped local
-prototype instead serves immutable in-memory revision/provider data and uses a
-content-keyed SQLite sidecar only for client-safe normalized-event search.
-Keep original and large extracted artifacts in content-addressed filesystem or
-S3-compatible storage in production.
+The distributed production serving-store target is PostgreSQL because this is
+a concurrent server, the data volume in the brief is moderate, and temporal
+interval queries fit its `int8range`, GiST, JSONB, and `inet` support. The
+shipped single-host profile serves its selected browser workspace from
+immutable revision/provider data and also provides a durable SQLite control
+plane: content-addressed uploads and canonical datasets, a transactional
+ingestion queue, tenant/project/workspace catalogs, multi-revision sessions,
+immutable session snapshots, and a mutable audited review overlay. The
+client-safe normalized-event search sidecar remains separate. See
+[`control-plane.md`](control-plane.md) for that implemented profile. Use
+S3-compatible object storage and server-backed catalog/queue/review stores
+when moving the same contracts to multiple hosts.
 
 If a revision grows from hundreds of thousands into tens or hundreds of
 millions of records, add immutable Parquet fact datasets, publish them through a
@@ -130,17 +139,48 @@ context, but must not be assigned a fabricated point on the global timeline.
 
 ## 3. Analysis revisions and ingestion lifecycle
 
-Every import produces an immutable `analysis_revision` identified by:
+Every import produces an immutable `analysis_revision`. The distributed target
+records all of:
 
 - Input content hash and node/case identity.
 - Core schema/API version.
-- Plugin IDs, versions, package hashes, and configuration hash.
+- Plug-in IDs, versions, immutable package/artifact identity, and configuration
+  hash.
 - Babeltrace decoder version and supported CTF/MIP version.
 - Clock alignment configuration.
 
 Reprocessing after a plugin upgrade creates a new revision. Published rows are
 never reinterpreted in place. A small transaction changes the case's published
 revision pointer only after validation succeeds.
+
+The shipped runtime-v2 revision fingerprint includes the normalized plug-in
+manifest, schema/input selection, and artifact content identity. The durable
+queue separately pins the exact registered executable identity during selection.
+Trusted loaders may provide an immutable package/artifact digest; otherwise
+core derives a bounded `package-sha256:<digest>` from the complete regular- or
+namespace-package import scope. Any scope with a preceding PEP 420 namespace
+begins at its first namespace ancestor and includes all of that ancestor's
+search locations in import-precedence order, even when a later component is a
+regular package; a genuine top-level module uses the
+separate `module-sha256:<digest>` label. The digest encodes logical scope and
+runtime search-root order without host paths, and core re-derives it immediately
+before execution. Removing the defining root from runtime `__path__` fails
+closed rather than collapsing to module scope. Sourceless Python bytecode also
+fails closed: its marshalled code can embed a build path, so a trusted loader
+must provide an immutable artifact digest instead. Headless ingestion, programmatic
+registries, and every server control
+plane fail closed by default if no executable identity can be derived and
+reject a manifest-only identity. A local/test embedding must explicitly pass
+`allow_manifest_identity=True` to obtain the compatibility fallback and cannot
+use that registry to publish durable revisions. A top-level regular plug-in
+package does not absorb an unrelated sibling distribution. A preceding
+namespace portion is necessarily conservative: every contributing search root
+enters its identity, including otherwise unrelated namespace siblings.
+Ordinary directories, including empty ones, enter the digest because they can
+change import and resource-existence semantics. File reads are bounded by the
+opened handle's declared size plus a growth sentinel and are accepted only when
+handle/path identity remains stable. Contained link/junction aliases are
+recorded without traversal, while external aliases fail closed.
 
 The public `revision_id` is an opaque core-owned string and may contain `/`.
 No plug-in, browser, or external client may infer node or resource semantics by
@@ -177,8 +217,10 @@ its limitations are stated immediately after it.
    by the observed Zstandard stream; the suffix is not trusted as evidence.
 3. **Probe/select**: run allowlisted plugin probes. If two plugins are plausible,
    persist candidates and pause for an explicit choice; never silently select the
-   nearest software version. Record the chosen plugin ID/version/package hash and
-   probe-set hash before an idempotent resume.
+   nearest software version. Record the chosen plug-in ID/version/exact
+   registered package identity, probe-set hash, idempotency key, and
+   request/response receipt before advancing. An exact retry therefore remains
+   valid after the queue has progressed.
 4. **Materialize selected inputs**: extract only plugin-selected artifacts into a
    private worker directory. CTF filesystem traces need a real directory containing
    `metadata` and stream files.
@@ -191,14 +233,411 @@ its limitations are stated immediately after it.
    record coverage.
 9. **Publish**: bulk-load/index serving tables and atomically expose the revision.
 
-The executable local `runtime.v2` slice currently implements one input as a
+The executable local `runtime.v2` slice handles one admitted artifact as a
 regular file, directory, tar, or ZIP. `CoreArtifactReader` applies portable
 relative-name rules, regular-member/link/collision checks, and count, depth,
 per-file, total-expanded-byte, and compression-ratio quotas. It exposes only
 logical artifact UUIDs, read-only streams, and session-private file/tree
-copies. Nested codec detection, persistent object storage, worker isolation,
-and production upload selection in the broader pipeline above remain future
-deployment work.
+copies. The durable control plane implements bounded raw-body uploads,
+content-addressed storage, deterministic probing/selection over a deployment
+allowlist, queue leases and recovery, retry/cancel, progress polling/SSE, and
+immutable catalog publication. Fixture admission enters `admitting` only after
+its complete catalog request is durable; validated output enters `publishing`
+only after its complete revision request is durable. An optional node hint and
+bounded caller import metadata pass consistently to plug-in inventory/probe
+and parsing; catalog, queue, tenant, project, workspace, and principal
+coordinates remain core-private. Nested codec detection, distributed object
+storage/queueing, and hardened worker sandbox/container controls remain future
+deployment work. The durable local profile already isolates plug-in probe and
+ingestion faults in spawned child processes as described below.
+Content-addressed objects are installed from verified same-directory
+temporaries by atomic replacement; digest-invalid finals are quarantined and
+self-healed. Store transactions explicitly recover from commit failure, and a
+claim-time SQLite error backs off instead of terminating a queue worker.
+Large-file work is deliberately outside the host-global publication fence:
+the upload/dataset digest check, copy fallback, and complete fixture view are
+prepared under private names first. The fence then spans only atomic final-name
+publication and the SQLite transaction that makes those names reachable.
+Workspace retention uses that same fence for its authoritative plan commit and
+for one deletion/checkpoint batch of at most 32 work items at a time, releasing
+it between batches. Its host directory walk and recursive size measurement stay
+outside that fence. This closes the publication/reference race without
+serializing unrelated hashing, copying, or host discovery across tenants or
+holding publication behind the complete cleanup plan.
+
+### 3.1 Implemented durable control plane
+
+The control plane is a core composition layer rather than a new plug-in
+protocol:
+
+```mermaid
+flowchart LR
+    T["Trusted tenant scope"] --> P["Project"]
+    P --> WS["Workspace"]
+    WS --> F["Immutable fixtures"]
+    F --> R["Immutable revisions"]
+    WS --> S["Mutable session"]
+    S --> R
+    S --> SS["Immutable revision-set snapshot"]
+    WS --> A["Mutable annotation/correlation overlay"]
+    A --> R
+```
+
+`router-dump-server` is the core-owned production-shaped composition root for
+this profile. It constructs an explicit allowlisted `PluginRegistry`, requires
+a deployment identity-resolver callable (or loopback-only trusted-header
+development mode), and serves root health plus `/v1/control-plane` without an
+analysis input, analysis providers, frontend, or assets. The ASGI lifespan owns
+worker startup and shutdown. OpenAPI/Swagger/ReDoc are absent by default and
+may be enabled only by an explicit option on a loopback listener. The ordinary
+`router-dump-analyzer` process may
+mount the same router beside one browser analysis for local review, but it is
+not the required production entry point.
+
+`SqliteSessionStore` owns the catalog and selections.
+`DurableIngestionPipeline` owns upload blobs, queue records, probe candidates,
+leased work, progress, canonical datasets, and publication.
+`ReviewOverlayStore` owns optimistic mutable annotations, manual event
+correlations, tombstones, and append-only audit rows. Each store also owns a
+bounded retention inventory and audit journal. `ControlPlane` validates
+their cross-store invariants: scopes must exist; published dataset references
+must reopen safely; review subjects must resolve inside their exact immutable
+revision; and reports receive only selected client-safe observations.
+
+Before any durable store is created, the composition root validates the
+Windows path budget needed by ingestion's deepest fixed candidate
+(`revisions/aa/bb/.{sha256}.json.{uuid}.partial`). Its 128-unit suffix leaves
+131 UTF-16 code units for the resolved root under the legacy-compatible
+259-unit usable budget. This conservative budget applies on every Windows host
+so correctness does not depend on optional long-path support in every process
+and filesystem. New fixture basenames are independently checked against their
+private staging path before spooling; an exact idempotent replay has no new
+fixture path to validate. These checks are Windows-only and their safe
+diagnostics expose lengths and budgets rather than host paths.
+
+A session member has a caller-visible member ID and exact fixture/revision
+pair. This intentionally allows multiple revisions of one node in the same
+session. Create, label/metadata update, member mutation, and deletion are
+scope-bound and idempotent; versioned changes use optimistic integer versions.
+A snapshot copies the member vector, default member, and session version under
+a deterministic digest and never follows later session changes. A session
+with snapshots cannot be deleted because those immutable records retain its
+identity.
+
+HTTP integer admission is split by semantic domain. Exact nanosecond instants
+use signed 64-bit bounds and cross browser-facing JSON as canonical decimal
+strings. Generic integer adapters require both bounds at every call site (an
+unbounded side must be deliberate), so a paging coordinate cannot inherit a
+timestamp limit by omission. Numeric offsets that are echoed to a browser are
+bounded by `2^53-1`, with smaller endpoint-specific caps where useful.
+
+The queue is durable and its SQLite claims are safe across cooperating
+processes on one host. Queue coordination workers remain threads in the
+application process. Renewable fenced leases and heartbeats prevent a stale
+worker from publishing after ownership changes; expired claims recover on
+startup/claim. The durable `ControlPlane` defaults to process-isolated plug-in
+execution, and `router-dump-ingest` always selects it. Both the complete
+allowlisted probe and selected ingestion run in a fresh child created through
+Python's `spawn` start method. The default 300-second deadline covers child
+startup, plug-in work, bounded result transfer, and clean exit. Timeout causes
+terminate, a two-second reap wait, kill if still alive, a second reap wait, and
+partial-spool cleanup. Direct `DurableIngestionPipeline` construction also
+defaults to process mode. An embedding can explicitly select `inline` for
+trusted local/test code, but that path runs synchronously and provides no
+timeout or bounded-shutdown claim. This avoids accumulating unkillable daemon
+helpers after apparent timeouts; only process mode provides killable isolation.
+
+Operational health is intentionally independent of an opened analysis
+session. A read-only queue projection groups every non-terminal import,
+separates intentional `awaiting_selection` waits, and marks other states
+stalled after the configured stage-progress age. Lease heartbeats extend only
+the fenced ownership deadline; they do not rewrite progress time, so a worker
+blocked in a publisher call remains observable even while its thread and lease
+are live. Publisher calls receive a separate deadline and inherit process
+isolation by default. The budget includes spawn, provider work, result transfer,
+and exit; an uncooperative child is terminated, killed if necessary, and reaped.
+The built-in SQLite catalog reopens its durable database in the child and also
+applies the context to Python lock acquisition and SQLite busy waits.
+Custom production publishers must be spawn-picklable or reconstruct their
+transport on unpickle; only an explicit trusted `inline` mode remains
+cooperative-only.
+Ambiguous deadline outcomes retain their exact idempotent outbox and pre-call
+artifact pin, and health exposes them immediately. Configuration requires the
+stall threshold to cover the larger of the bounded plug-in and publisher
+deadlines plus two heartbeat periods. The
+projection uses the `(state, updated_at_ns)` index and probes only active
+states; terminal history does not make health checks progressively slower.
+Root and control-plane HTTP health routes, plus `router-dump-health`, share
+this total projection; HTTP adds live/configured thread counts and bounded
+failure-class counters. Observer exceptions and malformed provider values are
+collapsed into stable bounded observation errors and degraded HTTP 200 rather
+than escaping as health-route 500 responses. The CLI opens SQLite in query-only
+mode and never initializes the state directory.
+
+Operational telemetry is a separate best-effort channel, not durable state.
+Core publishes the closed `rda.operational.v1` vocabulary to the standard
+`router_dump_analyzer.operations` logger through a fixed-capacity non-blocking
+queue. Admission/publication boundaries, sampled worker failure/exit, retention
+planning and per-source truncation, bounded cleanup batches, replay,
+completion/failure, and typed control-plane access denials have explicit
+events. Fields are flat, scalar, and
+bounded; dump content, paths, scope labels, raw payloads, and exception text
+never enter the record. A slow handler can block only the daemon logging
+thread, and dropped telemetry cannot affect ingestion or retention. Durable
+queue/outbox/progress/audit rows remain authoritative; deployments own logging
+handlers, exporters, retention, and alerting. Aggregate accepted/drop/delivery,
+queue, and emitter-liveness counters are projected through both public health
+routes without payloads or tenant identity; loss degrades health. Producer-side
+validation catches ordinary exceptions but preserves process-control signals.
+Authenticated `GET /v1/control-plane/diagnostics/operational-events` requires
+`control-plane:admin` and exposes the closed per-event and access-sampler
+counters without payloads. It is
+process-local, no-store, advisory, and restart-reset; it does not weaken the
+anonymous aggregate-only health contract or replace durable audit data.
+
+Access checks raise one private typed decision carrying closed phase/reason
+vocabulary. The common route wrapper emits it exactly once and recreates the
+unchanged public response, which distinguishes an authorization-concealing
+`404` from a genuine missing resource without scattering emit calls across
+handlers. Exact enum types are checked when the decision is created and again
+at the reporter boundary; the operational record validates the closed
+phase-to-reason relation before enqueue.
+
+The bounded key table never evicts an admitted sampler state. New keys after
+capacity share one permanent overflow state, preventing key rotation from
+recreating first-occurrence emission. Geometric/time coalescing is followed by
+a process-global token bucket, so cardinality churn cannot bypass aggregate
+admission. Intentional, global, overflow, invalid, and enqueue-loss counters
+remain distinct. Optional within-process scope correlation is a process-keyed
+HMAC of trusted resolved tenant identity, never requested header text. A
+constant-space candidate algorithm emits it only when its lower bound proves a
+strict majority for the sample window; uncertainty omits it. It is not a
+sampling key or compliance identity. Credential authentication, client
+attribution, rate limiting, and durable audit export remain deployment
+responsibilities.
+
+Sampler admission and state-window reservation happen under its lock, but the
+non-blocking operational emitter is invoked after that lock is released. A
+same-key observation during the attempt is coalesced into the next window; the
+result commit then either discards the accepted reservation or merges it back
+after enqueue failure. This prevents reentrant diagnostics from deadlocking
+and preserves suppression, tenant-candidate, and enqueue-loss accounting. The
+operational queue publishes a record and increments its accepted counters in
+one counter-lock critical section, so its worker cannot expose a delivery
+failure for a record that still appears unaccepted.
+
+Child IPC carries at most 1 MiB of canonical JSON metadata. Ingestion writes
+the canonical dataset to a unique parent-selected spool path; after renewing
+the fenced lease, the parent verifies its regular-file status, returned byte
+size, and SHA-256 before content-addressed installation. Registry-derived
+package identities are re-hashed in the child immediately before use. The
+plug-in/coordinator object graph must therefore be importable and
+spawn-picklable.
+
+Idempotency is scope-bound and request-sensitive. The queue, catalog, and
+review overlay are separate SQLite stores, not one cross-database transaction.
+Before each external catalog call, the queue durably stages the complete
+fixture-admission or revision-publication payload and operation ID. The catalog
+records each operation idempotently, so recovery can replay a lost admission
+response without a second fixture and a lost publication response without
+re-running parsing or creating a second revision. These child processes are
+fault isolation, not a plug-in security sandbox, and none of these mechanics
+imply a distributed coordinator.
+
+Retention is a core orchestration saga, not plug-in behavior. Quotas can be
+enabled independently from deletion. Destructive policy is disabled by
+default, inventories are bounded, catalog deletion is protected by session,
+snapshot, review, idempotency, and explicit references, and review audit is
+preserved unless an explicit compliance mode permits pruning. One advisory
+single-host fence serializes review reference creation with catalog retention
+across cooperating processes. Catalog deletion commits before exact artifact
+pins are released; unacknowledged releases are replayed after a crash. A
+versioned saga receipt freezes the actor, policies, and effective clock, then
+checkpoints the review, catalog, and ingestion phase results independently.
+Exact operation replay resumes the first incomplete phase or returns the same
+completed result, while conflicting operation-ID reuse fails before mutation.
+Store construction never performs retention. The tenant-owned part of a
+workspace ingestion plan is deliberately provenance-bounded: it includes only
+filesystem artifacts derived from eligible queue rows in that workspace. Rows
+with live catalog artifact pins are retained until the catalog release journal
+is reconciled; only then can one plan remove both the row and its unreferenced
+content. This ordering prevents a pin from turning a scoped object into an
+undiscoverable orphan.
+
+Pre-pin ingestion databases are upgraded through a transactional, versioned
+schema-migration ledger. The compatibility backfill and its completion marker
+commit together exactly once. A catalog release is therefore monotonic across
+process restart: construction never recreates a deliberately released pin
+from the historical import row.
+
+Schema creation and upgrades use the dedicated `.schema.lock`, independently
+of both retention-operation serialization (`.retention-operation.lock`) and
+the short publication fence (`.retention.lock`). Startup therefore does not
+wait on either cleanup file lock; ordinary bounded SQLite transaction
+coordination still applies, and process-safe migration remains serialized.
+Pending retention cleanup stores one bounded outcome row for each processed
+plan item in `ingestion_retention_cleanup_progress` and reuses one SQLite
+connection for the resume; it never rewrites an accumulated JSON document.
+Legacy `cleanup_progress_json` checkpoints are projected
+transactionally into those rows on first resume and the legacy aggregate is
+then cleared. One SQLite transaction checkpoints each cleanup batch of at most
+32 work items, so journal write volume stays linear without paying one durable
+commit per file. A crash before that transaction commits can leave a planned
+path already absent; replay treats that absence as the completed planned
+deletion and checkpoints the batch again. Concurrent resumptions refresh the
+durable rows after acquiring the fence and adopt an already-completed report.
+
+The operational logger emits one aggregate event after each committed batch
+and explicit events for plan commit, replay, completion, failure, and every
+bounded scan source that truncated. These records intentionally cannot replace
+the per-item journal used for exact crash recovery.
+
+Recursive artifact sizing happens during the advisory planning pass outside
+the publication fence. The authoritative fenced rebuild consumes those sizes
+but deliberately repeats database candidate selection, global reference and
+pin revalidation, catalog mutation, and path-identity checks before committing
+the immutable plan. That initial database phase therefore scales with the
+stored import/pin population; the 32-item bound applies to cleanup after the
+plan is committed. Cleanup releases the fence between those bounded batches.
+Each deletion and its batch checkpoint share the same fence, so
+waiting publishers can progress without reopening either the
+publish-before-reference or delete-before-checkpoint race.
+
+The migration deliberately treats an already-present legacy pin table as the
+authority. The previous pin-aware build had neither release tombstones nor a
+transactional backfill, so a table missing one projection may mean either a
+deliberate release or an interrupted old migration. Core cannot infer which.
+It preserves absence (and therefore release monotonicity) instead of
+reconstructing ownership from historical import rows.
+
+Construction and preview never inspect, advance, or mutate host-global staging
+state. Explicit destructive execution also performs a host-global convergence
+pass. Spool, blob, revision-dataset, and top-level fixture-view roots each
+receive an independent scan and delete budget, with a deterministic globally
+lexical resume cursor committed beside
+the cleanup journal. Preview reports this boundary explicitly as
+`host_storage_orphan_inventory="not_observed"`; execution reports
+`"bounded_host_scan"`. The additive coverage value prevents a zero advisory
+count from being interpreted as a complete host inventory without moving the
+host scan back into preview or under its former blocking lock. Each cursor
+advances monotonically to lexical EOF, where
+its cycle completes and resets; no root can starve another, a restart continues
+the bounded walk, and a root larger than one budget can still converge to an
+untruncated empty-cycle result. The traversal order is the exact relative-path
+string order used by cursor comparison, so a directory child cannot jump past
+a punctuation-sorted sibling. Besides aged partial/publication locks, the pass
+recognizes exact core-owned blob/dataset `.{leaf}.{32-hex}.partial` and
+`.{leaf}.corrupt-{32-hex}` crash artifacts. Candidate activity locks fence live
+writers; deletion revalidates immutable identity and prunes only exact empty
+shard ancestors. Arbitrary dotfiles remain untouched. The pass also recognizes
+only exact content-address layouts and selects unreferenced content
+older than the orphan grace. Removing the last leaf performs exact, nonrecursive
+`rmdir` pruning of its empty lowercase-hex shard ancestors; the bounded host
+walk also journals legacy empty one- or two-level shard directories as explicit
+cleanup work. Nonempty, symbolic-link, malformed, and unknown directories stay
+outside deletion. It also recognizes exact core fixture IDs only at
+the fixture root: a globally unreferenced, grace-aged fixture view is
+recoverable after a failed row-derived deletion, while its children do not
+consume scan budget. The potentially slow directory walk is ordered by a separate
+retention-operation lock and remains outside the publication fence. The bounded
+observations are accepted only after file-identity, age, global queue-row, and
+catalog-pin revalidation inside that fence; accepted identities are journalled
+and checked again during recovery under the content address lock before unlink.
+This repairs publish-before-DB-
+commit leaks without assigning host-global bytes to the workspace whose admin
+triggered the pass. Unknown layouts, malformed or referenced fixture views,
+and quarantine artifacts remain untouched. Completed ingestion retention journals share the idempotency
+replay window and have a bounded execute-only prune path; cleanup-pending
+journals are never pruned.
+
+Content-address coordination uses persistent per-shard and per-address locks
+under `locks/content`, not disposable lock files inside data shards. Persistent
+lock pathnames are intentionally never unlinked. Dynamic spool lock files use a
+separate stable namespace gate: contenders try the child lock without waiting
+while they hold the gate, and an owner closes and unlinks the child while the
+same gate prevents a fresh opener. This avoids POSIX close/unlink inode-domain
+splits and the equivalent Windows open race. The storage layout has an explicit
+stop-old-writers upgrade boundary from releases that still create in-tree
+content locks.
+
+Human review never mutates normalized data. Subjects are revision-qualified
+events, source records, resources, relationships, or time ranges. Manual
+correlations are event-only directed or undirected edges. The deterministic
+report keeps plug-in inference, user assertions, and generic core
+corroboration in distinct sections rather than treating agreement as truth.
+Those origins use the core-owned `CorrelationReportProvenanceClass`; they do
+not extend or reinterpret the plug-in fact `Provenance` vocabulary.
+Every report requires exactly one bounded selector: explicit revision IDs, a
+current mutable session, or an immutable session snapshot. Omission never
+widens to the whole workspace. The default composition budget limits one
+report to 128 revisions, 8 GiB of aggregate serialized datasets, 20,000 manual
+correlation edges, and 10,000 selected client-safe observations.
+The report wire is `correlation_report.v2`: every declared core-owned
+nanosecond field is a canonical decimal string. The `_ns` suffix is not a
+reserved semantic marker inside opaque plug-in mappings, so those keys and
+their JSON value types pass through unchanged. One recursive,
+Unicode-property-based core boundary renders `Cc`, `Cn`, `Cs`, `Zl`, and `Zp`,
+every `Cf` character except U+200C ZWNJ and U+200D ZWJ, every `Zs` separator
+except ordinary ASCII space, and assigned invisible or blank characters U+115F,
+U+1160, U+17B4, U+17B5, U+2800, U+3164, U+FFA0, U+13441, and U+13442 in
+AI-facing report strings and object keys as visible `\\uNNNN` or
+supplementary `\\UNNNNNNNN` text. It covers the full Unicode TAG block, review
+labels, and opaque plug-in metadata. Caller backslashes are doubled before
+this conversion, making the projection injective: literal escape-looking text
+and keys remain distinct from actual unsafe characters and therefore produce
+different report digests. U+16FE4 KHITAN SMALL SCRIPT FILLER remains valid as
+a legitimate cluster-layout control inside visibly anchored text. The explicit blank/filler
+table is reviewed against Unicode 15.0.0 and must be re-swept when the runtime
+Unicode database changes; it is intentionally not derived from character names
+or combining categories because those include legitimate shaping controls.
+The display projection additionally escapes combining grapheme joiner,
+unregistered or misplaced variation selectors, U+FFFC OBJECT REPLACEMENT
+CHARACTER, and private-use (`Co`) characters. These remain valid in bounded
+source display labels; only the ambiguous character is made explicit.
+U+FE0E/U+FE0F remain raw only for an exact adjacent pair registered by the
+vendored Unicode 15 `emoji-variation-sequences.txt` data. The scanner evaluates
+each selector independently, preserving multiple valid pairs across a ZWJ
+sequence while escaping standalone, repeated-on-one-base, or unregistered
+selectors. The identifier tier rejects every selector. The generated table
+records the Unicode/emoji version, official source URL/date, pair count, and
+SHA-256. Refresh it only through
+`python scripts/generate_emoji_variation_sequences.py --source PATH_OR_OFFICIAL_URL`;
+production never fetches Unicode data at runtime.
+Review metadata rejects raw
+control/bidi characters while body/rationale text retains ordinary tabs and
+line breaks. Markdown inline values are escaped, and
+temporal corroboration becomes explicitly unknown when clock domains are
+absent or different. The live corroboration value objects also recursively
+detach bounded evidence/provenance containers, including a fresh snapshot at
+the operation boundary, so later caller mutation cannot alter a returned fact
+or its report digest.
+Catalog storage identities use a narrower policy than report prose: Unicode
+`Default_Ignorable_Code_Point` characters (with only ZWNJ/ZWJ shaping
+exceptions), U+FFFC, and private-use code points are rejected, while ordinary
+combining accents and real-script shaping remain valid.
+
+Both HTTP router fences translate FastAPI request-shape validation to fixed
+bounded `422` details before the framework can echo caller input. Safe
+adapter-owned `4xx` details remain intact, while service-originated HTTP
+exceptions and unsafe/path-bearing detail fail closed. Syntactically valid
+IPv6 prefixes are not mistaken for local POSIX paths during that check.
+
+Annotation-list pagination is revision-bound rather than best-effort offset
+walking. The store reads each page and the scope audit watermark in one SQLite
+transaction. Later pages must echo the first watermark; a mismatch is a
+declared conflict. This prevents a concurrent tombstone or insertion from
+turning an apparently complete client scan into mixed review state.
+
+The server mounts the implemented HTTP boundary at `/v1/control-plane` only
+when `router-dump-analyzer` receives `--control-plane-dir`. The independent
+`router-dump-ingest` command is the headless CI/documentation client. Both use
+the same stores and queue implementation. Exact routes, states, headers,
+limits, and operational caveats are in
+[`control-plane.md`](control-plane.md).
+The HTTP boundary exposes messages only from exact declared public validation
+or conflict exception classes and only when their text is bounded and free of
+controls. Generic `ValueError`/`TypeError` faults, including storage and path
+failures, map to a closed `500` response without exception text.
 
 ## 4. Plugin architecture
 
@@ -281,7 +720,10 @@ application factory, runtime-session protocols, complete HTTP API, generic
 services, and frontend host. The separately packaged `frontend/` tree is forced
 into the core wheel and source distribution. FastAPI and Uvicorn remain behind
 the core's optional `web` extra so contract-only and parser-only use does not
-install a server stack.
+install a server stack. Every core web-shell factory defaults OpenAPI JSON,
+Swagger UI, and ReDoc off. The analysis and headless server CLIs expose them
+only after an explicit `--expose-api-docs` on a loopback listener; this host
+gate is core policy and is not a plug-in extension point.
 
 `demo/rsl_demo_plugin/` contains the example plug-in, its
 device/protocol and generated-projection policy, and a non-web input/session
@@ -369,8 +811,12 @@ A plugin bundle supplies:
 - Consistency checks.
 - Projection into a canonical forwarding model.
 - Sensitive-field declarations for structured resource properties. The core
-  owns public source-record projections, authorization, and raw-context access;
-  the current protocol does not expose a plug-in source-context policy hook.
+  owns public source-record projections, the authorization boundary, and
+  raw-context access; the current protocol does not expose a plug-in
+  source-context policy hook. The shipped server requires a host identity
+  resolver and enforces its roles and optional project/workspace scopes, but
+  does not authenticate credentials. The CLI's explicit local adapter only
+  trusts headers.
 
 The module-level entry-point target is an instance. Every plug-in has the
 required `describe`, `probe`, and `locate_inputs` hooks; standard
@@ -402,13 +848,25 @@ must select the same implemented hook. CTF dispatch additionally requires an
 explicitly configured core `TraceDecoder`; this repository does not ship a
 built-in decoder in runtime v2.
 
+The selection preflight shares that boundary rather than approximating it.
+`validate_probe_report()` owns result and diagnostic field bounds, while
+`validate_plugin_diagnostic()` is reused by ingestion and optional capability
+execution. Durable probing constructs its safe inventory with the exact
+`ArtifactLimits` carried by the registered coordinator, eliminating a
+selectable-under-defaults/rejected-under-ingestion quota split.
+
 The validation budget is ingestion-wide as well as per value: the default
 aggregate limits cover two million outputs, two million decoder records,
 100,000 diagnostics, four million each of evidence items, subject references,
 and event links, 64 million normalized value units, and 256 MiB of UTF-8 text.
 This bounds memory growth from many individually valid records; it is not an
-execution deadline. In-process plug-in calls can still block, so production
-worker isolation and timeouts remain required.
+execution deadline. The durable control plane separately applies its
+killable child-process deadline to probe and ingestion (300 seconds by
+default). Explicit trusted local/test inline execution is synchronous and
+does not apply that deadline, because Python cannot safely cancel arbitrary
+thread code. A production deployment still needs process mode plus
+operating-system CPU/memory/output quotas in
+addition to the wall-clock fault boundary.
 
 The executable `PluginCapabilityExecutor` is the matching core boundary for
 optional semantic hooks. It manifest-gates `apply`, `revert`, `correlate`,
@@ -426,11 +884,14 @@ use Arrow `RecordBatch` messages between the plugin worker and coordinator so
 100K+ records do not become millions of Python ORM objects. Validate every batch
 against the core schema at the process boundary.
 
-A Python import is not a sandbox. The current local runtime imports trusted
-installed plug-ins in-process; worker isolation is not implemented. Production
-must execute plug-ins and a separately configured native Babeltrace decoder in
-disposable, resource-limited Linux processes/containers without network access
-or application database credentials.
+A Python child process is not a sandbox. The durable local runtime imports
+trusted installed plug-ins, then executes probe and ingestion in killable
+spawned children with bounded metadata and a wall deadline. Those children
+still inherit the host user's filesystem, network, environment, and
+operating-system privileges. Production must run plug-ins and a separately
+configured native Babeltrace decoder in disposable, resource-limited Linux
+processes/containers without network access or application database
+credentials.
 
 The worker/core owns `bt2` iterator lifecycle and converts every native message
 into a dependency-free record: event; stream, packet, or activity boundary; or
@@ -1242,6 +1703,30 @@ is allowed only behind the same core contracts and after profiling demonstrates
 that the current server-windowed DOM/SVG implementation is the bottleneck.
 Plug-ins cannot select that renderer or provide browser modules.
 
+The node page's core-owned durable-review client consumes `/context` and its
+`can_write` decision. Read-only identities can hydrate annotations and
+generate explicitly selected reports, while mutation controls remain
+disabled. The client follows bounded collection continuations, caps hydrated
+review/catalog collections, applies 30-second ordinary and 60-second report
+deadlines, and never silently treats a first page as a complete selection.
+It refreshes an exact mutable session immediately before reporting, validates
+immutable snapshot vectors, and rejects empty, duplicate, invalid, or
+over-bound selections before sending the report.
+Marker/correlation creates carry client-generated record IDs plus stable
+idempotency keys; ambiguous transport outcomes are reconciled by exact ID or
+bounded collection refresh before retrying the same operation. Before sending,
+the client persists a SHA-256-bound operation identity in a schema-validated,
+size-bounded browser journal. Limits apply both per durable scope and globally;
+scope discard and warned all-scope reset are distinct recovery operations.
+Identity uniqueness follows the server's tenant/project/workspace namespace,
+not the narrower UI connection key that also contains principal and revision.
+Known failures release the identity; ambiguous results retain it across reload.
+Annotation hydration uses one watermark-bound retry and atomically replaces the
+confirmed marker projection only after a complete scan. Failure preserves the
+prior same-scope projection, while scope change or disconnect clears it. Report
+and review writes are mutually exclusive. This is generic client reliability
+policy, not plug-in presentation behavior.
+
 The primary topology page also contains one core-owned **reconstructed status**
 selector. Its axis comes only from the topology capability response's
 `time_bounds`:
@@ -1376,8 +1861,11 @@ and domain-free.
 
 ## 10. API surface
 
-Use immutable, revision-scoped endpoints and cursor pagination. Normative JSON
-payloads, time-basis unions, pagination, and errors are in `docs/api-contract.md`:
+The application has two related HTTP surfaces. Analysis-data reads use
+immutable revision scope and cursor pagination; the list below is the
+analysis-data contract/target whose shipped subset depends on the selected
+runtime providers. Normative JSON payloads, time-basis unions, pagination, and
+errors are in `docs/api-contract.md`:
 
 ```text
 POST /v1/imports
@@ -1417,24 +1905,63 @@ actual revision ID. Batch state queries are essential for dashboards.
 
 Plugin selection includes the probe-set/inventory hash and exact plugin package
 identity. A stale or concurrent choice returns `409`; repeating the same choice
-or resume request is idempotent. Resume continues only from a validated durable
-stage and never reuses partial unpublished output from a different plugin build.
+under the same scope-bound request receipt is idempotent even after the import
+advances. Resume continues only from a validated durable stage. It replays the
+exact fixture admission or revision publication operation when one was staged,
+and never reuses partial unpublished output from a different plugin build.
 
 Apply limits to upload size, selected lanes, graph breadth/depth, timeline span,
 bucket count, raw context bytes, route recursion, and query duration.
+
+The implemented durable administrative/review surface is separate and
+workspace-scoped:
+
+```text
+GET,POST /v1/control-plane/projects
+GET,POST /v1/control-plane/projects/{project_id}/workspaces
+GET      /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/fixtures
+GET      /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/revisions
+GET,POST /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/sessions
+GET,PATCH,DELETE .../sessions/{session_id}
+PUT,DELETE .../sessions/{session_id}/members/{member_id}
+POST       .../sessions/{session_id}/snapshots
+GET        .../snapshots
+GET        .../snapshots/{snapshot_id}
+GET,POST   .../imports
+GET,POST   .../annotations
+GET,POST   .../correlations
+GET         .../review-audit
+POST        .../correlation-report
+```
+
+It can be hosted independently with `router-dump-server`. That composition
+requires one repeatable plug-in allowlist family and a verified synchronous
+identity resolver, and never constructs an analysis runtime or frontend host.
+The loopback-only trusted-header resolver is a development adapter, not the
+production identity boundary.
+
+The abbreviated child routes include get/update/delete, queue progress,
+selection, resume, and cancellation operations documented exactly in
+[`control-plane.md`](control-plane.md). Catalog fixtures/revisions and session
+snapshots are immutable; sessions and review overlays use optimistic versions.
+This surface requires a host-supplied identity resolver, then verifies that
+tenant/principal headers, read/write roles, and optional project/workspace
+scopes agree. `GET /context` exposes the resolved principal and `can_write` so
+generic clients can remain useful under read-only access. The built-in
+loopback adapter trusts those headers and is not authentication.
 
 ## 11. Libraries
 
 | Area | Baseline choice | Rationale and boundary |
 |---|---|---|
 | HTTP/API | FastAPI + Pydantic 2 + Uvicorn | Typed OpenAPI, streaming uploads, SSE. Heavy analysis is queued, never a FastAPI background task. |
-| Jobs | Celery 5.6 with RabbitMQ; Redis acceptable for a small single-host profile | Linux worker processes, retries, limits, monitoring. Messages contain IDs only. |
+| Jobs | Current single-host profile: SQLite queue, in-process coordination threads, fenced renewable leases, and spawned child processes for plug-in probe/ingestion. Distributed target: Celery 5.6 with RabbitMQ. | Current queue survives restart and safely coordinates cooperating local processes. Plug-in calls have a bounded, killable fault boundary, but no OS security sandbox or CPU/memory/network quota. A distributed broker/worker deployment sends IDs only. |
 | CTF | Babeltrace 2.1.2 `bt2`, pinned in a Linux decoder image | Babeltrace 2.1 adds full CTF 2 support through MIP 1. Treat it as a native dependency, not a normal pure-Python wheel. |
 | Archives | Current: streaming `tarfile`/`zipfile` reader for one top-level container. Future: `zstandard` for a narrow known set and `libarchive-c` only when broad packaging is real. | Current code streams selected members without `extractall()`. A future nested extraction path must apply `filter="data"`/`tarfile.data_filter` at every tar layer, then stricter regular-file, path, collision, member/depth/expanded-byte/ratio rules. |
 | Status parsing | Streaming line readers; TextFSM for stable table/line state machines; Lark LALR for genuinely nested grammars | Keep grammars inside version/platform plugins. Do not parse a 100K-line file with one giant regex. |
 | Plugin discovery | `importlib.metadata.entry_points`; Pluggy only if hook ordering/wrappers become necessary | A small explicit protocol is easier to version and isolate. |
 | Inter-process batches | Apache Arrow RecordBatch | Typed, columnar, bounded batches without per-row JSON overhead. |
-| Serving data | PostgreSQL + psycopg 3 `COPY`; SQLAlchemy Core/Alembic for schema and ordinary queries | Concurrent server store and temporal/JSON/network indexes. Avoid hot-path ORM entity creation. |
+| Serving data | Current control plane: SQLite catalogs/review/queue plus content-addressed filesystem data. Distributed target: PostgreSQL + psycopg 3 `COPY`; SQLAlchemy Core/Alembic for schema and ordinary queries. | SQLite is the implemented transactional single-host profile. PostgreSQL remains the concurrent multi-host target for temporal/JSON/network indexes. Avoid hot-path ORM entity creation. |
 | Overflow/offline analytics | Parquet + DuckDB; Polars inside plugins when columnar text transforms help | Add after profiling or for export; immutable files, coarse partitions, one publishing coordinator. |
 | In-memory graph | rustworkx | Efficient directed/multigraph traversal and future shortest paths; retain stable external ID mapping. |
 | Timeline | Current: dependency-free JavaScript, server-windowed data, direct DOM windowing, and SVG overlays. Profile-gated future: Canvas/WebGL plus a virtual-list/scale library. | The shipped frontend keeps exact time and selection semantics in tested core view models. A renderer migration must preserve the API, keyboard mirror, and plug-in boundary. |
@@ -1481,12 +2008,25 @@ Treat every dump as hostile and sensitive.
 - Do not execute archive content or load a plugin supplied by a dump.
 - Production target: run native decoders/plugins with CPU, memory, file,
   process, output, and wall limits; disable network and provide no database
-  credentials. The current local runtime is in-process.
+  credentials. The current durable local runtime supplies spawned,
+  deadline-bounded, killable children for plug-in probe/ingestion, but not
+  those OS-level security/resource controls.
 - Allowlist and pin plugin bundles; signing is preferable for production.
 - Escape source text and never render log HTML.
-- Add tenant/RBAC filtering to every artifact and revision query.
-- Provide plugin redaction hooks, encryption at rest, retention/deletion policy,
-  export audit logs, and safe diagnostic messages.
+- The durable control-plane requires a host identity resolver, verifies
+  tenant/principal headers against it, enforces read/write/admin roles, and hides
+  disallowed project/workspace scope. A production deployment must
+  authenticate credentials, strip client identity headers, and construct that
+  resolved identity; the CLI's loopback adapter merely trusts headers. The
+  local adapter also allowlists the exact `Host` and mutation `Origin`.
+- Core exposes only closed ingestion failure codes/messages; arbitrary plug-in
+  exception text stays in a private diagnostics table with no HTTP route.
+- Apply plug-in redaction declarations before publishing client-safe
+  projections; never treat opaque `copy_text` as safe unless the plug-in made
+  it so.
+- Provide encryption at rest, external export audit logs, and deployment-level
+  backup/restore. The local profile already supplies bounded retention and
+  deletion audit but not those infrastructure controls.
 - Bound regex work and every graph/timeline/route query to prevent CPU denial of service.
 
 The current `CoreArtifactReader` recognizes one top-level regular file,
@@ -1500,12 +2040,20 @@ archives themselves.
 Python 3.12 does **not** make the safer tar extraction filter the default. If
 the future nested-codec pipeline uses tar extraction, every layer must
 explicitly use `filter="data"` or `tarfile.data_filter` and then apply the
-stricter policy above. Recursive codec detection, outer-to-inner chain
-recording, and worker isolation remain production work, not current
-runtime-v2 behavior. The Python documentation still requires archive
-inspection and additional resource limits.
+stricter policy above. Recursive codec detection and outer-to-inner chain
+recording remain production work, not current runtime-v2 behavior. Hardened
+sandbox/container isolation and OS resource controls also remain production
+work; the current durable child boundary provides wall-time fault isolation
+only. The Python documentation still requires archive inspection and
+additional resource limits.
 
 ## 14. Delivery sequence
+
+This is the broader distributed-product sequence, not a list of missing local
+features. The repository already ships the single-host durable control-plane
+slice described in section 3.1; distributed storage, hardened worker
+sandbox/container controls, and operational identity remain later deployment
+work.
 
 ### Milestone 0: contracts and fixture corpus
 
@@ -1542,6 +2090,45 @@ inspection and additional resource limits.
 
 ## 15. Choices intentionally deferred or rejected
 
+- **Full flow-sensitive opaque-payload policing now**: the executable AST
+  guards are a conservative non-growth boundary, not a whole-program proof.
+  Expanding them across every mapping/attribute/control-flow shape requires a
+  dedicated typed analysis or removing the remaining compatibility payloads;
+  that multi-day refactor is deliberately deferred rather than reported as a
+  repeatedly rediscovered defect. Reopen it before a new opaque payload reaches
+  durable identity, authorization, retention, or AI-report decisions, or when
+  the compatibility-cell allowance would otherwise grow.
+- **Immediate decomposition of `app.js` and `topology.js`**: pure timeline,
+  view-model, and durable-review controllers are exported and unit tested, but
+  the two browser entry modules remain integration-oriented scripts rather
+  than importable libraries. Splitting them safely requires staged module and
+  DOM-fixture extraction (or a TypeScript migration), so zero exports in those
+  entry files is an accepted structural position for now, not a claim of full
+  mutation coverage. Reopen the extraction before adding durable-write,
+  authorization, idempotency, conflict-resolution, or other correctness-
+  critical state logic to either entry script; repeated regressions that cannot
+  be killed through the exported model/controller tests are the same trigger.
+- **Exhaustive signed-decimal structural enforcement in every adapter now**:
+  high-risk timestamp and durable-catalog coordinates use bounded canonical
+  parsers, while several compatibility request fields still use older parsing
+  helpers. Their remaining migration is tracked as contract cleanup; existing
+  guards prevent silent widening of the protected fields but do not assert
+  universal coverage. Every new adapter field must use the typed shared parser;
+  reopen the sweep when an older field becomes a durable coordinate, an
+  authorization input, or a browser-round-tripped JSON number.
+- **Sourceless `.pyc`/`.pyo` identity derivation**: core continues to reject
+  bytecode-only plug-ins unless a trusted loader supplies an immutable artifact
+  digest, because embedded build paths make a host-derived digest relocation-
+  sensitive. Reopen only when a real supported distribution requires
+  sourceless packages and brings a loader identity/relocation contract. This
+  does not exempt ordinary files whose basename resembles a cache directory;
+  those now participate in the package fingerprint.
+- **Authenticate anonymous health by default**: root and control-plane health
+  remain aggregate, payload-free probe endpoints. Reopen if the deployment
+  threat model treats queue depth/timestamps as sensitive or detailed health
+  must cross an untrusted boundary; the compatible design is minimal public
+  liveness plus protected/configurable detailed readiness, not silently adding
+  identity requirements to the existing probe.
 - **Neo4j/Kuzu/another graph DB now**: dynamic validity intervals and revision
   publication are already relational; a graph DB adds operations before a proven need.
 - **Kafka/ClickHouse now**: 100K-scale offline imports do not justify them.

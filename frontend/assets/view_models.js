@@ -17,6 +17,120 @@ const DASHBOARD_EQUALITY_MAX_UNITS = 4_096;
 const DASHBOARD_EQUALITY_MAX_ATOM_UNITS = 65_536;
 const DASHBOARD_EQUALITY_MAX_INTEGER_BITS = 4_096;
 
+function exactBoundedInteger(value, label, { minimum = 0 } = {}) {
+  if (!Number.isSafeInteger(value) || value < minimum) {
+    throw new TypeError(`${label} must be a safe integer greater than or equal to ${minimum}`);
+  }
+  return value;
+}
+
+export function controlPlaneCollectionPageDecision({
+  payload,
+  offset,
+  requestedLimit,
+  accumulatedCount,
+  maximumCount,
+}) {
+  exactBoundedInteger(offset, "offset");
+  exactBoundedInteger(requestedLimit, "requestedLimit", { minimum: 1 });
+  exactBoundedInteger(accumulatedCount, "accumulatedCount");
+  exactBoundedInteger(maximumCount, "maximumCount", { minimum: 1 });
+  if (!payload || typeof payload !== "object" || !Array.isArray(payload.items)) {
+    throw new TypeError("control-plane collection response must contain an items array");
+  }
+  if (payload.items.length > requestedLimit) {
+    throw new RangeError("control-plane collection page exceeds the requested limit");
+  }
+  const totalCount = accumulatedCount + payload.items.length;
+  if (!Number.isSafeInteger(totalCount) || totalCount > maximumCount) {
+    throw new RangeError("control-plane collection exceeds the client safety cap");
+  }
+  const rawNextOffset = payload.next_offset;
+  if (rawNextOffset === null || rawNextOffset === undefined) {
+    return {
+      complete: true,
+      capExceeded: false,
+      nextOffset: null,
+      totalCount,
+    };
+  }
+  exactBoundedInteger(rawNextOffset, "next_offset");
+  if (rawNextOffset <= offset || payload.items.length === 0) {
+    throw new RangeError("control-plane collection next_offset does not advance");
+  }
+  return {
+    complete: false,
+    capExceeded: totalCount >= maximumCount,
+    nextOffset: rawNextOffset,
+    totalCount,
+  };
+}
+
+export function durableReportMemberValidation(members, maximumRevisions = 128) {
+  exactBoundedInteger(maximumRevisions, "maximumRevisions", { minimum: 1 });
+  if (!Array.isArray(members) || members.length === 0) {
+    return {
+      valid: false,
+      memberCount: Array.isArray(members) ? members.length : 0,
+      reason: "empty",
+    };
+  }
+  const revisionIds = members.map((member) => (
+    member && typeof member === "object"
+      ? String(member.revision_id || "")
+      : ""
+  ));
+  if (revisionIds.some((revisionId) => !revisionId)) {
+    return { valid: false, memberCount: members.length, reason: "invalid" };
+  }
+  if (new Set(revisionIds).size !== revisionIds.length) {
+    return { valid: false, memberCount: members.length, reason: "duplicate" };
+  }
+  if (revisionIds.length > maximumRevisions) {
+    return { valid: false, memberCount: members.length, reason: "oversized" };
+  }
+  return { valid: true, memberCount: members.length, reason: null };
+}
+
+export function durableReportRequestBody(scope) {
+  if (!scope || typeof scope !== "object") {
+    throw new TypeError("report scope is required");
+  }
+  const id = typeof scope.id === "string" ? scope.id.trim() : "";
+  if (!id) throw new TypeError("report scope id is required");
+  if (scope.kind === "revision") return { revision_ids: [id] };
+  if (scope.kind === "session") return { session_id: id };
+  if (scope.kind === "snapshot") return { snapshot_id: id };
+  throw new TypeError("unsupported report scope kind");
+}
+
+export function durableMutationDisposition(error) {
+  return error?.ambiguous === true ? "retain" : "discard";
+}
+
+export function durableReviewControlAvailability({
+  ready,
+  writable,
+  journalBlocked = false,
+  connecting,
+  markerBusy,
+  correlationBusy,
+  reportBusy,
+  selectionReady,
+}) {
+  const writeBusy = connecting || markerBusy || correlationBusy || reportBusy;
+  const durableReadOnly = ready && !writable;
+  return {
+    connectDisabled: writeBusy,
+    reportDisabled: !ready || reportBusy || markerBusy || correlationBusy,
+    reportScopeDisabled: !ready || reportBusy || markerBusy || correlationBusy,
+    markerDisabled: !selectionReady || writeBusy || durableReadOnly || journalBlocked,
+    correlationDisabled: !selectionReady || !writable || writeBusy || journalBlocked,
+    durableReadOnly,
+    journalBlocked,
+  };
+}
+
 function normalizedEnum(value) {
   if (value === null || value === undefined || typeof value === "object") return "";
   return String(value).trim().toLowerCase().replace(/[\s-]+/g, "_");

@@ -27,6 +27,8 @@ from .temporal_core import (
     RESOURCE_CREATION_OPERATIONS,
     RESOURCE_DELETION_OPERATIONS,
     TEMPORAL_ORDER_VERSION,
+    checked_temporal_add,
+    checked_temporal_subtract,
     distinct_temporal_states,
     temporal_integer,
     temporal_order_key,
@@ -46,6 +48,24 @@ def _ns(value: Any, field: str) -> int:
     except ValueError as error:
         raise TemporalTopologyRequestError(
             f"{field} must be an integer nanosecond value"
+        ) from error
+
+
+def _ns_add(left: int, right: int, field: str) -> int:
+    try:
+        return checked_temporal_add(left, right, field)
+    except ValueError as error:
+        raise TemporalTopologyRequestError(
+            f"{field} exceeds the signed 64-bit nanosecond range"
+        ) from error
+
+
+def _ns_subtract(left: int, right: int, field: str) -> int:
+    try:
+        return checked_temporal_subtract(left, right, field)
+    except ValueError as error:
+        raise TemporalTopologyRequestError(
+            f"{field} exceeds the signed 64-bit nanosecond range"
         ) from error
 
 
@@ -1017,9 +1037,38 @@ class TemporalTopologyService:
             clock["uncertainty_ns"],
             "clock.uncertainty_ns",
         )
+        if uncertainty < 0:
+            raise TemporalTopologyRequestError(
+                "clock.uncertainty_ns must be zero or positive"
+            )
         local_offset = _ns(
             clock["local_minus_absolute_ns"],
             "clock.local_minus_absolute_ns",
+        )
+        local_time = _ns_add(
+            timestamp_ns,
+            local_offset,
+            "resolved local time",
+        )
+        local_min = _ns_subtract(
+            local_time,
+            uncertainty,
+            "resolved local minimum",
+        )
+        local_max = _ns_add(
+            local_time,
+            uncertainty,
+            "resolved local maximum",
+        )
+        absolute_min = _ns_subtract(
+            timestamp_ns,
+            uncertainty,
+            "resolved absolute minimum",
+        )
+        absolute_max = _ns_add(
+            timestamp_ns,
+            uncertainty,
+            "resolved absolute maximum",
         )
         return {
             "node_id": node["node_id"],
@@ -1027,17 +1076,13 @@ class TemporalTopologyService:
             "clock_domain": clock["clock_domain"],
             "local_clock_domain": clock["clock_domain"],
             "query_time_ns": str(timestamp_ns),
-            "local_time_ns": str(timestamp_ns + local_offset),
-            "local_min_ns": str(
-                timestamp_ns + local_offset - uncertainty
-            ),
-            "local_max_ns": str(
-                timestamp_ns + local_offset + uncertainty
-            ),
-            "resolved_at_min_ns": str(timestamp_ns - uncertainty),
-            "resolved_at_max_ns": str(timestamp_ns + uncertainty),
-            "absolute_min_ns": str(timestamp_ns - uncertainty),
-            "absolute_max_ns": str(timestamp_ns + uncertainty),
+            "local_time_ns": str(local_time),
+            "local_min_ns": str(local_min),
+            "local_max_ns": str(local_max),
+            "resolved_at_min_ns": str(absolute_min),
+            "resolved_at_max_ns": str(absolute_max),
+            "absolute_min_ns": str(absolute_min),
+            "absolute_max_ns": str(absolute_max),
             "uncertainty_ns": str(uncertainty),
             "resolution": "exact" if uncertainty == 0 else "bounded",
             "mapping_method": clock["method"],
@@ -1057,29 +1102,48 @@ class TemporalTopologyService:
     ) -> dict[str, Any]:
         if watermark is None:
             return self._unaligned_node_time(node, perspective, clock_policy)
-        query_time_ns = _ns(
-            watermark["query_time_ns"],
-            "watermark.query_time_ns",
-        ) + offset_ns
-        local_time_ns = _ns(
-            watermark["local_time_ns"],
-            "watermark.local_time_ns",
-        ) + offset_ns
+        query_time_ns = _ns_add(
+            _ns(
+                watermark["query_time_ns"],
+                "watermark.query_time_ns",
+            ),
+            offset_ns,
+            "resolved relative query time",
+        )
+        local_time_ns = _ns_add(
+            _ns(
+                watermark["local_time_ns"],
+                "watermark.local_time_ns",
+            ),
+            offset_ns,
+            "resolved relative local time",
+        )
         absolute_min = watermark.get("absolute_min_ns")
         absolute_max = watermark.get("absolute_max_ns")
         if absolute_min is not None:
-            absolute_min = _ns(
-                absolute_min,
-                "watermark.absolute_min_ns",
-            ) + offset_ns
-            absolute_max = _ns(
-                absolute_max,
-                "watermark.absolute_max_ns",
-            ) + offset_ns
+            absolute_min = _ns_add(
+                _ns(
+                    absolute_min,
+                    "watermark.absolute_min_ns",
+                ),
+                offset_ns,
+                "resolved relative absolute minimum",
+            )
+            absolute_max = _ns_add(
+                _ns(
+                    absolute_max,
+                    "watermark.absolute_max_ns",
+                ),
+                offset_ns,
+                "resolved relative absolute maximum",
+            )
         uncertainty = (
             None
             if absolute_min is None
-            else max(0, (int(absolute_max) - int(absolute_min)) // 2)
+            else _ns(
+                max(0, (int(absolute_max) - int(absolute_min)) // 2),
+                "resolved relative uncertainty",
+            )
         )
         return {
             "node_id": node["node_id"],

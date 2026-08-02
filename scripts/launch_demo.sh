@@ -9,6 +9,8 @@ open_browser=false
 api_only=false
 rebuild_fixture=false
 validate_fixture=false
+control_plane_root=""
+trust_control_plane_headers=false
 
 usage() {
     cat <<'EOF'
@@ -18,6 +20,10 @@ Options:
   --host ADDRESS       Bind address (default: 127.0.0.1)
   --port PORT          TCP port (default: 8765)
   --frontend-dir PATH  Frontend distribution (default: <repository>/frontend)
+  --control-plane-dir PATH
+                       Durable session/import/review state
+  --trust-control-plane-headers
+                       Development only: allow the control plane off loopback
   --api-only           Disable integrated pages for split-process development
   --open-browser       Ask the core analyzer process to open the browser
   --no-browser         Keep browser launch disabled (the WSL default)
@@ -44,8 +50,16 @@ while (($#)); do
             frontend_root="$2"
             shift
             ;;
+        --control-plane-dir)
+            [[ $# -ge 2 ]] || { printf '%s\n' '--control-plane-dir requires a value.' >&2; exit 2; }
+            control_plane_root="$2"
+            shift
+            ;;
         --api-only)
             api_only=true
+            ;;
+        --trust-control-plane-headers)
+            trust_control_plane_headers=true
             ;;
         --open-browser)
             open_browser=true
@@ -119,6 +133,7 @@ fi
 fixture_argument="demo/fixtures/router-state-lab-demo.tgz"
 fixture_archive="${repository_root}/${fixture_argument}"
 frontend_root="${frontend_root:-${repository_root}/frontend}"
+control_plane_root="${control_plane_root:-${repository_root}/.runtime/control-plane}"
 
 cd -- "${repository_root}"
 export PYTHONUTF8=1
@@ -173,9 +188,13 @@ core_arguments=(
     --host "${bind_address}"
     --port "${port}"
     --frontend-dir "${frontend_root}"
+    --control-plane-dir "${control_plane_root}"
 )
 if [[ "${api_only}" == true ]]; then
     core_arguments+=(--api-only)
+fi
+if [[ "${trust_control_plane_headers}" == true ]]; then
+    core_arguments+=(--trust-control-plane-headers)
 fi
 if [[ "${open_browser}" == false ]]; then
     core_arguments+=(--no-browser)
@@ -183,6 +202,7 @@ fi
 
 printf 'Using generated assembly: %s\n' "${selected_fixture}"
 printf '%s\n' 'Single-node and fabric views read this same generated assembly.'
+printf 'Durable sessions, imports, and review data: %s\n' "${control_plane_root}"
 if [[ "${api_only}" == true ]]; then
     printf 'Starting Router State Lab backend API at http://%s:%s\n' \
         "${bind_address}" "${port}"
