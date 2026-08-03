@@ -384,7 +384,11 @@ adapters cover installed loading, ingestion descriptors and lazy streams,
 runtime/session contexts, normalized providers, temporal readers, route
 transition callbacks, capability hooks, and identity/runtime web providers.
 They snapshot hostile descriptors once and include iterator construction,
-`next()`, `close()`, `__enter__()`, and `__exit__()` in the boundary; cleanup
+`next()`, `close()`, `__enter__()`, and `__exit__()` in the boundary. The static
+guard also recognizes list/set/dict comprehensions, generator expressions,
+`list()`/`tuple()`/`sorted()`, starred expansion, `yield from`, direct
+`iter()`/`next()`, tuple unpacking, and `any()`/`all()`/`sum()`/`min()`/`max()`
+when their plug-in stream can be traced within the same function. Cleanup
 cannot suppress or replace an in-flight core exception. Registration
 snapshots validated manifest identity, so later queue work does not re-invoke a
 hostile manifest descriptor. A source-wide AST census derives executable

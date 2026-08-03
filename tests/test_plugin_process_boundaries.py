@@ -21,6 +21,9 @@ _LIFECYCLE_METHODS = frozenset(
     {"__enter__", "__exit__", "__iter__", "__next__", "close"}
 )
 _LIFECYCLE_BUILTINS = frozenset({"iter", "next"})
+_EAGER_ITERABLE_CONSUMERS = frozenset(
+    {"all", "any", "list", "max", "min", "sorted", "sum", "tuple"}
+)
 
 # This committed floor is intentionally independent of discovery.  Deriving
 # the expected module set from the same census would let one blind spot remove
@@ -625,9 +628,11 @@ def _candidate_nodes(
     Caught shapes: direct hook/descriptor access regardless of receiver name;
     literal and typed-dynamic ``getattr``; one-scope aliases and bound methods;
     callbacks stored on attributes; iterator/context lifecycle operations;
-    typed ``EntryPoint.load``; imported ``import_module`` callables; attributes
-    of their returned modules; and process-entry/ASGI call graphs whose value
-    can be traced in the same module. Explicit blind spots are reflection
+    comprehensions, generator expressions, eager iterable builtins, starred
+    expansion, ``yield from``, and iterable unpacking; typed
+    ``EntryPoint.load``; imported ``import_module`` callables; attributes of
+    their returned modules; and process-entry/ASGI call graphs whose value can
+    be traced in the same module. Explicit blind spots are reflection
     through ``eval``/native or custom ``__import__`` machinery, opaque-container
     or cross-module callback transport, and monkey-patching after the census.
     Those shapes are covered by behavioral hostile-plug-in tests, not falsely
@@ -1081,6 +1086,13 @@ def _candidate_nodes(
                     and scoped_key(node.args[0], site=node) in lazy_targets
                 ):
                     add(node, f"lazy lifecycle {node.func.id}()")
+                if (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id in _EAGER_ITERABLE_CONSUMERS
+                    and node.args
+                    and scoped_key(node.args[0], site=node) in lazy_targets
+                ):
+                    add(node, f"lazy consumption {node.func.id}()")
                 if isinstance(node.func, ast.Attribute):
                     owner_key = scoped_key(node.func.value, site=node)
                     if (
@@ -1106,6 +1118,11 @@ def _candidate_nodes(
                         callback_targets[target_key] = callback_targets[source_key]
                 if source_key in lazy_targets:
                     lazy_targets.update(target_keys)
+                    if any(
+                        isinstance(target, (ast.List, ast.Tuple))
+                        for target in targets
+                    ):
+                        add(node, "lazy consumption iterable unpacking")
                 if isinstance(value, ast.Attribute):
                     normalized = value.attr.lstrip("_")
                     if value.attr in external_members:
@@ -1171,6 +1188,28 @@ def _candidate_nodes(
                 and scoped_key(node.iter, site=node) in lazy_targets
             ):
                 add(node, "lazy lifecycle for-iteration")
+            if isinstance(
+                node,
+                (ast.DictComp, ast.GeneratorExp, ast.ListComp, ast.SetComp),
+            ):
+                for generator in node.generators:
+                    if scoped_key(generator.iter, site=node) in lazy_targets:
+                        add(
+                            node,
+                            "lazy consumption "
+                            f"{type(node).__name__.casefold()}",
+                        )
+            if (
+                isinstance(node, ast.Starred)
+                and isinstance(node.ctx, ast.Load)
+                and scoped_key(node.value, site=node) in lazy_targets
+            ):
+                add(node, "lazy consumption starred expansion")
+            if (
+                isinstance(node, ast.YieldFrom)
+                and scoped_key(node.value, site=node) in lazy_targets
+            ):
+                add(node, "lazy consumption yield from")
             if isinstance(node, (ast.With, ast.AsyncWith)):
                 for item in node.items:
                     if scoped_key(item.context_expr, site=node) in lazy_targets:
