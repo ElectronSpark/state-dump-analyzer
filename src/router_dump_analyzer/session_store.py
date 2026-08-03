@@ -38,6 +38,7 @@ from .public_text import (
     contains_unsafe_invisible_text,
     has_visible_identity_anchor,
 )
+from .value_core import MAX_JSON_SAFE_INTEGER
 
 _SCHEMA_VERSION = 1
 _MAX_ID_CHARACTERS = 256
@@ -517,6 +518,16 @@ def _stored_bounded_retention_mapping(
     if canonical != value:
         raise SessionStoreError(f"stored {label} is not canonical")
     return loaded
+
+
+def _stored_catalog_retention_audit_sequence(value: object) -> int:
+    """Validate one persisted/public catalog-audit coordinate fail-closed."""
+
+    if type(value) is not int or not 0 <= value <= MAX_JSON_SAFE_INTEGER:
+        raise SessionStoreError(
+            "stored catalog retention audit sequence is outside the safe domain"
+        )
+    return value
 
 
 def _plugin_ids(value: Sequence[str]) -> tuple[str, ...]:
@@ -3384,6 +3395,7 @@ class SqliteSessionStore:
                         result_json,
                     ),
                 )
+                _stored_catalog_retention_audit_sequence(cursor.lastrowid)
             except sqlite3.IntegrityError as error:
                 raise SessionConflictError(
                     "retention operation_id was already used in this workspace"
@@ -3418,7 +3430,7 @@ class SqliteSessionStore:
         ):
             raise SessionStoreError("stored catalog retention audit is invalid")
         entry = CatalogRetentionAuditEntry(
-            sequence=int(row["sequence"]),
+            sequence=_stored_catalog_retention_audit_sequence(row["sequence"]),
             tenant_id=tenant,
             workspace_id=workspace,
             operation_id=str(row["operation_id"]),
@@ -3463,8 +3475,11 @@ class SqliteSessionStore:
 
         tenant = _bounded_identifier(tenant_id, "tenant_id")
         workspace = _bounded_identifier(workspace_id, "workspace_id")
-        if type(after_sequence) is not int or after_sequence < 0:
-            raise ValueError("after_sequence must be a non-negative integer")
+        if (
+            type(after_sequence) is not int
+            or not 0 <= after_sequence <= MAX_JSON_SAFE_INTEGER
+        ):
+            raise ValueError("after_sequence must be a non-negative JSON-safe integer")
         page_limit, _ = _page_bounds(limit, 0)
         with self._read_cursor() as cursor:
             self._require_workspace(cursor, tenant, workspace)

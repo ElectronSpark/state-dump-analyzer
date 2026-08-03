@@ -66,6 +66,7 @@ from .plugin_identity import (
     PluginExecutableIdentityError,
     executable_plugin_fingerprint,
 )
+from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .value_core import parse_canonical_decimal_integer
 
 MAX_SCOPE_ID_LENGTH = 128
@@ -1097,14 +1098,34 @@ class RegisteredPlugin:
     coordinator: IngestionCoordinator
     package_hash: str
     verify_package_bytes: bool
+    _plugin_id_snapshot: str | None = None
+    _plugin_version_snapshot: str | None = None
 
     @property
     def plugin_id(self) -> str:
-        return str(self.plugin.manifest.plugin_id)
+        if self._plugin_id_snapshot is not None:
+            return self._plugin_id_snapshot
+        try:
+            return str(self.plugin.manifest.plugin_id)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise IngestionPipelineError(
+                "registered plug-in identity could not be resolved"
+            ) from error
 
     @property
     def plugin_version(self) -> str:
-        return str(self.plugin.manifest.plugin_version)
+        if self._plugin_version_snapshot is not None:
+            return self._plugin_version_snapshot
+        try:
+            return str(self.plugin.manifest.plugin_version)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise IngestionPipelineError(
+                "registered plug-in identity could not be resolved"
+            ) from error
 
 
 class PluginRegistry:
@@ -1144,8 +1165,7 @@ class PluginRegistry:
             self.register(plugin)
 
     @staticmethod
-    def _manifest_fingerprint(plugin: Any) -> str:
-        manifest = plugin.manifest
+    def _manifest_fingerprint(manifest: Any) -> str:
         material = {
             "plugin_id": manifest.plugin_id,
             "plugin_version": manifest.plugin_version,
@@ -1167,14 +1187,32 @@ class PluginRegistry:
         package_hash: str | None = None,
     ) -> RegisteredPlugin:
         active_coordinator = coordinator or IngestionCoordinator()
-        validated = active_coordinator._plugin(plugin)
+        try:
+            validated = active_coordinator._plugin(plugin)
+            manifest = validated.manifest
+            plugin_id = str(manifest.plugin_id)
+            plugin_version = str(manifest.plugin_version)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except IngestionError:
+            raise
+        except BaseException as error:
+            raise IngestionPipelineError(
+                "plug-in registration could not resolve required descriptors"
+            ) from error
         if package_hash is None:
             fingerprint_error: PluginExecutableIdentityError | None = None
             try:
                 resolved_package_hash = executable_plugin_fingerprint(validated)
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
             except PluginExecutableIdentityError as error:
                 resolved_package_hash = None
                 fingerprint_error = error
+            except BaseException as error:
+                raise IngestionPipelineError(
+                    "plug-in executable identity evaluation failed"
+                ) from error
             if resolved_package_hash is None:
                 if self._require_executable_identity:
                     detail = (
@@ -1184,11 +1222,17 @@ class PluginRegistry:
                     )
                     raise ValueError(
                         "plug-in "
-                        f"{validated.manifest.plugin_id}@"
-                        f"{validated.manifest.plugin_version} has no bounded "
+                        f"{plugin_id}@{plugin_version} has no bounded "
                         f"executable package identity{detail}"
                     ) from fingerprint_error
-                resolved_package_hash = self._manifest_fingerprint(validated)
+                try:
+                    resolved_package_hash = self._manifest_fingerprint(manifest)
+                except PROCESS_CONTROL_EXCEPTIONS:
+                    raise
+                except BaseException as error:
+                    raise IngestionPipelineError(
+                        "plug-in manifest identity evaluation failed"
+                    ) from error
             verify_package_bytes = resolved_package_hash.startswith(
                 ("package-sha256:", "module-sha256:")
             )
@@ -1210,6 +1254,8 @@ class PluginRegistry:
             coordinator=active_coordinator,
             package_hash=resolved_package_hash,
             verify_package_bytes=verify_package_bytes,
+            _plugin_id_snapshot=plugin_id,
+            _plugin_version_snapshot=plugin_version,
         )
         key = (record.plugin_id, record.plugin_version)
         if key in self._plugins:
@@ -1251,10 +1297,15 @@ class PluginRegistry:
             return
         try:
             current = executable_plugin_fingerprint(record.plugin)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
         except PluginExecutableIdentityError as error:
             raise IngestionPipelineError(
-                "registered plug-in executable can no longer be fingerprinted: "
-                f"{record.plugin_id}@{record.plugin_version}: {error}"
+                "registered plug-in executable can no longer be fingerprinted"
+            ) from error
+        except BaseException as error:
+            raise IngestionPipelineError(
+                "registered plug-in executable identity evaluation failed"
             ) from error
         if current != record.package_hash:
             raise IngestionPipelineError(
@@ -1323,7 +1374,9 @@ class PluginRegistry:
                             record.coordinator.limits.max_evidence_per_output
                         ),
                     )
-            except Exception:  # noqa: BLE001, S112 - isolated plug-in probe.
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except BaseException:  # noqa: BLE001, S112 - isolated plug-in probe.
                 # Probe isolation is fail-closed per plug-in: an invalid
                 # candidate is absent and cannot block other allowlisted
                 # candidates. Full diagnostics are emitted during ingestion.
@@ -1412,6 +1465,8 @@ def _probe_plugin_child(
                 "candidates": [candidate.as_dict() for candidate in candidates],
             },
         )
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
     except BaseException as error:  # noqa: BLE001 - child fault boundary.
         _send_isolated_child_message(
             connection,
@@ -1462,6 +1517,8 @@ def _ingest_plugin_child(
                 "resource_count": len(result.dataset.get("resources", ())),
             },
         )
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
     except BaseException as error:  # noqa: BLE001 - child fault boundary.
         _send_isolated_child_message(
             connection,
@@ -1707,7 +1764,11 @@ def _run_plugin_inline(
 
     try:
         return operation()
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
     except Exception:
+        # Ordinary domain failures retain the existing worker classification;
+        # the caller's established ingestion boundary contains them.
         raise
     except BaseException as error:
         raise PluginExecutionProcessError(
@@ -8289,7 +8350,9 @@ def _public_failure_code(error: BaseException) -> str:
 def _private_exception_message(error: BaseException) -> str:
     try:
         detail = str(error)
-    except Exception:  # noqa: BLE001 - formatting must never mask failure.
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except BaseException:  # noqa: BLE001 - formatting must never mask failure.
         detail = "<error text unavailable>"
     return _truncate_text(
         detail,

@@ -29,6 +29,9 @@ MAX_OPERATIONAL_FIELD_TEXT: Final = 256
 MAX_OPERATIONAL_EVENT_BYTES: Final = 4 * 1024
 DEFAULT_OPERATIONAL_QUEUE_SIZE: Final = 1_024
 MAX_OPERATIONAL_COUNTER: Final = 2**63 - 1
+RESOLVER_RESPONSE_HEADERS_REJECTED_EVENT: Final = (
+    "control_plane.identity_resolver.response_headers_rejected"
+)
 
 # Libraries must not configure application logging, but an unconfigured
 # ERROR record would otherwise be printed by Python's ``lastResort`` handler.
@@ -115,6 +118,7 @@ _ACCESS_DENIAL_ROLES = frozenset(
         "control-plane:read",
         "control-plane:write",
         "control-plane:admin",
+        "control-plane:instance-operator",
     }
 )
 _ACCESS_DENIAL_SAMPLING_SCOPES = frozenset({"exact", "overflow"})
@@ -282,6 +286,10 @@ OPERATIONAL_EVENT_CONTRACT: Mapping[str, _EventSpec] = MappingProxyType(
             ),
             ("required_role", "tenant_correlation"),
         ),
+        # This event is deliberately payload-free. Resolver-supplied header
+        # names, values, identity fields, and exception details must never
+        # cross the operational logging boundary.
+        RESOLVER_RESPONSE_HEADERS_REJECTED_EVENT: _spec(logging.ERROR, ()),
     }
 )
 
@@ -340,7 +348,7 @@ def _validated_fields(
             raise ValueError("access-denial phase/reason vocabulary is invalid")
         if fields["sampling_scope"] not in _ACCESS_DENIAL_SAMPLING_SCOPES:
             raise ValueError("access-denial sampling scope is invalid")
-        if fields["response_status"] not in {400, 401, 403, 404}:
+        if fields["response_status"] not in {400, 401, 403, 404, 500}:
             raise ValueError("access-denial response status is invalid")
         required_role = fields.get("required_role")
         if required_role is not None and required_role not in _ACCESS_DENIAL_ROLES:
@@ -579,6 +587,12 @@ def emit_operational_event(event: str, /, **fields: Any) -> bool:
     return _DEFAULT_EMITTER.emit(event, **fields)
 
 
+def emit_resolver_response_headers_rejected() -> bool:
+    """Emit the payload-free identity-resolver header rejection signal."""
+
+    return _DEFAULT_EMITTER.emit(RESOLVER_RESPONSE_HEADERS_REJECTED_EVENT)
+
+
 def flush_operational_events(*, timeout: float = 1.0) -> bool:
     return _DEFAULT_EMITTER.flush(timeout=timeout)
 
@@ -609,11 +623,13 @@ __all__ = [
     "OPERATIONAL_EVENT_CONTRACT",
     "OPERATIONAL_LOGGER_NAME",
     "OPERATIONAL_LOG_SCHEMA",
+    "RESOLVER_RESPONSE_HEADERS_REJECTED_EVENT",
     "OperationalEventClassHealthSnapshot",
     "OperationalEventDiagnosticsSnapshot",
     "OperationalEventEmitter",
     "OperationalEventHealthSnapshot",
     "emit_operational_event",
+    "emit_resolver_response_headers_rejected",
     "flush_operational_events",
     "operational_event_class_health_snapshot",
     "operational_event_diagnostics_snapshot",

@@ -6,17 +6,31 @@ import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import DEFAULT, patch
 
 from router_dump_analyzer.control_plane_server import (
     ControlPlaneApplicationRequest,
 )
 from router_dump_analyzer.server_cli import (
     ServerConfiguration,
+    _load_identity_resolver,
+    build_parser,
     main,
     parse_args,
     run,
 )
+
+
+class _HostileResolverFailure(BaseException):
+    pass
+
+
+class _HostileResolverModule:
+    def __init__(self, failure: BaseException) -> None:
+        self.failure = failure
+
+    def __getattr__(self, _name: str) -> Any:
+        raise self.failure
 
 
 class _ControlPlane:
@@ -33,6 +47,49 @@ class _ControlPlane:
 
 
 class ServerCliTests(unittest.TestCase):
+    def test_identity_resolver_loading_contains_hostile_base_exceptions(self) -> None:
+        private_path = r"C:\Users\private-operator\secret\resolver.py"
+        for stage, imported in (
+            ("import", None),
+            ("descriptor", _HostileResolverModule(
+                _HostileResolverFailure(private_path)
+            )),
+        ):
+            with self.subTest(stage=stage):
+                failure = _HostileResolverFailure(private_path)
+                side_effect = failure if stage == "import" else None
+                return_value = (
+                    imported
+                    if imported is not None
+                    else DEFAULT
+                )
+                with (
+                    patch(
+                        "router_dump_analyzer.server_cli.importlib.import_module",
+                        side_effect=side_effect,
+                        return_value=return_value,
+                    ),
+                    self.assertRaises(RuntimeError) as raised,
+                ):
+                    _load_identity_resolver("deployment.identity:resolver")
+                self.assertNotIn(private_path, str(raised.exception))
+
+    def test_identity_resolver_loading_preserves_process_controls(self) -> None:
+        for failure_type in (KeyboardInterrupt, SystemExit, GeneratorExit):
+            for stage in ("import", "descriptor"):
+                with self.subTest(failure=failure_type.__name__, stage=stage):
+                    failure = failure_type()
+                    with patch(
+                        "router_dump_analyzer.server_cli.importlib.import_module",
+                        side_effect=failure if stage == "import" else None,
+                        return_value=(
+                            _HostileResolverModule(failure)
+                            if stage == "descriptor"
+                            else DEFAULT
+                        ),
+                    ), self.assertRaises(failure_type):
+                        _load_identity_resolver("deployment.identity:resolver")
+
     def test_parser_accepts_repeated_plugin_allowlist_and_production_resolver(
         self,
     ) -> None:
@@ -68,6 +125,7 @@ class ServerCliTests(unittest.TestCase):
             "deployment.identity:resolver",
         )
         self.assertFalse(parsed.trust_control_plane_headers)
+        self.assertFalse(parsed.grant_instance_operator)
         self.assertEqual(parsed.retention_policy_path, Path("retention.json"))
         self.assertFalse(parsed.expose_api_docs)
 
@@ -137,6 +195,57 @@ class ServerCliTests(unittest.TestCase):
                 ]
             )
         self.assertEqual(unsafe_docs.exception.code, 2)
+
+        with self.assertRaises(SystemExit) as production_role_grant:
+            parse_args(
+                [
+                    "--plugin",
+                    "router",
+                    "--state-dir",
+                    "state",
+                    "--identity-resolver-module",
+                    "deployment.identity:resolver",
+                    "--grant-instance-operator",
+                ]
+            )
+        self.assertEqual(production_role_grant.exception.code, 2)
+
+        with self.assertRaises(SystemExit) as unsafe_role_grant:
+            parse_args(
+                [
+                    "--plugin",
+                    "router",
+                    "--state-dir",
+                    "state",
+                    "--host",
+                    "0.0.0.0",
+                    "--trust-control-plane-headers",
+                    "--grant-instance-operator",
+                ]
+            )
+        self.assertEqual(unsafe_role_grant.exception.code, 2)
+
+    def test_parser_accepts_explicit_instance_operator_role_on_loopback(self) -> None:
+        parsed = parse_args(
+            [
+                "--plugin",
+                "router",
+                "--state-dir",
+                "state",
+                "--trust-control-plane-headers",
+                "--grant-instance-operator",
+            ]
+        )
+
+        self.assertTrue(parsed.trust_control_plane_headers)
+        self.assertTrue(parsed.grant_instance_operator)
+        grant_help = next(
+            action.help
+            for action in build_parser()._actions
+            if action.dest == "grant_instance_operator"
+        )
+        self.assertIn("grant the control-plane instance-operator role", grant_help)
+        self.assertNotIn("grant access to", grant_help)
 
     def test_parser_allows_explicit_api_docs_only_on_loopback(self) -> None:
         parsed = parse_args(
@@ -223,6 +332,87 @@ class ServerCliTests(unittest.TestCase):
         self.assertEqual(control_planes[0].close_count, 0)
         self.assertFalse(hasattr(configuration, "input_path"))
         self.assertFalse(hasattr(configuration, "no_browser"))
+
+    def test_run_passes_role_grant_only_to_trusted_header_resolver(self) -> None:
+        resolver = lambda _request: object()
+        resolver_options: dict[str, Any] = {}
+        control_plane = _ControlPlane(Path("state"))
+        requests: list[ControlPlaneApplicationRequest] = []
+
+        def resolver_factory(**options: Any) -> Any:
+            resolver_options.update(options)
+            return resolver
+
+        configuration = ServerConfiguration(
+            state_dir=Path("state"),
+            plugin_names=("router",),
+            plugin_modules=(),
+            host="127.0.0.1",
+            port=8765,
+            identity_resolver_module=None,
+            trust_control_plane_headers=True,
+            grant_instance_operator=True,
+        )
+        with patch(
+            "router_dump_analyzer.web.control_plane_api."
+            "TrustedHeaderIdentityResolver",
+            side_effect=resolver_factory,
+        ):
+            run(
+                configuration,
+                entry_point_loader=lambda _name: object(),
+                identity_resolver_loader=lambda _target: self.fail(),
+                registry_factory=lambda _plugins, **_values: object(),
+                control_plane_factory=lambda *_args, **_values: control_plane,
+                application_factory=lambda request: (
+                    requests.append(request) or object()
+                ),
+                server_runner=lambda _app, **_values: None,
+            )
+
+        self.assertIs(requests[0].identity_resolver, resolver)
+        self.assertTrue(resolver_options["grant_instance_operator"])
+
+    def test_programmatic_role_grant_rejects_custom_and_non_loopback_modes(
+        self,
+    ) -> None:
+        common = {
+            "state_dir": Path("state"),
+            "plugin_names": ("router",),
+            "plugin_modules": (),
+            "port": 8765,
+            "grant_instance_operator": True,
+        }
+        with self.assertRaisesRegex(ValueError, "trusted-header resolver"):
+            run(
+                ServerConfiguration(
+                    host="127.0.0.1",
+                    identity_resolver_module="deployment.identity:resolver",
+                    trust_control_plane_headers=False,
+                    **common,
+                ),
+                entry_point_loader=lambda _name: self.fail(),
+                identity_resolver_loader=lambda _target: self.fail(),
+                registry_factory=lambda _plugins, **_values: self.fail(),
+                control_plane_factory=lambda *_args, **_values: self.fail(),
+                application_factory=lambda _request: self.fail(),
+                server_runner=lambda _app, **_values: self.fail(),
+            )
+
+        with self.assertRaisesRegex(ValueError, "only on a loopback host"):
+            run(
+                ServerConfiguration(
+                    host="0.0.0.0",
+                    identity_resolver_module=None,
+                    trust_control_plane_headers=True,
+                    **common,
+                ),
+                entry_point_loader=lambda _name: self.fail(),
+                registry_factory=lambda _plugins, **_values: self.fail(),
+                control_plane_factory=lambda *_args, **_values: self.fail(),
+                application_factory=lambda _request: self.fail(),
+                server_runner=lambda _app, **_values: self.fail(),
+            )
 
     def test_run_closes_constructed_control_plane_if_server_never_starts(
         self,

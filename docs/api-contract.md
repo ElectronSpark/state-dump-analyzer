@@ -31,6 +31,13 @@ is implemented; its operational guide is
   Every other integer input has an explicit field-specific minimum and maximum
   (or a documented deliberately unbounded side), never an inherited timestamp
   default. Small counts and page sizes are ordinary JSON integers.
+- Every caller-supplied audit cursor and watermark precondition uses canonical
+  non-negative ASCII decimal syntax and the range `0..9007199254740991`. The
+  same bound applies to retention `audit_before_sequence`, annotation
+  `expected_audit_watermark`, review-audit `after_sequence`, and both retention
+  journal cursors. Stored and projected catalog/review audit sequences use the
+  same exact integer domain. Exhausted writes and out-of-domain stored rows fail
+  closed rather than emitting an imprecise JSON integer.
 - Half-open intervals use `start_ns` inclusive and `end_ns` exclusive; `null`
   means unbounded. Unknown time is not encoded as zero.
 - `provenance` is one of `observed`, `event_derived`, `reconstructed`,
@@ -205,6 +212,9 @@ HTTP surface. Host code imports `PluginCapabilityExecutor` from
 bounds world reads and output iterators, validates requests and results against
 the immutable schema, preserves recoverable diagnostics in typed result
 envelopes, and raises a typed execution error for fatal or invalid output.
+Caller-owned request validation instead raises the root-exported
+`PluginCapabilityInputError` before the hook is resolved or invoked; malformed
+plug-in output remains `PluginCapabilityOutputError`.
 This makes the hook contract executable without implying that the current
 runtime-v2 host has scheduled those hooks or exposed temporal, topology, or
 route APIs; the providers above remain `None`.
@@ -231,11 +241,17 @@ roles, and optional project/workspace allowlists. The router checks the
 headers against that resolved identity, requires `control-plane:read` or
 `control-plane:write`, and hides disallowed project/workspace scope as `404`.
 Retention routes additionally require `control-plane:admin`. The CLI's
-explicit local adapter trusts headers and grants all three roles; it is
-not authentication. A production deployment verifies credentials upstream,
+explicit local adapter trusts headers and grants exactly read, write, and
+admin by default; it is not authentication. On a loopback listener only,
+`--grant-instance-operator` explicitly adds the distinct
+`control-plane:instance-operator` role. The option grants a role rather than
+access to one current route, and is rejected with a production resolver or a
+non-loopback listener. A production deployment verifies credentials upstream,
 strips client-supplied identity headers, and constructs the resolver result.
 The local adapter accepts only the configured exact `Host`, and a mutation's
 optional `Origin` must match the configured HTTP origin exactly.
+Tenant administration never implies instance operation. The operational
+diagnostics route requires the exact instance-operator role.
 
 The production-shaped core entry point hosts this surface without a startup
 analysis or browser application:
@@ -248,7 +264,8 @@ router-dump-server --plugin NAME [--plugin NAME ...] --state-dir PATH \
 `--plugin-module PACKAGE[:ATTRIBUTE]` is the mutually exclusive source-tree
 development selector and is also repeatable. The server requires exactly one
 identity mode; `--trust-control-plane-headers` replaces the resolver only on a
-loopback bind. The module resolver is synchronous and returns a verified
+loopback bind. `--grant-instance-operator` is valid only with that trusted
+mode and the same loopback restriction. The module resolver is synchronous and returns a verified
 `ControlPlaneIdentity`. This API-only application mounts aggregate root
 `/health` and `/v1/control-plane`; it has no input argument, analysis-data
 routes, frontend, or static assets. OpenAPI JSON, Swagger UI, and ReDoc are
@@ -306,7 +323,7 @@ All paths below are relative to `/v1/control-plane`.
 | Method | Path | Implemented purpose |
 |---|---|---|
 | `GET` | `/health` | Session-independent durable worker and queue health; no tenant identity required. |
-| `GET` | `/diagnostics/operational-events` | Payload-free process diagnostics; requires `control-plane:admin`. |
+| `GET` | `/diagnostics/operational-events` | Payload-free instance diagnostics; requires `control-plane:instance-operator`. |
 | `GET` | `/context` | Confirm enablement, resolved principal, `can_write`, and list visible tenant projects. |
 | `GET, POST` | `/projects` | List or create tenant projects. |
 | `GET, POST` | `/projects/{project_id}/workspaces` | List or create project workspaces. |
@@ -568,6 +585,10 @@ also defaults to 1,000 and caps at 5,000.
 Numeric `offset`, `next_offset`, and sequence coordinates never exceed
 `9007199254740991`; larger request values fail with `422`. Route-specific
 limits such as the event log's 10,000,000 offset cap remain stricter.
+`after_sequence`, `expected_audit_watermark`, retention
+`audit_before_sequence`, `catalog_after_sequence`, and
+`review_after_sequence` all use canonical unsigned ASCII decimal syntax and
+this JSON-safe maximum.
 
 Each annotation-list response also returns `audit_watermark` as a canonical
 non-negative decimal string. The page rows and watermark come from one SQLite
@@ -577,7 +598,9 @@ safety-cap probe. An `offset > 0` request without that precondition returns
 `428`. If any review-overlay mutation changes the scope watermark, the endpoint
 returns `409` instead of allowing a mixed-revision collection.
 Leading-zero, signed, whitespace-padded, non-ASCII, floating-point, negative,
-or greater-than-signed-64-bit expected values return `422`.
+or greater-than-`9007199254740991` expected values return `422`. The store also
+rejects audit-sequence exhaustion, and public reads fail closed if durable
+state contains an out-of-domain sequence.
 
 Annotation `kind` is `marker`, `note`, or `tag`. Each annotation has one to
 5,000 exact subjects, optional title/body, and up to 64 unique tags:
@@ -709,6 +732,34 @@ to `413`, invalid bounded input to `422`, missing preconditions to `428`,
 unconfigured control plane or identity resolver to `503`, and timeouts to
 `504`. The complete operational, recovery, security, and core/plug-in
 ownership rules are in [`control-plane.md`](control-plane.md).
+Resolver-supplied response headers on authorization `401`/`403` results cross
+an atomic bounded safe-header validator before they reach ASGI. One invalid
+name, value, duplicate, forbidden framing/representation header, or oversized
+map rejects the whole map and returns a bounded `500` without any
+resolver-supplied headers. The original typed access denial is still reported
+with its original phase/reason and actual `response_status=500`; the separate
+zero-field
+`control_plane.identity_resolver.response_headers_rejected` operational event
+records the resolver-boundary fault without header, identity, or exception
+data. `Set-Cookie` and obsolete `Set-Cookie2` are forbidden in every casing.
+Session establishment and cookie mutation belong in authenticated upstream
+middleware or dedicated endpoints; any future exception requires a typed,
+explicit cookie policy instead of a general header allowlist. A response-side
+`Cookie` field has no cookie-mutation semantics and remains subject to the
+ordinary bounded checks.
+Valid authentication/challenge and custom headers remain available to the
+deployment resolver. Wire-valid `obs-text` bytes `0xA0`-`0xFF` remain
+accepted; the core does not add behavior solely for Starlette's in-process
+`TestClient`. If harness parity becomes necessary, the reopening rule is one
+uniform printable-ASCII policy rather than a test-harness special case.
+
+`Location`, `Refresh`, CORS response headers, CSP, and HSTS currently remain
+under that generic bounded policy; this is compatibility, not an endorsement
+that an identity resolver owns redirect/origin/security policy. The recommended
+future boundary is a typed deployment allowlist: deny those policy primitives
+and response `Authorization` by default, retain `WWW-Authenticate`, and admit
+only registered custom headers. It is intentionally not enabled until resolver
+compatibility has been surveyed.
 
 ## 2. Time basis
 
@@ -2579,6 +2630,13 @@ GET /v1/control-plane/diagnostics/operational-events
         "queue_full_drops": 0,
         "rejected_events": 0,
         "delivery_failures": 0
+      },
+      {
+        "event": "control_plane.identity_resolver.response_headers_rejected",
+        "accepted_events": 1,
+        "queue_full_drops": 0,
+        "rejected_events": 0,
+        "delivery_failures": 0
       }
     ]
   },
@@ -2597,16 +2655,20 @@ GET /v1/control-plane/diagnostics/operational-events
 }
 ```
 
-The caller must resolve to `control-plane:admin`. The response sets
+The caller must resolve to `control-plane:instance-operator`; a tenant
+`control-plane:admin` does not imply that role. The response sets
 `Cache-Control: no-store`; snapshot failures return bounded `503`. The
 `event_classes` array contains one row for every closed event name, not only
 the example row. `status` is `degraded` when aggregate operational drops or
 delivery failures, access-denial enqueue failures, or invalid denial objects
 have been observed; otherwise it is `ok`. Counters above `2^53-1` are decimal
-strings. This is an
-advisory, process-local snapshot that may change while read and resets on
-restart. It contains no event fields, tenant correlation, request data, or
-queue contents and is not a durable security/compliance audit.
+strings. The payload has two related but different scopes:
+`operational_events` reads process-global emitter counters, while
+`access_denial_sampling` reads the sampler installed on this ASGI app and
+therefore aggregates every tenant handled by that app. It is an advisory,
+concurrently moving snapshot that resets on restart. It contains no event
+fields, tenant correlation, request data, or queue contents and is not a
+durable security/compliance audit.
 
 The visible density query is:
 

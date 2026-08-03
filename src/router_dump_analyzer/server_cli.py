@@ -26,6 +26,7 @@ from .control_plane_server import (
 )
 from .ingestion_pipeline import PluginRegistry
 from .plugin_loading import load_plugin_entry_point, load_plugin_module
+from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .public_text import bounded_public_error_detail
 
 _SERVER_ERROR_FALLBACK = "server configuration or startup failed"
@@ -42,6 +43,7 @@ class ServerConfiguration:
     port: int
     identity_resolver_module: str | None
     trust_control_plane_headers: bool
+    grant_instance_operator: bool = False
     retention_policy_path: Path | None = None
     expose_api_docs: bool = False
 
@@ -75,6 +77,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--grant-instance-operator",
+        action="store_true",
+        help=(
+            "development only: grant the control-plane instance-operator role "
+            "through the trusted-header resolver on a loopback listener"
+        ),
+    )
+    parser.add_argument(
         "--retention-policy",
         type=Path,
         dest="retention_policy_path",
@@ -99,6 +109,14 @@ def parse_args(argv: Sequence[str] | None = None) -> ServerConfiguration:
         parser.error("--host must be non-empty")
     if namespace.trust_control_plane_headers and not _is_loopback_host(host):
         parser.error("--trust-control-plane-headers is allowed only on a loopback host")
+    if namespace.grant_instance_operator and not namespace.trust_control_plane_headers:
+        parser.error(
+            "--grant-instance-operator requires --trust-control-plane-headers"
+        )
+    if namespace.grant_instance_operator and not _is_loopback_host(host):
+        parser.error(
+            "--grant-instance-operator is allowed only on a loopback host"
+        )
     if namespace.expose_api_docs and not _is_loopback_host(host):
         parser.error("--expose-api-docs is allowed only on a loopback host")
     return ServerConfiguration(
@@ -109,6 +127,7 @@ def parse_args(argv: Sequence[str] | None = None) -> ServerConfiguration:
         port=namespace.port,
         identity_resolver_module=namespace.identity_resolver_module,
         trust_control_plane_headers=namespace.trust_control_plane_headers,
+        grant_instance_operator=namespace.grant_instance_operator,
         retention_policy_path=namespace.retention_policy_path,
         expose_api_docs=namespace.expose_api_docs,
     )
@@ -124,12 +143,26 @@ def _load_identity_resolver(target: str) -> Callable[[Any], Any]:
         )
     try:
         module = importlib.import_module(module_name)
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
     except Exception as error:
         raise RuntimeError("identity resolver module could not be imported") from error
+    except BaseException:  # noqa: BLE001 - deployment extensions are hostile code.
+        raise RuntimeError(
+            "identity resolver module could not be imported"
+        ) from None
     try:
         resolver = getattr(module, attribute)
     except AttributeError as error:
         raise LookupError("identity resolver target is not available") from error
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except Exception:
+        raise
+    except BaseException:  # noqa: BLE001 - module attributes may be descriptors.
+        raise RuntimeError(
+            "identity resolver target could not be resolved"
+        ) from None
     if not callable(resolver):
         raise TypeError("identity resolver target must be callable")
     return resolver
@@ -166,6 +199,7 @@ def _trusted_header_resolver(configuration: ServerConfiguration) -> Any:
         allowed_origins=tuple(
             f"http://{allowed_authority}" for allowed_authority in authorities
         ),
+        grant_instance_operator=configuration.grant_instance_operator,
     )
 
 
@@ -191,6 +225,18 @@ def run(
         raise ValueError("host must be non-empty")
     if configuration.expose_api_docs and not _is_loopback_host(host):
         raise ValueError("API documentation may be exposed only on a loopback host")
+    if (
+        configuration.grant_instance_operator
+        and not configuration.trust_control_plane_headers
+    ):
+        raise ValueError(
+            "the instance-operator role may be granted only through the "
+            "trusted-header resolver"
+        )
+    if configuration.grant_instance_operator and not _is_loopback_host(host):
+        raise ValueError(
+            "the instance-operator role may be granted only on a loopback host"
+        )
     if configuration.trust_control_plane_headers:
         if configuration.identity_resolver_module is not None:
             raise ValueError("configure either an identity resolver or trusted headers")

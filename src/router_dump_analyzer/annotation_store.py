@@ -41,7 +41,7 @@ from .canonical import (
 )
 from .corroboration import CorroborationOutcome
 from .public_text import escape_unsafe_display_text
-from .value_core import parse_canonical_decimal_integer
+from .value_core import MAX_JSON_SAFE_INTEGER, parse_canonical_decimal_integer
 
 MAX_SCOPE_ID_LENGTH = 256
 MAX_IDENTIFIER_LENGTH = 1_024
@@ -172,6 +172,20 @@ def _exact_non_negative_int(value: Any, label: str) -> int:
 def _exact_positive_int(value: Any, label: str) -> int:
     if type(value) is not int or not 1 <= value <= MAX_SQLITE_INTEGER:
         raise ReviewValidationError(f"{label} must be a positive integer")
+    return value
+
+
+def _exact_json_safe_non_negative_int(value: Any, label: str) -> int:
+    if type(value) is not int or not 0 <= value <= MAX_JSON_SAFE_INTEGER:
+        raise ReviewValidationError(
+            f"{label} must be a non-negative JSON-safe integer"
+        )
+    return value
+
+
+def _stored_audit_sequence(value: Any) -> int:
+    if type(value) is not int or not 0 <= value <= MAX_JSON_SAFE_INTEGER:
+        raise ReviewOverlayError("stored audit sequence is outside the safe domain")
     return value
 
 
@@ -608,10 +622,14 @@ class ReviewRetentionPolicy:
         for label, value in (
             ("tombstone_before_ns", self.tombstone_before_ns),
             ("idempotency_before_ns", self.idempotency_before_ns),
-            ("audit_before_sequence", self.audit_before_sequence),
         ):
             if value is not None:
                 _exact_non_negative_int(value, label)
+        if self.audit_before_sequence is not None:
+            _exact_json_safe_non_negative_int(
+                self.audit_before_sequence,
+                "audit_before_sequence",
+            )
         try:
             mode = ReviewAuditRetentionMode(self.audit_mode)
         except (TypeError, ValueError) as error:
@@ -1575,7 +1593,7 @@ class ReviewOverlayStore:
         occurred_at_ns: int,
         snapshot: Mapping[str, Any],
     ) -> None:
-        connection.execute(
+        cursor = connection.execute(
             """
             INSERT INTO review_overlay_audit (
                 tenant_id, project_id, workspace_id, entity_kind, entity_id,
@@ -1593,6 +1611,7 @@ class ReviewOverlayStore:
                 _canonical_json(snapshot),
             ),
         )
+        _stored_audit_sequence(cursor.lastrowid)
 
     @staticmethod
     def _idempotent_result(
@@ -1827,7 +1846,7 @@ class ReviewOverlayStore:
             raise ReviewValidationError(f"limit must be between 1 and {MAX_LIST_LIMIT}")
         _exact_non_negative_int(offset, "offset")
         if expected_audit_watermark is not None:
-            _exact_non_negative_int(
+            _exact_json_safe_non_negative_int(
                 expected_audit_watermark,
                 "expected_audit_watermark",
             )
@@ -1842,7 +1861,7 @@ class ReviewOverlayStore:
                 """,
                 values,
             ).fetchone()
-            watermark = int(watermark_row["watermark"])
+            watermark = _stored_audit_sequence(watermark_row["watermark"])
             if (
                 expected_audit_watermark is not None
                 and watermark != expected_audit_watermark
@@ -2440,7 +2459,7 @@ class ReviewOverlayStore:
         limit: int = 1_000,
     ) -> tuple[ReviewAuditEntry, ...]:
         _scope_values(scope)
-        _exact_non_negative_int(after_sequence, "after_sequence")
+        _exact_json_safe_non_negative_int(after_sequence, "after_sequence")
         if type(limit) is not int or not 1 <= limit <= MAX_LIST_LIMIT:
             raise ReviewValidationError(f"limit must be between 1 and {MAX_LIST_LIMIT}")
         where, values = self._where(scope)
@@ -2458,7 +2477,7 @@ class ReviewOverlayStore:
             ).fetchall()
         return tuple(
             ReviewAuditEntry(
-                sequence=row["sequence"],
+                sequence=_stored_audit_sequence(row["sequence"]),
                 scope=scope,
                 entity_kind=row["entity_kind"],
                 entity_id=row["entity_id"],
@@ -2485,7 +2504,7 @@ class ReviewOverlayStore:
                 """,
                 values,
             ).fetchone()
-        return int(row["watermark"])
+        return _stored_audit_sequence(row["watermark"])
 
     def referenced_revision_ids(
         self,
@@ -2938,7 +2957,7 @@ class ReviewOverlayStore:
             purged_json = _canonical_json(purged_document)
             result_json = _canonical_json(_review_retention_result_document(result))
             try:
-                connection.execute(
+                cursor = connection.execute(
                     """
                     INSERT INTO review_retention_audit (
                         tenant_id, project_id, workspace_id, operation_id,
@@ -2959,6 +2978,7 @@ class ReviewOverlayStore:
                         result_json,
                     ),
                 )
+                _stored_audit_sequence(cursor.lastrowid)
             except sqlite3.IntegrityError as error:
                 raise ReviewConflictError(
                     "retention operation_id was already used in this scope"
@@ -2975,7 +2995,7 @@ class ReviewOverlayStore:
         """List the separate retention journal that ordinary pruning preserves."""
 
         scope_values = _scope_values(scope)
-        _exact_non_negative_int(after_sequence, "after_sequence")
+        _exact_json_safe_non_negative_int(after_sequence, "after_sequence")
         if type(limit) is not int or not 1 <= limit <= MAX_LIST_LIMIT:
             raise ReviewValidationError(f"limit must be between 1 and {MAX_LIST_LIMIT}")
         with self._transaction(begin="BEGIN") as connection:
@@ -3000,7 +3020,7 @@ class ReviewOverlayStore:
                 raise ReviewOverlayError("stored retention audit is invalid")
             result.append(
                 ReviewRetentionAuditEntry(
-                    sequence=int(row["sequence"]),
+                    sequence=_stored_audit_sequence(row["sequence"]),
                     scope=scope,
                     operation_id=str(row["operation_id"]),
                     actor=str(row["actor"]),
@@ -3110,7 +3130,7 @@ class ReviewOverlayStore:
             )
         return ReviewOverlaySnapshot(
             scope=scope,
-            audit_watermark=int(watermark_row["watermark"]),
+            audit_watermark=_stored_audit_sequence(watermark_row["watermark"]),
             annotations=annotations,
             correlations=correlations,
         )

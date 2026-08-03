@@ -10,11 +10,12 @@ needs an ``open(Path)`` hook.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from copy import deepcopy
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
+from functools import partial
 from hashlib import sha256
 from math import isfinite
 from pathlib import Path, PurePosixPath
@@ -74,6 +75,7 @@ from .plugin_api import (
     validate_probe_report,
     validate_probe_result,
 )
+from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .revision_store import (
     AssemblyDescriptor,
     RevisionDescriptor,
@@ -100,6 +102,227 @@ MAX_EVENT_LINKS_PER_RECORD = 4_096
 
 class IngestionError(RuntimeError):
     """A plug-in or input violated the executable ingestion contract."""
+
+
+def _plugin_execution_boundary(
+    operation: str,
+    callback: Callable[[], Any],
+) -> Any:
+    """Contain non-standard plug-in failures without changing Exception flow.
+
+    Ordinary ``Exception`` subclasses remain part of the established ingestion
+    contract. Process controls must always reach the host. Only hostile or
+    defective ``BaseException`` subclasses outside those two groups are
+    translated to a fixed, path-free core diagnostic.
+    """
+
+    try:
+        return callback()
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except Exception:
+        raise
+    except BaseException as error:
+        raise IngestionError(
+            f"plug-in {operation} failed during core ingestion"
+        ) from error
+
+
+@dataclass(frozen=True, slots=True)
+class _IngestionManifestSnapshot:
+    """Core-owned one-shot projection of the executable manifest."""
+
+    plugin_id: str
+    plugin_version: str
+    core_api_version: str
+    supported_platforms: tuple[str, ...]
+    supported_software_versions: str
+    capabilities: frozenset[PluginCapability | str]
+    reconstruction_default: Any
+    forwarding_ir_versions: tuple[str, ...]
+    _supports: Callable[[PluginCapability | str], Any] = field(
+        repr=False,
+        compare=False,
+    )
+
+    def supports(self, capability: PluginCapability | str) -> Any:
+        return _plugin_execution_boundary(
+            "manifest supports() execution",
+            lambda: self._supports(capability),
+        )
+
+
+@dataclass(slots=True)
+class _PluginOutputIterator(Iterator[Any]):
+    """Fence construction, lazy iteration, and closing of one plug-in stream."""
+
+    operation: str
+    iterator: Iterator[Any]
+
+    @classmethod
+    def open(
+        cls,
+        operation: str,
+        producer: Callable[[], Iterable[Any]],
+    ) -> _PluginOutputIterator:
+        outputs = _plugin_execution_boundary(
+            f"{operation} invocation",
+            producer,
+        )
+        iterator = _plugin_execution_boundary(
+            f"{operation} iterator construction",
+            lambda: iter(outputs),
+        )
+        return cls(operation=operation, iterator=iterator)
+
+    def __iter__(self) -> _PluginOutputIterator:
+        return self
+
+    def __next__(self) -> Any:
+        return _plugin_execution_boundary(
+            f"{self.operation} iteration",
+            lambda: next(self.iterator),
+        )
+
+    def close(self) -> None:
+        close = _plugin_execution_boundary(
+            f"{self.operation} close descriptor resolution",
+            lambda: getattr(self.iterator, "close", None),
+        )
+        if callable(close):
+            _plugin_execution_boundary(
+                f"{self.operation} close execution",
+                close,
+            )
+
+
+@dataclass(slots=True)
+class _IngestionPluginSnapshot:
+    """Resolve every plug-in descriptor at most once for one ingestion."""
+
+    original: Any
+    manifest: _IngestionManifestSnapshot
+    _describe: Callable[[], Any]
+    _probe: Callable[[DumpInventory], Any]
+    _locate_inputs: Callable[[DumpInventory], Iterable[Any]]
+    _parser_hooks: dict[str, Callable[..., Iterable[Any]] | None] = field(
+        default_factory=dict,
+    )
+
+    @classmethod
+    def resolve(cls, plugin: Any) -> _IngestionPluginSnapshot:
+        manifest = _plugin_execution_boundary(
+            "manifest descriptor resolution",
+            lambda: getattr(plugin, "manifest", None),
+        )
+        if not isinstance(manifest, PluginManifest):
+            raise IngestionError("core ingestion requires a PluginManifest")
+
+        def manifest_snapshot() -> _IngestionManifestSnapshot:
+            if manifest.core_api_version != CORE_PLUGIN_API_VERSION:
+                raise IngestionError(
+                    "plug-in core API version is incompatible with this core"
+                )
+            plugin_id = _bounded_text(
+                manifest.plugin_id,
+                "manifest.plugin_id",
+                maximum=256,
+            )
+            plugin_version = _bounded_text(
+                manifest.plugin_version,
+                "manifest.plugin_version",
+                maximum=128,
+            )
+            supports = getattr(manifest, "supports", None)
+            if not callable(supports):
+                raise IngestionError("plug-in manifest requires supports()")
+            return _IngestionManifestSnapshot(
+                plugin_id=plugin_id,
+                plugin_version=plugin_version,
+                core_api_version=manifest.core_api_version,
+                supported_platforms=manifest.supported_platforms,
+                supported_software_versions=manifest.supported_software_versions,
+                capabilities=manifest.capabilities,
+                reconstruction_default=manifest.reconstruction_default,
+                forwarding_ir_versions=manifest.forwarding_ir_versions,
+                _supports=supports,
+            )
+
+        projected_manifest = _plugin_execution_boundary(
+            "manifest projection",
+            manifest_snapshot,
+        )
+
+        def resolve_required_hook(name: str) -> Any:
+            return getattr(plugin, name, None)
+
+        resolved: dict[str, Callable[..., Any]] = {}
+        for name in ("describe", "probe", "locate_inputs"):
+            hook = _plugin_execution_boundary(
+                f"{name} descriptor resolution",
+                partial(resolve_required_hook, name),
+            )
+            if not callable(hook):
+                raise IngestionError(
+                    "core ingestion requires an AnalyzerPlugin with manifest, "
+                    "describe(), probe(), and locate_inputs()"
+                )
+            resolved[name] = hook
+        return cls(
+            original=plugin,
+            manifest=projected_manifest,
+            _describe=resolved["describe"],
+            _probe=resolved["probe"],
+            _locate_inputs=resolved["locate_inputs"],
+        )
+
+    def describe(self) -> Any:
+        return _plugin_execution_boundary(
+            "describe() execution",
+            self._describe,
+        )
+
+    def probe(self, inventory: DumpInventory) -> Any:
+        return _plugin_execution_boundary(
+            "probe() execution",
+            lambda: self._probe(inventory),
+        )
+
+    def locate_inputs(self, inventory: DumpInventory) -> _PluginOutputIterator:
+        return _PluginOutputIterator.open(
+            "locate_inputs()",
+            lambda: self._locate_inputs(inventory),
+        )
+
+    def parser_hook(
+        self,
+        parser_kind: InputParserKind,
+    ) -> Callable[..., Iterable[Any]]:
+        hook_name = INPUT_PARSER_HOOKS[parser_kind]
+        if hook_name not in self._parser_hooks:
+            hook = _plugin_execution_boundary(
+                f"{hook_name} descriptor resolution",
+                lambda: getattr(self.original, hook_name, None),
+            )
+            self._parser_hooks[hook_name] = hook if callable(hook) else None
+        hook = self._parser_hooks[hook_name]
+        if hook is None:
+            raise IngestionError(
+                f"InputSpec requires missing hook {hook_name}()"
+            )
+        return hook
+
+    def parse(
+        self,
+        parser_kind: InputParserKind,
+        *args: Any,
+    ) -> _PluginOutputIterator:
+        hook_name = INPUT_PARSER_HOOKS[parser_kind]
+        hook = self.parser_hook(parser_kind)
+        return _PluginOutputIterator.open(
+            f"{hook_name}()",
+            lambda: hook(*args),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1342,7 +1565,7 @@ def _source_uid(
 
 def _build_dataset(
     *,
-    plugin: AnalyzerPlugin,
+    plugin_id: str,
     inventory: DumpInventory,
     schema: PluginSchema,
     revision_id: str,
@@ -1684,7 +1907,7 @@ def _build_dataset(
         normalized_source_records.append(
             {
                 "source_record_uid": _source_uid(
-                    plugin_id=plugin.manifest.plugin_id,
+                    plugin_id=plugin_id,
                     node_id=node_id,
                     parser_id=parser_id,
                     input_ordinal=parsed_record.input_ordinal,
@@ -1948,7 +2171,7 @@ def _build_dataset(
 
 def _fingerprint(
     reader: CoreArtifactReader,
-    plugin: AnalyzerPlugin,
+    manifest: _IngestionManifestSnapshot,
     schema: PluginSchema,
     specs: Sequence[InputSpec],
 ) -> str:
@@ -1958,7 +2181,6 @@ def _fingerprint(
 
     digest = sha256()
     digest.update(b"router-dump-ingestion-revision:v2")
-    manifest = plugin.manifest
     add(
         canonical_json(
             {
@@ -2052,36 +2274,124 @@ class IngestionCoordinator:
 
     @staticmethod
     def _plugin(plugin: Any) -> AnalyzerPlugin:
-        manifest = getattr(plugin, "manifest", None)
-        required = ("describe", "probe", "locate_inputs")
-        if manifest is None or any(
-            not callable(getattr(plugin, name, None)) for name in required
-        ):
-            raise IngestionError(
-                "core ingestion requires an AnalyzerPlugin with manifest, "
-                "describe(), probe(), and locate_inputs()"
-            )
-        if not isinstance(manifest, PluginManifest):
-            raise IngestionError("core ingestion requires a PluginManifest")
-        if manifest.core_api_version != CORE_PLUGIN_API_VERSION:
-            raise IngestionError(
-                "plug-in core API version is incompatible with this core"
-            )
-        _bounded_text(
-            manifest.plugin_id,
-            "manifest.plugin_id",
-            maximum=256,
+        try:
+            snapshot = _IngestionPluginSnapshot.resolve(plugin)
+        except IngestionError as error:
+            # ``PluginRegistry.register`` owns the surrounding registration
+            # boundary and its established public error classification. Keep
+            # this private compatibility validator transparent to a hostile
+            # non-Exception failure so that outer boundary remains effective.
+            cause = error.__cause__
+            if (
+                cause is not None
+                and not isinstance(cause, Exception)
+                and not isinstance(cause, PROCESS_CONTROL_EXCEPTIONS)
+            ):
+                raise cause
+            raise
+        return cast(AnalyzerPlugin, snapshot.original)
+
+    @staticmethod
+    def _snapshot_plugin(plugin: Any) -> _IngestionPluginSnapshot:
+        if isinstance(plugin, _IngestionPluginSnapshot):
+            return plugin
+        return _IngestionPluginSnapshot.resolve(plugin)
+
+    def _schema(
+        self,
+        plugin: _IngestionPluginSnapshot,
+        budget: _IngestionBudget,
+    ) -> tuple[PluginSchema, _SchemaIndex]:
+        def process() -> tuple[PluginSchema, _SchemaIndex]:
+            schema = plugin.describe()
+            if type(schema) is not PluginSchema:
+                raise IngestionError(
+                    "describe() must return an exact PluginSchema"
+                )
+            budget.consume(schema, label="describe", output=False)
+            return schema, _SchemaIndex.build(schema)
+
+        return _plugin_execution_boundary(
+            "describe() output processing",
+            process,
         )
-        _bounded_text(
-            manifest.plugin_version,
-            "manifest.plugin_version",
-            maximum=128,
+
+    def _probe(
+        self,
+        plugin: _IngestionPluginSnapshot,
+        inventory: DumpInventory,
+        budget: _IngestionBudget,
+    ) -> tuple[PluginDiagnostic, ...]:
+        def process() -> tuple[PluginDiagnostic, ...]:
+            raw_report = plugin.probe(inventory)
+            inventory_artifact_ids = {
+                item.artifact_id for item in inventory.artifacts
+            }
+            try:
+                report = validate_probe_report(
+                    raw_report,
+                    artifact_ids=inventory_artifact_ids,
+                    maximum_diagnostics=self.limits.max_diagnostics,
+                    maximum_evidence_items=(
+                        self.limits.max_evidence_per_output
+                    ),
+                )
+            except ValueError as error:
+                raise IngestionError(
+                    f"probe report is invalid: {error}"
+                ) from error
+            probe_diagnostics = tuple(report.diagnostics)
+            for index, diagnostic in enumerate(probe_diagnostics):
+                budget.consume(
+                    diagnostic,
+                    label=f"probe.diagnostics[{index}]",
+                )
+                if not diagnostic.recoverable:
+                    raise IngestionError(
+                        f"probe() failed: {diagnostic.code}: "
+                        f"{diagnostic.message}"
+                    )
+            if report.result is not None:
+                try:
+                    probe_result = validate_probe_result(report.result)
+                except ValueError as error:
+                    raise IngestionError(
+                        f"probe result is invalid: {error}"
+                    ) from error
+                budget.consume(
+                    probe_result,
+                    label="probe.result",
+                    output=False,
+                )
+                match_kind = ProbeMatchKind(probe_result.match_kind)
+                _json_value(probe_result)
+            else:
+                match_kind = ProbeMatchKind.NONE
+            if report.result is None or match_kind is ProbeMatchKind.NONE:
+                raise IngestionError(
+                    "plug-in probe did not match the inventoried input"
+                )
+            return probe_diagnostics
+
+        return _plugin_execution_boundary(
+            "probe() output processing",
+            process,
         )
-        return cast(AnalyzerPlugin, plugin)
 
     def _located(
         self,
-        plugin: AnalyzerPlugin,
+        plugin: _IngestionPluginSnapshot,
+        inventory: DumpInventory,
+        budget: _IngestionBudget,
+    ) -> tuple[tuple[InputSpec, ...], tuple[PluginDiagnostic, ...]]:
+        return _plugin_execution_boundary(
+            "locate_inputs() output processing",
+            lambda: self._located_outputs(plugin, inventory, budget),
+        )
+
+    def _located_outputs(
+        self,
+        plugin: _IngestionPluginSnapshot,
         inventory: DumpInventory,
         budget: _IngestionBudget,
     ) -> tuple[tuple[InputSpec, ...], tuple[PluginDiagnostic, ...]]:
@@ -2091,7 +2401,7 @@ class IngestionCoordinator:
         artifacts_by_id = {
             artifact.artifact_id: artifact for artifact in inventory.artifacts
         }
-        iterator = iter(plugin.locate_inputs(inventory))
+        iterator = plugin.locate_inputs(inventory)
         try:
             for index, output in enumerate(iterator):
                 if index >= self.limits.max_located_inputs:
@@ -2189,11 +2499,7 @@ class IngestionCoordinator:
                         f"{output.parser_kind.value!r} requires undeclared "
                         f"capability {required_capability.value!r}"
                     )
-                hook_name = INPUT_PARSER_HOOKS[output.parser_kind]
-                if not callable(getattr(plugin, hook_name, None)):
-                    raise IngestionError(
-                        f"InputSpec requires missing hook {hook_name}()"
-                    )
+                plugin.parser_hook(output.parser_kind)
                 specs.append(output)
         finally:
             close = getattr(iterator, "close", None)
@@ -2205,7 +2511,36 @@ class IngestionCoordinator:
 
     def _parse(
         self,
-        plugin: AnalyzerPlugin,
+        plugin: _IngestionPluginSnapshot,
+        reader: CoreArtifactReader,
+        specs: Sequence[InputSpec],
+        *,
+        schema_index: _SchemaIndex,
+        budget: _IngestionBudget,
+        initial_diagnostics: Sequence[PluginDiagnostic] = (),
+    ) -> tuple[
+        list[SnapshotObservation],
+        list[RelationshipObservation],
+        list[RelationshipCollectionObservation],
+        list[DomainEvent],
+        list[_ParsedSourceRecord],
+        list[PluginDiagnostic],
+    ]:
+        return _plugin_execution_boundary(
+            "parser output processing",
+            lambda: self._parse_outputs(
+                plugin,
+                reader,
+                specs,
+                schema_index=schema_index,
+                budget=budget,
+                initial_diagnostics=initial_diagnostics,
+            ),
+        )
+
+    def _parse_outputs(
+        self,
+        plugin: _IngestionPluginSnapshot,
         reader: CoreArtifactReader,
         specs: Sequence[InputSpec],
         *,
@@ -2303,7 +2638,11 @@ class IngestionCoordinator:
                 consume(
                     spec,
                     input_ordinal,
-                    plugin.parse_status(scoped_reader, spec),
+                    plugin.parse(
+                        InputParserKind.STATUS,
+                        scoped_reader,
+                        spec,
+                    ),
                     (
                         SnapshotObservation,
                         RelationshipObservation,
@@ -2316,7 +2655,11 @@ class IngestionCoordinator:
                 consume(
                     spec,
                     input_ordinal,
-                    plugin.parse_text_trace(scoped_reader, spec),
+                    plugin.parse(
+                        InputParserKind.TEXT_TRACE,
+                        scoped_reader,
+                        spec,
+                    ),
                     (
                         DomainEvent,
                         SourceRecordEmission,
@@ -2386,7 +2729,11 @@ class IngestionCoordinator:
                 consume(
                     spec,
                     input_ordinal,
-                    plugin.parse_ctf(spec, decoded_messages(spec)),
+                    plugin.parse(
+                        InputParserKind.CTF,
+                        spec,
+                        decoded_messages(spec),
+                    ),
                     (
                         DomainEvent,
                         SourceRecordEmission,
@@ -2410,13 +2757,9 @@ class IngestionCoordinator:
         node_hint: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> IngestionResult:
-        selected = self._plugin(plugin)
+        selected = self._snapshot_plugin(plugin)
         budget = _IngestionBudget(self.limits)
-        schema = selected.describe()
-        if type(schema) is not PluginSchema:
-            raise IngestionError("describe() must return an exact PluginSchema")
-        budget.consume(schema, label="describe", output=False)
-        schema_index = _SchemaIndex.build(schema)
+        schema, schema_index = self._schema(selected, budget)
         serialized_metadata = _json_value(metadata or {})
         assert isinstance(serialized_metadata, dict)
         safe_metadata = serialized_metadata
@@ -2426,67 +2769,41 @@ class IngestionCoordinator:
             metadata=safe_metadata,
             limits=self.limits.artifact_limits,
         ) as reader:
-            raw_report = selected.probe(reader.inventory)
-            inventory_artifact_ids = {
-                item.artifact_id for item in reader.inventory.artifacts
-            }
-            try:
-                report = validate_probe_report(
-                    raw_report,
-                    artifact_ids=inventory_artifact_ids,
-                    maximum_diagnostics=self.limits.max_diagnostics,
-                    maximum_evidence_items=(self.limits.max_evidence_per_output),
-                )
-            except ValueError as error:
-                raise IngestionError(f"probe report is invalid: {error}") from error
-            probe_diagnostics = tuple(report.diagnostics)
-            for index, diagnostic in enumerate(probe_diagnostics):
-                budget.consume(
-                    diagnostic,
-                    label=f"probe.diagnostics[{index}]",
-                )
-                if not diagnostic.recoverable:
-                    raise IngestionError(
-                        f"probe() failed: {diagnostic.code}: {diagnostic.message}"
-                    )
-            if report.result is not None:
-                try:
-                    probe_result = validate_probe_result(report.result)
-                except ValueError as error:
-                    raise IngestionError(f"probe result is invalid: {error}") from error
-                budget.consume(
-                    probe_result,
-                    label="probe.result",
-                    output=False,
-                )
-                match_kind = ProbeMatchKind(probe_result.match_kind)
-                _json_value(probe_result)
-            else:
-                match_kind = ProbeMatchKind.NONE
-            if report.result is None or match_kind is ProbeMatchKind.NONE:
-                raise IngestionError(
-                    "plug-in probe did not match the inventoried input"
-                )
+            probe_diagnostics = self._probe(
+                selected,
+                reader.inventory,
+                budget,
+            )
             specs, locate_diagnostics = self._located(
                 selected,
                 reader.inventory,
                 budget,
             )
-            nodes = {spec.node for spec in specs}
-            if node_hint is not None and nodes != {node_hint}:
-                raise IngestionError(
-                    "all located inputs must match the requested node_hint"
-                )
-            if len(nodes) != 1:
-                raise IngestionError(
-                    "one core-ingestion revision must select exactly one node"
-                )
-            node_id = next(iter(nodes))
-            fingerprint = _fingerprint(
-                reader,
-                selected,
-                schema,
-                specs,
+
+            def selected_node() -> str:
+                nodes = {spec.node for spec in specs}
+                if node_hint is not None and nodes != {node_hint}:
+                    raise IngestionError(
+                        "all located inputs must match the requested node_hint"
+                    )
+                if len(nodes) != 1:
+                    raise IngestionError(
+                        "one core-ingestion revision must select exactly one node"
+                    )
+                return next(iter(nodes))
+
+            node_id = _plugin_execution_boundary(
+                "locate_inputs() result finalization",
+                selected_node,
+            )
+            fingerprint = _plugin_execution_boundary(
+                "ingestion fingerprint finalization",
+                lambda: _fingerprint(
+                    reader,
+                    selected.manifest,
+                    schema,
+                    specs,
+                ),
             )
             (
                 snapshots,
@@ -2506,42 +2823,54 @@ class IngestionCoordinator:
                     *locate_diagnostics,
                 ),
             )
-            event_uids = [event.event_uid for event in events]
-            if len(event_uids) != len(set(event_uids)):
-                raise IngestionError(
-                    "parser outputs contain duplicate event identifiers"
-                )
-            known_event_uids = set(event_uids)
-            for source_record in source_records:
-                emission = source_record.emission
-                linked = {
-                    *(
-                        (emission.matched_event_uid,)
-                        if emission.matched_event_uid is not None
-                        else ()
-                    ),
-                    *emission.matched_event_uids,
-                }
-                if unknown_links := linked - known_event_uids:
+            def validate_event_links() -> None:
+                event_uids = [event.event_uid for event in events]
+                if len(event_uids) != len(set(event_uids)):
                     raise IngestionError(
-                        "source record references "
-                        f"{len(unknown_links)} unknown event identifier(s)"
+                        "parser outputs contain duplicate event identifiers"
                     )
+                known_event_uids = set(event_uids)
+                for source_record in source_records:
+                    emission = source_record.emission
+                    linked = {
+                        *(
+                            (emission.matched_event_uid,)
+                            if emission.matched_event_uid is not None
+                            else ()
+                        ),
+                        *emission.matched_event_uids,
+                    }
+                    if unknown_links := linked - known_event_uids:
+                        raise IngestionError(
+                            "source record references "
+                            f"{len(unknown_links)} unknown event identifier(s)"
+                        )
+
+            _plugin_execution_boundary(
+                "parser result finalization",
+                validate_event_links,
+            )
             inventory = reader.inventory
 
-        revision_id = f"ingested/{node_id}/{fingerprint[:32]}"
-        dataset = _build_dataset(
-            plugin=selected,
-            inventory=inventory,
-            schema=schema,
-            revision_id=revision_id,
-            node_id=node_id,
-            snapshots=snapshots,
-            relationship_observations=relationships,
-            relationship_collections=collections,
-            events=events,
-            source_records=source_records,
-            diagnostics=diagnostics,
+        def finalize_dataset() -> tuple[str, dict[str, Any]]:
+            revision_id = f"ingested/{node_id}/{fingerprint[:32]}"
+            return revision_id, _build_dataset(
+                plugin_id=selected.manifest.plugin_id,
+                inventory=inventory,
+                schema=schema,
+                revision_id=revision_id,
+                node_id=node_id,
+                snapshots=snapshots,
+                relationship_observations=relationships,
+                relationship_collections=collections,
+                events=events,
+                source_records=source_records,
+                diagnostics=diagnostics,
+            )
+
+        revision_id, dataset = _plugin_execution_boundary(
+            "normalized output finalization",
+            finalize_dataset,
         )
         return IngestionResult(
             inventory=inventory,
@@ -2755,7 +3084,8 @@ class CoreIngestionRuntime:
         coordinator: IngestionCoordinator | None = None,
     ) -> None:
         self.coordinator = coordinator or IngestionCoordinator()
-        self.plugin = self.coordinator._plugin(plugin)
+        self._plugin_snapshot = self.coordinator._snapshot_plugin(plugin)
+        self.plugin = cast(AnalyzerPlugin, self._plugin_snapshot.original)
 
     def open(
         self,
@@ -2765,10 +3095,10 @@ class CoreIngestionRuntime:
 
     @contextmanager
     def _open(self, input_path: Path) -> Iterator[CoreIngestionSession]:
-        result = self.coordinator.ingest(self.plugin, input_path)
+        result = self.coordinator.ingest(self._plugin_snapshot, input_path)
         store = InMemoryRevisionStore(
             result,
-            plugin_id=self.plugin.manifest.plugin_id,
+            plugin_id=self._plugin_snapshot.manifest.plugin_id,
         )
         source = IngestedDatasetSource(store)
         yield CoreIngestionSession(

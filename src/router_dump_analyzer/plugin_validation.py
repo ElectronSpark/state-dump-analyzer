@@ -12,6 +12,7 @@ import mimetypes
 from collections.abc import Iterable
 from dataclasses import dataclass
 from importlib import metadata
+from inspect import getattr_static
 from itertools import islice
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -38,10 +39,12 @@ from .plugin_api import (
     validate_probe_report,
 )
 from .plugin_loading import load_plugin_entry_point
+from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .public_text import bounded_public_error_detail
 
 _MAX_DISCOVERY_OUTPUTS = 1_000
 _MAX_PUBLIC_DIAGNOSTIC_CHARACTERS = 1_024
+_MISSING_PLUGIN_MEMBER = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +58,37 @@ class PluginValidationResult:
     @property
     def ok(self) -> bool:
         return not self.errors
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedPluginMember:
+    value: object = _MISSING_PLUGIN_MEMBER
+    error_summary: str | None = None
+
+
+class _PluginMemberResolver:
+    """Resolve each plug-in-owned descriptor at most once per validation."""
+
+    def __init__(self, plugin: Any) -> None:
+        self._plugin = plugin
+        self._cache: dict[str, _ResolvedPluginMember] = {}
+
+    def resolve(self, name: str) -> _ResolvedPluginMember:
+        cached = self._cache.get(name)
+        if cached is not None:
+            return cached
+        try:
+            value = getattr(self._plugin, name, _MISSING_PLUGIN_MEMBER)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:  # noqa: BLE001 - plug-in descriptors are hostile.
+            resolved = _ResolvedPluginMember(
+                error_summary=_public_exception_summary(error)
+            )
+        else:
+            resolved = _ResolvedPluginMember(value=value)
+        self._cache[name] = resolved
+        return resolved
 
 
 def _standard_capabilities(manifest: PluginManifest) -> set[PluginCapability]:
@@ -80,7 +114,9 @@ def _public_dynamic_text(value: object, *, fallback: str) -> str:
 
     try:
         rendered = value if type(value) is str else str(value)
-    except Exception:  # noqa: BLE001 - hostile diagnostic rendering is data.
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except BaseException:  # noqa: BLE001 - hostile diagnostic rendering is data.
         return fallback
     return str(
         bounded_public_error_detail(
@@ -94,15 +130,19 @@ def _public_dynamic_text(value: object, *, fallback: str) -> str:
 def _public_dynamic_repr(value: object, *, fallback: str) -> str:
     try:
         rendered = repr(value)
-    except Exception:  # noqa: BLE001 - hostile diagnostic rendering is data.
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except BaseException:  # noqa: BLE001 - hostile diagnostic rendering is data.
         return fallback
     return _public_dynamic_text(rendered, fallback=fallback)
 
 
-def _public_exception_summary(error: Exception) -> str:
+def _public_exception_summary(error: BaseException) -> str:
     try:
         summary = f"{type(error).__name__}: {error}"
-    except Exception:  # noqa: BLE001 - hostile exception rendering is data.
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except BaseException:  # noqa: BLE001 - hostile exception rendering is data.
         summary = ""
     return _public_dynamic_text(
         summary,
@@ -118,9 +158,10 @@ def _bounded_outputs(
 
 
 def _validate_inventory_calls(
-    plugin: Any,
     inventory: DumpInventory,
     *,
+    probe: object,
+    locate_inputs: object,
     label: str,
     capabilities: set[PluginCapability],
     errors: list[str],
@@ -128,11 +169,12 @@ def _validate_inventory_calls(
     allow_legacy_input_dispatch: bool,
     require_match: bool,
 ) -> None:
-    probe = getattr(plugin, "probe", None)
     if callable(probe):
         try:
             report = probe(inventory)
-        except Exception as error:  # noqa: BLE001 - report plug-in boundary errors.
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:  # noqa: BLE001 - report plug-in boundary errors.
             errors.append(
                 f"probe() must handle {label}; "
                 f"raised {_public_exception_summary(error)}"
@@ -162,12 +204,13 @@ def _validate_inventory_calls(
                     "author fixture and metadata"
                 )
 
-    locate_inputs = getattr(plugin, "locate_inputs", None)
     if not callable(locate_inputs):
         return
     try:
         outputs, truncated = _bounded_outputs(locate_inputs(inventory))
-    except Exception as error:  # noqa: BLE001 - report plug-in boundary errors.
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except BaseException as error:  # noqa: BLE001 - report plug-in boundary errors.
         errors.append(
             f"locate_inputs() must handle {label}; "
             f"raised {_public_exception_summary(error)}"
@@ -246,17 +289,28 @@ def _validate_inventory_calls(
             )
 
 
-def validate_plugin(
+def _validate_plugin_owned_values(
     plugin: Any,
     *,
     inventory: DumpInventory | None = None,
     allow_legacy_input_dispatch: bool = False,
 ) -> PluginValidationResult:
-    """Validate one loaded entry-point object without device-specific knowledge."""
+    """Validate after the public boundary has assumed hostile plug-in values."""
 
     errors: list[str] = []
     warnings: list[str] = []
-    manifest = getattr(plugin, "manifest", None)
+    resolver = _PluginMemberResolver(plugin)
+    manifest_resolution = resolver.resolve("manifest")
+    if manifest_resolution.error_summary is not None:
+        manifest_error = (
+            "entry point manifest could not be resolved; raised "
+            + manifest_resolution.error_summary
+        )
+        return PluginValidationResult(
+            plugin_id="<unknown>",
+            errors=(manifest_error,),
+        )
+    manifest = manifest_resolution.value
     if not isinstance(manifest, PluginManifest):
         return PluginValidationResult(
             plugin_id="<unknown>",
@@ -300,36 +354,57 @@ def validate_plugin(
     except (TypeError, ValueError):
         errors.append("manifest.reconstruction_default is not supported")
 
+    resolved_hooks: dict[str, object] = {}
     for hook_name in ("describe", "probe", "locate_inputs"):
-        if not callable(getattr(plugin, hook_name, None)):
+        resolution = resolver.resolve(hook_name)
+        resolved_hooks[hook_name] = resolution.value
+        if resolution.error_summary is not None:
+            errors.append(
+                f"required hook {hook_name}() could not be resolved; raised "
+                f"{resolution.error_summary}"
+            )
+        elif not callable(resolution.value):
             errors.append(f"required hook {hook_name}() is missing")
 
     capabilities = _standard_capabilities(manifest)
     for capability, hook_names in PLUGIN_CAPABILITY_HOOKS.items():
+        if capability not in capabilities:
+            continue
         for hook_name in hook_names:
-            hook = getattr(plugin, hook_name, None)
-            if capability in capabilities and not callable(hook):
+            resolution = resolver.resolve(hook_name)
+            if resolution.error_summary is not None:
+                errors.append(
+                    f"capability {capability.value!r} hook {hook_name}() could not "
+                    f"be resolved; raised {resolution.error_summary}"
+                )
+                continue
+            if not callable(resolution.value):
                 errors.append(
                     f"capability {capability.value!r} requires {hook_name}()"
                 )
                 continue
             if (
-                capability in capabilities
-                and isinstance(plugin, AnalyzerPluginBase)
-                and getattr(type(plugin), hook_name, None)
-                is getattr(AnalyzerPluginBase, hook_name)
+                isinstance(plugin, AnalyzerPluginBase)
+                and getattr_static(
+                    type(plugin),
+                    hook_name,
+                    _MISSING_PLUGIN_MEMBER,
+                )
+                is getattr_static(AnalyzerPluginBase, hook_name)
             ):
                 errors.append(
                     f"capability {capability.value!r} requires an override of "
                     f"{hook_name}()"
                 )
 
-    describe = getattr(plugin, "describe", None)
+    describe = resolved_hooks["describe"]
     if callable(describe):
         try:
             first_schema = describe()
             second_schema = describe()
-        except Exception as error:  # noqa: BLE001 - report plug-in boundary errors.
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:  # noqa: BLE001 - report plug-in boundary errors.
             errors.append(f"describe() raised {_public_exception_summary(error)}")
         else:
             if not isinstance(first_schema, PluginSchema):
@@ -339,8 +414,9 @@ def validate_plugin(
 
     empty_inventory = DumpInventory(node_hint=None, artifacts=())
     _validate_inventory_calls(
-        plugin,
         empty_inventory,
+        probe=resolved_hooks["probe"],
+        locate_inputs=resolved_hooks["locate_inputs"],
         label="an empty safe inventory",
         capabilities=capabilities,
         errors=errors,
@@ -350,8 +426,9 @@ def validate_plugin(
     )
     if inventory is not None:
         _validate_inventory_calls(
-            plugin,
             inventory,
+            probe=resolved_hooks["probe"],
+            locate_inputs=resolved_hooks["locate_inputs"],
             label="the author fixture inventory",
             capabilities=capabilities,
             errors=errors,
@@ -379,6 +456,32 @@ def validate_plugin(
         errors=tuple(errors),
         warnings=tuple(warnings),
     )
+
+
+def validate_plugin(
+    plugin: Any,
+    *,
+    inventory: DumpInventory | None = None,
+    allow_legacy_input_dispatch: bool = False,
+) -> PluginValidationResult:
+    """Validate one loaded entry-point object without device-specific knowledge."""
+
+    try:
+        return _validate_plugin_owned_values(
+            plugin,
+            inventory=inventory,
+            allow_legacy_input_dispatch=allow_legacy_input_dispatch,
+        )
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except BaseException as error:  # noqa: BLE001 - plug-in-owned nested values.
+        return PluginValidationResult(
+            plugin_id="<unknown>",
+            errors=(
+                "plug-in validation could not inspect plug-in-owned values; raised "
+                + _public_exception_summary(error),
+            ),
+        )
 
 
 def _entry_points() -> tuple[metadata.EntryPoint, ...]:
@@ -508,7 +611,9 @@ def main(argv: list[str] | None = None) -> int:
             node_hint=arguments.node_hint,
             metadata_items=arguments.metadata,
         )
-    except (LookupError, OSError, RuntimeError, TypeError, ValueError) as error:
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except BaseException as error:  # noqa: BLE001 - final public CLI load boundary.
         detail = _public_dynamic_text(
             error,
             fallback="plug-in validation request failed",
@@ -516,11 +621,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {detail}")
         return 2
 
-    result = validate_plugin(
-        plugin,
-        inventory=inventory,
-        allow_legacy_input_dispatch=arguments.allow_legacy_input_dispatch,
-    )
+    try:
+        result = validate_plugin(
+            plugin,
+            inventory=inventory,
+            allow_legacy_input_dispatch=arguments.allow_legacy_input_dispatch,
+        )
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except BaseException as error:  # noqa: BLE001 - final public CLI error boundary.
+        detail = _public_exception_summary(error)
+        print(f"ERROR: plug-in validation failed; raised {detail}")
+        return 2
     for warning in result.warnings:
         print(f"WARNING: {warning}")
     for validation_error in result.errors:

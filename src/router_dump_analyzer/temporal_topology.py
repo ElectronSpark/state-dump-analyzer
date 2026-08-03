@@ -23,6 +23,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .normalized_data import contains_time
+from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .temporal_core import (
     RESOURCE_CREATION_OPERATIONS,
     RESOURCE_DELETION_OPERATIONS,
@@ -40,6 +41,77 @@ RelationshipReader = Callable[[int], list[dict[str, Any]]]
 
 class TemporalTopologyRequestError(ValueError):
     """A caller supplied an unsupported projection, perspective, or basis."""
+
+
+def _invoke_provider_callback(
+    callback: Callable[..., Any],
+    operation: str,
+    /,
+    *args: Any,
+) -> Any:
+    try:
+        return callback(*args)
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except Exception:
+        raise
+    except BaseException:  # noqa: BLE001 - plug-in callback boundary.
+        raise TemporalTopologyRequestError(
+            f"temporal provider {operation} failed"
+        ) from None
+
+
+def _materialize_provider_items(value: Any, operation: str) -> list[Any]:
+    """Contain lazy iteration and cleanup without hiding the primary failure."""
+
+    try:
+        iterator = iter(value)
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except Exception:
+        raise
+    except BaseException:  # noqa: BLE001 - plug-in iterable boundary.
+        raise TemporalTopologyRequestError(
+            f"temporal provider {operation} returned an unreadable iterable"
+        ) from None
+
+    items: list[Any] = []
+    failure: BaseException | None = None
+    try:
+        while True:
+            try:
+                items.append(next(iterator))
+            except StopIteration:
+                break
+    except BaseException as error:  # noqa: BLE001 - preserve primary failure.
+        failure = error
+    finally:
+        try:
+            close = getattr(iterator, "close", None)
+            if callable(close):
+                close()
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except Exception:
+            if failure is None:
+                raise
+            failure.add_note("plug-in provider iterator cleanup failed")
+        except BaseException:  # noqa: BLE001 - plug-in cleanup boundary.
+            if failure is None:
+                raise TemporalTopologyRequestError(
+                    f"temporal provider {operation} iterator cleanup failed"
+                ) from None
+            failure.add_note("plug-in provider iterator cleanup failed")
+
+    if failure is not None:
+        if isinstance(failure, PROCESS_CONTROL_EXCEPTIONS):
+            raise failure
+        if isinstance(failure, Exception):
+            raise failure
+        raise TemporalTopologyRequestError(
+            f"temporal provider {operation} iteration failed"
+        ) from None
+    return items
 
 
 def _ns(value: Any, field: str) -> int:
@@ -1535,8 +1607,11 @@ class TemporalTopologyService:
         resource_id = str(record["resource_id"])
         native = str(record.get("layer", "unknown")) == perspective["layer"]
         initial = (
-            self.state_reader(
-                resource_id, self.timeline_start_ns
+            _invoke_provider_callback(
+                self.state_reader,
+                "state read",
+                resource_id,
+                self.timeline_start_ns,
             )
             if native and self.state_reader is not None
             else None
@@ -1700,7 +1775,14 @@ class TemporalTopologyService:
         self, timestamp_ns: int, resource_ids: set[str]
     ) -> list[dict[str, Any]]:
         if self.runtime is None:
-            return self.relationship_reader(timestamp_ns)
+            return _materialize_provider_items(
+                _invoke_provider_callback(
+                    self.relationship_reader,
+                    "relationship read",
+                    timestamp_ns,
+                ),
+                "relationship read",
+            )
         unique: dict[str, dict[str, Any]] = {}
         for identifier in resource_ids:
             for item in self.runtime.relationships_by_endpoint.get(identifier, []):

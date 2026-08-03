@@ -53,6 +53,7 @@ from .multi_node_topology import (
     MultiNodeTopologyRequestError,
     MultiNodeTopologyService,
 )
+from .process_control import PROCESS_CONTROL_EXCEPTIONS
 
 
 class MultiNodeRouteRequestError(MultiNodeTopologyRequestError):
@@ -107,6 +108,21 @@ class MultiNodeRouteService:
     ) -> None:
         self.topology = topology
         self.policy = policy
+        try:
+            packet_transition_builder = policy.packet_transition_builder
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except Exception:
+            raise
+        except BaseException:  # noqa: BLE001 - plug-in descriptor boundary.
+            raise MultiNodeRouteRequestError(
+                "route packet-transition provider could not be resolved"
+            ) from None
+        if not callable(packet_transition_builder):
+            raise MultiNodeRouteRequestError(
+                "route packet-transition provider must be callable"
+            )
+        self._packet_transition_builder = packet_transition_builder
         if policy.default_scenario_id not in policy.scenarios:
             raise MultiNodeRouteRequestError(
                 "route policy default_scenario_id is not declared"
@@ -6690,15 +6706,24 @@ class MultiNodeRouteService:
             )
             if item["segment_kind"] == "node_resolution"
         ]
-        initial_state, transitions = self.policy.packet_transition_builder(
-            profile_id=profile_id,
-            step_ids=[
-                str(item["segment_id"]) for item in local_segments
-            ],
-            node_ids=[str(item["node_id"]) for item in local_segments],
-            direction=direction,
-            steering_profile_id=steering_profile_id,
-        )
+        try:
+            initial_state, transitions = self._packet_transition_builder(
+                profile_id=profile_id,
+                step_ids=[
+                    str(item["segment_id"]) for item in local_segments
+                ],
+                node_ids=[str(item["node_id"]) for item in local_segments],
+                direction=direction,
+                steering_profile_id=steering_profile_id,
+            )
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except Exception:
+            raise
+        except BaseException:  # noqa: BLE001 - plug-in callback boundary.
+            raise MultiNodeRouteRequestError(
+                "route packet-transition provider failed"
+            ) from None
         declared_actions: list[str] = []
         if declared_case is not None:
             initial_state, transitions = self._bind_generated_packet_declaration(

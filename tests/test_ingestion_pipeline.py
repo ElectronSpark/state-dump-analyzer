@@ -47,12 +47,17 @@ from router_dump_analyzer.ingestion_pipeline import (
     IngestionStateRootPathError,
     PipelineLimits,
     PluginExecutionMode,
+    PluginExecutionProcessError,
     PluginExecutionTimeoutError,
     PluginRegistry,
+    RegisteredPlugin,
     RetentionHostInventoryCoverage,
     RetentionPolicy,
+    _ingest_plugin_child,
     _path_for_containment_comparison,
+    _probe_plugin_child,
     _RetentionWorkItem,
+    _run_plugin_inline,
     _validate_ingestion_state_root,
     _windows_path_units,
     inspect_durable_queue,
@@ -62,6 +67,10 @@ from router_dump_analyzer.plugin_api import ProbeReport
 from tests.test_ingestion import InvalidProbeDiagnosticPlugin, ParseOnlyPlugin
 
 PRIVATE_FAILURE_MARKER = "PRIVATE-INGESTION-FAILURE-7f3e2d"
+
+
+class Boom(BaseException):
+    """Adversarial non-process-control throwable supplied by a plug-in."""
 
 
 def _fixture_bytes() -> bytes:
@@ -388,6 +397,55 @@ class _SlowProbePlugin(ParseOnlyPlugin):
         return super().probe(inventory)
 
 
+class _BoundaryProbePlugin(ParseOnlyPlugin):
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def probe(self, inventory: Any) -> ProbeReport:
+        del inventory
+        raise self.error
+
+
+class _BoundaryManifestPlugin:
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    @property
+    def manifest(self):
+        raise self.error
+
+
+class _BoundaryChildConnection:
+    def __init__(self) -> None:
+        self.closed = False
+        self.sent: list[bytes] = []
+
+    def send_bytes(self, payload: bytes) -> None:
+        self.sent.append(payload)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _BoundaryChildRegistry:
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def probe(self, *args: Any, **kwargs: Any) -> tuple[()]:
+        del args, kwargs
+        raise self.error
+
+
+class _BoundaryChildCoordinator(IngestionCoordinator):
+    def __init__(self, error: BaseException) -> None:
+        super().__init__()
+        self.error = error
+
+    def ingest(self, *args: Any, **kwargs: Any) -> IngestionResult:
+        del args, kwargs
+        raise self.error
+
+
 class DurableIngestionPipelineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.scope = ImportScope("tenant-a", "project-a", "workspace-a")
@@ -406,6 +464,122 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             poll_interval_seconds=0.01,
             plugin_execution_mode=PluginExecutionMode.INLINE,
         )
+
+    def test_inline_plugin_boundary_contains_boom_and_preserves_process_controls(
+        self,
+    ) -> None:
+        supplied = r"inline plug-in failed at C:\private\tenant\plugin.py"
+
+        def explode(error: BaseException) -> None:
+            raise error
+
+        with self.assertRaises(PluginExecutionProcessError) as caught:
+            _run_plugin_inline(
+                lambda: explode(Boom(supplied)),
+                stage="probe",
+            )
+        self.assertEqual(
+            str(caught.exception),
+            "plug-in probe failed during trusted inline execution",
+        )
+        self.assertNotIn(supplied, str(caught.exception))
+        self.assertEqual(caught.exception.private_exception_type, "Boom")
+
+        for exception_type in (KeyboardInterrupt, SystemExit, GeneratorExit):
+            with self.subTest(
+                exception_type=exception_type.__name__
+            ), self.assertRaises(exception_type):
+                _run_plugin_inline(
+                    lambda exception_type=exception_type: explode(
+                        exception_type("process control")
+                    ),
+                    stage="probe",
+                )
+
+    def test_registry_plugin_boundaries_contain_boom_and_preserve_process_controls(
+        self,
+    ) -> None:
+        supplied = r"registry plug-in failed at C:\private\tenant\plugin.py"
+        registry = PluginRegistry(allow_manifest_identity=True)
+        with self.assertRaisesRegex(
+            IngestionPipelineError,
+            "could not resolve required descriptors",
+        ) as caught:
+            registry.register(
+                _BoundaryManifestPlugin(Boom(supplied)),
+                package_hash="test-boundary",
+            )
+        self.assertNotIn(supplied, str(caught.exception))
+
+        with self.assertRaises(KeyboardInterrupt):
+            registry.register(
+                _BoundaryManifestPlugin(KeyboardInterrupt("process control")),
+                package_hash="test-boundary",
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory) / "status.jsonl"
+            fixture.write_bytes(_fixture_bytes())
+
+            boom_registry = PluginRegistry(allow_manifest_identity=True)
+            boom_registry.register(
+                _BoundaryProbePlugin(Boom(supplied)),
+                package_hash="test-boundary",
+            )
+            self.assertEqual(boom_registry.probe(fixture), ())
+
+            process_registry = PluginRegistry(allow_manifest_identity=True)
+            process_registry.register(
+                _BoundaryProbePlugin(SystemExit("process control")),
+                package_hash="test-boundary",
+            )
+            with self.assertRaises(SystemExit):
+                process_registry.probe(fixture)
+
+    def test_child_plugin_boundaries_preserve_process_control_exceptions(self) -> None:
+        for exception_type in (KeyboardInterrupt, SystemExit, GeneratorExit):
+            with self.subTest(
+                boundary="probe",
+                exception_type=exception_type.__name__,
+            ):
+                connection = _BoundaryChildConnection()
+                with self.assertRaises(exception_type):
+                    _probe_plugin_child(
+                        connection,
+                        _BoundaryChildRegistry(
+                            exception_type("process control")
+                        ),  # type: ignore[arg-type]
+                        "unused",
+                        None,
+                        {},
+                    )
+                self.assertTrue(connection.closed)
+                self.assertEqual(connection.sent, [])
+
+            with self.subTest(
+                boundary="ingest",
+                exception_type=exception_type.__name__,
+            ):
+                connection = _BoundaryChildConnection()
+                registered = RegisteredPlugin(
+                    plugin=object(),
+                    coordinator=_BoundaryChildCoordinator(
+                        exception_type("process control")
+                    ),
+                    package_hash="test-boundary",
+                    verify_package_bytes=False,
+                )
+                with self.assertRaises(exception_type):
+                    _ingest_plugin_child(
+                        connection,
+                        registered,
+                        "unused",
+                        None,
+                        {},
+                        "unused",
+                    )
+                self.assertTrue(connection.closed)
+                self.assertEqual(connection.sent, [])
 
     def _admit_staged(
         self,

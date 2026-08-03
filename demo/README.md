@@ -224,7 +224,12 @@ that `ifindex` is stable within one analysis revision and maps `oper_status=up`
 to healthy, `down` to error, and other accepted values to unknown.
 The generic validator preserves useful safe diagnostics from this plug-in but
 bounds or replaces unsafe exception/path/display text before it reaches a
-terminal or CI log. The package fingerprint includes ordinary files and
+terminal or CI log. Core rethrows `KeyboardInterrupt`, `SystemExit`, and
+`GeneratorExit` at validator, capability, registry-probe, and trusted-inline
+execution boundaries, while containing every other `BaseException` behind a
+bounded public diagnostic. Installed loading, runtime/session construction,
+lazy parser output, and provider callbacks use the same host-owned rule; the
+example does not implement or override it. The package fingerprint includes ordinary files and
 contained aliases even if their basename resembles `.git` or `__pycache__`;
 only actual metadata/cache directories are pruned.
 At one timestamp, `source_sequence` establishes producer order before the

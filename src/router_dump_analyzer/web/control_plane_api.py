@@ -28,6 +28,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, is_dataclass
 from dataclasses import field as dataclass_field
 from enum import Enum
+from itertools import islice
 from types import MappingProxyType
 from typing import Any, NoReturn, Protocol
 from urllib.parse import urlsplit
@@ -100,8 +101,10 @@ from router_dump_analyzer.operational_logging import (
     OPERATIONAL_EVENT_CONTRACT,
     OperationalEventDiagnosticsSnapshot,
     emit_operational_event,
+    emit_resolver_response_headers_rejected,
     operational_event_diagnostics_snapshot,
 )
+from router_dump_analyzer.process_control import PROCESS_CONTROL_EXCEPTIONS
 from router_dump_analyzer.public_text import (
     bounded_public_error_detail,
 )
@@ -132,6 +135,7 @@ MAX_PAGE_LIMIT = 5_000
 CONTROL_PLANE_READ_ROLE = "control-plane:read"
 CONTROL_PLANE_WRITE_ROLE = "control-plane:write"
 CONTROL_PLANE_ADMIN_ROLE = "control-plane:admin"
+CONTROL_PLANE_INSTANCE_OPERATOR_ROLE = "control-plane:instance-operator"
 MAX_RETENTION_AUDIT_LIMIT = 500
 MAX_RETENTION_OPERATION_ID_LENGTH = 248
 MAX_RETENTION_PROTECTED_IDS = 5_000
@@ -144,16 +148,42 @@ _MAX_ACCESS_DENIAL_SAMPLE_KEYS = 1_024
 _DEFAULT_ACCESS_DENIAL_GLOBAL_BURST = 64
 _DEFAULT_ACCESS_DENIAL_GLOBAL_REFILL_PER_SECOND = 1.0
 _ACCESS_DENIAL_TENANT_CANDIDATES = 4
-_PROCESS_CONTROL_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _ACCESS_DENIAL_RESPONSE_STATUSES = frozenset({400, 401, 403, 404})
+_ACCESS_DENIAL_REPORTED_RESPONSE_STATUSES = frozenset(
+    {*_ACCESS_DENIAL_RESPONSE_STATUSES, 500}
+)
 _ACCESS_DENIAL_REQUEST_METHODS = frozenset(
     {"DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"}
 )
 _ACCESS_DENIAL_ROLES = frozenset(
     {
         CONTROL_PLANE_ADMIN_ROLE,
+        CONTROL_PLANE_INSTANCE_OPERATOR_ROLE,
         CONTROL_PLANE_READ_ROLE,
         CONTROL_PLANE_WRITE_ROLE,
+    }
+)
+_MAX_RESOLVER_RESPONSE_HEADERS = 32
+_MAX_RESOLVER_HEADER_NAME_BYTES = 128
+_MAX_RESOLVER_HEADER_VALUE_BYTES = 4 * 1024
+_MAX_RESOLVER_HEADER_BLOCK_BYTES = 16 * 1024
+_HTTP_HEADER_NAME_PUNCTUATION = frozenset("!#$%&'*+-.^_`|~")
+_RESOLVER_FORBIDDEN_RESPONSE_HEADERS = frozenset(
+    {
+        "connection",
+        "content-encoding",
+        "content-length",
+        "content-type",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "proxy-connection",
+        "set-cookie",
+        "set-cookie2",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
     }
 )
 _ACCESS_DENIAL_REPORTER_INSTALL_LOCK = threading.Lock()
@@ -248,7 +278,7 @@ class _ControlPlaneAccessDenied(Exception):
         required_role: str | None = None,
         tenant_correlation: str | None = None,
         concealed: bool = False,
-        headers: dict[str, str] | None = None,
+        headers: object = None,
     ) -> None:
         if type(phase) is not ControlPlaneAccessPhase:
             raise TypeError("access-denial phase must use the closed enum")
@@ -468,6 +498,7 @@ class ControlPlaneAccessDenialReporter:
         request_method: object,
         route_name: object,
         mutating: object,
+        response_status: object,
     ) -> bool:
         """Validate every field before hashing or consuming sampler capacity."""
 
@@ -481,6 +512,9 @@ class ControlPlaneAccessDenialReporter:
             and reason in _ACCESS_DENIAL_REASONS_BY_PHASE[phase]
             and type(denial.status_code) is int
             and denial.status_code in _ACCESS_DENIAL_RESPONSE_STATUSES
+            and type(response_status) is int
+            and response_status in _ACCESS_DENIAL_REPORTED_RESPONSE_STATUSES
+            and response_status in {denial.status_code, 500}
             and type(request_method) is str
             and request_method in _ACCESS_DENIAL_REQUEST_METHODS
             and type(route_name) is str
@@ -509,19 +543,24 @@ class ControlPlaneAccessDenialReporter:
         request_method: str,
         route_name: str,
         mutating: bool,
+        response_status: int | None = None,
     ) -> bool:
         """Observe one denial; never wait for a logging handler."""
 
         with self._lock:
             self._observed_denials = self._increment(self._observed_denials)
+        actual_response_status = (
+            denial.status_code if response_status is None else response_status
+        )
         try:
             valid_dimensions = self._valid_dimensions(
                 denial,
                 request_method,
                 route_name,
                 mutating,
+                actual_response_status,
             )
-        except _PROCESS_CONTROL_EXCEPTIONS:
+        except PROCESS_CONTROL_EXCEPTIONS:
             raise
         except BaseException:
             valid_dimensions = False
@@ -531,7 +570,7 @@ class ControlPlaneAccessDenialReporter:
             return False
         try:
             now = float(self._monotonic())
-        except _PROCESS_CONTROL_EXCEPTIONS:
+        except PROCESS_CONTROL_EXCEPTIONS:
             raise
         except BaseException:
             with self._lock:
@@ -545,7 +584,7 @@ class ControlPlaneAccessDenialReporter:
             key = (
                 denial.phase,
                 denial.reason,
-                denial.status_code,
+                actual_response_status,
                 request_method,
                 route_name,
                 mutating,
@@ -612,7 +651,7 @@ class ControlPlaneAccessDenialReporter:
             fields: dict[str, bool | int | str] = {
                 "phase": denial.phase.value,
                 "reason": denial.reason.value,
-                "response_status": denial.status_code,
+                "response_status": actual_response_status,
                 "request_method": request_method,
                 "route_name": route_name,
                 "mutating": mutating,
@@ -629,7 +668,7 @@ class ControlPlaneAccessDenialReporter:
                 fields["tenant_correlation"] = tenant_correlation
         try:
             accepted = bool(self._emitter(_ACCESS_DENIAL_EVENT, **fields))
-        except _PROCESS_CONTROL_EXCEPTIONS:
+        except PROCESS_CONTROL_EXCEPTIONS:
             with self._lock:
                 state.emission_in_flight = False
                 state.suppressed_since_last = self._add(
@@ -679,7 +718,7 @@ def _access_denial_reporter(application_state: Any) -> ControlPlaneAccessDenialR
             "control_plane_access_denial_reporter",
             _MISSING_ACCESS_DENIAL_REPORTER,
         )
-    except _PROCESS_CONTROL_EXCEPTIONS:
+    except PROCESS_CONTROL_EXCEPTIONS:
         raise
     except BaseException:
         return _DEFAULT_ACCESS_DENIAL_REPORTER
@@ -698,13 +737,9 @@ def _access_denial_reporter(application_state: Any) -> ControlPlaneAccessDenialR
             if isinstance(reporter, ControlPlaneAccessDenialReporter):
                 return reporter
             reporter = ControlPlaneAccessDenialReporter()
-            setattr(
-                application_state,
-                "control_plane_access_denial_reporter",
-                reporter,
-            )
+            application_state.control_plane_access_denial_reporter = reporter
             return reporter
-        except _PROCESS_CONTROL_EXCEPTIONS:
+        except PROCESS_CONTROL_EXCEPTIONS:
             raise
         except BaseException:
             return _DEFAULT_ACCESS_DENIAL_REPORTER
@@ -730,7 +765,7 @@ def _control_plane_access_denial(
     identity: ControlPlaneIdentity | None = None,
     required_role: str | None = None,
     concealed: bool = False,
-    headers: dict[str, str] | None = None,
+    headers: object = None,
 ) -> _ControlPlaneAccessDenied:
     return _ControlPlaneAccessDenied(
         status_code=status_code,
@@ -757,7 +792,7 @@ def _deny_control_plane_access(
     identity: ControlPlaneIdentity | None = None,
     required_role: str | None = None,
     concealed: bool = False,
-    headers: dict[str, str] | None = None,
+    headers: object = None,
 ) -> NoReturn:
     raise _control_plane_access_denial(
         status_code=status_code,
@@ -789,6 +824,70 @@ class _ControlPlaneHTTPResponse(FastAPIHTTPException):
             ),
             headers=headers,
         )
+
+
+def _validated_resolver_response_headers(
+    value: object,
+) -> dict[str, str] | None:
+    """Copy one bounded resolver-owned response-header map or reject it.
+
+    A resolver may preserve authentication challenges and deployment-specific
+    metadata on a 401/403 response.  It may not control framing,
+    representation, connection state, cookie state, or inject ambiguous wire
+    text. ``Set-Cookie2`` is rejected with ``Set-Cookie`` even though it is
+    obsolete; a response-side ``Cookie`` field has no cookie-mutation semantics
+    and remains subject to the ordinary bounded-header checks.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise TypeError("resolver response headers must be a mapping")
+    entries = tuple(islice(iter(value.items()), _MAX_RESOLVER_RESPONSE_HEADERS + 1))
+    if len(entries) > _MAX_RESOLVER_RESPONSE_HEADERS:
+        raise ValueError("resolver response headers exceed the count limit")
+
+    result: dict[str, str] = {}
+    normalized_names: set[str] = set()
+    aggregate_bytes = 0
+    for entry in entries:
+        if not isinstance(entry, tuple) or len(entry) != 2:
+            raise TypeError("resolver response header entries must be pairs")
+        name, header_value = entry
+        if type(name) is not str or type(header_value) is not str:
+            raise TypeError("resolver response header names and values must be strings")
+        try:
+            name_bytes = name.encode("ascii")
+            value_bytes = header_value.encode("latin-1")
+        except UnicodeEncodeError as error:
+            raise ValueError("resolver response header text is not wire-safe") from error
+        if not name_bytes or len(name_bytes) > _MAX_RESOLVER_HEADER_NAME_BYTES:
+            raise ValueError("resolver response header name is invalid")
+        if not all(
+            character.isalnum() or character in _HTTP_HEADER_NAME_PUNCTUATION
+            for character in name
+        ):
+            raise ValueError("resolver response header name is invalid")
+        normalized_name = name.lower()
+        if normalized_name in normalized_names:
+            raise ValueError("resolver response headers contain a duplicate name")
+        if normalized_name in _RESOLVER_FORBIDDEN_RESPONSE_HEADERS:
+            raise ValueError("resolver response header is adapter-owned")
+        if len(value_bytes) > _MAX_RESOLVER_HEADER_VALUE_BYTES:
+            raise ValueError("resolver response header value is too large")
+        if header_value.startswith((" ", "\t")) or header_value.endswith((" ", "\t")):
+            raise ValueError("resolver response header value has unsafe whitespace")
+        if any(
+            ordinal <= 0x1F or ordinal == 0x7F or 0x80 <= ordinal <= 0x9F
+            for ordinal in value_bytes
+        ):
+            raise ValueError("resolver response header value contains control text")
+        aggregate_bytes += len(name_bytes) + 2 + len(value_bytes) + 2
+        if aggregate_bytes > _MAX_RESOLVER_HEADER_BLOCK_BYTES:
+            raise ValueError("resolver response headers exceed the aggregate limit")
+        normalized_names.add(normalized_name)
+        result[name] = header_value
+    return result
 
 
 class _BoundedControlPlaneRoute(APIRoute):
@@ -846,13 +945,45 @@ class _BoundedControlPlaneRoute(APIRoute):
             except _ControlPlaneAccessDenied as denial:
                 reporter = _access_denial_reporter(request.app.state)
                 try:
+                    response_headers = _validated_resolver_response_headers(
+                        denial.headers
+                    )
+                except PROCESS_CONTROL_EXCEPTIONS:
+                    raise
+                except BaseException as header_error:
+                    try:
+                        reporter.report(
+                            denial=denial,
+                            request_method=request.method.upper(),
+                            route_name=self.name or self.endpoint.__name__,
+                            mutating=_is_mutating_control_plane_request(request),
+                            response_status=500,
+                        )
+                    except PROCESS_CONTROL_EXCEPTIONS:
+                        raise
+                    except BaseException:  # noqa: S110 - telemetry is failure-isolated
+                        pass
+                    try:
+                        emit_resolver_response_headers_rejected()
+                    except PROCESS_CONTROL_EXCEPTIONS:
+                        raise
+                    except BaseException:  # noqa: S110 - telemetry is failure-isolated
+                        pass
+                    raise _ControlPlaneHTTPResponse(
+                        status_code=500,
+                        detail=(
+                            "control-plane identity resolver returned invalid "
+                            "response headers"
+                        ),
+                    ) from header_error
+                try:
                     reporter.report(
                         denial=denial,
                         request_method=request.method.upper(),
                         route_name=self.name or self.endpoint.__name__,
                         mutating=_is_mutating_control_plane_request(request),
                     )
-                except _PROCESS_CONTROL_EXCEPTIONS:
+                except PROCESS_CONTROL_EXCEPTIONS:
                     raise
                 except BaseException as telemetry_error:
                     # A deployment-supplied test/diagnostic reporter remains a
@@ -861,7 +992,7 @@ class _BoundedControlPlaneRoute(APIRoute):
                 raise _ControlPlaneHTTPResponse(
                     status_code=denial.status_code,
                     detail=denial.public_detail,
-                    headers=denial.headers,
+                    headers=response_headers,
                 ) from denial
             except RecursionError as error:
                 raise _ControlPlaneHTTPResponse(
@@ -1002,11 +1133,14 @@ class TrustedHeaderIdentityResolver:
         *,
         allowed_hosts: Iterable[str],
         allowed_origins: Iterable[str] | None = None,
+        grant_instance_operator: bool = False,
     ) -> None:
         if isinstance(allowed_hosts, (str, bytes)):
             raise TypeError("allowed_hosts must be an iterable of authorities")
         if isinstance(allowed_origins, (str, bytes)):
             raise TypeError("allowed_origins must be an iterable of origins")
+        if type(grant_instance_operator) is not bool:
+            raise TypeError("grant_instance_operator must be a boolean")
         hosts = frozenset(
             _normalized_authority(value, "allowed host") for value in allowed_hosts
         )
@@ -1024,6 +1158,14 @@ class TrustedHeaderIdentityResolver:
             raise ValueError("at least one allowed origin is required")
         self._allowed_hosts = hosts
         self._allowed_origins = origins
+        roles = {
+            CONTROL_PLANE_ADMIN_ROLE,
+            CONTROL_PLANE_READ_ROLE,
+            CONTROL_PLANE_WRITE_ROLE,
+        }
+        if grant_instance_operator:
+            roles.add(CONTROL_PLANE_INSTANCE_OPERATOR_ROLE)
+        self._roles = frozenset(roles)
 
     def _validate_request_source(self, request: Request) -> None:
         host_values = request.headers.getlist("host")
@@ -1103,13 +1245,7 @@ class TrustedHeaderIdentityResolver:
                 principal_id,
                 "X-Principal-ID",
             ),
-            roles=frozenset(
-                {
-                    CONTROL_PLANE_ADMIN_ROLE,
-                    CONTROL_PLANE_READ_ROLE,
-                    CONTROL_PLANE_WRITE_ROLE,
-                }
-            ),
+            roles=self._roles,
         )
 
 
@@ -1152,35 +1288,8 @@ def _resolved_identity(
             status_code=500,
             detail="control-plane identity resolver is invalid",
         )
-    try:
-        identity = resolver(request)
-    except _ControlPlaneAccessDenied:
-        raise
-    except StarletteHTTPException as error:
-        if error.status_code not in {401, 403}:
-            # A host resolver owns identity verification, not adapter HTTP
-            # responses.  Coerce even our private response subclass back to a
-            # framework exception so the outer boundary treats non-auth
-            # statuses as untrusted provider output and projects a bounded 500.
-            raise FastAPIHTTPException(
-                status_code=error.status_code,
-                detail=error.detail,
-                headers=error.headers,
-            ) from error
-        raise _control_plane_access_denial(
-            status_code=error.status_code,
-            public_detail=str(error.detail),
-            phase=ControlPlaneAccessPhase.IDENTITY_VERIFICATION,
-            reason=ControlPlaneAccessReason.IDENTITY_VERIFICATION_FAILED,
-            headers=dict(error.headers) if error.headers is not None else None,
-        ) from error
-    except Exception as error:
-        raise _control_plane_access_denial(
-            status_code=401,
-            public_detail="control-plane identity could not be verified",
-            phase=ControlPlaneAccessPhase.IDENTITY_VERIFICATION,
-            reason=ControlPlaneAccessReason.IDENTITY_VERIFICATION_FAILED,
-        ) from error
+
+    identity = _invoke_control_plane_identity_resolver(resolver, request)
     if type(identity) is not ControlPlaneIdentity:
         raise _ControlPlaneHTTPResponse(
             status_code=500,
@@ -1266,6 +1375,62 @@ def _resolved_identity(
     return identity
 
 
+def _invoke_control_plane_identity_resolver(
+    resolver: Callable[[Request], object],
+    request: Request,
+) -> object:
+    """Invoke and translate one deployment identity provider fail-closed.
+
+    The outer fence intentionally covers both the provider call and the
+    Starlette-exception adapter below. A hostile exception descriptor or detail
+    projection raised from inside that adapter must not escape merely because
+    Python does not match sibling ``except`` clauses for handler failures.
+    """
+
+    try:
+        try:
+            return resolver(request)
+        except _ControlPlaneAccessDenied:
+            raise
+        except StarletteHTTPException as error:
+            if error.status_code not in {401, 403}:
+                # A host resolver owns identity verification, not adapter HTTP
+                # responses. Coerce even our private response subclass back to
+                # a framework exception so the outer boundary treats non-auth
+                # statuses as untrusted provider output and projects a bounded
+                # 500 response.
+                raise FastAPIHTTPException(
+                    status_code=error.status_code,
+                    detail=error.detail,
+                ) from error
+            raise _control_plane_access_denial(
+                status_code=error.status_code,
+                public_detail=bounded_public_error_detail(
+                    error.detail,
+                    fallback="control-plane identity could not be verified",
+                    maximum_characters=_MAX_PUBLIC_ERROR_DETAIL_CHARACTERS,
+                ),
+                phase=ControlPlaneAccessPhase.IDENTITY_VERIFICATION,
+                reason=ControlPlaneAccessReason.IDENTITY_VERIFICATION_FAILED,
+                headers=error.headers,
+            ) from error
+    except _ControlPlaneAccessDenied:
+        raise
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except StarletteHTTPException:
+        # Preserve the deliberate non-auth framework exception constructed
+        # above; the common route policy projects it as a bounded 500.
+        raise
+    except BaseException as error:
+        raise _control_plane_access_denial(
+            status_code=401,
+            public_detail="control-plane identity could not be verified",
+            phase=ControlPlaneAccessPhase.IDENTITY_VERIFICATION,
+            reason=ControlPlaneAccessReason.IDENTITY_VERIFICATION_FAILED,
+        ) from error
+
+
 def _control_plane(request: Request) -> Any:
     control_plane = getattr(request.app.state, "control_plane", None)
     if control_plane is None:
@@ -1283,6 +1448,17 @@ def _require_control_plane_admin(request: Request) -> ControlPlaneIdentity:
     return _resolved_identity(
         request,
         required_role_override=CONTROL_PLANE_ADMIN_ROLE,
+    )
+
+
+def _require_control_plane_instance_operator(
+    request: Request,
+) -> ControlPlaneIdentity:
+    """Require the exact instance-wide diagnostics capability."""
+
+    return _resolved_identity(
+        request,
+        required_role_override=CONTROL_PLANE_INSTANCE_OPERATOR_ROLE,
     )
 
 
@@ -1535,8 +1711,8 @@ def _request_canonical_integer(
     value: object,
     field: str,
     *,
-    minimum: int = 0,
-    maximum: int = _MAX_SQLITE_INTEGER,
+    minimum: int,
+    maximum: int,
 ) -> int:
     """Parse one caller-owned integer before entering service/store code."""
 
@@ -1642,8 +1818,8 @@ def _retention_integer(
     field: str,
     *,
     default: int | None = None,
-    minimum: int = 0,
-    maximum: int = _MAX_SQLITE_INTEGER,
+    minimum: int,
+    maximum: int,
 ) -> int | None:
     value = payload.get(field, default)
     if value is None:
@@ -1780,18 +1956,26 @@ def _retention_policies(
             idempotency_before_ns=_retention_integer(
                 catalog,
                 "idempotency_before_ns",
+                minimum=0,
+                maximum=_MAX_SQLITE_INTEGER,
             ),
             snapshot_before_ns=_retention_integer(
                 catalog,
                 "snapshot_before_ns",
+                minimum=0,
+                maximum=_MAX_SQLITE_INTEGER,
             ),
             revision_before_ns=_retention_integer(
                 catalog,
                 "revision_before_ns",
+                minimum=0,
+                maximum=_MAX_SQLITE_INTEGER,
             ),
             fixture_before_ns=_retention_integer(
                 catalog,
                 "fixture_before_ns",
+                minimum=0,
+                maximum=_MAX_SQLITE_INTEGER,
             ),
             preserve_latest_snapshot_per_session=_retention_boolean(
                 catalog,
@@ -1817,15 +2001,21 @@ def _retention_policies(
             tombstone_before_ns=_retention_integer(
                 review,
                 "tombstone_before_ns",
+                minimum=0,
+                maximum=_MAX_SQLITE_INTEGER,
             ),
             idempotency_before_ns=_retention_integer(
                 review,
                 "idempotency_before_ns",
+                minimum=0,
+                maximum=_MAX_SQLITE_INTEGER,
             ),
             audit_mode=selected_audit_mode,
             audit_before_sequence=_retention_integer(
                 review,
                 "audit_before_sequence",
+                minimum=0,
+                maximum=MAX_JSON_SAFE_INTEGER,
             ),
             maximum_candidates=review_maximum,
         )
@@ -2344,15 +2534,20 @@ def operational_event_diagnostics(
     request: Request,
     response: Response,
 ) -> dict[str, Any]:
-    """Return authenticated process counters without operational payloads."""
+    """Return instance/app diagnostics without operational payloads.
 
-    _require_control_plane_admin(request)
+    Operational-event counters are process-global. Access-denial sampling is
+    scoped to the reporter installed on this ASGI application and aggregates
+    every tenant served by that application.
+    """
+
+    _require_control_plane_instance_operator(request)
     response.headers["Cache-Control"] = "no-store"
     try:
         operational = operational_event_diagnostics_snapshot()
         access = _access_denial_reporter(request.app.state).snapshot()
         return _operational_diagnostics_payload(operational, access)
-    except _PROCESS_CONTROL_EXCEPTIONS:
+    except PROCESS_CONTROL_EXCEPTIONS:
         raise
     except BaseException as error:
         raise _ControlPlaneHTTPResponse(
@@ -2382,6 +2577,8 @@ def _subjects(payload: dict[str, Any]) -> tuple[ReviewSubject, ...]:
                     candidate[field] = _request_canonical_integer(
                         raw,
                         field,
+                        minimum=0,
+                        maximum=_MAX_SQLITE_INTEGER,
                     )
             normalized.append(ReviewSubject.from_dict(candidate))
         return tuple(normalized)
@@ -2685,20 +2882,24 @@ def list_workspace_retention_audit(
         ge=1,
         le=MAX_RETENTION_AUDIT_LIMIT,
     ),
-    catalog_after_sequence: int = Query(
-        default=0,
-        ge=0,
-        le=MAX_JSON_SAFE_INTEGER,
-    ),
-    review_after_sequence: int = Query(
-        default=0,
-        ge=0,
-        le=MAX_JSON_SAFE_INTEGER,
-    ),
+    catalog_after_sequence: str = Query(default="0"),
+    review_after_sequence: str = Query(default="0"),
     x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
 ) -> dict[str, Any]:
     """List bounded retention journals from all three durable stores."""
 
+    parsed_catalog_after_sequence = _request_canonical_integer(
+        catalog_after_sequence,
+        "catalog_after_sequence",
+        minimum=0,
+        maximum=MAX_JSON_SAFE_INTEGER,
+    )
+    parsed_review_after_sequence = _request_canonical_integer(
+        review_after_sequence,
+        "review_after_sequence",
+        minimum=0,
+        maximum=MAX_JSON_SAFE_INTEGER,
+    )
     _require_control_plane_admin(request)
     tenant_id = _tenant(x_tenant_id)
     ingestion_scope = _import_scope(
@@ -2717,12 +2918,12 @@ def list_workspace_retention_audit(
         catalog = control_plane.sessions.list_retention_audit(
             tenant_id,
             workspace_id,
-            after_sequence=catalog_after_sequence,
+            after_sequence=parsed_catalog_after_sequence,
             limit=limit,
         )
         review = control_plane.annotations.list_retention_audit(
             scope,
-            after_sequence=review_after_sequence,
+            after_sequence=parsed_review_after_sequence,
             limit=limit,
         )
         ingestion = control_plane.ingestion.list_retention_audits(
@@ -3233,6 +3434,8 @@ def list_imports(
         else _request_canonical_integer(
             before_created_at_ns,
             "before_created_at_ns",
+            minimum=0,
+            maximum=_MAX_SQLITE_INTEGER,
         )
     )
     scope = _import_scope(
@@ -3508,6 +3711,7 @@ def import_events(
     parsed_after_sequence = _request_canonical_integer(
         after_sequence,
         "after_sequence",
+        minimum=0,
         maximum=MAX_JSON_SAFE_INTEGER,
     )
     _, scope = _selected_import(
@@ -3543,6 +3747,7 @@ async def stream_import_events(
     parsed_after_sequence = _request_canonical_integer(
         after_sequence,
         "after_sequence",
+        minimum=0,
         maximum=MAX_JSON_SAFE_INTEGER,
     )
     _, scope = _selected_import(
@@ -3758,6 +3963,8 @@ def list_annotations(
         else _request_canonical_integer(
             expected_audit_watermark,
             "expected_audit_watermark",
+            minimum=0,
+            maximum=MAX_JSON_SAFE_INTEGER,
         )
     )
     if offset > 0 and parsed_expected_watermark is None:
@@ -4156,10 +4363,16 @@ def review_audit(
     project_id: str,
     workspace_id: str,
     request: Request,
-    after_sequence: int = Query(default=0, ge=0, le=MAX_JSON_SAFE_INTEGER),
+    after_sequence: str = Query(default="0"),
     limit: int = Query(default=1_000, ge=1, le=MAX_PAGE_LIMIT),
     x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
 ) -> dict[str, Any]:
+    parsed_after_sequence = _request_canonical_integer(
+        after_sequence,
+        "after_sequence",
+        minimum=0,
+        maximum=MAX_JSON_SAFE_INTEGER,
+    )
     scope = _review_scope_from_path(
         request,
         x_tenant_id,
@@ -4169,7 +4382,7 @@ def review_audit(
     try:
         values = _control_plane(request).annotations.list_audit(
             scope,
-            after_sequence=after_sequence,
+            after_sequence=parsed_after_sequence,
             limit=limit,
         )
         return {"items": [_json_value(item) for item in values]}
@@ -4268,6 +4481,7 @@ def correlation_report(
 
 __all__ = [
     "CONTROL_PLANE_ADMIN_ROLE",
+    "CONTROL_PLANE_INSTANCE_OPERATOR_ROLE",
     "CONTROL_PLANE_READ_ROLE",
     "CONTROL_PLANE_WRITE_ROLE",
     "ControlPlaneIdentity",

@@ -15,6 +15,7 @@ from collections.abc import Iterable, Mapping
 from contextlib import AbstractContextManager
 from functools import lru_cache
 from hashlib import sha256
+from types import TracebackType
 from typing import Any, Protocol, runtime_checkable
 
 from .dashboard_core import (
@@ -22,6 +23,7 @@ from .dashboard_core import (
     evaluate_dashboards,
     validate_dashboard_descriptors,
 )
+from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .source_record_core import project_source_record_for_log
 
 MAX_RESOURCE_TABLE_TRAVERSAL_NODES = 5_000
@@ -1456,6 +1458,89 @@ def resource_search_text(
     ).casefold()
 
 
+class NormalizedProviderError(RuntimeError):
+    """A plug-in provider failed outside the ordinary ``Exception`` domain."""
+
+
+def _snapshot_provider_member(
+    provider: Any,
+    member_name: str,
+    *,
+    role: str,
+) -> Any:
+    try:
+        member = getattr(provider, member_name)
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except Exception:
+        raise
+    except BaseException:  # noqa: BLE001 - plug-in descriptor boundary.
+        raise NormalizedProviderError(
+            f"normalized {role} member could not be resolved"
+        ) from None
+    if not callable(member):
+        raise TypeError(f"normalized {role} member must be callable")
+    return member
+
+
+def _invoke_provider(member: Any, operation: str, /, *args: Any, **kwargs: Any) -> Any:
+    try:
+        return member(*args, **kwargs)
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except Exception:
+        raise
+    except BaseException:  # noqa: BLE001 - plug-in callback boundary.
+        raise NormalizedProviderError(
+            f"normalized provider {operation} failed"
+        ) from None
+
+
+class _ContainedRevisionScope(AbstractContextManager[Any]):
+    """Contain a provider context's complete descriptor and call lifecycle."""
+
+    def __init__(self, context: Any) -> None:
+        self._enter = _snapshot_provider_member(
+            context,
+            "__enter__",
+            role="revision context entry",
+        )
+        self._exit = _snapshot_provider_member(
+            context,
+            "__exit__",
+            role="revision context exit",
+        )
+
+    def __enter__(self) -> Any:
+        return _invoke_provider(self._enter, "revision context entry")
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool:
+        try:
+            result = self._exit(exc_type, exc_value, traceback)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except Exception:
+            if exc_value is None:
+                raise
+            exc_value.add_note("plug-in provider context cleanup failed")
+            return False
+        except BaseException:  # noqa: BLE001 - plug-in cleanup boundary.
+            if exc_value is None:
+                raise NormalizedProviderError(
+                    "normalized provider revision context exit failed"
+                ) from None
+            exc_value.add_note("plug-in provider context cleanup failed")
+            return False
+        # A provider context may release resources but may not suppress a failure
+        # raised by core code inside the revision scope.
+        return bool(result) if exc_value is None else False
+
+
 class NormalizedDataService:
     """Core query engine bound to one plug-in source and policy."""
 
@@ -1470,31 +1555,94 @@ class NormalizedDataService:
             raise TypeError("normalized policy does not implement its contract")
         self.source = source
         self.policy = policy
+        self._source_revision_scope = _snapshot_provider_member(
+            source,
+            "revision_scope",
+            role="source revision scope",
+        )
+        self._source_load_dataset = _snapshot_provider_member(
+            source,
+            "load_dataset",
+            role="source dataset loader",
+        )
+        self._source_revision_id = _snapshot_provider_member(
+            source,
+            "revision_id",
+            role="source revision identifier",
+        )
+        self._source_indexed_history = _snapshot_provider_member(
+            source,
+            "indexed_history",
+            role="source history index",
+        )
+        self._policy_analysis_metadata = _snapshot_provider_member(
+            policy,
+            "analysis_metadata",
+            role="policy analysis metadata",
+        )
+        self._policy_workspace_metadata = _snapshot_provider_member(
+            policy,
+            "workspace_metadata",
+            role="policy workspace metadata",
+        )
+        self._policy_route_resolution_capability = _snapshot_provider_member(
+            policy,
+            "route_resolution_capability",
+            role="policy route capability",
+        )
+        self._policy_route_row = _snapshot_provider_member(
+            policy,
+            "route_row",
+            role="policy route row",
+        )
+        self._policy_source_record_for_event = _snapshot_provider_member(
+            policy,
+            "source_record_for_event",
+            role="policy source record",
+        )
 
     def revision_scope(
         self,
         revision_id: str,
     ) -> AbstractContextManager[Any]:
-        return self.source.revision_scope(revision_id)
+        context = _invoke_provider(
+            self._source_revision_scope,
+            "revision scope construction",
+            revision_id,
+        )
+        return _ContainedRevisionScope(context)
 
     def load_dataset(
         self,
         revision_id: str | None = None,
         **selection: Any,
     ) -> dict[str, Any]:
-        return self.source.load_dataset(revision_id, **selection)
+        return _invoke_provider(
+            self._source_load_dataset,
+            "dataset loading",
+            revision_id,
+            **selection,
+        )
 
     def current_revision_id(
         self,
         dataset: Mapping[str, Any] | None = None,
     ) -> str:
-        return self.source.revision_id(dataset or self.load_dataset())
+        return _invoke_provider(
+            self._source_revision_id,
+            "revision identification",
+            dataset or self.load_dataset(),
+        )
 
     def history_runtime(
         self,
         dataset: Mapping[str, Any] | None = None,
     ) -> IndexedHistory | None:
-        return self.source.indexed_history(dataset or self.load_dataset())
+        return _invoke_provider(
+            self._source_indexed_history,
+            "history indexing",
+            dataset or self.load_dataset(),
+        )
 
     def has_indexed_history(
         self,
@@ -1506,14 +1654,20 @@ class NormalizedDataService:
         self,
         dataset: Mapping[str, Any],
     ) -> Mapping[str, Any]:
-        return self.policy.analysis_metadata(dataset)
+        return _invoke_provider(
+            self._policy_analysis_metadata,
+            "analysis metadata projection",
+            dataset,
+        )
 
     def route_resolution_capability(
         self,
         dataset: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         return dict(
-            self.policy.route_resolution_capability(
+            _invoke_provider(
+                self._policy_route_resolution_capability,
+                "route capability projection",
                 dataset or self.load_dataset()
             )
         )
@@ -1524,14 +1678,25 @@ class NormalizedDataService:
         dataset: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         return dict(
-            self.policy.route_row(route_id, dataset or self.load_dataset())
+            _invoke_provider(
+                self._policy_route_row,
+                "route row projection",
+                route_id,
+                dataset or self.load_dataset(),
+            )
         )
 
     def source_record_for_event(
         self,
         event: Mapping[str, Any],
     ) -> dict[str, Any]:
-        return dict(self.policy.source_record_for_event(event))
+        return dict(
+            _invoke_provider(
+                self._policy_source_record_for_event,
+                "source record projection",
+                event,
+            )
+        )
 
     def event_redaction_policy(
         self,
@@ -1702,7 +1867,9 @@ class NormalizedDataService:
                 },
             }
         client["workspace"] = dict(
-            self.policy.workspace_metadata(
+            _invoke_provider(
+                self._policy_workspace_metadata,
+                "workspace metadata projection",
                 dataset,
                 revision_id=selected_revision,
                 history_mode=history_mode,
@@ -2921,6 +3088,7 @@ __all__ = [
     "NormalizedDataPolicy",
     "NormalizedDataService",
     "NormalizedDatasetSource",
+    "NormalizedProviderError",
     "active_interval",
     "contains_time",
     "descriptor_property_rules",

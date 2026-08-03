@@ -183,7 +183,7 @@ development-only `--trust-control-plane-headers` override.
 | `http://127.0.0.1:8765/docs` | Interactive API documentation; available only after a loopback launch with `--expose-api-docs` |
 | `http://127.0.0.1:8765/health` | Server and fixture health |
 | `http://127.0.0.1:8765/v1/control-plane/health` | Session-independent durable worker and queue health |
-| `http://127.0.0.1:8765/v1/control-plane/diagnostics/operational-events` | Process-local operational counters; requires `control-plane:admin` |
+| `http://127.0.0.1:8765/v1/control-plane/diagnostics/operational-events` | Protected operational diagnostics; requires `control-plane:instance-operator` |
 | `http://127.0.0.1:8765/v1/control-plane/context` | Durable control-plane context; requires `X-Tenant-ID` and an enabled state directory (the bundled launcher enables one) |
 
 The topology page is the normal entry point. Select a device or endpoint there
@@ -492,14 +492,22 @@ target must be a synchronous module-level
 callable that verifies credentials and returns a `ControlPlaneIdentity`. For
 loopback development only, replace the resolver option with
 `--trust-control-plane-headers`; the trusted-header adapter cannot be enabled
-on a non-loopback listener.
+on a non-loopback listener. That adapter grants exactly the read, write, and
+tenant-admin roles by default. Add `--grant-instance-operator` only when a
+loopback development process must also grant the independent
+`control-plane:instance-operator` role; the flag controls the role grant, not
+one particular endpoint. It is rejected with a custom resolver or a
+non-loopback listener.
 The two health routes intentionally require no tenant identity and return only
 bounded aggregate serving/queue/telemetry status; they never expose scope IDs,
 paths, event fields, credentials, or exception text.
 The separate operational-diagnostics route is authenticated, requires the
-exact `control-plane:admin` role, sets `Cache-Control: no-store`, and exposes
-only process-local counters. It is an advisory troubleshooting snapshot, not
-a durable audit or compliance record, and resets when the process restarts.
+exact `control-plane:instance-operator` role, and sets `Cache-Control: no-store`.
+A tenant `control-plane:admin` does not imply this instance-wide role. The
+response is deliberately hybrid: `operational_events` is process-global, while
+`access_denial_sampling` covers all tenants observed by the installed ASGI app.
+It is an advisory troubleshooting snapshot, not a durable audit or compliance
+record, and resets when the process restarts.
 
 To mount the same control-plane routes beside one browser analysis, add
 `--control-plane-dir .\.runtime\control-plane` to `router-dump-analyzer`; the
@@ -509,7 +517,20 @@ trusted-header development adapter. A non-loopback listener is rejected unless
 the unsafe development override is supplied; production ASGI hosting must
 install a resolver backed by verified credentials.
 The local adapter allowlists the exact listener host and mutation origin. It
-is safe against local DNS rebinding but still is not authentication.
+is safe against local DNS rebinding but still is not authentication; for local
+development it explicitly grants read, write, and tenant-admin roles, with no
+instance-operator role by default. The loopback-only
+`--grant-instance-operator` option adds that role explicitly.
+Resolver-supplied headers on `401`/`403` responses are
+accepted only as one atomically validated, bounded safe header map. An invalid
+map is dropped in full, becomes a bounded `500` with no resolver-supplied
+headers, records the original typed denial with the actual response status
+`500`, and emits the separate payload-free
+`control_plane.identity_resolver.response_headers_rejected` event.
+`Set-Cookie` and obsolete `Set-Cookie2` are always rejected: cookie mutation
+belongs in authenticated upstream middleware or a dedicated endpoint, not an
+identity resolver. A future exception requires a typed cookie policy rather
+than a generic header allowlist.
 Fixture admission and revision publication are independently staged before
 their catalog calls. Recovery replays either exact operation idempotently; a
 lost publication response does not run the plug-in a second time. Catalog
@@ -550,6 +571,15 @@ plug-in; it does not remove the plug-in's filesystem, network, or host-user
 access. Programmatic embeddings may explicitly choose synchronous `inline`
 execution for trusted local/tests, but it has no timeout or bounded-cancellation
 claim; process mode is the only killable boundary.
+Across validator descriptors/hooks, capability execution, registry probing,
+trusted inline ingestion, installed loading, runtime/session providers, and
+normalized temporal/topology/route callbacks, the core boundary policy rethrows
+`KeyboardInterrupt`, `SystemExit`, and `GeneratorExit` unchanged and contains
+every other `BaseException` behind bounded fixed public diagnostics. It
+snapshots executable descriptors once and contains lazy iteration, cleanup,
+and context entry/exit as part of the call. Plug-ins
+must use structured `PluginDiagnostic` values rather than exception text for
+author-visible detail.
 Client-visible failures use closed safe code/message pairs; arbitrary plug-in
 exception text stays in private diagnostics with no HTTP route.
 
@@ -602,6 +632,8 @@ Python logger `router_dump_analyzer.operations`. Records use schema
 `rda.operational.v1` and cover ingestion catalog calls and failures, worker
 failure/exit signals, retention planning/truncation, cleanup batches, replay,
 completion, and centrally translated control-plane access denials.
+Invalid identity-resolver header maps additionally emit the zero-field
+`control_plane.identity_resolver.response_headers_rejected` class.
 The fixed-capacity handoff never blocks ingestion or retention and may drop
 telemetry; durable queue, outbox, cleanup-progress, and audit rows remain the
 source of truth. Both health routes publish aggregate accepted, dropped,
@@ -620,14 +652,23 @@ the reporter and operational-record boundaries. Intentional sampling, global
 admission suppression, overflow observations, and real enqueue loss have
 separate process-local counters. Anonymous health keeps its aggregate-only
 schema; the protected diagnostics endpoint exposes the payload-free per-event
-and sampling breakdown. A deployment configures handlers, formatting, and
-export through ordinary Python logging rather than a plug-in hook.
+and sampling breakdown. Its queue counters are process-global; its denial
+sampler is scoped to the installed ASGI app and aggregates that app's tenants.
+A deployment configures handlers, formatting, and export through ordinary
+Python logging rather than a plug-in hook.
 
 Integer-bearing API inputs use an explicit domain rather than inheriting one
 generic bound. Nanosecond instants use signed 64-bit bounds and are normally
 returned as decimal strings. Browser-visible numeric paging offsets are
 limited to `0..9007199254740991` (`2^53-1`), with smaller route-specific caps
 where declared; `2^53` is rejected instead of being echoed imprecisely.
+Caller-supplied audit cursors and watermark preconditions use canonical
+non-negative ASCII decimal syntax and the range `0..9007199254740991`. This
+includes retention `audit_before_sequence`, annotation
+`expected_audit_watermark`, review-audit `after_sequence`, and both retention
+journal cursors. Stored and projected audit sequences use the same exact
+integer range. Writes that would exhaust it and reads that encounter an
+out-of-domain stored value fail closed.
 The [durable control-plane guide](docs/control-plane.md) documents the exact
 state machine, route table, optimistic concurrency, idempotency, recovery,
 security boundary, and core-versus-plug-in ownership.

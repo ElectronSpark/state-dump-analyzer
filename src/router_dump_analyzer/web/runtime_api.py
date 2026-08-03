@@ -24,6 +24,7 @@ from router_dump_analyzer.history_search_core import HistorySearchCapacityError
 from router_dump_analyzer.multi_node_route import MultiNodeRouteRequestError
 from router_dump_analyzer.multi_node_topology import MultiNodeTopologyRequestError
 from router_dump_analyzer.plugin_api import MAX_TIMESTAMP_NS, MIN_TIMESTAMP_NS
+from router_dump_analyzer.process_control import PROCESS_CONTROL_EXCEPTIONS
 from router_dump_analyzer.public_text import (
     bounded_public_error_detail,
 )
@@ -315,8 +316,15 @@ def _runtime_api_call(
 ) -> Any:
     try:
         return operation(*args, **kwargs)
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
     except Exception as error:  # noqa: BLE001 - closed policy re-raises unknowns
         _raise_runtime_api_error(error)
+    except BaseException as error:
+        raise _RuntimeHTTPResponse(
+            status_code=500,
+            detail="internal analysis operation failed",
+        ) from error
 
 
 class _BoundedRuntimeApiRoute(APIRoute):
@@ -334,8 +342,15 @@ class _BoundedRuntimeApiRoute(APIRoute):
         async def bounded(request: Request) -> Any:
             try:
                 return await original(request)
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
             except Exception as error:  # noqa: BLE001 - closed boundary policy
                 _raise_runtime_api_error(error)
+            except BaseException as error:
+                raise _RuntimeHTTPResponse(
+                    status_code=500,
+                    detail="internal analysis operation failed",
+                ) from error
 
         return bounded
 

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import io
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path, PurePosixPath
+from typing import Self
 from unittest.mock import patch
 from uuid import UUID
 
@@ -30,6 +34,30 @@ from router_dump_analyzer.plugin_api import (
     ReconstructionSupport,
 )
 from router_dump_analyzer.plugin_validation import main, validate_plugin
+
+
+class Boom(BaseException):
+    """Adversarial non-process-control throwable supplied by a plug-in."""
+
+
+class _ExplodingHashText(str):
+    failure: BaseException
+    armed: bool
+
+    def __new__(
+        cls,
+        value: str,
+        failure: BaseException,
+    ) -> Self:
+        result = super().__new__(cls, value)
+        result.failure = failure
+        result.armed = False
+        return result
+
+    def __hash__(self) -> int:
+        if self.armed:
+            raise self.failure
+        return str.__hash__(self)
 
 
 def manifest(*capabilities: PluginCapability) -> PluginManifest:
@@ -124,6 +152,128 @@ class ExplodingProbePlugin(MinimalPlugin):
         raise RuntimeError(self.message)
 
 
+class ExplodingDescribePlugin(MinimalPlugin):
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def describe(self) -> PluginSchema:
+        raise self.error
+
+
+class ExplodingGetattrPlugin:
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def __getattr__(self, name: str):
+        del name
+        raise self.error
+
+
+class DescriptorBackedPlugin:
+    def __init__(self) -> None:
+        self.accesses = {
+            "manifest": 0,
+            "describe": 0,
+            "probe": 0,
+            "locate_inputs": 0,
+            "parse_status": 0,
+        }
+        self._manifest = manifest(PluginCapability.STATUS_PARSE)
+
+    @property
+    def manifest(self):
+        self.accesses["manifest"] += 1
+        return self._manifest
+
+    @property
+    def describe(self):
+        self.accesses["describe"] += 1
+
+        def resolved_describe():
+            return PluginSchema(resource_kinds=(), relationship_types=())
+
+        return resolved_describe
+
+    @property
+    def probe(self):
+        self.accesses["probe"] += 1
+
+        def resolved_probe(inventory):
+            del inventory
+            return ProbeReport(result=None)
+
+        return resolved_probe
+
+    @property
+    def locate_inputs(self):
+        self.accesses["locate_inputs"] += 1
+
+        def resolved_locate_inputs(inventory):
+            del inventory
+            return ()
+
+        return resolved_locate_inputs
+
+    @property
+    def parse_status(self):
+        self.accesses["parse_status"] += 1
+
+        def resolved_parse_status(reader, spec):
+            del reader, spec
+            return ()
+
+        return resolved_parse_status
+
+
+class ExplodingManifestDescriptorPlugin:
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+        self.accesses = 0
+
+    @property
+    def manifest(self):
+        self.accesses += 1
+        raise self.error
+
+
+class ExplodingProbeDescriptorPlugin(MinimalPlugin):
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+        self.accesses = 0
+
+    @property
+    def probe(self):
+        self.accesses += 1
+        raise self.error
+
+
+class InstanceOnlyHookDescriptor:
+    def __init__(self) -> None:
+        self.class_accesses = 0
+        self.instance_accesses = 0
+
+    def __get__(self, instance, owner):
+        del owner
+        if instance is None:
+            self.class_accesses += 1
+            raise RuntimeError(r"class lookup reached C:\private\plugin.py")
+        self.instance_accesses += 1
+
+        def resolved_parse_status(reader, spec):
+            del reader, spec
+            return ()
+
+        return resolved_parse_status
+
+
+instance_only_parse_status = InstanceOnlyHookDescriptor()
+
+
+class StaticDescriptorOverridePlugin(MinimalPlugin):
+    manifest = manifest(PluginCapability.STATUS_PARSE)
+    parse_status = instance_only_parse_status
+
+
 class MismatchedDispatchPlugin(MinimalPlugin):
     manifest = manifest(PluginCapability.TEXT_TRACE_PARSE)
 
@@ -176,9 +326,132 @@ def author_inventory() -> DumpInventory:
 
 
 class PluginValidationTests(unittest.TestCase):
+    @staticmethod
+    def _plugin_with_exploding_manifest_value(
+        failure: BaseException,
+    ) -> MinimalPlugin:
+        capability = _ExplodingHashText("vendor.custom", failure)
+        plugin = MinimalPlugin()
+        plugin.manifest = PluginManifest(
+            plugin_id="example.hostile-value",
+            plugin_version="1.0.0",
+            core_api_version=CORE_PLUGIN_API_VERSION,
+            supported_platforms=("example-router",),
+            supported_software_versions="*",
+            capabilities=frozenset({capability}),
+            reconstruction_default=ReconstructionSupport.EXACT,
+        )
+        capability.armed = True
+        return plugin
+
+    def test_nested_manifest_values_are_bounded_and_preserve_process_controls(
+        self,
+    ) -> None:
+        supplied = r"manifest value failed at C:\private\tenant\plugin.py"
+        result = validate_plugin(
+            self._plugin_with_exploding_manifest_value(Boom(supplied))
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.plugin_id, "<unknown>")
+        self.assertEqual(len(result.errors), 1)
+        self.assertIn("could not inspect plug-in-owned values", result.errors[0])
+        self.assertNotIn(supplied, result.errors[0])
+        self.assertLessEqual(len(result.errors[0]), 1_100)
+
+        for exception_type in (KeyboardInterrupt, SystemExit, GeneratorExit):
+            with self.subTest(
+                exception_type=exception_type.__name__
+            ), self.assertRaises(exception_type):
+                validate_plugin(
+                    self._plugin_with_exploding_manifest_value(
+                        exception_type("process control")
+                    )
+                )
+
     def test_minimal_plugin_passes(self) -> None:
         result = validate_plugin(MinimalPlugin())
         self.assertTrue(result.ok, result.errors)
+
+    def test_plugin_owned_descriptors_are_resolved_once(self) -> None:
+        plugin = DescriptorBackedPlugin()
+
+        result = validate_plugin(plugin)
+
+        self.assertTrue(result.ok, result.errors)
+        self.assertEqual(
+            plugin.accesses,
+            {
+                "manifest": 1,
+                "describe": 1,
+                "probe": 1,
+                "locate_inputs": 1,
+                "parse_status": 1,
+            },
+        )
+
+    def test_manifest_descriptor_errors_are_bounded_public_results(self) -> None:
+        cases = (
+            RuntimeError(r"manifest failed at C:\private\tenant\plugin.py"),
+            RuntimeError("manifest\x00failed"),
+            RuntimeError("manifest\u202efailed"),
+            RuntimeError("x" * 2_000),
+        )
+        for raised in cases:
+            with self.subTest(raised=repr(raised)):
+                plugin = ExplodingManifestDescriptorPlugin(raised)
+
+                result = validate_plugin(plugin)
+
+                rendered = "\n".join(result.errors)
+                self.assertFalse(result.ok)
+                self.assertEqual(plugin.accesses, 1)
+                self.assertIn("plug-in exception details unavailable", rendered)
+                self.assertNotIn(str(raised), rendered)
+                self.assertNotIn("\x00", rendered)
+                self.assertNotIn("\u202e", rendered)
+                self.assertLessEqual(len(rendered), 1_200)
+
+    def test_hook_descriptor_error_is_contained_without_a_second_lookup(self) -> None:
+        supplied = r"probe failed at C:\private\tenant\probe.py"
+        plugin = ExplodingProbeDescriptorPlugin(RuntimeError(supplied))
+
+        result = validate_plugin(plugin)
+
+        rendered = "\n".join(result.errors)
+        self.assertFalse(result.ok)
+        self.assertEqual(plugin.accesses, 1)
+        self.assertIn("required hook probe() could not be resolved", rendered)
+        self.assertIn("plug-in exception details unavailable", rendered)
+        self.assertNotIn(supplied, rendered)
+
+    def test_nonstandard_base_exceptions_are_contained_at_author_boundaries(
+        self,
+    ) -> None:
+        supplied = r"plug-in failed at C:\private\tenant\hostile.py"
+        plugins = (
+            ExplodingManifestDescriptorPlugin(Boom(supplied)),
+            ExplodingGetattrPlugin(Boom(supplied)),
+            ExplodingProbeDescriptorPlugin(Boom(supplied)),
+            ExplodingDescribePlugin(Boom(supplied)),
+        )
+        for plugin in plugins:
+            with self.subTest(plugin=type(plugin).__name__):
+                result = validate_plugin(plugin)
+                rendered = "\n".join(result.errors)
+                self.assertFalse(result.ok)
+                self.assertIn("plug-in exception details unavailable", rendered)
+                self.assertNotIn(supplied, rendered)
+                self.assertLessEqual(len(rendered), 1_200)
+
+    def test_override_check_uses_static_descriptor_inspection(self) -> None:
+        instance_only_parse_status.class_accesses = 0
+        instance_only_parse_status.instance_accesses = 0
+
+        result = validate_plugin(StaticDescriptorOverridePlugin())
+
+        self.assertTrue(result.ok, result.errors)
+        self.assertEqual(instance_only_parse_status.instance_accesses, 1)
+        self.assertEqual(instance_only_parse_status.class_accesses, 0)
 
     def test_probe_validation_rechecks_the_canonical_contract(self) -> None:
         result = validate_plugin(ForgedProbePlugin())
@@ -340,6 +613,193 @@ class PluginValidationTests(unittest.TestCase):
             self.assertIn(expected, rendered)
             self.assertNotIn(supplied, rendered)
             self.assertLessEqual(len(rendered), 1_100)
+
+    def test_cli_contains_unexpected_ordinary_validation_exceptions(self) -> None:
+        supplied = r"validator failed at C:\private\tenant\validator.py"
+        output = io.StringIO()
+        with (
+            patch(
+                "router_dump_analyzer.plugin_validation.load_entry_point",
+                return_value=MinimalPlugin(),
+            ),
+            patch(
+                "router_dump_analyzer.plugin_validation.validate_plugin",
+                side_effect=RuntimeError(supplied),
+            ),
+            redirect_stdout(output),
+        ):
+            return_code = main(["hostile"])
+
+        rendered = output.getvalue()
+        self.assertEqual(return_code, 2)
+        self.assertIn("ERROR: plug-in validation failed", rendered)
+        self.assertIn("plug-in exception details unavailable", rendered)
+        self.assertNotIn(supplied, rendered)
+        self.assertLessEqual(len(rendered), 1_100)
+
+    def test_cli_contains_nonstandard_base_exceptions_without_traceback(self) -> None:
+        supplied = r"validator failed at C:\private\tenant\boom.py"
+        for failure_stage in ("load", "validate"):
+            with self.subTest(failure_stage=failure_stage):
+                output = io.StringIO()
+                if failure_stage == "load":
+                    with patch(
+                        "router_dump_analyzer.plugin_validation.load_entry_point",
+                        side_effect=Boom(supplied),
+                    ), redirect_stdout(output):
+                        return_code = main(["hostile"])
+                else:
+                    with patch(
+                        "router_dump_analyzer.plugin_validation.load_entry_point",
+                        return_value=MinimalPlugin(),
+                    ), patch(
+                        "router_dump_analyzer.plugin_validation.validate_plugin",
+                        side_effect=Boom(supplied),
+                    ), redirect_stdout(output):
+                        return_code = main(["hostile"])
+
+                rendered = output.getvalue()
+                self.assertEqual(return_code, 2)
+                self.assertNotIn(supplied, rendered)
+                self.assertNotIn("Traceback", rendered)
+                self.assertLessEqual(len(rendered), 1_100)
+
+    def test_module_cli_contains_installed_boom_entry_points(self) -> None:
+        supplied = r"C:\Users\alice\secret\plugin.py"
+        cases = {
+            "manifest": f"""
+class Boom(BaseException):
+    pass
+class P:
+    @property
+    def manifest(self):
+        raise Boom(r"failed at {supplied}")
+plugin = P()
+""",
+            "getattr": f"""
+class Boom(BaseException):
+    pass
+class P:
+    def __getattr__(self, name):
+        raise Boom(r"failed at {supplied}")
+plugin = P()
+""",
+            "describe": f"""
+from router_dump_analyzer.plugin_api import (
+    CORE_PLUGIN_API_VERSION, PluginManifest, ProbeReport, ReconstructionSupport
+)
+class Boom(BaseException):
+    pass
+class P:
+    manifest = PluginManifest(
+        plugin_id="hostile.test",
+        plugin_version="1",
+        core_api_version=CORE_PLUGIN_API_VERSION,
+        supported_platforms=("test",),
+        supported_software_versions="*",
+        capabilities=frozenset(),
+        reconstruction_default=ReconstructionSupport.EXACT,
+    )
+    def describe(self):
+        raise Boom(r"failed at {supplied}")
+    def probe(self, inventory):
+        return ProbeReport(result=None)
+    def locate_inputs(self, inventory):
+        return ()
+plugin = P()
+""",
+        }
+        for case, module_source in cases.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "hostile_plugin.py").write_text(
+                    module_source,
+                    encoding="utf-8",
+                )
+                distribution = root / "hostile_plugin-1.0.dist-info"
+                distribution.mkdir()
+                (distribution / "METADATA").write_text(
+                    "Metadata-Version: 2.1\nName: hostile-plugin\nVersion: 1.0\n",
+                    encoding="utf-8",
+                )
+                (distribution / "entry_points.txt").write_text(
+                    "[router_dump_analyzer.plugins]\n"
+                    "hostile = hostile_plugin:plugin\n",
+                    encoding="utf-8",
+                )
+                environment = os.environ.copy()
+                environment["PYTHONUTF8"] = "1"
+                environment["PYTHONIOENCODING"] = "utf-8"
+                environment["PYTHONPATH"] = os.pathsep.join(
+                    filter(
+                        None,
+                        (
+                            str(root),
+                            str(ROOT / "src"),
+                            environment.get("PYTHONPATH"),
+                        ),
+                    )
+                )
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "router_dump_analyzer.plugin_validation",
+                        "hostile",
+                    ],
+                    cwd=ROOT,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+                rendered = completed.stdout + completed.stderr
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertNotIn(supplied, rendered)
+                self.assertNotIn("Traceback", rendered)
+                self.assertLessEqual(len(rendered), 2_200)
+
+    def test_hook_and_loader_process_controls_are_not_swallowed(self) -> None:
+        for exception_type in (KeyboardInterrupt, SystemExit, GeneratorExit):
+            with self.subTest(exception_type=exception_type.__name__):
+                with self.assertRaises(exception_type):
+                    validate_plugin(
+                        ExplodingDescribePlugin(exception_type("process control"))
+                    )
+
+                with (
+                    patch(
+                        "router_dump_analyzer.plugin_validation.load_entry_point",
+                        side_effect=exception_type("process control"),
+                    ),
+                    self.assertRaises(exception_type),
+                ):
+                    main(["hostile"])
+
+    def test_descriptor_process_controls_are_not_swallowed(self) -> None:
+        for exception_type in (KeyboardInterrupt, SystemExit, GeneratorExit):
+            with self.subTest(exception_type=exception_type.__name__):
+                with self.assertRaises(exception_type):
+                    validate_plugin(
+                        ExplodingManifestDescriptorPlugin(
+                            exception_type("process control")
+                        )
+                    )
+
+                output = io.StringIO()
+                with (
+                    patch(
+                        "router_dump_analyzer.plugin_validation.load_entry_point",
+                        return_value=ExplodingManifestDescriptorPlugin(
+                            exception_type("process control")
+                        ),
+                    ),
+                    redirect_stdout(output),
+                    self.assertRaises(exception_type),
+                ):
+                    main(["hostile"])
+                self.assertEqual(output.getvalue(), "")
 
     def test_cli_builds_and_checks_representative_inventory(self) -> None:
         class InstalledEntryPoint:

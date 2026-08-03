@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .plugin_loading import load_plugin_entry_point, load_plugin_module
+from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .public_text import bounded_public_error_detail
 from .runtime import (
     RuntimeApplicationFactory,
@@ -23,6 +24,20 @@ from .runtime import (
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 _CLI_ERROR_FALLBACK = "analyzer configuration or startup failed"
+
+
+def _cli_error_detail(error: BaseException) -> str:
+    """Render one expected startup error behind the final hostile-text fence."""
+
+    try:
+        return bounded_public_error_detail(
+            str(error),
+            fallback=_CLI_ERROR_FALLBACK,
+        )
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except BaseException:  # noqa: BLE001 - hostile exception rendering is data.
+        return _CLI_ERROR_FALLBACK
 
 
 def _port(value: str) -> int:
@@ -125,6 +140,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--grant-instance-operator",
+        action="store_true",
+        help=(
+            "development only: grant the control-plane instance-operator role "
+            "through the built-in trusted-header resolver on a loopback listener"
+        ),
+    )
+    parser.add_argument(
         "--control-plane-retention-policy",
         type=Path,
         help=(
@@ -155,6 +178,7 @@ class LaunchConfiguration:
     api_only: bool = False
     control_plane_dir: Path | None = None
     trust_control_plane_headers: bool = False
+    grant_instance_operator: bool = False
     control_plane_retention_policy: Path | None = None
     expose_api_docs: bool = False
 
@@ -166,6 +190,12 @@ def parse_args(argv: Sequence[str] | None = None) -> LaunchConfiguration:
         build_parser().error("--host must be non-empty")
     if namespace.expose_api_docs and not _is_loopback_host(host):
         build_parser().error("--expose-api-docs is allowed only on a loopback host")
+    if namespace.grant_instance_operator and namespace.control_plane_dir is None:
+        build_parser().error("--grant-instance-operator requires --control-plane-dir")
+    if namespace.grant_instance_operator and not _is_loopback_host(host):
+        build_parser().error(
+            "--grant-instance-operator is allowed only on a loopback host"
+        )
     if (
         namespace.control_plane_retention_policy is not None
         and namespace.control_plane_dir is None
@@ -184,6 +214,7 @@ def parse_args(argv: Sequence[str] | None = None) -> LaunchConfiguration:
         api_only=namespace.api_only,
         control_plane_dir=namespace.control_plane_dir,
         trust_control_plane_headers=namespace.trust_control_plane_headers,
+        grant_instance_operator=namespace.grant_instance_operator,
         control_plane_retention_policy=(namespace.control_plane_retention_policy),
         expose_api_docs=namespace.expose_api_docs,
     )
@@ -255,6 +286,20 @@ def run(
 ) -> None:
     if configuration.expose_api_docs and not _is_loopback_host(configuration.host):
         raise ValueError("API documentation may be exposed only on a loopback host")
+    if (
+        configuration.grant_instance_operator
+        and configuration.control_plane_dir is None
+    ):
+        raise ValueError(
+            "the instance-operator role may be granted only by the built-in "
+            "trusted-header control plane"
+        )
+    if configuration.grant_instance_operator and not _is_loopback_host(
+        configuration.host
+    ):
+        raise ValueError(
+            "the instance-operator role may be granted only on a loopback host"
+        )
     input_path = configuration.input_path.expanduser().resolve()
     if not input_path.exists():
         raise FileNotFoundError(f"analyzer input does not exist: {input_path}")
@@ -311,6 +356,7 @@ def run(
             allowed_origins=tuple(
                 f"http://{allowed_authority}" for allowed_authority in authorities
             ),
+            grant_instance_operator=configuration.grant_instance_operator,
         )
     try:
         application = factory(
@@ -360,6 +406,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.error("--host must be non-empty")
     if namespace.expose_api_docs and not _is_loopback_host(host):
         parser.error("--expose-api-docs is allowed only on a loopback host")
+    if namespace.grant_instance_operator and namespace.control_plane_dir is None:
+        parser.error("--grant-instance-operator requires --control-plane-dir")
+    if namespace.grant_instance_operator and not _is_loopback_host(host):
+        parser.error("--grant-instance-operator is allowed only on a loopback host")
     if (
         namespace.control_plane_retention_policy is not None
         and namespace.control_plane_dir is None
@@ -376,17 +426,19 @@ def main(argv: Sequence[str] | None = None) -> None:
         api_only=namespace.api_only,
         control_plane_dir=namespace.control_plane_dir,
         trust_control_plane_headers=namespace.trust_control_plane_headers,
+        grant_instance_operator=namespace.grant_instance_operator,
         control_plane_retention_policy=(namespace.control_plane_retention_policy),
         expose_api_docs=namespace.expose_api_docs,
     )
     try:
         run(configuration)
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
     except (LookupError, OSError, RuntimeError, TypeError, ValueError) as error:
-        detail = bounded_public_error_detail(
-            str(error),
-            fallback=_CLI_ERROR_FALLBACK,
-        )
+        detail = _cli_error_detail(error)
         parser.exit(1, f"router-dump-analyzer: error: {detail}\n")
+    except BaseException:  # noqa: BLE001 - final process-facing fault fence.
+        parser.exit(1, f"router-dump-analyzer: error: {_CLI_ERROR_FALLBACK}\n")
 
 
 if __name__ == "__main__":

@@ -65,6 +65,15 @@ controlled-development override, not production hardening. A production ASGI
 host installs its own `ControlPlaneIdentityResolver` backed by verified
 credentials.
 
+The development resolver grants the exact role set
+`control-plane:read`, `control-plane:write`, and `control-plane:admin` by
+default. `--grant-instance-operator` adds the independent
+`control-plane:instance-operator` role only when the built-in trusted-header
+resolver is selected on a loopback listener. Argument validation and the
+composition root both reject every other combination. The option grants the
+role, not the diagnostics route specifically; future routes may use the same
+role without changing this contract.
+
 The trusted-header adapter also validates the exact listener `Host` on every
 request and the exact `Origin` on mutations when one is present. This closes
 the DNS-rebinding gap for the local profile; it does not turn caller-supplied
@@ -395,7 +404,9 @@ Core emits a closed, bounded event vocabulary on the standard Python logger
 `rda_fields` mapping. Categories cover admission/publication catalog calls and
 failures, sampled worker failures/exits, retention run/preview/plan/replay,
 per-source truncated scans, cleanup batches, final completion/failure, and
-`control_plane.access.denied`.
+`control_plane.access.denied`. A rejected identity-resolver response-header
+map also emits the separate zero-field
+`control_plane.identity_resolver.response_headers_rejected` class.
 Retention truncation records name the bounded source and its limit rather than
 silently presenting a partial inventory as complete.
 
@@ -415,6 +426,13 @@ non-majority is never reported. Candidate uncertainty, absent trusted tenant
 identity, or a balanced window omits the field. The deployment authenticator
 remains responsible for durable credential-attempt, client-address,
 rate-limit, and compliance audit records.
+
+If the denial's resolver-owned response-header map is invalid, the denial
+keeps its original phase and reason while its operational record carries the
+actual `response_status=500`. The independent header-rejection event has an
+exact empty field set. Neither event contains a header name/value, resolver
+exception, raw tenant/principal, credential, or request payload. Failure of
+either best-effort telemetry path cannot change the bounded `500` response.
 
 The reporter accepts only exact `ControlPlaneAccessPhase` and
 `ControlPlaneAccessReason` enum members, revalidates them at the reporting
@@ -455,8 +473,10 @@ GET /v1/control-plane/diagnostics/operational-events
 X-Tenant-ID: verified-tenant
 ```
 
-The resolved identity must have `control-plane:admin`; the response sets
-`Cache-Control: no-store` and uses schema `rda.operational-diagnostics.v1`.
+The resolved identity must have the distinct
+`control-plane:instance-operator` role; tenant `control-plane:admin` does not
+imply it. The response sets `Cache-Control: no-store` and uses schema
+`rda.operational-diagnostics.v1`.
 `operational_events` contains aggregate queue counters plus one closed
 `event_classes` row for every declared `rda_event`, with
 `accepted_events`, `queue_full_drops`, `rejected_events`, and
@@ -468,9 +488,12 @@ The resolved identity must have `control-plane:admin`; the response sets
 enqueue/validation failures. Counters above JavaScript's exact-integer maximum
 become decimal strings.
 
-This endpoint is a process-local, concurrently moving troubleshooting view.
-It resets on restart, contains no event payloads or tenant correlations, and
-is neither a durable audit nor proof that every denial was observed. A
+This endpoint has a deliberately hybrid scope. `operational_events` is backed
+by process-global emitter counters. `access_denial_sampling` belongs to the
+installed ASGI app and aggregates all tenants handled by that app. The result
+is a concurrently moving troubleshooting view. It resets on restart, contains
+no event payloads or tenant correlations, and is neither a durable audit nor
+proof that every denial was observed. A
 snapshot failure returns bounded `503`; it never publishes internal exception
 text. Anonymous health intentionally remains aggregate-only.
 
@@ -645,6 +668,13 @@ continuation without it returns `428`; a different current watermark returns
 `409`, so clients restart instead of
 silently skipping or duplicating rows after a concurrent create, update, or
 delete.
+Every caller-supplied audit cursor and watermark precondition uses canonical
+non-negative ASCII decimal syntax and the range `0..9007199254740991`: this
+watermark, `expected_audit_watermark`, review-audit `after_sequence`, retention
+`audit_before_sequence`, and both retention-journal cursors. Stored and
+projected catalog/review audit sequences use the same exact integer range.
+Allocation fails closed at exhaustion, and public projections fail closed if
+stored state violates the domain.
 
 Generate a report from explicit revisions:
 
@@ -713,7 +743,7 @@ All routes have the prefix `/v1/control-plane`.
 | Area | Methods and paths |
 |---|---|
 | Context | `GET /context` |
-| Diagnostics | `GET /diagnostics/operational-events` (`control-plane:admin`) |
+| Diagnostics | `GET /diagnostics/operational-events` (`control-plane:instance-operator`) |
 | Projects | `GET, POST /projects` |
 | Workspaces | `GET, POST /projects/{project_id}/workspaces` |
 | Catalog | `GET /projects/{project_id}/workspaces/{workspace_id}/fixtures`; `GET .../revisions?node_id=...` |
@@ -739,6 +769,10 @@ values are rejected rather than rounded or echoed. Nanosecond instants use the
 separate signed 64-bit domain and cross JSON as canonical decimal strings.
 Annotation continuations additionally require the first page's canonical
 `audit_watermark` in `expected_audit_watermark`; a changed value conflicts.
+The same canonical JSON-safe sequence domain applies to review-audit
+`after_sequence`, retention `audit_before_sequence`, and the retention
+journal's `catalog_after_sequence` and `review_after_sequence`, including
+durable catalog/review allocation and projection.
 
 Import lists instead use a stable two-part cursor because several uploads can
 share one timestamp. They are ordered by
@@ -782,16 +816,49 @@ The host application must install a callable `ControlPlaneIdentityResolver`.
 It returns one exact `ControlPlaneIdentity` with tenant, principal, roles, and
 optional allowed project/workspace ID sets. Reads require
 `control-plane:read`; ordinary mutations require `control-plane:write`;
-retention routes require the separate `control-plane:admin` role. Request headers
-must match the resolved identity, and an out-of-scope project/workspace is
-hidden as `404`.
+retention routes require the separate `control-plane:admin` role; operational
+diagnostics require the independent `control-plane:instance-operator` role.
+Neither privileged role implies the other. Request headers must match the
+resolved identity, and an out-of-scope project/workspace is hidden as `404`.
 
 The resolver is an authorization input, not an authenticator. A production
 deployment must verify credentials first, remove client-supplied identity
 headers, inject the verified tenant/principal, construct the allowed roles and
 scopes, and use TLS at the proxy or service boundary. The built-in CLI adapter
-simply trusts local headers and grants all three roles; never mistake it for that
-production integration.
+simply trusts local headers and grants read/write/admin by default; the
+loopback-only `--grant-instance-operator` option must be supplied to add the
+fourth role. Never mistake either mode for that production integration.
+
+An authorization resolver may attach response headers to a `401` or `403`, but
+the complete map must pass the core's atomic bounded safe-header policy before
+ASGI sees it. Invalid names or values, case-insensitive duplicates, forbidden
+framing/representation/cookie-mutation fields, and excessive count or size
+reject the whole map. The result is a bounded `500` without resolver-supplied
+headers, not a partially forwarded response. The original denial is reported
+with actual status `500`, and a second payload-free resolver-header-rejection
+event makes the boundary fault observable. `Set-Cookie` and obsolete
+`Set-Cookie2` are forbidden case-insensitively. A response `Cookie` field does
+not mutate browser state and remains under the generic bounds. Cookie mutation
+belongs in authenticated upstream middleware or a dedicated endpoint; a
+future resolver exception must use a typed explicit cookie policy, never a
+generic allowlist.
+
+Values in the HTTP `obs-text` range `0xA0`-`0xFF` remain wire-valid. The core
+does not add Starlette `TestClient`-specific restrictions. If in-process
+harness parity becomes a requirement, the documented reopening decision is to
+restrict resolver values to printable ASCII uniformly.
+
+Round-16 policy analysis leaves `Location`, `Refresh`, `Access-Control-*`,
+`Content-Security-Policy`, and `Strict-Transport-Security` unchanged for
+compatibility, but does **not** classify them as ordinary authentication
+metadata. They can redirect a client or alter browser origin and security
+policy. Before exposing resolver-selected values for them in production, add a
+typed deployment policy that authorizes exact header families and owning
+middleware. The recommended default for that future policy is deny for those
+five families (and response `Authorization`), allow `WWW-Authenticate`, and
+allow only explicitly registered custom headers. A deployment survey is needed
+before replacing today's generic bounded policy, so this task does not silently
+break an existing resolver.
 
 ### Browser review behavior
 
@@ -945,6 +1012,8 @@ retained review subjects, idempotency receipts, explicitly protected IDs, and
 the latest snapshot policy can each block a candidate. The caller cannot set
 the catalog's external-reference attestation over HTTP; `ControlPlane`
 calculates it after checking the review store.
+`audit_before_sequence` uses the same canonical `0..9007199254740991` audit
+domain as review cursors and watermarks; it is not a signed-64-bit coordinate.
 
 Opening a control plane or ingestion pipeline is non-destructive even when the
 loaded policy has `enabled: true`. Workspace ingestion retention considers only

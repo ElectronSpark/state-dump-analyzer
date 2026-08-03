@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from router_dump_analyzer.cli import (
     LaunchConfiguration,
+    build_parser,
     main,
     parse_args,
     run,
@@ -48,6 +49,14 @@ class _Runtime:
 
 class _Plugin:
     runtime = _Runtime()
+
+
+class _ClosableControlPlane:
+    def __init__(self) -> None:
+        self.close_count = 0
+
+    def close(self) -> None:
+        self.close_count += 1
 
 
 class CoreCliTests(unittest.TestCase):
@@ -97,6 +106,7 @@ class CoreCliTests(unittest.TestCase):
         self.assertTrue(parsed.no_browser)
         self.assertEqual(parsed.control_plane_dir, Path("durable-state"))
         self.assertTrue(parsed.trust_control_plane_headers)
+        self.assertFalse(parsed.grant_instance_operator)
         self.assertFalse(parsed.expose_api_docs)
         self.assertEqual(
             parsed.control_plane_retention_policy,
@@ -140,6 +150,142 @@ class CoreCliTests(unittest.TestCase):
             ]
         )
         self.assertTrue(loopback_docs.expose_api_docs)
+
+    def test_instance_operator_role_flag_requires_loopback_control_plane(self) -> None:
+        parsed = parse_args(
+            [
+                "--plugin",
+                "router",
+                "--input",
+                "fixture.tgz",
+                "--control-plane-dir",
+                "state",
+                "--grant-instance-operator",
+            ]
+        )
+        self.assertTrue(parsed.grant_instance_operator)
+
+        with self.assertRaises(SystemExit) as missing_control_plane:
+            parse_args(
+                [
+                    "--plugin",
+                    "router",
+                    "--input",
+                    "fixture.tgz",
+                    "--grant-instance-operator",
+                ]
+            )
+        self.assertEqual(missing_control_plane.exception.code, 2)
+
+        with self.assertRaises(SystemExit) as non_loopback:
+            parse_args(
+                [
+                    "--plugin",
+                    "router",
+                    "--input",
+                    "fixture.tgz",
+                    "--control-plane-dir",
+                    "state",
+                    "--trust-control-plane-headers",
+                    "--host",
+                    "0.0.0.0",
+                    "--grant-instance-operator",
+                ]
+            )
+        self.assertEqual(non_loopback.exception.code, 2)
+
+        grant_help = next(
+            action.help
+            for action in build_parser()._actions
+            if action.dest == "grant_instance_operator"
+        )
+        self.assertIn("grant the control-plane instance-operator role", grant_help)
+        self.assertNotIn("grant access to", grant_help)
+
+    def test_run_passes_instance_operator_role_grant_to_trusted_resolver(
+        self,
+    ) -> None:
+        plugin = _Plugin()
+        resolver = lambda _request: object()
+        control_plane = _ClosableControlPlane()
+        resolver_options: dict[str, Any] = {}
+        requests: list[RuntimeApplicationRequest] = []
+
+        def resolver_factory(**options: Any) -> Any:
+            resolver_options.update(options)
+            return resolver
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = Path(temporary_directory) / "fixture.tgz"
+            fixture.touch()
+            with (
+                patch(
+                    "router_dump_analyzer.control_plane.ControlPlane",
+                    return_value=control_plane,
+                ),
+                patch(
+                    "router_dump_analyzer.ingestion_pipeline.PluginRegistry",
+                    return_value=object(),
+                ),
+                patch(
+                    "router_dump_analyzer.web.control_plane_api."
+                    "TrustedHeaderIdentityResolver",
+                    side_effect=resolver_factory,
+                ),
+            ):
+                run(
+                    LaunchConfiguration(
+                        plugin_name="router",
+                        plugin_module=None,
+                        input_path=fixture,
+                        host="127.0.0.1",
+                        port=8765,
+                        no_browser=True,
+                        control_plane_dir=Path(temporary_directory) / "state",
+                        grant_instance_operator=True,
+                    ),
+                    entry_point_loader=lambda _name: plugin,
+                    application_factory=lambda request: (
+                        requests.append(request) or object()
+                    ),
+                    server_runner=lambda _app, **_values: None,
+                )
+
+        self.assertIs(requests[0].control_plane_identity_resolver, resolver)
+        self.assertTrue(resolver_options["grant_instance_operator"])
+        self.assertEqual(control_plane.close_count, 1)
+
+    def test_programmatic_instance_operator_grant_rejects_invalid_composition(
+        self,
+    ) -> None:
+        base = {
+            "plugin_name": "router",
+            "plugin_module": None,
+            "input_path": Path("fixture.tgz"),
+            "port": 8765,
+            "no_browser": True,
+            "grant_instance_operator": True,
+        }
+        with self.assertRaisesRegex(ValueError, "trusted-header control plane"):
+            run(
+                LaunchConfiguration(host="127.0.0.1", **base),
+                entry_point_loader=lambda _name: self.fail(),
+                application_factory=lambda _request: self.fail(),
+                server_runner=lambda _app, **_values: self.fail(),
+            )
+
+        with self.assertRaisesRegex(ValueError, "only on a loopback host"):
+            run(
+                LaunchConfiguration(
+                    host="0.0.0.0",
+                    control_plane_dir=Path("state"),
+                    trust_control_plane_headers=True,
+                    **base,
+                ),
+                entry_point_loader=lambda _name: self.fail(),
+                application_factory=lambda _request: self.fail(),
+                server_runner=lambda _app, **_values: self.fail(),
+            )
 
     def test_control_plane_refuses_implicit_header_trust_off_loopback(
         self,

@@ -18,6 +18,7 @@ from unittest.mock import patch
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.requests import Request as StarletteRequest
 
 from router_dump_analyzer.annotation_store import (
     CORRELATION_REPORT_SCHEMA_VERSION,
@@ -46,11 +47,13 @@ from router_dump_analyzer.operational_logging import (
     OperationalEventHealthSnapshot,
 )
 from router_dump_analyzer.plugin_api import DomainEvent
+from router_dump_analyzer.session_store import CatalogRetentionPolicy
 from router_dump_analyzer.value_core import MAX_JSON_SAFE_INTEGER
 from router_dump_analyzer.web.control_plane_api import (
     _API_ERROR_DOMAIN_ROOTS,
     _API_ERROR_POLICY_BY_CLASS,
     CONTROL_PLANE_ADMIN_ROLE,
+    CONTROL_PLANE_INSTANCE_OPERATOR_ROLE,
     CONTROL_PLANE_READ_ROLE,
     CONTROL_PLANE_WRITE_ROLE,
     MAX_CONTROL_PLANE_JSON_BODY_BYTES,
@@ -455,6 +458,31 @@ class ControlPlaneApiTests(unittest.TestCase):
                     headers=self._read_headers(self.tenant_a),
                 )
                 self.assertEqual(response.status_code, 422, response.text)
+            with self.subTest(review_after_sequence=invalid):
+                response = self.client.get(
+                    f"{self.workspace_path}/review-audit",
+                    params={"after_sequence": invalid},
+                    headers=self._read_headers(self.tenant_a),
+                )
+                self.assertEqual(response.status_code, 422, response.text)
+
+        review_range_failures = {
+            "01": "after_sequence must be a canonical decimal integer",
+            "+1": "after_sequence must be a canonical decimal integer",
+            "-1": "after_sequence must be at least 0",
+            str(MAX_JSON_SAFE_INTEGER + 1): (
+                f"after_sequence must be no greater than {MAX_JSON_SAFE_INTEGER}"
+            ),
+        }
+        for value, expected_detail in review_range_failures.items():
+            with self.subTest(review_after_sequence=value):
+                response = self.client.get(
+                    f"{self.workspace_path}/review-audit",
+                    params={"after_sequence": value},
+                    headers=self._read_headers(self.tenant_a),
+                )
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertEqual(response.json()["detail"], expected_detail)
 
         first_page = self.client.get(
             f"{self.workspace_path}/imports",
@@ -471,6 +499,71 @@ class ControlPlaneApiTests(unittest.TestCase):
         )
         self.assertEqual(second_page.status_code, 200, second_page.text)
         self.assertEqual(second_page.json()["items"], [])
+
+    def test_retention_audit_cursors_use_canonical_json_safe_integers(self) -> None:
+        self._provision_scope(self.tenant_a)
+        headers = self._read_headers(self.tenant_a)
+        failures = {
+            "01": "must be a canonical decimal integer",
+            "+1": "must be a canonical decimal integer",
+            "-1": "must be at least 0",
+            str(MAX_JSON_SAFE_INTEGER + 1): (
+                f"must be no greater than {MAX_JSON_SAFE_INTEGER}"
+            ),
+        }
+        for field in ("catalog_after_sequence", "review_after_sequence"):
+            for value, suffix in failures.items():
+                with self.subTest(field=field, value=value):
+                    response = self.client.get(
+                        f"{self.workspace_path}/retention/audit",
+                        params={field: value},
+                        headers=headers,
+                    )
+                    self.assertEqual(response.status_code, 422, response.text)
+                    self.assertEqual(response.json()["detail"], f"{field} {suffix}")
+
+        boundary = self.client.get(
+            f"{self.workspace_path}/retention/audit",
+            params={
+                "catalog_after_sequence": str(MAX_JSON_SAFE_INTEGER),
+                "review_after_sequence": str(MAX_JSON_SAFE_INTEGER),
+            },
+            headers=headers,
+        )
+        self.assertEqual(boundary.status_code, 200, boundary.text)
+
+        self.control_plane.sessions._connection.execute(
+            "INSERT INTO sqlite_sequence(name, seq) VALUES (?, ?)",
+            ("catalog_retention_audit", MAX_JSON_SAFE_INTEGER - 1),
+        )
+        self.control_plane.sessions.purge_retention(
+            self.tenant_a,
+            self.workspace_id,
+            CatalogRetentionPolicy(enabled=True),
+            operation_id="api-sequence-boundary",
+        )
+        projected = self.client.get(
+            f"{self.workspace_path}/retention/audit",
+            params={"catalog_after_sequence": str(MAX_JSON_SAFE_INTEGER - 1)},
+            headers=headers,
+        )
+        self.assertEqual(projected.status_code, 200, projected.text)
+        self.assertEqual(
+            projected.json()["catalog"][0]["sequence"],
+            MAX_JSON_SAFE_INTEGER,
+        )
+
+        unsafe_sequence = MAX_JSON_SAFE_INTEGER + 1
+        self.control_plane.sessions._connection.execute(
+            "UPDATE catalog_retention_audit SET sequence = ? WHERE operation_id = ?",
+            (unsafe_sequence, "api-sequence-boundary"),
+        )
+        corrupt = self.client.get(
+            f"{self.workspace_path}/retention/audit",
+            headers=headers,
+        )
+        self.assertEqual(corrupt.status_code, 500, corrupt.text)
+        self.assertNotIn(str(unsafe_sequence), corrupt.text)
 
     def test_absent_control_plane_and_trusted_tenant_boundary(self) -> None:
         application = FastAPI()
@@ -1234,7 +1327,9 @@ class ControlPlaneApiTests(unittest.TestCase):
                 captured: list[dict[str, object]] = []
                 reporter = ControlPlaneAccessDenialReporter(
                     emitter=(
-                        lambda _event, **fields: captured.append(dict(fields))
+                        lambda _event, _captured=captured, **fields: _captured.append(
+                            dict(fields)
+                        )
                         or True
                     ),
                     monotonic=lambda: 0.0,
@@ -1465,14 +1560,14 @@ class ControlPlaneApiTests(unittest.TestCase):
         reporter = self._capturing_access_reporter(events)
         application.state.control_plane_access_denial_reporter = reporter
 
-        def non_admin(_request: Any) -> ControlPlaneIdentity:
+        def tenant_admin(_request: Any) -> ControlPlaneIdentity:
             return ControlPlaneIdentity(
                 tenant_id=self.tenant_a,
                 principal_id="operator",
-                roles=frozenset({CONTROL_PLANE_READ_ROLE}),
+                roles=frozenset({CONTROL_PLANE_ADMIN_ROLE}),
             )
 
-        application.state.control_plane_identity_resolver = non_admin
+        application.state.control_plane_identity_resolver = tenant_admin
         with TestClient(application) as client:
             public_health = client.get("/v1/control-plane/health")
             self.assertEqual(public_health.status_code, 200)
@@ -1487,15 +1582,24 @@ class ControlPlaneApiTests(unittest.TestCase):
             self.assertEqual(denied.status_code, 403, denied.text)
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0][1]["reason"], "required_role_missing")
+            self.assertEqual(
+                events[0][1]["required_role"],
+                CONTROL_PLANE_INSTANCE_OPERATOR_ROLE,
+            )
 
-            def admin(_request: Any) -> ControlPlaneIdentity:
+            def instance_operator(_request: Any) -> ControlPlaneIdentity:
                 return ControlPlaneIdentity(
                     tenant_id=self.tenant_a,
                     principal_id="operator",
-                    roles=frozenset({CONTROL_PLANE_ADMIN_ROLE}),
+                    roles=frozenset({CONTROL_PLANE_INSTANCE_OPERATOR_ROLE}),
                 )
 
-            application.state.control_plane_identity_resolver = admin
+            application.state.control_plane_identity_resolver = instance_operator
+            operator_cannot_admin = client.get(
+                "/v1/control-plane/projects/project/workspaces/workspace/retention/audit",
+                headers={"X-Tenant-ID": self.tenant_a},
+            )
+            self.assertEqual(operator_cannot_admin.status_code, 403)
             with reporter._lock:
                 reporter._observed_denials = MAX_OPERATIONAL_COUNTER
             zero = OperationalEventClassHealthSnapshot(0, 0, 0, 0)
@@ -1565,18 +1669,106 @@ class ControlPlaneApiTests(unittest.TestCase):
         ):
             self.assertNotIn(private, serialized)
 
+    def test_trusted_local_resolver_role_grants_are_exact_and_operator_is_opt_in(
+        self,
+    ) -> None:
+        def resolve(*, grant_instance_operator: bool) -> ControlPlaneIdentity:
+            resolver = TrustedHeaderIdentityResolver(
+                allowed_hosts=("testserver",),
+                allowed_origins=("http://testserver",),
+                grant_instance_operator=grant_instance_operator,
+            )
+            request = StarletteRequest(
+                {
+                    "type": "http",
+                    "asgi": {"version": "3.0"},
+                    "http_version": "1.1",
+                    "method": "GET",
+                    "scheme": "http",
+                    "path": "/v1/control-plane/projects",
+                    "raw_path": b"/v1/control-plane/projects",
+                    "root_path": "",
+                    "query_string": b"",
+                    "headers": (
+                        (b"host", b"testserver"),
+                        (b"x-tenant-id", b"tenant-a"),
+                    ),
+                    "client": ("127.0.0.1", 40000),
+                    "server": ("testserver", 80),
+                }
+            )
+            return resolver(request)
+
+        self.assertEqual(
+            resolve(grant_instance_operator=False).roles,
+            frozenset(
+                {
+                    CONTROL_PLANE_ADMIN_ROLE,
+                    CONTROL_PLANE_READ_ROLE,
+                    CONTROL_PLANE_WRITE_ROLE,
+                }
+            ),
+        )
+        self.assertEqual(
+            resolve(grant_instance_operator=True).roles,
+            frozenset(
+                {
+                    CONTROL_PLANE_ADMIN_ROLE,
+                    CONTROL_PLANE_INSTANCE_OPERATOR_ROLE,
+                    CONTROL_PLANE_READ_ROLE,
+                    CONTROL_PLANE_WRITE_ROLE,
+                }
+            ),
+        )
+
+        denied = self.client.get(
+            "/v1/control-plane/diagnostics/operational-events",
+            headers=self._read_headers(self.tenant_a),
+        )
+        self.assertEqual(denied.status_code, 403, denied.text)
+
+        self.client.app.state.control_plane_identity_resolver = (
+            TrustedHeaderIdentityResolver(
+                allowed_hosts=("testserver",),
+                allowed_origins=("http://testserver",),
+                grant_instance_operator=True,
+            )
+        )
+        accepted = self.client.get(
+            "/v1/control-plane/diagnostics/operational-events",
+            headers=self._read_headers(self.tenant_a),
+        )
+
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        self.assertEqual(accepted.headers["cache-control"], "no-store")
+
     def test_integer_adapters_preserve_grammar_and_range_failures(self) -> None:
         cases = (
             (
-                lambda: _request_canonical_integer("01", "offset"),
+                lambda: _request_canonical_integer(
+                    "01",
+                    "offset",
+                    minimum=0,
+                    maximum=10,
+                ),
                 "offset must be a canonical decimal integer",
             ),
             (
-                lambda: _request_canonical_integer(-1, "offset", minimum=0),
+                lambda: _request_canonical_integer(
+                    -1,
+                    "offset",
+                    minimum=0,
+                    maximum=10,
+                ),
                 "offset must be at least 0",
             ),
             (
-                lambda: _request_canonical_integer(11, "offset", maximum=10),
+                lambda: _request_canonical_integer(
+                    11,
+                    "offset",
+                    minimum=0,
+                    maximum=10,
+                ),
                 "offset must be no greater than 10",
             ),
             (
@@ -1584,6 +1776,7 @@ class ControlPlaneApiTests(unittest.TestCase):
                     {"maximum_candidates": -1},
                     "maximum_candidates",
                     minimum=0,
+                    maximum=10,
                 ),
                 "maximum_candidates must be at least 0",
             ),
@@ -1591,6 +1784,7 @@ class ControlPlaneApiTests(unittest.TestCase):
                 lambda: _retention_integer(
                     {"maximum_candidates": 11},
                     "maximum_candidates",
+                    minimum=0,
                     maximum=10,
                 ),
                 "maximum_candidates must be no greater than 10",
@@ -1614,6 +1808,19 @@ class ControlPlaneApiTests(unittest.TestCase):
                     operation()
                 self.assertEqual(raised.exception.status_code, 422)
                 self.assertEqual(raised.exception.detail, expected_detail)
+
+        for adapter in (_request_canonical_integer, _retention_integer):
+            with self.subTest(adapter=adapter.__name__):
+                parameters = inspect.signature(adapter).parameters
+                for bound in ("minimum", "maximum"):
+                    self.assertEqual(
+                        parameters[bound].kind,
+                        inspect.Parameter.KEYWORD_ONLY,
+                    )
+                    self.assertIs(
+                        parameters[bound].default,
+                        inspect.Parameter.empty,
+                    )
 
     def test_browser_paging_coordinates_are_json_safe_across_control_plane(
         self,
@@ -1669,6 +1876,157 @@ class ControlPlaneApiTests(unittest.TestCase):
                     response.json()["detail"],
                     (f"after_sequence must be no greater than {MAX_JSON_SAFE_INTEGER}"),
                 )
+
+    def test_review_sequence_fields_share_one_json_safe_domain(self) -> None:
+        self._provision_scope(self.tenant_a)
+        headers = self._write_headers(self.tenant_a)
+        connection = self.control_plane.annotations._connection
+        connection.execute(
+            """
+            INSERT INTO review_overlay_audit (
+                sequence, tenant_id, project_id, workspace_id, entity_kind,
+                entity_id, operation, version, actor, occurred_at_ns,
+                snapshot_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                MAX_JSON_SAFE_INTEGER,
+                self.tenant_a,
+                self.project_id,
+                self.workspace_id,
+                "annotation",
+                "boundary-annotation",
+                "create",
+                1,
+                "boundary-tester",
+                1,
+                "{}",
+            ),
+        )
+
+        annotation_page = self.client.get(
+            f"{self.workspace_path}/annotations",
+            params={"expected_audit_watermark": str(MAX_JSON_SAFE_INTEGER)},
+            headers=headers,
+        )
+        self.assertEqual(annotation_page.status_code, 200, annotation_page.text)
+        self.assertEqual(
+            annotation_page.json()["audit_watermark"],
+            str(MAX_JSON_SAFE_INTEGER),
+        )
+        audit_page = self.client.get(
+            f"{self.workspace_path}/review-audit",
+            params={"after_sequence": str(MAX_JSON_SAFE_INTEGER - 1)},
+            headers=headers,
+        )
+        self.assertEqual(audit_page.status_code, 200, audit_page.text)
+        self.assertEqual(
+            audit_page.json()["items"][0]["sequence"],
+            MAX_JSON_SAFE_INTEGER,
+        )
+
+        preview = self.client.post(
+            f"{self.workspace_path}/retention/preview",
+            headers=headers,
+            json={
+                "review": {
+                    "enabled": True,
+                    "tombstone_before_ns": str((1 << 63) - 1),
+                    "audit_mode": "prune_explicit",
+                    "audit_before_sequence": str(MAX_JSON_SAFE_INTEGER),
+                }
+            },
+        )
+        self.assertEqual(preview.status_code, 200, preview.text)
+        self.assertEqual(
+            preview.json()["review"]["policy"]["audit_before_sequence"],
+            MAX_JSON_SAFE_INTEGER,
+        )
+        self.assertEqual(
+            preview.json()["review"]["policy"]["tombstone_before_ns"],
+            str((1 << 63) - 1),
+        )
+
+        unsafe = str(MAX_JSON_SAFE_INTEGER + 1)
+        unsafe_requests = (
+            self.client.get(
+                f"{self.workspace_path}/annotations",
+                params={"expected_audit_watermark": unsafe},
+                headers=headers,
+            ),
+            self.client.get(
+                f"{self.workspace_path}/review-audit",
+                params={"after_sequence": unsafe},
+                headers=headers,
+            ),
+            self.client.post(
+                f"{self.workspace_path}/retention/preview",
+                headers=headers,
+                json={
+                    "review": {
+                        "audit_mode": "prune_explicit",
+                        "audit_before_sequence": unsafe,
+                    }
+                },
+            ),
+        )
+        for response in unsafe_requests:
+            with self.subTest(detail=response.text):
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertIn(
+                    f"must be no greater than {MAX_JSON_SAFE_INTEGER}",
+                    response.json()["detail"],
+                )
+
+        for invalid in ("01", "+1"):
+            with self.subTest(audit_before_sequence=invalid):
+                response = self.client.post(
+                    f"{self.workspace_path}/retention/preview",
+                    headers=headers,
+                    json={
+                        "review": {
+                            "audit_mode": "prune_explicit",
+                            "audit_before_sequence": invalid,
+                        }
+                    },
+                )
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertEqual(
+                    response.json()["detail"],
+                    "audit_before_sequence must be a canonical decimal integer",
+                )
+
+        unsafe_sequence = MAX_JSON_SAFE_INTEGER + 1
+        connection.execute(
+            """
+            INSERT INTO review_overlay_audit (
+                sequence, tenant_id, project_id, workspace_id, entity_kind,
+                entity_id, operation, version, actor, occurred_at_ns,
+                snapshot_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                unsafe_sequence,
+                self.tenant_a,
+                self.project_id,
+                self.workspace_id,
+                "annotation",
+                "unsafe-annotation",
+                "create",
+                1,
+                "boundary-tester",
+                1,
+                "{}",
+            ),
+        )
+        for path in ("annotations", "review-audit"):
+            with self.subTest(preseeded_path=path):
+                response = self.client.get(
+                    f"{self.workspace_path}/{path}",
+                    headers=headers,
+                )
+                self.assertEqual(response.status_code, 500, response.text)
+                self.assertNotIn(str(unsafe_sequence), response.text)
 
     def test_core_time_projection_preserves_opaque_metadata_suffixes(self) -> None:
         self._provision_scope(self.tenant_a)

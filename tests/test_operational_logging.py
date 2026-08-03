@@ -15,7 +15,9 @@ from router_dump_analyzer.operational_logging import (
     OPERATIONAL_EVENT_CONTRACT,
     OPERATIONAL_LOG_SCHEMA,
     OPERATIONAL_LOGGER_NAME,
+    RESOLVER_RESPONSE_HEADERS_REJECTED_EVENT,
     OperationalEventEmitter,
+    emit_resolver_response_headers_rejected,
     operational_event_diagnostics_snapshot,
 )
 
@@ -98,6 +100,23 @@ class _CapturingLogger:
     def log(self, level: int, message: str, *, extra: dict[str, object]) -> None:
         self.records.append((level, message, extra))
         self.called.set()
+
+
+class _RecordHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+        self.rendered: list[str] = []
+        self.setFormatter(
+            logging.Formatter(
+                "%(name)s %(levelname)s %(message)s %(rda_schema)s "
+                "%(rda_event)s %(rda_fields)s"
+            )
+        )
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+        self.rendered.append(self.format(record))
 
 
 class _BlockingLogger:
@@ -323,7 +342,7 @@ class OperationalLoggingTests(unittest.TestCase):
             ("phase", "plug_in_phase"),
             ("reason", "host_rejected"),
             ("sampling_scope", "unbounded"),
-            ("response_status", 500),
+            ("response_status", 418),
             ("required_role", "plug-in:admin"),
             ("tenant_correlation", "A5" * 16),
             ("tenant_correlation", "a5" * 15),
@@ -337,10 +356,121 @@ class OperationalLoggingTests(unittest.TestCase):
                     )
                 )
 
+        operator = {
+            **valid,
+            "required_role": "control-plane:instance-operator",
+        }
+        actual_failure = {**valid, "response_status": 500}
         self.assertTrue(emitter.emit("control_plane.access.denied", **valid))
+        self.assertTrue(emitter.emit("control_plane.access.denied", **operator))
+        self.assertTrue(emitter.emit("control_plane.access.denied", **actual_failure))
         self.assertTrue(emitter.flush(timeout=2.0))
-        self.assertEqual(len(logger.records), 1)
+        self.assertEqual(len(logger.records), 3)
         self.assertEqual(emitter.dropped_events, len(invalid_overrides))
+
+    def test_resolver_header_rejection_event_has_an_exact_empty_payload(self) -> None:
+        logger = _CapturingLogger()
+        emitter = OperationalEventEmitter(logger=logger)
+        spec = OPERATIONAL_EVENT_CONTRACT[RESOLVER_RESPONSE_HEADERS_REJECTED_EVENT]
+
+        self.assertEqual(spec.required, frozenset())
+        self.assertEqual(spec.optional, frozenset())
+        self.assertTrue(emitter.emit(RESOLVER_RESPONSE_HEADERS_REJECTED_EVENT))
+        self.assertTrue(emitter.flush(timeout=2.0))
+        self.assertEqual(
+            logger.records,
+            [
+                (
+                    logging.ERROR,
+                    RESOLVER_RESPONSE_HEADERS_REJECTED_EVENT,
+                    {
+                        "rda_schema": OPERATIONAL_LOG_SCHEMA,
+                        "rda_event": RESOLVER_RESPONSE_HEADERS_REJECTED_EVENT,
+                        "rda_fields": {},
+                    },
+                )
+            ],
+        )
+
+    def test_resolver_header_rejection_event_never_logs_hostile_caller_data(
+        self,
+    ) -> None:
+        logger = logging.getLogger(f"rda-test-resolver-header-rejection-{id(self)}")
+        logger.propagate = False
+        handler = _RecordHandler()
+        logger.addHandler(handler)
+        self.addCleanup(logger.removeHandler, handler)
+        emitter = OperationalEventEmitter(logger=logger)
+        hostile_values = (
+            "Set-Cookie",
+            "X-Tenant-ID",
+            "X-Resolver-Private-Detail",
+            r"C:\Users\alice\secret\plugin.py",
+            "/srv/private/tenant-a/reviews.sqlite3",
+            "header\r\nX-Injected: yes",
+            "right-to-left-\u202eprivate",
+            "x" * 5_000,
+            "Bearer secret-token-value",
+            "tenant-private-id",
+        )
+
+        for hostile in hostile_values:
+            with self.subTest(hostile_prefix=hostile[:16]):
+                self.assertFalse(
+                    emitter.emit(
+                        RESOLVER_RESPONSE_HEADERS_REJECTED_EVENT,
+                        resolver_value=hostile,
+                    )
+                )
+        self.assertTrue(emitter.emit(RESOLVER_RESPONSE_HEADERS_REJECTED_EVENT))
+        self.assertTrue(emitter.flush(timeout=2.0))
+        self.assertEqual(len(handler.records), 1)
+        self.assertEqual(handler.records[0].rda_fields, {})
+        record_text = repr(handler.records[0].__dict__)
+        rendered = handler.rendered[0]
+        for hostile in hostile_values:
+            with self.subTest(scanned_prefix=hostile[:16]):
+                self.assertNotIn(hostile, record_text)
+                self.assertNotIn(hostile, rendered)
+
+    def test_resolver_header_rejection_counters_separate_rejection_and_capacity(
+        self,
+    ) -> None:
+        logger = _BlockingLogger()
+        emitter = OperationalEventEmitter(logger=logger, max_queue_size=1)
+        event = RESOLVER_RESPONSE_HEADERS_REJECTED_EVENT
+        try:
+            self.assertFalse(emitter.emit(event, private_header="must-not-cross"))
+            self.assertTrue(emitter.emit(event))
+            self.assertTrue(logger.entered.wait(timeout=1.0))
+            self.assertTrue(emitter.emit(event))
+            self.assertFalse(emitter.emit(event))
+            counters = emitter.diagnostics_snapshot().event_classes[event]
+            self.assertEqual(counters.accepted_events, 2)
+            self.assertEqual(counters.rejected_events, 1)
+            self.assertEqual(counters.queue_full_drops, 1)
+            self.assertEqual(counters.delivery_failures, 0)
+        finally:
+            logger.release.set()
+        self.assertTrue(emitter.flush(timeout=2.0))
+
+    def test_payload_free_resolver_header_emitter_preserves_process_controls(
+        self,
+    ) -> None:
+        for interruption in (
+            KeyboardInterrupt(),
+            SystemExit(7),
+            GeneratorExit(),
+        ):
+            with (
+                self.subTest(interruption=type(interruption).__name__),
+                patch(
+                    "router_dump_analyzer.operational_logging._DEFAULT_EMITTER.emit",
+                    side_effect=interruption,
+                ),
+                self.assertRaises(type(interruption)),
+            ):
+                emit_resolver_response_headers_rejected()
 
     def test_field_types_text_safety_integer_bounds_and_event_size_are_bounded(
         self,

@@ -404,9 +404,15 @@ core-owned ceilings.
 Recoverable `PluginDiagnostic` values remain in the typed execution result.
 Any non-recoverable diagnostic raises `PluginCapabilityExecutionError` with
 the diagnostics attached. An undeclared capability raises
-`PluginCapabilityUnavailableError`; a malformed, invalid, or over-limit result
-raises `PluginCapabilityOutputError`. Plug-in exceptions are wrapped in this
+`PluginCapabilityUnavailableError`; a malformed caller request raises
+`PluginCapabilityInputError`; a malformed, invalid, or over-limit result raises
+`PluginCapabilityOutputError`. Plug-in exceptions are wrapped in this
 execution-error boundary rather than escaping as a partially valid result.
+
+Caller validation MUST finish before the optional hook is resolved or invoked.
+The three error domains are caller input, hook execution, and plug-in output;
+implementations MUST NOT label a caller-owned request defect as a plug-in
+execution or output failure.
 
 This executable caller makes optional hooks directly testable and reusable; it
 does not itself publish a temporal, topology, or route provider. The current
@@ -1446,6 +1452,18 @@ bounded-shutdown promise; core does not create an unkillable helper thread and
 misreport its queue wait as cancellation. Only process mode is a killable fault
 boundary.
 
+Every in-process executable plug-in boundary MUST rethrow `KeyboardInterrupt`,
+`SystemExit`, and `GeneratorExit` unchanged and MUST contain every other
+`BaseException`. Validator failures become bounded author diagnostics;
+capability failures become fixed `PluginCapabilityExecutionError` messages;
+registry probe failures remove only that candidate; and trusted inline
+ingestion routes failures through its existing durable worker classification.
+No public failure text may interpolate a plug-in exception. Core snapshots the
+validated manifest identity during registration instead of repeatedly invoking
+a plug-in-owned manifest descriptor. These sites share one dependency-free
+process-control exception vocabulary so HTTP, validator, capability, and
+ingestion boundaries cannot drift independently.
+
 The default child deadline is 300 seconds, validated within 0.05 through
 86,400 seconds. It covers child startup, plug-in execution, bounded result
 transfer, and clean exit; the headless command caps it to the command's
@@ -1927,6 +1945,25 @@ fragment is projected through the shared bounded public-text policy before it
 is printed. Oversized text, probable host or traversal paths, unsafe invisible
 text, and ambiguous display characters cannot leak through validator stdout;
 plug-ins MUST use structured diagnostics rather than parse exception prose.
+The validator MUST resolve the installed object's `manifest` and each relevant
+hook descriptor at most once per run, and MUST use static class inspection when
+it determines whether an `AnalyzerPluginBase` hook was overridden. An ordinary
+descriptor exception produces a bounded failed report. A different ordinary
+exception escaping the validation implementation is contained by the command's
+final boundary and exits with status 2 without a traceback. `KeyboardInterrupt`,
+`SystemExit`, and `GeneratorExit` remain process-control exceptions and MUST NOT
+be converted into validation results. This includes nonstandard
+`BaseException` subclasses raised by manifest or hook descriptors, `describe()`,
+`probe()`, `locate_inputs()`, or the validator's loader: they MUST be contained
+without a traceback or untrusted exception text unless they are one of those
+three process controls.
+
+The host applies the same rule to installed loading, ingestion discovery and
+parser streams, runtime/session descriptors, context entry/exit, normalized
+data providers, temporal readers, and route packet-transition callbacks.
+Descriptors are snapshotted once per operation/session. Lazy iteration and
+`close()` are inside the boundary, and a failing context cleanup cannot replace
+an exception already raised by the core-owned body.
 
 ### Probe and input discovery
 

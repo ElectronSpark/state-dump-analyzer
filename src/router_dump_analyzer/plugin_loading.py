@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import importlib
 import inspect
+from collections.abc import Iterable
 from importlib import metadata
-from typing import Any, Iterable
+from typing import Any
 
 from .plugin_api import PLUGIN_ENTRY_POINT_GROUP
+from .process_control import PROCESS_CONTROL_EXCEPTIONS
 
 
 def installed_plugin_entry_points() -> tuple[metadata.EntryPoint, ...]:
@@ -63,11 +65,17 @@ def load_plugin_entry_point(
         )
     try:
         loaded = matches[0].load()
-    except Exception as error:  # noqa: BLE001 - convert imports to diagnostics.
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except Exception as error:
         raise RuntimeError(
             f"failed to load entry point {name!r}: "
             f"{type(error).__name__}: {error}"
         ) from error
+    except BaseException:  # noqa: BLE001 - installed plug-ins are hostile code.
+        raise RuntimeError(
+            "failed to load the selected plug-in entry point"
+        ) from None
     return _validated_instance(
         loaded,
         target=f"entry point {name!r}",
@@ -86,17 +94,31 @@ def load_plugin_module(target: str) -> Any:
         )
     try:
         module = importlib.import_module(module_name)
-    except Exception as error:  # noqa: BLE001 - convert imports to diagnostics.
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except Exception as error:
         raise RuntimeError(
             f"failed to import plug-in module {module_name!r}: "
             f"{type(error).__name__}: {error}"
         ) from error
+    except BaseException:  # noqa: BLE001 - imported module initialization is hostile.
+        raise RuntimeError(
+            "failed to import the selected plug-in module"
+        ) from None
     try:
         loaded = getattr(module, attribute)
-    except AttributeError as error:
+    except AttributeError:
         raise LookupError(
             f"plug-in module {module_name!r} has no attribute {attribute!r}"
-        ) from error
+        ) from None
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except Exception:
+        raise
+    except BaseException:  # noqa: BLE001 - module attributes may be descriptors.
+        raise RuntimeError(
+            "could not resolve the selected plug-in module attribute"
+        ) from None
     return _validated_instance(
         loaded,
         target=f"module target {module_name}:{attribute}",

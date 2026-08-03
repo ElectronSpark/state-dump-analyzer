@@ -294,6 +294,30 @@ may be enabled only by an explicit option on a loopback listener. The ordinary
 mount the same router beside one browser analysis for local review, but it is
 not the required production entry point.
 
+When an identity resolver returns an authorization `401` or `403`, its optional
+response headers cross an atomic bounded safe-header validator. Invalid names,
+values, duplicates, forbidden framing/representation/cookie-mutation fields, or excessive
+size reject the entire map as a bounded `500` without resolver-supplied headers
+while preserving two payload-free signals: the typed denial retains its
+phase/reason with actual status `500`, and
+`control_plane.identity_resolver.response_headers_rejected` records the
+resolver fault with an exact empty field set. `Set-Cookie` and obsolete
+`Set-Cookie2` are forbidden in every casing; cookie mutation belongs upstream
+or in a dedicated endpoint, and any future exception must be a typed cookie
+policy rather than a generic allowlist. Response `Cookie` remains under the
+generic bounds because it has no browser cookie-mutation semantics. This keeps
+resolver policy extensible without letting an invalid header tear down the
+HTTP connection.
+Wire-valid `obs-text` bytes `0xA0`-`0xFF` remain accepted. A future need for
+Starlette in-process harness parity reopens this decision as one uniform
+printable-ASCII policy, not production behavior specialized for a test client.
+Redirect (`Location`/`Refresh`), CORS, CSP, and HSTS headers remain generically
+bounded for compatibility, but are identified as policy primitives. The next
+production hardening step is a typed resolver-header authorization policy that
+defaults them (and response `Authorization`) to denied while retaining
+`WWW-Authenticate` and explicitly registered custom headers; changing the
+current behavior requires a deployment compatibility survey first.
+
 `SqliteSessionStore` owns the catalog and selections.
 `DurableIngestionPipeline` owns upload blobs, queue records, probe candidates,
 leased work, progress, canonical datasets, and publication.
@@ -330,6 +354,12 @@ strings. Generic integer adapters require both bounds at every call site (an
 unbounded side must be deliberate), so a paging coordinate cannot inherit a
 timestamp limit by omission. Numeric offsets that are echoed to a browser are
 bounded by `2^53-1`, with smaller endpoint-specific caps where useful.
+Audit sequences are a public JSON-safe domain rather than a SQLite integer
+domain. Caller-owned retention `audit_before_sequence`, annotation
+`expected_audit_watermark`, review-audit `after_sequence`, and retention-journal
+cursors use canonical unsigned ASCII decimal syntax bounded by `2^53-1`.
+Catalog/review audit allocation and projection use the same exact integer
+range. Sequence exhaustion or an out-of-domain stored row fails closed.
 
 The queue is durable and its SQLite claims are safe across cooperating
 processes on one host. Queue coordination workers remain threads in the
@@ -346,6 +376,31 @@ defaults to process mode. An embedding can explicitly select `inline` for
 trusted local/test code, but that path runs synchronously and provides no
 timeout or bounded-shutdown claim. This avoids accumulating unkillable daemon
 helpers after apparent timeouts; only process mode provides killable isolation.
+All in-process plug-in entry points use the same dependency-free
+`PROCESS_CONTROL_EXCEPTIONS` vocabulary. They rethrow `KeyboardInterrupt`,
+`SystemExit`, and `GeneratorExit`, contain every other `BaseException`, and use
+fixed public failure prose rather than plug-in exception text. Core-owned
+adapters cover installed loading, ingestion descriptors and lazy streams,
+runtime/session contexts, normalized providers, temporal readers, route
+transition callbacks, capability hooks, and identity/runtime web providers.
+They snapshot hostile descriptors once and include iterator construction,
+`next()`, `close()`, `__enter__()`, and `__exit__()` in the boundary; cleanup
+cannot suppress or replace an in-flight core exception. Registration
+snapshots validated manifest identity, so later queue work does not re-invoke a
+hostile manifest descriptor. A source-wide AST census derives executable
+contract members from `plugin_api.py`, scans every Python module under `src/`,
+derives entry-point and dynamic-module loading from imported callable/type
+semantics, follows attributes of imported module values, and asserts that every
+discovered boundary has the process-control-first containment shape. It also
+derives executable-process and ASGI fence reachability from registrations and
+call graphs rather than filenames. Mutation tests plant unguarded calls, bare
+`Exception` handlers, swallowed controls, and reversed handlers in modules
+outside the old three-file allowlist and across loading primitives. This
+remains a bounded static execution-boundary guard, not the broad flow-sensitive
+opaque-payload analysis explicitly deferred in section 15. Reflective calls
+hidden behind dynamic `eval`, native or custom `__import__` machinery, opaque
+cross-module/container callback transport, and post-census monkey-patching are
+documented blind spots.
 
 Operational health is intentionally independent of an opened analysis
 session. A read-only queue projection groups every non-terminal import,
@@ -380,7 +435,8 @@ Core publishes the closed `rda.operational.v1` vocabulary to the standard
 queue. Admission/publication boundaries, sampled worker failure/exit, retention
 planning and per-source truncation, bounded cleanup batches, replay,
 completion/failure, and typed control-plane access denials have explicit
-events. Fields are flat, scalar, and
+events. Invalid resolver header maps additionally use a closed zero-field
+event class. Fields are flat, scalar, and
 bounded; dump content, paths, scope labels, raw payloads, and exception text
 never enter the record. A slow handler can block only the daemon logging
 thread, and dropped telemetry cannot affect ingestion or retention. Durable
@@ -390,10 +446,13 @@ queue, and emitter-liveness counters are projected through both public health
 routes without payloads or tenant identity; loss degrades health. Producer-side
 validation catches ordinary exceptions but preserves process-control signals.
 Authenticated `GET /v1/control-plane/diagnostics/operational-events` requires
-`control-plane:admin` and exposes the closed per-event and access-sampler
-counters without payloads. It is
-process-local, no-store, advisory, and restart-reset; it does not weaken the
-anonymous aggregate-only health contract or replace durable audit data.
+the distinct `control-plane:instance-operator` role; tenant admin does not
+imply instance operation. It exposes closed counters without payloads using a
+hybrid scope: `operational_events` is process-global, while
+`access_denial_sampling` belongs to the installed ASGI app and aggregates its
+tenants. The view is no-store, advisory, concurrently moving, and
+restart-reset; it does not weaken the anonymous aggregate-only health contract
+or replace durable audit data.
 
 Access checks raise one private typed decision carrying closed phase/reason
 vocabulary. The common route wrapper emits it exactly once and recreates the
@@ -1946,9 +2005,13 @@ selection, resume, and cancellation operations documented exactly in
 snapshots are immutable; sessions and review overlays use optimistic versions.
 This surface requires a host-supplied identity resolver, then verifies that
 tenant/principal headers, read/write roles, and optional project/workspace
-scopes agree. `GET /context` exposes the resolved principal and `can_write` so
-generic clients can remain useful under read-only access. The built-in
-loopback adapter trusts those headers and is not authentication.
+scopes agree. Tenant retention administration and instance-level operational
+diagnostics use separate admin and instance-operator roles. `GET /context`
+exposes the resolved principal and `can_write` so generic clients can remain
+useful under read-only access. The built-in loopback adapter trusts those
+headers, grants read/write/admin by default, and is not authentication. The
+loopback-only `--grant-instance-operator` option explicitly adds the fourth
+role; it is rejected for production resolvers and non-loopback listeners.
 
 ## 11. Libraries
 
@@ -2014,7 +2077,8 @@ Treat every dump as hostile and sensitive.
 - Allowlist and pin plugin bundles; signing is preferable for production.
 - Escape source text and never render log HTML.
 - The durable control-plane requires a host identity resolver, verifies
-  tenant/principal headers against it, enforces read/write/admin roles, and hides
+  tenant/principal headers against it, enforces read/write/admin and the
+  separate instance-operator role, and hides
   disallowed project/workspace scope. A production deployment must
   authenticate credentials, strip client identity headers, and construct that
   resolved identity; the CLI's loopback adapter merely trusts headers. The

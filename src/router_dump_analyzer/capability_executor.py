@@ -54,15 +54,15 @@ from .plugin_api import (
     Provenance,
     Quality,
     ReadOnlyWorld,
-    ReconstructionWatermark,
     ReconstructionCoverage,
-    RelativeToWatermarkSelector,
+    ReconstructionWatermark,
     RelationshipMutation,
     RelationshipOperation,
     RelationshipView,
+    RelativeToWatermarkSelector,
+    ResolvedNodeBasis,
     ResourceKey,
     ResourceStateView,
-    ResolvedNodeBasis,
     StateMutation,
     StatusPerspectiveRef,
     TopologyEndpointRecord,
@@ -80,6 +80,7 @@ from .plugin_api import (
     WorldBasisKind,
     validate_plugin_diagnostic,
 )
+from .process_control import PROCESS_CONTROL_EXCEPTIONS
 
 
 class PluginCapabilityExecutionError(RuntimeError):
@@ -99,6 +100,10 @@ class PluginCapabilityExecutionError(RuntimeError):
 
 class PluginCapabilityUnavailableError(PluginCapabilityExecutionError):
     """The plug-in did not advertise a requested standard capability."""
+
+
+class PluginCapabilityInputError(PluginCapabilityExecutionError):
+    """The caller supplied an invalid capability request."""
 
 
 class PluginCapabilityOutputError(PluginCapabilityExecutionError):
@@ -418,14 +423,57 @@ class PluginCapabilityExecutor:
         *,
         limits: PluginCapabilityLimits | None = None,
     ) -> None:
-        manifest = getattr(plugin, "manifest", None)
+        try:
+            manifest = getattr(plugin, "manifest", None)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise TypeError(
+                "capability executor could not resolve the plug-in manifest"
+            ) from error
         if not isinstance(manifest, PluginManifest):
             raise TypeError("capability executor requires a PluginManifest")
-        selected_schema = plugin.describe() if schema is None else schema
+        try:
+            manifest_supports = manifest.supports
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise TypeError(
+                "capability executor could not resolve manifest supports()"
+            ) from error
+        if not callable(manifest_supports):
+            raise TypeError("capability executor manifest requires supports()")
+        try:
+            forwarding_ir_versions = manifest.forwarding_ir_versions
+            if type(forwarding_ir_versions) is not tuple or any(
+                type(version) is not str for version in forwarding_ir_versions
+            ):
+                raise TypeError(
+                    "manifest forwarding_ir_versions must be an exact tuple of strings"
+                )
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise TypeError(
+                "capability executor could not resolve manifest forwarding IR versions"
+            ) from error
+        if schema is None:
+            try:
+                selected_schema = plugin.describe()
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except BaseException as error:
+                raise TypeError(
+                    "capability executor could not resolve the plug-in schema"
+                ) from error
+        else:
+            selected_schema = schema
         if type(selected_schema) is not PluginSchema:
             raise TypeError("capability executor requires an exact PluginSchema")
         self.plugin = plugin
         self.manifest = manifest
+        self._manifest_supports = manifest_supports
+        self._forwarding_ir_versions = forwarding_ir_versions
         self.schema = selected_schema
         self.limits = limits or PluginCapabilityLimits()
         self._schema = _SchemaIndex.build(selected_schema)
@@ -443,17 +491,73 @@ class PluginCapabilityExecutor:
             diagnostics=diagnostics,
         )
 
-    def _require(self, capability: PluginCapability, hook_name: str) -> None:
-        if not self.manifest.supports(capability):
+    def _input_error(
+        self,
+        capability: PluginCapability,
+        message: str,
+        *,
+        diagnostics: tuple[PluginDiagnostic, ...] = (),
+    ) -> PluginCapabilityInputError:
+        return PluginCapabilityInputError(
+            message,
+            capability=capability,
+            diagnostics=diagnostics,
+        )
+
+    def _validate_caller_input(
+        self,
+        capability: PluginCapability,
+        validator: Callable[[], Any],
+        *,
+        unreadable_message: str,
+    ) -> None:
+        """Validate core-owned request data before any plug-in hook is invoked."""
+
+        try:
+            validator()
+        except PluginCapabilityInputError:
+            raise
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except (TypeError, ValueError) as error:
+            raise self._input_error(capability, str(error)) from error
+        except BaseException as error:
+            raise self._input_error(capability, unreadable_message) from error
+
+    def _require(
+        self,
+        capability: PluginCapability,
+        hook_name: str,
+    ) -> Callable[..., Any]:
+        try:
+            supported = self._manifest_supports(capability)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise self._error(
+                capability,
+                "plug-in manifest capability check failed",
+            ) from error
+        if not supported:
             raise PluginCapabilityUnavailableError(
                 f"plug-in does not advertise {capability.value!r}",
                 capability=capability,
             )
-        if not callable(getattr(self.plugin, hook_name, None)):
+        try:
+            hook = getattr(self.plugin, hook_name, None)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise self._error(
+                capability,
+                "plug-in capability hook could not be resolved",
+            ) from error
+        if not callable(hook):
             raise PluginCapabilityUnavailableError(
                 f"plug-in capability {capability.value!r} has no {hook_name}() hook",
                 capability=capability,
             )
+        return hook
 
     def _resource(self, value: Any, label: str) -> ResourceKey:
         if type(value) is not ResourceKey:
@@ -900,10 +1004,14 @@ class PluginCapabilityExecutor:
 
     def apply(self, event: DomainEvent, world: ReadOnlyWorld) -> ChangeSet:
         capability = PluginCapability.EVENT_REDUCTION
-        self._require(capability, "apply")
+        self._validate_caller_input(
+            capability,
+            lambda: self._event(event, "event"),
+            unreadable_message="event could not be validated",
+        )
+        hook = self._require(capability, "apply")
         try:
-            self._event(event, "event")
-            result = self.plugin.apply(
+            result = hook(
                 event,
                 cast(
                     ReadOnlyWorld,
@@ -916,9 +1024,21 @@ class PluginCapabilityExecutor:
             )
         except PluginCapabilityExecutionError:
             raise
-        except Exception as error:
-            raise self._error(capability, f"apply() failed: {error}") from error
-        return self._change_set(result, capability)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise self._error(capability, "apply() failed inside plug-in") from error
+        try:
+            return self._change_set(result, capability)
+        except PluginCapabilityExecutionError:
+            raise
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise self._error(
+                capability,
+                "apply() returned an unreadable result",
+            ) from error
 
     def revert(
         self,
@@ -926,10 +1046,14 @@ class PluginCapabilityExecutor:
         world_after: ReadOnlyWorld,
     ) -> ChangeSet:
         capability = PluginCapability.EVENT_REVERSION
-        self._require(capability, "revert")
+        self._validate_caller_input(
+            capability,
+            lambda: self._event(event, "event"),
+            unreadable_message="event could not be validated",
+        )
+        hook = self._require(capability, "revert")
         try:
-            self._event(event, "event")
-            result = self.plugin.revert(
+            result = hook(
                 event,
                 cast(
                     ReadOnlyWorld,
@@ -942,9 +1066,21 @@ class PluginCapabilityExecutor:
             )
         except PluginCapabilityExecutionError:
             raise
-        except Exception as error:
-            raise self._error(capability, f"revert() failed: {error}") from error
-        return self._change_set(result, capability)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise self._error(capability, "revert() failed inside plug-in") from error
+        try:
+            return self._change_set(result, capability)
+        except PluginCapabilityExecutionError:
+            raise
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise self._error(
+                capability,
+                "revert() returned an unreadable result",
+            ) from error
 
     def _consume(
         self,
@@ -1022,36 +1158,43 @@ class PluginCapabilityExecutor:
         window: CorrelationWindow,
     ) -> CorrelationExecutionResult:
         capability = PluginCapability.CORRELATION
-        self._require(capability, "correlate")
         if type(window) is not CorrelationWindow:
-            raise self._error(capability, "window must be an exact CorrelationWindow")
-        try:
+            raise self._input_error(
+                capability,
+                "window must be an exact CorrelationWindow",
+            )
+
+        def validate_window() -> None:
             self._optional_time(window.start_ns, "window.start_ns")
             self._optional_time(window.end_ns, "window.end_ns")
-        except ValueError as error:
-            raise self._error(capability, str(error)) from error
-        if (
-            window.start_ns is not None
-            and window.end_ns is not None
-            and window.start_ns > window.end_ns
-        ):
-            raise self._error(capability, "window time bounds are reversed")
-        if (
-            type(window.max_events) is not int
-            or not 1 <= window.max_events <= self.limits.max_correlation_outputs
-        ):
-            raise self._error(capability, "window max_events is outside core bounds")
-        if (
-            type(window.max_world_reads) is not int
-            or not 1 <= window.max_world_reads <= self.limits.max_world_reads
-        ):
-            raise self._error(
-                capability,
-                "window max_world_reads is outside core bounds",
-            )
+            if (
+                window.start_ns is not None
+                and window.end_ns is not None
+                and window.start_ns > window.end_ns
+            ):
+                raise ValueError("window time bounds are reversed")
+            if (
+                type(window.max_events) is not int
+                or not 1
+                <= window.max_events
+                <= self.limits.max_correlation_outputs
+            ):
+                raise ValueError("window max_events is outside core bounds")
+            if (
+                type(window.max_world_reads) is not int
+                or not 1 <= window.max_world_reads <= self.limits.max_world_reads
+            ):
+                raise ValueError("window max_world_reads is outside core bounds")
+
+        self._validate_caller_input(
+            capability,
+            validate_window,
+            unreadable_message="correlation window could not be validated",
+        )
+        hook = self._require(capability, "correlate")
         maximum = min(window.max_events, self.limits.max_correlation_outputs)
         try:
-            outputs = self.plugin.correlate(reader, window)
+            outputs = hook(reader, window)
             values, diagnostics = self._consume(
                 capability,
                 outputs,
@@ -1061,8 +1204,13 @@ class PluginCapabilityExecutor:
             )
         except PluginCapabilityExecutionError:
             raise
-        except Exception as error:
-            raise self._error(capability, f"correlate() failed: {error}") from error
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise self._error(
+                capability,
+                "correlate() failed inside plug-in",
+            ) from error
         return CorrelationExecutionResult(
             causal_links=tuple(
                 item for item in values if type(item) is CausalLink
@@ -1150,7 +1298,7 @@ class PluginCapabilityExecutor:
             else:
                 raise ValueError(f"{label}.selector is invalid")
         if not isinstance(value.node_resolutions, tuple):
-            raise ValueError(f"{label}.node_resolutions must be a tuple")
+            raise TypeError(f"{label}.node_resolutions must be a tuple")
         for index, resolution in enumerate(value.node_resolutions):
             if type(resolution) is not ResolvedNodeBasis:
                 raise ValueError(
@@ -1225,9 +1373,9 @@ class PluginCapabilityExecutor:
         world: ReadOnlyWorld,
     ) -> ConsistencyExecutionResult:
         capability = PluginCapability.CONSISTENCY_CHECK
-        self._require(capability, "check_consistency")
+        hook = self._require(capability, "check_consistency")
         try:
-            outputs = self.plugin.check_consistency(
+            outputs = hook(
                 cast(
                     ReadOnlyWorld,
                     _BoundedWorld(
@@ -1246,10 +1394,12 @@ class PluginCapabilityExecutor:
             )
         except PluginCapabilityExecutionError:
             raise
-        except Exception as error:
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
             raise self._error(
                 capability,
-                f"check_consistency() failed: {error}",
+                "check_consistency() failed inside plug-in",
             ) from error
         return ConsistencyExecutionResult(
             findings=cast(tuple[ConsistencyFinding, ...], values),
@@ -1336,31 +1486,36 @@ class PluginCapabilityExecutor:
         world: ReadOnlyWorld,
     ) -> TopologyExecutionResult:
         capability = PluginCapability.TOPOLOGY_PROJECTION
-        self._require(capability, "project_topology")
         if type(request) is not TopologyProjectionRequest:
-            raise self._error(
+            raise self._input_error(
                 capability,
                 "request must be an exact TopologyProjectionRequest",
             )
         supported = self._schema.topology_perspectives.get(request.projection_id)
         if supported is None:
-            raise self._error(
+            raise self._input_error(
                 capability,
                 f"projection {request.projection_id!r} is not declared",
             )
         if request.status_perspective_id not in supported:
-            raise self._error(
+            raise self._input_error(
                 capability,
                 "requested status perspective is not supported by the projection",
             )
-        try:
+
+        def validate_request() -> None:
             for index, resource in enumerate(request.seed_resources):
                 self._resource(resource, f"request.seed_resources[{index}]")
-        except ValueError as error:
-            raise self._error(capability, str(error)) from error
+
+        self._validate_caller_input(
+            capability,
+            validate_request,
+            unreadable_message="topology request could not be validated",
+        )
+        hook = self._require(capability, "project_topology")
         maximum = min(request.max_records, self.limits.max_topology_outputs)
         try:
-            outputs = self.plugin.project_topology(
+            outputs = hook(
                 request,
                 cast(
                     ReadOnlyWorld,
@@ -1384,10 +1539,12 @@ class PluginCapabilityExecutor:
             )
         except PluginCapabilityExecutionError:
             raise
-        except Exception as error:
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
             raise self._error(
                 capability,
-                f"project_topology() failed: {error}",
+                "project_topology() failed inside plug-in",
             ) from error
         return TopologyExecutionResult(
             records=cast(tuple[TopologyProjectionRecord, ...], values),
@@ -1400,10 +1557,9 @@ class PluginCapabilityExecutor:
         ir_version: Any,
     ) -> str:
         if not isinstance(ir_version, str) or not ir_version:
-            raise self._error(capability, "forwarding IR version must be a string")
-        if ir_version not in self.manifest.forwarding_ir_versions:
-            raise self._error(
-                capability,
+            raise ValueError("forwarding IR version must be a string")
+        if ir_version not in self._forwarding_ir_versions:
+            raise ValueError(
                 f"forwarding IR {ir_version!r} is not declared by the plug-in",
             )
         return ir_version
@@ -1511,25 +1667,33 @@ class PluginCapabilityExecutor:
         world: ReadOnlyWorld,
     ) -> ForwardingProjectionExecutionResult:
         capability = PluginCapability.FORWARDING_PROJECTION
-        self._require(capability, "project_forwarding")
         if type(request) is not ForwardingProjectionRequest:
-            raise self._error(
+            raise self._input_error(
                 capability,
                 "request must be an exact ForwardingProjectionRequest",
             )
-        self._supported_ir(capability, request.ir_version)
-        try:
+
+        def validate_request() -> None:
+            self._supported_ir(capability, request.ir_version)
             self._perspective(
                 request.status_perspective,
                 "request.status_perspective",
             )
-        except ValueError as error:
-            raise self._error(capability, str(error)) from error
-        if request.changes is not None:
-            self._change_set(request.changes, capability)
+            if request.changes is not None:
+                try:
+                    self._change_set(request.changes, capability)
+                except PluginCapabilityOutputError as error:
+                    raise ValueError(str(error)) from error
+
+        self._validate_caller_input(
+            capability,
+            validate_request,
+            unreadable_message="forwarding projection request could not be validated",
+        )
+        hook = self._require(capability, "project_forwarding")
         maximum = min(request.max_records, self.limits.max_forwarding_outputs)
         try:
-            outputs = self.plugin.project_forwarding(
+            outputs = hook(
                 request,
                 cast(
                     ReadOnlyWorld,
@@ -1553,10 +1717,12 @@ class PluginCapabilityExecutor:
             )
         except PluginCapabilityExecutionError:
             raise
-        except Exception as error:
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
             raise self._error(
                 capability,
-                f"project_forwarding() failed: {error}",
+                "project_forwarding() failed inside plug-in",
             ) from error
         return ForwardingProjectionExecutionResult(
             mutations=cast(tuple[ForwardingMutation, ...], values),
@@ -1609,14 +1775,14 @@ class PluginCapabilityExecutor:
         world: ReadOnlyWorld,
     ) -> ForwardingStepExecutionResult:
         capability = PluginCapability.FORWARDING_TRACE
-        self._require(capability, "resolve_forwarding_step")
         if type(request) is not ForwardingStepRequest:
-            raise self._error(
+            raise self._input_error(
                 capability,
                 "request must be an exact ForwardingStepRequest",
             )
-        self._supported_ir(capability, request.ir_version)
-        try:
+
+        def validate_request() -> None:
+            self._supported_ir(capability, request.ir_version)
             self._perspective(
                 request.status_perspective,
                 "request.status_perspective",
@@ -1636,10 +1802,15 @@ class PluginCapabilityExecutor:
                         rule.selected_candidate,
                         f"request.steering_rules[{index}].selected_candidate",
                     )
-        except ValueError as error:
-            raise self._error(capability, str(error)) from error
+
+        self._validate_caller_input(
+            capability,
+            validate_request,
+            unreadable_message="forwarding step request could not be validated",
+        )
+        hook = self._require(capability, "resolve_forwarding_step")
         try:
-            output = self.plugin.resolve_forwarding_step(
+            output = hook(
                 request,
                 cast(
                     ReadOnlyWorld,
@@ -1650,6 +1821,16 @@ class PluginCapabilityExecutor:
                     ),
                 ),
             )
+        except PluginCapabilityExecutionError:
+            raise
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise self._error(
+                capability,
+                "resolve_forwarding_step() failed inside plug-in",
+            ) from error
+        try:
             if type(output) is PluginDiagnostic:
                 diagnostic = self._diagnostic(output, "forwarding_trace")
                 diagnostics = (diagnostic,)
@@ -1667,10 +1848,14 @@ class PluginCapabilityExecutor:
             result = self._forwarding_step_result(request, output)
         except PluginCapabilityExecutionError:
             raise
-        except Exception as error:
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except (TypeError, ValueError) as error:
+            raise self._error(capability, str(error)) from error
+        except BaseException as error:
             raise self._error(
                 capability,
-                f"resolve_forwarding_step() failed: {error}",
+                "resolve_forwarding_step() returned an unreadable result",
             ) from error
         return ForwardingStepExecutionResult(result=result, diagnostics=())
 
@@ -1682,6 +1867,7 @@ __all__ = [
     "ForwardingStepExecutionResult",
     "PluginCapabilityExecutionError",
     "PluginCapabilityExecutor",
+    "PluginCapabilityInputError",
     "PluginCapabilityLimits",
     "PluginCapabilityOutputError",
     "PluginCapabilityUnavailableError",

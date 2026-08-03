@@ -35,6 +35,7 @@ from .capability_executor import (
     ForwardingStepExecutionResult,
     PluginCapabilityExecutionError,
     PluginCapabilityExecutor,
+    PluginCapabilityInputError,
     PluginCapabilityLimits,
     PluginCapabilityOutputError,
     PluginCapabilityUnavailableError,
@@ -108,6 +109,7 @@ from .normalized_data import (
     NormalizedDataPolicy,
     NormalizedDataService,
     NormalizedDatasetSource,
+    NormalizedProviderError,
 )
 from .plugin_api import (
     CORE_PLUGIN_API_VERSION,
@@ -219,10 +221,12 @@ __all__ = [
     "NormalizedDataPolicy",
     "NormalizedDataService",
     "NormalizedDatasetSource",
+    "NormalizedProviderError",
     "PipelineLimits",
     "PluginCandidate",
     "PluginCapabilityExecutionError",
     "PluginCapabilityExecutor",
+    "PluginCapabilityInputError",
     "PluginCapabilityLimits",
     "PluginCapabilityOutputError",
     "PluginCapabilityUnavailableError",

@@ -14,14 +14,15 @@ from router_dump_analyzer.session_store import (
     CatalogRetentionPolicy,
     IdempotencyConflict,
     SessionConflictError,
-    SessionStoreError,
     SessionStoreDeadlineExceeded,
+    SessionStoreError,
     SqliteSessionStore,
     StaleSessionVersion,
     validate_catalog_identifier,
     validate_catalog_label,
     validate_catalog_metadata,
 )
+from router_dump_analyzer.value_core import MAX_JSON_SAFE_INTEGER
 
 
 def _digest(value: str) -> str:
@@ -781,6 +782,149 @@ class SqliteSessionStoreTests(unittest.TestCase):
                 actor="different-actor",
                 operation_id="release-fixture",
             )
+
+    def test_catalog_retention_audit_accepts_json_safe_sequence_boundary(self) -> None:
+        self._workspace()
+        self.store._connection.execute(
+            "INSERT INTO sqlite_sequence(name, seq) VALUES (?, ?)",
+            ("catalog_retention_audit", MAX_JSON_SAFE_INTEGER - 1),
+        )
+
+        self.store.purge_retention(
+            "tenant-a",
+            "workspace-a",
+            CatalogRetentionPolicy(enabled=True),
+            operation_id="safe-sequence-boundary",
+        )
+
+        entries = self.store.list_retention_audit(
+            "tenant-a",
+            "workspace-a",
+            after_sequence=MAX_JSON_SAFE_INTEGER - 1,
+        )
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].sequence, MAX_JSON_SAFE_INTEGER)
+        self.assertEqual(
+            self.store.list_retention_audit(
+                "tenant-a",
+                "workspace-a",
+                after_sequence=MAX_JSON_SAFE_INTEGER,
+            ),
+            (),
+        )
+        for invalid in (-1, MAX_JSON_SAFE_INTEGER + 1, True):
+            with self.subTest(after_sequence=invalid), self.assertRaisesRegex(
+                ValueError,
+                "JSON-safe",
+            ):
+                self.store.list_retention_audit(
+                    "tenant-a",
+                    "workspace-a",
+                    after_sequence=invalid,
+                )
+
+    def test_catalog_retention_audit_sequence_exhaustion_rolls_back_purge(self) -> None:
+        self._workspace()
+        self.store.attach_fixture(
+            "tenant-a",
+            "workspace-a",
+            "fixture-a",
+            label="Fixture A",
+            content_digest=_digest("fixture-a"),
+        )
+        self._set_catalog_time("fixtures", "created_at_ns", 10)
+        self.store._connection.execute(
+            "INSERT INTO sqlite_sequence(name, seq) VALUES (?, ?)",
+            ("catalog_retention_audit", MAX_JSON_SAFE_INTEGER),
+        )
+
+        with self.assertRaisesRegex(SessionStoreError, "outside the safe domain"):
+            self.store.purge_retention(
+                "tenant-a",
+                "workspace-a",
+                CatalogRetentionPolicy(
+                    enabled=True,
+                    external_references_checked=True,
+                    fixture_before_ns=20,
+                ),
+                operation_id="exhausted-sequence",
+            )
+
+        self.assertEqual(
+            self.store.get_fixture("tenant-a", "fixture-a").fixture_id,
+            "fixture-a",
+        )
+        self.assertIsNone(
+            self.store.get_retention_audit(
+                "tenant-a",
+                "workspace-a",
+                "exhausted-sequence",
+            )
+        )
+        sqlite_sequence = self.store._connection.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = ?",
+            ("catalog_retention_audit",),
+        ).fetchone()
+        self.assertEqual(sqlite_sequence["seq"], MAX_JSON_SAFE_INTEGER)
+
+    def test_catalog_retention_audit_corrupt_sequence_fails_all_projections(
+        self,
+    ) -> None:
+        self._workspace()
+        self.store.attach_fixture(
+            "tenant-a",
+            "workspace-a",
+            "fixture-a",
+            label="Fixture A",
+            content_digest=_digest("fixture-a"),
+            metadata={
+                "blob_ref": "aa/bb/blob.tgz",
+                "admission_operation_id": "admission:upload-a",
+            },
+        )
+        self._set_catalog_time("fixtures", "created_at_ns", 10)
+        self.store._connection.execute(
+            "INSERT INTO sqlite_sequence(name, seq) VALUES (?, ?)",
+            ("catalog_retention_audit", MAX_JSON_SAFE_INTEGER - 1),
+        )
+        policy = CatalogRetentionPolicy(
+            enabled=True,
+            external_references_checked=True,
+            fixture_before_ns=20,
+        )
+        self.store.purge_retention(
+            "tenant-a",
+            "workspace-a",
+            policy,
+            operation_id="corrupt-sequence",
+        )
+        unsafe_sequence = MAX_JSON_SAFE_INTEGER + 1
+        self.store._connection.execute(
+            "UPDATE catalog_retention_audit SET sequence = ? WHERE operation_id = ?",
+            (unsafe_sequence, "corrupt-sequence"),
+        )
+
+        reads = (
+            lambda: self.store.list_retention_audit("tenant-a", "workspace-a"),
+            lambda: self.store.get_retention_audit(
+                "tenant-a", "workspace-a", "corrupt-sequence"
+            ),
+            lambda: self.store.pending_artifact_release_audits(
+                "tenant-a", "workspace-a"
+            ),
+            lambda: self.store.purge_retention(
+                "tenant-a",
+                "workspace-a",
+                policy,
+                operation_id="corrupt-sequence",
+            ),
+        )
+        for read in reads:
+            with self.subTest(read=read), self.assertRaisesRegex(
+                SessionStoreError,
+                "outside the safe domain",
+            ):
+                read()
 
     def test_catalog_retention_inventory_is_bounded_and_workspace_scoped(
         self,

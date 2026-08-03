@@ -62,7 +62,16 @@ OK: demo.example-router
 Validator diagnostics preserve bounded safe plug-in detail, but core replaces
 oversized text, host/traversal paths, unsafe invisible text, and ambiguous
 display characters before writing to the terminal or CI log. Do not depend on
-private exception text as a machine-readable validator interface.
+private exception text as a machine-readable validator interface. The validator
+resolves the installed object's manifest and each relevant hook descriptor only
+once per run. An ordinary descriptor failure produces a bounded failed result;
+`KeyboardInterrupt`, `SystemExit`, and `GeneratorExit` remain process controls
+and are not converted into validation errors. The same process-control rule
+applies to core capability execution, registry probing, and trusted inline
+ingestion. Any other throwable is contained by a bounded core boundary; public
+errors never depend on the plug-in exception's text. Treat structured
+`PluginDiagnostic` records as the only supported way to publish useful failure
+detail.
 
 Durable executable identity fingerprints every ordinary package file. Only an
 actual VCS/cache **directory** named `.git`, `.hg`, `.svn`, `__pycache__`,
@@ -477,12 +486,19 @@ validates exact request/result shapes and every schema reference. `apply()` and
 `revert()` return a validated `ChangeSet`; the other optional calls return
 typed execution envelopes containing validated values and recoverable
 diagnostics. A missing capability raises
-`PluginCapabilityUnavailableError`, malformed or over-budget output raises
+`PluginCapabilityUnavailableError`, an invalid caller request raises
+`PluginCapabilityInputError`, malformed or over-budget plug-in output raises
 `PluginCapabilityOutputError`, and any non-recoverable diagnostic raises
 `PluginCapabilityExecutionError` with the diagnostics retained. Correlation is
 the one exception to the world wrapper: the caller supplies the already
 bounded/indexed `CorrelationReader`, and the executor validates its exact
 bounded `CorrelationWindow` and outputs.
+
+The input/execution/output distinction is deliberate: validate the request
+before invoking the hook, report a hook failure as execution failure, and
+report only the plug-in's returned value as output failure. This keeps a bad
+host call such as `apply(None, world)` from being blamed on a plug-in that was
+never invoked.
 
 Use this executor in tests for every capability you advertise. Do not construct
 it inside the plug-in or treat it as a temporal, topology, or route provider.

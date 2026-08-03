@@ -3,12 +3,13 @@ from __future__ import annotations
 import unittest
 from collections.abc import Iterable
 from dataclasses import replace
-from typing import Any
+from typing import Any, Self
 from uuid import UUID
 
 from router_dump_analyzer.capability_executor import (
     PluginCapabilityExecutionError,
     PluginCapabilityExecutor,
+    PluginCapabilityInputError,
     PluginCapabilityLimits,
     PluginCapabilityOutputError,
     PluginCapabilityUnavailableError,
@@ -82,6 +83,10 @@ CAPABILITIES = frozenset(
         PluginCapability.FORWARDING_TRACE,
     }
 )
+
+
+class Boom(BaseException):
+    """Adversarial non-process-control throwable supplied by a plug-in."""
 
 
 def _schema() -> PluginSchema:
@@ -248,6 +253,11 @@ class _Plugin(AnalyzerPluginBase):
         self.forwarding_output: Iterable[Any] = ()
         self.step_output: Any = None
         self.apply_called = False
+        self.revert_called = False
+        self.correlate_called = False
+        self.topology_called = False
+        self.forwarding_called = False
+        self.forwarding_step_called = False
 
     def describe(self) -> PluginSchema:
         return _schema()
@@ -263,22 +273,158 @@ class _Plugin(AnalyzerPluginBase):
         return self.apply_output
 
     def revert(self, event: DomainEvent, world_after: Any) -> ChangeSet:
+        self.revert_called = True
         return self.revert_output
 
     def correlate(self, reader: Any, window: Any) -> Iterable[Any]:
+        self.correlate_called = True
         return self.correlation_output
 
     def check_consistency(self, world: Any) -> Iterable[Any]:
         return self.consistency_output
 
     def project_topology(self, request: Any, world: Any) -> Iterable[Any]:
+        self.topology_called = True
         return self.topology_output
 
     def project_forwarding(self, request: Any, world: Any) -> Iterable[Any]:
+        self.forwarding_called = True
         return self.forwarding_output
 
     def resolve_forwarding_step(self, request: Any, world: Any) -> Any:
+        self.forwarding_step_called = True
         return self.step_output
+
+
+class _ExplodingManifestPlugin:
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    @property
+    def manifest(self):
+        raise self.error
+
+
+class _ExplodingDescribePlugin(_Plugin):
+    def __init__(self, error: BaseException) -> None:
+        super().__init__()
+        self.error = error
+
+    def describe(self) -> PluginSchema:
+        raise self.error
+
+
+class _ExplodingApplyDescriptorPlugin(_Plugin):
+    def __init__(self, error: BaseException) -> None:
+        super().__init__()
+        self.error = error
+
+    @property
+    def apply(self):
+        raise self.error
+
+
+class _CountingApplyDescriptorPlugin(_Plugin):
+    def __init__(self) -> None:
+        super().__init__()
+        self.apply_descriptor_reads = 0
+
+    @property
+    def apply(self):
+        self.apply_descriptor_reads += 1
+
+        def execute(_event: DomainEvent, _world: Any) -> ChangeSet:
+            self.apply_called = True
+            return self.apply_output
+
+        return execute
+
+
+class _ExplodingApplyPlugin(_Plugin):
+    def __init__(self, error: BaseException) -> None:
+        super().__init__()
+        self.error = error
+
+    def apply(self, event: DomainEvent, world: Any) -> ChangeSet:
+        del event, world
+        raise self.error
+
+
+class _ExplodingSupportsManifest(PluginManifest):
+    __slots__ = ("failure",)
+
+    failure: BaseException
+
+    def supports(self, capability: PluginCapability | str) -> bool:
+        del capability
+        raise self.failure
+
+
+class _GuardedForwardingVersionsManifest(PluginManifest):
+    __slots__ = ("failure", "maximum_reads", "reads")
+
+    failure: BaseException
+    maximum_reads: int
+    reads: int
+
+    def __getattribute__(self, name: str) -> Any:
+        if name == "forwarding_ir_versions":
+            reads = object.__getattribute__(self, "reads")
+            maximum_reads = object.__getattribute__(self, "maximum_reads")
+            if reads >= maximum_reads:
+                raise object.__getattribute__(self, "failure")
+            object.__setattr__(self, "reads", reads + 1)
+        return super().__getattribute__(name)
+
+
+def _exploding_supports_manifest(error: BaseException) -> PluginManifest:
+    source = _manifest()
+    result = _ExplodingSupportsManifest(
+        plugin_id=source.plugin_id,
+        plugin_version=source.plugin_version,
+        core_api_version=source.core_api_version,
+        supported_platforms=source.supported_platforms,
+        supported_software_versions=source.supported_software_versions,
+        capabilities=source.capabilities,
+        reconstruction_default=source.reconstruction_default,
+        forwarding_ir_versions=source.forwarding_ir_versions,
+    )
+    object.__setattr__(result, "failure", error)
+    return result
+
+
+def _guarded_forwarding_versions_manifest(
+    error: BaseException,
+    *,
+    maximum_reads: int,
+) -> _GuardedForwardingVersionsManifest:
+    source = _manifest()
+    result = _GuardedForwardingVersionsManifest(
+        plugin_id=source.plugin_id,
+        plugin_version=source.plugin_version,
+        core_api_version=source.core_api_version,
+        supported_platforms=source.supported_platforms,
+        supported_software_versions=source.supported_software_versions,
+        capabilities=source.capabilities,
+        reconstruction_default=source.reconstruction_default,
+        forwarding_ir_versions=source.forwarding_ir_versions,
+    )
+    object.__setattr__(result, "failure", error)
+    object.__setattr__(result, "maximum_reads", maximum_reads)
+    object.__setattr__(result, "reads", 0)
+    return result
+
+
+class _ExplodingTuple(tuple[Any, ...]):
+    failure: BaseException
+
+    def __new__(cls, failure: BaseException) -> Self:
+        result = super().__new__(cls)
+        result.failure = failure
+        return result
+
+    def __len__(self) -> int:
+        raise self.failure
 
 
 def _diagnostic(*, recoverable: bool = True) -> PluginDiagnostic:
@@ -425,6 +571,10 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
             router_dump_analyzer.PluginCapabilityExecutor,
             PluginCapabilityExecutor,
         )
+        self.assertIs(
+            router_dump_analyzer.PluginCapabilityInputError,
+            PluginCapabilityInputError,
+        )
 
     def test_manifest_capability_is_checked_before_invocation(self) -> None:
         plugin = _Plugin(manifest=_manifest(frozenset()))
@@ -432,8 +582,234 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
 
         with self.assertRaises(PluginCapabilityUnavailableError):
             executor.apply(EVENT, _World())  # type: ignore[arg-type]
-
         self.assertFalse(plugin.apply_called)
+
+    def test_capability_hook_descriptor_is_snapshotted_once_per_invocation(
+        self,
+    ) -> None:
+        plugin = _CountingApplyDescriptorPlugin()
+        executor = PluginCapabilityExecutor(plugin)
+
+        self.assertEqual(executor.apply(EVENT, _World()), ChangeSet())  # type: ignore[arg-type]
+        self.assertTrue(plugin.apply_called)
+        self.assertEqual(plugin.apply_descriptor_reads, 1)
+
+    def test_caller_validation_uses_the_input_error_domain_before_hooks(self) -> None:
+        cases = (
+            (
+                "apply",
+                lambda executor: executor.apply(object(), _World()),
+                "apply_called",
+            ),
+            (
+                "revert",
+                lambda executor: executor.revert(object(), _World()),
+                "revert_called",
+            ),
+            (
+                "correlate",
+                lambda executor: executor.correlate(object(), object()),
+                "correlate_called",
+            ),
+            (
+                "project_topology",
+                lambda executor: executor.project_topology(object(), _World()),
+                "topology_called",
+            ),
+            (
+                "project_forwarding",
+                lambda executor: executor.project_forwarding(object(), _World()),
+                "forwarding_called",
+            ),
+            (
+                "resolve_forwarding_step",
+                lambda executor: executor.resolve_forwarding_step(
+                    object(),
+                    _World(),
+                ),
+                "forwarding_step_called",
+            ),
+        )
+        for label, invoke, called_attribute in cases:
+            with self.subTest(label=label):
+                plugin = _Plugin()
+                executor = PluginCapabilityExecutor(plugin)
+                with self.assertRaises(PluginCapabilityInputError):
+                    invoke(executor)
+                self.assertFalse(getattr(plugin, called_attribute))
+
+    def test_nonstandard_base_exceptions_are_bounded_at_capability_boundaries(
+        self,
+    ) -> None:
+        supplied = r"capability failed at C:\private\tenant\plugin.py"
+        with self.assertRaisesRegex(
+            TypeError, "could not resolve.*manifest"
+        ) as manifest_error:
+            PluginCapabilityExecutor(_ExplodingManifestPlugin(Boom(supplied)))  # type: ignore[arg-type]
+        self.assertNotIn(supplied, str(manifest_error.exception))
+
+        with self.assertRaisesRegex(
+            TypeError, "could not resolve.*schema"
+        ) as schema_error:
+            PluginCapabilityExecutor(_ExplodingDescribePlugin(Boom(supplied)))
+        self.assertNotIn(supplied, str(schema_error.exception))
+
+        descriptor_plugin = _ExplodingApplyDescriptorPlugin(Boom(supplied))
+        descriptor_executor = PluginCapabilityExecutor(descriptor_plugin)
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "hook could not be resolved",
+        ) as descriptor_error:
+            descriptor_executor.apply(EVENT, _World())  # type: ignore[arg-type]
+        self.assertNotIn(supplied, str(descriptor_error.exception))
+
+        hook_plugin = _ExplodingApplyPlugin(Boom(supplied))
+        hook_executor = PluginCapabilityExecutor(hook_plugin)
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "failed inside plug-in",
+        ) as hook_error:
+            hook_executor.apply(EVENT, _World())  # type: ignore[arg-type]
+        self.assertNotIn(supplied, str(hook_error.exception))
+
+    def test_manifest_capability_check_contains_nonstandard_base_exceptions(
+        self,
+    ) -> None:
+        supplied = r"manifest failed at C:\private\tenant\plugin.py"
+        executor = PluginCapabilityExecutor(
+            _Plugin(manifest=_exploding_supports_manifest(Boom(supplied)))
+        )
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "manifest capability check failed",
+        ) as caught:
+            executor.apply(EVENT, _World())  # type: ignore[arg-type]
+        self.assertNotIn(supplied, str(caught.exception))
+
+        for exception_type in (KeyboardInterrupt, SystemExit, GeneratorExit):
+            with self.subTest(exception_type=exception_type.__name__):
+                executor = PluginCapabilityExecutor(
+                    _Plugin(
+                        manifest=_exploding_supports_manifest(
+                            exception_type("process control")
+                        )
+                    )
+                )
+                with self.assertRaises(exception_type):
+                    executor.apply(EVENT, _World())  # type: ignore[arg-type]
+
+    def test_forwarding_ir_versions_descriptor_is_snapshotted_once(
+        self,
+    ) -> None:
+        manifest = _guarded_forwarding_versions_manifest(
+            Boom(r"re-read at C:\private\tenant\plugin.py"),
+            maximum_reads=1,
+        )
+        plugin = _Plugin(manifest=manifest)
+        request = _step_request()
+        plugin.step_output = _step_result(request)
+
+        executor = PluginCapabilityExecutor(plugin)
+
+        self.assertEqual(manifest.reads, 1)
+        executor.project_forwarding(
+            _projection_request(),
+            _World(),  # type: ignore[arg-type]
+        )
+        executor.resolve_forwarding_step(
+            request,
+            _World(),  # type: ignore[arg-type]
+        )
+        self.assertEqual(manifest.reads, 1)
+
+    def test_forwarding_ir_versions_descriptor_uses_the_plugin_error_domain(
+        self,
+    ) -> None:
+        supplied = r"manifest failed at C:\private\tenant\plugin.py"
+        with self.assertRaisesRegex(
+            TypeError,
+            "could not resolve manifest forwarding IR versions",
+        ) as caught:
+            PluginCapabilityExecutor(
+                _Plugin(
+                    manifest=_guarded_forwarding_versions_manifest(
+                        Boom(supplied),
+                        maximum_reads=0,
+                    )
+                )
+            )
+        self.assertNotIn(supplied, str(caught.exception))
+
+        for exception_type in (KeyboardInterrupt, SystemExit, GeneratorExit):
+            with (
+                self.subTest(exception_type=exception_type.__name__),
+                self.assertRaises(exception_type),
+            ):
+                PluginCapabilityExecutor(
+                    _Plugin(
+                        manifest=_guarded_forwarding_versions_manifest(
+                            exception_type("process control"),
+                            maximum_reads=0,
+                        )
+                    )
+                )
+
+    def test_apply_and_revert_contain_unreadable_outputs_and_preserve_process_controls(
+        self,
+    ) -> None:
+        supplied = r"output failed at C:\private\tenant\plugin.py"
+        for hook_name, output_name in (
+            ("apply", "apply_output"),
+            ("revert", "revert_output"),
+        ):
+            with self.subTest(hook=hook_name, failure="boom"):
+                plugin = _Plugin()
+                setattr(
+                    plugin,
+                    output_name,
+                    ChangeSet(state=_ExplodingTuple(Boom(supplied))),
+                )
+                executor = PluginCapabilityExecutor(plugin)
+                with self.assertRaisesRegex(
+                    PluginCapabilityOutputError,
+                    f"{hook_name}\\(\\) returned an unreadable result",
+                ) as caught:
+                    getattr(executor, hook_name)(EVENT, _World())
+                self.assertNotIn(supplied, str(caught.exception))
+
+            for exception_type in (KeyboardInterrupt, SystemExit, GeneratorExit):
+                with self.subTest(
+                    hook=hook_name,
+                    exception_type=exception_type.__name__,
+                ):
+                    plugin = _Plugin()
+                    setattr(
+                        plugin,
+                        output_name,
+                        ChangeSet(
+                            state=_ExplodingTuple(
+                                exception_type("process control")
+                            )
+                        ),
+                    )
+                    executor = PluginCapabilityExecutor(plugin)
+                    with self.assertRaises(exception_type):
+                        getattr(executor, hook_name)(EVENT, _World())
+
+    def test_capability_boundaries_preserve_process_control_exceptions(self) -> None:
+        for exception_type in (KeyboardInterrupt, SystemExit, GeneratorExit):
+            with self.subTest(exception_type=exception_type.__name__):
+                with self.assertRaises(exception_type):
+                    PluginCapabilityExecutor(
+                        _ExplodingManifestPlugin(
+                            exception_type("process control")
+                        )  # type: ignore[arg-type]
+                    )
+
+                plugin = _ExplodingApplyPlugin(exception_type("process control"))
+                executor = PluginCapabilityExecutor(plugin)
+                with self.assertRaises(exception_type):
+                    executor.apply(EVENT, _World())  # type: ignore[arg-type]
 
     def test_apply_and_revert_require_exact_bounded_change_sets(self) -> None:
         plugin = _Plugin()
@@ -679,7 +1055,7 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
 
         undeclared = replace(request, projection_id="opaque.missing")
         with self.assertRaisesRegex(
-            PluginCapabilityOutputError,
+            PluginCapabilityInputError,
             "not declared",
         ):
             executor.project_topology(undeclared, _World())  # type: ignore[arg-type]
@@ -699,7 +1075,7 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
         self.assertEqual(result.diagnostics, (_diagnostic(),))
 
         with self.assertRaisesRegex(
-            PluginCapabilityOutputError,
+            PluginCapabilityInputError,
             "not declared",
         ):
             executor.project_forwarding(

@@ -18,6 +18,7 @@ from router_dump_analyzer.annotation_store import (
     ReviewAuditRetentionMode,
     ReviewConflictError,
     ReviewIdempotencyConflictError,
+    ReviewOverlayError,
     ReviewOverlayStore,
     ReviewRetentionDisabledError,
     ReviewRetentionPolicy,
@@ -31,6 +32,7 @@ from router_dump_analyzer.canonical import (
     strict_canonical_json,
     strict_canonical_json_bytes,
 )
+from router_dump_analyzer.value_core import MAX_JSON_SAFE_INTEGER
 
 
 class _Clock:
@@ -214,6 +216,200 @@ class ReviewOverlayStoreTests(unittest.TestCase):
             ["annotation-b", "annotation-c"],
         )
         self.assertGreater(current_watermark, watermark)
+
+    def test_audit_sequence_inputs_share_the_json_safe_domain(self) -> None:
+        unsafe = MAX_JSON_SAFE_INTEGER + 1
+        for operation in (
+            lambda: self.store.list_audit(self.scope, after_sequence=unsafe),
+            lambda: self.store.list_retention_audit(
+                self.scope,
+                after_sequence=unsafe,
+            ),
+            lambda: self.store.list_annotations_page(
+                self.scope,
+                expected_audit_watermark=unsafe,
+            ),
+            lambda: ReviewRetentionPolicy(
+                audit_mode=ReviewAuditRetentionMode.PRUNE_EXPLICIT,
+                audit_before_sequence=unsafe,
+            ),
+        ):
+            with self.subTest(operation=operation), self.assertRaisesRegex(
+                ReviewValidationError,
+                "JSON-safe",
+            ):
+                operation()
+
+        self.assertEqual(
+            self.store.list_audit(
+                self.scope,
+                after_sequence=MAX_JSON_SAFE_INTEGER,
+            ),
+            (),
+        )
+        self.assertEqual(
+            self.store.list_retention_audit(
+                self.scope,
+                after_sequence=MAX_JSON_SAFE_INTEGER,
+            ),
+            (),
+        )
+        policy = ReviewRetentionPolicy(
+            audit_mode=ReviewAuditRetentionMode.PRUNE_EXPLICIT,
+            audit_before_sequence=MAX_JSON_SAFE_INTEGER,
+        )
+        self.assertEqual(policy.audit_before_sequence, MAX_JSON_SAFE_INTEGER)
+
+    def test_preseeded_unsafe_audit_sequences_fail_read_projections(self) -> None:
+        connection = self.store._connection
+        safe_sequence = MAX_JSON_SAFE_INTEGER
+        connection.execute(
+            """
+            INSERT INTO review_overlay_audit (
+                sequence, tenant_id, project_id, workspace_id, entity_kind,
+                entity_id, operation, version, actor, occurred_at_ns,
+                snapshot_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                safe_sequence,
+                self.scope.tenant_id,
+                self.scope.project_id,
+                self.scope.workspace_id,
+                "annotation",
+                "safe-boundary",
+                "create",
+                1,
+                "tester",
+                1,
+                "{}",
+            ),
+        )
+        self.assertEqual(self.store.audit_watermark(self.scope), safe_sequence)
+        self.assertEqual(self.store.list_audit(self.scope)[0].sequence, safe_sequence)
+        self.assertEqual(
+            self.store.list_annotations_page(self.scope)[1],
+            safe_sequence,
+        )
+        self.assertEqual(
+            self.store.snapshot_for_report(self.scope).audit_watermark,
+            safe_sequence,
+        )
+
+        unsafe_sequence = safe_sequence + 1
+        connection.execute(
+            """
+            INSERT INTO review_overlay_audit (
+                sequence, tenant_id, project_id, workspace_id, entity_kind,
+                entity_id, operation, version, actor, occurred_at_ns,
+                snapshot_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                unsafe_sequence,
+                self.scope.tenant_id,
+                self.scope.project_id,
+                self.scope.workspace_id,
+                "annotation",
+                "unsafe-boundary",
+                "create",
+                1,
+                "tester",
+                1,
+                "{}",
+            ),
+        )
+        for operation in (
+            lambda: self.store.list_audit(self.scope),
+            lambda: self.store.audit_watermark(self.scope),
+            lambda: self.store.list_annotations_page(self.scope),
+            lambda: self.store.snapshot_for_report(self.scope),
+        ):
+            with self.subTest(operation=operation), self.assertRaisesRegex(
+                ReviewOverlayError,
+                "safe domain",
+            ):
+                operation()
+
+        policy_json = strict_canonical_json(
+            {
+                "enabled": True,
+                "tombstone_before_ns": None,
+                "idempotency_before_ns": None,
+                "audit_mode": "preserve",
+                "audit_before_sequence": None,
+                "maximum_candidates": 1_000,
+            }
+        )
+        connection.execute(
+            """
+            INSERT INTO review_retention_audit (
+                sequence, tenant_id, project_id, workspace_id, operation_id,
+                actor, occurred_at_ns, policy_json, candidate_count,
+                purged_count, purged_json, purged_sha256, result_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                unsafe_sequence,
+                self.scope.tenant_id,
+                self.scope.project_id,
+                self.scope.workspace_id,
+                "unsafe-retention-audit",
+                "tester",
+                1,
+                policy_json,
+                0,
+                0,
+                "[]",
+                sha256(b"[]").hexdigest(),
+                "{}",
+            ),
+        )
+        with self.assertRaisesRegex(ReviewOverlayError, "safe domain"):
+            self.store.list_retention_audit(self.scope)
+
+    def test_exhausted_audit_sequences_roll_back_store_writes(self) -> None:
+        connection = self.store._connection
+
+        def exhaust(table: str) -> None:
+            connection.execute("DELETE FROM sqlite_sequence WHERE name = ?", (table,))
+            connection.execute(
+                "INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)",
+                (table, MAX_JSON_SAFE_INTEGER),
+            )
+
+        exhaust("review_overlay_audit")
+        with self.assertRaisesRegex(ReviewOverlayError, "safe domain"):
+            self.store.create_annotation(
+                self.scope,
+                annotation_id="exhausted-audit-write",
+                kind=ReviewAnnotationKind.MARKER,
+                subjects=(self.event("event-a"),),
+                author="alice",
+            )
+        with self.assertRaises(KeyError):
+            self.store.get_annotation(self.scope, "exhausted-audit-write")
+        self.assertEqual(
+            connection.execute(
+                "SELECT COUNT(*) FROM review_overlay_audit"
+            ).fetchone()[0],
+            0,
+        )
+
+        exhaust("review_retention_audit")
+        with self.assertRaisesRegex(ReviewOverlayError, "safe domain"):
+            self.store.purge_retention(
+                self.scope,
+                ReviewRetentionPolicy(enabled=True),
+                actor="retention-bot",
+                operation_id="exhausted-retention-audit-write",
+            )
+        self.assertEqual(
+            connection.execute(
+                "SELECT COUNT(*) FROM review_retention_audit"
+            ).fetchone()[0],
+            0,
+        )
 
     def test_review_text_rejects_controls_but_allows_multiline_body(self) -> None:
         with self.assertRaisesRegex(ReviewValidationError, "control characters"):
