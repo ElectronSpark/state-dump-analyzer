@@ -24,6 +24,7 @@ from .runtime import (
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 _CLI_ERROR_FALLBACK = "analyzer configuration or startup failed"
+_UVICORN_STARTUP_FAILURE = 3
 
 
 def _cli_error_detail(error: BaseException) -> str:
@@ -292,14 +293,32 @@ def _run_uvicorn(application: Any, *, host: str, port: int) -> None:
         async with application.router.lifespan_context(application):
             await server.serve()
 
-    asyncio.run(
-        serve_with_core_lifespan(),
-        loop_factory=configuration.get_loop_factory(),
-    )
-    if not server.started:
-        from uvicorn.config import STARTUP_FAILURE
+    # Uvicorn 0.30 through 0.35 configures its event-loop policy through
+    # setup_event_loop(); 0.36 and later return a loop factory instead.  Keep
+    # both declared dependency generations functional and retain Uvicorn's
+    # uvloop/asyncio and Windows policy selection.  Entering Runner initializes
+    # the selected loop before the lifespan coroutine is constructed, so a
+    # broken loop configuration cannot also leak an un-awaited coroutine.
+    get_loop_factory = getattr(configuration, "get_loop_factory", None)
+    if callable(get_loop_factory):
+        loop_factory = get_loop_factory()
+    else:
+        setup_event_loop = getattr(configuration, "setup_event_loop", None)
+        if not callable(setup_event_loop):
+            raise RuntimeError(
+                "installed Uvicorn does not expose a supported event-loop "
+                "configuration API"
+            )
+        setup_event_loop()
+        loop_factory = None
 
-        raise SystemExit(STARTUP_FAILURE)
+    with asyncio.Runner(loop_factory=loop_factory) as runner:
+        runner.run(serve_with_core_lifespan())
+    if not server.started:
+        # Uvicorn's CLI has used exit status 3 for a server that returns before
+        # startup throughout the declared >=0.30,<1 range.  Owning that small
+        # process contract avoids depending on its version-specific module.
+        raise SystemExit(_UVICORN_STARTUP_FAILURE)
 
 
 def run(

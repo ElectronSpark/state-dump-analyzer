@@ -185,6 +185,17 @@ lifespan and validates the same six session surfaces. Core constructs
 generic state, relationship, resource-table, dashboard, range, redaction,
 search, or client-projection queries.
 
+The default host enters that real application lifespan before handing control
+to Uvicorn and disables Uvicorn's duplicate lifespan driver. Runtime open,
+context entry, lazy discovery, serving, and context exit therefore share one
+core-owned lifetime. An ordinary installed plug-in failure during startup exits
+with status 1 and exactly one bounded, path-free
+`router-dump-analyzer: error: ...` line, without a traceback. The
+process-control exceptions `KeyboardInterrupt`, `SystemExit`, and
+`GeneratorExit` propagate unchanged. This projection is preserved across the
+declared `uvicorn>=0.30,<1` dependency range, including each generation's
+native event-loop selection mechanism.
+
 This binding does not alter payload ownership. Core still owns envelopes,
 pagination, errors, routes, and rendering contracts. The plug-in still owns
 input interpretation, resource and relationship meaning, topology/route

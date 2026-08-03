@@ -695,10 +695,13 @@ npm --prefix frontend run check
 ```
 
 The frontend check requires Node.js 18 or newer but installs no packages. CI
-runs the same gates on Windows and Linux with Python 3.12 and Node 22. An
-additional Linux job syntax-checks the shell launchers, builds all three
-distributions through their source archives, installs the wheels together,
-and verifies their entry points and packaged resources.
+runs the same gates on Windows and Linux with Python 3.12 and Node 22. A second
+Windows/Linux Python matrix constrains Uvicorn to the declared 0.30.0 floor,
+asserts that exact resolution, runs `pip check`, and repeats the complete core
+and demo suites. The normal matrix exercises the current compatible resolver
+result. An additional Linux job syntax-checks the shell launchers, builds all
+three distributions through their source archives, installs the wheels
+together, and verifies their entry points and packaged resources.
 
 ### Develop frontend and backend separately
 
