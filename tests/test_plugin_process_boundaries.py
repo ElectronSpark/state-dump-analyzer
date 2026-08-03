@@ -1744,6 +1744,50 @@ def invoke(adapter):
         self.assertIn("lazy lifecycle context enter/exit", labels)
         self.assertTrue(all(not site.guarded for site in sites), labels)
 
+    def test_every_declared_lazy_consumption_form_is_discovered(self) -> None:
+        """Pin every stream-consumption form claimed by the architecture."""
+
+        forms = (
+            ("list comprehension", "result = [item for item in rows]"),
+            ("set comprehension", "result = {item for item in rows}"),
+            ("dict comprehension", "result = {item: item for item in rows}"),
+            ("generator expression", "result = (item for item in rows)"),
+            ("list()", "result = list(rows)"),
+            ("tuple()", "result = tuple(rows)"),
+            ("sorted()", "result = sorted(rows)"),
+            ("starred list", "result = [*rows]"),
+            ("yield from", "yield from rows"),
+            ("next()", "result = next(rows)"),
+            ("iter()", "result = iter(rows)"),
+            ("tuple unpacking", "first, second = rows"),
+            ("any()", "result = any(rows)"),
+            ("all()", "result = all(rows)"),
+            ("sum()", "result = sum(rows)"),
+            ("min()", "result = min(rows)"),
+            ("max()", "result = max(rows)"),
+        )
+        template = """
+def invoke(adapter):
+    try:
+        rows = adapter.locate_inputs(None)
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except BaseException:
+        return bounded_failure()
+    {consumer}
+"""
+        for label, consumer in forms:
+            with self.subTest(form=label):
+                violations = _guard_violations(
+                    textwrap.dedent(template).format(consumer=consumer),
+                    filename="ingestion.py",
+                    contract=self.contract,
+                )
+                self.assertTrue(
+                    any("lazy" in violation for violation in violations),
+                    f"{label} escaped the lazy-consumption census: {violations}",
+                )
+
     def test_unrelated_helper_is_not_covered_by_a_module_route_fence(self) -> None:
         """A valid APIRoute fence is not a module-wide exemption."""
 
