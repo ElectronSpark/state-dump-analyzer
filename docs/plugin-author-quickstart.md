@@ -73,6 +73,13 @@ errors never depend on the plug-in exception's text. Treat structured
 `PluginDiagnostic` records as the only supported way to publish useful failure
 detail.
 
+The default `router-dump-analyzer` host enters the core application lifespan
+before Uvicorn starts logging. An ordinary installed plug-in failure during
+runtime open, context entry, or lazy input discovery therefore exits with
+status 1 and exactly one bounded `router-dump-analyzer: error: ...` line, with
+no traceback or host path. The three process-control exceptions still
+propagate unchanged.
+
 Durable executable identity fingerprints every ordinary package file. Only an
 actual VCS/cache **directory** named `.git`, `.hg`, `.svn`, `__pycache__`,
 `.mypy_cache`, `.pytest_cache`, or `.ruff_cache` is pruned. A regular file or

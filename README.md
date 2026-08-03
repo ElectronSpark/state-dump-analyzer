@@ -580,6 +580,11 @@ snapshots executable descriptors once and contains lazy iteration, cleanup,
 and context entry/exit as part of the call. Plug-ins
 must use structured `PluginDiagnostic` values rather than exception text for
 author-visible detail.
+The default analyzer CLI enters its real application lifespan before Uvicorn
+starts, so an ordinary plug-in startup failure exits 1 with one bounded,
+path-free error line instead of a server traceback. Process-control exceptions
+remain unchanged.
+
 Client-visible failures use closed safe code/message pairs; arbitrary plug-in
 exception text stays in private diagnostics with no HTTP route.
 

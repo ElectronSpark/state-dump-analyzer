@@ -229,9 +229,12 @@ terminal or CI log. Core rethrows `KeyboardInterrupt`, `SystemExit`, and
 execution boundaries, while containing every other `BaseException` behind a
 bounded public diagnostic. Installed loading, runtime/session construction,
 lazy parser output, and provider callbacks use the same host-owned rule; the
-example does not implement or override it. The package fingerprint includes ordinary files and
-contained aliases even if their basename resembles `.git` or `__pycache__`;
-only actual metadata/cache directories are pruned.
+example does not implement or override it. When this installed example fails
+during application startup, the default analyzer CLI exits with one bounded
+error line before Uvicorn can render a traceback or host path. The package
+fingerprint includes ordinary files and contained aliases even if their
+basename resembles `.git` or `__pycache__`; only actual metadata/cache
+directories are pruned.
 At one timestamp, `source_sequence` establishes producer order before the
 stable record identity tie-breaker. The checked fixture includes create,
 modify, and window-only observations; shared temporal replay also treats

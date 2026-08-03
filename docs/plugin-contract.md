@@ -1965,6 +1965,14 @@ Descriptors are snapshotted once per operation/session. Lazy iteration and
 `close()` are inside the boundary, and a failing context cleanup cannot replace
 an exception already raised by the core-owned body.
 
+When the default `router-dump-analyzer` CLI hosts the application, core MUST
+enter the real application lifespan before Uvicorn starts and MUST disable
+Uvicorn's duplicate lifespan driver for that server run. Every ordinary
+plug-in failure during runtime open, context entry, or lazy discovery MUST
+exit with status 1 and exactly one bounded, path-free CLI error line. It MUST
+emit no traceback and MUST NOT convert `KeyboardInterrupt`, `SystemExit`, or
+`GeneratorExit` into a public failure.
+
 ### Probe and input discovery
 
 - Exact version, adjacent version, ambiguous version, and missing manifest.
