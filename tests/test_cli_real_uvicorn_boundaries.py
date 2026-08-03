@@ -105,7 +105,10 @@ class RealUvicornCliBoundaryTests(unittest.TestCase):
         self,
     ) -> None:
         cases = {
-            "manifest": "does not implement the standard core-ingestion parser contract",
+            "manifest": (
+                "loaded plug-in does not expose runtime.v1 and does not implement "
+                "the standard core-ingestion parser contract"
+            ),
             "runtime": "plug-in runtime session open failed",
             "hook": "plug-in runtime session enter failed",
             "generator": "plug-in runtime session enter failed",
@@ -189,18 +192,18 @@ class RealUvicornCliBoundaryTests(unittest.TestCase):
                     )
                     rendered = completed.stdout + completed.stderr
                     lines = completed.stderr.splitlines()
-                    self.assertNotEqual(completed.returncode, 0, case)
+                    self.assertEqual(completed.returncode, 1, rendered)
                     self.assertEqual(completed.stdout, "", rendered)
                     self.assertEqual(
                         len(lines),
                         1,
                         f"{case} emitted {len(lines)} lines:\n{rendered}",
                     )
-                    self.assertTrue(
-                        lines[0].startswith("router-dump-analyzer: error: "),
+                    self.assertEqual(
+                        lines[0],
+                        f"router-dump-analyzer: error: {expected_detail}",
                         rendered,
                     )
-                    self.assertIn(expected_detail, lines[0], rendered)
                     self.assertLessEqual(len(lines[0]), 512, rendered)
                     lowered = rendered.casefold().replace("\\", "/")
                     for path in forbidden_paths:

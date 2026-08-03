@@ -294,6 +294,15 @@ may be enabled only by an explicit option on a loopback listener. The ordinary
 mount the same router beside one browser analysis for local review, but it is
 not the required production entry point.
 
+Both core CLI composition roots drive their FastAPI application's real ASGI
+lifespan around the complete default server run, then start Uvicorn with its
+second lifespan driver disabled. This preserves one startup/shutdown lifetime
+while keeping failures from core-owned plug-in/runtime startup outside
+Uvicorn's traceback logger, so the process boundary can project them as one
+bounded, path-free CLI error. Direct ASGI embedding still drives the same
+application lifespan normally; process-control exceptions are never converted
+to public errors.
+
 When an identity resolver returns an authorization `401` or `403`, its optional
 response headers cross an atomic bounded safe-header validator. Invalid names,
 values, duplicates, forbidden framing/representation/cookie-mutation fields, or excessive

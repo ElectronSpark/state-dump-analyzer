@@ -266,13 +266,40 @@ def _schedule_browser(
 
 
 def _run_uvicorn(application: Any, *, host: str, port: int) -> None:
+    import asyncio
+
     try:
         import uvicorn
     except ImportError as error:
         raise RuntimeError(
             "web serving requires the 'router-dump-analyzer-core[web]' extra"
         ) from error
-    uvicorn.run(application, host=host, port=port)
+
+    # Drive the core-owned lifespan before Uvicorn starts.  Starlette reports
+    # lifespan failures through Uvicorn's logger and then converts them into a
+    # generic startup exit, which would bypass the CLI's bounded public-error
+    # projection.  The same lifespan still surrounds the complete server run;
+    # Uvicorn is told not to enter it a second time.
+    configuration = uvicorn.Config(
+        application,
+        host=host,
+        port=port,
+        lifespan="off",
+    )
+    server = uvicorn.Server(configuration)
+
+    async def serve_with_core_lifespan() -> None:
+        async with application.router.lifespan_context(application):
+            await server.serve()
+
+    asyncio.run(
+        serve_with_core_lifespan(),
+        loop_factory=configuration.get_loop_factory(),
+    )
+    if not server.started:
+        from uvicorn.config import STARTUP_FAILURE
+
+        raise SystemExit(STARTUP_FAILURE)
 
 
 def run(
