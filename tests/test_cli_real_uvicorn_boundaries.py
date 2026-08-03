@@ -6,7 +6,10 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -101,6 +104,76 @@ def _available_port() -> int:
 
 
 class RealUvicornCliBoundaryTests(unittest.TestCase):
+    def test_shared_runner_hosts_a_healthy_application(self) -> None:
+        port = _available_port()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher = root / "healthy_uvicorn.py"
+            launcher.write_text(
+                textwrap.dedent(
+                    f'''\
+                    from fastapi import FastAPI
+                    from router_dump_analyzer.cli import _run_uvicorn
+
+                    application = FastAPI()
+
+                    @application.get("/health")
+                    def health():
+                        return {{"status": "ok"}}
+
+                    _run_uvicorn(
+                        application,
+                        host="127.0.0.1",
+                        port={port},
+                    )
+                    '''
+                ),
+                encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment["PYTHONUTF8"] = "1"
+            environment["PYTHONIOENCODING"] = "utf-8"
+            environment["PYTHONPATH"] = os.pathsep.join(
+                filter(
+                    None,
+                    (str(ROOT / "src"), environment.get("PYTHONPATH")),
+                )
+            )
+            process = subprocess.Popen(
+                [sys.executable, str(launcher)],
+                cwd=ROOT,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            response_body = ""
+            deadline = time.monotonic() + 15.0
+            try:
+                while time.monotonic() < deadline:
+                    if process.poll() is not None:
+                        break
+                    try:
+                        with urllib.request.urlopen(
+                            f"http://127.0.0.1:{port}/health",
+                            timeout=0.5,
+                        ) as response:
+                            response_body = response.read().decode("utf-8")
+                            self.assertEqual(response.status, 200)
+                            break
+                    except (OSError, urllib.error.URLError):
+                        time.sleep(0.05)
+                self.assertEqual(response_body, '{"status":"ok"}')
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                try:
+                    stdout, stderr = process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    stdout, stderr = process.communicate(timeout=5)
+            self.assertIn(process.returncode, (0, 1, -15), stdout + stderr)
+
     def test_lifespan_plugin_failures_have_one_bounded_process_projection(
         self,
     ) -> None:

@@ -4,7 +4,6 @@ import tomllib
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -246,6 +245,14 @@ class PluginAuthoringDocumentationTests(unittest.TestCase):
         self.assertIn("--plugin-module", readme)
         self.assertIn("PluginRuntimeCapability", quickstart)
         self.assertIn("PluginRuntimeSession", contract)
+
+    def test_api_contract_documents_runtime_startup_projection(self) -> None:
+        api_contract = (ROOT / "docs" / "api-contract.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Uvicorn", api_contract)
+        self.assertIn("exactly one bounded", api_contract)
+        self.assertIn("process-control", api_contract)
 
     def test_codex_and_fable_share_one_maintenance_rule(self) -> None:
         memory = (ROOT / "AGENTS.md").read_text(encoding="utf-8")

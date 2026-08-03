@@ -1,0 +1,2 @@
+# Executable lower-bound contract for the declared web/test dependency range.
+uvicorn==0.30.0
