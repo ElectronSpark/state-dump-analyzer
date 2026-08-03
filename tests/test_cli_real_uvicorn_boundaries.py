@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -15,7 +16,10 @@ _PLUGIN_SOURCE = textwrap.dedent(
     '''\
     from router_dump_analyzer.plugin_api import (
         CORE_PLUGIN_API_VERSION,
+        DiagnosticSeverity,
+        DiagnosticStage,
         PluginManifest,
+        PluginDiagnostic,
         PluginSchema,
         ProbeMatchKind,
         ProbeReport,
@@ -31,10 +35,14 @@ _PLUGIN_SOURCE = textwrap.dedent(
         def manifest(self):
             raise Boom(__SECRET__)
 
-    class RuntimeFailurePlugin:
-        @property
-        def runtime(self):
+    class RuntimeFailureRuntime:
+        capability_id = "router_dump_analyzer.runtime.v1"
+
+        def open(self, _input_path):
             raise Boom(__SECRET__)
+
+    class RuntimeFailurePlugin:
+        runtime = RuntimeFailureRuntime()
 
     class ParserPlugin:
         manifest = PluginManifest(
@@ -68,8 +76,14 @@ _PLUGIN_SOURCE = textwrap.dedent(
 
     class GeneratorFailurePlugin(ParserPlugin):
         def locate_inputs(self, _inventory):
-            if False:
-                yield None
+            for index in range(2):
+                yield PluginDiagnostic(
+                    stage=DiagnosticStage.LOCATE,
+                    severity=DiagnosticSeverity.INFO,
+                    code=f"round17-{index}",
+                    message="accepted prefix output",
+                    recoverable=True,
+                )
             raise Boom(__SECRET__)
 
     manifest_plugin = ManifestFailurePlugin()
@@ -80,13 +94,19 @@ _PLUGIN_SOURCE = textwrap.dedent(
 ).replace("__SECRET__", repr(_SECRET))
 
 
+def _available_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
+
+
 class RealUvicornCliBoundaryTests(unittest.TestCase):
     def test_lifespan_plugin_failures_have_one_bounded_process_projection(
         self,
     ) -> None:
         cases = {
             "manifest": "does not implement the standard core-ingestion parser contract",
-            "runtime": "plug-in runtime descriptor could not be resolved",
+            "runtime": "plug-in runtime session open failed",
             "hook": "plug-in runtime session enter failed",
             "generator": "plug-in runtime session enter failed",
         }
@@ -94,11 +114,13 @@ class RealUvicornCliBoundaryTests(unittest.TestCase):
             root = Path(directory)
             input_path = root / "input"
             input_path.mkdir()
-            (root / "round17_hostile_plugins.py").write_text(
+            site_packages = root / "site-packages"
+            site_packages.mkdir()
+            (site_packages / "round17_hostile_plugins.py").write_text(
                 _PLUGIN_SOURCE,
                 encoding="utf-8",
             )
-            distribution = root / "round17_hostile_plugins-1.0.dist-info"
+            distribution = site_packages / "round17_hostile_plugins-1.0.dist-info"
             distribution.mkdir()
             (distribution / "METADATA").write_text(
                 "Metadata-Version: 2.1\n"
@@ -123,14 +145,20 @@ class RealUvicornCliBoundaryTests(unittest.TestCase):
                     None,
                     (
                         str(root),
+                        str(site_packages),
                         str(ROOT / "src"),
                         environment.get("PYTHONPATH"),
                     ),
                 )
             )
-            forbidden = (
-                str(ROOT).casefold(),
-                r"c:\python",
+            forbidden_paths = (
+                ROOT,
+                root,
+                Path(sys.executable).resolve().parent,
+                Path(sys.prefix),
+            )
+            forbidden_text = (
+                "c:/python",
                 "site-packages",
                 _SECRET.casefold(),
                 "traceback",
@@ -150,7 +178,7 @@ class RealUvicornCliBoundaryTests(unittest.TestCase):
                             "--no-browser",
                             "--api-only",
                             "--port",
-                            "65530",
+                            str(_available_port()),
                         ],
                         cwd=ROOT,
                         env=environment,
@@ -160,10 +188,9 @@ class RealUvicornCliBoundaryTests(unittest.TestCase):
                         check=False,
                     )
                     rendered = completed.stdout + completed.stderr
-                    lines = tuple(
-                        line for line in rendered.splitlines() if line.strip()
-                    )
+                    lines = completed.stderr.splitlines()
                     self.assertNotEqual(completed.returncode, 0, case)
+                    self.assertEqual(completed.stdout, "", rendered)
                     self.assertEqual(
                         len(lines),
                         1,
@@ -175,8 +202,11 @@ class RealUvicornCliBoundaryTests(unittest.TestCase):
                     )
                     self.assertIn(expected_detail, lines[0], rendered)
                     self.assertLessEqual(len(lines[0]), 512, rendered)
-                    lowered = rendered.casefold()
-                    for needle in forbidden:
+                    lowered = rendered.casefold().replace("\\", "/")
+                    for path in forbidden_paths:
+                        needle = str(path.resolve()).casefold().replace("\\", "/")
+                        self.assertNotIn(needle, lowered, rendered)
+                    for needle in forbidden_text:
                         self.assertNotIn(needle, lowered, rendered)
 
 
