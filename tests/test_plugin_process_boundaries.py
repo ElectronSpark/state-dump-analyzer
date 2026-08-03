@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import textwrap
 import unittest
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,25 @@ _LIFECYCLE_METHODS = frozenset(
     {"__enter__", "__exit__", "__iter__", "__next__", "close"}
 )
 _LIFECYCLE_BUILTINS = frozenset({"iter", "next"})
+
+# This committed floor is intentionally independent of discovery.  Deriving
+# the expected module set from the same census would let one blind spot remove
+# both the evidence and its expectation.  Counts may grow without maintenance;
+# lowering a floor requires an explicit review of the removed boundary.
+_CENSUS_FLOOR_BY_MODULE = {
+    "src/router_dump_analyzer/capability_executor.py": 12,
+    "src/router_dump_analyzer/ingestion.py": 7,
+    "src/router_dump_analyzer/ingestion_pipeline.py": 6,
+    "src/router_dump_analyzer/multi_node_route.py": 2,
+    "src/router_dump_analyzer/normalized_data.py": 3,
+    "src/router_dump_analyzer/plugin_loading.py": 3,
+    "src/router_dump_analyzer/plugin_validation.py": 2,
+    "src/router_dump_analyzer/runtime.py": 6,
+    "src/router_dump_analyzer/server_cli.py": 2,
+    "src/router_dump_analyzer/temporal_topology.py": 1,
+    "src/router_dump_analyzer/web/control_plane_api.py": 1,
+    "src/router_dump_analyzer/web/runtime_api.py": 4,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -1819,6 +1839,18 @@ class Adapter:
         """Assert the derived whole-source census, with readable evidence."""
 
         sites = _source_census(self.source_paths, contract=self.contract)
+        module_counts = Counter(
+            site.filename.replace("\\", "/") for site in sites
+        )
+        for module, floor in _CENSUS_FLOOR_BY_MODULE.items():
+            self.assertGreaterEqual(
+                module_counts[module],
+                floor,
+                "plug-in boundary census floor regressed: "
+                f"{module} discovered {module_counts[module]}, expected at least "
+                f"{floor}; total discovered {len(sites)}; per-module "
+                f"{dict(sorted(module_counts.items()))}",
+            )
         guarded = tuple(site for site in sites if site.guarded)
         violations = tuple(site for site in sites if not site.guarded)
         census = "\n".join(site.display() for site in sites)
