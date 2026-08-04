@@ -2306,6 +2306,69 @@ partial reference or byte charge. The service remains ephemeral and read-only:
 it owns no model runner, durable run or ledger store, HTTP API, database,
 filesystem, network, shell, plug-in call, mutation, or promotion authority.
 
+Runner composition claims a pristine service through a permanent single-run
+lease. Lease acquisition is atomic with direct-call execution, refuses an
+active or previously used service, and blocks every non-lease call while and
+after the runner owns it. A separate direct-use latch is set on the first
+admitted direct attempt, including zero-budget and authorization failures, so
+empty counters cannot make a direct-mode service eligible for a runner lease.
+A budget-neutral lease operation performs the same exact authorization and
+pinned-current-policy admission without disclosing an
+evidence item. This closes the race in which another trusted holder could
+change the ledger between model return and result validation.
+
+The adjacent `ConfiguredPrivateAnalysisInProcessRunner` is an ephemeral
+trusted-local adapter, not a provider client. Its configuration must equal the
+request's runner ID/version/transport/configuration and trusted
+instruction-profile digest. Before it exposes the detached request and shipped
+catalog, it claims the exclusive service lease and requires current run access.
+The operator callback receives only those detached values and a narrow
+synchronous gateway. The gateway parses canonical closed-catalog call JSON,
+executes through the lease, and returns detached typed tool results/errors; the
+supported callback interface exposes no service/provider/store/plug-in handle.
+The gateway necessarily retains private in-process execution state. Python
+reflection can reach and mutate that state, so a deliberately introspective
+callback is outside this process-trusted adapter's threat model rather than a
+capability this layer can contain. Detected unsupported bypass fails with a
+static protocol outcome instead of leaking a finalization invariant; the
+local-child transport is required when callback code itself is untrusted.
+
+The gateway is owner-thread-affine and non-reentrant. Protocol misuse latches
+one closed failure that wins over any later callback result. It records a
+domain-separated constant-memory digest chain of validated call and response
+digests, bounded to the configured tool-call count plus one exhaustion
+response. It stores no raw query, evidence payload, model output, exception,
+path, timestamp, or callback representation. After the callback returns, core
+closes the gateway, rechecks current run access, snapshots the detached ledger,
+strictly parses canonical result JSON, applies output/count limits, and binds
+citations with `validate_private_analysis_result`. The internal receipt is a
+detached outcome plus ledger/budget snapshots and the payload-free transcript
+seal; it is neither routed nor persisted at this stage.
+
+Gateway exchange counters, chain state, and terminal state have no public
+callback-facing properties. After owner-thread close, runner finalization uses
+one private atomic snapshot, avoiding individually observable metadata reads
+that would otherwise weaken the thread-affinity contract.
+
+The monotonic deadline is checked again after result parsing, budget checks,
+and citation validation. A result that was timely when returned but became
+late during validation is discarded as `timeout` rather than sealed.
+Candidate access, tool, and protocol errors are accumulated until the common
+post-operation clock check, so an operation that crossed its deadline is
+reported as `timeout` instead of whichever error happened to return late.
+
+Monotonic checks make a late access/tool/model response fail as `timeout`, but
+trusted in-process Python cannot be forcibly terminated safely. A callback
+that never returns and never cooperates can block the host indefinitely. The
+adapter starts no worker thread to fake cancellation. Its callback is
+process-trusted and unsandboxed; core can avoid granting a filesystem, network,
+shell, subprocess, plug-in, database, or mutation handle but cannot prevent
+deliberately hostile code already running in-process from acquiring global
+Python authority. The later local-child runner is the hard-kill isolation
+boundary. No public provider dependency, endpoint/key setting, automatic
+network fallback, API/CLI, durable lifecycle, retry, annotation write, or
+promotion is introduced here.
+
 ## 14. Delivery sequence
 
 This is the broader distributed-product sequence, not a list of missing local

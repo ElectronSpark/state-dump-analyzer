@@ -338,11 +338,91 @@ would exceed either limit returns `budget_exceeded` without partially adding
 references or bytes. `budget_state` and `disclosed_references` expose detached
 snapshots for later result validation.
 
+For runner composition, a pristine service can issue one exclusive
+`PrivateAnalysisToolRunLease`. Acquiring it is race-safe with direct calls,
+requires empty call/budget/ledger state, and permanently makes the service a
+single-run object. While the lease is open, calls without that exact authority
+fail closed; after release, no further calls are admitted. Its budget-neutral
+run-access check re-authorizes the exact request and resolves the current
+pinned workspace policy without materializing evidence.
+
+Direct-call and runner modes are mutually exclusive by an explicit lifetime
+latch, not inferred only from counters. The first admitted direct attempt
+permanently prevents lease acquisition even if a zero-call budget returns
+`budget_exceeded` or authorization fails before a call unit is charged.
+
 This service is intentionally ephemeral and read-only. It owns no database,
 filesystem, network, shell, model runner, plug-in invocation, HTTP endpoint,
 run lifecycle, durable accounting, or promotion authority. Durable run and
-ledger storage, execution isolation, API composition, and user-visible model
+ledger storage, subprocess isolation, API composition, and user-visible model
 workflows remain later stages.
+
+## Trusted in-process runner
+
+`ConfiguredPrivateAnalysisInProcessRunner` is the first executable model
+transport. It is configured with one exact `PrivateAnalysisRunnerSelection`,
+the trusted instruction-profile digest already pinned by the request, and an
+operator-supplied callback. Only `in_process` selections are admitted. Runner
+ID, version, configuration digest, instruction-profile digest, shipped catalog
+digest, and the tool service's complete canonical request must all agree
+before the callback can run.
+
+The callback is invoked exactly once. It receives fresh detached request and
+catalog values plus a narrow request-local gateway as its supported interface;
+core does not expose a public tool-service, provider callback, store, plug-in,
+filesystem, shell, or socket handle through that interface. Calls cross the
+gateway as bounded canonical
+`PrivateAnalysisToolCall` JSON and return freshly detached typed results or
+errors. The gateway is synchronous, owner-thread-affine, non-reentrant, and
+closed before finalization. Malformed, duplicate, cross-thread, recursive, or
+retained calls terminal-latch a static runner error even if the trusted
+callback catches the local abort. One extra exchange may report that the tool
+budget is exhausted; later attempts fail terminally, so rejected calls cannot
+grow an unbounded transcript.
+
+The supported callback interface does not expose terminal state, exchange
+counts, metadata-byte counters, or chain digests. Core obtains those values as
+one private atomic snapshot only after it closes the gateway on the owner
+thread; callback-visible execution, deadline, and close operations remain
+thread-affine.
+
+Access is checked before the request/query reaches the callback and again
+after the gateway closes. Only then does core snapshot the disclosure ledger,
+parse the callback's canonical `PrivateAnalysisResult` JSON, apply the
+request-specific byte/claim/proposal ceilings, and validate every citation
+against that exact ledger. The returned internal receipt contains detached
+outcome and ledger snapshots plus counters and a payload-free transcript
+digest. The transcript is a domain-separated constant-memory hash chain over
+validated call/result identities and its final outcome; it retains no query,
+evidence payload, model text, exception, path, or timestamp.
+
+The request deadline is enforced cooperatively with a monotonic clock before
+and after admission, each gateway exchange, callback return, final access
+check, and result validation. A result that crosses the deadline while being
+parsed or citation-validated is discarded as `timeout`. Python cannot safely
+kill an arbitrary callback in the same process, so a callback that never
+returns and never reaches the gateway can still hang the host indefinitely. No worker
+thread is left behind to simulate cancellation. Durable cancellation and the
+hard-kill local-subprocess boundary are separate stages.
+
+Deadline precedence is systematic: if an authorization, policy, tool,
+malformed-call, or result-validation operation crosses the monotonic deadline,
+the run records `timeout` rather than the otherwise applicable error returned
+by that late operation.
+
+The callback is process-trusted and unsandboxed. It may already possess Python
+process authority supplied by its deployment; this adapter cannot prevent a
+deliberately hostile callback from finding globals or opening its own files,
+network connections, or child processes. The same rule applies to deliberate
+reflection into or mutation of the gateway's private lease/transcript state:
+that behavior is outside this trusted adapter's contract, though detected
+private-state bypass fails with a static protocol result rather than leaking a
+constructor diagnostic. Core itself imports and grants none of those
+capabilities through the supported interface. The adapter adds no public
+provider SDK, model
+endpoint or key setting, automatic network fallback, HTTP/CLI entry point,
+database, durable run, retry loop, annotation write, promotion, or plug-in
+invocation.
 
 ## Tool and instruction boundary
 

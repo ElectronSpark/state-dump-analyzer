@@ -493,8 +493,28 @@ bindings, conceals foreign or denied reads, detects changed query snapshots,
 and atomically enforces cumulative call, unique-reference, and canonical-byte
 budgets. Query references join the same request-local citation ledger as read
 envelopes. Provider callbacks are contained and cannot leak diagnostics into
-tool errors. The service is ephemeral and owns no model runner, persistence,
-HTTP endpoint, network, shell, or plug-in invocation authority. See the
+tool errors.
+
+`ConfiguredPrivateAnalysisInProcessRunner` now composes one pristine tool
+service with an operator-supplied, process-trusted local callback. It binds the
+exact runner ID/version/configuration and trusted instruction-profile digest,
+admits current workspace access before exposing the request, and gives the
+callback only a detached request/catalog context plus a thread-affine gateway
+as its supported interface for canonical closed-catalog calls. The callback is
+deployment-trusted Python, not an adversarial sandbox guest: deliberate
+reflection into, or mutation of, the gateway's private implementation state is
+outside this transport's contract and requires the child-process transport.
+The callback returns canonical
+`PrivateAnalysisResult` JSON; core closes the gateway, rechecks access, then
+validates output budgets and every citation against the exact disclosure
+ledger. A constant-memory digest chain records call/response identities
+without retaining payloads or model text. Cooperative monotonic deadline
+checks after result validation discard output that becomes late while parsing,
+but this trusted in-process transport cannot
+preempt a callback that never returns. It is not a sandbox and adds no public
+provider, endpoint, key, network fallback, persistence, HTTP route, shell, or
+plug-in authority. Hard isolation is reserved for the separate local-child
+transport. The tool service and runner remain ephemeral. See the
 [private AI analysis boundary](docs/private-ai-analysis.md).
 
 For a headless multi-fixture run:

@@ -27,6 +27,9 @@ ROOT = Path(__file__).resolve().parents[1]
 CORE_SOURCE = ROOT / "src" / "router_dump_analyzer"
 PRIVATE_ANALYSIS_SOURCE = CORE_SOURCE / "private_analysis"
 PRIVATE_ANALYSIS_TOOL_SERVICE_SOURCE = CORE_SOURCE / "private_analysis_tool_service.py"
+PRIVATE_ANALYSIS_IN_PROCESS_RUNNER_SOURCE = (
+    CORE_SOURCE / "private_analysis_in_process_runner.py"
+)
 DECISION_DOCUMENT = ROOT / "docs" / "private-ai-analysis.md"
 
 APPROVED_PROJECT_REQUIREMENTS = {
@@ -1675,7 +1678,7 @@ class PrivateAiArchitectureTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source)
 
-    def test_private_analysis_tool_service_is_not_wired_before_runner_stage(
+    def test_private_analysis_tool_service_has_only_the_in_process_runner_consumer(
         self,
     ) -> None:
         consumers: list[str] = []
@@ -1684,6 +1687,92 @@ class PrivateAiArchitectureTests(unittest.TestCase):
                 continue
             for line, imported in _literal_imports(path):
                 if imported.endswith("private_analysis_tool_service"):
+                    consumers.append(
+                        f"{path.relative_to(CORE_SOURCE).as_posix()}:{line}"
+                    )
+        self.assertEqual(
+            len(consumers),
+            1,
+            consumers,
+        )
+        self.assertTrue(
+            consumers[0].startswith("private_analysis_in_process_runner.py:"),
+            consumers,
+        )
+
+    def test_private_analysis_in_process_runner_has_narrow_authority(self) -> None:
+        source = PRIVATE_ANALYSIS_IN_PROCESS_RUNNER_SOURCE.read_text(encoding="utf-8")
+        tree = ast.parse(
+            source,
+            filename=str(PRIVATE_ANALYSIS_IN_PROCESS_RUNNER_SOURCE),
+        )
+        imported: dict[str, set[str]] = {}
+        for node in ast.walk(tree):
+            self.assertNotIsInstance(node, ast.Import)
+            if isinstance(node, ast.ImportFrom):
+                module = "." * node.level + (node.module or "")
+                imported[module] = {alias.name for alias in node.names}
+            if isinstance(node, ast.Call):
+                function = node.func
+                if isinstance(function, ast.Name):
+                    self.assertNotIn(
+                        function.id,
+                        {
+                            "Thread",
+                            "Timer",
+                            "compile",
+                            "eval",
+                            "exec",
+                            "open",
+                            "__import__",
+                        },
+                    )
+        self.assertEqual(
+            imported["threading"],
+            {"Lock", "get_ident"},
+        )
+        self.assertEqual(imported["time"], {"monotonic_ns"})
+        self.assertEqual(
+            set(imported),
+            {
+                "__future__",
+                "collections.abc",
+                "dataclasses",
+                "enum",
+                "threading",
+                "time",
+                "typing",
+                ".canonical",
+                ".private_analysis",
+                ".private_analysis_tool_service",
+                ".process_control",
+            },
+        )
+        for forbidden in (
+            "annotation_store",
+            "asyncio",
+            "capability_executor",
+            "concurrent",
+            "control_plane",
+            "multiprocessing",
+            "pathlib",
+            "plugin_api",
+            "revision_store",
+            "session_store",
+            "socket",
+            "sqlite",
+            "subprocess",
+            "web.",
+        ):
+            self.assertNotIn(forbidden, source)
+
+    def test_in_process_runner_is_not_wired_to_product_surfaces_yet(self) -> None:
+        consumers: list[str] = []
+        for path in _python_files(CORE_SOURCE):
+            if path == PRIVATE_ANALYSIS_IN_PROCESS_RUNNER_SOURCE:
+                continue
+            for line, imported in _literal_imports(path):
+                if imported.endswith("private_analysis_in_process_runner"):
                     consumers.append(
                         f"{path.relative_to(CORE_SOURCE).as_posix()}:{line}"
                     )

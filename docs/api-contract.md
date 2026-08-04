@@ -586,11 +586,65 @@ would cross an item or byte ceiling returns `budget_exceeded` without a
 partial ledger or byte update; its already admitted tool-call unit remains
 consumed.
 
-The service is ephemeral and has no `/v1` route. Model runner execution,
-durable disclosure-ledger persistence, run lifecycle/cancellation, durable
-quotas/accounting, HTTP composition, and human promotion are later contracts.
-It owns no database, filesystem, network, shell, or plug-in invocation
-authority.
+One pristine service may be claimed by exactly one
+`PrivateAnalysisToolRunLease`. Lease acquisition is atomic with direct-call
+admission and requires empty call, byte, and citation state. The lease exposes
+the same closed tool execution plus a budget-neutral `require_run_access()`
+check. Direct calls fail while it is open, release is permanent, and a service
+cannot be silently reused for another runner execution. The first admitted
+direct-call attempt permanently selects direct-call mode even when it returns
+`budget_exceeded` before charging a call or fails authorization; zero counters
+therefore do not make that service pristine again.
+
+The core also implements a trusted local
+`ConfiguredPrivateAnalysisInProcessRunner`; it still exposes no `/v1` route.
+Construction binds an exact in-process runner ID, version, configuration
+digest, and trusted instruction-profile digest. Execution accepts one exact
+fresh leased service. It requires current authorization and pinned workspace
+policy before invoking the callback, supplies only detached request/catalog
+values and a thread-affine canonical-call gateway, closes that gateway, and
+then rechecks access before accepting output.
+
+The operator callback is called once and returns strict canonical
+`PrivateAnalysisResult` JSON. Every tool-call JSON document is parsed through
+the existing bounded contract and every response is detached before returning
+to the callback. Malformed, duplicate, recursive, cross-thread, concurrent,
+or post-close calls latch `runner_protocol_error`; catching the local abort
+does not clear that state. The gateway permits at most `max_tool_calls + 1`
+recorded exchanges, where the extra response can report exhaustion. Its
+constant-memory transcript binds only call/response digests and the final
+outcome, ledger digest, and counters; it retains no payload or model text.
+Exchange counts, chain state, and terminal state are not callback-visible
+properties; core takes one private atomic snapshot only after owner-thread
+close. Callback-visible execution, deadline, and close operations are
+owner-thread-affine.
+
+After a final access check, core snapshots the disclosure ledger, applies the
+request's canonical output-byte, claim, and proposal ceilings, and calls
+`validate_private_analysis_result`. The callback-owned value is never returned
+directly. Non-process callback failures become static `runner_failed`; exact
+process-control signals propagate. Measured monotonic deadline expiry becomes
+`timeout`, including a callback result returned late or one that crosses the
+deadline during result parsing, budget enforcement, or citation validation.
+When an authorization, policy, tool, or protocol operation itself crosses the
+deadline, `timeout` takes precedence over the otherwise applicable static
+error from that late operation.
+The in-process callback cannot be forcibly preempted, so a callback that never
+returns can still block the host.
+
+This transport is a validation and supported-interface boundary, not a Python
+sandbox. The configured callback is process-trusted. Core adds no filesystem,
+network, shell, plug-in, database, mutation, retry, persistence, HTTP, or
+promotion authority through the callback's supported interface and ships no
+provider SDK, endpoint/key setting, or public-network fallback. Because Python
+reflection can reach any in-process object's private implementation graph, a
+callback that deliberately reads or mutates private gateway state is outside
+this trusted transport's contract; it must use the later local-child transport
+when that threat exists. Unsupported private-state bypass is not an evidence
+API and finalization fails it closed with a static protocol error when detected.
+Durable disclosure-ledger persistence, run lifecycle/cancellation,
+durable quotas/accounting, HTTP composition, hard-kill subprocess isolation,
+and human promotion remain later contracts.
 
 Retention preview and execute accept a closed object with optional `catalog`
 and `review` policy objects. Cutoffs use canonical decimal strings. The router

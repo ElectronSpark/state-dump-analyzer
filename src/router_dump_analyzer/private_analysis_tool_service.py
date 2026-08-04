@@ -249,8 +249,10 @@ class PrivateAnalysisToolService:
     """
 
     __slots__ = (
+        "_active_executions",
         "_authorize",
         "_call_ids",
+        "_direct_use_claimed",
         "_evidence_bytes_disclosed",
         "_ledger",
         "_lock",
@@ -260,6 +262,9 @@ class PrivateAnalysisToolService:
         "_resolve_policy",
         "_resolve_reference",
         "_runner_full_fidelity",
+        "_runner_lease",
+        "_runner_lease_claimed",
+        "_runner_lease_open",
         "_runner_transport",
         "_tool_calls_consumed",
         "_validate_reference",
@@ -338,6 +343,11 @@ class PrivateAnalysisToolService:
         self._evidence_bytes_disclosed = 0
         self._ledger: dict[str, EvidenceReference] = {}
         self._call_ids: set[str] = set()
+        self._active_executions = 0
+        self._direct_use_claimed = False
+        self._runner_lease: object | None = None
+        self._runner_lease_claimed = False
+        self._runner_lease_open = False
 
     @property
     def request(self) -> PrivateAnalysisRequest:
@@ -375,6 +385,61 @@ class PrivateAnalysisToolService:
         """Execute one well-bound call without leaking callback diagnostics."""
 
         request = self.request
+        self._enter_execution(request, None)
+        try:
+            return self._execute_admitted(request, call)
+        finally:
+            self._leave_execution()
+
+    def acquire_run_lease(self) -> PrivateAnalysisToolRunLease:
+        """Claim one pristine service for an exclusive private-runner execution.
+
+        A service can back either direct tool calls or one runner execution,
+        never both.  The permanent claim prevents a zero-tool run from being
+        silently reused with a different model session after finalization.
+        """
+
+        request = self.request
+        token = object()
+        with self._lock:
+            pristine = (
+                self._active_executions == 0
+                and not self._direct_use_claimed
+                and not self._runner_lease_claimed
+                and self._tool_calls_consumed == 0
+                and self._evidence_bytes_disclosed == 0
+                and not self._call_ids
+                and not self._ledger
+            )
+            if pristine:
+                self._runner_lease_claimed = True
+                self._runner_lease_open = True
+                self._runner_lease = token
+        if not pristine:
+            raise _service_error(
+                request,
+                PrivateAnalysisErrorStage.RUNNER,
+                PrivateAnalysisErrorCode.RUNNER_PROTOCOL_ERROR,
+            )
+        return PrivateAnalysisToolRunLease(self, token)
+
+    def _execute_for_lease(
+        self,
+        lease_token: object,
+        call: PrivateAnalysisToolCall,
+    ) -> PrivateAnalysisToolResult | PrivateAnalysisToolError:
+        request = self.request
+        self._enter_execution(request, lease_token)
+        try:
+            return self._execute_admitted(request, call)
+        finally:
+            self._leave_execution()
+
+    def _execute_admitted(
+        self,
+        request: PrivateAnalysisRequest,
+        call: PrivateAnalysisToolCall,
+    ) -> PrivateAnalysisToolResult | PrivateAnalysisToolError:
         detached_call = self._validated_call(request, call)
         preflight = self._preflight_call_state(request, detached_call)
         if preflight == "duplicate":
@@ -410,6 +475,73 @@ class PrivateAnalysisToolService:
         if detached_call.binding.name is PrivateAnalysisToolName.QUERY_EVIDENCE:
             return self._execute_query(request, detached_call, policy)
         return self._execute_read(request, detached_call, policy)
+
+    def _require_run_access_for_lease(self, lease_token: object) -> None:
+        """Re-authorize one leased run without charging evidence budgets."""
+
+        request = self.request
+        self._enter_execution(request, lease_token)
+        try:
+            self._require_authorization(request)
+            if self._current_policy(request) is None:
+                raise _service_error(
+                    request,
+                    PrivateAnalysisErrorStage.DISCLOSURE,
+                    PrivateAnalysisErrorCode.POLICY_DENIED,
+                )
+        finally:
+            self._leave_execution()
+
+    def _enter_execution(
+        self,
+        request: PrivateAnalysisRequest,
+        lease_token: object | None,
+    ) -> None:
+        admitted = False
+        with self._lock:
+            if self._runner_lease_claimed:
+                admitted = (
+                    self._runner_lease_open
+                    and lease_token is not None
+                    and lease_token is self._runner_lease
+                )
+            else:
+                admitted = lease_token is None
+                if admitted:
+                    self._direct_use_claimed = True
+            if admitted:
+                self._active_executions += 1
+        if not admitted:
+            raise _service_error(
+                request,
+                PrivateAnalysisErrorStage.RUNNER,
+                PrivateAnalysisErrorCode.RUNNER_PROTOCOL_ERROR,
+            )
+
+    def _leave_execution(self) -> None:
+        with self._lock:
+            if self._active_executions <= 0:
+                raise RuntimeError("private-analysis execution accounting failed")
+            self._active_executions -= 1
+
+    def _release_run_lease(self, lease_token: object) -> None:
+        request = self.request
+        released = False
+        with self._lock:
+            if (
+                self._runner_lease_open
+                and lease_token is self._runner_lease
+                and self._active_executions == 0
+            ):
+                self._runner_lease_open = False
+                self._runner_lease = None
+                released = True
+        if not released:
+            raise _service_error(
+                request,
+                PrivateAnalysisErrorStage.RUNNER,
+                PrivateAnalysisErrorCode.RUNNER_PROTOCOL_ERROR,
+            )
 
     def _validated_call(
         self,
@@ -889,6 +1021,64 @@ class PrivateAnalysisToolService:
             return True
 
 
+class PrivateAnalysisToolRunLease:
+    """Exclusive, single-use authority over one pristine tool service.
+
+    The lease is a core-composition object, not a runner wire value.  A model
+    callback never receives it; the in-process gateway exposes only the closed
+    tool-call contract.
+    """
+
+    __slots__ = ("_closed", "_service", "_token")
+
+    def __init__(self, service: PrivateAnalysisToolService, token: object) -> None:
+        if type(service) is not PrivateAnalysisToolService:
+            raise TypeError("service must be PrivateAnalysisToolService")
+        self._service = service
+        self._token = token
+        self._closed = False
+
+    @property
+    def request(self) -> PrivateAnalysisRequest:
+        self._require_open()
+        return self._service.request
+
+    @property
+    def budget_state(self) -> PrivateAnalysisToolBudgetState:
+        self._require_open()
+        return self._service.budget_state
+
+    @property
+    def disclosed_references(self) -> tuple[EvidenceReference, ...]:
+        self._require_open()
+        return self._service.disclosed_references
+
+    def require_run_access(self) -> None:
+        self._require_open()
+        self._service._require_run_access_for_lease(self._token)
+
+    def execute(
+        self,
+        call: PrivateAnalysisToolCall,
+    ) -> PrivateAnalysisToolResult | PrivateAnalysisToolError:
+        self._require_open()
+        return self._service._execute_for_lease(self._token, call)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._service._release_run_lease(self._token)
+        self._closed = True
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise _service_error(
+                self._service.request,
+                PrivateAnalysisErrorStage.RUNNER,
+                PrivateAnalysisErrorCode.RUNNER_PROTOCOL_ERROR,
+            )
+
+
 def _bounded_counter(maximum: object, consumed: object, label: str) -> None:
     if type(maximum) is not int or maximum < 0:
         raise ValueError(f"max_{label} must be a non-negative integer")
@@ -1036,6 +1226,7 @@ __all__ = [
     "PrivateAnalysisReferenceResolver",
     "PrivateAnalysisReferenceValidator",
     "PrivateAnalysisToolBudgetState",
+    "PrivateAnalysisToolRunLease",
     "PrivateAnalysisToolService",
     "PrivateAnalysisToolServiceError",
     "PrivateAnalysisWorkspacePolicySnapshot",
