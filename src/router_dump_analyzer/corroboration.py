@@ -18,9 +18,19 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from itertools import combinations, product
+from math import isfinite
 from typing import Any
+from uuid import UUID
 
-from .canonical import CanonicalValueError, canonical_opaque_value
+from .canonical import (
+    MAX_OPAQUE_ATOM_PAYLOAD_UNITS,
+    MAX_OPAQUE_CONTAINER_ITEMS,
+    MAX_OPAQUE_INTEGER_BITS,
+    MAX_OPAQUE_VALUE_DEPTH,
+    MAX_OPAQUE_VALUE_UNITS,
+    CanonicalValueError,
+    canonical_opaque_value,
+)
 from .contract_validation import validate_bounded_json_value
 from .plugin_api import MAX_TIMESTAMP_NS, MIN_TIMESTAMP_NS, KeyAtom
 
@@ -45,7 +55,7 @@ class CorroborationError(ValueError):
 
 
 def _validated_identifier(value: str, *, label: str) -> str:
-    if not isinstance(value, str) or not value or len(value) > _MAX_IDENTIFIER_LENGTH:
+    if type(value) is not str or not value or len(value) > _MAX_IDENTIFIER_LENGTH:
         raise CorroborationError(
             f"{label} must be a non-empty string of at most "
             f"{_MAX_IDENTIFIER_LENGTH} characters"
@@ -59,17 +69,20 @@ def _validate_generic_value(
     label: str,
     maximum_container_items: int = _MAX_GENERIC_CONTAINER_ITEMS,
     maximum_units: int = _MAX_GENERIC_VALUE_UNITS,
-) -> None:
-    """Validate retained generic data as bounded, report-safe JSON."""
+) -> Any:
+    """Return retained generic data as one bounded exact snapshot."""
 
     try:
-        validate_bounded_json_value(
+        return validate_bounded_json_value(
             value,
             label,
             maximum_depth=_MAX_GENERIC_DEPTH,
             maximum_container_items=maximum_container_items,
             maximum_units=maximum_units,
             maximum_atom_units=_MAX_GENERIC_ATOM_UNITS,
+            exact_types=True,
+            allow_exact_tuples=True,
+            snapshot=True,
         )
     except ValueError as error:
         raise CorroborationError(str(error)) from error
@@ -81,46 +94,158 @@ def _validate_generic_tuple(
     label: str,
     maximum_container_items: int = _MAX_GENERIC_CONTAINER_ITEMS,
     maximum_units: int = _MAX_GENERIC_VALUE_UNITS,
-) -> None:
-    if not isinstance(value, tuple):
+) -> tuple[Any, ...]:
+    if type(value) is not tuple:
         raise CorroborationError(f"{label} must be a tuple")
-    _validate_generic_value(
+    snapshot = _validate_generic_value(
         value,
         label=label,
         maximum_container_items=maximum_container_items,
         maximum_units=maximum_units,
     )
+    assert type(snapshot) is tuple
+    return snapshot
 
 
-def _clone_generic_value(value: Any) -> Any:
-    """Detach one already-validated JSON-like value from caller containers."""
+def _clone_opaque_key(
+    value: Any,
+    *,
+    _container_depth: int = 0,
+    _active_container_ids: set[int] | None = None,
+    _units: list[int] | None = None,
+) -> Any:
+    """Detach one opaque key with the canonical key bounds and exact types."""
 
-    if isinstance(value, dict):
-        return {key: _clone_generic_value(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_clone_generic_value(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_clone_generic_value(item) for item in value)
-    return value
+    active_container_ids = (
+        set() if _active_container_ids is None else _active_container_ids
+    )
+    units = [0] if _units is None else _units
+    units[0] += 1
+    if units[0] > MAX_OPAQUE_VALUE_UNITS:
+        raise CorroborationError(
+            f"opaque matcher keys support at most {MAX_OPAQUE_VALUE_UNITS} value units"
+        )
 
-
-def _clone_opaque_key(value: Any) -> Any:
-    """Detach mutable containers in one bounded exact-match key."""
-
-    if isinstance(value, KeyAtom):
-        return KeyAtom(value.type_tag, _clone_opaque_key(value.value))
-    if isinstance(value, dict):
-        return {
-            _clone_opaque_key(key): _clone_opaque_key(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_clone_opaque_key(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_clone_opaque_key(item) for item in value)
-    if isinstance(value, (bytearray, memoryview)):
+    value_type = type(value)
+    if value is None or value_type is bool:
+        return value
+    if value_type is KeyAtom:
+        if type(value.type_tag) is not str:
+            raise CorroborationError("opaque matcher key contains an invalid key atom")
+        atom_id = id(value)
+        if atom_id in active_container_ids:
+            raise CorroborationError("opaque matcher keys must not contain reference cycles")
+        active_container_ids.add(atom_id)
+        try:
+            return KeyAtom(
+                value.type_tag,
+                _clone_opaque_key(
+                    value.value,
+                    _container_depth=_container_depth,
+                    _active_container_ids=active_container_ids,
+                    _units=units,
+                ),
+            )
+        finally:
+            active_container_ids.remove(atom_id)
+    if value_type is int:
+        if value.bit_length() > MAX_OPAQUE_INTEGER_BITS:
+            raise CorroborationError(
+                f"opaque matcher key integers exceed {MAX_OPAQUE_INTEGER_BITS} bits"
+            )
+        return value
+    if value_type is float:
+        if not isfinite(value):
+            raise CorroborationError(
+                "opaque matcher keys require finite floating-point values"
+            )
+        return value
+    if value_type is UUID:
+        return value
+    if value_type is str:
+        if len(value) > MAX_OPAQUE_ATOM_PAYLOAD_UNITS:
+            raise CorroborationError(
+                "opaque matcher key strings exceed their character limit"
+            )
+        return value
+    if value_type is bytes:
+        if len(value) > MAX_OPAQUE_ATOM_PAYLOAD_UNITS:
+            raise CorroborationError("opaque matcher key bytes exceed their limit")
+        return value
+    if value_type is bytearray:
+        if len(value) > MAX_OPAQUE_ATOM_PAYLOAD_UNITS:
+            raise CorroborationError("opaque matcher key bytes exceed their limit")
         return bytes(value)
-    return value
+    if value_type is memoryview:
+        if value.nbytes > MAX_OPAQUE_ATOM_PAYLOAD_UNITS:
+            raise CorroborationError("opaque matcher key bytes exceed their limit")
+        return bytes(value)
+    if value_type not in {dict, list, tuple}:
+        raise CorroborationError("opaque matcher key contains an unsupported type")
+
+    child_depth = _container_depth + 1
+    if child_depth > MAX_OPAQUE_VALUE_DEPTH:
+        raise CorroborationError(
+            f"opaque matcher keys support at most {MAX_OPAQUE_VALUE_DEPTH} container levels"
+        )
+    if len(value) > MAX_OPAQUE_CONTAINER_ITEMS:
+        raise CorroborationError(
+            "opaque matcher key containers exceed their item limit"
+        )
+    container_id = id(value)
+    if container_id in active_container_ids:
+        raise CorroborationError("opaque matcher keys must not contain reference cycles")
+    active_container_ids.add(container_id)
+    try:
+        if value_type is list:
+            detached_list: list[Any] = []
+            for index, item in enumerate(value):
+                if index >= MAX_OPAQUE_CONTAINER_ITEMS:
+                    raise CorroborationError(
+                        "opaque matcher key containers exceed their item limit"
+                    )
+                detached_list.append(_clone_opaque_key(
+                    item,
+                    _container_depth=child_depth,
+                    _active_container_ids=active_container_ids,
+                    _units=units,
+                ))
+            return detached_list
+        if value_type is tuple:
+            detached_tuple: list[Any] = []
+            for index, item in enumerate(value):
+                if index >= MAX_OPAQUE_CONTAINER_ITEMS:
+                    raise CorroborationError(
+                        "opaque matcher key containers exceed their item limit"
+                    )
+                detached_tuple.append(_clone_opaque_key(
+                    item,
+                    _container_depth=child_depth,
+                    _active_container_ids=active_container_ids,
+                    _units=units,
+                ))
+            return tuple(detached_tuple)
+        detached_mapping: dict[Any, Any] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= MAX_OPAQUE_CONTAINER_ITEMS:
+                raise CorroborationError(
+                    "opaque matcher key containers exceed their item limit"
+                )
+            detached_key = _clone_opaque_key(
+                key,
+                _container_depth=child_depth,
+                _active_container_ids=active_container_ids,
+                _units=units,
+            )
+            detached_mapping[detached_key] = _clone_opaque_key(
+                item,
+                _container_depth=child_depth,
+                _active_container_ids=active_container_ids,
+                _units=units,
+            )
+        return detached_mapping
+    finally:
+        active_container_ids.remove(container_id)
 
 
 def _validated_exact_tuple(
@@ -134,7 +259,7 @@ def _validated_exact_tuple(
         raise CorroborationError(f"{label} must be a tuple")
     if len(value) > maximum:
         raise CorroborationError(f"{label} supports at most {maximum} values")
-    if item_type is not None and any(not isinstance(item, item_type) for item in value):
+    if item_type is not None and any(type(item) is not item_type for item in value):
         raise CorroborationError(f"{label} must contain {item_type.__name__} values")
     return value
 
@@ -156,14 +281,12 @@ def _bounded_fact_values(
                 )
             result.append(item)
     combined = tuple(result)
-    _validate_generic_tuple(
+    cloned = _validate_generic_tuple(
         combined,
         label=label,
         maximum_container_items=_MAX_FACT_GENERIC_CONTAINER_ITEMS,
         maximum_units=_MAX_FACT_GENERIC_VALUE_UNITS,
     )
-    cloned = _clone_generic_value(combined)
-    assert isinstance(cloned, tuple)
     return cloned
 
 
@@ -205,19 +328,29 @@ class ExactMatchClaim:
     def __post_init__(self) -> None:
         _validated_identifier(self.claim_id, label="claim id")
         _validated_identifier(self.partition_id, label="partition id")
-        if not isinstance(self.matcher_id, MatcherId):
+        if type(self.matcher_id) is not MatcherId:
             raise CorroborationError("matcher_id must be a MatcherId")
-        _validate_generic_tuple(self.evidence, label="claim evidence")
-        _validate_generic_tuple(self.provenance, label="claim provenance")
-        _validate_generic_value(self.payload, label="claim payload")
-        object.__setattr__(self, "match_key", _clone_opaque_key(self.match_key))
-        object.__setattr__(self, "evidence", _clone_generic_value(self.evidence))
-        object.__setattr__(
-            self,
-            "provenance",
-            _clone_generic_value(self.provenance),
+        evidence = _validate_generic_tuple(self.evidence, label="claim evidence")
+        provenance = _validate_generic_tuple(
+            self.provenance,
+            label="claim provenance",
         )
-        object.__setattr__(self, "payload", _clone_generic_value(self.payload))
+        payload = _validate_generic_value(self.payload, label="claim payload")
+        try:
+            match_key = _clone_opaque_key(self.match_key)
+            canonical_opaque_value(match_key, key_atom_type=KeyAtom)
+        except (
+            CanonicalValueError,
+            CorroborationError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as error:
+            raise CorroborationError("claim has an invalid exact-match key") from error
+        object.__setattr__(self, "match_key", match_key)
+        object.__setattr__(self, "evidence", evidence)
+        object.__setattr__(self, "provenance", provenance)
+        object.__setattr__(self, "payload", payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,7 +468,7 @@ def exact_match_claims(
     for claim_count, claim in enumerate(claims):
         if claim_count >= max_claims:
             raise CorroborationError(f"claims support at most {max_claims} values")
-        if not isinstance(claim, ExactMatchClaim):
+        if type(claim) is not ExactMatchClaim:
             raise CorroborationError("claims must contain ExactMatchClaim values")
         # A frozen dataclass does not recursively freeze its nested values.
         # Snapshot again at the operation boundary so mutations performed
@@ -351,9 +484,7 @@ def exact_match_claims(
         )
         identity = (claim.partition_id, claim.claim_id)
         if identity in claim_identities:
-            raise CorroborationError(
-                f"duplicate claim identity {claim.partition_id!r}/{claim.claim_id!r}"
-            )
+            raise CorroborationError("duplicate claim identity")
         claim_identities.add(identity)
         try:
             normalized_key, typed_key = canonical_opaque_value(
@@ -362,8 +493,7 @@ def exact_match_claims(
             )
         except CanonicalValueError as error:
             raise CorroborationError(
-                f"claim {claim.partition_id!r}/{claim.claim_id!r} has an "
-                f"invalid exact-match key: {error}"
+                "claim has an invalid exact-match key"
             ) from error
         group_identity = (claim.matcher_id, typed_key)
         builder = builders.get(group_identity)
@@ -467,22 +597,18 @@ class ExplicitCausalLink:
 
     def __post_init__(self) -> None:
         _validated_identifier(self.link_id, label="causal link id")
-        if not isinstance(self.target, EventIdentity):
+        if type(self.target) is not EventIdentity:
             raise CorroborationError("causal-link target must be an EventIdentity")
-        _validate_generic_tuple(
+        evidence = _validate_generic_tuple(
             self.evidence,
             label="causal-link evidence",
         )
-        _validate_generic_tuple(
+        provenance = _validate_generic_tuple(
             self.provenance,
             label="causal-link provenance",
         )
-        object.__setattr__(self, "evidence", _clone_generic_value(self.evidence))
-        object.__setattr__(
-            self,
-            "provenance",
-            _clone_generic_value(self.provenance),
-        )
+        object.__setattr__(self, "evidence", evidence)
+        object.__setattr__(self, "provenance", provenance)
 
 
 @dataclass(frozen=True, slots=True)
@@ -500,7 +626,7 @@ class ResolvedEventRef:
     clock_domain: str | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.identity, EventIdentity):
+        if type(self.identity) is not EventIdentity:
             raise CorroborationError("event identity must be an EventIdentity")
         source_records = _validated_exact_tuple(
             self.source_records,
@@ -553,8 +679,11 @@ class ResolvedEventRef:
         causal_link_ids = tuple(link.link_id for link in causal_links)
         if len(causal_link_ids) != len(set(causal_link_ids)):
             raise CorroborationError("causal_links must not contain duplicate link ids")
-        _validate_generic_tuple(self.evidence, label="event evidence")
-        _validate_generic_tuple(self.provenance, label="event provenance")
+        evidence = _validate_generic_tuple(self.evidence, label="event evidence")
+        provenance = _validate_generic_tuple(
+            self.provenance,
+            label="event provenance",
+        )
         object.__setattr__(
             self,
             "causal_links",
@@ -568,12 +697,8 @@ class ResolvedEventRef:
                 for link in causal_links
             ),
         )
-        object.__setattr__(self, "evidence", _clone_generic_value(self.evidence))
-        object.__setattr__(
-            self,
-            "provenance",
-            _clone_generic_value(self.provenance),
-        )
+        object.__setattr__(self, "evidence", evidence)
+        object.__setattr__(self, "provenance", provenance)
 
 
 class CorroborationOutcome(StrEnum):
@@ -625,22 +750,19 @@ class CorroborationFact:
     right_clock_domain: str | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.left, EventIdentity) or not isinstance(
-            self.right,
-            EventIdentity,
-        ):
+        if type(self.left) is not EventIdentity or type(self.right) is not EventIdentity:
             raise CorroborationError(
                 "corroboration fact endpoints must be EventIdentity values"
             )
-        if not isinstance(self.outcome, CorroborationOutcome):
+        if type(self.outcome) is not CorroborationOutcome:
             raise CorroborationError(
                 "corroboration fact outcome must be a CorroborationOutcome"
             )
-        if not isinstance(self.reason_code, CorroborationReasonCode):
+        if type(self.reason_code) is not CorroborationReasonCode:
             raise CorroborationError(
                 "corroboration fact reason_code must be a CorroborationReasonCode"
             )
-        if not isinstance(self.temporal_relation, TemporalRelation):
+        if type(self.temporal_relation) is not TemporalRelation:
             raise CorroborationError(
                 "corroboration fact temporal_relation must be a TemporalRelation"
             )
@@ -692,24 +814,20 @@ class CorroborationFact:
                 self.right_clock_domain,
                 label="corroboration fact right clock domain",
             )
-        _validate_generic_tuple(
+        evidence = _validate_generic_tuple(
             self.evidence,
             label="corroboration fact evidence",
             maximum_container_items=_MAX_FACT_GENERIC_CONTAINER_ITEMS,
             maximum_units=_MAX_FACT_GENERIC_VALUE_UNITS,
         )
-        _validate_generic_tuple(
+        provenance = _validate_generic_tuple(
             self.provenance,
             label="corroboration fact provenance",
             maximum_container_items=_MAX_FACT_GENERIC_CONTAINER_ITEMS,
             maximum_units=_MAX_FACT_GENERIC_VALUE_UNITS,
         )
-        object.__setattr__(self, "evidence", _clone_generic_value(self.evidence))
-        object.__setattr__(
-            self,
-            "provenance",
-            _clone_generic_value(self.provenance),
-        )
+        object.__setattr__(self, "evidence", evidence)
+        object.__setattr__(self, "provenance", provenance)
 
 
 def _snapshot_resolved_event(value: ResolvedEventRef) -> ResolvedEventRef:
@@ -760,10 +878,7 @@ def corroborate_events(
     aggregate independent evidence into a policy verdict.
     """
 
-    if not isinstance(left, ResolvedEventRef) or not isinstance(
-        right,
-        ResolvedEventRef,
-    ):
+    if type(left) is not ResolvedEventRef or type(right) is not ResolvedEventRef:
         raise CorroborationError(
             "corroborate_events requires two ResolvedEventRef values"
         )

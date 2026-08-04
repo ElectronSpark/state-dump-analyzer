@@ -601,8 +601,13 @@ class TopologyPluginSemanticsDescriptor:
 
     def __post_init__(self) -> None:
         if self.role is not None:
+            role_text = (
+                self.role.value
+                if type(self.role) is TopologyDomainRole
+                else self.role
+            )
             bounded_string(
-                self.role,
+                role_text,
                 "topology semantics role",
                 maximum=128,
                 message=(

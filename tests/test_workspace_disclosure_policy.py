@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import builtins
 import unittest
 from dataclasses import FrozenInstanceError
+from unittest.mock import patch
 
 from router_dump_analyzer.private_analysis import (
     DisclosureDecisionReason,
@@ -11,6 +13,7 @@ from router_dump_analyzer.private_analysis import (
     PrivateAnalysisTransport,
     WorkspaceDisclosurePolicy,
     disclosure_decision_dict,
+    disclosure_decision_from_dict,
     disclosure_scope_digest,
     evaluate_workspace_disclosure,
     workspace_disclosure_policy_dict,
@@ -113,6 +116,29 @@ class WorkspaceDisclosurePolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fields"):
             workspace_disclosure_policy_from_dict(missing)
 
+    def test_direct_dict_parsers_reject_wrong_cardinality_before_key_scans(
+        self,
+    ) -> None:
+        oversized = {f"field-{index}": None for index in range(10_000)}
+        with (
+            patch.object(
+                builtins,
+                "set",
+                side_effect=AssertionError("key set must not be materialized"),
+            ),
+            self.assertRaises(ValueError),
+        ):
+            workspace_disclosure_policy_from_dict(oversized)
+        with (
+            patch.object(
+                builtins,
+                "set",
+                side_effect=AssertionError("key set must not be materialized"),
+            ),
+            self.assertRaises(ValueError),
+        ):
+            disclosure_decision_from_dict(oversized)
+
     def test_never_assistant_dominates_every_mode_and_transport(self) -> None:
         for policy in (
             WorkspaceDisclosurePolicy.disabled(),
@@ -203,6 +229,49 @@ class WorkspaceDisclosurePolicyTests(unittest.TestCase):
             limited_runner.reason,
             DisclosureDecisionReason.RUNNER_FULL_FIDELITY_NOT_APPROVED,
         )
+
+    def test_authority_gate_revalidates_detached_policy_values(self) -> None:
+        workspace_policy = WorkspaceDisclosurePolicy(
+            PrivateAnalysisDisclosureMode.FULL_FIDELITY,
+            (PrivateAnalysisTransport.IN_PROCESS,),
+        )
+        runner_policy = PrivateAnalysisPolicy(
+            PrivateAnalysisTransport.IN_PROCESS,
+            full_fidelity_workspace_data=False,
+        )
+        object.__setattr__(runner_policy, "full_fidelity_workspace_data", 1)
+        with self.assertRaisesRegex(TypeError, "must be a boolean"):
+            _evaluate(
+                workspace_policy,
+                runner_policy=runner_policy,
+                evidence_class=PrivateAnalysisEvidenceClass.PROPRIETARY,
+            )
+
+        object.__setattr__(workspace_policy, "transports", [])
+        with self.assertRaisesRegex(TypeError, "must be a tuple"):
+            _evaluate(
+                workspace_policy,
+                runner_policy=PrivateAnalysisPolicy(
+                    PrivateAnalysisTransport.IN_PROCESS
+                ),
+                evidence_class=PrivateAnalysisEvidenceClass.PROPRIETARY,
+            )
+        with self.assertRaisesRegex(TypeError, "must be a tuple"):
+            workspace_disclosure_policy_dict(workspace_policy)
+
+        decision = _evaluate(
+            WorkspaceDisclosurePolicy(
+                PrivateAnalysisDisclosureMode.CLIENT_SAFE,
+                (PrivateAnalysisTransport.IN_PROCESS,),
+            ),
+            runner_policy=PrivateAnalysisPolicy(
+                PrivateAnalysisTransport.IN_PROCESS
+            ),
+            evidence_class=PrivateAnalysisEvidenceClass.PROPRIETARY,
+        )
+        object.__setattr__(decision, "allowed", True)
+        with self.assertRaisesRegex(ValueError, "allowed flag and reason disagree"):
+            disclosure_decision_dict(decision)
 
     def test_decision_projection_is_closed_and_payload_free(self) -> None:
         marker = "SECRET-PAYLOAD-MUST-NOT-APPEAR"

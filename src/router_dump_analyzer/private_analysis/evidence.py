@@ -24,10 +24,32 @@ from ..public_text import (
     contains_unsafe_identifier_text,
     has_visible_identity_anchor,
 )
-from ..value_core import MAX_JSON_SAFE_INTEGER, parse_canonical_decimal_integer
+from ..value_core import MAX_JSON_SAFE_INTEGER
+from ._wire import (
+    SealedContractValue,
+)
+from ._wire import (
+    bounded_canonical_decimal_integer as _bounded_decimal,
+)
+from ._wire import (
+    bounded_utf8_text as _bounded_utf8_text,
+)
+from ._wire import (
+    exact_contract_version as _contract_version,
+)
+from ._wire import (
+    exact_json_object as _exact_dict,
+)
+from ._wire import (
+    reject_duplicate_json_object_pairs as _reject_duplicate_pairs,
+)
+from ._wire import (
+    strict_string_enum as _enum,
+)
 from .disclosure import (
     DisclosureDecision,
     PrivateAnalysisEvidenceClass,
+    _revalidated_disclosure_decision,
     disclosure_decision_dict,
     disclosure_decision_from_dict,
     disclosure_scope_digest,
@@ -181,25 +203,6 @@ def _prefixed_sha256(value: object, label: str) -> str:
     return value
 
 
-def _exact_dict(value: object, label: str, fields: set[str]) -> dict[str, Any]:
-    if type(value) is not dict or set(value) != fields:
-        raise ValueError(f"{label} must contain exactly {sorted(fields)}")
-    return value
-
-
-def _enum[EnumType: StrEnum](
-    enum_type: type[EnumType],
-    value: object,
-    label: str,
-) -> EnumType:
-    if type(value) is not str:
-        raise TypeError(f"{label} must be a string")
-    try:
-        return enum_type(value)
-    except ValueError as error:
-        raise ValueError(f"{label} is unsupported") from error
-
-
 def _integer(
     value: object,
     label: str,
@@ -219,9 +222,7 @@ def _wire_integer(
     minimum: int,
     maximum: int,
 ) -> int:
-    if type(value) is not str:
-        raise TypeError(f"{label} must be a canonical decimal string")
-    return parse_canonical_decimal_integer(
+    return _bounded_decimal(
         value,
         label,
         minimum=minimum,
@@ -245,18 +246,31 @@ def _wire_ns(value: int | None) -> str | None:
     return None if value is None else str(value)
 
 
-def _validate_exact_json(value: object, label: str) -> None:
-    """Reject Python-only JSON lookalikes after enforcing aggregate bounds."""
+def _validate_exact_json(
+    value: object,
+    label: str,
+    *,
+    maximum_depth: int = MAX_EVIDENCE_PAYLOAD_DEPTH,
+    maximum_units: int = MAX_EVIDENCE_PAYLOAD_UNITS,
+    maximum_encoded_bytes: int = MAX_EVIDENCE_PAYLOAD_BYTES,
+) -> dict[str, Any]:
+    """Return one bounded exact JSON snapshot for later canonicalization."""
 
-    validate_bounded_json_value(
+    snapshot = validate_bounded_json_value(
         value,
         label,
-        maximum_depth=MAX_EVIDENCE_PAYLOAD_DEPTH,
+        maximum_depth=maximum_depth,
         maximum_container_items=MAX_EVIDENCE_PAYLOAD_CONTAINER_ITEMS,
-        maximum_units=MAX_EVIDENCE_PAYLOAD_UNITS,
+        maximum_units=maximum_units,
         maximum_atom_units=MAX_EVIDENCE_PAYLOAD_ATOM_CHARACTERS,
         maximum_integer_bits=53,
+        exact_types=True,
+        allow_exact_tuples=False,
+        maximum_encoded_bytes=maximum_encoded_bytes,
+        snapshot=True,
     )
+    if type(snapshot) is not dict:
+        raise TypeError(f"{label} must be an exact JSON object")
 
     def visit(nested: object) -> None:
         if nested is None or type(nested) is bool:
@@ -296,15 +310,16 @@ def _validate_exact_json(value: object, label: str) -> None:
             f"{label} contains non-exact JSON type {type(nested).__name__}"
         )
 
-    visit(value)
+    visit(snapshot)
+    return snapshot
 
 
 def _canonical_payload_json(value: object, label: str) -> str:
     if type(value) is not dict:
         raise TypeError(f"{label} must be an exact JSON object")
-    _validate_exact_json(value, label)
+    snapshot = _validate_exact_json(value, label)
     try:
-        encoded = strict_canonical_json(value)
+        encoded = strict_canonical_json(snapshot)
         encoded_bytes = encoded.encode("utf-8")
     except (TypeError, ValueError, UnicodeError) as error:
         raise ValueError(f"{label} is not canonical UTF-8 JSON") from error
@@ -318,18 +333,15 @@ def _canonical_payload_json(value: object, label: str) -> str:
 def _canonical_locator_json(value: object) -> str:
     if type(value) is not dict:
         raise TypeError("locator identity must be an exact JSON object")
-    validate_bounded_json_value(
+    snapshot = _validate_exact_json(
         value,
         "locator identity",
         maximum_depth=12,
-        maximum_container_items=1_024,
         maximum_units=MAX_EVIDENCE_LOCATOR_UNITS,
-        maximum_atom_units=65_536,
-        maximum_integer_bits=53,
+        maximum_encoded_bytes=MAX_EVIDENCE_LOCATOR_BYTES,
     )
-    _validate_exact_json(value, "locator identity")
     try:
-        encoded = strict_canonical_json(value)
+        encoded = strict_canonical_json(snapshot)
         encoded_bytes = encoded.encode("utf-8")
     except (TypeError, ValueError, UnicodeError) as error:
         raise ValueError("locator identity is not canonical UTF-8 JSON") from error
@@ -376,7 +388,7 @@ def evidence_payload_digest(
 
 
 @dataclass(frozen=True, slots=True)
-class EvidenceRevisionBinding:
+class EvidenceRevisionBinding(SealedContractValue):
     """Exact immutable catalog member and interpretation plan."""
 
     fixture_id: str
@@ -398,7 +410,7 @@ class EvidenceRevisionBinding:
 
 
 @dataclass(frozen=True, slots=True)
-class EvidenceScope:
+class EvidenceScope(SealedContractValue):
     """Authorization scope for one immutable atomic evidence record."""
 
     tenant_id: str
@@ -412,7 +424,7 @@ class EvidenceScope:
 
 
 @dataclass(frozen=True, slots=True)
-class EvidenceProducer:
+class EvidenceProducer(SealedContractValue):
     """Authority and, for plug-ins, the exact executable interpretation."""
 
     authority: EvidenceAuthority
@@ -421,7 +433,7 @@ class EvidenceProducer:
     plugin_capability: str | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.authority, EvidenceAuthority):
+        if type(self.authority) is not EvidenceAuthority:
             raise TypeError("authority must be EvidenceAuthority")
         _token(self.producer_id, "producer_id")
         if self.authority is EvidenceAuthority.PLUGIN_INFERRED:
@@ -446,7 +458,7 @@ class EvidenceProducer:
 
 
 @dataclass(frozen=True, slots=True)
-class EvidenceTimeRange:
+class EvidenceTimeRange(SealedContractValue):
     """Explicit interval and clock semantics for one evidence item."""
 
     basis: EvidenceTimeBasis
@@ -456,7 +468,7 @@ class EvidenceTimeRange:
     clock_domain: str | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.basis, EvidenceTimeBasis):
+        if type(self.basis) is not EvidenceTimeBasis:
             raise TypeError("time basis must be EvidenceTimeBasis")
         if self.basis is EvidenceTimeBasis.NOT_APPLICABLE:
             if any(
@@ -507,7 +519,7 @@ class EvidenceTimeRange:
 
 
 @dataclass(frozen=True, slots=True)
-class EvidenceReference:
+class EvidenceReference(SealedContractValue):
     """Stable citation identity for one immutable evidence projection."""
 
     scope: EvidenceScope
@@ -525,15 +537,18 @@ class EvidenceReference:
     reference_digest: str = ""
 
     def __post_init__(self) -> None:
-        if self.contract_version != EVIDENCE_REFERENCE_VERSION:
-            raise ValueError("unsupported evidence-reference version")
+        _contract_version(
+            self.contract_version,
+            EVIDENCE_REFERENCE_VERSION,
+            "evidence-reference",
+        )
         if type(self.scope) is not EvidenceScope:
             raise TypeError("scope must be EvidenceScope")
         if type(self.revision) is not EvidenceRevisionBinding:
             raise TypeError("revision must be EvidenceRevisionBinding")
         if type(self.producer) is not EvidenceProducer:
             raise TypeError("producer must be EvidenceProducer")
-        if not isinstance(self.kind, EvidenceKind):
+        if type(self.kind) is not EvidenceKind:
             raise TypeError("kind must be EvidenceKind")
         _token(
             self.subject_kind,
@@ -541,15 +556,46 @@ class EvidenceReference:
             maximum=MAX_EVIDENCE_SUBJECT_KIND_CHARACTERS,
         )
         _prefixed_sha256(self.locator_digest, "locator_digest")
-        if not isinstance(self.evidence_class, PrivateAnalysisEvidenceClass):
+        if type(self.evidence_class) is not PrivateAnalysisEvidenceClass:
             raise TypeError("evidence_class must be PrivateAnalysisEvidenceClass")
         _token(self.payload_schema, "payload_schema")
-        if not isinstance(self.fact_provenance, EvidenceFactProvenance):
+        if type(self.fact_provenance) is not EvidenceFactProvenance:
             raise TypeError(
                 "fact_provenance must be EvidenceFactProvenance"
             )
         if type(self.time_range) is not EvidenceTimeRange:
             raise TypeError("time_range must be EvidenceTimeRange")
+        scope = EvidenceScope(
+            tenant_id=self.scope.tenant_id,
+            project_id=self.scope.project_id,
+            workspace_id=self.scope.workspace_id,
+        )
+        revision = EvidenceRevisionBinding(
+            fixture_id=self.revision.fixture_id,
+            fixture_content_sha256=self.revision.fixture_content_sha256,
+            node_id=self.revision.node_id,
+            revision_id=self.revision.revision_id,
+            revision_identity_sha256=self.revision.revision_identity_sha256,
+            plan_basis_revision_id=self.revision.plan_basis_revision_id,
+            execution_plan_digest=self.revision.execution_plan_digest,
+        )
+        producer = EvidenceProducer(
+            authority=self.producer.authority,
+            producer_id=self.producer.producer_id,
+            plugin_instance_id=self.producer.plugin_instance_id,
+            plugin_capability=self.producer.plugin_capability,
+        )
+        time_range = EvidenceTimeRange(
+            basis=self.time_range.basis,
+            start_ns=self.time_range.start_ns,
+            end_ns=self.time_range.end_ns,
+            uncertainty_ns=self.time_range.uncertainty_ns,
+            clock_domain=self.time_range.clock_domain,
+        )
+        object.__setattr__(self, "scope", scope)
+        object.__setattr__(self, "revision", revision)
+        object.__setattr__(self, "producer", producer)
+        object.__setattr__(self, "time_range", time_range)
         _prefixed_sha256(self.content_digest, "content_digest")
         if type(self.reference_digest) is not str:
             raise TypeError("reference_digest must be a string")
@@ -565,7 +611,7 @@ class EvidenceReference:
 
 
 @dataclass(frozen=True, slots=True)
-class EvidenceEnvelope:
+class EvidenceEnvelope(SealedContractValue):
     """One authorized, immutable payload passed through a private runner."""
 
     reference: EvidenceReference
@@ -575,15 +621,29 @@ class EvidenceEnvelope:
     envelope_digest: str = ""
 
     def __post_init__(self) -> None:
-        if self.contract_version != EVIDENCE_ENVELOPE_VERSION:
-            raise ValueError("unsupported evidence-envelope version")
+        _contract_version(
+            self.contract_version,
+            EVIDENCE_ENVELOPE_VERSION,
+            "evidence-envelope",
+        )
         if type(self.reference) is not EvidenceReference:
             raise TypeError("reference must be EvidenceReference")
         if type(self.disclosure_decision) is not DisclosureDecision:
             raise TypeError("disclosure_decision must be DisclosureDecision")
-        _validate_envelope_disclosure(self.reference, self.disclosure_decision)
+        reference = _revalidated_evidence_reference(self.reference)
+        disclosure_decision = _revalidated_disclosure_decision(
+            self.disclosure_decision
+        )
+        object.__setattr__(self, "reference", reference)
+        object.__setattr__(self, "disclosure_decision", disclosure_decision)
+        _validate_envelope_disclosure(reference, disclosure_decision)
         if type(self.payload_json) is not str:
             raise TypeError("payload_json must be a string")
+        _bounded_utf8_text(
+            self.payload_json,
+            "evidence payload JSON",
+            MAX_EVIDENCE_PAYLOAD_BYTES,
+        )
         payload = _load_payload_json(self.payload_json)
         canonical = _canonical_payload_json(payload, "evidence payload")
         if canonical != self.payload_json:
@@ -615,6 +675,15 @@ class EvidenceEnvelope:
 def _revision_binding_dict(value: EvidenceRevisionBinding) -> dict[str, object]:
     if type(value) is not EvidenceRevisionBinding:
         raise TypeError("revision binding must be EvidenceRevisionBinding")
+    value = EvidenceRevisionBinding(
+        fixture_id=value.fixture_id,
+        fixture_content_sha256=value.fixture_content_sha256,
+        node_id=value.node_id,
+        revision_id=value.revision_id,
+        revision_identity_sha256=value.revision_identity_sha256,
+        plan_basis_revision_id=value.plan_basis_revision_id,
+        execution_plan_digest=value.execution_plan_digest,
+    )
     return {
         "fixture_id": value.fixture_id,
         "fixture_content_sha256": value.fixture_content_sha256,
@@ -626,9 +695,22 @@ def _revision_binding_dict(value: EvidenceRevisionBinding) -> dict[str, object]:
     }
 
 
+def evidence_revision_binding_dict(
+    value: EvidenceRevisionBinding,
+) -> dict[str, object]:
+    """Return the exact immutable revision-binding wire object."""
+
+    return _revision_binding_dict(value)
+
+
 def _scope_dict(value: EvidenceScope) -> dict[str, object]:
     if type(value) is not EvidenceScope:
         raise TypeError("scope must be EvidenceScope")
+    value = EvidenceScope(
+        tenant_id=value.tenant_id,
+        project_id=value.project_id,
+        workspace_id=value.workspace_id,
+    )
     return {
         "tenant_id": value.tenant_id,
         "project_id": value.project_id,
@@ -636,9 +718,21 @@ def _scope_dict(value: EvidenceScope) -> dict[str, object]:
     }
 
 
+def evidence_scope_dict(value: EvidenceScope) -> dict[str, object]:
+    """Return the exact authorization-scope wire object."""
+
+    return _scope_dict(value)
+
+
 def _producer_dict(value: EvidenceProducer) -> dict[str, object]:
     if type(value) is not EvidenceProducer:
         raise TypeError("producer must be EvidenceProducer")
+    value = EvidenceProducer(
+        authority=value.authority,
+        producer_id=value.producer_id,
+        plugin_instance_id=value.plugin_instance_id,
+        plugin_capability=value.plugin_capability,
+    )
     return {
         "authority": value.authority.value,
         "producer_id": value.producer_id,
@@ -650,6 +744,13 @@ def _producer_dict(value: EvidenceProducer) -> dict[str, object]:
 def _time_range_dict(value: EvidenceTimeRange) -> dict[str, object]:
     if type(value) is not EvidenceTimeRange:
         raise TypeError("time_range must be EvidenceTimeRange")
+    value = EvidenceTimeRange(
+        basis=value.basis,
+        start_ns=value.start_ns,
+        end_ns=value.end_ns,
+        uncertainty_ns=value.uncertainty_ns,
+        clock_domain=value.clock_domain,
+    )
     return {
         "basis": value.basis.value,
         "start_ns": _wire_ns(value.start_ns),
@@ -679,8 +780,7 @@ def _evidence_reference_payload(value: EvidenceReference) -> dict[str, object]:
 def evidence_reference_dict(value: EvidenceReference) -> dict[str, object]:
     """Return the exact self-authenticating wire projection."""
 
-    if type(value) is not EvidenceReference:
-        raise TypeError("value must be EvidenceReference")
+    value = _revalidated_evidence_reference(value)
     result = _evidence_reference_payload(value)
     result["reference_digest"] = value.reference_digest
     return result
@@ -702,6 +802,7 @@ def evidence_envelope_dict(value: EvidenceEnvelope) -> dict[str, object]:
 
     if type(value) is not EvidenceEnvelope:
         raise TypeError("value must be EvidenceEnvelope")
+    value.__post_init__()
     result = _evidence_envelope_payload(value)
     result["envelope_digest"] = value.envelope_digest
     return result
@@ -743,6 +844,14 @@ def _revision_binding_from_dict(value: object) -> EvidenceRevisionBinding:
     )
 
 
+def evidence_revision_binding_from_dict(
+    value: object,
+) -> EvidenceRevisionBinding:
+    """Parse one exact immutable revision-binding wire object."""
+
+    return _revision_binding_from_dict(value)
+
+
 def _scope_from_dict(value: object) -> EvidenceScope:
     item = _exact_dict(
         value,
@@ -758,6 +867,12 @@ def _scope_from_dict(value: object) -> EvidenceScope:
         project_id=item["project_id"],
         workspace_id=item["workspace_id"],
     )
+
+
+def evidence_scope_from_dict(value: object) -> EvidenceScope:
+    """Parse one exact authorization-scope wire object."""
+
+    return _scope_from_dict(value)
 
 
 def _producer_from_dict(value: object) -> EvidenceProducer:
@@ -865,6 +980,29 @@ def evidence_reference_from_dict(value: object) -> EvidenceReference:
     )
 
 
+def _revalidated_evidence_reference(value: object) -> EvidenceReference:
+    """Recompute one reference and all nested cached invariants."""
+
+    if type(value) is not EvidenceReference:
+        raise TypeError("reference must be EvidenceReference")
+    if type(value.scope) is not EvidenceScope:
+        raise TypeError("evidence reference scope must be EvidenceScope")
+    if type(value.revision) is not EvidenceRevisionBinding:
+        raise TypeError("evidence reference revision must be EvidenceRevisionBinding")
+    if type(value.producer) is not EvidenceProducer:
+        raise TypeError("evidence reference producer must be EvidenceProducer")
+    if type(value.time_range) is not EvidenceTimeRange:
+        raise TypeError("evidence reference time_range must be EvidenceTimeRange")
+    value.scope.__post_init__()
+    value.revision.__post_init__()
+    value.producer.__post_init__()
+    value.time_range.__post_init__()
+    value.__post_init__()
+    wire = _evidence_reference_payload(value)
+    wire["reference_digest"] = value.reference_digest
+    return evidence_reference_from_dict(wire)
+
+
 def make_evidence_envelope(
     reference: EvidenceReference,
     disclosure_decision: DisclosureDecision,
@@ -872,10 +1010,8 @@ def make_evidence_envelope(
 ) -> EvidenceEnvelope:
     """Detach one authorized payload and bind it to its immutable reference."""
 
-    if type(reference) is not EvidenceReference:
-        raise TypeError("reference must be EvidenceReference")
-    if type(disclosure_decision) is not DisclosureDecision:
-        raise TypeError("disclosure_decision must be DisclosureDecision")
+    reference = _revalidated_evidence_reference(reference)
+    disclosure_decision = _revalidated_disclosure_decision(disclosure_decision)
     _validate_envelope_disclosure(reference, disclosure_decision)
     payload_json = _canonical_payload_json(payload, "evidence payload")
     return EvidenceEnvelope(
@@ -904,17 +1040,6 @@ def _validate_envelope_disclosure(
     )
     if disclosure_decision.scope_digest != expected_scope_digest:
         raise ValueError("disclosure decision and evidence scope disagree")
-
-
-def _reject_duplicate_pairs(
-    pairs: list[tuple[str, Any]],
-) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"duplicate JSON object member {key!r}")
-        result[key] = value
-    return result
 
 
 def _reject_json_constant(value: str) -> None:
@@ -974,6 +1099,10 @@ def evidence_envelope_from_json(value: str) -> EvidenceEnvelope:
 
     if type(value) is not str:
         raise TypeError("evidence envelope JSON must be a string")
+    if len(value) > MAX_EVIDENCE_ENVELOPE_BYTES:
+        raise ValueError(
+            f"evidence envelope exceeds {MAX_EVIDENCE_ENVELOPE_BYTES} bytes"
+        )
     try:
         encoded = value.encode("utf-8")
     except UnicodeEncodeError as error:
@@ -1024,5 +1153,9 @@ __all__ = [
     "evidence_payload_digest",
     "evidence_reference_dict",
     "evidence_reference_from_dict",
+    "evidence_revision_binding_dict",
+    "evidence_revision_binding_from_dict",
+    "evidence_scope_dict",
+    "evidence_scope_from_dict",
     "make_evidence_envelope",
 ]

@@ -101,8 +101,12 @@ class ExactCrossPartitionMatchingTests(unittest.TestCase):
             _claim("same", "partition", "second", matcher="different.matcher"),
         )
 
-        with self.assertRaisesRegex(CorroborationError, "duplicate claim identity"):
+        with self.assertRaisesRegex(
+            CorroborationError,
+            "duplicate claim identity",
+        ) as caught:
             exact_match_claims(duplicate)
+        self.assertNotIn("partition/", str(caught.exception))
 
     def test_ambiguous_and_unmatched_groups_use_cross_partition_pairs_only(
         self,
@@ -239,6 +243,30 @@ class ExactCrossPartitionMatchingTests(unittest.TestCase):
     def test_invalid_key_and_limit_fail_closed(self) -> None:
         with self.assertRaisesRegex(CorroborationError, "invalid exact-match key"):
             exact_match_claims((_claim("bad", "p1", object()),))
+        cyclic_key: list[object] = []
+        cyclic_key.append(cyclic_key)
+        with self.assertRaisesRegex(CorroborationError, "invalid exact-match key"):
+            _claim("cyclic", "p1", cyclic_key)
+
+        class HostileKeyAtom(KeyAtom):
+            armed = False
+
+            def __getattribute__(self, name: str):
+                if name in {"type_tag", "value"} and object.__getattribute__(
+                    self, "armed"
+                ):
+                    raise AssertionError("hostile key atom attribute must not run")
+                return super().__getattribute__(name)
+
+        hostile_atom = HostileKeyAtom("opaque_int", 7)
+        object.__setattr__(hostile_atom, "armed", True)
+        with self.assertRaisesRegex(CorroborationError, "invalid exact-match key"):
+            _claim("hostile-atom", "p1", hostile_atom)
+
+        cyclic_atom = KeyAtom("opaque_int", 7)
+        object.__setattr__(cyclic_atom, "value", cyclic_atom)
+        with self.assertRaisesRegex(CorroborationError, "invalid exact-match key"):
+            _claim("cyclic-atom", "p1", cyclic_atom)
         with self.assertRaisesRegex(CorroborationError, "non-negative integer"):
             exact_match_claims((), max_candidates=-1)
         with self.assertRaisesRegex(CorroborationError, "non-negative integer"):
@@ -319,6 +347,35 @@ class ExactCrossPartitionMatchingTests(unittest.TestCase):
                 "key",
                 payload=object(),
             )
+
+        class StatefulDictionary(dict[str, object]):
+            calls = 0
+
+            def items(self):  # type: ignore[override]
+                self.calls += 1
+                if self.calls == 1:
+                    return super().items()
+                return {"forged": object()}.items()
+
+        with self.assertRaisesRegex(CorroborationError, "non-JSON type object"):
+            _claim(
+                "stateful-payload",
+                "partition",
+                "key",
+                payload=StatefulDictionary({"safe": 1}),
+            )
+
+        class HostileInteger(int):
+            def bit_length(self) -> int:
+                raise AssertionError("hostile scalar method must not run")
+
+        with self.assertRaisesRegex(CorroborationError, "non-JSON type object"):
+            _claim(
+                "hostile-scalar",
+                "partition",
+                "key",
+                payload=HostileInteger(1),
+            )
         with self.assertRaisesRegex(
             CorroborationError,
             "arrays support at most 256 items",
@@ -341,6 +398,29 @@ class ExactCrossPartitionMatchingTests(unittest.TestCase):
 
 
 class GenericEventCorroborationTests(unittest.TestCase):
+    def test_event_boundaries_reject_subclasses_before_overrides_run(self) -> None:
+        class HostileString(str):
+            def __len__(self) -> int:
+                raise AssertionError("hostile identifier method must not run")
+
+        with self.assertRaisesRegex(CorroborationError, "event partition id"):
+            EventIdentity(HostileString("revision-a"), "event-1")
+
+        identity = EventIdentity("revision-a", "event-1")
+
+        class HostileResolvedEvent(ResolvedEventRef):
+            armed = False
+
+            def __getattribute__(self, name: str):
+                if name == "identity" and object.__getattribute__(self, "armed"):
+                    raise AssertionError("hostile event attribute must not run")
+                return super().__getattribute__(name)
+
+        hostile = HostileResolvedEvent(identity)
+        object.__setattr__(hostile, "armed", True)
+        with self.assertRaisesRegex(CorroborationError, "ResolvedEventRef"):
+            corroborate_events(hostile, ResolvedEventRef(identity))
+
     def test_event_and_causal_generic_values_use_the_same_bounds(self) -> None:
         identity = EventIdentity("revision-a", "event-1")
         with self.assertRaisesRegex(CorroborationError, "non-JSON type object"):

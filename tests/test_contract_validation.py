@@ -26,6 +26,14 @@ class _IntegerSubclass(int):
     pass
 
 
+class _StringSubclass(str):
+    pass
+
+
+class _TupleSubclass(tuple):
+    pass
+
+
 class ContractValidationTests(unittest.TestCase):
     def test_strict_scalars_do_not_coerce_adjacent_types(self) -> None:
         self.assertEqual(bounded_string("name", "field"), "name")
@@ -37,6 +45,8 @@ class ContractValidationTests(unittest.TestCase):
             strict_integer(True, "count")
         with self.assertRaises(ValueError):
             strict_boolean(1, "enabled")
+        with self.assertRaises(ValueError):
+            bounded_string(_StringSubclass("name"), "field")
 
     def test_bounded_mapping_rejects_coercion_and_unbounded_iteration(
         self,
@@ -62,6 +72,12 @@ class ContractValidationTests(unittest.TestCase):
                 "semantics",
                 maximum_items=1,
             )
+
+        class DictionarySubclass(dict[str, object]):
+            pass
+
+        with self.assertRaises(ValueError):
+            bounded_mapping(DictionarySubclass({"role": "external"}), "semantics")
 
     def test_bounded_json_value_is_strict_recursive_and_cycle_safe(
         self,
@@ -119,8 +135,54 @@ class ContractValidationTests(unittest.TestCase):
             value,
         )
 
+    def test_exact_json_mode_can_allow_only_exact_tuple_containers(self) -> None:
+        validate_bounded_json_value(
+            ({"safe": [1]},),
+            "snapshot",
+            exact_types=True,
+            allow_exact_tuples=True,
+        )
+
+        with self.assertRaisesRegex(ValueError, "non-JSON type object"):
+            validate_bounded_json_value(
+                _TupleSubclass((1,)),
+                "snapshot",
+                exact_types=True,
+                allow_exact_tuples=True,
+            )
+
+    def test_exact_json_snapshot_is_detached_in_the_bounded_traversal(self) -> None:
+        original = {"items": [1, {"state": "up"}]}
+        snapshot = validate_bounded_json_value(
+            original,
+            "snapshot",
+            snapshot=True,
+        )
+        self.assertEqual(snapshot, original)
+        self.assertIsNot(snapshot, original)
+        original["items"][1]["state"] = "down"  # type: ignore[index]
+        self.assertEqual(snapshot, {"items": [1, {"state": "up"}]})
+
+        class HostileInteger(int):
+            def bit_length(self) -> int:
+                raise AssertionError("hostile integer method must not run")
+
+        with self.assertRaisesRegex(ValueError, "non-JSON type object"):
+            validate_bounded_json_value(HostileInteger(1), "snapshot")
+
+        with self.assertRaises(ValueError):
+            typed_tuple(_TupleSubclass(("a",)), "names", str)
+        with self.assertRaisesRegex(ValueError, "bounds are invalid"):
+            validate_bounded_json_value(
+                (),
+                "snapshot",
+                exact_types=False,
+                allow_exact_tuples=True,
+            )
+
     def test_enum_tuple_and_bounds_share_fail_closed_semantics(self) -> None:
         self.assertIs(coerce_enum(_Mode, "one", "mode"), _Mode.ONE)
+        self.assertIs(coerce_enum(_Mode, _Mode.ONE, "mode"), _Mode.ONE)
         self.assertEqual(
             typed_tuple(
                 ("a", "b"),
@@ -138,6 +200,15 @@ class ContractValidationTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             coerce_enum(_Mode, "three", "mode")
+
+        class HostileString(str):
+            def __eq__(self, other: object) -> bool:
+                raise AssertionError("hostile equality must not run")
+
+            __hash__ = str.__hash__
+
+        with self.assertRaises(ValueError):
+            coerce_enum(_Mode, HostileString("one"), "mode")
         with self.assertRaises(ValueError):
             typed_tuple(("a", "a"), "names", str, unique_key=lambda item: item)
         with self.assertRaises(ValueError):

@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
+from ._wire import SealedContractValue
+
 PRIVATE_ANALYSIS_POLICY_VERSION: Final = (
     "router_dump_analyzer.private_analysis_policy.v1"
 )
@@ -48,7 +50,7 @@ class PrivateAnalysisContributionKind(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class PrivateAnalysisPolicy:
+class PrivateAnalysisPolicy(SealedContractValue):
     """One immutable capability ceiling for an approved private runner.
 
     This value never authorizes a workspace. ``WorkspaceDisclosurePolicy``
@@ -62,7 +64,7 @@ class PrivateAnalysisPolicy:
     full_fidelity_workspace_data: bool = True
 
     def __post_init__(self) -> None:
-        if not isinstance(self.transport, PrivateAnalysisTransport):
+        if type(self.transport) is not PrivateAnalysisTransport:
             raise TypeError(
                 "private analysis transport must be PrivateAnalysisTransport"
             )

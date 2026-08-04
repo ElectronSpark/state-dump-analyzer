@@ -2232,10 +2232,32 @@ either authority channel. The envelope digest is transport/audit integrity;
 the reference digest is the only citation identity.
 
 Cross-node analysis composes several atomic references rather than assigning
-one source revision to a synthetic multi-node fact. A later immutable run
-context owns the complete revision vector, canonical query, clock policy, and
-budgets. The current value layer performs no retrieval, paging, runner
-execution, network access, or promotion.
+one source revision to a synthetic multi-node fact. The immutable
+`PrivateAnalysisRequest` now owns the exact scope and canonical revision
+vector, selected runner/version/transport/configuration digest, disclosure and
+instruction-profile digests, untrusted query, clock policy, and bounded work
+limits. Its self-digest is the identity used by later execution and storage.
+
+The matching advisory-output contract is deliberately narrower than an
+annotation or reconstructed fact. A `PrivateAnalysisResult` contains one
+support-labeled summary claim, bounded additional claims, and
+`assistant_suggested` proposals. There is no free-form result-summary channel.
+Evidence-supported summary/detail claims and all proposals cite atomic
+evidence-reference digests; unsupported hypotheses must not cite evidence.
+The required summary consumes one slot from the positive request claim budget.
+Acceptance requires validating the result against both the
+original request and the exact reference ledger disclosed during that run, so
+a syntactically valid reference from another scope or revision cannot be
+laundered into the result. Proposal payloads are deep-detached strict-canonical
+JSON under a producer schema and have no mutation authority.
+
+Typed failures use a closed stage/code/retryability matrix and static safe
+messages rather than arbitrary diagnostics. A versioned outcome is exactly one
+result or one error. Every request, citation, claim, proposal, result, error,
+and outcome is exact-field, bounded, canonical, and self-digested. Parsing
+checks representation and integrity only; it does not perform authorization,
+retrieve evidence, establish policy freshness, execute a runner, persist a
+run, or promote a proposal. Those remain separate orchestration stages.
 
 ## 14. Delivery sequence
 

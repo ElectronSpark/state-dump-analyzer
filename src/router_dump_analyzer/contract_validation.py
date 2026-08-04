@@ -7,6 +7,7 @@ error messages attached to the caller-provided field label.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from enum import Enum
 from math import isfinite
@@ -29,7 +30,7 @@ def bounded_string(
 
     if minimum < 0 or maximum < minimum:
         raise ValueError("string bounds are invalid")
-    if not isinstance(value, str) or not minimum <= len(value) <= maximum:
+    if type(value) is not str or not minimum <= len(value) <= maximum:
         _raise(
             message,
             f"{label} must contain {minimum} to {maximum} characters",
@@ -58,7 +59,7 @@ def bounded_mapping(
         raise ValueError("mapping bounds are invalid")
     if value is None and allow_none:
         return {}
-    if not isinstance(value, Mapping):
+    if type(value) is not dict:
         _raise(message, f"{label} must be a mapping")
     result: dict[str, Any] = {}
     for index, (key, nested) in enumerate(value.items()):
@@ -68,7 +69,7 @@ def bounded_mapping(
                 f"{label} supports at most {maximum_items} items",
             )
         if (
-            not isinstance(key, str)
+            type(key) is not str
             or not key
             or len(key) > maximum_key_characters
         ):
@@ -90,14 +91,25 @@ def validate_bounded_json_value(
     maximum_units: int = 4_096,
     maximum_atom_units: int = 65_536,
     maximum_integer_bits: int = 4_096,
-) -> None:
+    exact_types: bool = True,
+    allow_exact_tuples: bool = True,
+    maximum_encoded_bytes: int | None = None,
+    snapshot: bool = False,
+) -> object | None:
     """Validate a bounded value accepted by strict JSON serialization.
 
     The validator fails before serialization for cycles, non-finite floats,
     non-string mapping keys, and Python-only atoms such as bytes or UUIDs.
-    Tuples are accepted because the standard JSON encoder represents them as
-    arrays; callers that need to distinguish tuple from list must use a typed
-    contract instead.
+    By default only built-in ``None``/boolean/integer/float/string/list/dict
+    values and exact tuple containers are inspected; subclasses are rejected
+    before any overridable method is invoked. Compatibility callers may opt
+    out of exact types explicitly. Exact tuple containers may be disabled for
+    strict JSON object trees. An
+    optional encoded-byte ceiling is available only in exact mode and is
+    accumulated incrementally using the strict compact UTF-8 JSON
+    representation, before any whole-document serialization. ``snapshot``
+    returns a detached built-in tree from that same bounded traversal and is
+    available only in exact mode.
     """
 
     if (
@@ -106,13 +118,50 @@ def validate_bounded_json_value(
         or maximum_units < 1
         or maximum_atom_units < 0
         or maximum_integer_bits < 0
+        or type(exact_types) is not bool
+        or type(allow_exact_tuples) is not bool
+        or type(snapshot) is not bool
+        or (allow_exact_tuples and not exact_types)
+        or (snapshot and not exact_types)
+        or (
+            maximum_encoded_bytes is not None
+            and (
+                type(maximum_encoded_bytes) is not int
+                or maximum_encoded_bytes < 1
+                or not exact_types
+            )
+        )
     ):
         raise ValueError("JSON value bounds are invalid")
 
     units = [0]
+    encoded_bytes = [0]
     active_container_ids: set[int] = set()
 
-    def validate(nested: object, depth: int) -> None:
+    def consume_encoded_bytes(count: int) -> None:
+        if maximum_encoded_bytes is None:
+            return
+        encoded_bytes[0] += count
+        if encoded_bytes[0] > maximum_encoded_bytes:
+            raise ValueError(
+                f"{label} exceeds {maximum_encoded_bytes} encoded UTF-8 bytes"
+            )
+
+    def consume_json_atom(atom: object) -> None:
+        if maximum_encoded_bytes is None:
+            return
+        try:
+            encoded = json.dumps(
+                atom,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (TypeError, ValueError, UnicodeError) as error:
+            raise ValueError(f"{label} contains an invalid JSON scalar") from error
+        consume_encoded_bytes(len(encoded))
+
+    def validate(nested: object, depth: int) -> object:
         if depth > maximum_depth:
             raise ValueError(
                 f"{label} supports at most {maximum_depth} container levels"
@@ -123,31 +172,50 @@ def validate_bounded_json_value(
                 f"{label} supports at most {maximum_units} value units"
             )
 
-        if nested is None or type(nested) is bool:
-            return
-        if isinstance(nested, int) and not isinstance(nested, bool):
+        nested_type = type(nested)
+        if nested is None or nested_type is bool:
+            consume_json_atom(nested)
+            return nested
+        is_integer = (
+            nested_type is int
+            if exact_types
+            else isinstance(nested, int) and not isinstance(nested, bool)
+        )
+        if is_integer:
+            assert isinstance(nested, int)
             if nested.bit_length() > maximum_integer_bits:
                 raise ValueError(
                     f"{label} integers exceed {maximum_integer_bits} bits"
                 )
-            return
-        if isinstance(nested, float):
+            consume_json_atom(nested)
+            return nested
+        is_float = nested_type is float if exact_types else isinstance(nested, float)
+        if is_float:
+            assert isinstance(nested, float)
             if not isfinite(nested):
                 raise ValueError(
                     f"{label} floats must be finite JSON numbers"
                 )
-            return
-        if isinstance(nested, str):
+            consume_json_atom(nested)
+            return nested
+        is_string = nested_type is str if exact_types else isinstance(nested, str)
+        if is_string:
+            assert isinstance(nested, str)
             if len(nested) > maximum_atom_units:
                 raise ValueError(
                     f"{label} strings exceed {maximum_atom_units} characters"
                 )
-            return
-        if isinstance(nested, dict):
+            consume_json_atom(nested)
+            return nested
+        is_dictionary = nested_type is dict if exact_types else isinstance(nested, dict)
+        if is_dictionary:
+            assert isinstance(nested, dict)
+            consume_encoded_bytes(2)
             container_id = id(nested)
             if container_id in active_container_ids:
                 raise ValueError(f"{label} must not contain reference cycles")
             active_container_ids.add(container_id)
+            detached: dict[str, object] | None = {} if snapshot else None
             try:
                 for index, (key, child) in enumerate(nested.items()):
                     if index >= maximum_container_items:
@@ -155,27 +223,43 @@ def validate_bounded_json_value(
                             f"{label} mappings support at most "
                             f"{maximum_container_items} items"
                         )
-                    if not isinstance(key, str):
+                    if (
+                        type(key) is not str
+                        if exact_types
+                        else not isinstance(key, str)
+                    ):
                         _raise(None, f"{label} mappings require string keys")
                     if len(key) > maximum_atom_units:
                         raise ValueError(
                             f"{label} mapping keys exceed "
                             f"{maximum_atom_units} characters"
                         )
-                    validate(child, depth + 1)
+                    if index:
+                        consume_encoded_bytes(1)
+                    consume_json_atom(key)
+                    consume_encoded_bytes(1)
+                    child_value = validate(child, depth + 1)
+                    if detached is not None:
+                        detached[key] = child_value
             finally:
                 active_container_ids.remove(container_id)
-            return
-        if isinstance(nested, Mapping):
-            raise ValueError(
-                f"{label} contains non-JSON mapping type "
-                f"{type(nested).__name__}"
-            )
-        if isinstance(nested, (list, tuple)):
+            return nested if detached is None else detached
+        if not exact_types and isinstance(nested, Mapping):
+            raise ValueError(f"{label} contains a non-JSON mapping value")
+        is_array = (
+            nested_type is list
+            or (allow_exact_tuples and nested_type is tuple)
+            if exact_types
+            else isinstance(nested, (list, tuple))
+        )
+        if is_array:
+            assert isinstance(nested, (list, tuple))
+            consume_encoded_bytes(2)
             container_id = id(nested)
             if container_id in active_container_ids:
                 raise ValueError(f"{label} must not contain reference cycles")
             active_container_ids.add(container_id)
+            detached_items: list[object] | None = [] if snapshot else None
             try:
                 for index, child in enumerate(nested):
                     if index >= maximum_container_items:
@@ -183,15 +267,22 @@ def validate_bounded_json_value(
                             f"{label} arrays support at most "
                             f"{maximum_container_items} items"
                         )
-                    validate(child, depth + 1)
+                    if index:
+                        consume_encoded_bytes(1)
+                    child_value = validate(child, depth + 1)
+                    if detached_items is not None:
+                        detached_items.append(child_value)
             finally:
                 active_container_ids.remove(container_id)
-            return
-        raise ValueError(
-            f"{label} contains non-JSON type {type(nested).__name__}"
-        )
+            if detached_items is None:
+                return nested
+            return tuple(detached_items) if nested_type is tuple else detached_items
+        # Keep the rejection payload static: consulting a hostile value's
+        # metaclass for a display name can execute caller-controlled code.
+        raise ValueError(f"{label} contains a non-JSON type object")
 
-    validate(value, 0)
+    validated = validate(value, 0)
+    return validated if snapshot else None
 
 
 def strict_boolean(
@@ -248,6 +339,19 @@ def coerce_enum[EnumType: Enum](
 ) -> EnumType:
     """Return one declared enum member with a uniform boundary error."""
 
+    if type(value) is enum_type:
+        return cast(EnumType, value)
+    declared_value_types = {type(member.value) for member in enum_type}
+    if type(value) not in declared_value_types:
+        raise ValueError(message or f"{label} is not supported")
+    if type(value) is str:
+        string_widths = tuple(
+            len(member.value)
+            for member in enum_type
+            if type(member.value) is str
+        )
+        if not string_widths or len(value) > max(string_widths):
+            raise ValueError(message or f"{label} is not supported")
     try:
         return enum_type(value)
     except (TypeError, ValueError) as error:
@@ -271,7 +375,7 @@ def typed_tuple[ItemType](
 
     if minimum < 0 or maximum < minimum:
         raise ValueError("tuple bounds are invalid")
-    if not isinstance(value, tuple):
+    if type(value) is not tuple:
         _raise(tuple_message, f"{label} must be a tuple")
     raw_items = value
     if not minimum <= len(raw_items) <= maximum:
@@ -279,7 +383,8 @@ def typed_tuple[ItemType](
             bounds_message,
             f"{label} must contain {minimum} to {maximum} items",
         )
-    if any(not isinstance(item, item_type) for item in raw_items):
+    item_types = item_type if type(item_type) is tuple else (item_type,)
+    if any(type(item) not in item_types for item in raw_items):
         _raise(item_message, f"{label} contains an unsupported item")
     result = cast(tuple[ItemType, ...], raw_items)
     if unique_key is not None:

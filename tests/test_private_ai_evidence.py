@@ -14,6 +14,7 @@ from router_dump_analyzer.private_analysis import (
     DisclosureDecision,
     DisclosureDecisionReason,
     EvidenceAuthority,
+    EvidenceEnvelope,
     EvidenceFactProvenance,
     EvidenceKind,
     EvidenceProducer,
@@ -129,6 +130,39 @@ def _reference(
 
 
 class PrivateAnalysisEvidenceTests(unittest.TestCase):
+    def test_reference_detaches_nested_contract_values(self) -> None:
+        scope = _scope()
+        revision = _revision()
+        producer = EvidenceProducer(
+            authority=EvidenceAuthority.CORE_CORROBORATION,
+            producer_id=CoreEvidenceProducer.CORROBORATION_V1.value,
+        )
+        time_range = EvidenceTimeRange.not_applicable()
+        payload = {"message": "full-fidelity event", "timestamp_ns": "17"}
+        reference = EvidenceReference(
+            scope=scope,
+            revision=revision,
+            producer=producer,
+            kind=EvidenceKind.EVENT,
+            subject_kind="route_event",
+            locator_digest=evidence_locator_digest(
+                "route_event", {"event_id": "event-1"}
+            ),
+            evidence_class=PrivateAnalysisEvidenceClass.PROPRIETARY,
+            payload_schema="vendor.route-event.v1",
+            fact_provenance=EvidenceFactProvenance.CORE_CORROBORATED,
+            time_range=time_range,
+            content_digest=evidence_payload_digest(
+                "vendor.route-event.v1", payload
+            ),
+        )
+        self.assertIsNot(reference.scope, scope)
+        self.assertIsNot(reference.revision, revision)
+        self.assertIsNot(reference.producer, producer)
+        self.assertIsNot(reference.time_range, time_range)
+        object.__setattr__(scope, "tenant_id", "tenant-substituted")
+        self.assertEqual(reference.scope.tenant_id, "tenant-a")
+
     def test_reference_and_envelope_round_trip_exact_canonical_wire(self) -> None:
         payload = {
             "message": "EVPN 恢復 \u0000 \U0001f6a7",
@@ -265,6 +299,30 @@ class PrivateAnalysisEvidenceTests(unittest.TestCase):
         envelope_wire["envelope_digest"] = "sha256:" + "0" * 64
         with self.assertRaisesRegex(ValueError, "envelope digest"):
             evidence_envelope_from_dict(envelope_wire)
+
+        object.__setattr__(reference.scope, "tenant_id", "tenant-substituted")
+        with self.assertRaisesRegex(ValueError, "digest does not match"):
+            evidence_reference_dict(reference)
+
+    def test_envelope_authority_gate_revalidates_caller_owned_values(self) -> None:
+        payload = {"value": "private"}
+        reference = _reference(payload)
+        decision = _decision(allowed=False)
+        object.__setattr__(decision, "allowed", True)
+        with self.assertRaisesRegex(ValueError, "allowed flag and reason disagree"):
+            make_evidence_envelope(reference, decision, payload)
+
+        with self.assertRaisesRegex(ValueError, "allowed flag and reason disagree"):
+            EvidenceEnvelope(
+                reference=reference,
+                disclosure_decision=decision,
+                payload_json=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            )
+
+        valid_decision = _decision()
+        object.__setattr__(reference.scope, "tenant_id", "tenant-substituted")
+        with self.assertRaisesRegex(ValueError, "digest does not match"):
+            make_evidence_envelope(reference, valid_decision, payload)
 
     def test_disclosure_decision_is_part_of_and_required_by_envelope(self) -> None:
         payload = {"value": "private"}

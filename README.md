@@ -467,15 +467,22 @@ unsafe characters in canonical reports and their SHA-256 digests. The Khitan sma
 semantics inside visibly anchored text. Corroboration snapshots its
 bounded evidence so caller mutation cannot change a completed report.
 
-The core also exports a local-only private-analysis evidence value layer.
+The core also exports a local-only private-analysis contract layer.
 Atomic references bind tenant/workspace scope, immutable fixture and dataset
 digests, the exact plug-in execution plan and producer instance, an opaque
 locator digest, disclosure class, payload schema, and explicit time basis.
 Disclosure-gated envelopes deep-detach bounded canonical JSON and reject
 `never_assistant` and cross-workspace decision replay; wire parsers never mint
 missing identity digests. Multi-node claims compose several atomic references.
-These are reusable library/tool-wire values today, not a public-model
-integration or an enabled model-run endpoint. See the
+Versioned requests bind the exact revision vector, local runner selection,
+policy/instruction digests, clock, query, and budgets. Advisory results contain
+citation-backed claims or explicitly unsupported hypotheses and
+`assistant_suggested` proposals. The summary is itself a support-labeled claim,
+not an uncited text channel; validation accepts citations only from the
+references actually disclosed for that request. Typed failures do not carry
+arbitrary diagnostics. These are reusable library/local-wire values today,
+not a public-model integration, evidence tool service, or enabled model-run
+endpoint. See the
 [private AI analysis boundary](docs/private-ai-analysis.md).
 
 For a headless multi-fixture run:

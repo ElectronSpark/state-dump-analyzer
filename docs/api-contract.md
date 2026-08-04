@@ -490,8 +490,46 @@ before materializing the payload.
 
 Multi-node output uses several atomic reference digests. Mutable session IDs,
 snapshot member IDs, topology contexts, route-trace IDs, and plug-in run IDs
-are not citation identity. The future run contract will bind the full revision
-vector and accept citations only from that run's disclosure ledger.
+are not citation identity.
+
+The exported private-analysis request and advisory-output values are also
+implemented as a library/local-wire contract. They still have no `/v1` run
+endpoint. `PrivateAnalysisRequest` binds the exact scope, a canonical unique
+vector of 1 to 128 revision bindings, selected runner ID/version/closed
+transport/configuration digest, workspace policy digest, trusted instruction
+profile digest, closed task kind, untrusted query, explicit clock selection,
+and bounded limits. Its `request_digest` covers every field. Time coordinates
+are canonical decimal strings; `latest_per_revision` carries `null`.
+
+`PrivateAnalysisResult` is bound to the request digest. It contains one
+support-labeled summary claim plus unique-ID detail claims/proposals; summary
+cannot carry free-form uncited text and consumes one slot from the positive
+`max_claims` budget. An `evidence_supported` claim requires
+one or more unique canonically ordered citations; an
+`unsupported_hypothesis` forbids citations. A citation contains only an
+`EvidenceReference.reference_digest`. Every proposal has fixed provenance
+`assistant_suggested`, at least one citation, a closed proposal kind, and a
+bounded strict-canonical JSON object under a named payload schema.
+
+`validate_private_analysis_result` requires the original request and the exact
+set of references recorded as disclosed for that run. It rejects request,
+scope, or revision mismatch; undisclosed or duplicate references; and output
+that exceeds the request's claim, proposal, or byte limits. Construction or
+wire parsing does not authorize a request and does not establish that a
+reference was disclosed.
+
+Failures use closed `stage`, `code`, and `retryable` combinations. Their human
+message is selected locally from the code and is not serialized, preventing
+runner exception text or paths from entering the wire value. A versioned
+outcome contains exactly one result or one error. All nested values and the
+outcome have required verified self-digests, exact field sets, strict JSON,
+duplicate-member rejection, JSON-safe numeric bounds, and an 8 MiB overall
+wire ceiling. The result ceiling reserves enough space for its required
+outcome wrapper. Summary, claim, and proposal text remains private output and
+is not implicitly safe for an untrusted client or log sink.
+
+Read-only tools, runner execution, disclosure-ledger persistence, paging,
+cursors, run lifecycle, HTTP routes, and human promotion are later contracts.
 
 Retention preview and execute accept a closed object with optional `catalog`
 and `review` policy objects. Cutoffs use canonical decimal strings. The router

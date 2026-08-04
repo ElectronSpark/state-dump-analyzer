@@ -8,7 +8,6 @@ payloads, or override evidence-level ``never_assistant`` declarations.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
@@ -19,6 +18,7 @@ from ..public_text import (
     contains_unsafe_identifier_text,
     has_visible_identity_anchor,
 )
+from ._wire import SealedContractValue, exact_json_object, strict_string_enum
 from .policy import PrivateAnalysisPolicy, PrivateAnalysisTransport
 
 WORKSPACE_DISCLOSURE_POLICY_VERSION: Final = (
@@ -73,7 +73,7 @@ _FULL_FIDELITY_CLASSES: Final = frozenset(
 
 
 @dataclass(frozen=True, slots=True)
-class WorkspaceDisclosurePolicy:
+class WorkspaceDisclosurePolicy(SealedContractValue):
     """One detached policy value later bound to an exact workspace.
 
     Transport entries must be in canonical wire order.  Requiring canonical
@@ -85,12 +85,14 @@ class WorkspaceDisclosurePolicy:
     transports: tuple[PrivateAnalysisTransport, ...] = ()
 
     def __post_init__(self) -> None:
-        if not isinstance(self.mode, PrivateAnalysisDisclosureMode):
+        if type(self.mode) is not PrivateAnalysisDisclosureMode:
             raise TypeError("disclosure mode must be PrivateAnalysisDisclosureMode")
-        if not isinstance(self.transports, tuple):
+        if type(self.transports) is not tuple:
             raise TypeError("disclosure transports must be a tuple")
+        if len(self.transports) > len(PrivateAnalysisTransport):
+            raise ValueError("too many disclosure transports")
         if any(
-            not isinstance(transport, PrivateAnalysisTransport)
+            type(transport) is not PrivateAnalysisTransport
             for transport in self.transports
         ):
             raise TypeError(
@@ -119,7 +121,7 @@ class WorkspaceDisclosurePolicy:
 
 
 @dataclass(frozen=True, slots=True)
-class DisclosureDecision:
+class DisclosureDecision(SealedContractValue):
     """Payload-free result of evaluating one evidence disclosure."""
 
     policy_digest: str
@@ -130,23 +132,23 @@ class DisclosureDecision:
     reason: DisclosureDecisionReason
 
     def __post_init__(self) -> None:
-        if not isinstance(self.policy_digest, str) or len(self.policy_digest) != 64:
+        if type(self.policy_digest) is not str or len(self.policy_digest) != 64:
             raise ValueError("policy_digest must be a lowercase SHA-256 digest")
         if any(character not in "0123456789abcdef" for character in self.policy_digest):
             raise ValueError("policy_digest must be a lowercase SHA-256 digest")
-        if not isinstance(self.scope_digest, str) or len(self.scope_digest) != 64:
+        if type(self.scope_digest) is not str or len(self.scope_digest) != 64:
             raise ValueError("scope_digest must be a lowercase SHA-256 digest")
         if any(character not in "0123456789abcdef" for character in self.scope_digest):
             raise ValueError("scope_digest must be a lowercase SHA-256 digest")
-        if not isinstance(self.transport, PrivateAnalysisTransport):
+        if type(self.transport) is not PrivateAnalysisTransport:
             raise TypeError("decision transport must be PrivateAnalysisTransport")
-        if not isinstance(self.evidence_class, PrivateAnalysisEvidenceClass):
+        if type(self.evidence_class) is not PrivateAnalysisEvidenceClass:
             raise TypeError(
                 "decision evidence_class must be PrivateAnalysisEvidenceClass"
             )
         if type(self.allowed) is not bool:
             raise TypeError("decision allowed must be a boolean")
-        if not isinstance(self.reason, DisclosureDecisionReason):
+        if type(self.reason) is not DisclosureDecisionReason:
             raise TypeError("decision reason must be DisclosureDecisionReason")
         if self.allowed is not (self.reason is DisclosureDecisionReason.ALLOWED):
             raise ValueError("decision allowed flag and reason disagree")
@@ -161,8 +163,7 @@ def workspace_disclosure_policy_dict(
 ) -> dict[str, object]:
     """Project one policy to its exact versioned canonical wire object."""
 
-    if not isinstance(policy, WorkspaceDisclosurePolicy):
-        raise TypeError("policy must be WorkspaceDisclosurePolicy")
+    policy = _revalidated_workspace_disclosure_policy(policy)
     return {
         "policy_version": WORKSPACE_DISCLOSURE_POLICY_VERSION,
         "mode": policy.mode.value,
@@ -171,37 +172,41 @@ def workspace_disclosure_policy_dict(
 
 
 def workspace_disclosure_policy_from_dict(
-    value: Mapping[str, Any],
+    value: dict[str, Any],
 ) -> WorkspaceDisclosurePolicy:
     """Parse one exact policy object and reject missing or unknown fields."""
 
-    if not isinstance(value, Mapping):
-        raise TypeError("workspace disclosure policy must be a mapping")
     expected = {"policy_version", "mode", "transports"}
-    if set(value) != expected:
-        raise ValueError("workspace disclosure policy fields are invalid")
-    if value["policy_version"] != WORKSPACE_DISCLOSURE_POLICY_VERSION:
+    item = exact_json_object(value, "workspace disclosure policy fields", expected)
+    if (
+        type(item["policy_version"]) is not str
+        or item["policy_version"] != WORKSPACE_DISCLOSURE_POLICY_VERSION
+    ):
         raise ValueError("workspace disclosure policy version is unsupported")
-    mode_value = value["mode"]
-    if not isinstance(mode_value, str):
+    mode_value = item["mode"]
+    if type(mode_value) is not str:
         raise TypeError("workspace disclosure policy mode must be a string")
-    try:
-        mode = PrivateAnalysisDisclosureMode(mode_value)
-    except ValueError as error:
-        raise ValueError("workspace disclosure policy mode is unsupported") from error
-    raw_transports = value["transports"]
-    if not isinstance(raw_transports, list):
+    mode = strict_string_enum(
+        PrivateAnalysisDisclosureMode,
+        mode_value,
+        "workspace disclosure policy mode",
+    )
+    raw_transports = item["transports"]
+    if type(raw_transports) is not list:
         raise TypeError("workspace disclosure policy transports must be a list")
+    if len(raw_transports) > len(PrivateAnalysisTransport):
+        raise ValueError("too many workspace disclosure policy transports")
     transports: list[PrivateAnalysisTransport] = []
     for raw_transport in raw_transports:
-        if not isinstance(raw_transport, str):
+        if type(raw_transport) is not str:
             raise TypeError("workspace disclosure policy transport must be a string")
-        try:
-            transports.append(PrivateAnalysisTransport(raw_transport))
-        except ValueError as error:
-            raise ValueError(
-                "workspace disclosure policy transport is unsupported"
-            ) from error
+        transports.append(
+            strict_string_enum(
+                PrivateAnalysisTransport,
+                raw_transport,
+                "workspace disclosure policy transport",
+            )
+        )
     return WorkspaceDisclosurePolicy(mode, tuple(transports))
 
 
@@ -209,6 +214,49 @@ def workspace_disclosure_policy_digest(policy: WorkspaceDisclosurePolicy) -> str
     """Return the type-preserving digest used by storage and future ledgers."""
 
     return strict_canonical_json_sha256(workspace_disclosure_policy_dict(policy))
+
+
+def _revalidated_workspace_disclosure_policy(
+    policy: object,
+) -> WorkspaceDisclosurePolicy:
+    """Return a detached policy after rechecking every authority-bearing field."""
+
+    if type(policy) is not WorkspaceDisclosurePolicy:
+        raise TypeError("policy must be WorkspaceDisclosurePolicy")
+    return WorkspaceDisclosurePolicy(
+        mode=policy.mode,
+        transports=policy.transports,
+    )
+
+
+def _revalidated_private_analysis_policy(
+    policy: object,
+) -> PrivateAnalysisPolicy:
+    """Return a detached runner ceiling instead of trusting a frozen instance."""
+
+    if type(policy) is not PrivateAnalysisPolicy:
+        raise TypeError("runner_policy must be PrivateAnalysisPolicy")
+    return PrivateAnalysisPolicy(
+        transport=policy.transport,
+        full_fidelity_workspace_data=policy.full_fidelity_workspace_data,
+    )
+
+
+def _revalidated_disclosure_decision(
+    decision: object,
+) -> DisclosureDecision:
+    """Return a detached decision after rechecking its closed invariants."""
+
+    if type(decision) is not DisclosureDecision:
+        raise TypeError("disclosure_decision must be DisclosureDecision")
+    return DisclosureDecision(
+        policy_digest=decision.policy_digest,
+        scope_digest=decision.scope_digest,
+        transport=decision.transport,
+        evidence_class=decision.evidence_class,
+        allowed=decision.allowed,
+        reason=decision.reason,
+    )
 
 
 def _scope_identifier(value: object, label: str) -> str:
@@ -254,11 +302,9 @@ def evaluate_workspace_disclosure(
 ) -> DisclosureDecision:
     """Evaluate one class without accepting or observing the evidence payload."""
 
-    if not isinstance(policy, WorkspaceDisclosurePolicy):
-        raise TypeError("policy must be WorkspaceDisclosurePolicy")
-    if not isinstance(runner_policy, PrivateAnalysisPolicy):
-        raise TypeError("runner_policy must be PrivateAnalysisPolicy")
-    if not isinstance(evidence_class, PrivateAnalysisEvidenceClass):
+    policy = _revalidated_workspace_disclosure_policy(policy)
+    runner_policy = _revalidated_private_analysis_policy(runner_policy)
+    if type(evidence_class) is not PrivateAnalysisEvidenceClass:
         raise TypeError("evidence_class must be PrivateAnalysisEvidenceClass")
     transport = runner_policy.transport
     if evidence_class is PrivateAnalysisEvidenceClass.NEVER_ASSISTANT:
@@ -311,8 +357,7 @@ def evaluate_workspace_disclosure(
 def disclosure_decision_dict(decision: DisclosureDecision) -> dict[str, object]:
     """Project a decision without any payload, identifier, or free-form text."""
 
-    if not isinstance(decision, DisclosureDecision):
-        raise TypeError("decision must be DisclosureDecision")
+    decision = _revalidated_disclosure_decision(decision)
     return {
         "policy_digest": decision.policy_digest,
         "scope_digest": decision.scope_digest,
@@ -324,12 +369,10 @@ def disclosure_decision_dict(decision: DisclosureDecision) -> dict[str, object]:
 
 
 def disclosure_decision_from_dict(
-    value: Mapping[str, Any],
+    value: dict[str, Any],
 ) -> DisclosureDecision:
     """Parse the exact payload-free decision used by evidence envelopes."""
 
-    if not isinstance(value, Mapping):
-        raise TypeError("disclosure decision must be a mapping")
     expected = {
         "policy_digest",
         "scope_digest",
@@ -338,45 +381,45 @@ def disclosure_decision_from_dict(
         "allowed",
         "reason",
     }
-    if set(value) != expected:
-        raise ValueError("disclosure decision fields are invalid")
-    transport_value = value["transport"]
-    evidence_class_value = value["evidence_class"]
-    reason_value = value["reason"]
-    if not isinstance(transport_value, str):
+    item = exact_json_object(value, "disclosure decision fields", expected)
+    transport_value = item["transport"]
+    evidence_class_value = item["evidence_class"]
+    reason_value = item["reason"]
+    if type(transport_value) is not str:
         raise TypeError("disclosure decision transport must be a string")
-    if not isinstance(evidence_class_value, str):
+    if type(evidence_class_value) is not str:
         raise TypeError("disclosure decision evidence_class must be a string")
-    if not isinstance(reason_value, str):
+    if type(reason_value) is not str:
         raise TypeError("disclosure decision reason must be a string")
-    if type(value["allowed"]) is not bool:
+    if type(item["allowed"]) is not bool:
         raise TypeError("disclosure decision allowed must be a boolean")
-    policy_digest = value["policy_digest"]
-    scope_digest = value["scope_digest"]
+    policy_digest = item["policy_digest"]
+    scope_digest = item["scope_digest"]
     if type(policy_digest) is not str:
         raise TypeError("disclosure decision policy_digest must be a string")
     if type(scope_digest) is not str:
         raise TypeError("disclosure decision scope_digest must be a string")
-    try:
-        transport = PrivateAnalysisTransport(transport_value)
-    except ValueError as error:
-        raise ValueError("disclosure decision transport is unsupported") from error
-    try:
-        evidence_class = PrivateAnalysisEvidenceClass(evidence_class_value)
-    except ValueError as error:
-        raise ValueError(
-            "disclosure decision evidence_class is unsupported"
-        ) from error
-    try:
-        reason = DisclosureDecisionReason(reason_value)
-    except ValueError as error:
-        raise ValueError("disclosure decision reason is unsupported") from error
+    transport = strict_string_enum(
+        PrivateAnalysisTransport,
+        transport_value,
+        "disclosure decision transport",
+    )
+    evidence_class = strict_string_enum(
+        PrivateAnalysisEvidenceClass,
+        evidence_class_value,
+        "disclosure decision evidence_class",
+    )
+    reason = strict_string_enum(
+        DisclosureDecisionReason,
+        reason_value,
+        "disclosure decision reason",
+    )
     return DisclosureDecision(
         policy_digest=policy_digest,
         scope_digest=scope_digest,
         transport=transport,
         evidence_class=evidence_class,
-        allowed=value["allowed"],
+        allowed=item["allowed"],
         reason=reason,
     )
 

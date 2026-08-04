@@ -172,10 +172,67 @@ retrieval, and ledger the reference before delivery.
 
 Multi-node claims cite multiple atomic references. They do not turn a mutable
 session, snapshot member, transient topology context, or route-trace ID into a
-synthetic source fact. The future run context will bind the complete immutable
-revision vector, canonical query, clock policy, and limits. Paging, cursors,
-run storage, retrieval, citations in assistant output, and promotion remain
-separate implementation stages.
+synthetic source fact.
+
+## Typed request and advisory-output values
+
+Core exports a versioned request/result contract for later runner and tool
+implementations. This is still a library and local wire contract; it does not
+enable a model, retrieve evidence, authorize a caller, persist a run, or add an
+HTTP analysis endpoint.
+
+A `PrivateAnalysisRequest` binds all authority-relevant inputs before model
+execution:
+
+- the exact tenant/project/workspace scope;
+- a non-empty, canonical, duplicate-free vector of at most 128 immutable
+  revision bindings;
+- runner ID, runner version, one of the two closed transports, and a runner
+  configuration digest;
+- workspace disclosure-policy and trusted instruction-profile digests;
+- a closed task kind, an untrusted user query, an explicit clock mode and
+  optional time coordinate; and
+- bounded evidence, tool-call, output, claim, proposal, and deadline limits.
+
+The request self-digest covers all of those fields. Nanosecond coordinates use
+canonical decimal strings on the wire; `latest_per_revision` deliberately has
+no numeric coordinate. Parsing a request verifies its exact shape and digest
+but does not prove authorization, policy freshness, runner availability, or
+revision existence.
+
+A `PrivateAnalysisResult` is bound to one request digest and contains a
+support-labeled summary claim, additional claims, and proposals. The summary
+is not a free-form escape hatch: it follows the same evidence-supported versus
+unsupported-hypothesis rules as every other claim and consumes one slot from
+the request's positive `max_claims` budget. Every evidence-supported claim has
+at least one unique, canonically ordered `PrivateAnalysisCitation`; an
+explicitly unsupported hypothesis has none. A citation contains only an
+immutable evidence-reference digest. Before accepting a result, core must call
+`validate_private_analysis_result` with the original request and the exact
+reference ledger actually disclosed during that run. The validator rejects a
+different request, scope, revision vector, undisclosed citation, duplicate
+ledger entry, or request-specific output-budget violation. Constructing or
+parsing a reference is not a substitute for that ledger.
+
+Proposals are always `assistant_suggested`, cite disclosed evidence, and carry
+a producer-named payload schema plus a deep-detached, bounded, strict-canonical
+JSON object. Their confidence is metadata. No proposal mutates a revision,
+becomes plug-in evidence, or enters the annotation store until later
+deterministic validation and explicit human promotion.
+
+Failures use a closed stage/code/retryability matrix and a static payload-free
+safe message. Arbitrary exception text, file paths, model output, and runner
+diagnostics are not part of the error wire value. A versioned outcome is an
+exact exclusive choice between one result and one error. Each nested value and
+the outcome have content-verified self-digests; strict parsers reject duplicate
+members, unknown fields, missing digests, noncanonical JSON, unsafe integers,
+and oversized wire values.
+
+Summary, claim, and proposal text is proprietary analysis output, not
+automatically client-safe text. Display and export surfaces added later must
+apply their own authorization, disclosure, and safe-rendering boundaries.
+Paging, cursors, run storage, retrieval, the disclosure ledger itself,
+execution, and promotion remain separate implementation stages.
 
 ## Tool and instruction boundary
 
