@@ -243,9 +243,17 @@ PRIVATE_ANALYSIS_ALLOWED_IMPORT_PREFIXES = (
     "collections.abc",
     "dataclasses",
     "enum",
+    "json",
     "typing",
 )
-PRIVATE_ANALYSIS_ALLOWED_PARENT_IMPORTS = frozenset({"..canonical"})
+PRIVATE_ANALYSIS_ALLOWED_PARENT_IMPORTS = frozenset(
+    {
+        "..canonical",
+        "..contract_validation",
+        "..public_text",
+        "..value_core",
+    }
+)
 NETWORK_CAPABLE_IMPORT_PREFIXES = (
     "aiohttp",
     "anyio",

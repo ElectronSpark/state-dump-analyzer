@@ -112,6 +112,71 @@ system. The v1-to-v2 migration similarly authenticates the valid legacy prefix
 it can observe; it cannot prove that a privileged writer did not erase a suffix
 before the first migration.
 
+## Immutable evidence values
+
+Core now exports versioned evidence-reference and evidence-envelope values;
+this is a library/tool-wire contract, not a model runner or an HTTP analysis
+endpoint. One reference identifies one atomic projection from one immutable
+revision. It binds tenant, project, workspace, fixture content digest, catalog
+revision and dataset digest, node, execution-plan basis and digest, producer,
+evidence kind, plug-in-defined subject kind, payload schema, disclosure class,
+fact provenance, explicit time coordinate, and content digest. Planless legacy
+revisions are not eligible for this contract.
+
+Plug-in producers are qualified by the exact plan's `instance_id`, `plugin_id`,
+and declared capability. `plugin_id` alone, registration order, a live plug-in
+object, mutable session, route/topology context handle, and `plugin_run_id` are
+never evidence identity. A catalog-aware verifier reconstructs the binding
+from trusted workspace, fixture, revision, and execution-plan descriptors and
+fails closed on any mismatch. Core authority remains distinct from plug-in
+inference: core producer IDs are a closed enum, while plug-in IDs remain bound
+to exact plan pins. Fact provenance is another closed general enum: `observed`,
+`snapshot_observed`, `log_derived`, `state_reconstructed`,
+`relationship_inferred`, `route_resolved`, `topology_inferred`,
+`core_corroborated`, or `not_applicable`. Plug-in-specific vocabulary belongs
+in subject kinds and payload schemas, not authority-like provenance text.
+Assistant suggestions are not admitted as evidence, and mutable user
+annotations wait for a later binding that includes their exact version, audit
+watermark, payload digest, and referenced revisions.
+
+The coarse evidence kinds are closed core vocabulary (`revision_metadata`,
+`artifact_excerpt`, `source_record`, `event`, `resource_identity`,
+`resource_state_interval`, `relationship_interval`, and `plugin_schema`). The
+specific subject kind and payload schema remain plug-in vocabulary. A state
+claim must identify an interval rather than a top-level resource row. Raw
+locator identity is hashed through a versioned, typed canonical wrapper, so a
+citation contains no source locator, resource key, filesystem path, callback,
+database handle, or mutable runtime context.
+
+References are projection-bound: the disclosure class, payload schema, and
+domain-separated content digest are all covered by the self digest. Thus a
+client-safe and a full-fidelity projection of one source record have different
+references. Payloads are detached into strict canonical JSON and every new
+evidence digest uses a `sha256:` prefix; existing catalog SHA fields retain
+their established bare-hex format. Integers in payload JSON are restricted to
+the interoperable JSON-safe range, while larger opaque or nanosecond values
+are canonical decimal strings. Each payload is limited to 1 MiB, 16 container
+levels, 1,024 items per container, 4,096 value units, and 65,536 characters per
+atom.
+
+An envelope additionally binds the payload-free disclosure decision and can
+be constructed only for an allowed decision whose evidence class matches the
+reference. A domain-separated scope digest binds that decision to the exact
+tenant/project/workspace without repeating those IDs inside the decision;
+cross-workspace replay fails closed. `never_assistant` cannot produce an
+envelope. Wire parsers require non-empty reference and envelope digests and
+never switch into construction mode for missing identity. This decision object
+is not an authorization token: the future read-only tool service must resolve
+the reference from the trusted catalog, re-evaluate current policy before
+retrieval, and ledger the reference before delivery.
+
+Multi-node claims cite multiple atomic references. They do not turn a mutable
+session, snapshot member, transient topology context, or route-trace ID into a
+synthetic source fact. The future run context will bind the complete immutable
+revision vector, canonical query, clock policy, and limits. Paging, cursors,
+run storage, retrieval, citations in assistant output, and promotion remain
+separate implementation stages.
+
 ## Tool and instruction boundary
 
 The model receives a closed catalog of read-only analysis tools rather than a

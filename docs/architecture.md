@@ -2206,6 +2206,37 @@ the workspace policy, sees only the declared evidence class, and returns a
 payload-free decision, keeping later evidence retrieval and ledger recording
 on the other side of this boundary.
 
+The implemented evidence value layer is atomic and content addressed. An
+`EvidenceReference` binds authorization scope to one fixture digest, immutable
+dataset revision digest, node, execution-plan basis/digest, exact producer,
+closed coarse evidence kind and fact-provenance class, plug-in subject/schema
+vocabulary, disclosure class, explicit clock coordinate, opaque locator
+digest, and projection content digest. Planless catalog revisions fail closed.
+A catalog-aware adapter resolves plug-in producers by the exact plan digest,
+instance ID, and capability, then verifies the plug-in ID from the selected
+pin; the display-only `plugin_ids` projection never routes or authenticates
+evidence.
+
+Raw subject identity is not carried by the reference. Core derives its locator
+digest from a versioned strict-canonical typed object, keeping artifact paths,
+resource keys, and runtime handles inside the disclosure-gated data channel.
+An `EvidenceEnvelope` deep-detaches one bounded canonical JSON object and binds
+the allowed disclosure decision. The decision carries a domain-separated
+scope digest, preventing a grant for one tenant/project/workspace from being
+replayed into another. It rejects `never_assistant`, class or scope mismatch,
+payload substitution, missing or empty wire digests, noncanonical wire values,
+duplicate JSON members, Python-only container types, unsafe-sized integers,
+and all unknown fields. Core producer IDs and deterministic fact provenance
+are closed core enums; invented assistant or mutable-user labels cannot enter
+either authority channel. The envelope digest is transport/audit integrity;
+the reference digest is the only citation identity.
+
+Cross-node analysis composes several atomic references rather than assigning
+one source revision to a synthetic multi-node fact. A later immutable run
+context owns the complete revision vector, canonical query, clock policy, and
+budgets. The current value layer performs no retrieval, paging, runner
+execution, network access, or promotion.
+
 ## 14. Delivery sequence
 
 This is the broader distributed-product sequence, not a list of missing local

@@ -11,13 +11,48 @@ from router_dump_analyzer.private_analysis import (
     PrivateAnalysisTransport,
     WorkspaceDisclosurePolicy,
     disclosure_decision_dict,
+    disclosure_scope_digest,
     evaluate_workspace_disclosure,
     workspace_disclosure_policy_dict,
     workspace_disclosure_policy_from_dict,
 )
 
 
+def _evaluate(
+    policy: WorkspaceDisclosurePolicy,
+    *,
+    runner_policy: PrivateAnalysisPolicy,
+    evidence_class: PrivateAnalysisEvidenceClass,
+):
+    return evaluate_workspace_disclosure(
+        policy,
+        tenant_id="tenant-a",
+        project_id="project-a",
+        workspace_id="workspace-a",
+        runner_policy=runner_policy,
+        evidence_class=evidence_class,
+    )
+
+
 class WorkspaceDisclosurePolicyTests(unittest.TestCase):
+    def test_scope_digest_rejects_every_filesystem_path_shape(self) -> None:
+        for workspace_id in (
+            "./private/dump",
+            r".\private\dump",
+            r"C:private\dump",
+            r"\private",
+            "/v1/private/dump",
+            "relative/private/dump",
+        ):
+            with self.subTest(workspace_id=workspace_id), self.assertRaises(
+                ValueError
+            ):
+                disclosure_scope_digest(
+                    tenant_id="tenant-a",
+                    project_id="project-a",
+                    workspace_id=workspace_id,
+                )
+
     def test_default_policy_is_explicitly_disabled_and_frozen(self) -> None:
         policy = WorkspaceDisclosurePolicy.disabled()
         self.assertEqual(policy.mode, PrivateAnalysisDisclosureMode.DISABLED)
@@ -91,7 +126,7 @@ class WorkspaceDisclosurePolicyTests(unittest.TestCase):
             ),
         ):
             with self.subTest(mode=policy.mode):
-                decision = evaluate_workspace_disclosure(
+                decision = _evaluate(
                     policy,
                     runner_policy=PrivateAnalysisPolicy(
                         PrivateAnalysisTransport.IN_PROCESS
@@ -110,7 +145,7 @@ class WorkspaceDisclosurePolicyTests(unittest.TestCase):
             (PrivateAnalysisTransport.IN_PROCESS,),
         )
         self.assertTrue(
-            evaluate_workspace_disclosure(
+            _evaluate(
                 client_safe,
                 runner_policy=PrivateAnalysisPolicy(
                     PrivateAnalysisTransport.IN_PROCESS
@@ -118,7 +153,7 @@ class WorkspaceDisclosurePolicyTests(unittest.TestCase):
                 evidence_class=PrivateAnalysisEvidenceClass.CLIENT_SAFE,
             ).allowed
         )
-        proprietary = evaluate_workspace_disclosure(
+        proprietary = _evaluate(
             client_safe,
             runner_policy=PrivateAnalysisPolicy(
                 PrivateAnalysisTransport.IN_PROCESS
@@ -129,7 +164,7 @@ class WorkspaceDisclosurePolicyTests(unittest.TestCase):
             proprietary.reason,
             DisclosureDecisionReason.EVIDENCE_CLASS_NOT_APPROVED,
         )
-        limited_client_safe = evaluate_workspace_disclosure(
+        limited_client_safe = _evaluate(
             client_safe,
             runner_policy=PrivateAnalysisPolicy(
                 PrivateAnalysisTransport.IN_PROCESS,
@@ -141,7 +176,7 @@ class WorkspaceDisclosurePolicyTests(unittest.TestCase):
             limited_client_safe.reason,
             DisclosureDecisionReason.EVIDENCE_CLASS_NOT_APPROVED,
         )
-        wrong_transport = evaluate_workspace_disclosure(
+        wrong_transport = _evaluate(
             client_safe,
             runner_policy=PrivateAnalysisPolicy(
                 PrivateAnalysisTransport.LOCAL_SUBPROCESS
@@ -156,7 +191,7 @@ class WorkspaceDisclosurePolicyTests(unittest.TestCase):
             PrivateAnalysisDisclosureMode.FULL_FIDELITY,
             (PrivateAnalysisTransport.IN_PROCESS,),
         )
-        limited_runner = evaluate_workspace_disclosure(
+        limited_runner = _evaluate(
             full_workspace,
             runner_policy=PrivateAnalysisPolicy(
                 PrivateAnalysisTransport.IN_PROCESS,
@@ -171,7 +206,7 @@ class WorkspaceDisclosurePolicyTests(unittest.TestCase):
 
     def test_decision_projection_is_closed_and_payload_free(self) -> None:
         marker = "SECRET-PAYLOAD-MUST-NOT-APPEAR"
-        decision = evaluate_workspace_disclosure(
+        decision = _evaluate(
             WorkspaceDisclosurePolicy(
                 PrivateAnalysisDisclosureMode.FULL_FIDELITY,
                 (PrivateAnalysisTransport.IN_PROCESS,),
@@ -184,7 +219,14 @@ class WorkspaceDisclosurePolicyTests(unittest.TestCase):
         projected = disclosure_decision_dict(decision)
         self.assertEqual(
             set(projected),
-            {"policy_digest", "transport", "evidence_class", "allowed", "reason"},
+            {
+                "policy_digest",
+                "scope_digest",
+                "transport",
+                "evidence_class",
+                "allowed",
+                "reason",
+            },
         )
         self.assertNotIn(marker, repr(projected))
         self.assertEqual(len(decision.digest), 64)

@@ -419,6 +419,80 @@ provider registry are trusted in-process composition objects; underscore
 attributes and Python introspection are outside the supported API and are not
 a sandbox for hostile in-process callers.
 
+The exported private-analysis evidence values are also implemented, but no
+`/v1` evidence or model-run route exists yet. An atomic reference has this
+exact shape (digest text is abbreviated here only for readability):
+
+```json
+{
+  "contract_version": "router_dump_analyzer.private_analysis.evidence_reference.v1",
+  "scope": {
+    "tenant_id": "tenant-a",
+    "project_id": "project-a",
+    "workspace_id": "workspace-a"
+  },
+  "revision": {
+    "fixture_id": "fixture-a",
+    "fixture_content_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "node_id": "router-a",
+    "revision_id": "revision-a",
+    "revision_identity_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "plan_basis_revision_id": "dump-basis-a",
+    "execution_plan_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "producer": {
+    "authority": "plugin_inferred",
+    "producer_id": "vendor.router",
+    "plugin_instance_id": "parser-a",
+    "plugin_capability": "source_record_parser"
+  },
+  "kind": "source_record",
+  "subject_kind": "lttng_event",
+  "locator_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "evidence_class": "proprietary",
+  "payload_schema": "vendor.lttng.event.v1",
+  "fact_provenance": "observed",
+  "time_range": {
+    "basis": "revision_start_relative_ns",
+    "start_ns": "17",
+    "end_ns": "17",
+    "uncertainty_ns": "2",
+    "clock_domain": null
+  },
+  "content_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+  "reference_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+}
+```
+
+The reference is projection-bound and contains no raw locator. The closed
+`kind` names a core category, and `fact_provenance` is also closed general core
+vocabulary; `subject_kind` and `payload_schema` retain producer vocabulary.
+Arbitrary assistant or mutable-user origin labels are therefore not valid fact
+provenance. Catalog SHA fields keep their existing 64-character lowercase hex
+representation. All new evidence digests are `sha256:` prefixed. Nanoseconds
+are signed 64-bit values represented by canonical decimal strings, or `null`
+only for the explicit `not_applicable` time basis.
+
+An envelope contains exact fields `contract_version`, `reference`,
+`disclosure_decision`, `payload`, and `envelope_digest`. The decision must be
+allowed and match both the reference class and a domain-separated digest of
+its tenant/project/workspace scope; a decision evaluated for one workspace
+cannot be replayed into another. `never_assistant` is structurally rejected.
+Payload is an exact strict-canonical JSON object with a 1 MiB UTF-8 limit, 16
+container levels, 1,024 items per container, 4,096 value units, and 65,536
+characters per atom. Payload JSON numbers are limited to the exact JavaScript
+range; larger integers use canonical decimal strings. Envelope parsers reject
+duplicate/missing/unknown fields and require, rather than mint, all wire
+digests before verifying content, reference, and envelope identity.
+Construction alone grants no access: a future tool layer must resolve these
+claims against tenant-scoped catalog descriptors and evaluate disclosure
+before materializing the payload.
+
+Multi-node output uses several atomic reference digests. Mutable session IDs,
+snapshot member IDs, topology contexts, route-trace IDs, and plug-in run IDs
+are not citation identity. The future run contract will bind the full revision
+vector and accept citations only from that run's disclosure ledger.
+
 Retention preview and execute accept a closed object with optional `catalog`
 and `review` policy objects. Cutoffs use canonical decimal strings. The router
 derives catalog external-reference protection itself and rejects a caller

@@ -14,11 +14,20 @@ from enum import StrEnum
 from typing import Any, Final
 
 from ..canonical import strict_canonical_json_sha256
+from ..public_text import (
+    contains_filesystem_identity_path,
+    contains_unsafe_identifier_text,
+    has_visible_identity_anchor,
+)
 from .policy import PrivateAnalysisPolicy, PrivateAnalysisTransport
 
 WORKSPACE_DISCLOSURE_POLICY_VERSION: Final = (
     "router_dump_analyzer.workspace_disclosure_policy.v1"
 )
+DISCLOSURE_SCOPE_VERSION: Final = (
+    "router_dump_analyzer.private_analysis.disclosure_scope.v1"
+)
+_MAX_SCOPE_IDENTIFIER_CHARACTERS: Final = 256
 
 
 class PrivateAnalysisDisclosureMode(StrEnum):
@@ -114,6 +123,7 @@ class DisclosureDecision:
     """Payload-free result of evaluating one evidence disclosure."""
 
     policy_digest: str
+    scope_digest: str
     transport: PrivateAnalysisTransport
     evidence_class: PrivateAnalysisEvidenceClass
     allowed: bool
@@ -124,6 +134,10 @@ class DisclosureDecision:
             raise ValueError("policy_digest must be a lowercase SHA-256 digest")
         if any(character not in "0123456789abcdef" for character in self.policy_digest):
             raise ValueError("policy_digest must be a lowercase SHA-256 digest")
+        if not isinstance(self.scope_digest, str) or len(self.scope_digest) != 64:
+            raise ValueError("scope_digest must be a lowercase SHA-256 digest")
+        if any(character not in "0123456789abcdef" for character in self.scope_digest):
+            raise ValueError("scope_digest must be a lowercase SHA-256 digest")
         if not isinstance(self.transport, PrivateAnalysisTransport):
             raise TypeError("decision transport must be PrivateAnalysisTransport")
         if not isinstance(self.evidence_class, PrivateAnalysisEvidenceClass):
@@ -197,9 +211,44 @@ def workspace_disclosure_policy_digest(policy: WorkspaceDisclosurePolicy) -> str
     return strict_canonical_json_sha256(workspace_disclosure_policy_dict(policy))
 
 
+def _scope_identifier(value: object, label: str) -> str:
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > _MAX_SCOPE_IDENTIFIER_CHARACTERS
+        or value != value.strip()
+        or contains_filesystem_identity_path(value)
+        or contains_unsafe_identifier_text(value)
+        or not has_visible_identity_anchor(value)
+    ):
+        raise ValueError(f"{label} is not a safe bounded identifier")
+    return value
+
+
+def disclosure_scope_digest(
+    *,
+    tenant_id: str,
+    project_id: str,
+    workspace_id: str,
+) -> str:
+    """Bind a decision to one exact authorization scope without echoing IDs."""
+
+    return strict_canonical_json_sha256(
+        {
+            "contract_version": DISCLOSURE_SCOPE_VERSION,
+            "tenant_id": _scope_identifier(tenant_id, "tenant_id"),
+            "project_id": _scope_identifier(project_id, "project_id"),
+            "workspace_id": _scope_identifier(workspace_id, "workspace_id"),
+        }
+    )
+
+
 def evaluate_workspace_disclosure(
     policy: WorkspaceDisclosurePolicy,
     *,
+    tenant_id: str,
+    project_id: str,
+    workspace_id: str,
     runner_policy: PrivateAnalysisPolicy,
     evidence_class: PrivateAnalysisEvidenceClass,
 ) -> DisclosureDecision:
@@ -247,6 +296,11 @@ def evaluate_workspace_disclosure(
         reason = DisclosureDecisionReason.EVIDENCE_CLASS_NOT_APPROVED
     return DisclosureDecision(
         policy_digest=policy.digest,
+        scope_digest=disclosure_scope_digest(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            workspace_id=workspace_id,
+        ),
         transport=transport,
         evidence_class=evidence_class,
         allowed=allowed,
@@ -261,6 +315,7 @@ def disclosure_decision_dict(decision: DisclosureDecision) -> dict[str, object]:
         raise TypeError("decision must be DisclosureDecision")
     return {
         "policy_digest": decision.policy_digest,
+        "scope_digest": decision.scope_digest,
         "transport": decision.transport.value,
         "evidence_class": decision.evidence_class.value,
         "allowed": decision.allowed,
@@ -268,7 +323,66 @@ def disclosure_decision_dict(decision: DisclosureDecision) -> dict[str, object]:
     }
 
 
+def disclosure_decision_from_dict(
+    value: Mapping[str, Any],
+) -> DisclosureDecision:
+    """Parse the exact payload-free decision used by evidence envelopes."""
+
+    if not isinstance(value, Mapping):
+        raise TypeError("disclosure decision must be a mapping")
+    expected = {
+        "policy_digest",
+        "scope_digest",
+        "transport",
+        "evidence_class",
+        "allowed",
+        "reason",
+    }
+    if set(value) != expected:
+        raise ValueError("disclosure decision fields are invalid")
+    transport_value = value["transport"]
+    evidence_class_value = value["evidence_class"]
+    reason_value = value["reason"]
+    if not isinstance(transport_value, str):
+        raise TypeError("disclosure decision transport must be a string")
+    if not isinstance(evidence_class_value, str):
+        raise TypeError("disclosure decision evidence_class must be a string")
+    if not isinstance(reason_value, str):
+        raise TypeError("disclosure decision reason must be a string")
+    if type(value["allowed"]) is not bool:
+        raise TypeError("disclosure decision allowed must be a boolean")
+    policy_digest = value["policy_digest"]
+    scope_digest = value["scope_digest"]
+    if type(policy_digest) is not str:
+        raise TypeError("disclosure decision policy_digest must be a string")
+    if type(scope_digest) is not str:
+        raise TypeError("disclosure decision scope_digest must be a string")
+    try:
+        transport = PrivateAnalysisTransport(transport_value)
+    except ValueError as error:
+        raise ValueError("disclosure decision transport is unsupported") from error
+    try:
+        evidence_class = PrivateAnalysisEvidenceClass(evidence_class_value)
+    except ValueError as error:
+        raise ValueError(
+            "disclosure decision evidence_class is unsupported"
+        ) from error
+    try:
+        reason = DisclosureDecisionReason(reason_value)
+    except ValueError as error:
+        raise ValueError("disclosure decision reason is unsupported") from error
+    return DisclosureDecision(
+        policy_digest=policy_digest,
+        scope_digest=scope_digest,
+        transport=transport,
+        evidence_class=evidence_class,
+        allowed=value["allowed"],
+        reason=reason,
+    )
+
+
 __all__ = [
+    "DISCLOSURE_SCOPE_VERSION",
     "WORKSPACE_DISCLOSURE_POLICY_VERSION",
     "DisclosureDecision",
     "DisclosureDecisionReason",
@@ -276,6 +390,8 @@ __all__ = [
     "PrivateAnalysisEvidenceClass",
     "WorkspaceDisclosurePolicy",
     "disclosure_decision_dict",
+    "disclosure_decision_from_dict",
+    "disclosure_scope_digest",
     "evaluate_workspace_disclosure",
     "workspace_disclosure_policy_dict",
     "workspace_disclosure_policy_digest",

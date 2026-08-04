@@ -440,13 +440,20 @@ def _without_ipv6_cidr_tokens(value: str) -> str:
     return _IPV6_CIDR_CANDIDATE.sub(replace, value)
 
 
-def contains_probable_absolute_filesystem_path(value: str) -> bool:
+def contains_probable_absolute_filesystem_path(
+    value: str,
+    *,
+    allow_api_routes: bool = True,
+) -> bool:
     """Return whether public text appears to contain an absolute host path.
 
     Error details are not a transport for storage diagnostics.  The check is
     intentionally conservative: a false positive only selects the endpoint's
     documented safe fallback, while a false negative could disclose host
-    layout or tenant storage coordinates.
+    layout or tenant storage coordinates. Public error text may opt into the
+    narrow API-route exception; durable identity fields must set
+    ``allow_api_routes=False`` because a route-shaped value can also be an
+    absolute POSIX path.
     """
 
     if _FILE_URL.search(value) is not None:
@@ -479,14 +486,41 @@ def contains_probable_absolute_filesystem_path(value: str) -> bool:
         # API routes are common caller-facing validation values rather than
         # host coordinates. This narrow exception avoids hiding `/v1/...`
         # diagnostics while all other absolute-looking paths fail closed.
-        if _RELATIVE_API_ROUTE.fullmatch(token) is not None:
+        if allow_api_routes and _RELATIVE_API_ROUTE.fullmatch(token) is not None:
             continue
         return True
     return False
 
 
+def contains_filesystem_identity_path(value: str) -> bool:
+    """Reject every path-shaped value from durable identity fields.
+
+    Unlike public diagnostics, identity vocabulary has no reason to preserve
+    route-shaped strings. Separators, dot-relative tokens, and Windows
+    drive-relative prefixes therefore fail closed even when they are not
+    absolute host paths.
+    """
+
+    return (
+        "/" in value
+        or "\\" in value
+        or value in {".", ".."}
+        or (
+            len(value) >= 2
+            and value[0].isascii()
+            and value[0].isalpha()
+            and value[1] == ":"
+        )
+        or contains_probable_absolute_filesystem_path(
+            value,
+            allow_api_routes=False,
+        )
+    )
+
+
 __all__ = [
     "bounded_public_error_detail",
+    "contains_filesystem_identity_path",
     "contains_probable_absolute_filesystem_path",
     "contains_unsafe_display_text",
     "contains_unsafe_identifier_text",
