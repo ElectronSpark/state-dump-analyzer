@@ -199,7 +199,15 @@ flowchart TD
 - An **analysis revision** points to one validated, immutable canonical
   dataset, its node ID, plug-in IDs, identity digest, and publication
   metadata. The catalog revision ID is distinct from the plug-in/source
-  revision ID retained in metadata.
+  revision ID retained in metadata. New publications also persist one
+  immutable execution plan that pins the ordered producer instances, exact
+  executable/configuration/schema/capability/role identity, and optional
+  decoder. Its configuration field is a digest, not a value. Legacy rows keep
+  an explicit absent plan. The catalog prevents a planful row from being
+  downgraded to planless, while unfinished pre-contract queue work is re-probed
+  and already-staged legacy publication is replayed unchanged. Once staged,
+  the complete publication payload is immutable; publication re-hashes the
+  dataset and requires its embedded plan digest to equal the catalog plan.
 - A **session** is a mutable named selection. Each member has its own
   `member_id`, exact `fixture_id`, exact `revision_id`, node ID, and opaque
   role. Different revisions of the same node can coexist under different

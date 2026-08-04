@@ -23,17 +23,20 @@ from __future__ import annotations
 import errno
 import hashlib
 import heapq
+import inspect
 import json
 import math
 import multiprocessing
 import os
 import random
+import re
 import shutil
 import sqlite3
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -52,15 +55,28 @@ from .filesystem_lock import (
 from .ingestion import (
     IngestionCoordinator,
     IngestionError,
+    IngestionResult,
 )
 from .operational_logging import emit_operational_event
 from .plugin_api import (
     MAX_PROBE_DETECTED_TEXT_LENGTH,
     MAX_PROBE_REASON_LENGTH,
+    AnalyzerPlugin,
+    PluginCapability,
+    PluginManifest,
     ProbeMatchKind,
     ProbeResult,
+    ReconstructionSupport,
     validate_probe_report,
     validate_probe_result,
+)
+from .plugin_execution_plan import (
+    DecoderIdentity,
+    PluginArtifactIdentity,
+    PluginExecutionPin,
+    PluginExecutionPlan,
+    plugin_execution_plan_dict,
+    plugin_execution_plan_from_dict,
 )
 from .plugin_identity import (
     PluginExecutableIdentityError,
@@ -94,6 +110,16 @@ MAX_PRIVATE_FAILURE_TYPE_LENGTH = 512
 MAX_PRIVATE_FAILURE_MESSAGE_LENGTH = 65_536
 _ARTIFACT_PIN_BACKFILL_REQUIRED_MARKER = "2026-07-31-artifact-pin-backfill-required-v1"
 _ARTIFACT_PIN_BACKFILL_MIGRATION = "2026-07-31-artifact-pin-backfill-v1"
+_PACKAGE_HASH_PATTERN = re.compile(
+    r"^(?:(?:manifest|module|package)-sha256|sha256):[0-9a-f]{64}$"
+)
+_EXECUTION_PLAN_REQUIRED = 1
+_EXECUTION_PLAN_LEGACY_OPTIONAL = 0
+_MAX_STAGED_INGESTION_ENVELOPE_BYTES = 4 * 1024 * 1024
+_ACTIVE_DECODER_IDENTITY: ContextVar[DecoderIdentity | None] = ContextVar(
+    "ingestion_active_decoder_identity",
+    default=None,
+)
 
 # Core deliberately uses the legacy-compatible Windows pathname budget on every
 # Windows host rather than depending on registry, manifest, child-process, or
@@ -877,12 +903,14 @@ class PluginCandidate:
     reasons: tuple[str, ...] = ()
     detected_platform: str | None = None
     detected_software_version: str | None = None
+    registered_execution_identity: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "plugin_id": self.plugin_id,
             "plugin_version": self.plugin_version,
             "package_hash": self.package_hash,
+            "registered_execution_identity": self.registered_execution_identity,
             "confidence": self.confidence,
             "match_kind": self.match_kind,
             "reasons": list(self.reasons),
@@ -1071,10 +1099,70 @@ class RevisionCatalogPublisher(Protocol):
         event_count: int,
         source_record_count: int,
         resource_count: int,
+        execution_plan: PluginExecutionPlan | None,
         call_context: PublisherCallContext,
     ) -> str | None:
         """Publish and optionally return the catalog-visible revision ID."""
         ...
+
+
+class _PublisherExecutionPlanSupport(StrEnum):
+    ABSENT = "absent"
+    EXPLICIT_KEYWORD = "explicit_keyword"
+    VAR_KEYWORD = "var_keyword"
+
+
+def _publisher_execution_plan_support(
+    publisher: Any,
+) -> _PublisherExecutionPlanSupport:
+    """Inspect the publication contract before any side-effecting call.
+
+    Pre-contract publishers remain valid for genuine legacy planless replay.
+    A planful publication may never silently discard its execution identity.
+    """
+
+    try:
+        publish_revision = publisher.publish_revision
+        parameters = inspect.signature(publish_revision).parameters.values()
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except BaseException as error:
+        raise IngestionPipelineError(
+            "revision publisher contract could not be inspected"
+        ) from error
+    if any(
+        parameter.name == "execution_plan"
+        and parameter.kind is inspect.Parameter.POSITIONAL_ONLY
+        for parameter in parameters
+    ):
+        return _PublisherExecutionPlanSupport.ABSENT
+    if any(
+        (
+            parameter.name == "execution_plan"
+            and parameter.kind
+            in {
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            }
+        )
+        for parameter in parameters
+    ):
+        return _PublisherExecutionPlanSupport.EXPLICIT_KEYWORD
+    if any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    ):
+        return _PublisherExecutionPlanSupport.VAR_KEYWORD
+    return _PublisherExecutionPlanSupport.ABSENT
+
+
+def _publisher_accepts_execution_plan(publisher: Any) -> bool:
+    """Return whether planful publication can bind ``execution_plan``."""
+
+    return (
+        _publisher_execution_plan_support(publisher)
+        is not _PublisherExecutionPlanSupport.ABSENT
+    )
 
 
 class NullRevisionCatalogPublisher:
@@ -1093,13 +1181,118 @@ class NullRevisionCatalogPublisher:
 
 
 @dataclass(frozen=True, slots=True)
+class _PinnedManifestPlugin:
+    """Execute one plug-in through the manifest validated at registration."""
+
+    original: Any
+    manifest: PluginManifest
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.original, name)
+
+
+class _IdentityBoundTraceDecoder:
+    """Mark the exact registered decoder when a CTF input invokes it."""
+
+    __slots__ = ("_decoder", "_identity")
+    _decoder: Any
+    _identity: DecoderIdentity
+
+    def __init__(self, decoder: Any, identity: DecoderIdentity) -> None:
+        object.__setattr__(self, "_decoder", decoder)
+        object.__setattr__(
+            self,
+            "_identity",
+            _snapshot_decoder_identity(identity),
+        )
+
+    @property
+    def identity(self) -> DecoderIdentity:
+        return _snapshot_decoder_identity(self._identity)
+
+    def _implementation(self) -> Any:
+        return self._decoder
+
+    def _matches(
+        self,
+        implementation: Any,
+        identity: DecoderIdentity,
+    ) -> bool:
+        return self._decoder is implementation and self._identity == identity
+
+    def iter_ctf(self, *args: Any, **kwargs: Any) -> Any:
+        _ACTIVE_DECODER_IDENTITY.set(
+            _snapshot_decoder_identity(self._identity)
+        )
+        return self._decoder.iter_ctf(*args, **kwargs)
+
+
+def _snapshot_decoder_identity(identity: DecoderIdentity) -> DecoderIdentity:
+    """Detach an exact decoder identity from caller-owned mutable aliases."""
+
+    if type(identity) is not DecoderIdentity:
+        raise TypeError("decoder identity must be an exact DecoderIdentity")
+    return DecoderIdentity(
+        decoder_id=identity.decoder_id,
+        decoder_version=identity.decoder_version,
+        executable_digest=identity.executable_digest,
+    )
+
+
+def _snapshot_plugin_manifest(manifest: PluginManifest) -> PluginManifest:
+    """Detach executable dispatch vocabulary from a caller-owned manifest."""
+
+    if type(manifest) is not PluginManifest:
+        raise TypeError("manifest must be an exact PluginManifest")
+    normalized_capabilities: set[PluginCapability | str] = set()
+    for item in manifest.capabilities:
+        candidate = str(item)
+        try:
+            normalized_capabilities.add(PluginCapability(candidate))
+        except ValueError:
+            normalized_capabilities.add(candidate)
+    return PluginManifest(
+        plugin_id=str(manifest.plugin_id),
+        plugin_version=str(manifest.plugin_version),
+        core_api_version=str(manifest.core_api_version),
+        supported_platforms=tuple(str(item) for item in manifest.supported_platforms),
+        supported_software_versions=str(manifest.supported_software_versions),
+        capabilities=frozenset(normalized_capabilities),
+        reconstruction_default=ReconstructionSupport(
+            str(manifest.reconstruction_default)
+        ),
+        forwarding_ir_versions=tuple(
+            str(item) for item in manifest.forwarding_ir_versions
+        ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class RegisteredPlugin:
     plugin: Any
     coordinator: IngestionCoordinator
     package_hash: str
     verify_package_bytes: bool
+    instance_id: str = "legacy.default"
+    distribution_name: str = "legacy.plugin"
+    distribution_version: str = "0"
+    entry_point_name: str = "legacy.plugin"
+    module_target: str = "legacy.plugin:plugin"
+    configuration_digest: str = (
+        "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    )
+    core_api_version: str = "1.0"
+    capabilities: tuple[str, ...] = ()
+    schema_versions: tuple[str, ...] = (
+        "router_dump_analyzer.plugin_schema.v1",
+    )
+    decoder_identity: DecoderIdentity | None = None
     _plugin_id_snapshot: str | None = None
     _plugin_version_snapshot: str | None = None
+    _manifest_identity_snapshot: str | None = None
+    _execution_plugin: Any | None = None
+    _decoder_implementation_snapshot: Any | None = None
+    _registered_execution_identity_snapshot: str | None = None
 
     @property
     def plugin_id(self) -> str:
@@ -1126,6 +1319,56 @@ class RegisteredPlugin:
             raise IngestionPipelineError(
                 "registered plug-in identity could not be resolved"
             ) from error
+
+    @property
+    def execution_plugin(self) -> Any:
+        """Return the plug-in view whose manifest is frozen for execution."""
+
+        return (
+            self._execution_plugin
+            if self._execution_plugin is not None
+            else self.plugin
+        )
+
+    def execution_identity_material(self) -> dict[str, Any]:
+        """Project every registered coordinate that can affect one execution."""
+
+        decoder = self.decoder_identity
+        return {
+            "schema_version": "router_dump_analyzer.registered_execution.v1",
+            "instance_id": self.instance_id,
+            "plugin_id": self.plugin_id,
+            "plugin_version": self.plugin_version,
+            "core_api_version": self.core_api_version,
+            "manifest_digest": self._manifest_identity_snapshot,
+            "artifact": {
+                "distribution_name": self.distribution_name,
+                "distribution_version": self.distribution_version,
+                "package_hash": self.package_hash,
+                "entry_point_name": self.entry_point_name,
+                "module_target": self.module_target,
+            },
+            "configuration_digest": self.configuration_digest,
+            "capabilities": list(self.capabilities),
+            "schema_versions": list(self.schema_versions),
+            "decoder": (
+                {
+                    "decoder_id": decoder.decoder_id,
+                    "decoder_version": decoder.decoder_version,
+                    "executable_digest": decoder.executable_digest,
+                }
+                if decoder is not None
+                else None
+            ),
+        }
+
+    @property
+    def registered_execution_identity(self) -> str:
+        material = self.execution_identity_material()
+        return (
+            "sha256:"
+            + hashlib.sha256(canonical_json(material).encode("utf-8")).hexdigest()
+        )
 
 
 class PluginRegistry:
@@ -1167,12 +1410,21 @@ class PluginRegistry:
     @staticmethod
     def _manifest_fingerprint(manifest: Any) -> str:
         material = {
-            "plugin_id": manifest.plugin_id,
-            "plugin_version": manifest.plugin_version,
-            "core_api_version": manifest.core_api_version,
+            "schema_version": "router_dump_analyzer.plugin_manifest_identity.v1",
+            "plugin_id": str(manifest.plugin_id),
+            "plugin_version": str(manifest.plugin_version),
+            "core_api_version": str(manifest.core_api_version),
             "capabilities": sorted(str(item) for item in manifest.capabilities),
-            "supported_platforms": list(manifest.supported_platforms),
-            "supported_software_versions": (manifest.supported_software_versions),
+            "supported_platforms": [
+                str(item) for item in manifest.supported_platforms
+            ],
+            "supported_software_versions": str(
+                manifest.supported_software_versions
+            ),
+            "reconstruction_default": str(manifest.reconstruction_default.value),
+            "forwarding_ir_versions": [
+                str(item) for item in manifest.forwarding_ir_versions
+            ],
         }
         return (
             "manifest-sha256:"
@@ -1181,17 +1433,60 @@ class PluginRegistry:
 
     def register(
         self,
-        plugin: Any,
+        plugin: AnalyzerPlugin,
         *,
         coordinator: IngestionCoordinator | None = None,
         package_hash: str | None = None,
+        instance_id: str | None = None,
+        distribution_name: str | None = None,
+        distribution_version: str | None = None,
+        entry_point_name: str | None = None,
+        module_target: str | None = None,
+        configuration_digest: str | None = None,
+        decoder_identity: DecoderIdentity | None = None,
     ) -> RegisteredPlugin:
-        active_coordinator = coordinator or IngestionCoordinator()
+        if package_hash is not None:
+            # A loader-supplied digest is a trust assertion. Reject malformed
+            # assertions before resolving any executable plug-in descriptor.
+            resolved_package_hash = _bounded_identifier(
+                package_hash,
+                "package_hash",
+                80,
+            )
+            if _PACKAGE_HASH_PATTERN.fullmatch(resolved_package_hash) is None:
+                raise ValueError(
+                    "package_hash must be a lowercase SHA-256 package digest"
+                )
+        else:
+            resolved_package_hash = None
+        active_coordinator = (
+            coordinator if coordinator is not None else IngestionCoordinator()
+        )
         try:
-            validated = active_coordinator._plugin(plugin)
-            manifest = validated.manifest
-            plugin_id = str(manifest.plugin_id)
-            plugin_version = str(manifest.plugin_version)
+            manifest = plugin.manifest
+            if type(manifest) is not PluginManifest:
+                raise IngestionError("core ingestion requires a PluginManifest")
+            projected_manifest = _snapshot_plugin_manifest(manifest)
+            execution_plugin = _PinnedManifestPlugin(plugin, projected_manifest)
+            active_coordinator._plugin(execution_plugin)
+            plugin_id = str(projected_manifest.plugin_id)
+            plugin_version = str(projected_manifest.plugin_version)
+            core_api_version = str(projected_manifest.core_api_version)
+            capabilities = tuple(
+                sorted(str(item) for item in projected_manifest.capabilities)
+            )
+            schema_versions = (
+                "router_dump_analyzer.plugin_schema.v1",
+                *(
+                    str(item)
+                    for item in projected_manifest.forwarding_ir_versions
+                ),
+            )
+            manifest_identity = self._manifest_fingerprint(projected_manifest)
+            if self._manifest_fingerprint(manifest) != manifest_identity:
+                raise IngestionError(
+                    "plug-in manifest changed while it was being registered"
+                )
         except PROCESS_CONTROL_EXCEPTIONS:
             raise
         except IngestionError:
@@ -1200,10 +1495,10 @@ class PluginRegistry:
             raise IngestionPipelineError(
                 "plug-in registration could not resolve required descriptors"
             ) from error
-        if package_hash is None:
+        if resolved_package_hash is None:
             fingerprint_error: PluginExecutableIdentityError | None = None
             try:
-                resolved_package_hash = executable_plugin_fingerprint(validated)
+                resolved_package_hash = executable_plugin_fingerprint(plugin)
             except PROCESS_CONTROL_EXCEPTIONS:
                 raise
             except PluginExecutableIdentityError as error:
@@ -1226,7 +1521,7 @@ class PluginRegistry:
                         f"executable package identity{detail}"
                     ) from fingerprint_error
                 try:
-                    resolved_package_hash = self._manifest_fingerprint(manifest)
+                    resolved_package_hash = manifest_identity
                 except PROCESS_CONTROL_EXCEPTIONS:
                     raise
                 except BaseException as error:
@@ -1237,25 +1532,169 @@ class PluginRegistry:
                 ("package-sha256:", "module-sha256:")
             )
         else:
-            resolved_package_hash = _bounded_identifier(
-                package_hash,
-                "package_hash",
-                256,
-            )
             verify_package_bytes = False
+        assert resolved_package_hash is not None
         if self._require_executable_identity and resolved_package_hash.startswith(
             "manifest-sha256:"
         ):
             raise ValueError(
                 "manifest-only plug-in identity is not permitted by this registry"
             )
+        plugin_type = type(plugin)
+        if module_target is None:
+            try:
+                resolved_module_target = (
+                    f"{plugin_type.__module__}:{plugin_type.__qualname__}"
+                )
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except BaseException as error:
+                raise IngestionPipelineError(
+                    "plug-in module identity could not be resolved"
+                ) from error
+        else:
+            resolved_module_target = module_target
+        resolved_configuration_digest = (
+            configuration_digest
+            if configuration_digest is not None
+            else (
+                "sha256:"
+                + hashlib.sha256(canonical_json({}).encode("utf-8")).hexdigest()
+            )
+        )
+        if (
+            type(resolved_configuration_digest) is not str
+            or len(resolved_configuration_digest) != 71
+            or not resolved_configuration_digest.startswith("sha256:")
+            or any(
+                character not in "0123456789abcdef"
+                for character in resolved_configuration_digest[7:]
+            )
+        ):
+            raise ValueError("configuration_digest must be a lowercase SHA-256 digest")
+        resolved_decoder_identity = (
+            _snapshot_decoder_identity(decoder_identity)
+            if decoder_identity is not None
+            else None
+        )
+        try:
+            active_decoder = getattr(active_coordinator, "trace_decoder", None)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise IngestionPipelineError(
+                "coordinator trace_decoder descriptor could not be resolved"
+            ) from error
+        decoder_implementation: Any | None = None
+        if type(active_decoder) is _IdentityBoundTraceDecoder:
+            try:
+                decoder_matches = (
+                    active_decoder.identity == resolved_decoder_identity
+                )
+                decoder_implementation = active_decoder._implementation()
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except BaseException as error:
+                raise IngestionPipelineError(
+                    "coordinator trace_decoder identity could not be compared"
+                ) from error
+            if not decoder_matches:
+                raise ValueError(
+                    "coordinator trace_decoder identity conflicts with registration"
+                )
+        elif (active_decoder is None) != (resolved_decoder_identity is None):
+            raise ValueError(
+                "decoder_identity is required exactly when the coordinator has "
+                "a trace_decoder"
+            )
+        if (
+            active_decoder is not None
+            and type(active_decoder) is not _IdentityBoundTraceDecoder
+        ):
+            assert resolved_decoder_identity is not None
+            decoder_implementation = active_decoder
+            try:
+                active_coordinator.trace_decoder = _IdentityBoundTraceDecoder(
+                    active_decoder,
+                    _snapshot_decoder_identity(resolved_decoder_identity),
+                )
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except BaseException as error:
+                raise IngestionPipelineError(
+                    "coordinator trace_decoder binding could not be installed"
+                ) from error
         record = RegisteredPlugin(
-            plugin=validated,
+            plugin=plugin,
             coordinator=active_coordinator,
             package_hash=resolved_package_hash,
             verify_package_bytes=verify_package_bytes,
+            instance_id=_bounded_identifier(
+                (
+                    instance_id
+                    if instance_id is not None
+                    else f"{plugin_id}.default"
+                ),
+                "instance_id",
+                256,
+            ),
+            distribution_name=_bounded_identifier(
+                (
+                    distribution_name
+                    if distribution_name is not None
+                    else plugin_id
+                ),
+                "distribution_name",
+                256,
+            ),
+            distribution_version=_bounded_identifier(
+                (
+                    distribution_version
+                    if distribution_version is not None
+                    else plugin_version
+                ),
+                "distribution_version",
+                128,
+            ),
+            entry_point_name=_bounded_identifier(
+                (
+                    entry_point_name
+                    if entry_point_name is not None
+                    else plugin_id
+                ),
+                "entry_point_name",
+                256,
+            ),
+            module_target=_bounded_identifier(
+                resolved_module_target,
+                "module_target",
+                512,
+            ),
+            configuration_digest=resolved_configuration_digest,
+            core_api_version=core_api_version,
+            capabilities=capabilities,
+            schema_versions=schema_versions,
+            decoder_identity=resolved_decoder_identity,
             _plugin_id_snapshot=plugin_id,
             _plugin_version_snapshot=plugin_version,
+            _manifest_identity_snapshot=manifest_identity,
+            _execution_plugin=execution_plugin,
+            _decoder_implementation_snapshot=decoder_implementation,
+        )
+        # Validate the same artifact projection used later by execution plans
+        # now, at the registration boundary.
+        PluginArtifactIdentity(
+            distribution_name=record.distribution_name,
+            distribution_version=record.distribution_version,
+            package_hash=record.package_hash,
+            entry_point_name=record.entry_point_name,
+            module_target=record.module_target,
+        )
+        record = replace(
+            record,
+            _registered_execution_identity_snapshot=(
+                record.registered_execution_identity
+            ),
         )
         key = (record.plugin_id, record.plugin_version)
         if key in self._plugins:
@@ -1313,6 +1752,97 @@ class PluginRegistry:
                 f"{record.plugin_id}@{record.plugin_version}"
             )
 
+    @classmethod
+    def revalidate_manifest_identity(cls, record: RegisteredPlugin) -> None:
+        """Reject mutation of any manifest coordinate frozen for execution."""
+
+        expected = record._manifest_identity_snapshot
+        if expected is None:
+            # Compatibility for direct RegisteredPlugin construction in
+            # boundary tests; registry-created records always carry a snapshot.
+            return
+        # Preserve the declared plug-in receiver type at this trust boundary.
+        # Besides improving static checking, this keeps descriptor execution
+        # visible to the repository-wide derived boundary census.
+        plugin: AnalyzerPlugin = record.plugin
+        try:
+            manifest = plugin.manifest
+            if type(manifest) is not PluginManifest:
+                raise TypeError("registered plug-in manifest is invalid")
+            current = cls._manifest_fingerprint(manifest)
+            execution_plugin = record.execution_plugin
+            if (
+                type(execution_plugin) is not _PinnedManifestPlugin
+                or execution_plugin.original is not record.plugin
+                or cls._manifest_fingerprint(execution_plugin.manifest)
+                != expected
+            ):
+                raise TypeError("registered execution manifest is invalid")
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise IngestionPipelineError(
+                "registered plug-in manifest identity cannot be revalidated"
+            ) from error
+        if current != expected:
+            raise IngestionPipelineError(
+                "registered plug-in manifest changed after registration: "
+                f"{record.plugin_id}@{record.plugin_version}"
+            )
+
+    @classmethod
+    def revalidate_registered_identity(cls, record: RegisteredPlugin) -> None:
+        cls.revalidate_executable_identity(record)
+        cls.revalidate_manifest_identity(record)
+        try:
+            active_decoder = getattr(record.coordinator, "trace_decoder", None)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise IngestionPipelineError(
+                "registered trace decoder binding could not be revalidated"
+            ) from error
+        if record.decoder_identity is None:
+            decoder_matches = (
+                active_decoder is None
+                and record._decoder_implementation_snapshot is None
+            )
+        else:
+            if type(active_decoder) is not _IdentityBoundTraceDecoder:
+                decoder_matches = False
+            else:
+                try:
+                    decoder_matches = active_decoder._matches(
+                        record._decoder_implementation_snapshot,
+                        record.decoder_identity,
+                    )
+                except PROCESS_CONTROL_EXCEPTIONS:
+                    raise
+                except BaseException as error:
+                    raise IngestionPipelineError(
+                        "registered trace decoder identity could not be compared"
+                    ) from error
+        if not decoder_matches:
+            raise IngestionPipelineError(
+                "registered trace decoder binding changed after registration"
+            )
+        expected_execution_identity = (
+            record._registered_execution_identity_snapshot
+        )
+        if expected_execution_identity is not None:
+            try:
+                current_execution_identity = record.registered_execution_identity
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except BaseException as error:
+                raise IngestionPipelineError(
+                    "registered execution identity could not be revalidated"
+                ) from error
+            if current_execution_identity != expected_execution_identity:
+                raise IngestionPipelineError(
+                    "registered execution identity changed after registration"
+                )
+
     def require_executable_identities(self) -> None:
         """Reject records backed only by the non-executable manifest digest."""
 
@@ -1331,12 +1861,15 @@ class PluginRegistry:
         """Return a deterministic identity for the complete allowlisted set."""
 
         material = {
-            "schema_version": "router_dump_analyzer.plugin_registry.v1",
+            "schema_version": "router_dump_analyzer.plugin_registry.v2",
             "plugins": [
                 {
                     "plugin_id": record.plugin_id,
                     "plugin_version": record.plugin_version,
                     "package_hash": record.package_hash,
+                    "registered_execution_identity": (
+                        record.registered_execution_identity
+                    ),
                 }
                 for record in self.records()
             ],
@@ -1355,7 +1888,7 @@ class PluginRegistry:
     ) -> tuple[PluginCandidate, ...]:
         candidates: list[PluginCandidate] = []
         for record in self.records():
-            self.revalidate_executable_identity(record)
+            self.revalidate_registered_identity(record)
             try:
                 with CoreArtifactReader(
                     input_path,
@@ -1364,7 +1897,7 @@ class PluginRegistry:
                     limits=record.coordinator.limits.artifact_limits,
                 ) as reader:
                     report = validate_probe_report(
-                        record.plugin.probe(reader.inventory),
+                        record.execution_plugin.probe(reader.inventory),
                         artifact_ids={
                             artifact.artifact_id
                             for artifact in reader.inventory.artifacts
@@ -1397,6 +1930,9 @@ class PluginRegistry:
                     plugin_id=record.plugin_id,
                     plugin_version=record.plugin_version,
                     package_hash=record.package_hash,
+                    registered_execution_identity=(
+                        record.registered_execution_identity
+                    ),
                     confidence=float(probe_result.confidence),
                     match_kind=match_kind.value,
                     reasons=probe_result.reasons,
@@ -1412,6 +1948,7 @@ class PluginRegistry:
                     item.plugin_id,
                     item.plugin_version,
                     item.package_hash,
+                    item.registered_execution_identity,
                 ),
             )
         )
@@ -1426,6 +1963,140 @@ class _StagedChildIngestion:
     event_count: int
     source_record_count: int
     resource_count: int
+    execution_plan: PluginExecutionPlan
+
+
+def _execution_plan_for_result(
+    registered: RegisteredPlugin,
+    result: IngestionResult,
+) -> PluginExecutionPlan:
+    """Freeze the executable interpretation that produced one result."""
+
+    decoder_identity = _ACTIVE_DECODER_IDENTITY.get()
+    _ACTIVE_DECODER_IDENTITY.set(None)
+    if decoder_identity is not None:
+        try:
+            decoder_matches = decoder_identity == registered.decoder_identity
+            executed_decoder_identity = _snapshot_decoder_identity(decoder_identity)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise IngestionPipelineError(
+                "executed trace decoder identity could not be validated"
+            ) from error
+        if not decoder_matches:
+            raise IngestionPipelineError(
+                "executed trace decoder does not match the registered identity"
+            )
+    else:
+        executed_decoder_identity = None
+    schema = result.dataset.get("schema")
+    if not isinstance(schema, Mapping):
+        raise IngestionPipelineError("normalized dataset lacks its plug-in schema")
+    schema_digest = (
+        "sha256:"
+        + hashlib.sha256(canonical_json(dict(schema)).encode("utf-8")).hexdigest()
+    )
+    pin = PluginExecutionPin(
+        instance_id=registered.instance_id,
+        plugin_id=registered.plugin_id,
+        plugin_version=registered.plugin_version,
+        core_api_version=registered.core_api_version,
+        artifact=PluginArtifactIdentity(
+            distribution_name=registered.distribution_name,
+            distribution_version=registered.distribution_version,
+            package_hash=registered.package_hash,
+            entry_point_name=registered.entry_point_name,
+            module_target=registered.module_target,
+        ),
+        configuration_digest=registered.configuration_digest,
+        schema_digest=schema_digest,
+        schema_versions=registered.schema_versions,
+        capabilities=registered.capabilities,
+        roles=("primary_parser",),
+    )
+    return PluginExecutionPlan(
+        node_id=result.node_id,
+        basis_revision_id=result.revision_id,
+        plugins=(pin,),
+        decoder=executed_decoder_identity,
+    )
+
+
+def _dataset_with_execution_plan(
+    registered: RegisteredPlugin,
+    result: IngestionResult,
+) -> tuple[bytes, PluginExecutionPlan]:
+    plan = _execution_plan_for_result(registered, result)
+    dataset = dict(result.dataset)
+    raw_ingestion = dataset.get("_ingestion")
+    if not isinstance(raw_ingestion, Mapping):
+        raise IngestionPipelineError("normalized dataset lacks ingestion metadata")
+    ingestion_metadata = dict(raw_ingestion)
+    ingestion_metadata["plugin_execution_plan_digest"] = plan.plan_digest
+    dataset["_ingestion"] = ingestion_metadata
+    return canonical_json(dataset).encode("utf-8"), plan
+
+
+def _execution_plan_matches_registration(
+    plan: PluginExecutionPlan,
+    registered: RegisteredPlugin,
+) -> bool:
+    if len(plan.plugins) != 1:
+        return False
+    pin = plan.plugins[0]
+    artifact = pin.artifact
+    return (
+        pin.instance_id == registered.instance_id
+        and pin.plugin_id == registered.plugin_id
+        and pin.plugin_version == registered.plugin_version
+        and pin.core_api_version == registered.core_api_version
+        and artifact.distribution_name == registered.distribution_name
+        and artifact.distribution_version == registered.distribution_version
+        and artifact.package_hash == registered.package_hash
+        and artifact.entry_point_name == registered.entry_point_name
+        and artifact.module_target == registered.module_target
+        and pin.configuration_digest == registered.configuration_digest
+        and pin.schema_versions == registered.schema_versions
+        and pin.capabilities == registered.capabilities
+        and pin.roles == ("primary_parser",)
+        and (
+            plan.decoder is None
+            or plan.decoder == registered.decoder_identity
+        )
+    )
+
+
+def _ingest_registered_plugin(
+    registered: RegisteredPlugin,
+    input_path: Path,
+    *,
+    node_hint: str | None,
+    metadata: Mapping[str, Any],
+) -> tuple[IngestionResult, bytes, PluginExecutionPlan]:
+    """Execute and bind the identities revalidated for this exact run."""
+
+    token = _ACTIVE_DECODER_IDENTITY.set(None)
+    try:
+        PluginRegistry.revalidate_registered_identity(registered)
+        result = registered.coordinator.ingest(
+            registered.execution_plugin,
+            input_path,
+            node_hint=node_hint,
+            metadata=metadata,
+        )
+        PluginRegistry.revalidate_registered_identity(registered)
+        dataset_json, execution_plan = _dataset_with_execution_plan(
+            registered,
+            result,
+        )
+        if not _execution_plan_matches_registration(execution_plan, registered):
+            raise IngestionPipelineError(
+                "execution plan does not match the registered execution identity"
+            )
+        return result, dataset_json, execution_plan
+    finally:
+        _ACTIVE_DECODER_IDENTITY.reset(token)
 
 
 def _send_isolated_child_message(
@@ -1489,14 +2160,12 @@ def _ingest_plugin_child(
     staged_path: str,
 ) -> None:
     try:
-        PluginRegistry.revalidate_executable_identity(registered)
-        result = registered.coordinator.ingest(
-            registered.plugin,
+        result, dataset_json, execution_plan = _ingest_registered_plugin(
+            registered,
             Path(input_path),
             node_hint=node_hint,
             metadata=metadata,
         )
-        dataset_json = canonical_json(result.dataset).encode("utf-8")
         dataset_sha256 = hashlib.sha256(dataset_json).hexdigest()
         output = Path(staged_path)
         with output.open("xb") as stream:
@@ -1515,6 +2184,7 @@ def _ingest_plugin_child(
                 "event_count": len(result.events),
                 "source_record_count": len(result.source_records),
                 "resource_count": len(result.dataset.get("resources", ())),
+                "execution_plan": plugin_execution_plan_dict(execution_plan),
             },
         )
     except PROCESS_CONTROL_EXCEPTIONS:
@@ -1934,6 +2604,7 @@ class DurableIngestionPipeline:
                     selected_plugin_id TEXT,
                     selected_plugin_version TEXT,
                     selected_package_hash TEXT,
+                    selected_execution_identity TEXT,
                     revision_id TEXT,
                     node_id TEXT,
                     admission_operation_id TEXT,
@@ -1946,6 +2617,10 @@ class DurableIngestionPipeline:
                     staged_event_count INTEGER,
                     staged_source_record_count INTEGER,
                     staged_resource_count INTEGER,
+                    staged_execution_plan_json TEXT,
+                    staged_execution_plan_digest TEXT,
+                    execution_plan_required INTEGER NOT NULL DEFAULT 1
+                        CHECK (execution_plan_required IN (0, 1)),
                     attempt_count INTEGER NOT NULL DEFAULT 0,
                     auto_select INTEGER NOT NULL,
                     preferred_plugin_id TEXT,
@@ -1984,6 +2659,7 @@ class DurableIngestionPipeline:
                     plugin_id TEXT NOT NULL,
                     plugin_version TEXT NOT NULL,
                     package_hash TEXT NOT NULL,
+                    registered_execution_identity TEXT NOT NULL,
                     confidence REAL NOT NULL,
                     match_kind TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
@@ -2111,6 +2787,7 @@ class DurableIngestionPipeline:
                     "metadata_json TEXT NOT NULL DEFAULT '{}'"
                 )
             staged_columns = {
+                "selected_execution_identity": "TEXT",
                 "admission_operation_id": "TEXT",
                 "catalog_fixture_admitted": "INTEGER NOT NULL DEFAULT 0",
                 "publication_operation_id": "TEXT",
@@ -2121,12 +2798,150 @@ class DurableIngestionPipeline:
                 "staged_event_count": "INTEGER",
                 "staged_source_record_count": "INTEGER",
                 "staged_resource_count": "INTEGER",
+                "staged_execution_plan_json": "TEXT",
+                "staged_execution_plan_digest": "TEXT",
+                "execution_plan_required": (
+                    "INTEGER NOT NULL DEFAULT 0 "
+                    "CHECK (execution_plan_required IN (0, 1))"
+                ),
             }
             for name, sql_type in staged_columns.items():
                 if name not in columns:
                     connection.execute(
                         f"ALTER TABLE ingestion_imports ADD COLUMN {name} {sql_type}"
                     )
+            candidate_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(ingestion_candidates)"
+                ).fetchall()
+            }
+            if "registered_execution_identity" not in candidate_columns:
+                connection.execute(
+                    "ALTER TABLE ingestion_candidates ADD COLUMN "
+                    "registered_execution_identity TEXT NOT NULL DEFAULT ''"
+                )
+            connection.executescript(
+                """
+                CREATE TRIGGER IF NOT EXISTS
+                    ingestion_execution_plan_contract_no_downgrade
+                BEFORE UPDATE OF execution_plan_required ON ingestion_imports
+                WHEN OLD.execution_plan_required = 1
+                     AND NEW.execution_plan_required != 1
+                BEGIN
+                    SELECT RAISE(
+                        ABORT,
+                        'execution-plan contract cannot be downgraded'
+                    );
+                END;
+                CREATE TRIGGER IF NOT EXISTS
+                    ingestion_execution_plan_required_insert
+                BEFORE INSERT ON ingestion_imports
+                WHEN NEW.execution_plan_required = 1
+                     AND NEW.publication_operation_id IS NOT NULL
+                     AND (
+                         NEW.staged_execution_plan_json IS NULL
+                         OR NEW.staged_execution_plan_json = ''
+                         OR NEW.staged_execution_plan_digest IS NULL
+                         OR NEW.staged_execution_plan_digest = ''
+                     )
+                BEGIN
+                    SELECT RAISE(
+                        ABORT,
+                        'execution plan is required for this import'
+                    );
+                END;
+                CREATE TRIGGER IF NOT EXISTS
+                    ingestion_execution_plan_required_update
+                BEFORE UPDATE ON ingestion_imports
+                WHEN NEW.execution_plan_required = 1
+                     AND NEW.publication_operation_id IS NOT NULL
+                     AND (
+                         NEW.staged_execution_plan_json IS NULL
+                         OR NEW.staged_execution_plan_json = ''
+                         OR NEW.staged_execution_plan_digest IS NULL
+                         OR NEW.staged_execution_plan_digest = ''
+                     )
+                BEGIN
+                    SELECT RAISE(
+                        ABORT,
+                        'execution plan is required for this import'
+                    );
+                END;
+                CREATE TRIGGER IF NOT EXISTS
+                    ingestion_staged_publication_immutable
+                BEFORE UPDATE OF
+                    publication_operation_id,
+                    staged_source_revision_id,
+                    staged_node_id,
+                    staged_dataset_ref,
+                    staged_dataset_sha256,
+                    staged_event_count,
+                    staged_source_record_count,
+                    staged_resource_count,
+                    staged_execution_plan_json,
+                    staged_execution_plan_digest,
+                    selected_plugin_id,
+                    selected_plugin_version,
+                    selected_package_hash,
+                    selected_execution_identity
+                ON ingestion_imports
+                WHEN OLD.publication_operation_id IS NOT NULL
+                     AND (
+                         NEW.publication_operation_id
+                             IS NOT OLD.publication_operation_id
+                         OR NEW.staged_source_revision_id
+                             IS NOT OLD.staged_source_revision_id
+                         OR NEW.staged_node_id IS NOT OLD.staged_node_id
+                         OR NEW.staged_dataset_ref IS NOT OLD.staged_dataset_ref
+                         OR NEW.staged_dataset_sha256
+                             IS NOT OLD.staged_dataset_sha256
+                         OR NEW.staged_event_count IS NOT OLD.staged_event_count
+                         OR NEW.staged_source_record_count
+                             IS NOT OLD.staged_source_record_count
+                         OR NEW.staged_resource_count
+                             IS NOT OLD.staged_resource_count
+                         OR NEW.staged_execution_plan_json
+                             IS NOT OLD.staged_execution_plan_json
+                         OR NEW.staged_execution_plan_digest
+                             IS NOT OLD.staged_execution_plan_digest
+                         OR NEW.selected_plugin_id IS NOT OLD.selected_plugin_id
+                         OR NEW.selected_plugin_version
+                             IS NOT OLD.selected_plugin_version
+                         OR NEW.selected_package_hash
+                             IS NOT OLD.selected_package_hash
+                         OR NEW.selected_execution_identity
+                             IS NOT OLD.selected_execution_identity
+                     )
+                BEGIN
+                    SELECT RAISE(
+                        ABORT,
+                        'staged publication payload is immutable'
+                    );
+                END;
+                CREATE TRIGGER IF NOT EXISTS
+                    ingestion_staged_scope_immutable
+                BEFORE UPDATE OF
+                    tenant_id,
+                    project_id,
+                    workspace_id,
+                    fixture_id
+                ON ingestion_imports
+                WHEN OLD.publication_operation_id IS NOT NULL
+                     AND (
+                         NEW.tenant_id IS NOT OLD.tenant_id
+                         OR NEW.project_id IS NOT OLD.project_id
+                         OR NEW.workspace_id IS NOT OLD.workspace_id
+                         OR NEW.fixture_id IS NOT OLD.fixture_id
+                     )
+                BEGIN
+                    SELECT RAISE(
+                        ABORT,
+                        'staged publication scope is immutable'
+                    );
+                END;
+                """
+            )
             retention_audit_columns = {
                 str(row["name"])
                 for row in connection.execute(
@@ -2160,6 +2975,7 @@ class DurableIngestionPipeline:
             )
             connection.execute("BEGIN IMMEDIATE")
             try:
+                self._migrate_legacy_execution_selections(connection)
                 self._migrate_legacy_artifact_pins(connection)
                 self._migrate_legacy_public_failures(connection)
             except BaseException:
@@ -2168,6 +2984,82 @@ class DurableIngestionPipeline:
             else:
                 connection.commit()
         self._recover_expired_jobs()
+
+    def _migrate_legacy_execution_selections(
+        self,
+        connection: sqlite3.Connection,
+    ) -> None:
+        """Re-probe unfinished pre-contract jobs before binding a full identity."""
+
+        reprobe_states = (
+            ImportState.QUEUED.value,
+            ImportState.PROBING.value,
+            ImportState.AWAITING_SELECTION.value,
+            ImportState.READY.value,
+            ImportState.INGESTING.value,
+            ImportState.FAILED.value,
+        )
+        placeholders = ", ".join("?" for _ in reprobe_states)
+        rows = connection.execute(
+            f"""
+            SELECT import_id, state
+            FROM ingestion_imports
+            WHERE execution_plan_required = 0
+              AND publication_operation_id IS NULL
+              AND state IN ({placeholders})
+            """,
+            reprobe_states,
+        ).fetchall()
+        if not rows:
+            # ADMITTING rows have not probed and can adopt the contract in place.
+            connection.execute(
+                """
+                UPDATE ingestion_imports
+                SET execution_plan_required = 1
+                WHERE execution_plan_required = 0
+                  AND publication_operation_id IS NULL
+                  AND state = ?
+                """,
+                (ImportState.ADMITTING.value,),
+            )
+            return
+        import_ids = tuple(str(row["import_id"]) for row in rows)
+        id_placeholders = ", ".join("?" for _ in import_ids)
+        connection.execute(
+            f"DELETE FROM ingestion_candidates "
+            f"WHERE import_id IN ({id_placeholders})",
+            import_ids,
+        )
+        connection.execute(
+            f"""
+            UPDATE ingestion_imports
+            SET state = CASE WHEN state = ? THEN state ELSE ? END,
+                probe_set_hash = NULL,
+                selected_plugin_id = NULL,
+                selected_plugin_version = NULL,
+                selected_package_hash = NULL,
+                selected_execution_identity = NULL,
+                lease_owner = NULL,
+                lease_expires_ns = NULL,
+                execution_plan_required = 1
+            WHERE import_id IN ({id_placeholders})
+            """,
+            (
+                ImportState.FAILED.value,
+                ImportState.QUEUED.value,
+                *import_ids,
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE ingestion_imports
+            SET execution_plan_required = 1
+            WHERE execution_plan_required = 0
+              AND publication_operation_id IS NULL
+              AND state = ?
+            """,
+            (ImportState.ADMITTING.value,),
+        )
 
     def _migrate_legacy_artifact_pins(
         self,
@@ -2744,6 +3636,66 @@ class DurableIngestionPipeline:
             raise IngestionPipelineError(
                 "content-addressed object failed digest verification"
             )
+
+    @staticmethod
+    def _verified_dataset_execution_plan_digest(
+        path: Path,
+        *,
+        expected_sha256: str,
+    ) -> str | None:
+        """Verify staged bytes and read the bounded canonical ingestion envelope."""
+
+        if (
+            len(expected_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in expected_sha256)
+        ):
+            raise IngestionPipelineError("staged dataset digest is invalid")
+        if path.is_symlink() or not path.is_file():
+            raise IngestionPipelineError("staged dataset is not a regular file")
+        digest = hashlib.sha256()
+        prefix = bytearray()
+        try:
+            with path.open("rb") as stream:
+                while block := stream.read(1024 * 1024):
+                    digest.update(block)
+                    remaining = (
+                        _MAX_STAGED_INGESTION_ENVELOPE_BYTES - len(prefix)
+                    )
+                    if remaining > 0:
+                        prefix.extend(block[:remaining])
+        except OSError as error:
+            raise IngestionPipelineError(
+                "staged dataset could not be verified"
+            ) from error
+        if digest.hexdigest() != expected_sha256:
+            raise IngestionPipelineError("staged dataset failed digest verification")
+        try:
+            document_prefix = bytes(prefix).decode("utf-8")
+            envelope_prefix = '{"_ingestion":'
+            if not document_prefix.startswith(envelope_prefix):
+                raise ValueError("canonical ingestion envelope is not first")
+            ingestion, _ = json.JSONDecoder().raw_decode(
+                document_prefix[len(envelope_prefix) :]
+            )
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
+            raise IngestionPipelineError(
+                "staged dataset has an invalid or oversized ingestion envelope"
+            ) from error
+        if not isinstance(ingestion, dict):
+            raise IngestionPipelineError("staged dataset ingestion envelope is invalid")
+        value = ingestion.get("plugin_execution_plan_digest")
+        if value is None:
+            return None
+        if (
+            not isinstance(value, str)
+            or len(value) != 71
+            or not value.startswith("sha256:")
+            or any(character not in "0123456789abcdef" for character in value[7:])
+        ):
+            raise IngestionPipelineError(
+                "staged dataset execution-plan digest is invalid"
+            )
+        return value
 
     @staticmethod
     def _content_file_identity(
@@ -3542,10 +4494,10 @@ class DurableIngestionPipeline:
                                     catalog_fixture_admitted, attempt_count,
                                     auto_select, preferred_plugin_id,
                                     idempotency_key, created_at_ns,
-                                    updated_at_ns
+                                    updated_at_ns, execution_plan_required
                                 ) VALUES (
                                     ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?,
-                                    ?, ?, ?, 0, 0, ?, ?, ?, ?, ?
+                                    ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, 1
                                 )
                                 """,
                                 (
@@ -6538,6 +7490,8 @@ class DurableIngestionPipeline:
                 row["selected_plugin_id"] == plugin_id
                 and row["selected_plugin_version"] == plugin_version
                 and row["selected_package_hash"] == package_hash
+                and isinstance(row["selected_execution_identity"], str)
+                and bool(row["selected_execution_identity"])
                 and row["probe_set_hash"] == probe_set_hash
                 and ImportState(str(row["state"]))
                 in {
@@ -6577,7 +7531,7 @@ class DurableIngestionPipeline:
                 raise ImportConflictError("stale probe_set_hash")
             candidate = connection.execute(
                 """
-                SELECT 1
+                SELECT registered_execution_identity
                 FROM ingestion_candidates
                 WHERE import_id = ? AND plugin_id = ?
                   AND plugin_version = ? AND package_hash = ?
@@ -6599,6 +7553,7 @@ class DurableIngestionPipeline:
                     selected_plugin_id = ?,
                     selected_plugin_version = ?,
                     selected_package_hash = ?,
+                    selected_execution_identity = ?,
                     error_code = NULL, error_message = NULL,
                     updated_at_ns = ?
                 WHERE import_id = ?
@@ -6608,6 +7563,7 @@ class DurableIngestionPipeline:
                     plugin_id,
                     plugin_version,
                     package_hash,
+                    candidate["registered_execution_identity"],
                     now,
                     import_id,
                 ),
@@ -7301,18 +8257,23 @@ class DurableIngestionPipeline:
                 raw_plugin_id = value.get("plugin_id")
                 raw_plugin_version = value.get("plugin_version")
                 raw_package_hash = value.get("package_hash")
+                raw_execution_identity = value.get(
+                    "registered_execution_identity"
+                )
                 if not all(
                     isinstance(item, str)
                     for item in (
                         raw_plugin_id,
                         raw_plugin_version,
                         raw_package_hash,
+                        raw_execution_identity,
                     )
                 ):
                     raise ValueError("identity fields are invalid")
                 assert isinstance(raw_plugin_id, str)
                 assert isinstance(raw_plugin_version, str)
                 assert isinstance(raw_package_hash, str)
+                assert isinstance(raw_execution_identity, str)
                 plugin_id = _bounded_identifier(
                     raw_plugin_id,
                     f"probe candidate {index} plugin_id",
@@ -7328,6 +8289,20 @@ class DurableIngestionPipeline:
                     f"probe candidate {index} package_hash",
                     256,
                 )
+                registered_execution_identity = _bounded_identifier(
+                    raw_execution_identity,
+                    f"probe candidate {index} registered_execution_identity",
+                    71,
+                )
+                if (
+                    len(registered_execution_identity) != 71
+                    or not registered_execution_identity.startswith("sha256:")
+                    or any(
+                        character not in "0123456789abcdef"
+                        for character in registered_execution_identity[7:]
+                    )
+                ):
+                    raise ValueError("registered execution identity is invalid")
                 confidence = value.get("confidence")
                 if (
                     isinstance(confidence, bool)
@@ -7376,8 +8351,12 @@ class DurableIngestionPipeline:
                     )
                 )
                 registered = self.registry.get(plugin_id, plugin_version)
-                if registered.package_hash != package_hash:
-                    raise ValueError("package identity does not match registry")
+                if (
+                    registered.package_hash != package_hash
+                    or registered.registered_execution_identity
+                    != registered_execution_identity
+                ):
+                    raise ValueError("execution identity does not match registry")
             except (KeyError, TypeError, ValueError) as error:
                 raise PluginExecutionProcessError(
                     f"plug-in probe candidate {index} is invalid: {error}"
@@ -7393,6 +8372,7 @@ class DurableIngestionPipeline:
                     plugin_id=plugin_id,
                     plugin_version=plugin_version,
                     package_hash=package_hash,
+                    registered_execution_identity=registered_execution_identity,
                     confidence=float(probe_result.confidence),
                     match_kind=ProbeMatchKind(probe_result.match_kind).value,
                     reasons=probe_result.reasons,
@@ -7408,6 +8388,7 @@ class DurableIngestionPipeline:
                     item.plugin_id,
                     item.plugin_version,
                     item.package_hash,
+                    item.registered_execution_identity,
                 ),
             )
         )
@@ -7472,8 +8453,9 @@ class DurableIngestionPipeline:
                     """
                     INSERT INTO ingestion_candidates (
                         import_id, ordinal, plugin_id, plugin_version,
-                        package_hash, confidence, match_kind, payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        package_hash, registered_execution_identity,
+                        confidence, match_kind, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         row["import_id"],
@@ -7481,6 +8463,7 @@ class DurableIngestionPipeline:
                         candidate.plugin_id,
                         candidate.plugin_version,
                         candidate.package_hash,
+                        candidate.registered_execution_identity,
                         candidate.confidence,
                         candidate.match_kind,
                         canonical_json(candidate.as_dict()),
@@ -7494,6 +8477,7 @@ class DurableIngestionPipeline:
                     selected_plugin_id = ?,
                     selected_plugin_version = ?,
                     selected_package_hash = ?,
+                    selected_execution_identity = ?,
                     lease_owner = NULL, lease_expires_ns = NULL,
                     updated_at_ns = ?
                 WHERE import_id = ?
@@ -7504,6 +8488,11 @@ class DurableIngestionPipeline:
                     selected.plugin_id if selected else None,
                     selected.plugin_version if selected else None,
                     selected.package_hash if selected else None,
+                    (
+                        selected.registered_execution_identity
+                        if selected
+                        else None
+                    ),
                     now,
                     row["import_id"],
                 ),
@@ -7532,6 +8521,7 @@ class DurableIngestionPipeline:
     @staticmethod
     def _child_ingestion_metadata(
         payload: Mapping[str, Any],
+        registered: RegisteredPlugin,
     ) -> _StagedChildIngestion:
         try:
             raw_revision_id = payload.get("revision_id")
@@ -7573,6 +8563,20 @@ class DurableIngestionPipeline:
                 ):
                     raise ValueError(f"{field_name} is invalid")
                 counts.append(value)
+            execution_plan = plugin_execution_plan_from_dict(
+                payload.get("execution_plan")
+            )
+            if (
+                execution_plan.node_id != node_id
+                or execution_plan.basis_revision_id != revision_id
+                or not _execution_plan_matches_registration(
+                    execution_plan,
+                    registered,
+                )
+            ):
+                raise ValueError(
+                    "execution plan does not match the staged revision basis"
+                )
         except (TypeError, ValueError) as error:
             raise PluginExecutionProcessError(
                 f"plug-in ingestion child returned invalid metadata: {error}"
@@ -7585,6 +8589,7 @@ class DurableIngestionPipeline:
             event_count=counts[1],
             source_record_count=counts[2],
             resource_count=counts[3],
+            execution_plan=execution_plan,
         )
 
     def _run_ingestion(self, row: sqlite3.Row) -> None:
@@ -7597,10 +8602,18 @@ class DurableIngestionPipeline:
                 "selected plug-in is no longer registered"
             ) from error
         selected_package_hash = str(row["selected_package_hash"] or "")
-        if selected_package_hash != registered.package_hash:
+        selected_execution_identity = str(
+            row["selected_execution_identity"] or ""
+        )
+        if (
+            selected_package_hash != registered.package_hash
+            or selected_execution_identity
+            != registered.registered_execution_identity
+        ):
             raise IngestionPipelineError(
-                "selected plug-in package identity no longer matches the "
-                "registered immutable package hash or manifest fingerprint"
+                "selected plug-in execution identity no longer matches the "
+                "registered artifact, configuration, manifest, instance, or "
+                "decoder identity"
             )
         upload_metadata = json.loads(str(row["metadata_json"]))
         if not isinstance(upload_metadata, dict):
@@ -7626,12 +8639,11 @@ class DurableIngestionPipeline:
                     timeout_seconds=(self.limits.plugin_execution_timeout_seconds),
                     stage="ingest",
                 )
-                staged = self._child_ingestion_metadata(payload)
+                staged = self._child_ingestion_metadata(payload, registered)
             else:
-                self.registry.revalidate_executable_identity(registered)
-                result = _run_plugin_inline(
-                    lambda: registered.coordinator.ingest(
-                        registered.plugin,
+                result, dataset_json, execution_plan = _run_plugin_inline(
+                    lambda: _ingest_registered_plugin(
+                        registered,
                         input_path,
                         node_hint=node_hint,
                         # Authorization/catalog coordinates remain core-private.
@@ -7640,7 +8652,6 @@ class DurableIngestionPipeline:
                     ),
                     stage="ingest",
                 )
-                dataset_json = canonical_json(result.dataset).encode("utf-8")
                 dataset_sha256 = hashlib.sha256(dataset_json).hexdigest()
                 with temporary.open("xb") as stream:
                     stream.write(dataset_json)
@@ -7654,6 +8665,7 @@ class DurableIngestionPipeline:
                     event_count=len(result.events),
                     source_record_count=len(result.source_records),
                     resource_count=len(result.dataset.get("resources", ())),
+                    execution_plan=execution_plan,
                 )
             if not self._renew_lease(
                 str(row["import_id"]),
@@ -7713,6 +8725,8 @@ class DurableIngestionPipeline:
                         staged_event_count = ?,
                         staged_source_record_count = ?,
                         staged_resource_count = ?,
+                        staged_execution_plan_json = ?,
+                        staged_execution_plan_digest = ?,
                         error_code = NULL, error_message = NULL,
                         lease_owner = NULL, lease_expires_ns = NULL,
                         updated_at_ns = ?
@@ -7728,6 +8742,10 @@ class DurableIngestionPipeline:
                         staged.event_count,
                         staged.source_record_count,
                         staged.resource_count,
+                        canonical_json(
+                            plugin_execution_plan_dict(staged.execution_plan)
+                        ),
+                        staged.execution_plan.plan_digest,
                         now,
                         row["import_id"],
                     ),
@@ -7746,6 +8764,9 @@ class DurableIngestionPipeline:
                         "source_record_count": staged.source_record_count,
                         "resource_count": staged.resource_count,
                         "dataset_sha256": staged.dataset_sha256,
+                        "plugin_execution_plan_digest": (
+                            staged.execution_plan.plan_digest
+                        ),
                     },
                     now=now,
                 )
@@ -7785,6 +8806,76 @@ class DurableIngestionPipeline:
         for label, value in required_counts.items():
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise IngestionPipelineError(f"staged publication has invalid {label}")
+        plan_required = row["execution_plan_required"]
+        if plan_required not in {
+            _EXECUTION_PLAN_LEGACY_OPTIONAL,
+            _EXECUTION_PLAN_REQUIRED,
+        }:
+            raise IngestionPipelineError(
+                "staged publication has an invalid execution-plan contract"
+            )
+        raw_plan_json = row["staged_execution_plan_json"]
+        raw_plan_digest = row["staged_execution_plan_digest"]
+        plan_absent = raw_plan_json is None and raw_plan_digest is None
+        if plan_absent:
+            if plan_required == _EXECUTION_PLAN_REQUIRED:
+                raise IngestionPipelineError(
+                    "staged publication is missing its required execution plan"
+                )
+            execution_plan = None
+        else:
+            if (
+                not isinstance(raw_plan_json, str)
+                or not raw_plan_json
+                or not isinstance(raw_plan_digest, str)
+                or not raw_plan_digest
+            ):
+                raise IngestionPipelineError(
+                    "staged publication has an incomplete execution plan"
+                )
+            try:
+                execution_plan = plugin_execution_plan_from_dict(
+                    json.loads(raw_plan_json)
+                )
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise IngestionPipelineError(
+                    "staged publication has an invalid execution plan"
+                ) from error
+            if (
+                execution_plan.plan_digest != raw_plan_digest
+                or execution_plan.node_id != required_text["staged_node_id"]
+                or execution_plan.basis_revision_id
+                != required_text["staged_source_revision_id"]
+                or len(execution_plan.plugins) != 1
+                or execution_plan.plugins[0].plugin_id
+                != required_text["selected_plugin_id"]
+                or execution_plan.plugins[0].plugin_version
+                != required_text["selected_plugin_version"]
+                or execution_plan.plugins[0].artifact.package_hash
+                != row["selected_package_hash"]
+            ):
+                raise IngestionPipelineError(
+                    "staged publication execution plan does not match its revision"
+                )
+        dataset_path = self._contained_path(
+            self.dataset_root,
+            Path(str(required_text["staged_dataset_ref"])),
+            label="staged dataset reference",
+        )
+        dataset_plan_digest = self._verified_dataset_execution_plan_digest(
+            dataset_path,
+            expected_sha256=str(required_text["staged_dataset_sha256"]),
+        )
+        if (
+            execution_plan is None
+            and dataset_plan_digest is not None
+        ) or (
+            execution_plan is not None
+            and dataset_plan_digest != execution_plan.plan_digest
+        ):
+            raise IngestionPipelineError(
+                "staged dataset execution-plan digest does not match publication"
+            )
         scope = ImportScope(
             tenant_id=str(row["tenant_id"]),
             project_id=str(row["project_id"]),
@@ -7832,6 +8923,19 @@ class DurableIngestionPipeline:
             "resource_count": int(required_counts["resource_count"]),
             "call_context": call_context,
         }
+        publisher_plan_support = _publisher_execution_plan_support(self.publisher)
+        if (
+            execution_plan is not None
+            and publisher_plan_support is _PublisherExecutionPlanSupport.ABSENT
+        ):
+            raise IngestionPipelineError(
+                "revision publisher does not support immutable execution plans"
+            )
+        if execution_plan is not None or (
+            publisher_plan_support
+            is _PublisherExecutionPlanSupport.EXPLICIT_KEYWORD
+        ):
+            publisher_values["execution_plan"] = execution_plan
         if (
             self.limits.effective_publisher_execution_mode
             is PluginExecutionMode.PROCESS
@@ -7950,6 +9054,15 @@ class DurableIngestionPipeline:
                     "node_id": required_text["staged_node_id"],
                     **required_counts,
                     "dataset_sha256": required_text["staged_dataset_sha256"],
+                    **(
+                        {
+                            "plugin_execution_plan_digest": (
+                                execution_plan.plan_digest
+                            )
+                        }
+                        if execution_plan is not None
+                        else {}
+                    ),
                 },
                 now=now,
             )
@@ -8251,7 +9364,7 @@ def _bounded_identifier(
     maximum: int = MAX_SCOPE_ID_LENGTH,
 ) -> str:
     if (
-        not isinstance(value, str)
+        type(value) is not str
         or not value
         or len(value) > maximum
         or any(character.isspace() or ord(character) < 32 for character in value)

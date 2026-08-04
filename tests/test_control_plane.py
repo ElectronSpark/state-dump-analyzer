@@ -363,6 +363,82 @@ class ControlPlaneTests(unittest.TestCase):
         )
         self.assertEqual(len(reloaded["events"]), 2)
 
+    def test_dataset_loading_binds_catalog_dataset_and_full_execution_plan(self) -> None:
+        control = self._control_plane(self._root())
+        completed = self._ingest(control)
+        scope = control.scope("tenant-a", "project-a", "workspace-a")
+        revision = control.resolve_catalog_revision(
+            scope,
+            fixture_id=completed.fixture_id,
+        )
+        dataset = control.load_revision_dataset(scope, revision.revision_id)
+        execution_plan = revision.execution_plan
+        assert execution_plan is not None
+
+        dataset_digest_mismatch = json.loads(json.dumps(dataset))
+        dataset_digest_mismatch["_ingestion"][
+            "plugin_execution_plan_digest"
+        ] = "sha256:" + ("0" * 64)
+        with self.assertRaisesRegex(DatasetIntegrityError, "full catalog plan"):
+            control._index_dataset(revision, dataset_digest_mismatch)
+
+        missing_catalog_digest = dict(revision.metadata)
+        missing_catalog_digest.pop("plugin_execution_plan_digest")
+        with self.assertRaisesRegex(DatasetIntegrityError, "full catalog plan"):
+            control._index_dataset(
+                replace(revision, metadata=missing_catalog_digest),
+                dataset,
+            )
+
+        changed_basis = replace(
+            execution_plan,
+            basis_revision_id="ingested/router-a/different-basis",
+            plan_digest="",
+        )
+        changed_basis_metadata = dict(revision.metadata)
+        changed_basis_metadata["plugin_execution_plan_digest"] = (
+            changed_basis.plan_digest
+        )
+        changed_basis_dataset = json.loads(json.dumps(dataset))
+        changed_basis_dataset["_ingestion"][
+            "plugin_execution_plan_digest"
+        ] = changed_basis.plan_digest
+        with self.assertRaisesRegex(DatasetIntegrityError, "basis"):
+            control._index_dataset(
+                replace(
+                    revision,
+                    execution_plan=changed_basis,
+                    metadata=changed_basis_metadata,
+                ),
+                changed_basis_dataset,
+            )
+
+        planless_metadata = dict(revision.metadata)
+        planless_metadata.pop("plugin_execution_plan_digest")
+        planless_dataset = json.loads(json.dumps(dataset))
+        planless_dataset["_ingestion"].pop("plugin_execution_plan_digest")
+        planless_revision = replace(
+            revision,
+            execution_plan=None,
+            metadata=planless_metadata,
+        )
+        control._index_dataset(planless_revision, planless_dataset)
+
+        mutated_revision = replace(revision)
+        assert mutated_revision.execution_plan is not None
+        object.__setattr__(
+            mutated_revision.execution_plan.plugins[0].artifact,
+            "distribution_name",
+            "attacker-mutated-distribution",
+        )
+        with self.assertRaisesRegex(
+            DatasetIntegrityError,
+            "invalid execution plan",
+        ):
+            control._index_dataset(mutated_revision, dataset)
+        with self.assertRaisesRegex(DatasetIntegrityError, "planless"):
+            control._index_dataset(planless_revision, dataset)
+
     def test_session_catalog_publisher_runs_in_bounded_process(self) -> None:
         control = ControlPlane(
             self._root(),

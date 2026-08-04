@@ -30,6 +30,10 @@ cross-layer inconsistency.
 > bounded, killable child processes by default, but those children inherit the
 > host user's operating-system privileges and are fault isolation, not a
 > security boundary.
+> Every newly published durable revision also records an immutable execution
+> plan for the exact plug-in artifact, configuration digest, schema,
+> capabilities, role, and optional decoder that interpreted it. Legacy
+> revisions remain explicit when that provenance is unavailable.
 
 ## Start here
 

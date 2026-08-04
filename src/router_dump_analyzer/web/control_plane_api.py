@@ -25,7 +25,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from dataclasses import field as dataclass_field
 from enum import Enum
 from itertools import islice
@@ -103,6 +103,10 @@ from router_dump_analyzer.operational_logging import (
     emit_operational_event,
     emit_resolver_response_headers_rejected,
     operational_event_diagnostics_snapshot,
+)
+from router_dump_analyzer.plugin_execution_plan import (
+    PluginExecutionPlan,
+    plugin_execution_plan_dict,
 )
 from router_dump_analyzer.process_control import PROCESS_CONTROL_EXCEPTIONS
 from router_dump_analyzer.public_text import (
@@ -2125,8 +2129,18 @@ def _json_value(
 ) -> Any:
     """Return bounded-store records in a browser-safe JSON shape."""
 
+    if type(value) is PluginExecutionPlan:
+        return _json_value(plugin_execution_plan_dict(value))
     if is_dataclass(value) and not isinstance(value, type):
-        return _json_value(asdict(value))
+        # Project one level at a time so nested contract objects retain their
+        # type-specific validation boundary.  ``dataclasses.asdict`` recursively
+        # erases ``PluginExecutionPlan`` before its digest can be revalidated.
+        return _json_value(
+            {
+                descriptor.name: getattr(value, descriptor.name)
+                for descriptor in fields(value)
+            }
+        )
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, dict):

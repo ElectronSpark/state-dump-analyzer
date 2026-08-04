@@ -149,6 +149,26 @@ records all of:
 - Babeltrace decoder version and supported CTF/MIP version.
 - Clock alignment configuration.
 
+The implemented local profile represents that claim with the immutable,
+versioned `PluginExecutionPlan`. It is an ordered tuple of producer pins rather
+than a synthetic composite plug-in, so each configured instance retains its
+own artifact, configuration, schema, capability, role, and optional decoder
+identity. The plan digest covers its node and source-revision basis and every
+pin field. Configuration values and secrets are deliberately absent. Catalog
+rows persist the canonical plan and digest; normalized datasets and correlation
+revision vectors carry the same digest. Pre-contract rows remain readable with
+an explicit absent plan instead of receiving invented provenance.
+
+The registry also freezes a broader registered-execution identity before
+selection. It covers artifact coordinates and digest, configuration digest,
+the complete manifest fingerprint (including probe selectors), API/schema/
+capability declarations, configured instance, and decoder binding. Probe
+candidates persist that identity, and ingestion refuses to run if a restart
+supplies a different registration. Installed loaders provide real
+distribution coordinates; direct-module loading uses an explicit
+`direct-module` / `0` sentinel. A decoder pin appears in the revision plan only
+when that decoder was actually used.
+
 Reprocessing after a plugin upgrade creates a new revision. Published rows are
 never reinterpreted in place. A small transaction changes the case's published
 revision pointer only after validation succeeds.

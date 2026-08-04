@@ -30,7 +30,13 @@ from .ingestion_pipeline import (
     PluginExecutionMode,
     PluginRegistry,
 )
-from .plugin_loading import load_plugin_entry_point, load_plugin_module
+from .plugin_loading import (
+    LoadedPlugin,
+    load_plugin_entry_point,
+    load_plugin_module,
+    loaded_entry_point,
+    loaded_module,
+)
 
 DEFAULT_TIMEOUT_SECONDS = 900.0
 MAX_TIMEOUT_SECONDS = 7 * 24 * 60 * 60
@@ -193,9 +199,15 @@ def _load_plugins(
     *,
     entry_point_loader: Callable[[str], Any],
     module_loader: Callable[[str], Any],
-) -> tuple[Any, ...]:
-    values = [entry_point_loader(name) for name in configuration.plugin_names]
-    values.extend(module_loader(target) for target in configuration.plugin_modules)
+) -> tuple[LoadedPlugin, ...]:
+    values = [
+        loaded_entry_point(name, loader=entry_point_loader)
+        for name in configuration.plugin_names
+    ]
+    values.extend(
+        loaded_module(target, loader=module_loader)
+        for target in configuration.plugin_modules
+    )
     return tuple(values)
 
 
@@ -333,15 +345,14 @@ def run(
     for path in inputs:
         if not path.is_file():
             raise FileNotFoundError(f"ingestion input is not a file: {path}")
-    plugins = _load_plugins(
+    loaded_plugins = _load_plugins(
         configuration,
         entry_point_loader=entry_point_loader,
         module_loader=module_loader,
     )
-    registry = PluginRegistry(
-        plugins,
-        require_executable_identity=True,
-    )
+    registry = PluginRegistry(require_executable_identity=True)
+    for loaded_plugin in loaded_plugins:
+        loaded_plugin.register(registry)
     registry_fingerprint = registry.fingerprint()
     effective_pipeline_limits = pipeline_limits or PipelineLimits()
     effective_pipeline_limits = replace(

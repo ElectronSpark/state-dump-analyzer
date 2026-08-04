@@ -11,7 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .plugin_loading import load_plugin_entry_point, load_plugin_module
+from .plugin_loading import (
+    LoadedPlugin,
+    load_plugin_entry_point,
+    load_plugin_module,
+    loaded_entry_point,
+    loaded_module,
+)
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .public_text import bounded_public_error_detail
 from .runtime import (
@@ -236,11 +242,17 @@ def _load_selected_plugin(
     *,
     entry_point_loader: Callable[[str], Any],
     module_loader: Callable[[str], Any],
-) -> Any:
+) -> LoadedPlugin:
     if configuration.plugin_name is not None:
-        return entry_point_loader(configuration.plugin_name)
+        return loaded_entry_point(
+            configuration.plugin_name,
+            loader=entry_point_loader,
+        )
     assert configuration.plugin_module is not None
-    return module_loader(configuration.plugin_module)
+    return loaded_module(
+        configuration.plugin_module,
+        loader=module_loader,
+    )
 
 
 def _browser_url(host: str, port: int) -> str:
@@ -349,11 +361,12 @@ def run(
     input_path = configuration.input_path.expanduser().resolve()
     if not input_path.exists():
         raise FileNotFoundError(f"analyzer input does not exist: {input_path}")
-    plugin = _load_selected_plugin(
+    loaded_plugin = _load_selected_plugin(
         configuration,
         entry_point_loader=entry_point_loader,
         module_loader=module_loader,
     )
+    plugin = loaded_plugin.plugin
     runtime = require_plugin_runtime(plugin)
     factory = application_factory or create_runtime_application
     control_plane = None
@@ -380,12 +393,20 @@ def run(
             if configuration.control_plane_retention_policy is not None
             else None
         )
-        control_plane = ControlPlane(
-            configuration.control_plane_dir.expanduser().resolve(),
-            registry=PluginRegistry(
+        registry = PluginRegistry(require_executable_identity=True)
+        register = getattr(registry, "register", None)
+        if callable(register):
+            loaded_plugin.register(registry)
+        else:
+            # Preserve lightweight dependency-injected registry doubles that
+            # predate coordinate-aware composition.
+            registry = PluginRegistry(
                 (plugin,),
                 require_executable_identity=True,
-            ),
+            )
+        control_plane = ControlPlane(
+            configuration.control_plane_dir.expanduser().resolve(),
+            registry=registry,
             retention_policy=retention_policy,
         )
         authority = _listener_authority(

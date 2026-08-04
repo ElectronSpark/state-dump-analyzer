@@ -614,6 +614,27 @@ class PluginValidationTests(unittest.TestCase):
             self.assertNotIn(supplied, rendered)
             self.assertLessEqual(len(rendered), 1_100)
 
+    def test_cli_preserves_safe_loader_detail_within_the_total_budget(self) -> None:
+        supplied = "x" * 980
+
+        class BrokenEntryPoint:
+            name = "broken"
+
+            def load(self):
+                raise RuntimeError(supplied)
+
+        output = io.StringIO()
+        with patch(
+            "router_dump_analyzer.plugin_validation._entry_points",
+            return_value=(BrokenEntryPoint(),),
+        ), redirect_stdout(output):
+            return_code = main(["broken"])
+
+        rendered = output.getvalue()
+        self.assertEqual(return_code, 2)
+        self.assertIn(f"RuntimeError: {supplied}", rendered)
+        self.assertLessEqual(len(rendered), 1_100)
+
     def test_cli_contains_unexpected_ordinary_validation_exceptions(self) -> None:
         supplied = r"validator failed at C:\private\tenant\validator.py"
         output = io.StringIO()

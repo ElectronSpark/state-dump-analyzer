@@ -53,9 +53,11 @@ from router_dump_analyzer.ingestion_pipeline import (
     RegisteredPlugin,
     RetentionHostInventoryCoverage,
     RetentionPolicy,
+    _execution_plan_for_result,
     _ingest_plugin_child,
     _path_for_containment_comparison,
     _probe_plugin_child,
+    _publisher_accepts_execution_plan,
     _RetentionWorkItem,
     _run_plugin_inline,
     _validate_ingestion_state_root,
@@ -63,7 +65,13 @@ from router_dump_analyzer.ingestion_pipeline import (
     inspect_durable_queue,
     validate_ingestion_state_root,
 )
-from router_dump_analyzer.plugin_api import ProbeReport
+from router_dump_analyzer.plugin_api import PluginCapability, ProbeReport
+from router_dump_analyzer.plugin_execution_plan import (
+    DecoderIdentity,
+    PluginExecutionPlan,
+    plugin_execution_plan_dict,
+    plugin_execution_plan_from_dict,
+)
 from tests.test_ingestion import InvalidProbeDiagnosticPlugin, ParseOnlyPlugin
 
 PRIVATE_FAILURE_MARKER = "PRIVATE-INGESTION-FAILURE-7f3e2d"
@@ -71,6 +79,36 @@ PRIVATE_FAILURE_MARKER = "PRIVATE-INGESTION-FAILURE-7f3e2d"
 
 class Boom(BaseException):
     """Adversarial non-process-control throwable supplied by a plug-in."""
+
+
+class _HostileString(str):
+    def __new__(cls, value: str, error: BaseException):
+        instance = super().__new__(cls, value)
+        instance.error = error
+        return instance
+
+    def __len__(self) -> int:
+        raise self.error
+
+    def __iter__(self):
+        raise self.error
+
+    def __eq__(self, other: object) -> bool:
+        del other
+        raise self.error
+
+    __hash__ = str.__hash__
+
+
+class _NoopTraceDecoder:
+    def iter_ctf(self, *args: Any, **kwargs: Any) -> tuple[()]:
+        del args, kwargs
+        return ()
+
+
+class _FalseyCoordinator(IngestionCoordinator):
+    def __bool__(self) -> bool:
+        return False
 
 
 def _fixture_bytes() -> bytes:
@@ -199,6 +237,63 @@ class _Publisher:
 
     def publish_revision(self, scope: ImportScope, **values: Any) -> None:
         self.revisions.append((scope, values))
+
+
+class _LegacyPublisher(_Publisher):
+    """Exact pre-execution-plan publication contract from the prior release."""
+
+    def publish_revision(
+        self,
+        scope: ImportScope,
+        *,
+        operation_id: str,
+        fixture_id: str,
+        source_revision_id: str,
+        node_id: str,
+        plugin_id: str,
+        plugin_version: str,
+        dataset_ref: str,
+        dataset_sha256: str,
+        event_count: int,
+        source_record_count: int,
+        resource_count: int,
+        call_context: Any,
+    ) -> None:
+        self.revisions.append(
+            (
+                scope,
+                {
+                    "operation_id": operation_id,
+                    "fixture_id": fixture_id,
+                    "source_revision_id": source_revision_id,
+                    "node_id": node_id,
+                    "plugin_id": plugin_id,
+                    "plugin_version": plugin_version,
+                    "dataset_ref": dataset_ref,
+                    "dataset_sha256": dataset_sha256,
+                    "event_count": event_count,
+                    "source_record_count": source_record_count,
+                    "resource_count": resource_count,
+                    "call_context": call_context,
+                },
+            )
+        )
+
+
+class _PositionalExecutionPlanPublisher:
+    def publish_revision(self, scope: ImportScope, execution_plan: Any, /) -> None:
+        del scope, execution_plan
+
+
+class _PositionalExecutionPlanKwargsPublisher:
+    def publish_revision(
+        self,
+        scope: ImportScope,
+        execution_plan: Any,
+        /,
+        **values: Any,
+    ) -> None:
+        del scope, execution_plan, values
 
 
 class _LostPublicationResponsePublisher(_Publisher):
@@ -415,6 +510,60 @@ class _BoundaryManifestPlugin:
         raise self.error
 
 
+class _BoundaryIterable:
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def __iter__(self):
+        raise self.error
+
+
+class _BoundaryModuleMeta(type):
+    def __getattribute__(cls, name: str):
+        if name in {"__module__", "__qualname__"}:
+            error = type.__getattribute__(cls, "_boundary_module_error")
+            if error is not None:
+                raise error
+        return super().__getattribute__(name)
+
+
+class _BoundaryModulePlugin(ParseOnlyPlugin, metaclass=_BoundaryModuleMeta):
+    _boundary_module_error: BaseException | None = None
+
+
+class _BoundaryDecoderCoordinator(IngestionCoordinator):
+    def __init__(
+        self,
+        error: BaseException,
+        *,
+        trace_decoder: Any | None = None,
+    ) -> None:
+        object.__setattr__(self, "_boundary_ready", False)
+        object.__setattr__(self, "_boundary_error", error)
+        object.__setattr__(self, "_fail_decoder_get", False)
+        object.__setattr__(self, "_fail_decoder_set", False)
+        super().__init__(trace_decoder=trace_decoder)
+        object.__setattr__(self, "_boundary_ready", True)
+
+    def __getattribute__(self, name: str):
+        if (
+            name == "trace_decoder"
+            and object.__getattribute__(self, "_boundary_ready")
+            and object.__getattribute__(self, "_fail_decoder_get")
+        ):
+            raise object.__getattribute__(self, "_boundary_error")
+        return super().__getattribute__(name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if (
+            name == "trace_decoder"
+            and object.__getattribute__(self, "_boundary_ready")
+            and object.__getattribute__(self, "_fail_decoder_set")
+        ):
+            raise object.__getattribute__(self, "_boundary_error")
+        super().__setattr__(name, value)
+
+
 class _BoundaryChildConnection:
     def __init__(self) -> None:
         self.closed = False
@@ -507,14 +656,14 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         ) as caught:
             registry.register(
                 _BoundaryManifestPlugin(Boom(supplied)),
-                package_hash="test-boundary",
+                package_hash="sha256:" + ("a" * 64),
             )
         self.assertNotIn(supplied, str(caught.exception))
 
         with self.assertRaises(KeyboardInterrupt):
             registry.register(
                 _BoundaryManifestPlugin(KeyboardInterrupt("process control")),
-                package_hash="test-boundary",
+                package_hash="sha256:" + ("a" * 64),
             )
 
         with tempfile.TemporaryDirectory() as directory:
@@ -524,17 +673,122 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             boom_registry = PluginRegistry(allow_manifest_identity=True)
             boom_registry.register(
                 _BoundaryProbePlugin(Boom(supplied)),
-                package_hash="test-boundary",
+                package_hash="sha256:" + ("a" * 64),
             )
             self.assertEqual(boom_registry.probe(fixture), ())
 
             process_registry = PluginRegistry(allow_manifest_identity=True)
             process_registry.register(
                 _BoundaryProbePlugin(SystemExit("process control")),
-                package_hash="test-boundary",
+                package_hash="sha256:" + ("a" * 64),
             )
             with self.assertRaises(SystemExit):
                 process_registry.probe(fixture)
+
+    def test_registry_execution_identity_resolution_contains_hostile_descriptors(
+        self,
+    ) -> None:
+        supplied = r"identity resolution failed at C:\private\tenant\plugin.py"
+        package_hash = "sha256:" + ("a" * 64)
+
+        manifest_plugin = ParseOnlyPlugin()
+        hostile_manifest = replace(manifest_plugin.manifest)
+        object.__setattr__(
+            hostile_manifest,
+            "supported_platforms",
+            _BoundaryIterable(Boom(supplied)),
+        )
+        manifest_plugin.manifest = hostile_manifest
+        with self.assertRaisesRegex(
+            IngestionPipelineError,
+            "could not resolve required descriptors",
+        ) as manifest_failure:
+            PluginRegistry().register(
+                manifest_plugin,
+                package_hash=package_hash,
+            )
+
+        _BoundaryModulePlugin._boundary_module_error = Boom(supplied)
+        try:
+            with self.assertRaisesRegex(
+                IngestionPipelineError,
+                "module identity could not be resolved",
+            ) as module_failure:
+                PluginRegistry().register(
+                    _BoundaryModulePlugin(),
+                    package_hash=package_hash,
+                )
+        finally:
+            _BoundaryModulePlugin._boundary_module_error = None
+
+        decoder_identity = DecoderIdentity(
+            decoder_id="tests.decoder",
+            decoder_version="1",
+            executable_digest="sha256:" + ("d" * 64),
+        )
+        get_coordinator = _BoundaryDecoderCoordinator(Boom(supplied))
+        get_coordinator._fail_decoder_get = True
+        with self.assertRaisesRegex(
+            IngestionPipelineError,
+            "trace_decoder descriptor could not be resolved",
+        ) as decoder_get_failure:
+            PluginRegistry().register(
+                ParseOnlyPlugin(),
+                coordinator=get_coordinator,
+                package_hash=package_hash,
+            )
+
+        set_coordinator = _BoundaryDecoderCoordinator(
+            Boom(supplied),
+            trace_decoder=_NoopTraceDecoder(),
+        )
+        set_coordinator._fail_decoder_set = True
+        with self.assertRaisesRegex(
+            IngestionPipelineError,
+            "trace_decoder binding could not be installed",
+        ) as decoder_set_failure:
+            PluginRegistry().register(
+                ParseOnlyPlugin(),
+                coordinator=set_coordinator,
+                package_hash=package_hash,
+                decoder_identity=decoder_identity,
+            )
+
+        revalidation_coordinator = _BoundaryDecoderCoordinator(Boom(supplied))
+        record = PluginRegistry().register(
+            ParseOnlyPlugin(),
+            coordinator=revalidation_coordinator,
+            package_hash=package_hash,
+        )
+        revalidation_coordinator._fail_decoder_get = True
+        with self.assertRaisesRegex(
+            IngestionPipelineError,
+            "trace decoder binding could not be revalidated",
+        ) as decoder_revalidation_failure:
+            PluginRegistry.revalidate_registered_identity(record)
+
+        for caught in (
+            manifest_failure,
+            module_failure,
+            decoder_get_failure,
+            decoder_set_failure,
+            decoder_revalidation_failure,
+        ):
+            self.assertNotIn(supplied, str(caught.exception))
+
+        process_manifest = replace(ParseOnlyPlugin.manifest)
+        object.__setattr__(
+            process_manifest,
+            "supported_platforms",
+            _BoundaryIterable(KeyboardInterrupt("process control")),
+        )
+        process_plugin = ParseOnlyPlugin()
+        process_plugin.manifest = process_manifest
+        with self.assertRaises(KeyboardInterrupt):
+            PluginRegistry().register(
+                process_plugin,
+                package_hash=package_hash,
+            )
 
     def test_child_plugin_boundaries_preserve_process_control_exceptions(self) -> None:
         for exception_type in (KeyboardInterrupt, SystemExit, GeneratorExit):
@@ -973,12 +1227,48 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             self.assertTrue(completed.revision_id)
             self.assertEqual(len(publisher.fixtures), 1)
             self.assertEqual(len(publisher.revisions), 1)
+            execution_plan = publisher.revisions[0][1]["execution_plan"]
+            self.assertIsInstance(execution_plan, PluginExecutionPlan)
+            assert isinstance(execution_plan, PluginExecutionPlan)
+            self.assertEqual(execution_plan.node_id, "router-a")
+            self.assertEqual(
+                execution_plan.basis_revision_id,
+                publisher.revisions[0][1]["source_revision_id"],
+            )
+            self.assertEqual(len(execution_plan.plugins), 1)
+            self.assertEqual(execution_plan.plugins[0].plugin_id, "tests.parse-only")
+            with pipeline._connect() as connection:
+                staged_row = connection.execute(
+                    "SELECT staged_execution_plan_json, "
+                    "staged_execution_plan_digest FROM ingestion_imports "
+                    "WHERE import_id = ?",
+                    (admitted.import_id,),
+                ).fetchone()
+            self.assertEqual(
+                staged_row["staged_execution_plan_digest"],
+                execution_plan.plan_digest,
+            )
+            self.assertEqual(
+                json.loads(staged_row["staged_execution_plan_json"])["plan_digest"],
+                execution_plan.plan_digest,
+            )
             self.assertTrue(
                 (
                     Path(directory)
                     / "revisions"
                     / publisher.revisions[0][1]["dataset_ref"]
                 ).is_file()
+            )
+            dataset = json.loads(
+                (
+                    Path(directory)
+                    / "revisions"
+                    / publisher.revisions[0][1]["dataset_ref"]
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                dataset["_ingestion"]["plugin_execution_plan_digest"],
+                execution_plan.plan_digest,
             )
 
             reopened = DurableIngestionPipeline(
@@ -1351,6 +1641,15 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             self.assertEqual(coordinator.ingest_calls, 1)
             self.assertEqual(publisher.calls, 2)
             self.assertEqual(len(publisher.revisions), 1)
+            replayed_plan = publisher.revisions[0][1]["execution_plan"]
+            self.assertIsInstance(replayed_plan, PluginExecutionPlan)
+            with pipeline._connect() as connection:
+                staged_digest = connection.execute(
+                    "SELECT staged_execution_plan_digest "
+                    "FROM ingestion_imports WHERE import_id = ?",
+                    (admitted.import_id,),
+                ).fetchone()[0]
+            self.assertEqual(replayed_plan.plan_digest, staged_digest)
             operation_ids = {
                 event.payload.get("operation_id")
                 for event in pipeline.events(
@@ -1362,6 +1661,56 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             self.assertEqual(
                 operation_ids,
                 {f"publication:{admitted.import_id}"},
+            )
+
+    def test_execution_plan_changes_with_package_configuration_and_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "status.jsonl"
+            input_path.write_bytes(_fixture_bytes())
+            coordinator = IngestionCoordinator()
+            plugin = ParseOnlyPlugin()
+            result = coordinator.ingest(plugin, input_path)
+
+            def registered(
+                package_character: str,
+                configuration_character: str,
+            ) -> RegisteredPlugin:
+                registry = PluginRegistry()
+                return registry.register(
+                    plugin,
+                    coordinator=coordinator,
+                    package_hash="module-sha256:" + package_character * 64,
+                    configuration_digest=(
+                        "sha256:" + configuration_character * 64
+                    ),
+                )
+
+            baseline = _execution_plan_for_result(registered("1", "a"), result)
+            package_changed = _execution_plan_for_result(
+                registered("2", "a"), result
+            )
+            configuration_changed = _execution_plan_for_result(
+                registered("1", "b"), result
+            )
+            changed_dataset = dict(result.dataset)
+            changed_schema = dict(changed_dataset["schema"])
+            changed_schema["test_extension"] = "changed"
+            changed_dataset["schema"] = changed_schema
+            schema_changed = _execution_plan_for_result(
+                registered("1", "a"),
+                replace(result, dataset=changed_dataset),
+            )
+
+            self.assertEqual(
+                len(
+                    {
+                        baseline.plan_digest,
+                        package_changed.plan_digest,
+                        configuration_changed.plan_digest,
+                        schema_changed.plan_digest,
+                    }
+                ),
+                4,
             )
 
     def test_catalog_admission_deadline_is_durable_and_pins_blob(self) -> None:
@@ -1666,6 +2015,267 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             derived.fingerprint(),
             supplied.fingerprint(),
         )
+
+    def test_registration_rejects_malformed_trusted_hash_before_plugin_access(
+        self,
+    ) -> None:
+        registry = PluginRegistry()
+        with self.assertRaisesRegex(ValueError, "package_hash"):
+            registry.register(
+                _BoundaryManifestPlugin(Boom("manifest must not be accessed")),
+                package_hash="sha256:not-a-digest",
+            )
+
+    def test_registered_execution_identity_covers_configuration_and_candidates(
+        self,
+    ) -> None:
+        package_hash = "sha256:" + ("a" * 64)
+        first = PluginRegistry()
+        first.register(
+            ParseOnlyPlugin(),
+            package_hash=package_hash,
+            configuration_digest="sha256:" + ("1" * 64),
+        )
+        second = PluginRegistry()
+        second.register(
+            ParseOnlyPlugin(),
+            package_hash=package_hash,
+            configuration_digest="sha256:" + ("2" * 64),
+        )
+        self.assertNotEqual(first.fingerprint(), second.fingerprint())
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "status.jsonl"
+            input_path.write_bytes(_fixture_bytes())
+            first_candidate = first.probe(input_path)[0]
+            second_candidate = second.probe(input_path)[0]
+        self.assertNotEqual(
+            first_candidate.registered_execution_identity,
+            second_candidate.registered_execution_identity,
+        )
+        self.assertEqual(
+            first_candidate.registered_execution_identity,
+            first.records()[0].registered_execution_identity,
+        )
+
+    def test_registered_execution_identity_covers_all_probe_manifest_fields(
+        self,
+    ) -> None:
+        package_hash = "sha256:" + ("a" * 64)
+        first = PluginRegistry()
+        first_record = first.register(
+            ParseOnlyPlugin(),
+            package_hash=package_hash,
+        )
+        changed_plugin = ParseOnlyPlugin()
+        changed_plugin.manifest = replace(
+            changed_plugin.manifest,
+            supported_platforms=("changed-platform",),
+            supported_software_versions=">=999",
+        )
+        changed = PluginRegistry()
+        changed_record = changed.register(
+            changed_plugin,
+            package_hash=package_hash,
+        )
+
+        self.assertNotEqual(
+            first_record._manifest_identity_snapshot,
+            changed_record._manifest_identity_snapshot,
+        )
+        self.assertNotEqual(
+            first_record.registered_execution_identity,
+            changed_record.registered_execution_identity,
+        )
+        self.assertNotEqual(first.fingerprint(), changed.fingerprint())
+
+    def test_registration_defaults_only_when_identity_values_are_none(self) -> None:
+        package_hash = "sha256:" + ("a" * 64)
+        for field_name in (
+            "instance_id",
+            "distribution_name",
+            "distribution_version",
+            "entry_point_name",
+            "module_target",
+            "configuration_digest",
+        ):
+            with self.subTest(field=field_name), self.assertRaises(
+                (TypeError, ValueError)
+            ):
+                PluginRegistry().register(
+                    ParseOnlyPlugin(),
+                    package_hash=package_hash,
+                    **{field_name: ""},
+                )
+
+        coordinator = _FalseyCoordinator()
+        registered = PluginRegistry().register(
+            ParseOnlyPlugin(),
+            coordinator=coordinator,
+            package_hash=package_hash,
+        )
+        self.assertIs(registered.coordinator, coordinator)
+
+    def test_registration_rejects_hostile_string_subclasses_before_use(self) -> None:
+        supplied = r"string hook ran at C:\private\tenant\plugin.py"
+        hostile = _HostileString("apparently-valid", Boom(supplied))
+        package_hash = "sha256:" + ("a" * 64)
+        for field_name in ("distribution_name", "configuration_digest"):
+            with self.subTest(field=field_name), self.assertRaises(
+                (TypeError, ValueError)
+            ) as caught:
+                PluginRegistry().register(
+                    ParseOnlyPlugin(),
+                    package_hash=package_hash,
+                    **{field_name: hostile},
+                )
+            self.assertNotIn(supplied, str(caught.exception))
+
+    def test_decoder_identity_comparison_contains_hostile_scalar_mutation(
+        self,
+    ) -> None:
+        supplied = r"decoder equality ran at C:\private\tenant\decoder.py"
+        package_hash = "sha256:" + ("a" * 64)
+        active_identity = DecoderIdentity(
+            decoder_id="tests.decoder",
+            decoder_version="1",
+            executable_digest="sha256:" + ("d" * 64),
+        )
+        coordinator = IngestionCoordinator(trace_decoder=_NoopTraceDecoder())
+        registry = PluginRegistry()
+        record = registry.register(
+            ParseOnlyPlugin(),
+            coordinator=coordinator,
+            package_hash=package_hash,
+            decoder_identity=active_identity,
+        )
+        baseline_execution_identity = record.registered_execution_identity
+        object.__setattr__(
+            active_identity,
+            "decoder_id",
+            _HostileString("tests.decoder", Boom(supplied)),
+        )
+        self.assertIsNot(record.decoder_identity, active_identity)
+        assert coordinator.trace_decoder is not None
+        self.assertIsNot(coordinator.trace_decoder.identity, record.decoder_identity)
+        PluginRegistry.revalidate_registered_identity(record)
+        self.assertEqual(
+            record.registered_execution_identity,
+            baseline_execution_identity,
+        )
+
+        assert record.decoder_identity is not None
+        object.__setattr__(
+            record.decoder_identity,
+            "decoder_id",
+            _HostileString("tests.decoder", Boom(supplied)),
+        )
+        with self.assertRaisesRegex(
+            IngestionPipelineError,
+            "identity could not be compared",
+        ) as revalidation_failure:
+            PluginRegistry.revalidate_registered_identity(record)
+        self.assertNotIn(supplied, str(revalidation_failure.exception))
+
+    def test_manifest_and_decoder_identity_are_bound_to_the_executed_run(
+        self,
+    ) -> None:
+        plugin = ParseOnlyPlugin()
+        registry = PluginRegistry()
+        registered_manifest = registry.register(
+            plugin,
+            package_hash="sha256:" + ("a" * 64),
+        )
+        bound_manifest = registered_manifest.execution_plugin.manifest
+        self.assertIsNot(bound_manifest, plugin.manifest)
+        original_capabilities = plugin.manifest.capabilities
+        object.__setattr__(
+            plugin.manifest,
+            "capabilities",
+            frozenset(
+                {
+                    PluginCapability.STATUS_PARSE,
+                    PluginCapability.TEXT_TRACE_PARSE,
+                }
+            ),
+        )
+        self.assertFalse(bound_manifest.supports(PluginCapability.TEXT_TRACE_PARSE))
+        object.__setattr__(
+            plugin.manifest,
+            "capabilities",
+            original_capabilities,
+        )
+        plugin.manifest = replace(plugin.manifest, forwarding_ir_versions=("changed",))
+        with self.assertRaisesRegex(IngestionPipelineError, "manifest changed"):
+            registry.probe(Path(__file__))
+
+        decoder_identity = DecoderIdentity(
+            decoder_id="tests.decoder",
+            decoder_version="1",
+            executable_digest="sha256:" + ("d" * 64),
+        )
+        with self.assertRaisesRegex(ValueError, "decoder_identity"):
+            PluginRegistry().register(
+                ParseOnlyPlugin(),
+                coordinator=IngestionCoordinator(trace_decoder=_NoopTraceDecoder()),
+                package_hash="sha256:" + ("b" * 64),
+            )
+        with self.assertRaisesRegex(ValueError, "exactly when"):
+            PluginRegistry().register(
+                ParseOnlyPlugin(),
+                package_hash="sha256:" + ("b" * 64),
+                decoder_identity=decoder_identity,
+            )
+
+        coordinator = IngestionCoordinator(trace_decoder=_NoopTraceDecoder())
+        decoder_registry = PluginRegistry()
+        registered = decoder_registry.register(
+            ParseOnlyPlugin(),
+            coordinator=coordinator,
+            package_hash="sha256:" + ("c" * 64),
+            decoder_identity=decoder_identity,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "status.jsonl"
+            input_path.write_bytes(_fixture_bytes())
+            result = coordinator.ingest(registered.execution_plugin, input_path)
+        self.assertIsNone(_execution_plan_for_result(registered, result).decoder)
+        assert coordinator.trace_decoder is not None
+        tuple(coordinator.trace_decoder.iter_ctf(None, None))
+        self.assertEqual(
+            _execution_plan_for_result(registered, result).decoder,
+            decoder_identity,
+        )
+
+    def test_decoder_implementation_is_bound_to_the_registered_identity(self) -> None:
+        class ReplacementDecoder:
+            def iter_ctf(self, *args: Any, **kwargs: Any) -> tuple[str]:
+                del args, kwargs
+                return ("REPLACEMENT",)
+
+        coordinator = IngestionCoordinator(trace_decoder=_NoopTraceDecoder())
+        identity = DecoderIdentity(
+            decoder_id="tests.decoder",
+            decoder_version="1",
+            executable_digest="sha256:" + ("d" * 64),
+        )
+        record = PluginRegistry().register(
+            ParseOnlyPlugin(),
+            coordinator=coordinator,
+            package_hash="sha256:" + ("a" * 64),
+            decoder_identity=identity,
+        )
+        bound = coordinator.trace_decoder
+        assert bound is not None
+
+        with self.assertRaises(AttributeError):
+            object.__setattr__(bound, "decoder", ReplacementDecoder())
+
+        object.__setattr__(bound, "_decoder", ReplacementDecoder())
+        with self.assertRaisesRegex(
+            IngestionPipelineError,
+            "decoder binding changed",
+        ):
+            PluginRegistry.revalidate_registered_identity(record)
 
     def test_registry_manifest_fallback_requires_explicit_compatibility_opt_out(
         self,
@@ -2110,6 +2720,417 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                 failed.error_message,
                 PUBLIC_INGESTION_FAILURE_MESSAGES["ingestion_rejected"],
             )
+            self.assertEqual(publisher.revisions, [])
+
+    def test_restart_fails_closed_when_selected_configuration_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            package_hash = "sha256:" + ("1" * 64)
+            first_registry = PluginRegistry()
+            first_registry.register(
+                ParseOnlyPlugin(),
+                package_hash=package_hash,
+                configuration_digest="sha256:" + ("a" * 64),
+            )
+            first = DurableIngestionPipeline(
+                Path(directory),
+                registry=first_registry,
+                publisher=_Publisher(),
+                limits=self._limits(),
+            )
+            admitted = first.submit_bytes(
+                self.scope,
+                _fixture_bytes(),
+                original_name="status.jsonl",
+            )
+            self._admit_staged(first, admitted.import_id)
+            probe_claim = first._claim()
+            assert probe_claim is not None
+            first._run_probe(probe_claim)
+
+            changed_registry = PluginRegistry()
+            changed_registry.register(
+                ParseOnlyPlugin(),
+                package_hash=package_hash,
+                configuration_digest="sha256:" + ("b" * 64),
+            )
+            publisher = _Publisher()
+            restarted = DurableIngestionPipeline(
+                Path(directory),
+                registry=changed_registry,
+                publisher=publisher,
+                limits=self._limits(),
+            )
+            with restarted:
+                failed = restarted.wait(
+                    self.scope,
+                    admitted.import_id,
+                    timeout=10,
+                )
+
+            self.assertEqual(failed.state, ImportState.FAILED)
+            self.assertEqual(failed.error_code, "ingestion_rejected")
+            self.assertEqual(publisher.revisions, [])
+
+    def test_restart_fails_closed_when_probe_manifest_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            package_hash = "sha256:" + ("1" * 64)
+            first_registry = PluginRegistry()
+            first_registry.register(
+                ParseOnlyPlugin(),
+                package_hash=package_hash,
+            )
+            first = DurableIngestionPipeline(
+                Path(directory),
+                registry=first_registry,
+                publisher=_Publisher(),
+                limits=self._limits(),
+            )
+            admitted = first.submit_bytes(
+                self.scope,
+                _fixture_bytes(),
+                original_name="status.jsonl",
+            )
+            self._admit_staged(first, admitted.import_id)
+            probe_claim = first._claim()
+            assert probe_claim is not None
+            first._run_probe(probe_claim)
+
+            changed_plugin = ParseOnlyPlugin()
+            changed_plugin.manifest = replace(
+                changed_plugin.manifest,
+                supported_platforms=("changed-platform",),
+                supported_software_versions=">=999",
+            )
+            changed_registry = PluginRegistry()
+            changed_registry.register(
+                changed_plugin,
+                package_hash=package_hash,
+            )
+            publisher = _Publisher()
+            restarted = DurableIngestionPipeline(
+                Path(directory),
+                registry=changed_registry,
+                publisher=publisher,
+                limits=self._limits(),
+            )
+            with restarted:
+                failed = restarted.wait(
+                    self.scope,
+                    admitted.import_id,
+                    timeout=10,
+                )
+
+            self.assertEqual(failed.state, ImportState.FAILED)
+            self.assertEqual(failed.error_code, "ingestion_rejected")
+            self.assertEqual(publisher.revisions, [])
+
+    def test_legacy_unstaged_selections_are_reprobed_under_the_new_contract(
+        self,
+    ) -> None:
+        for legacy_state in (
+            ImportState.AWAITING_SELECTION,
+            ImportState.READY,
+            ImportState.FAILED,
+        ):
+            with self.subTest(state=legacy_state), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                registry = PluginRegistry((ParseOnlyPlugin(),))
+                first = DurableIngestionPipeline(
+                    root,
+                    registry=registry,
+                    publisher=_Publisher(),
+                    limits=self._limits(),
+                )
+                admitted = first.submit_bytes(
+                    self.scope,
+                    _fixture_bytes(),
+                    original_name="status.jsonl",
+                    auto_select=legacy_state is not ImportState.AWAITING_SELECTION,
+                )
+                self._admit_staged(first, admitted.import_id)
+                probe_claim = first._claim()
+                assert probe_claim is not None
+                first._run_probe(probe_claim)
+                with first._connect() as connection:
+                    connection.execute(
+                        "DROP TRIGGER ingestion_execution_plan_contract_no_downgrade"
+                    )
+                    connection.execute(
+                        """
+                        UPDATE ingestion_imports
+                        SET execution_plan_required = 0,
+                            state = ?
+                        WHERE import_id = ?
+                        """,
+                        (legacy_state.value, admitted.import_id),
+                    )
+
+                reopened = DurableIngestionPipeline(
+                    root,
+                    registry=registry,
+                    publisher=_Publisher(),
+                    limits=self._limits(),
+                )
+                migrated = reopened.get_import(self.scope, admitted.import_id)
+                if legacy_state is ImportState.FAILED:
+                    self.assertEqual(migrated.state, ImportState.FAILED)
+                    migrated = reopened.resume(self.scope, admitted.import_id)
+                self.assertEqual(migrated.state, ImportState.QUEUED)
+                self.assertIsNone(migrated.selected_plugin_id)
+                self.assertEqual(reopened.candidates(self.scope, admitted.import_id), ())
+                with reopened._connect() as connection:
+                    required = connection.execute(
+                        "SELECT execution_plan_required FROM ingestion_imports "
+                        "WHERE import_id = ?",
+                        (admitted.import_id,),
+                    ).fetchone()[0]
+                self.assertEqual(required, 1)
+
+    def test_staged_plan_is_immutable_and_must_match_dataset_envelope(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = PluginRegistry((ParseOnlyPlugin(),))
+            publisher = _Publisher()
+            pipeline = DurableIngestionPipeline(
+                root,
+                registry=registry,
+                publisher=publisher,
+                limits=self._limits(),
+            )
+            admitted = pipeline.submit_bytes(
+                self.scope,
+                _fixture_bytes(),
+                original_name="status.jsonl",
+            )
+            self._admit_staged(pipeline, admitted.import_id)
+            probe_claim = pipeline._claim()
+            assert probe_claim is not None
+            pipeline._run_probe(probe_claim)
+            ingestion_claim = pipeline._claim()
+            assert ingestion_claim is not None
+            pipeline._run_ingestion(ingestion_claim)
+
+            with pipeline._connect() as connection:
+                row = connection.execute(
+                    """
+                    SELECT staged_execution_plan_json
+                    FROM ingestion_imports WHERE import_id = ?
+                    """,
+                    (admitted.import_id,),
+                ).fetchone()
+                assert row is not None
+                plan = plugin_execution_plan_from_dict(
+                    json.loads(row["staged_execution_plan_json"])
+                )
+                changed_pin = replace(
+                    plan.plugins[0],
+                    configuration_digest="sha256:" + ("f" * 64),
+                )
+                changed_plan = replace(
+                    plan,
+                    plugins=(changed_pin,),
+                    plan_digest="",
+                )
+                changed_json = canonical_json(
+                    plugin_execution_plan_dict(changed_plan)
+                )
+                for column, changed_value in (
+                    ("tenant_id", "tenant-b"),
+                    ("project_id", "project-b"),
+                    ("workspace_id", "workspace-b"),
+                    ("fixture_id", "fixture-b"),
+                ):
+                    with self.subTest(
+                        staged_scope_column=column
+                    ), self.assertRaises(sqlite3.IntegrityError):
+                        connection.execute(
+                            f"UPDATE ingestion_imports SET {column} = ? "
+                            "WHERE import_id = ?",
+                            (changed_value, admitted.import_id),
+                        )
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        """
+                        UPDATE ingestion_imports
+                        SET staged_execution_plan_json = ?,
+                            staged_execution_plan_digest = ?
+                        WHERE import_id = ?
+                        """,
+                        (
+                            changed_json,
+                            changed_plan.plan_digest,
+                            admitted.import_id,
+                        ),
+                    )
+                connection.execute(
+                    "DROP TRIGGER ingestion_staged_publication_immutable"
+                )
+                connection.execute(
+                    """
+                    UPDATE ingestion_imports
+                    SET staged_execution_plan_json = ?,
+                        staged_execution_plan_digest = ?
+                    WHERE import_id = ?
+                    """,
+                    (
+                        changed_json,
+                        changed_plan.plan_digest,
+                        admitted.import_id,
+                    ),
+                )
+
+            publication_claim = pipeline._claim()
+            assert publication_claim is not None
+            with self.assertRaisesRegex(
+                IngestionPipelineError,
+                "dataset execution-plan digest",
+            ):
+                pipeline._run_publication(publication_claim)
+            self.assertEqual(publisher.revisions, [])
+
+    def test_legacy_publishing_can_replay_planless_but_new_rows_cannot_downgrade(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = PluginRegistry((ParseOnlyPlugin(),))
+            first = DurableIngestionPipeline(
+                root,
+                registry=registry,
+                publisher=_Publisher(),
+                limits=self._limits(),
+            )
+            admitted = first.submit_bytes(
+                self.scope,
+                _fixture_bytes(),
+                original_name="status.jsonl",
+            )
+            with first._connect() as connection:
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        "UPDATE ingestion_imports "
+                        "SET execution_plan_required = 0 WHERE import_id = ?",
+                        (admitted.import_id,),
+                    )
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        "UPDATE ingestion_imports "
+                        "SET publication_operation_id = 'publication:missing-plan' "
+                        "WHERE import_id = ?",
+                        (admitted.import_id,),
+                    )
+            self._admit_staged(first, admitted.import_id)
+            probe_claim = first._claim()
+            assert probe_claim is not None
+            first._run_probe(probe_claim)
+            ingestion_claim = first._claim()
+            assert ingestion_claim is not None
+            first._run_ingestion(ingestion_claim)
+            with first._connect() as connection:
+                staged = connection.execute(
+                    """
+                    SELECT staged_dataset_ref FROM ingestion_imports
+                    WHERE import_id = ?
+                    """,
+                    (admitted.import_id,),
+                ).fetchone()
+                assert staged is not None
+                modern_path = first.dataset_root / Path(
+                    str(staged["staged_dataset_ref"])
+                )
+                legacy_dataset = json.loads(modern_path.read_text("utf-8"))
+                legacy_dataset["_ingestion"].pop(
+                    "plugin_execution_plan_digest"
+                )
+                legacy_bytes = canonical_json(legacy_dataset).encode("utf-8")
+                legacy_sha256 = hashlib.sha256(legacy_bytes).hexdigest()
+                legacy_relative = (
+                    Path(legacy_sha256[:2])
+                    / legacy_sha256[2:4]
+                    / f"{legacy_sha256}.json"
+                )
+                legacy_path = first.dataset_root / legacy_relative
+                legacy_path.parent.mkdir(parents=True, exist_ok=True)
+                legacy_path.write_bytes(legacy_bytes)
+                connection.execute(
+                    "DROP TRIGGER ingestion_execution_plan_contract_no_downgrade"
+                )
+                connection.execute(
+                    "DROP TRIGGER ingestion_staged_publication_immutable"
+                )
+                connection.execute(
+                    """
+                    UPDATE ingestion_imports
+                    SET execution_plan_required = 0,
+                        staged_execution_plan_json = NULL,
+                        staged_execution_plan_digest = NULL,
+                        staged_dataset_ref = ?,
+                        staged_dataset_sha256 = ?
+                    WHERE import_id = ?
+                    """,
+                    (
+                        legacy_relative.as_posix(),
+                        legacy_sha256,
+                        admitted.import_id,
+                    ),
+                )
+
+            # A pre-contract publisher may have accepted arbitrary keywords
+            # while hashing the exact request for idempotency.  Planless replay
+            # must not acquire a new ``execution_plan=None`` field merely
+            # because ``**values`` can technically bind it.
+            publisher = _Publisher()
+            reopened = DurableIngestionPipeline(
+                root,
+                registry=registry,
+                publisher=publisher,
+                limits=self._limits(),
+            )
+            publication_claim = reopened._claim()
+            assert publication_claim is not None
+            reopened._run_publication(publication_claim)
+            self.assertNotIn("execution_plan", publisher.revisions[0][1])
+            self.assertEqual(
+                reopened.get_import(self.scope, admitted.import_id).state,
+                ImportState.COMPLETED,
+            )
+
+    def test_planful_publication_rejects_a_legacy_publisher_before_call(self) -> None:
+        self.assertFalse(
+            _publisher_accepts_execution_plan(_PositionalExecutionPlanPublisher())
+        )
+        self.assertFalse(
+            _publisher_accepts_execution_plan(
+                _PositionalExecutionPlanKwargsPublisher()
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            publisher = _LegacyPublisher()
+            pipeline = DurableIngestionPipeline(
+                Path(directory),
+                registry=PluginRegistry((ParseOnlyPlugin(),)),
+                publisher=publisher,
+                limits=self._limits(),
+            )
+            admitted = pipeline.submit_bytes(
+                self.scope,
+                _fixture_bytes(),
+                original_name="status.jsonl",
+            )
+            self._admit_staged(pipeline, admitted.import_id)
+            probe_claim = pipeline._claim()
+            assert probe_claim is not None
+            pipeline._run_probe(probe_claim)
+            ingestion_claim = pipeline._claim()
+            assert ingestion_claim is not None
+            pipeline._run_ingestion(ingestion_claim)
+            publication_claim = pipeline._claim()
+            assert publication_claim is not None
+            with self.assertRaisesRegex(
+                IngestionPipelineError,
+                "does not support immutable execution plans",
+            ):
+                pipeline._run_publication(publication_claim)
             self.assertEqual(publisher.revisions, [])
 
     def test_upload_idempotency_and_tenant_isolation(self) -> None:

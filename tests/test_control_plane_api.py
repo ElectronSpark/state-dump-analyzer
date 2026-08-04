@@ -3309,6 +3309,31 @@ class ControlPlaneApiTests(unittest.TestCase):
             finally:
                 control_plane.close(timeout=5)
 
+    def test_revision_catalog_preserves_legacy_plan_absence(self) -> None:
+        self._provision_scope(self.tenant_a)
+        self.control_plane.sessions.attach_fixture(
+            self.tenant_a,
+            self.workspace_id,
+            "legacy-fixture",
+            label="Legacy fixture",
+            content_digest="a" * 64,
+        )
+        self.control_plane.sessions.publish_revision(
+            self.tenant_a,
+            self.workspace_id,
+            "legacy-fixture",
+            "legacy-revision",
+            node_id="legacy-node",
+            identity_digest="b" * 64,
+            plugin_ids=("legacy.plugin",),
+        )
+
+        revisions = self._catalog_revisions()
+
+        self.assertEqual(len(revisions), 1)
+        self.assertIsNone(revisions[0]["execution_plan"])
+        self.assertEqual(revisions[0]["plugin_ids"], ["legacy.plugin"])
+
     def test_streamed_upload_and_multi_revision_session_membership(self) -> None:
         self._provision_scope(self.tenant_a)
         first_import = self._upload(
@@ -3332,6 +3357,22 @@ class ControlPlaneApiTests(unittest.TestCase):
             len({revision["fixture_id"] for revision in revisions}),
             2,
         )
+        for revision in revisions:
+            execution_plan = revision["execution_plan"]
+            self.assertEqual(
+                execution_plan["plan_digest"],
+                revision["metadata"]["plugin_execution_plan_digest"],
+            )
+            self.assertEqual(execution_plan["node_id"], revision["node_id"])
+            self.assertEqual(len(execution_plan["plugins"]), 1)
+            pin = execution_plan["plugins"][0]
+            self.assertEqual(pin["plugin_id"], "tests.control-plane-events")
+            self.assertIn("configuration_digest", pin)
+            self.assertNotIn("configuration", pin)
+            self.assertIn(
+                pin["artifact"]["package_hash"].split(":", 1)[0],
+                {"module-sha256", "package-sha256"},
+            )
 
         created = self.client.post(
             f"{self.workspace_path}/sessions",

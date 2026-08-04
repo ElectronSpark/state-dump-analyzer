@@ -15,6 +15,10 @@ from router_dump_analyzer.cli import (
     parse_args,
     run,
 )
+from router_dump_analyzer.plugin_loading import (
+    LoadedPlugin,
+    PluginArtifactCoordinates,
+)
 from router_dump_analyzer.runtime import (
     PLUGIN_RUNTIME_CAPABILITY_ID,
     PluginRuntimeCapabilityError,
@@ -27,6 +31,7 @@ from router_dump_analyzer.web.control_plane_api import (
     ControlPlaneAccessDenialReporter,
 )
 from tests.support.normalized_data import StaticDataPolicy, StaticDatasetSource
+from tests.test_ingestion import ParseOnlyPlugin
 
 
 class _Session:
@@ -51,6 +56,10 @@ class _Plugin:
     runtime = _Runtime()
 
 
+class _RegisteredRuntimePlugin(ParseOnlyPlugin):
+    runtime = _Runtime()
+
+
 class _ClosableControlPlane:
     def __init__(self) -> None:
         self.close_count = 0
@@ -60,6 +69,50 @@ class _ClosableControlPlane:
 
 
 class CoreCliTests(unittest.TestCase):
+    def test_control_plane_registry_retains_selected_loader_coordinates(self) -> None:
+        loaded = LoadedPlugin(
+            plugin=_RegisteredRuntimePlugin(),
+            coordinates=PluginArtifactCoordinates(
+                distribution_name="vendor-router-plugin",
+                distribution_version="2.7.4",
+                entry_point_name="vendor_router",
+                module_target="vendor_router_plugin:plugin",
+            ),
+        )
+        registry_values: dict[str, Any] = {}
+
+        def control_plane_factory(_root: Path, **values: Any) -> Any:
+            registry_values.update(values)
+            return _ClosableControlPlane()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = Path(temporary_directory) / "fixture.tgz"
+            fixture.touch()
+            with patch(
+                "router_dump_analyzer.control_plane.ControlPlane",
+                side_effect=control_plane_factory,
+            ):
+                run(
+                    LaunchConfiguration(
+                        plugin_name="vendor_router",
+                        plugin_module=None,
+                        input_path=fixture,
+                        host="127.0.0.1",
+                        port=8765,
+                        no_browser=True,
+                        control_plane_dir=Path(temporary_directory) / "state",
+                    ),
+                    entry_point_loader=lambda _name: loaded,
+                    application_factory=lambda _request: object(),
+                    server_runner=lambda _app, **_values: None,
+                )
+
+        record = registry_values["registry"].records()[0]
+        self.assertEqual(record.distribution_name, "vendor-router-plugin")
+        self.assertEqual(record.distribution_version, "2.7.4")
+        self.assertEqual(record.entry_point_name, "vendor_router")
+        self.assertEqual(record.module_target, "vendor_router_plugin:plugin")
+
     def test_parser_requires_exactly_one_plugin_selector(self) -> None:
         with self.assertRaises(SystemExit) as missing:
             parse_args(["--input", "fixture.tgz"])

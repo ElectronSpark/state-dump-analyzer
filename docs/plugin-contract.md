@@ -65,8 +65,38 @@ robustness, and the representative inventory's explicit parser dispatch. It
 does not open the supplied artifact or run the parser. Product conformance still
 requires a plug-in-owned synthetic corpus and the tests in section 8.
 
-The server records distribution name/version/hash, manifest, plugin API version,
-configuration hash, and decoder version in the analysis revision.
+The core freezes the executable interpretation of every durable revision in a
+versioned `PluginExecutionPlan`. Each ordered plug-in pin records its configured
+instance ID, manifest plug-in ID/version and core API version, installed
+distribution name/version, entry-point and module target, exact executable
+package/module digest, configuration digest, normalized schema digest and
+declared schema versions, capabilities, and core-assigned role. An optional
+decoder pin records its ID, version, and executable digest. The plan binds the
+node and source revision basis and carries a deterministic content digest. It
+contains configuration digests only—never configuration values or secrets.
+
+The durable registry rejects manifest-only executable identity. The installed
+entry-point loaders record the owning distribution name/version, selected
+entry-point name, and normalized `module:attribute` target. An explicit
+`--plugin-module` selection is not misrepresented as an installed package: its
+artifact coordinates are `direct-module`, version `0`, entry point
+`direct-module`, and the exact normalized module target. Deployment-owned
+registration supplies a configuration digest and decoder identity when it
+configures either facility; the plan includes the decoder only when that
+decoder was actually invoked for the revision. A re-run after any pinned
+artifact, configuration, schema, capability, order, role, or decoder change is
+a different plan and therefore a different reproducibility claim. A legacy
+catalog row may expose `execution_plan: null`; core must not fabricate a plan
+for history that was published before this contract existed.
+
+On upgrade, unfinished pre-contract imports that have not staged publication
+are probed again under the current registered-execution identity. Already
+staged `publishing` rows retain their exact legacy, planless publication
+payload so crash recovery never re-runs a plug-in or invents provenance.
+Probe candidates bind a digest of every manifest field, including supported
+platform/software selectors and reconstruction support. Explicit empty or
+invalid registration coordinates are rejected; only omitted (`None`) values
+receive compatibility defaults.
 
 Do not use filename-based module discovery or import Python files found in the
 dump. The deployment owns an allowlist of installed plugin distributions.

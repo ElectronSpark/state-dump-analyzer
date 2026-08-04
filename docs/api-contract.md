@@ -366,6 +366,19 @@ All paths below are relative to `/v1/control-plane`.
 
 Here, an abbreviated `...` preserves the same project/workspace prefix.
 
+Each revision item includes `execution_plan`. New durable publications expose
+the closed `router_dump_analyzer.plugin_execution_plan.v1` object: node and
+source-revision basis, ordered producer pins, optional decoder identity, and
+`plan_digest`. A pin exposes artifact/configuration/schema/capability/role
+identity but never configuration values. `plugin_ids` is the ordered distinct
+projection of the plan's plug-in IDs and must agree with it. The normalized
+dataset `_ingestion.plugin_execution_plan_digest`, catalog metadata, plan body,
+and correlation-report revision vector identify the same plan. A migrated
+pre-contract row returns `execution_plan: null`; absence is not proof of the
+current registry state. Unfinished pre-contract queue entries are re-probed
+before execution; an already staged legacy publication remains planless so its
+idempotent crash replay uses the original payload.
+
 Retention preview and execute accept a closed object with optional `catalog`
 and `review` policy objects. Cutoffs use canonical decimal strings. The router
 derives catalog external-reference protection itself and rejects a caller

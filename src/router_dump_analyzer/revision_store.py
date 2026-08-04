@@ -9,8 +9,14 @@ very different storage engines.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
+
+from .plugin_execution_plan import (
+    PluginExecutionPlan,
+    snapshot_plugin_execution_plan,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +30,7 @@ class RevisionDescriptor:
     resource_count: int
     plugin_ids: tuple[str, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    execution_plan: PluginExecutionPlan | None = None
 
     def __post_init__(self) -> None:
         if not self.node_id:
@@ -36,6 +43,22 @@ class RevisionDescriptor:
             raise ValueError("event_count must be non-negative")
         if self.resource_count < 0:
             raise ValueError("resource_count must be non-negative")
+        if self.execution_plan is not None:
+            if type(self.execution_plan) is not PluginExecutionPlan:
+                raise TypeError(
+                    "execution_plan must be PluginExecutionPlan or None"
+                )
+            execution_plan = snapshot_plugin_execution_plan(self.execution_plan)
+            object.__setattr__(self, "execution_plan", execution_plan)
+            if execution_plan.node_id != self.node_id:
+                raise ValueError("execution_plan node_id must match revision node_id")
+            projected_plugin_ids = tuple(
+                dict.fromkeys(pin.plugin_id for pin in execution_plan.plugins)
+            )
+            if self.plugin_ids != projected_plugin_ids:
+                raise ValueError(
+                    "plugin_ids must match the execution_plan plug-in ID projection"
+                )
 
 
 @dataclass(frozen=True, slots=True)

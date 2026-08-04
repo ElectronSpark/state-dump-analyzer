@@ -134,6 +134,13 @@ durably stages its fixture admission, probes the installed demo entry point,
 parses through the standard runtime-v2 hooks, then durably stages and
 publishes one immutable catalog revision. A replay after either lost catalog
 response uses the same operation ID; publication replay does not parse again.
+The revision also carries a core-owned immutable execution plan pinning this
+demo plug-in's exact executable, configuration digest, schema, capabilities,
+role, and optional decoder identity. The demo does not build that plan, and no
+configuration values are embedded in it.
+Installed launch records `router-dump-analyzer-demo`, its installed version,
+entry point `demo_router`, and target `rsl_demo_plugin:plugin`. Direct-module
+launch instead uses the explicit `direct-module` / `0` artifact sentinel.
 Probe and parsing run in fresh `spawn` child processes with the core's bounded
 deadline (300 seconds by default, capped by the command's `--timeout`). The
 demo plug-in and coordinator are module-level, importable, and spawn-picklable

@@ -86,6 +86,24 @@ actual VCS/cache **directory** named `.git`, `.hg`, `.svn`, `__pycache__`,
 contained alias with one of those names still participates in identity; an
 escaping alias fails closed.
 
+On durable publication the core also creates an immutable execution plan for
+the revision. A plug-in author does not construct or persist this plan. Keep
+`describe()`, the normalized schema, capability declarations, and output
+deterministic; the deployment registration supplies the exact distribution,
+entry-point/module, configuration digest, and optional decoder identity. The
+public plan stores only a configuration digest, never configuration values.
+Changing any pinned executable, configuration, schema, capability, or decoder
+identity changes the plan digest. Current ordinary ingestion produces one pin
+with the core role `primary_parser`; multi-plug-in routing is a separate
+core-owned composition concern and must not be emulated with a synthetic
+composite plug-in.
+
+Installed entry points are pinned with their real distribution and
+`module:attribute` coordinates. Direct `--plugin-module` use is deliberately
+identified by the `direct-module` / `0` sentinel instead of claiming an
+installed distribution. A registered decoder is recorded only when parsing
+actually invokes it.
+
 The generator verification proves that the tiny JSONL vector exactly matches
 the plug-in-owned `CONFORMANCE_STATUS_RECORDS`; it is not a second hand-written
 mock dump. The two core tests execute safe artifact access and the standard

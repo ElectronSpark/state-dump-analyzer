@@ -289,6 +289,19 @@ class PipelineCliTests(unittest.TestCase):
                     "workspace-a",
                 )
                 self.assertEqual(len(revisions), 2)
+                for revision in revisions:
+                    assert revision.execution_plan is not None
+                    artifact = revision.execution_plan.plugins[0].artifact
+                    self.assertEqual(
+                        artifact.distribution_name,
+                        "direct-module",
+                    )
+                    self.assertEqual(artifact.distribution_version, "0")
+                    self.assertEqual(artifact.entry_point_name, "direct-module")
+                    self.assertEqual(
+                        artifact.module_target,
+                        "test.plugin:plugin",
+                    )
 
     def test_headless_run_reports_selection_required_with_exit_two(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

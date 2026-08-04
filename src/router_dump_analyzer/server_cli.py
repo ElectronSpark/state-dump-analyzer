@@ -25,7 +25,13 @@ from .control_plane_server import (
     create_control_plane_application,
 )
 from .ingestion_pipeline import PluginRegistry
-from .plugin_loading import load_plugin_entry_point, load_plugin_module
+from .plugin_loading import (
+    LoadedPlugin,
+    load_plugin_entry_point,
+    load_plugin_module,
+    loaded_entry_point,
+    loaded_module,
+)
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .public_text import bounded_public_error_detail
 
@@ -173,12 +179,18 @@ def _plugins(
     *,
     entry_point_loader: Callable[[str], Any],
     module_loader: Callable[[str], Any],
-) -> tuple[Any, ...]:
+) -> tuple[LoadedPlugin, ...]:
     if bool(configuration.plugin_names) == bool(configuration.plugin_modules):
         raise ValueError("configure exactly one of plugin_names or plugin_modules")
     if configuration.plugin_names:
-        return tuple(entry_point_loader(name) for name in configuration.plugin_names)
-    return tuple(module_loader(target) for target in configuration.plugin_modules)
+        return tuple(
+            loaded_entry_point(name, loader=entry_point_loader)
+            for name in configuration.plugin_names
+        )
+    return tuple(
+        loaded_module(target, loader=module_loader)
+        for target in configuration.plugin_modules
+    )
 
 
 def _trusted_header_resolver(configuration: ServerConfiguration) -> Any:
@@ -249,14 +261,22 @@ def run(
         if not callable(identity_resolver):
             raise TypeError("identity resolver target must be callable")
 
-    registry = registry_factory(
-        _plugins(
-            configuration,
-            entry_point_loader=entry_point_loader,
-            module_loader=module_loader,
-        ),
-        require_executable_identity=True,
+    loaded_plugins = _plugins(
+        configuration,
+        entry_point_loader=entry_point_loader,
+        module_loader=module_loader,
     )
+    if registry_factory is PluginRegistry:
+        registry = registry_factory(require_executable_identity=True)
+        for loaded_plugin in loaded_plugins:
+            loaded_plugin.register(registry)
+    else:
+        # Keep custom composition factories source-compatible. Production uses
+        # the core registry branch above, which records loader coordinates.
+        registry = registry_factory(
+            tuple(loaded.plugin for loaded in loaded_plugins),
+            require_executable_identity=True,
+        )
     retention_policy = None
     if configuration.retention_policy_path is not None:
         from .maintenance_cli import load_policy

@@ -88,8 +88,9 @@ marked as an unsupported hypothesis.
 ## Multi-plug-in prerequisite
 
 AI analysis operates on exact plug-in execution plans, not whichever plug-in
-happens to be installed later. Each node/revision will pin plug-in instance,
-version, package, configuration, schema, and decoder identity. Same-node
+happens to be installed later. Each new durable node/revision now pins plug-in
+instance, version, package, configuration, schema, and any decoder actually
+used. Same-node
 component results remain producer-qualified, and cross-plug-in or cross-node
 equivalence requires exact canonical keys or an explicit federation linker.
 

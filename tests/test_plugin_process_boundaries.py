@@ -32,7 +32,7 @@ _EAGER_ITERABLE_CONSUMERS = frozenset(
 _CENSUS_FLOOR_BY_MODULE = {
     "src/router_dump_analyzer/capability_executor.py": 12,
     "src/router_dump_analyzer/ingestion.py": 7,
-    "src/router_dump_analyzer/ingestion_pipeline.py": 6,
+    "src/router_dump_analyzer/ingestion_pipeline.py": 7,
     "src/router_dump_analyzer/multi_node_route.py": 2,
     "src/router_dump_analyzer/normalized_data.py": 3,
     "src/router_dump_analyzer/plugin_loading.py": 3,

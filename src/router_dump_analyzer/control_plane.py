@@ -79,6 +79,10 @@ from .normalized_data import (
     resource_id,
 )
 from .plugin_api import MAX_TIMESTAMP_NS, MIN_TIMESTAMP_NS
+from .plugin_execution_plan import (
+    PluginExecutionPlan,
+    snapshot_plugin_execution_plan,
+)
 from .session_store import (
     AnalysisRevisionDescriptor,
     AnalysisSession,
@@ -909,10 +913,22 @@ class SessionCatalogPublisher(RevisionCatalogPublisher):
         event_count: int,
         source_record_count: int,
         resource_count: int,
+        execution_plan: PluginExecutionPlan | None,
         call_context: PublisherCallContext,
     ) -> str:
         deadline_ns = self._deadline(call_context, operation_id)
         try:
+            if execution_plan is not None:
+                try:
+                    if type(execution_plan) is not PluginExecutionPlan:
+                        raise TypeError
+                    execution_plan = snapshot_plugin_execution_plan(
+                        execution_plan
+                    )
+                except (TypeError, ValueError) as error:
+                    raise DatasetIntegrityError(
+                        "execution plan must use the core contract type"
+                    ) from error
             self._workspace(scope, deadline_ns=deadline_ns)
             fixture = self.sessions.get_fixture(
                 scope.tenant_id,
@@ -922,6 +938,16 @@ class SessionCatalogPublisher(RevisionCatalogPublisher):
             if fixture.workspace_id != scope.workspace_id:
                 raise ControlPlaneScopeError(
                     "fixture does not belong to the requested workspace"
+                )
+            if execution_plan is not None and (
+                execution_plan.node_id != node_id
+                or execution_plan.basis_revision_id != source_revision_id
+                or len(execution_plan.plugins) != 1
+                or execution_plan.plugins[0].plugin_id != plugin_id
+                or execution_plan.plugins[0].plugin_version != plugin_version
+            ):
+                raise DatasetIntegrityError(
+                    "execution plan does not match the published revision basis"
                 )
             catalog_revision_id = self.catalog_revision_id(
                 scope,
@@ -941,6 +967,15 @@ class SessionCatalogPublisher(RevisionCatalogPublisher):
                 "event_count": event_count,
                 "source_record_count": source_record_count,
                 "resource_count": resource_count,
+                **(
+                    {
+                        "plugin_execution_plan_digest": (
+                            execution_plan.plan_digest
+                        )
+                    }
+                    if execution_plan is not None
+                    else {}
+                ),
             }
             self.sessions.publish_revision(
                 scope.tenant_id,
@@ -950,6 +985,7 @@ class SessionCatalogPublisher(RevisionCatalogPublisher):
                 node_id=node_id,
                 identity_digest=dataset_sha256,
                 plugin_ids=(plugin_id,),
+                execution_plan=execution_plan,
                 metadata=metadata,
                 idempotency_key=f"publication:{operation_id}",
                 deadline_ns=deadline_ns,
@@ -1503,7 +1539,15 @@ class ControlPlane:
         ingestion = dataset.get("_ingestion")
         if not isinstance(ingestion, Mapping):
             raise DatasetIntegrityError("dataset lacks the core ingestion envelope")
-        source_revision_id = descriptor.metadata.get("source_revision_id")
+        try:
+            source_revision_id = _exact_identifier(
+                descriptor.metadata.get("source_revision_id"),
+                label="source_revision_id",
+            )
+        except (TypeError, ValueError) as error:
+            raise DatasetIntegrityError(
+                "catalog publication lacks a valid source revision"
+            ) from error
         if ingestion.get("revision_id") != source_revision_id:
             raise DatasetIntegrityError(
                 "dataset source revision does not match its catalog publication"
@@ -1512,6 +1556,51 @@ class ControlPlane:
             raise DatasetIntegrityError(
                 "dataset node does not match its catalog publication"
             )
+        try:
+            execution_plan = (
+                snapshot_plugin_execution_plan(descriptor.execution_plan)
+                if descriptor.execution_plan is not None
+                else None
+            )
+        except (TypeError, ValueError) as error:
+            raise DatasetIntegrityError(
+                "catalog revision has an invalid execution plan"
+            ) from error
+        catalog_plan_digest = descriptor.metadata.get(
+            "plugin_execution_plan_digest"
+        )
+        dataset_plan_digest = ingestion.get("plugin_execution_plan_digest")
+        if execution_plan is None:
+            if catalog_plan_digest is not None or dataset_plan_digest is not None:
+                raise DatasetIntegrityError(
+                    "planless catalog revision disagrees with execution-plan metadata"
+                )
+        else:
+            if (
+                catalog_plan_digest != execution_plan.plan_digest
+                or dataset_plan_digest != execution_plan.plan_digest
+            ):
+                raise DatasetIntegrityError(
+                    "dataset execution-plan digest does not match its full "
+                    "catalog plan"
+                )
+            if execution_plan.basis_revision_id != source_revision_id:
+                raise DatasetIntegrityError(
+                    "execution-plan basis does not match the dataset source revision"
+                )
+            if len(execution_plan.plugins) != 1:
+                raise DatasetIntegrityError(
+                    "catalog ingestion revision must contain one execution-plan pin"
+                )
+            pin = execution_plan.plugins[0]
+            if (
+                descriptor.metadata.get("plugin_id") != pin.plugin_id
+                or descriptor.metadata.get("plugin_version")
+                != pin.plugin_version
+            ):
+                raise DatasetIntegrityError(
+                    "catalog plug-in metadata does not match its full execution plan"
+                )
         timeline_start = _non_negative_ns(
             ingestion.get("timeline_start_ns", 0),
             label="timeline_start_ns",
@@ -2418,6 +2507,9 @@ class ControlPlane:
                 "fixture_id": revision.descriptor.fixture_id,
                 "identity_digest": revision.descriptor.identity_digest,
                 "plugin_ids": list(revision.descriptor.plugin_ids),
+                "plugin_execution_plan_digest": (
+                    revision.descriptor.execution_plan_digest
+                ),
                 "published_at_ns": revision.descriptor.published_at_ns,
             }
             for revision in loaded.values()

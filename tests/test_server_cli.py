@@ -11,6 +11,10 @@ from unittest.mock import DEFAULT, patch
 from router_dump_analyzer.control_plane_server import (
     ControlPlaneApplicationRequest,
 )
+from router_dump_analyzer.plugin_loading import (
+    LoadedPlugin,
+    PluginArtifactCoordinates,
+)
 from router_dump_analyzer.server_cli import (
     ServerConfiguration,
     _load_identity_resolver,
@@ -19,6 +23,7 @@ from router_dump_analyzer.server_cli import (
     parse_args,
     run,
 )
+from tests.test_ingestion import ParseOnlyPlugin
 
 
 class _HostileResolverFailure(BaseException):
@@ -47,6 +52,48 @@ class _ControlPlane:
 
 
 class ServerCliTests(unittest.TestCase):
+    def test_installed_plugin_coordinates_reach_production_registry(self) -> None:
+        loaded = LoadedPlugin(
+            plugin=ParseOnlyPlugin(),
+            coordinates=PluginArtifactCoordinates(
+                distribution_name="vendor-router-plugin",
+                distribution_version="2.7.4",
+                entry_point_name="vendor_router",
+                module_target="vendor_router_plugin:plugin",
+            ),
+        )
+        control_planes: list[_ControlPlane] = []
+
+        def control_plane_factory(root: Path, **values: Any) -> _ControlPlane:
+            control_plane = _ControlPlane(root, **values)
+            control_planes.append(control_plane)
+            return control_plane
+
+        with tempfile.TemporaryDirectory() as directory:
+            run(
+                ServerConfiguration(
+                    state_dir=Path(directory) / "state",
+                    plugin_names=("vendor_router",),
+                    plugin_modules=(),
+                    host="127.0.0.1",
+                    port=8765,
+                    identity_resolver_module="deployment.identity:resolver",
+                    trust_control_plane_headers=False,
+                ),
+                entry_point_loader=lambda _name: loaded,
+                identity_resolver_loader=lambda _target: lambda _request: object(),
+                control_plane_factory=control_plane_factory,
+                application_factory=lambda _request: object(),
+                server_runner=lambda _app, **_values: None,
+            )
+
+        registry = control_planes[0].values["registry"]
+        record = registry.records()[0]
+        self.assertEqual(record.distribution_name, "vendor-router-plugin")
+        self.assertEqual(record.distribution_version, "2.7.4")
+        self.assertEqual(record.entry_point_name, "vendor_router")
+        self.assertEqual(record.module_target, "vendor_router_plugin:plugin")
+
     def test_identity_resolver_loading_contains_hostile_base_exceptions(self) -> None:
         private_path = r"C:\Users\private-operator\secret\resolver.py"
         for stage, imported in (

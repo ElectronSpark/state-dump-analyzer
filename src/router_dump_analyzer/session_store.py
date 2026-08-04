@@ -33,6 +33,14 @@ from uuid import uuid4
 from .canonical import canonical_json, canonical_json_sha256
 from .contract_validation import validate_bounded_json_value
 from .filesystem_lock import exclusive_file_lock
+from .plugin_execution_plan import (
+    PluginExecutionPlan,
+    RevisionExecutionPlanRef,
+    plugin_execution_plan_dict,
+    plugin_execution_plan_digest,
+    plugin_execution_plan_from_dict,
+    snapshot_plugin_execution_plan,
+)
 from .public_text import (
     contains_unsafe_identifier_text,
     contains_unsafe_invisible_text,
@@ -122,6 +130,41 @@ class AnalysisRevisionDescriptor:
     plugin_ids: tuple[str, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
     published_at_ns: int = 0
+    execution_plan: PluginExecutionPlan | None = None
+
+    def __post_init__(self) -> None:
+        if self.execution_plan is None:
+            return
+        if type(self.execution_plan) is not PluginExecutionPlan:
+            raise TypeError("execution_plan must be PluginExecutionPlan or None")
+        execution_plan = snapshot_plugin_execution_plan(self.execution_plan)
+        object.__setattr__(self, "execution_plan", execution_plan)
+        if execution_plan.node_id != self.node_id:
+            raise ValueError("execution_plan node_id must match revision node_id")
+        if self.plugin_ids != _execution_plan_plugin_ids(execution_plan):
+            raise ValueError(
+                "plugin_ids must match the execution_plan plug-in ID projection"
+            )
+
+    @property
+    def execution_plan_digest(self) -> str | None:
+        """Return the immutable plan identity without duplicating stored state."""
+
+        if self.execution_plan is None:
+            return None
+        return plugin_execution_plan_digest(self.execution_plan)
+
+    @property
+    def execution_plan_ref(self) -> RevisionExecutionPlanRef | None:
+        """Bind the persisted plan identity to this published revision."""
+
+        if self.execution_plan is None:
+            return None
+        return RevisionExecutionPlanRef(
+            node_id=self.node_id,
+            revision_id=self.revision_id,
+            plan_digest=plugin_execution_plan_digest(self.execution_plan),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -542,6 +585,42 @@ def _plugin_ids(value: Sequence[str]) -> tuple[str, ...]:
     return result
 
 
+def _execution_plan_plugin_ids(plan: PluginExecutionPlan) -> tuple[str, ...]:
+    """Return ordered distinct producer identities represented by a plan."""
+
+    return tuple(dict.fromkeys(pin.plugin_id for pin in plan.plugins))
+
+
+def _stored_execution_plan(
+    plan_json: object,
+    plan_digest: object,
+    plan_present: object,
+    *,
+    node_id: object,
+) -> PluginExecutionPlan | None:
+    """Load one canonical plan and independently verify its stored digest."""
+
+    if type(plan_present) is not int or plan_present not in (0, 1):
+        raise SessionStoreError("stored revision execution plan presence is invalid")
+    if plan_present == 0:
+        if plan_json is not None or plan_digest is not None:
+            raise SessionStoreError("stored revision execution plan is invalid")
+        return None
+    if not isinstance(plan_json, str) or not isinstance(plan_digest, str):
+        raise SessionStoreError("stored revision execution plan is invalid")
+    try:
+        document = json.loads(plan_json)
+        plan = plugin_execution_plan_from_dict(document)
+        canonical = canonical_json(plugin_execution_plan_dict(plan))
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise SessionStoreError("stored revision execution plan is invalid") from error
+    if canonical != plan_json or plan.plan_digest != plan_digest:
+        raise SessionStoreError("stored revision execution plan digest is invalid")
+    if plan.node_id != node_id:
+        raise SessionStoreError("stored revision execution plan node is invalid")
+    return plan
+
+
 def _json_mapping(value: str) -> dict[str, Any]:
     loaded = json.loads(value)
     if not isinstance(loaded, dict):
@@ -838,6 +917,10 @@ class SqliteSessionStore:
                 plugin_ids_json TEXT NOT NULL,
                 metadata_json TEXT NOT NULL,
                 published_at_ns INTEGER NOT NULL,
+                execution_plan_json TEXT,
+                execution_plan_digest TEXT,
+                execution_plan_present INTEGER NOT NULL DEFAULT 0
+                    CHECK (execution_plan_present IN (0, 1)),
                 PRIMARY KEY (tenant_id, revision_id),
                 UNIQUE (tenant_id, revision_id, workspace_id),
                 FOREIGN KEY (tenant_id, fixture_id, workspace_id)
@@ -1004,6 +1087,78 @@ class SqliteSessionStore:
             self._connection.execute(
                 "ALTER TABLE catalog_retention_audit ADD COLUMN result_json TEXT"
             )
+        revision_columns = {
+            str(row["name"])
+            for row in self._connection.execute(
+                "PRAGMA table_info(analysis_revisions)"
+            ).fetchall()
+        }
+        if "execution_plan_json" not in revision_columns:
+            self._connection.execute(
+                "ALTER TABLE analysis_revisions ADD COLUMN execution_plan_json TEXT"
+            )
+        if "execution_plan_digest" not in revision_columns:
+            self._connection.execute(
+                "ALTER TABLE analysis_revisions ADD COLUMN execution_plan_digest TEXT"
+            )
+        if "execution_plan_present" not in revision_columns:
+            self._connection.execute(
+                "ALTER TABLE analysis_revisions ADD COLUMN "
+                "execution_plan_present INTEGER NOT NULL DEFAULT 0 "
+                "CHECK (execution_plan_present IN (0, 1))"
+            )
+        self._connection.execute(
+            """
+            UPDATE analysis_revisions
+            SET execution_plan_present = 1
+            WHERE execution_plan_present IS NOT 1
+              AND (
+                  execution_plan_json IS NOT NULL
+                  OR execution_plan_digest IS NOT NULL
+              )
+            """
+        )
+        self._connection.executescript(
+            """
+            DROP TRIGGER IF EXISTS
+                analysis_revision_execution_plan_no_downgrade;
+            CREATE TRIGGER IF NOT EXISTS
+                analysis_revision_execution_plan_insert_valid
+            BEFORE INSERT ON analysis_revisions
+            WHEN (
+                NEW.execution_plan_present = 1
+                AND (
+                    NEW.execution_plan_json IS NULL
+                    OR NEW.execution_plan_json = ''
+                    OR NEW.execution_plan_digest IS NULL
+                    OR NEW.execution_plan_digest = ''
+                )
+            ) OR (
+                NEW.execution_plan_present = 0
+                AND (
+                    NEW.execution_plan_json IS NOT NULL
+                    OR NEW.execution_plan_digest IS NOT NULL
+                )
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'revision execution-plan contract is invalid');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS
+                analysis_revision_execution_plan_immutable
+            BEFORE UPDATE OF
+                execution_plan_present,
+                execution_plan_json,
+                execution_plan_digest
+            ON analysis_revisions
+            WHEN NEW.execution_plan_present IS NOT OLD.execution_plan_present
+                 OR NEW.execution_plan_json IS NOT OLD.execution_plan_json
+                 OR NEW.execution_plan_digest IS NOT OLD.execution_plan_digest
+            BEGIN
+                SELECT RAISE(ABORT, 'revision execution plan is immutable');
+            END;
+            """
+        )
         if current_version == 0:
             self._connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
@@ -1273,17 +1428,89 @@ class SqliteSessionStore:
     def _revision_from_payload(
         payload: Mapping[str, Any],
     ) -> AnalysisRevisionDescriptor:
+        raw_plan = payload.get("execution_plan")
+        try:
+            execution_plan = (
+                None
+                if raw_plan is None
+                else plugin_execution_plan_from_dict(raw_plan)
+            )
+        except (TypeError, ValueError) as error:
+            raise SessionStoreError(
+                "stored idempotent revision execution plan is invalid"
+            ) from error
+        node_id = str(payload["node_id"])
+        if execution_plan is not None and execution_plan.node_id != node_id:
+            raise SessionStoreError(
+                "stored idempotent revision execution plan node is invalid"
+            )
         return AnalysisRevisionDescriptor(
             tenant_id=str(payload["tenant_id"]),
             workspace_id=str(payload["workspace_id"]),
             fixture_id=str(payload["fixture_id"]),
             revision_id=str(payload["revision_id"]),
-            node_id=str(payload["node_id"]),
+            node_id=node_id,
             identity_digest=str(payload["identity_digest"]),
             plugin_ids=tuple(str(item) for item in payload.get("plugin_ids", ())),
             metadata=dict(payload.get("metadata") or {}),
             published_at_ns=int(payload["published_at_ns"]),
+            execution_plan=execution_plan,
         )
+
+    @classmethod
+    def _replayed_revision(
+        cls,
+        cursor: sqlite3.Cursor,
+        payload: Mapping[str, Any],
+        *,
+        tenant_id: str,
+        revision_id: str,
+    ) -> AnalysisRevisionDescriptor:
+        """Validate a receipt while returning the immutable durable revision."""
+
+        receipt = cls._revision_from_payload(payload)
+        row = cursor.execute(
+            """
+            SELECT * FROM analysis_revisions
+            WHERE tenant_id = ? AND revision_id = ?
+            """,
+            (tenant_id, revision_id),
+        ).fetchone()
+        if row is None:
+            raise SessionStoreError(
+                "stored idempotent revision response has no durable revision"
+            )
+        durable = cls._revision_row(row)
+        receipt_fields = (
+            receipt.tenant_id,
+            receipt.workspace_id,
+            receipt.fixture_id,
+            receipt.revision_id,
+            receipt.node_id,
+            receipt.identity_digest,
+            receipt.plugin_ids,
+            dict(receipt.metadata),
+            receipt.published_at_ns,
+        )
+        durable_fields = (
+            durable.tenant_id,
+            durable.workspace_id,
+            durable.fixture_id,
+            durable.revision_id,
+            durable.node_id,
+            durable.identity_digest,
+            durable.plugin_ids,
+            dict(durable.metadata),
+            durable.published_at_ns,
+        )
+        if receipt_fields != durable_fields or (
+            payload.get("execution_plan") is not None
+            and receipt.execution_plan != durable.execution_plan
+        ):
+            raise SessionStoreError(
+                "stored idempotent revision response conflicts with durable revision"
+            )
+        return durable
 
     @staticmethod
     def _member_from_payload(
@@ -1773,7 +2000,8 @@ class SqliteSessionStore:
         *,
         node_id: str,
         identity_digest: str,
-        plugin_ids: Sequence[str] = (),
+        plugin_ids: Sequence[str] | None = None,
+        execution_plan: PluginExecutionPlan | None = None,
         metadata: Mapping[str, Any] | None = None,
         idempotency_key: str | None = None,
         deadline_ns: int | None = None,
@@ -1784,9 +2012,41 @@ class SqliteSessionStore:
         revision = _bounded_identifier(revision_id, "revision_id")
         node = _bounded_identifier(node_id, "node_id")
         identity = _digest(identity_digest, "identity_digest")
-        plugins = _plugin_ids(plugin_ids)
+        execution_plan_document: dict[str, Any] | None = None
+        if execution_plan is not None:
+            if type(execution_plan) is not PluginExecutionPlan:
+                raise TypeError(
+                    "execution_plan must be PluginExecutionPlan or None"
+                )
+            execution_plan = snapshot_plugin_execution_plan(execution_plan)
+            execution_plan_document = plugin_execution_plan_dict(execution_plan)
+        if execution_plan is not None and execution_plan.node_id != node:
+            raise ValueError("execution_plan node_id must match revision node_id")
+        derived_plugins = (
+            _execution_plan_plugin_ids(execution_plan)
+            if execution_plan is not None
+            else ()
+        )
+        if plugin_ids is None:
+            plugins = derived_plugins
+        else:
+            plugins = _plugin_ids(plugin_ids)
+            if execution_plan is not None and plugins != derived_plugins:
+                raise ValueError(
+                    "plugin_ids must exactly match execution-plan plug-in IDs"
+                )
+        execution_plan_json = (
+            canonical_json(execution_plan_document)
+            if execution_plan_document is not None
+            else None
+        )
+        execution_plan_digest = (
+            execution_plan_document["plan_digest"]
+            if execution_plan_document is not None
+            else None
+        )
         metadata_json = _metadata_json(metadata, "revision metadata")
-        request = {
+        request: dict[str, Any] = {
             "workspace_id": workspace,
             "fixture_id": fixture,
             "revision_id": revision,
@@ -1795,6 +2055,8 @@ class SqliteSessionStore:
             "plugin_ids": list(plugins),
             "metadata": json.loads(metadata_json),
         }
+        if execution_plan_document is not None:
+            request["execution_plan"] = execution_plan_document
         request_digest = canonical_json_sha256(request)
         with self._transaction(deadline_ns=deadline_ns) as cursor:
             self._require_workspace(cursor, tenant, workspace)
@@ -1809,7 +2071,12 @@ class SqliteSessionStore:
                 request_digest,
             )
             if prior is not None:
-                return self._revision_from_payload(prior)
+                return self._replayed_revision(
+                    cursor,
+                    prior,
+                    tenant_id=tenant,
+                    revision_id=revision,
+                )
             published_at_ns = time.time_ns()
             try:
                 cursor.execute(
@@ -1817,8 +2084,9 @@ class SqliteSessionStore:
                     INSERT INTO analysis_revisions(
                         tenant_id, revision_id, workspace_id, fixture_id,
                         node_id, identity_digest, plugin_ids_json,
-                        metadata_json, published_at_ns
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        metadata_json, published_at_ns, execution_plan_json,
+                        execution_plan_digest, execution_plan_present
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         tenant,
@@ -1830,6 +2098,9 @@ class SqliteSessionStore:
                         canonical_json(list(plugins)),
                         metadata_json,
                         published_at_ns,
+                        execution_plan_json,
+                        execution_plan_digest,
+                        int(execution_plan is not None),
                     ),
                 )
             except sqlite3.IntegrityError as error:
@@ -1846,6 +2117,7 @@ class SqliteSessionStore:
                 plugin_ids=plugins,
                 metadata=json.loads(metadata_json),
                 published_at_ns=published_at_ns,
+                execution_plan=execution_plan,
             )
             self._record_idempotency(
                 cursor,
@@ -1879,6 +2151,22 @@ class SqliteSessionStore:
         plugins = json.loads(row["plugin_ids_json"])
         if not isinstance(plugins, list):
             raise SessionStoreError("stored revision plugin IDs are invalid")
+        execution_plan = _stored_execution_plan(
+            row["execution_plan_json"],
+            row["execution_plan_digest"],
+            row["execution_plan_present"],
+            node_id=row["node_id"],
+        )
+        expected_plugins = (
+            _execution_plan_plugin_ids(execution_plan)
+            if execution_plan is not None
+            else None
+        )
+        parsed_plugins = _plugin_ids(plugins)
+        if expected_plugins is not None and parsed_plugins != expected_plugins:
+            raise SessionStoreError(
+                "stored revision plug-in IDs do not match execution plan"
+            )
         return AnalysisRevisionDescriptor(
             tenant_id=row["tenant_id"],
             workspace_id=row["workspace_id"],
@@ -1886,9 +2174,10 @@ class SqliteSessionStore:
             revision_id=row["revision_id"],
             node_id=row["node_id"],
             identity_digest=row["identity_digest"],
-            plugin_ids=tuple(str(item) for item in plugins),
+            plugin_ids=parsed_plugins,
             metadata=_json_mapping(row["metadata_json"]),
             published_at_ns=row["published_at_ns"],
+            execution_plan=execution_plan,
         )
 
     def get_revision(
