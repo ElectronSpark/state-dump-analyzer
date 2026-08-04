@@ -2235,8 +2235,9 @@ Cross-node analysis composes several atomic references rather than assigning
 one source revision to a synthetic multi-node fact. The immutable
 `PrivateAnalysisRequest` now owns the exact scope and canonical revision
 vector, selected runner/version/transport/configuration digest, disclosure and
-instruction-profile digests, untrusted query, clock policy, and bounded work
-limits. Its self-digest is the identity used by later execution and storage.
+instruction-profile digests, exact closed tool-catalog digest, untrusted query,
+clock policy, and bounded work limits. Its self-digest is the identity used by
+later execution and storage.
 
 The matching advisory-output contract is deliberately narrower than an
 annotation or reconstructed fact. A `PrivateAnalysisResult` contains one
@@ -2258,6 +2259,19 @@ and outcome is exact-field, bounded, canonical, and self-digested. Parsing
 checks representation and integrity only; it does not perform authorization,
 retrieve evidence, establish policy freshness, execute a runner, persist a
 run, or promote a proposal. Those remain separate orchestration stages.
+
+The adjacent tool layer is intentionally inert. A self-digested catalog fixes
+the complete vocabulary to `query_evidence` and `read_evidence`, with closed
+argument/result contract versions and no callable or resource authority.
+Request- and catalog-bound calls use distinct typed query/read arguments.
+Queries return only unique `EvidenceReference` values in digest order; reads
+return one matching disclosure-gated `EvidenceEnvelope`. Keyset cursors bind
+the request, catalog, canonical query fingerprint, immutable eligible-set
+snapshot digest, and last reference digest. This makes filter, request,
+catalog, and snapshot replay detectable without giving the model an offset,
+database handle, filesystem path, shell, socket, dynamic loader, or plug-in
+callback. Closed payload-free errors keep storage and runner diagnostics out of
+the wire. The values still do not authorize, retrieve, ledger, or execute.
 
 ## 14. Delivery sequence
 

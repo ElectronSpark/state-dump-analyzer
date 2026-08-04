@@ -475,14 +475,18 @@ Disclosure-gated envelopes deep-detach bounded canonical JSON and reject
 `never_assistant` and cross-workspace decision replay; wire parsers never mint
 missing identity digests. Multi-node claims compose several atomic references.
 Versioned requests bind the exact revision vector, local runner selection,
-policy/instruction digests, clock, query, and budgets. Advisory results contain
+policy/instruction digests, the closed read-only tool-catalog digest, clock,
+query, and budgets. Advisory results contain
 citation-backed claims or explicitly unsupported hypotheses and
 `assistant_suggested` proposals. The summary is itself a support-labeled claim,
 not an uncited text channel; validation accepts citations only from the
 references actually disclosed for that request. Typed failures do not carry
-arbitrary diagnostics. These are reusable library/local-wire values today,
-not a public-model integration, evidence tool service, or enabled model-run
-endpoint. See the
+arbitrary diagnostics. Core also exports an inert, self-digested catalog
+containing exactly `query_evidence` and `read_evidence`, plus typed calls,
+keyset cursors, page/read results, and payload-free errors. Those values carry
+no handler, database/filesystem handle, shell, network, or plug-in callback.
+They are reusable library/local-wire values today, not a public-model
+integration, evidence retrieval service, or enabled model-run endpoint. See the
 [private AI analysis boundary](docs/private-ai-analysis.md).
 
 For a headless multi-fixture run:

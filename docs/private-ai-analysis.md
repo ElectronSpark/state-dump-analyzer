@@ -189,7 +189,8 @@ execution:
   revision bindings;
 - runner ID, runner version, one of the two closed transports, and a runner
   configuration digest;
-- workspace disclosure-policy and trusted instruction-profile digests;
+- workspace disclosure-policy, trusted instruction-profile, and exact
+  read-only tool-catalog digests;
 - a closed task kind, an untrusted user query, an explicit clock mode and
   optional time coordinate; and
 - bounded evidence, tool-call, output, claim, proposal, and deadline limits.
@@ -231,8 +232,43 @@ and oversized wire values.
 Summary, claim, and proposal text is proprietary analysis output, not
 automatically client-safe text. Display and export surfaces added later must
 apply their own authorization, disclosure, and safe-rendering boundaries.
-Paging, cursors, run storage, retrieval, the disclosure ledger itself,
-execution, and promotion remain separate implementation stages.
+Run storage, retrieval, the disclosure ledger itself, execution, and promotion
+remain separate implementation stages.
+
+## Inert read-only tool contract
+
+Core exports one closed, self-digested catalog containing exactly
+`query_evidence` and `read_evidence`. It is a value contract, not a service:
+definitions carry only closed names and argument/result contract versions.
+There is no handler, Python callable, database or filesystem handle, shell,
+network socket, dynamic loader, or plug-in callback in the catalog or its wire
+values.
+
+Every tool binding names one tool and binds the exact request digest and
+catalog digest. Query and read arguments are separately typed so a read cannot
+be dispatched with query arguments or vice versa. Query filters stay generic
+and plug-in-neutral; they select immutable evidence references by declared
+evidence kind and bounded producer, node, or subject vocabulary. Query pages
+contain unique references in strict `reference_digest` order. They do not
+contain evidence payloads. Filter families are ANDed and values inside one
+family are ORed; an empty family means unrestricted inside the parent request.
+The pure paging helper accepts only an already authorized,
+disclosure-eligible frozen reference set and rejects a member outside those
+filters. It does not discover or authorize that set.
+
+Paging uses a typed keyset cursor, never a mutable offset. The cursor binds the
+request, tool catalog, canonical query fingerprint, immutable eligible-set
+snapshot digest, and last returned reference digest. Replaying it under a
+different request, catalog, query, or snapshot fails closed. `read_evidence`
+accepts exactly one reference digest and its result contains exactly one
+matching, already disclosure-gated `EvidenceEnvelope`.
+
+Tool calls and results are canonical, bounded, self-digested values. Tool
+errors use a closed, payload-free taxonomy and static local messages; runner
+or storage exception text does not cross the wire. These contracts do not
+look up a revision, authorize a caller, evaluate a current disclosure policy,
+materialize payloads, record the disclosure ledger, or execute a model. Those
+responsibilities are added by later trusted orchestration stages.
 
 ## Tool and instruction boundary
 

@@ -94,9 +94,7 @@ APPROVED_PACKAGING_MANIFESTS = {
         },
         "scripts": {},
         "entry-points": {
-            "router_dump_analyzer.plugins": {
-                "demo_router": "rsl_demo_plugin:plugin"
-            }
+            "router_dump_analyzer.plugins": {"demo_router": "rsl_demo_plugin:plugin"}
         },
         "tool": {
             "hatch": {
@@ -109,8 +107,7 @@ APPROVED_PACKAGING_MANIFESTS = {
                             ],
                             "force-include": {
                                 "fixtures/minimal-status.jsonl": (
-                                    "rsl_demo_plugin/fixtures/"
-                                    "minimal-status.jsonl"
+                                    "rsl_demo_plugin/fixtures/minimal-status.jsonl"
                                 ),
                                 "router-state-lab-default.scenario.json": (
                                     "rsl_demo_generator/"
@@ -135,9 +132,7 @@ APPROVED_PACKAGING_MANIFESTS = {
     },
     "state-dump-generator/pyproject.toml": {
         "requirements": {"base": frozenset()},
-        "scripts": {
-            "state-dump-generator": "state_dump_generator.__main__:main"
-        },
+        "scripts": {"state-dump-generator": "state_dump_generator.__main__:main"},
         "entry-points": {},
         "tool": {
             "hatch": {
@@ -234,9 +229,7 @@ DEPENDENCY_MANIFEST_NAMES = frozenset(
         "yarn.lock",
     }
 )
-APPROVED_EXTERNAL_IMPORT_ROOTS = frozenset(
-    {"fastapi", "starlette", "uvicorn"}
-)
+APPROVED_EXTERNAL_IMPORT_ROOTS = frozenset({"fastapi", "starlette", "uvicorn"})
 PRIVATE_ANALYSIS_ALLOWED_IMPORT_PREFIXES = (
     "__future__",
     ".policy",
@@ -466,11 +459,9 @@ def _literal_imports(path: Path) -> tuple[tuple[int, str], ...]:
         elif isinstance(node, ast.Call) and node.args:
             function = node.func
             is_dynamic_import = (
-                isinstance(function, ast.Name)
-                and function.id == "__import__"
+                isinstance(function, ast.Name) and function.id == "__import__"
             ) or (
-                isinstance(function, ast.Attribute)
-                and function.attr == "import_module"
+                isinstance(function, ast.Attribute) and function.attr == "import_module"
             )
             argument = node.args[0]
             if (
@@ -521,14 +512,12 @@ def _dependency_policy_violations(
     for group_name, approved in approved_requirements.items():
         raw_requirements = groups.get(group_name, ())
         if not isinstance(raw_requirements, list):
-            raw_requirements = tuple(raw_requirements) if isinstance(
-                raw_requirements, tuple
-            ) else ()
+            raw_requirements = (
+                tuple(raw_requirements) if isinstance(raw_requirements, tuple) else ()
+            )
         actual = {str(requirement).strip() for requirement in raw_requirements}
         for requirement in sorted(actual - approved):
-            violations.append(
-                f"{group_name}: unapproved requirement {requirement}"
-            )
+            violations.append(f"{group_name}: unapproved requirement {requirement}")
         for requirement in sorted(approved - actual):
             violations.append(
                 f"{group_name}: missing approved requirement {requirement}"
@@ -556,16 +545,13 @@ def _dependency_policy_violations(
             set(build_system) - {"requires", "build-backend"}
         )
         violations.extend(
-            f"unapproved build-system field {name}"
-            for name in unexpected_build_keys
+            f"unapproved build-system field {name}" for name in unexpected_build_keys
         )
     for executable_field in ("scripts", "gui-scripts", "entry-points"):
         actual = project_table.get(executable_field, {})
         expected = policy.get(executable_field, {})
         if actual != expected:
-            violations.append(
-                f"unapproved project {executable_field} {actual!r}"
-            )
+            violations.append(f"unapproved project {executable_field} {actual!r}")
     tool = project.get("tool", {})
     if tool != policy["tool"]:
         violations.append(
@@ -615,9 +601,11 @@ def _dependency_manifest_violations(root: Path) -> tuple[str, ...]:
             )
     for name, expected_lines in APPROVED_ENVIRONMENT_MANIFESTS.items():
         path = root / name
-        if path.is_file() and tuple(
-            path.read_text(encoding="utf-8").rstrip().splitlines()
-        ) != expected_lines:
+        if (
+            path.is_file()
+            and tuple(path.read_text(encoding="utf-8").rstrip().splitlines())
+            != expected_lines
+        ):
             violations.append(
                 f"{name}: environment dependencies differ from the approved manifest"
             )
@@ -632,6 +620,44 @@ def _dependency_manifest_violations(root: Path) -> tuple[str, ...]:
 
 def _private_analysis_import_violations(source_root: Path) -> tuple[str, ...]:
     violations: list[str] = []
+    forbidden_reflective_members = frozenset(
+        {
+            "_getframe",
+            "ag_code",
+            "ag_frame",
+            "cr_code",
+            "cr_frame",
+            "f_builtins",
+            "f_code",
+            "f_globals",
+            "f_locals",
+            "gi_code",
+            "gi_frame",
+            "tb_frame",
+        }
+    )
+    allowed_external_members = {
+        "..canonical": frozenset(
+            {"strict_canonical_json", "strict_canonical_json_sha256"}
+        ),
+        "..contract_validation": frozenset({"validate_bounded_json_value"}),
+        "..public_text": frozenset(
+            {
+                "contains_filesystem_identity_path",
+                "contains_unsafe_identifier_text",
+                "has_visible_identity_anchor",
+            }
+        ),
+        "..value_core": frozenset(
+            {"MAX_JSON_SAFE_INTEGER", "parse_canonical_decimal_integer"}
+        ),
+        "__future__": frozenset({"annotations"}),
+        "collections.abc": frozenset({"Callable"}),
+        "dataclasses": frozenset({"dataclass"}),
+        "enum": frozenset({"StrEnum"}),
+        "json": frozenset({"JSONDecodeError", "loads"}),
+        "typing": frozenset({"Any", "Final"}),
+    }
     for path in _python_files(source_root):
         relative = path.relative_to(source_root).as_posix()
         for line, import_name in _literal_imports(path):
@@ -652,19 +678,190 @@ def _private_analysis_import_violations(source_root: Path) -> tuple[str, ...]:
                     f"{relative}:{line}: unapproved private-analysis import "
                     f"{import_name}"
                 )
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                violations.append(
+                    f"{relative}:{node.lineno}: module-object imports are forbidden"
+                )
+            elif isinstance(node, ast.ImportFrom):
+                module_key = "." * node.level + (node.module or "")
+                if node.level > 0 and node.module is None:
+                    violations.append(
+                        f"{relative}:{node.lineno}: relative module-object imports "
+                        "are forbidden"
+                    )
+                    continue
+                if any(alias.name == "*" for alias in node.names):
+                    violations.append(
+                        f"{relative}:{node.lineno}: wildcard imports are forbidden"
+                    )
+                    continue
+                reflective = sorted(
+                    alias.name
+                    for alias in node.names
+                    if (alias.name.startswith("__") and alias.name.endswith("__"))
+                    or alias.name in forbidden_reflective_members
+                )
+                if reflective:
+                    violations.append(
+                        f"{relative}:{node.lineno}: reflective import members are "
+                        f"forbidden: {', '.join(reflective)}"
+                    )
+                    continue
+                allowed = allowed_external_members.get(module_key)
+                if allowed is None:
+                    if node.level != 1:
+                        violations.append(
+                            f"{relative}:{node.lineno}: unapproved ImportFrom module "
+                            f"{module_key}"
+                        )
+                    continue
+                unexpected = sorted(
+                    alias.name for alias in node.names if alias.name not in allowed
+                )
+                if unexpected:
+                    violations.append(
+                        f"{relative}:{node.lineno}: unapproved members imported from "
+                        f"{module_key}: {', '.join(unexpected)}"
+                    )
     return tuple(sorted(set(violations)))
+
+
+def _private_analysis_forbidden_capability(
+    node: ast.AST,
+    *,
+    forbidden_aliases: set[str],
+    builtin_namespace_aliases: set[str],
+    forbidden_names: frozenset[str],
+) -> str | None:
+    allowed_dunder_attributes = frozenset(
+        {
+            "__bases__",
+            "__init_subclass__",
+            "__name__",
+            "__post_init__",
+            "__setattr__",
+        }
+    )
+    forbidden_reflective_attributes = frozenset(
+        {
+            "__builtins__",
+            "__class__",
+            "__closure__",
+            "__code__",
+            "__dict__",
+            "__getattribute__",
+            "__globals__",
+            "__mro__",
+            "__self__",
+            "__subclasses__",
+            "__traceback__",
+            "_getframe",
+            "ag_code",
+            "ag_frame",
+            "cr_code",
+            "cr_frame",
+            "f_builtins",
+            "f_code",
+            "f_globals",
+            "f_locals",
+            "gi_code",
+            "gi_frame",
+            "tb_frame",
+        }
+    )
+    if isinstance(node, ast.Attribute):
+        if (
+            node.attr.startswith("__")
+            and node.attr.endswith("__")
+            and node.attr not in allowed_dunder_attributes
+        ):
+            return node.attr
+        if node.attr in forbidden_reflective_attributes:
+            return node.attr
+    if isinstance(node, ast.MatchClass):
+        for attribute in node.kwd_attrs:
+            if (
+                attribute.startswith("__")
+                and attribute.endswith("__")
+                and attribute not in allowed_dunder_attributes
+            ) or attribute in forbidden_reflective_attributes:
+                return attribute
+    if isinstance(node, ast.Name) and node.id in forbidden_aliases:
+        return node.id
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id in builtin_namespace_aliases
+        and node.attr in forbidden_names
+    ):
+        return node.attr
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id in builtin_namespace_aliases
+        and isinstance(node.slice, ast.Constant)
+        and node.slice.value in forbidden_names
+    ):
+        return str(node.slice.value)
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"get", "__getitem__"}
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id in builtin_namespace_aliases
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value in forbidden_names
+    ):
+        return str(node.args[0].value)
+    return None
 
 
 def _private_analysis_dynamic_execution_violations(
     source_root: Path,
 ) -> tuple[str, ...]:
     violations: list[str] = []
-    forbidden_names = frozenset({"__import__", "compile", "eval", "exec"})
+    forbidden_names = frozenset(
+        {
+            "__import__",
+            "__cached__",
+            "__file__",
+            "__loader__",
+            "__name__",
+            "__package__",
+            "__spec__",
+            "compile",
+            "eval",
+            "exec",
+            "getattr",
+            "globals",
+            "locals",
+            "open",
+            "vars",
+        }
+    )
     forbidden_attributes = frozenset({"__import__", "import_module"})
     for path in _python_files(source_root):
         relative = path.relative_to(source_root).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         forbidden_aliases = set(forbidden_names)
+        builtin_namespace_aliases = {"builtins", "__builtins__"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                builtin_namespace_aliases.update(
+                    alias.asname or alias.name
+                    for alias in node.names
+                    if alias.name == "builtins"
+                )
+            elif isinstance(node, ast.ImportFrom) and node.module == "builtins":
+                forbidden_aliases.update(
+                    alias.asname or alias.name
+                    for alias in node.names
+                    if alias.name in forbidden_names
+                )
+
         changed = True
         while changed:
             changed = False
@@ -672,12 +869,30 @@ def _private_analysis_dynamic_execution_violations(
                 if (
                     isinstance(node, (ast.Assign, ast.AnnAssign))
                     and isinstance(node.value, ast.Name)
-                    and node.value.id in forbidden_aliases
+                    and node.value.id in builtin_namespace_aliases
+                ):
+                    namespace_targets = (
+                        node.targets if isinstance(node, ast.Assign) else (node.target,)
+                    )
+                    for target in namespace_targets:
+                        if (
+                            isinstance(target, ast.Name)
+                            and target.id not in builtin_namespace_aliases
+                        ):
+                            builtin_namespace_aliases.add(target.id)
+                            changed = True
+                if (
+                    isinstance(node, (ast.Assign, ast.AnnAssign))
+                    and _private_analysis_forbidden_capability(
+                        node.value,
+                        forbidden_aliases=forbidden_aliases,
+                        builtin_namespace_aliases=builtin_namespace_aliases,
+                        forbidden_names=forbidden_names,
+                    )
+                    is not None
                 ):
                     targets = (
-                        node.targets
-                        if isinstance(node, ast.Assign)
-                        else (node.target,)
+                        node.targets if isinstance(node, ast.Assign) else (node.target,)
                     )
                     for target in targets:
                         if (
@@ -697,8 +912,21 @@ def _private_analysis_dynamic_execution_violations(
                 if (
                     isinstance(node, ast.Name)
                     and isinstance(node.ctx, ast.Load)
-                    and node.id in forbidden_aliases
-                    and not (isinstance(parent, ast.Call) and parent.func is node)
+                    and node.id in builtin_namespace_aliases
+                ):
+                    violations.append(
+                        f"{relative}:{node.lineno}: builtin namespace capability "
+                        "escapes direct validation"
+                    )
+                    continue
+                capability = _private_analysis_forbidden_capability(
+                    node,
+                    forbidden_aliases=forbidden_aliases,
+                    builtin_namespace_aliases=builtin_namespace_aliases,
+                    forbidden_names=forbidden_names,
+                )
+                if capability is not None and not (
+                    isinstance(parent, ast.Call) and parent.func is node
                 ):
                     violations.append(
                         f"{relative}:{node.lineno}: dynamic execution capability "
@@ -706,9 +934,22 @@ def _private_analysis_dynamic_execution_violations(
                     )
                 continue
             function = node.func
-            if isinstance(function, ast.Name) and function.id in forbidden_aliases:
+            capability = _private_analysis_forbidden_capability(
+                node,
+                forbidden_aliases=forbidden_aliases,
+                builtin_namespace_aliases=builtin_namespace_aliases,
+                forbidden_names=forbidden_names,
+            )
+            if capability is None:
+                capability = _private_analysis_forbidden_capability(
+                    function,
+                    forbidden_aliases=forbidden_aliases,
+                    builtin_namespace_aliases=builtin_namespace_aliases,
+                    forbidden_names=forbidden_names,
+                )
+            if capability is not None:
                 violations.append(
-                    f"{relative}:{node.lineno}: dynamic execution {function.id}"
+                    f"{relative}:{node.lineno}: dynamic execution {capability}"
                 )
             elif (
                 isinstance(function, ast.Attribute)
@@ -724,9 +965,7 @@ def _private_analysis_dynamic_execution_violations(
                 and isinstance(node.args[1], ast.Constant)
                 and node.args[1].value in forbidden_names | forbidden_attributes
             ):
-                violations.append(
-                    f"{relative}:{node.lineno}: dynamic import lookup"
-                )
+                violations.append(f"{relative}:{node.lineno}: dynamic import lookup")
     return tuple(sorted(set(violations)))
 
 
@@ -804,8 +1043,7 @@ def _core_dynamic_import_violations(source_root: Path) -> tuple[str, ...]:
         import_aliases.update(
             alias.asname or alias.name
             for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
-            and node.module == "builtins"
+            if isinstance(node, ast.ImportFrom) and node.module == "builtins"
             for alias in node.names
             if alias.name == "__import__"
         )
@@ -819,8 +1057,7 @@ def _core_dynamic_import_violations(source_root: Path) -> tuple[str, ...]:
         import_module_aliases = {
             alias.asname or alias.name
             for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
-            and node.module == "importlib"
+            if isinstance(node, ast.ImportFrom) and node.module == "importlib"
             for alias in node.names
             if alias.name == "import_module"
         }
@@ -840,8 +1077,7 @@ def _core_dynamic_import_violations(source_root: Path) -> tuple[str, ...]:
             *(
                 alias.asname or alias.name
                 for node in ast.walk(tree)
-                if isinstance(node, ast.ImportFrom)
-                and node.module == "builtins"
+                if isinstance(node, ast.ImportFrom) and node.module == "builtins"
                 for alias in node.names
                 if alias.name == "getattr"
             ),
@@ -874,28 +1110,26 @@ def _core_dynamic_import_violations(source_root: Path) -> tuple[str, ...]:
         while changed:
             changed = False
             for node in ast.walk(tree):
-                if (
-                    isinstance(node, (ast.Assign, ast.AnnAssign))
-                    and (
-                        (
-                            isinstance(node.value, ast.Name)
-                            and node.value.id in getattr_aliases
-                        )
-                        or (
-                            isinstance(node.value, ast.Attribute)
-                            and node.value.attr == "getattr"
-                            and isinstance(node.value.value, ast.Name)
-                            and node.value.value.id in builtins_module_aliases
-                        )
+                if isinstance(node, (ast.Assign, ast.AnnAssign)) and (
+                    (
+                        isinstance(node.value, ast.Name)
+                        and node.value.id in getattr_aliases
+                    )
+                    or (
+                        isinstance(node.value, ast.Attribute)
+                        and node.value.attr == "getattr"
+                        and isinstance(node.value.value, ast.Name)
+                        and node.value.value.id in builtins_module_aliases
                     )
                 ):
                     targets = (
-                        node.targets
-                        if isinstance(node, ast.Assign)
-                        else (node.target,)
+                        node.targets if isinstance(node, ast.Assign) else (node.target,)
                     )
                     for target in targets:
-                        if isinstance(target, ast.Name) and target.id not in getattr_aliases:
+                        if (
+                            isinstance(target, ast.Name)
+                            and target.id not in getattr_aliases
+                        ):
                             getattr_aliases.add(target.id)
                             changed = True
                 if (
@@ -904,9 +1138,7 @@ def _core_dynamic_import_violations(source_root: Path) -> tuple[str, ...]:
                     and node.value.id in builtins_module_aliases
                 ):
                     targets = (
-                        node.targets
-                        if isinstance(node, ast.Assign)
-                        else (node.target,)
+                        node.targets if isinstance(node, ast.Assign) else (node.target,)
                     )
                     for target in targets:
                         if (
@@ -921,19 +1153,18 @@ def _core_dynamic_import_violations(source_root: Path) -> tuple[str, ...]:
                     and node.value.id in import_aliases
                 ):
                     targets = (
-                        node.targets
-                        if isinstance(node, ast.Assign)
-                        else (node.target,)
+                        node.targets if isinstance(node, ast.Assign) else (node.target,)
                     )
                     for target in targets:
-                        if isinstance(target, ast.Name) and target.id not in import_aliases:
+                        if (
+                            isinstance(target, ast.Name)
+                            and target.id not in import_aliases
+                        ):
                             import_aliases.add(target.id)
                             changed = True
                 if isinstance(node, (ast.Assign, ast.AnnAssign)):
                     targets = (
-                        node.targets
-                        if isinstance(node, ast.Assign)
-                        else (node.target,)
+                        node.targets if isinstance(node, ast.Assign) else (node.target,)
                     )
                     source_is_import_module = (
                         isinstance(node.value, ast.Name)
@@ -960,7 +1191,10 @@ def _core_dynamic_import_violations(source_root: Path) -> tuple[str, ...]:
                     )
                     if source_is_builtin_import:
                         for target in targets:
-                            if isinstance(target, ast.Name) and target.id not in import_aliases:
+                            if (
+                                isinstance(target, ast.Name)
+                                and target.id not in import_aliases
+                            ):
                                 import_aliases.add(target.id)
                                 changed = True
                     source_is_loader_callable = (
@@ -1019,8 +1253,7 @@ def _core_dynamic_import_violations(source_root: Path) -> tuple[str, ...]:
                     f"{relative}:{node.lineno}: unapproved dynamic import"
                 )
             elif (
-                isinstance(function, ast.Name)
-                and function.id in import_module_aliases
+                isinstance(function, ast.Name) and function.id in import_module_aliases
             ):
                 if (
                     relative,
@@ -1037,7 +1270,8 @@ def _core_dynamic_import_violations(source_root: Path) -> tuple[str, ...]:
                 and (
                     relative,
                     enclosing_function(node),
-                ) not in allowed_import_module_sites
+                )
+                not in allowed_import_module_sites
             ):
                 violations.append(
                     f"{relative}:{node.lineno}: unapproved import_module call"
@@ -1053,10 +1287,7 @@ def _core_dynamic_import_violations(source_root: Path) -> tuple[str, ...]:
                     f"{relative}:{node.lineno}: unapproved import machinery call"
                 )
             elif (
-                (
-                    isinstance(function, ast.Name)
-                    and function.id in getattr_aliases
-                )
+                (isinstance(function, ast.Name) and function.id in getattr_aliases)
                 or (
                     isinstance(function, ast.Attribute)
                     and function.attr == "getattr"
@@ -1134,9 +1365,7 @@ def _core_asyncio_usage_violations(source_root: Path) -> tuple[str, ...]:
                     and node.value.id in aliases
                 ):
                     targets = (
-                        node.targets
-                        if isinstance(node, ast.Assign)
-                        else (node.target,)
+                        node.targets if isinstance(node, ast.Assign) else (node.target,)
                     )
                     for target in targets:
                         if isinstance(target, ast.Name) and target.id not in aliases:
@@ -1189,8 +1418,7 @@ def _core_asyncio_usage_violations(source_root: Path) -> tuple[str, ...]:
             ):
                 parent = parents.get(node)
                 is_allowed_attribute_receiver = (
-                    isinstance(parent, ast.Attribute)
-                    and parent.value is node
+                    isinstance(parent, ast.Attribute) and parent.value is node
                 )
                 is_direct_alias_source = (
                     isinstance(parent, (ast.Assign, ast.AnnAssign))
@@ -1243,8 +1471,7 @@ def _deployable_resource_violations(*roots: Path) -> tuple[str, ...]:
             )
             if has_package_install:
                 installed_providers = sorted(
-                    PUBLIC_MODEL_PROVIDER_PACKAGE_MARKERS
-                    & set(command_tokens)
+                    PUBLIC_MODEL_PROVIDER_PACKAGE_MARKERS & set(command_tokens)
                 )
                 violations.extend(
                     f"{relative_to_root.as_posix()}: forbidden public-model "
@@ -1310,12 +1537,8 @@ class PrivateAiArchitectureTests(unittest.TestCase):
             )
 
     def test_assistant_provenance_cannot_impersonate_fact_provenance(self) -> None:
-        assistant_values = {
-            item.value for item in PrivateAnalysisContributionKind
-        }
-        report_values = {
-            item.value for item in CorrelationReportProvenanceClass
-        }
+        assistant_values = {item.value for item in PrivateAnalysisContributionKind}
+        report_values = {item.value for item in CorrelationReportProvenanceClass}
         self.assertEqual(
             assistant_values,
             {
@@ -1348,9 +1571,7 @@ class PrivateAiArchitectureTests(unittest.TestCase):
             (),
         )
         self.assertEqual(
-            _private_analysis_dynamic_execution_violations(
-                PRIVATE_ANALYSIS_SOURCE
-            ),
+            _private_analysis_dynamic_execution_violations(PRIVATE_ANALYSIS_SOURCE),
             (),
         )
         self.assertEqual(
@@ -1358,7 +1579,9 @@ class PrivateAiArchitectureTests(unittest.TestCase):
             (),
         )
 
-    def test_deployable_sources_have_no_model_endpoint_or_key_configuration(self) -> None:
+    def test_deployable_sources_have_no_model_endpoint_or_key_configuration(
+        self,
+    ) -> None:
         self.assertEqual(
             _deployable_resource_violations(
                 ROOT,
@@ -1378,24 +1601,104 @@ class PrivateAiArchitectureTests(unittest.TestCase):
                     "import asyncio\nasync def connect():\n"
                     "    return await asyncio.open_connection('host', 443)\n"
                 ),
-                "indirect.py": (
-                    "from router_dump_analyzer.web import service_api\n"
-                ),
+                "indirect.py": ("from router_dump_analyzer.web import service_api\n"),
                 "escape.py": "from ..web import service_api\n",
                 "dynamic.py": (
                     "module_name = 'socket'\n"
                     "loader = __import__\n"
                     "client = loader(module_name)\n"
                 ),
+                "filesystem.py": "reader = open\nreader('secret.dump', 'rb')\n",
+                "builtin_lookup.py": (
+                    "reader = __builtins__['open']\nreader('secret.dump', 'rb')\n"
+                ),
+                "builtin_namespace_alias.py": (
+                    "runtime = __builtins__\n"
+                    "reader = runtime['open']\n"
+                    "reader('secret.dump', 'rb')\n"
+                ),
+                "builtin_method_lookup.py": (
+                    "runtime = __builtins__\n"
+                    "reader = runtime.get('open')\n"
+                    "reader('secret.dump', 'rb')\n"
+                    "second = runtime.__getitem__('open')\n"
+                    "second('other.dump', 'rb')\n"
+                ),
+                "builtin_accessor_alias.py": (
+                    "key = 'open'\n"
+                    "lookup = __builtins__.get\n"
+                    "reader = lookup(key)\n"
+                    "reader('secret.dump', 'rb')\n"
+                ),
+                "reflective_builtin_lookup.py": (
+                    "first = marker.__builtins__['open']\n"
+                    "second = marker.__globals__['__builtins__']['open']\n"
+                    "third = len.__self__.open\n"
+                ),
+                "frame_builtin_lookup.py": (
+                    "first = generator.gi_frame.f_builtins['open']\n"
+                    "second = error.__traceback__.tb_frame.f_builtins['open']\n"
+                ),
+                "module_bridge.py": (
+                    "import dataclasses\n"
+                    "reader = dataclasses.sys.modules['builtins'].open\n"
+                ),
+                "member_bridge.py": (
+                    "from dataclasses import sys\n"
+                    "reader = sys.modules['builtins'].open\n"
+                ),
+                "absolute_submodule_bridge.py": (
+                    "from json.decoder import re\n"
+                    "reader = re.enum.sys.modules['builtins'].open\n"
+                ),
+                "parent_member_bridge.py": (
+                    "from ..canonical import __builtins__ as runtime\n"
+                    "reader = runtime['open']\n"
+                ),
+                "local_module_bridge.py": (
+                    "from . import tool_catalog\n"
+                    "reader = tool_catalog.loads.__globals__['__builtins__']['open']\n"
+                ),
+                "local_member_bridge.py": (
+                    "from .tool_catalog import __builtins__ as runtime\n"
+                    "reader = runtime['open']\n"
+                ),
+                "loader_metadata.py": (
+                    "first = __loader__.get_data(__file__)\n"
+                    "second = __spec__.loader.get_data(__file__)\n"
+                ),
+                "pattern_reflective_lookup.py": (
+                    "match len:\n"
+                    "    case object(__self__=namespace):\n"
+                    "        reader = namespace.open\n"
+                    "match callback:\n"
+                    "    case object(__globals__=namespace):\n"
+                    "        second = namespace['__builtins__']['open']\n"
+                ),
+                "reduction_reflective_lookup.py": (
+                    "lookup, unused = [].append.__reduce__()\n"
+                    "namespace = lookup(len, '__self__')\n"
+                    "reader = lookup(namespace, 'open')\n"
+                ),
             }
             for name, source in fixtures.items():
                 (root / name).write_text(source, encoding="utf-8")
             violations = _private_analysis_import_violations(root)
-            dynamic_violations = _private_analysis_dynamic_execution_violations(
-                root
-            )
+            dynamic_violations = _private_analysis_dynamic_execution_violations(root)
         for name in fixtures:
-            if name == "dynamic.py":
+            if name in {
+                "dynamic.py",
+                "filesystem.py",
+                "builtin_lookup.py",
+                "builtin_namespace_alias.py",
+                "builtin_method_lookup.py",
+                "builtin_accessor_alias.py",
+                "reflective_builtin_lookup.py",
+                "frame_builtin_lookup.py",
+                "loader_metadata.py",
+                "pattern_reflective_lookup.py",
+                "reduction_reflective_lookup.py",
+            }:
                 continue
             self.assertTrue(
                 any(item.startswith(f"{name}:") for item in violations),
@@ -1403,6 +1706,67 @@ class PrivateAiArchitectureTests(unittest.TestCase):
             )
         self.assertTrue(
             any(item.startswith("dynamic.py:") for item in dynamic_violations),
+            dynamic_violations,
+        )
+        self.assertTrue(
+            any(item.startswith("filesystem.py:") for item in dynamic_violations),
+            dynamic_violations,
+        )
+        self.assertTrue(
+            any(item.startswith("builtin_lookup.py:") for item in dynamic_violations),
+            dynamic_violations,
+        )
+        self.assertTrue(
+            any(
+                item.startswith("builtin_namespace_alias.py:")
+                for item in dynamic_violations
+            ),
+            dynamic_violations,
+        )
+        self.assertTrue(
+            any(
+                item.startswith("builtin_method_lookup.py:")
+                for item in dynamic_violations
+            ),
+            dynamic_violations,
+        )
+        self.assertTrue(
+            any(
+                item.startswith("builtin_accessor_alias.py:")
+                for item in dynamic_violations
+            ),
+            dynamic_violations,
+        )
+        self.assertTrue(
+            any(
+                item.startswith("reflective_builtin_lookup.py:")
+                for item in dynamic_violations
+            ),
+            dynamic_violations,
+        )
+        self.assertTrue(
+            any(
+                item.startswith("frame_builtin_lookup.py:")
+                for item in dynamic_violations
+            ),
+            dynamic_violations,
+        )
+        self.assertTrue(
+            any(item.startswith("loader_metadata.py:") for item in dynamic_violations),
+            dynamic_violations,
+        )
+        self.assertTrue(
+            any(
+                item.startswith("pattern_reflective_lookup.py:")
+                for item in dynamic_violations
+            ),
+            dynamic_violations,
+        )
+        self.assertTrue(
+            any(
+                item.startswith("reduction_reflective_lookup.py:")
+                for item in dynamic_violations
+            ),
             dynamic_violations,
         )
 
@@ -1554,9 +1918,7 @@ class PrivateAiArchitectureTests(unittest.TestCase):
         self.assertIn("unapproved dependency group private-ai", violations)
 
     def test_dependency_guard_pins_extras_sources_and_build_requirements(self) -> None:
-        original = tomllib.loads(
-            (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        )
+        original = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         cases = (
             ("fastapi[all]>=0.115,<1", "web"),
             ("fastapi @ https://example.invalid/package.whl", "web"),
@@ -1570,17 +1932,13 @@ class PrivateAiArchitectureTests(unittest.TestCase):
                 self.assertTrue(_dependency_policy_violations(project))
         original["build-system"]["requires"].append("future-build-hook")
         self.assertTrue(_dependency_policy_violations(original))
-        dynamic = tomllib.loads(
-            (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        )
+        dynamic = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         dynamic["project"]["dynamic"] = ["dependencies"]
         self.assertIn(
             "project dynamic metadata is not allowed",
             _dependency_policy_violations(dynamic),
         )
-        hook = tomllib.loads(
-            (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        )
+        hook = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         hook["tool"]["hatch"]["metadata"] = {"hooks": {"custom": {}}}
         self.assertIn(
             "tool metadata must match the approved static build and test tables",
@@ -1637,8 +1995,7 @@ class PrivateAiArchitectureTests(unittest.TestCase):
             )
             env_path = root / "environment.yml"
             env_path.write_text(
-                env_path.read_text(encoding="utf-8")
-                + "  - future-model-provider\n",
+                env_path.read_text(encoding="utf-8") + "  - future-model-provider\n",
                 encoding="utf-8",
             )
             violations = _dependency_manifest_violations(root)

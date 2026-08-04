@@ -77,6 +77,8 @@ _SHA_B = "sha256:" + "b" * 64
 _SHA_C = "sha256:" + "c" * 64
 _POLICY_A = "d" * 64
 _POLICY_B = "e" * 64
+_CATALOG_A = "sha256:" + "f" * 64
+_CATALOG_B = "sha256:" + "0" * 64
 
 
 def _scope(suffix: str = "a") -> EvidenceScope:
@@ -137,6 +139,7 @@ def _request(
         runner=_runner(),
         workspace_policy_digest=_POLICY_A,
         instruction_profile_digest=_SHA_B,
+        tool_catalog_digest=_CATALOG_A,
         task_kind=PrivateAnalysisTaskKind.LTTNG_ANALYSIS,
         query="Explain the observed BGP withdrawal and its downstream effect. \U0001f50e",
         clock_mode=PrivateAnalysisClockMode.LATEST_PER_REVISION,
@@ -388,7 +391,10 @@ class PrivateAnalysisContractTests(unittest.TestCase):
                         separators=(",", ":"),
                     ),
                 )
-                self.assertTrue(value.contract_version.endswith(".v1"))
+                expected_suffix = (
+                    ".v2" if type(value) is PrivateAnalysisRequest else ".v1"
+                )
+                self.assertTrue(value.contract_version.endswith(expected_suffix))
 
         self.assertIn("\U0001f50e", private_analysis_request_json(request))
         self.assertTrue(request.request_digest.startswith("sha256:"))
@@ -465,6 +471,7 @@ class PrivateAnalysisContractTests(unittest.TestCase):
             runner=runner,
             workspace_policy_digest=_POLICY_A,
             instruction_profile_digest=_SHA_B,
+            tool_catalog_digest=_CATALOG_A,
             task_kind=PrivateAnalysisTaskKind.LTTNG_ANALYSIS,
             query="Explain the event.",
             clock_mode=PrivateAnalysisClockMode.LATEST_PER_REVISION,
@@ -540,7 +547,7 @@ class PrivateAnalysisContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             private_analysis_outcome_dict(outcome)
 
-    def test_request_digest_binds_scope_revision_runner_policy_instructions_and_limits(
+    def test_request_digest_binds_scope_revision_runner_policy_catalog_and_limits(
         self,
     ) -> None:
         base = _request()
@@ -561,6 +568,7 @@ class PrivateAnalysisContractTests(unittest.TestCase):
             ),
             replace(base, workspace_policy_digest=_POLICY_B, request_digest=""),
             replace(base, instruction_profile_digest=_SHA_C, request_digest=""),
+            replace(base, tool_catalog_digest=_CATALOG_B, request_digest=""),
             replace(
                 base,
                 task_kind=PrivateAnalysisTaskKind.RESOURCE_CORRELATION,
@@ -983,6 +991,14 @@ class PrivateAnalysisContractTests(unittest.TestCase):
                 _limits(**changes)
 
         request = _request()
+        with self.assertRaises(ValueError):
+            replace(request, tool_catalog_digest="not-a-digest", request_digest="")
+        legacy_wire = private_analysis_request_dict(request)
+        legacy_wire["contract_version"] = (
+            "router_dump_analyzer.private_analysis.request.v1"
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            private_analysis_request_from_dict(legacy_wire)
         with self.assertRaises(ValueError):
             replace(request, query="", request_digest="")
         with self.assertRaises(ValueError):
@@ -1508,7 +1524,7 @@ class PrivateAnalysisContractTests(unittest.TestCase):
         )
         with (
             patch(
-                "router_dump_analyzer.private_analysis.contracts.json.loads"
+                "router_dump_analyzer.private_analysis.contracts.loads"
             ) as json_loads,
             self.assertRaises(ValueError),
         ):

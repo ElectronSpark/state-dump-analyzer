@@ -12,9 +12,9 @@ the disclosure-gated payload, never in the stable citation identity.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from enum import StrEnum
+from json import JSONDecodeError, loads
 from typing import Any, Final
 
 from ..canonical import strict_canonical_json, strict_canonical_json_sha256
@@ -139,7 +139,7 @@ _CORE_EVIDENCE_PRODUCER_IDS: Final = frozenset(
 )
 
 
-def _identifier(
+def validate_evidence_identifier(
     value: object,
     label: str,
     *,
@@ -161,13 +161,13 @@ def _identifier(
     return value
 
 
-def _token(
+def validate_evidence_token(
     value: object,
     label: str,
     *,
     maximum: int = MAX_EVIDENCE_IDENTIFIER_CHARACTERS,
 ) -> str:
-    result = _identifier(value, label, maximum=maximum)
+    result = validate_evidence_identifier(value, label, maximum=maximum)
     if any(character.isspace() for character in result):
         raise ValueError(f"{label} must be an opaque token")
     return result
@@ -184,11 +184,7 @@ def _sha256(value: object, label: str) -> str:
 
 
 def _execution_plan_digest(value: object, label: str) -> str:
-    if (
-        type(value) is not str
-        or not value.startswith("sha256:")
-        or len(value) != 71
-    ):
+    if type(value) is not str or not value.startswith("sha256:") or len(value) != 71:
         raise ValueError(f"{label} must be a sha256-prefixed lowercase digest")
     _sha256(value[7:], label)
     return value
@@ -288,7 +284,9 @@ def _validate_exact_json(
             try:
                 nested.encode("utf-8")
             except UnicodeEncodeError as error:
-                raise ValueError(f"{label} strings must contain Unicode scalars") from error
+                raise ValueError(
+                    f"{label} strings must contain Unicode scalars"
+                ) from error
             return
         if type(nested) is list:
             for child in nested:
@@ -355,7 +353,7 @@ def _canonical_locator_json(value: object) -> str:
 def evidence_locator_digest(subject_kind: str, identity: dict[str, Any]) -> str:
     """Return an opaque, type-preserving locator without exposing its key."""
 
-    kind = _token(
+    kind = validate_evidence_token(
         subject_kind,
         "subject_kind",
         maximum=MAX_EVIDENCE_SUBJECT_KIND_CHARACTERS,
@@ -365,7 +363,7 @@ def evidence_locator_digest(subject_kind: str, identity: dict[str, Any]) -> str:
         {
             "contract_version": EVIDENCE_LOCATOR_VERSION,
             "subject_kind": kind,
-            "identity": json.loads(identity_json),
+            "identity": loads(identity_json),
         }
     )
 
@@ -376,13 +374,13 @@ def evidence_payload_digest(
 ) -> str:
     """Return the domain-separated digest stored in an evidence reference."""
 
-    schema = _token(payload_schema, "payload_schema")
+    schema = validate_evidence_token(payload_schema, "payload_schema")
     payload_json = _canonical_payload_json(payload, "evidence payload")
     return "sha256:" + strict_canonical_json_sha256(
         {
             "contract_version": EVIDENCE_PAYLOAD_VERSION,
             "payload_schema": schema,
-            "payload": json.loads(payload_json),
+            "payload": loads(payload_json),
         }
     )
 
@@ -400,12 +398,15 @@ class EvidenceRevisionBinding(SealedContractValue):
     execution_plan_digest: str
 
     def __post_init__(self) -> None:
-        _identifier(self.fixture_id, "fixture_id")
+        validate_evidence_identifier(self.fixture_id, "fixture_id")
         _sha256(self.fixture_content_sha256, "fixture_content_sha256")
-        _identifier(self.node_id, "node_id")
-        _identifier(self.revision_id, "revision_id")
+        validate_evidence_identifier(self.node_id, "node_id")
+        validate_evidence_identifier(self.revision_id, "revision_id")
         _sha256(self.revision_identity_sha256, "revision_identity_sha256")
-        _identifier(self.plan_basis_revision_id, "plan_basis_revision_id")
+        validate_evidence_identifier(
+            self.plan_basis_revision_id,
+            "plan_basis_revision_id",
+        )
         _execution_plan_digest(self.execution_plan_digest, "execution_plan_digest")
 
 
@@ -418,9 +419,9 @@ class EvidenceScope(SealedContractValue):
     workspace_id: str
 
     def __post_init__(self) -> None:
-        _identifier(self.tenant_id, "tenant_id")
-        _identifier(self.project_id, "project_id")
-        _identifier(self.workspace_id, "workspace_id")
+        validate_evidence_identifier(self.tenant_id, "tenant_id")
+        validate_evidence_identifier(self.project_id, "project_id")
+        validate_evidence_identifier(self.workspace_id, "workspace_id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -435,21 +436,15 @@ class EvidenceProducer(SealedContractValue):
     def __post_init__(self) -> None:
         if type(self.authority) is not EvidenceAuthority:
             raise TypeError("authority must be EvidenceAuthority")
-        _token(self.producer_id, "producer_id")
+        validate_evidence_token(self.producer_id, "producer_id")
         if self.authority is EvidenceAuthority.PLUGIN_INFERRED:
-            if (
-                self.plugin_instance_id is None
-                or self.plugin_capability is None
-            ):
+            if self.plugin_instance_id is None or self.plugin_capability is None:
                 raise ValueError(
                     "plugin-inferred evidence requires a capability and instance"
                 )
-            _token(self.plugin_instance_id, "plugin_instance_id")
-            _token(self.plugin_capability, "plugin_capability")
-        elif (
-            self.plugin_instance_id is not None
-            or self.plugin_capability is not None
-        ):
+            validate_evidence_token(self.plugin_instance_id, "plugin_instance_id")
+            validate_evidence_token(self.plugin_capability, "plugin_capability")
+        elif self.plugin_instance_id is not None or self.plugin_capability is not None:
             raise ValueError(
                 "only plugin-inferred evidence may carry a plug-in binding"
             )
@@ -484,7 +479,9 @@ class EvidenceTimeRange(SealedContractValue):
                     "not-applicable evidence time must not carry coordinates"
                 )
             return
-        minimum = 0 if self.basis is EvidenceTimeBasis.ABSOLUTE_UNIX_NS else _MIN_SIGNED_NS
+        minimum = (
+            0 if self.basis is EvidenceTimeBasis.ABSOLUTE_UNIX_NS else _MIN_SIGNED_NS
+        )
         start = _integer(
             self.start_ns,
             "start_ns",
@@ -509,7 +506,7 @@ class EvidenceTimeRange(SealedContractValue):
         if self.basis is EvidenceTimeBasis.SOURCE_CLOCK_NS:
             if self.clock_domain is None:
                 raise ValueError("source-clock evidence requires clock_domain")
-            _token(self.clock_domain, "clock_domain")
+            validate_evidence_token(self.clock_domain, "clock_domain")
         elif self.clock_domain is not None:
             raise ValueError("clock_domain is valid only for source-clock evidence")
 
@@ -550,7 +547,7 @@ class EvidenceReference(SealedContractValue):
             raise TypeError("producer must be EvidenceProducer")
         if type(self.kind) is not EvidenceKind:
             raise TypeError("kind must be EvidenceKind")
-        _token(
+        validate_evidence_token(
             self.subject_kind,
             "subject_kind",
             maximum=MAX_EVIDENCE_SUBJECT_KIND_CHARACTERS,
@@ -558,11 +555,9 @@ class EvidenceReference(SealedContractValue):
         _prefixed_sha256(self.locator_digest, "locator_digest")
         if type(self.evidence_class) is not PrivateAnalysisEvidenceClass:
             raise TypeError("evidence_class must be PrivateAnalysisEvidenceClass")
-        _token(self.payload_schema, "payload_schema")
+        validate_evidence_token(self.payload_schema, "payload_schema")
         if type(self.fact_provenance) is not EvidenceFactProvenance:
-            raise TypeError(
-                "fact_provenance must be EvidenceFactProvenance"
-            )
+            raise TypeError("fact_provenance must be EvidenceFactProvenance")
         if type(self.time_range) is not EvidenceTimeRange:
             raise TypeError("time_range must be EvidenceTimeRange")
         scope = EvidenceScope(
@@ -631,9 +626,7 @@ class EvidenceEnvelope(SealedContractValue):
         if type(self.disclosure_decision) is not DisclosureDecision:
             raise TypeError("disclosure_decision must be DisclosureDecision")
         reference = _revalidated_evidence_reference(self.reference)
-        disclosure_decision = _revalidated_disclosure_decision(
-            self.disclosure_decision
-        )
+        disclosure_decision = _revalidated_disclosure_decision(self.disclosure_decision)
         object.__setattr__(self, "reference", reference)
         object.__setattr__(self, "disclosure_decision", disclosure_decision)
         _validate_envelope_disclosure(reference, disclosure_decision)
@@ -790,9 +783,7 @@ def _evidence_envelope_payload(value: EvidenceEnvelope) -> dict[str, object]:
     return {
         "contract_version": value.contract_version,
         "reference": evidence_reference_dict(value.reference),
-        "disclosure_decision": disclosure_decision_dict(
-            value.disclosure_decision
-        ),
+        "disclosure_decision": disclosure_decision_dict(value.disclosure_decision),
         "payload": value.payload,
     }
 
@@ -910,13 +901,17 @@ def _time_range_from_dict(value: object) -> EvidenceTimeRange:
         start_ns=_optional_wire_integer(
             item["start_ns"],
             "start_ns",
-            minimum=(0 if basis is EvidenceTimeBasis.ABSOLUTE_UNIX_NS else _MIN_SIGNED_NS),
+            minimum=(
+                0 if basis is EvidenceTimeBasis.ABSOLUTE_UNIX_NS else _MIN_SIGNED_NS
+            ),
             maximum=_MAX_SIGNED_NS,
         ),
         end_ns=_optional_wire_integer(
             item["end_ns"],
             "end_ns",
-            minimum=(0 if basis is EvidenceTimeBasis.ABSOLUTE_UNIX_NS else _MIN_SIGNED_NS),
+            minimum=(
+                0 if basis is EvidenceTimeBasis.ABSOLUTE_UNIX_NS else _MIN_SIGNED_NS
+            ),
             maximum=_MAX_SIGNED_NS,
         ),
         uncertainty_ns=_optional_wire_integer(
@@ -1048,12 +1043,12 @@ def _reject_json_constant(value: str) -> None:
 
 def _load_payload_json(value: str) -> dict[str, Any]:
     try:
-        parsed = json.loads(
+        parsed = loads(
             value,
             object_pairs_hook=_reject_duplicate_pairs,
             parse_constant=_reject_json_constant,
         )
-    except (TypeError, ValueError, json.JSONDecodeError, RecursionError) as error:
+    except (TypeError, ValueError, JSONDecodeError, RecursionError) as error:
         raise ValueError("evidence payload is not strict JSON") from error
     if type(parsed) is not dict:
         raise ValueError("evidence payload must be a JSON object")
@@ -1106,18 +1101,20 @@ def evidence_envelope_from_json(value: str) -> EvidenceEnvelope:
     try:
         encoded = value.encode("utf-8")
     except UnicodeEncodeError as error:
-        raise ValueError("evidence envelope JSON must contain Unicode scalars") from error
+        raise ValueError(
+            "evidence envelope JSON must contain Unicode scalars"
+        ) from error
     if len(encoded) > MAX_EVIDENCE_ENVELOPE_BYTES:
         raise ValueError(
             f"evidence envelope exceeds {MAX_EVIDENCE_ENVELOPE_BYTES} bytes"
         )
     try:
-        parsed = json.loads(
+        parsed = loads(
             value,
             object_pairs_hook=_reject_duplicate_pairs,
             parse_constant=_reject_json_constant,
         )
-    except (TypeError, ValueError, json.JSONDecodeError, RecursionError) as error:
+    except (TypeError, ValueError, JSONDecodeError, RecursionError) as error:
         raise ValueError("evidence envelope is not strict JSON") from error
     if type(parsed) is not dict:
         raise ValueError("evidence envelope must be a JSON object")

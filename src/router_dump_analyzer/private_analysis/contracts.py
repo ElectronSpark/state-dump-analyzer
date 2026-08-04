@@ -9,10 +9,10 @@ disclosed evidence ledger for the request.
 
 from __future__ import annotations
 
-import enum
-import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
+from json import JSONDecodeError, loads
 from typing import Any, Final
 
 from ..canonical import strict_canonical_json, strict_canonical_json_sha256
@@ -23,7 +23,13 @@ from ..public_text import (
     has_visible_identity_anchor,
 )
 from ..value_core import MAX_JSON_SAFE_INTEGER
-from . import _wire
+from ._wire import SealedContractValue
+from ._wire import bounded_canonical_decimal_integer as _bounded_decimal
+from ._wire import bounded_utf8_text as _bounded_utf8_text
+from ._wire import exact_contract_version as _contract_version
+from ._wire import exact_json_object as _exact_dict
+from ._wire import reject_duplicate_json_object_pairs as _reject_duplicate_pairs
+from ._wire import strict_string_enum as _enum
 from .evidence import (
     EvidenceReference,
     EvidenceRevisionBinding,
@@ -36,31 +42,20 @@ from .evidence import (
 )
 from .policy import PrivateAnalysisContributionKind, PrivateAnalysisTransport
 
-_bounded_utf8_text = _wire.bounded_utf8_text
-_bounded_decimal = _wire.bounded_canonical_decimal_integer
-_contract_version = _wire.exact_contract_version
-_exact_dict = _wire.exact_json_object
-_reject_duplicate_pairs = _wire.reject_duplicate_json_object_pairs
-_enum = _wire.strict_string_enum
-
 PRIVATE_ANALYSIS_REQUEST_VERSION: Final = (
-    "router_dump_analyzer.private_analysis.request.v1"
+    "router_dump_analyzer.private_analysis.request.v2"
 )
 PRIVATE_ANALYSIS_CITATION_VERSION: Final = (
     "router_dump_analyzer.private_analysis.citation.v1"
 )
-PRIVATE_ANALYSIS_CLAIM_VERSION: Final = (
-    "router_dump_analyzer.private_analysis.claim.v1"
-)
+PRIVATE_ANALYSIS_CLAIM_VERSION: Final = "router_dump_analyzer.private_analysis.claim.v1"
 PRIVATE_ANALYSIS_PROPOSAL_VERSION: Final = (
     "router_dump_analyzer.private_analysis.proposal.v1"
 )
 PRIVATE_ANALYSIS_RESULT_VERSION: Final = (
     "router_dump_analyzer.private_analysis.result.v1"
 )
-PRIVATE_ANALYSIS_ERROR_VERSION: Final = (
-    "router_dump_analyzer.private_analysis.error.v1"
-)
+PRIVATE_ANALYSIS_ERROR_VERSION: Final = "router_dump_analyzer.private_analysis.error.v1"
 PRIVATE_ANALYSIS_OUTCOME_VERSION: Final = (
     "router_dump_analyzer.private_analysis.outcome.v1"
 )
@@ -68,9 +63,7 @@ MAX_PRIVATE_ANALYSIS_REVISIONS: Final = 128
 MAX_PRIVATE_ANALYSIS_QUERY_CHARACTERS: Final = 32_768
 MAX_PRIVATE_ANALYSIS_QUERY_BYTES: Final = 131_072
 MAX_PRIVATE_ANALYSIS_CLAIM_CHARACTERS: Final = 16_384
-MAX_PRIVATE_ANALYSIS_SUMMARY_CHARACTERS: Final = (
-    MAX_PRIVATE_ANALYSIS_CLAIM_CHARACTERS
-)
+MAX_PRIVATE_ANALYSIS_SUMMARY_CHARACTERS: Final = MAX_PRIVATE_ANALYSIS_CLAIM_CHARACTERS
 MAX_PRIVATE_ANALYSIS_PROPOSAL_TEXT_CHARACTERS: Final = 16_384
 MAX_PRIVATE_ANALYSIS_CLAIMS: Final = 512
 MAX_PRIVATE_ANALYSIS_PROPOSALS: Final = 256
@@ -84,9 +77,7 @@ _MAX_CLAIM_WIRE_UNITS: Final = (
     7 + MAX_PRIVATE_ANALYSIS_CITATIONS_PER_ITEM * _MAX_CITATION_WIRE_UNITS
 )
 _MAX_PROPOSAL_WIRE_UNITS: Final = (
-    12
-    + MAX_PRIVATE_ANALYSIS_CITATIONS_PER_ITEM * _MAX_CITATION_WIRE_UNITS
-    + 4_096
+    12 + MAX_PRIVATE_ANALYSIS_CITATIONS_PER_ITEM * _MAX_CITATION_WIRE_UNITS + 4_096
 )
 _MAX_RESULT_WIRE_UNITS: Final = (
     7
@@ -103,7 +94,7 @@ _MAX_OUTPUT_BYTES: Final = MAX_PRIVATE_ANALYSIS_WIRE_BYTES
 _MAX_DEADLINE_MS: Final = 3_600_000
 
 
-class PrivateAnalysisTaskKind(enum.StrEnum):
+class PrivateAnalysisTaskKind(StrEnum):
     """Closed high-level intents understood by core orchestration."""
 
     LTTNG_ANALYSIS = "lttng_analysis"
@@ -113,7 +104,7 @@ class PrivateAnalysisTaskKind(enum.StrEnum):
     GENERAL_EVIDENCE_REVIEW = "general_evidence_review"
 
 
-class PrivateAnalysisClockMode(enum.StrEnum):
+class PrivateAnalysisClockMode(StrEnum):
     """How one request selects a comparable moment across revisions."""
 
     LATEST_PER_REVISION = "latest_per_revision"
@@ -121,14 +112,14 @@ class PrivateAnalysisClockMode(enum.StrEnum):
     REVISION_END_RELATIVE_NS = "revision_end_relative_ns"
 
 
-class PrivateAnalysisClaimSupport(enum.StrEnum):
+class PrivateAnalysisClaimSupport(StrEnum):
     """Whether a returned statement is grounded in disclosed evidence."""
 
     EVIDENCE_SUPPORTED = "evidence_supported"
     UNSUPPORTED_HYPOTHESIS = "unsupported_hypothesis"
 
 
-class PrivateAnalysisProposalKind(enum.StrEnum):
+class PrivateAnalysisProposalKind(StrEnum):
     """Advisory actions that later stages may validate or promote."""
 
     EVENT_INTERPRETATION = "event_interpretation"
@@ -140,7 +131,7 @@ class PrivateAnalysisProposalKind(enum.StrEnum):
     REPORT_ANNOTATION = "report_annotation"
 
 
-class PrivateAnalysisErrorStage(enum.StrEnum):
+class PrivateAnalysisErrorStage(StrEnum):
     """Closed stages safe to expose without copying a diagnostic."""
 
     REQUEST_VALIDATION = "request_validation"
@@ -151,7 +142,7 @@ class PrivateAnalysisErrorStage(enum.StrEnum):
     OUTPUT_VALIDATION = "output_validation"
 
 
-class PrivateAnalysisErrorCode(enum.StrEnum):
+class PrivateAnalysisErrorCode(StrEnum):
     """Closed, payload-free failure vocabulary."""
 
     INVALID_REQUEST = "invalid_request"
@@ -166,7 +157,7 @@ class PrivateAnalysisErrorCode(enum.StrEnum):
     INVALID_RESULT = "invalid_result"
 
 
-class PrivateAnalysisOutcomeKind(enum.StrEnum):
+class PrivateAnalysisOutcomeKind(StrEnum):
     RESULT = "result"
     ERROR = "error"
 
@@ -219,12 +210,8 @@ _ERROR_STAGES: Final = {
     PrivateAnalysisErrorCode.RUNNER_FAILED: frozenset(
         {PrivateAnalysisErrorStage.RUNNER}
     ),
-    PrivateAnalysisErrorCode.TIMEOUT: frozenset(
-        {PrivateAnalysisErrorStage.RUNNER}
-    ),
-    PrivateAnalysisErrorCode.CANCELLED: frozenset(
-        {PrivateAnalysisErrorStage.RUNNER}
-    ),
+    PrivateAnalysisErrorCode.TIMEOUT: frozenset({PrivateAnalysisErrorStage.RUNNER}),
+    PrivateAnalysisErrorCode.CANCELLED: frozenset({PrivateAnalysisErrorStage.RUNNER}),
     PrivateAnalysisErrorCode.INVALID_RESULT: frozenset(
         {PrivateAnalysisErrorStage.OUTPUT_VALIDATION}
     ),
@@ -294,9 +281,7 @@ def _bounded_text(
     maximum_bytes: int | None = None,
 ) -> str:
     if type(value) is not str or not value or len(value) > maximum_characters:
-        raise ValueError(
-            f"{label} must contain 1 to {maximum_characters} characters"
-        )
+        raise ValueError(f"{label} must contain 1 to {maximum_characters} characters")
     try:
         encoded = value.encode("utf-8")
     except UnicodeEncodeError as error:
@@ -377,12 +362,12 @@ def _load_strict_json(value: str, label: str) -> dict[str, Any]:
     if len(encoded) > MAX_PRIVATE_ANALYSIS_WIRE_BYTES:
         raise ValueError(f"{label} JSON exceeds its encoded byte limit")
     try:
-        parsed = json.loads(
+        parsed = loads(
             value,
             object_pairs_hook=_reject_duplicate_pairs,
             parse_constant=_reject_json_constant,
         )
-    except (TypeError, ValueError, json.JSONDecodeError, RecursionError) as error:
+    except (TypeError, ValueError, JSONDecodeError, RecursionError) as error:
         raise ValueError(f"{label} is not strict JSON") from error
     if type(parsed) is not dict:
         raise ValueError(f"{label} must be a JSON object")
@@ -457,10 +442,7 @@ def _validate_result_wire_budget(
     )
 
     digest_member_increment = (
-        _canonical_component_size(
-            {"result_digest": _WIRE_DIGEST_PLACEHOLDER}
-        )
-        - 1
+        _canonical_component_size({"result_digest": _WIRE_DIGEST_PLACEHOLDER}) - 1
     )
     outcome_increment = 0
     if include_outcome_wrapper:
@@ -471,9 +453,7 @@ def _validate_result_wire_budget(
             "error": None,
             "outcome_digest": _WIRE_DIGEST_PLACEHOLDER,
         }
-        outcome_increment = (
-            _canonical_component_size(outcome_skeleton) - len("null")
-        )
+        outcome_increment = _canonical_component_size(outcome_skeleton) - len("null")
     fixed_overhead = digest_member_increment + outcome_increment
 
     def require_room() -> None:
@@ -522,7 +502,7 @@ def _validate_result_input_wire_budget(
 
 
 @dataclass(frozen=True, slots=True)
-class PrivateAnalysisRunnerSelection(_wire.SealedContractValue):
+class PrivateAnalysisRunnerSelection(SealedContractValue):
     runner_id: str
     runner_version: str
     transport: PrivateAnalysisTransport
@@ -537,7 +517,7 @@ class PrivateAnalysisRunnerSelection(_wire.SealedContractValue):
 
 
 @dataclass(frozen=True, slots=True)
-class PrivateAnalysisLimits(_wire.SealedContractValue):
+class PrivateAnalysisLimits(SealedContractValue):
     max_evidence_items: int = 10_000
     max_evidence_bytes: int = 64 * 1024 * 1024
     max_tool_calls: int = 256
@@ -622,12 +602,13 @@ def _detached_limits(value: object) -> PrivateAnalysisLimits:
 
 
 @dataclass(frozen=True, slots=True)
-class PrivateAnalysisRequest(_wire.SealedContractValue):
+class PrivateAnalysisRequest(SealedContractValue):
     scope: EvidenceScope
     revisions: tuple[EvidenceRevisionBinding, ...]
     runner: PrivateAnalysisRunnerSelection
     workspace_policy_digest: str
     instruction_profile_digest: str
+    tool_catalog_digest: str
     task_kind: PrivateAnalysisTaskKind
     query: str
     clock_mode: PrivateAnalysisClockMode
@@ -666,6 +647,7 @@ class PrivateAnalysisRequest(_wire.SealedContractValue):
             self.instruction_profile_digest,
             "instruction_profile_digest",
         )
+        _prefixed_sha256(self.tool_catalog_digest, "tool_catalog_digest")
         if type(self.task_kind) is not PrivateAnalysisTaskKind:
             raise TypeError("task_kind must be PrivateAnalysisTaskKind")
         _bounded_text(
@@ -707,7 +689,7 @@ class PrivateAnalysisRequest(_wire.SealedContractValue):
 
 
 @dataclass(frozen=True, slots=True)
-class PrivateAnalysisCitation(_wire.SealedContractValue):
+class PrivateAnalysisCitation(SealedContractValue):
     evidence_reference_digest: str
     contract_version: str = PRIVATE_ANALYSIS_CITATION_VERSION
     citation_digest: str = ""
@@ -750,9 +732,7 @@ def _validate_citations(
     detached: list[PrivateAnalysisCitation] = []
     for item in citations:
         if type(item) is not PrivateAnalysisCitation:
-            raise TypeError(
-                "citations must contain PrivateAnalysisCitation values"
-            )
+            raise TypeError("citations must contain PrivateAnalysisCitation values")
         detached.append(
             PrivateAnalysisCitation(
                 contract_version=item.contract_version,
@@ -768,7 +748,7 @@ def _validate_citations(
 
 
 @dataclass(frozen=True, slots=True)
-class PrivateAnalysisClaim(_wire.SealedContractValue):
+class PrivateAnalysisClaim(SealedContractValue):
     claim_id: str
     support: PrivateAnalysisClaimSupport
     text: str
@@ -814,7 +794,7 @@ class PrivateAnalysisClaim(_wire.SealedContractValue):
 
 
 @dataclass(frozen=True, slots=True)
-class PrivateAnalysisProposal(_wire.SealedContractValue):
+class PrivateAnalysisProposal(SealedContractValue):
     proposal_id: str
     kind: PrivateAnalysisProposalKind
     title: str
@@ -865,12 +845,12 @@ class PrivateAnalysisProposal(_wire.SealedContractValue):
             MAX_PRIVATE_ANALYSIS_PROPOSAL_PAYLOAD_BYTES,
         )
         try:
-            payload = json.loads(
+            payload = loads(
                 self.payload_json,
                 object_pairs_hook=_reject_duplicate_pairs,
                 parse_constant=_reject_json_constant,
             )
-        except (TypeError, ValueError, json.JSONDecodeError, RecursionError) as error:
+        except (TypeError, ValueError, JSONDecodeError, RecursionError) as error:
             raise ValueError("proposal payload is not strict JSON") from error
         canonical = _canonical_payload_json(payload)
         if canonical != self.payload_json:
@@ -891,7 +871,7 @@ class PrivateAnalysisProposal(_wire.SealedContractValue):
 
     @property
     def payload(self) -> dict[str, Any]:
-        value = json.loads(self.payload_json)
+        value = loads(self.payload_json)
         if type(value) is not dict:  # constructor makes this unreachable
             raise ValueError("proposal payload must be an object")
         return value
@@ -953,9 +933,7 @@ def _preflight_citations_without_hashing(
         raise ValueError("evidence-supported output requires a citation")
     for citation in value:
         if type(citation) is not PrivateAnalysisCitation:
-            raise TypeError(
-                "citations must contain PrivateAnalysisCitation values"
-            )
+            raise TypeError("citations must contain PrivateAnalysisCitation values")
         _contract_version(
             citation.contract_version,
             PRIVATE_ANALYSIS_CITATION_VERSION,
@@ -1039,12 +1017,12 @@ def _preflight_proposal_without_hashing(value: object) -> None:
         MAX_PRIVATE_ANALYSIS_PROPOSAL_PAYLOAD_BYTES,
     )
     try:
-        payload = json.loads(
+        payload = loads(
             value.payload_json,
             object_pairs_hook=_reject_duplicate_pairs,
             parse_constant=_reject_json_constant,
         )
-    except (TypeError, ValueError, json.JSONDecodeError, RecursionError) as error:
+    except (TypeError, ValueError, JSONDecodeError, RecursionError) as error:
         raise ValueError("proposal payload is not strict JSON") from error
     if _canonical_payload_json(payload) != value.payload_json:
         raise ValueError("proposal payload_json must use exact canonical JSON")
@@ -1079,7 +1057,7 @@ def make_private_analysis_proposal(
 
 
 @dataclass(frozen=True, slots=True)
-class PrivateAnalysisResult(_wire.SealedContractValue):
+class PrivateAnalysisResult(SealedContractValue):
     request_digest: str
     summary: PrivateAnalysisClaim
     claims: tuple[PrivateAnalysisClaim, ...]
@@ -1164,7 +1142,7 @@ def _detached_result(value: object) -> PrivateAnalysisResult:
 
 
 @dataclass(frozen=True, slots=True)
-class PrivateAnalysisError(_wire.SealedContractValue):
+class PrivateAnalysisError(SealedContractValue):
     request_digest: str | None
     stage: PrivateAnalysisErrorStage
     code: PrivateAnalysisErrorCode
@@ -1226,7 +1204,7 @@ def _detached_error(value: object) -> PrivateAnalysisError:
 
 
 @dataclass(frozen=True, slots=True)
-class PrivateAnalysisOutcome(_wire.SealedContractValue):
+class PrivateAnalysisOutcome(SealedContractValue):
     kind: PrivateAnalysisOutcomeKind
     result: PrivateAnalysisResult | None = None
     error: PrivateAnalysisError | None = None
@@ -1277,6 +1255,7 @@ def _detached_request(value: object) -> PrivateAnalysisRequest:
         runner=value.runner,
         workspace_policy_digest=value.workspace_policy_digest,
         instruction_profile_digest=value.instruction_profile_digest,
+        tool_catalog_digest=value.tool_catalog_digest,
         task_kind=value.task_kind,
         query=value.query,
         clock_mode=value.clock_mode,
@@ -1329,12 +1308,11 @@ def _private_analysis_request_payload(
     return {
         "contract_version": value.contract_version,
         "scope": evidence_scope_dict(value.scope),
-        "revisions": [
-            evidence_revision_binding_dict(item) for item in value.revisions
-        ],
+        "revisions": [evidence_revision_binding_dict(item) for item in value.revisions],
         "runner": _runner_selection_dict(value.runner),
         "workspace_policy_digest": value.workspace_policy_digest,
         "instruction_profile_digest": value.instruction_profile_digest,
+        "tool_catalog_digest": value.tool_catalog_digest,
         "task_kind": value.task_kind.value,
         "query": value.query,
         "clock_mode": value.clock_mode.value,
@@ -1387,8 +1365,7 @@ def _private_analysis_claim_payload(
         "support": value.support.value,
         "text": value.text,
         "citations": [
-            _private_analysis_citation_dict_unchecked(item)
-            for item in value.citations
+            _private_analysis_citation_dict_unchecked(item) for item in value.citations
         ],
     }
 
@@ -1419,8 +1396,7 @@ def _private_analysis_proposal_payload(
         "rationale": value.rationale,
         "confidence_basis_points": value.confidence_basis_points,
         "citations": [
-            _private_analysis_citation_dict_unchecked(item)
-            for item in value.citations
+            _private_analysis_citation_dict_unchecked(item) for item in value.citations
         ],
         "payload_schema": value.payload_schema,
         "payload": value.payload,
@@ -1454,8 +1430,7 @@ def _private_analysis_result_payload(
             _private_analysis_claim_dict_unchecked(item) for item in value.claims
         ],
         "proposals": [
-            _private_analysis_proposal_dict_unchecked(item)
-            for item in value.proposals
+            _private_analysis_proposal_dict_unchecked(item) for item in value.proposals
         ],
     }
 
@@ -1586,9 +1561,7 @@ def _selected_time_from_wire(
     if value is None:
         return None
     minimum = (
-        0
-        if clock_mode is PrivateAnalysisClockMode.ABSOLUTE_UNIX_NS
-        else _MIN_SIGNED_NS
+        0 if clock_mode is PrivateAnalysisClockMode.ABSOLUTE_UNIX_NS else _MIN_SIGNED_NS
     )
     return _bounded_decimal(
         value,
@@ -1609,6 +1582,7 @@ def private_analysis_request_from_dict(value: object) -> PrivateAnalysisRequest:
             "runner",
             "workspace_policy_digest",
             "instruction_profile_digest",
+            "tool_catalog_digest",
             "task_kind",
             "query",
             "clock_mode",
@@ -1632,12 +1606,12 @@ def private_analysis_request_from_dict(value: object) -> PrivateAnalysisRequest:
         contract_version=item["contract_version"],
         scope=evidence_scope_from_dict(item["scope"]),
         revisions=tuple(
-            evidence_revision_binding_from_dict(revision)
-            for revision in raw_revisions
+            evidence_revision_binding_from_dict(revision) for revision in raw_revisions
         ),
         runner=_runner_selection_from_dict(item["runner"]),
         workspace_policy_digest=item["workspace_policy_digest"],
         instruction_profile_digest=item["instruction_profile_digest"],
+        tool_catalog_digest=item["tool_catalog_digest"],
         task_kind=_enum(
             PrivateAnalysisTaskKind,
             item["task_kind"],
@@ -1782,8 +1756,7 @@ def private_analysis_result_from_dict(value: object) -> PrivateAnalysisResult:
         summary=private_analysis_claim_from_dict(item["summary"]),
         claims=tuple(private_analysis_claim_from_dict(claim) for claim in raw_claims),
         proposals=tuple(
-            private_analysis_proposal_from_dict(proposal)
-            for proposal in raw_proposals
+            private_analysis_proposal_from_dict(proposal) for proposal in raw_proposals
         ),
         result_digest=_prefixed_sha256(item["result_digest"], "result_digest"),
     )
@@ -1848,9 +1821,7 @@ def private_analysis_outcome_from_dict(value: object) -> PrivateAnalysisOutcome:
             else private_analysis_result_from_dict(raw_result)
         ),
         error=(
-            None
-            if raw_error is None
-            else private_analysis_error_from_dict(raw_error)
+            None if raw_error is None else private_analysis_error_from_dict(raw_error)
         ),
         outcome_digest=_prefixed_sha256(
             item["outcome_digest"],
@@ -2014,14 +1985,19 @@ def validate_private_analysis_result(
 def _revalidated_request(value: PrivateAnalysisRequest) -> PrivateAnalysisRequest:
     """Recompute every cached request invariant before authority checks."""
 
-    if type(value.revisions) is not tuple or len(value.revisions) > MAX_PRIVATE_ANALYSIS_REVISIONS:
+    if (
+        type(value.revisions) is not tuple
+        or len(value.revisions) > MAX_PRIVATE_ANALYSIS_REVISIONS
+    ):
         raise TypeError("request revisions must be a bounded tuple")
     if type(value.scope) is not EvidenceScope:
         raise TypeError("request scope must be EvidenceScope")
     value.scope.__post_init__()
     for revision in value.revisions:
         if type(revision) is not EvidenceRevisionBinding:
-            raise TypeError("request revisions must contain EvidenceRevisionBinding values")
+            raise TypeError(
+                "request revisions must contain EvidenceRevisionBinding values"
+            )
         revision.__post_init__()
     if type(value.runner) is not PrivateAnalysisRunnerSelection:
         raise TypeError("request runner must be PrivateAnalysisRunnerSelection")
@@ -2064,9 +2040,15 @@ def _revalidated_result(
 
     if type(value.summary) is not PrivateAnalysisClaim:
         raise TypeError("result summary must be PrivateAnalysisClaim")
-    if type(value.claims) is not tuple or len(value.claims) > MAX_PRIVATE_ANALYSIS_CLAIMS - 1:
+    if (
+        type(value.claims) is not tuple
+        or len(value.claims) > MAX_PRIVATE_ANALYSIS_CLAIMS - 1
+    ):
         raise TypeError("result claims must be a bounded tuple")
-    if type(value.proposals) is not tuple or len(value.proposals) > MAX_PRIVATE_ANALYSIS_PROPOSALS:
+    if (
+        type(value.proposals) is not tuple
+        or len(value.proposals) > MAX_PRIVATE_ANALYSIS_PROPOSALS
+    ):
         raise TypeError("result proposals must be a bounded tuple")
     if 1 + len(value.claims) > maximum_claims:
         raise PrivateAnalysisContractError("result exceeds request claim budget")

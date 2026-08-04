@@ -494,11 +494,13 @@ are not citation identity.
 
 The exported private-analysis request and advisory-output values are also
 implemented as a library/local-wire contract. They still have no `/v1` run
-endpoint. `PrivateAnalysisRequest` binds the exact scope, a canonical unique
+endpoint. `PrivateAnalysisRequest` wire version 2 binds the exact scope, a
+canonical unique
 vector of 1 to 128 revision bindings, selected runner ID/version/closed
 transport/configuration digest, workspace policy digest, trusted instruction
-profile digest, closed task kind, untrusted query, explicit clock selection,
-and bounded limits. Its `request_digest` covers every field. Time coordinates
+profile digest, exact closed tool-catalog digest, closed task kind, untrusted
+query, explicit clock selection, and bounded limits. Its `request_digest`
+covers every field. Time coordinates
 are canonical decimal strings; `latest_per_revision` carries `null`.
 
 `PrivateAnalysisResult` is bound to the request digest. It contains one
@@ -528,8 +530,21 @@ wire ceiling. The result ceiling reserves enough space for its required
 outcome wrapper. Summary, claim, and proposal text remains private output and
 is not implicitly safe for an untrusted client or log sink.
 
-Read-only tools, runner execution, disclosure-ledger persistence, paging,
-cursors, run lifecycle, HTTP routes, and human promotion are later contracts.
+The library also exposes one exact, self-digested read-only tool catalog with
+only `query_evidence` and `read_evidence`. Definitions contain closed metadata,
+not executable handlers. Calls bind the request and catalog digest and require
+the argument type declared for the selected tool. Query results expose only
+unique, canonically ordered `EvidenceReference` values; read results expose one
+matching disclosure-gated `EvidenceEnvelope`. Query paging is keyset-based.
+Its typed cursor binds request, catalog, canonical query fingerprint,
+immutable eligible-set snapshot digest, and last reference digest, preventing
+cross-request, cross-filter, or changed-snapshot replay. Tool failures use a
+closed static payload-free vocabulary. These values perform no authorization,
+retrieval, disclosure evaluation or recording, runner execution, or plug-in
+callback.
+
+Runner execution, disclosure-ledger persistence, run lifecycle, HTTP routes,
+and human promotion are later contracts.
 
 Retention preview and execute accept a closed object with optional `catalog`
 and `review` policy objects. Cutoffs use canonical decimal strings. The router
