@@ -49,13 +49,13 @@ class PrivateAnalysisContributionKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class PrivateAnalysisPolicy:
-    """One immutable workspace policy for an approved private model.
+    """One immutable capability ceiling for an approved private runner.
 
-    ``full_fidelity_workspace_data`` controls whether an authorized run may
-    retrieve proprietary dump content.  It does not override future
-    ``never_assistant`` declarations for credentials or other secrets.
-    Operational pagination and byte budgets likewise remain mandatory even
-    when the model is approved for full-fidelity evidence.
+    This value never authorizes a workspace. ``WorkspaceDisclosurePolicy``
+    separately grants a workspace disclosure tier, and the evaluator applies
+    the intersection. ``full_fidelity_workspace_data`` only says whether this
+    runner is eligible to receive proprietary dump content when that workspace
+    also grants it. It cannot override ``never_assistant`` declarations.
     """
 
     transport: PrivateAnalysisTransport

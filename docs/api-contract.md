@@ -324,6 +324,7 @@ tenant
     `-- workspace
         |-- immutable fixtures
         |   `-- immutable analysis revisions
+        |-- versioned private-analysis disclosure policy
         |-- mutable sessions -> immutable revision-set snapshots
         |-- durable imports
         `-- mutable annotations/correlations -> append-only review audit
@@ -338,6 +339,7 @@ All paths below are relative to `/v1/control-plane`.
 | `GET` | `/context` | Confirm enablement, resolved principal, `can_write`, and list visible tenant projects. |
 | `GET, POST` | `/projects` | List or create tenant projects. |
 | `GET, POST` | `/projects/{project_id}/workspaces` | List or create project workspaces. |
+| `GET, PUT` | `/projects/{project_id}/workspaces/{workspace_id}/private-analysis-policy` | Read the current workspace disclosure policy or append an admin-authorized compare-and-swap revision. |
 | `GET` | `/projects/{project_id}/workspaces/{workspace_id}/fixtures` | List immutable fixtures. |
 | `GET` | `/projects/{project_id}/workspaces/{workspace_id}/revisions` | List immutable revisions; optional `node_id` or `fixture_id`. |
 | `GET, POST` | `/projects/{project_id}/workspaces/{workspace_id}/sessions` | List or create mutable sessions. |
@@ -365,6 +367,32 @@ All paths below are relative to `/v1/control-plane`.
 | `GET` | `/projects/{project_id}/workspaces/{workspace_id}/retention/audit` | Return bounded store-specific retention journals. |
 
 Here, an abbreviated `...` preserves the same project/workspace prefix.
+
+The private-analysis policy `GET` returns a numeric strong `ETag`. An
+unconfigured workspace returns `ETag: "0"`, `explicit: false`, and the closed
+`disabled` policy; workspace metadata never changes this result. `PUT` requires
+`control-plane:admin`, the current ETag in `If-Match`, and this exact body:
+
+```json
+{
+  "policy_version": "router_dump_analyzer.workspace_disclosure_policy.v1",
+  "mode": "full_fidelity",
+  "transports": ["in_process"]
+}
+```
+
+`mode` is one of `disabled`, `client_safe`, or `full_fidelity`. A disabled
+policy has no transports; an enabled policy has a unique, canonical-order list
+drawn only from `in_process` and `local_subprocess`. Unknown keys, duplicate or
+out-of-order transports, and public/network transports are rejected. Updates
+append immutable history and use optimistic versions rather than overwriting a
+prior policy. Core validates a workspace-rooted hash-chain tip, the durable
+head, exact-revision receipts, and contiguous history on read and write; a
+missing or independently corrupted revision is a storage failure, never an
+implicit rollback to an older permission. This integrity contract assumes the
+SQLite catalog file, schema, triggers, and state-directory administrator are
+trusted. It does not claim to detect a privileged actor coherently replacing
+every authority row or restoring the complete catalog from an older snapshot.
 
 Each revision item includes `execution_plan`. New durable publications expose
 the closed `router_dump_analyzer.plugin_execution_plan.v1` object: node and

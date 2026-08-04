@@ -239,10 +239,13 @@ APPROVED_EXTERNAL_IMPORT_ROOTS = frozenset(
 )
 PRIVATE_ANALYSIS_ALLOWED_IMPORT_PREFIXES = (
     "__future__",
+    ".policy",
+    "collections.abc",
     "dataclasses",
     "enum",
     "typing",
 )
+PRIVATE_ANALYSIS_ALLOWED_PARENT_IMPORTS = frozenset({"..canonical"})
 NETWORK_CAPABLE_IMPORT_PREFIXES = (
     "aiohttp",
     "anyio",
@@ -624,7 +627,10 @@ def _private_analysis_import_violations(source_root: Path) -> tuple[str, ...]:
     for path in _python_files(source_root):
         relative = path.relative_to(source_root).as_posix()
         for line, import_name in _literal_imports(path):
-            if import_name.startswith(".."):
+            if (
+                import_name.startswith("..")
+                and import_name not in PRIVATE_ANALYSIS_ALLOWED_PARENT_IMPORTS
+            ):
                 violations.append(
                     f"{relative}:{line}: import escapes private_analysis {import_name}"
                 )

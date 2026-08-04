@@ -9,6 +9,18 @@ from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
 
+from router_dump_analyzer.canonical import (
+    canonical_json,
+    canonical_json_sha256,
+    strict_canonical_json,
+)
+from router_dump_analyzer.private_analysis import (
+    PrivateAnalysisDisclosureMode,
+    PrivateAnalysisTransport,
+    WorkspaceDisclosurePolicy,
+    workspace_disclosure_policy_dict,
+    workspace_disclosure_policy_digest,
+)
 from router_dump_analyzer.session_store import (
     CatalogRetentionDisabledError,
     CatalogRetentionPolicy,
@@ -18,6 +30,7 @@ from router_dump_analyzer.session_store import (
     SessionStoreError,
     SqliteSessionStore,
     StaleSessionVersion,
+    StaleWorkspaceDisclosurePolicyVersion,
     validate_catalog_identifier,
     validate_catalog_label,
     validate_catalog_metadata,
@@ -153,6 +166,757 @@ class SqliteSessionStoreTests(unittest.TestCase):
             plugin_ids=("vendor.router",),
             metadata={"capture": revision},
         )
+
+    @staticmethod
+    def _full_fidelity_policy() -> WorkspaceDisclosurePolicy:
+        return WorkspaceDisclosurePolicy(
+            PrivateAnalysisDisclosureMode.FULL_FIDELITY,
+            (PrivateAnalysisTransport.IN_PROCESS,),
+        )
+
+    def test_workspace_disclosure_policy_defaults_disabled_outside_metadata(self) -> None:
+        self.store.create_project(
+            "tenant-a",
+            "Project A",
+            project_id="project-a",
+        )
+        self.store.create_workspace(
+            "tenant-a",
+            "project-a",
+            "Workspace A",
+            workspace_id="workspace-a",
+            metadata={
+                "private_analysis_policy": "full_fidelity",
+                "allow_proprietary_ai": True,
+            },
+        )
+        record = self.store.get_workspace_disclosure_policy(
+            "tenant-a", "workspace-a"
+        )
+        self.assertEqual(record.version, 0)
+        self.assertFalse(record.explicit)
+        self.assertEqual(record.policy, WorkspaceDisclosurePolicy.disabled())
+
+    def test_legacy_workspace_without_policy_table_migrates_to_disabled(self) -> None:
+        self._workspace()
+        self.store._connection.execute(
+            "DROP TABLE workspace_disclosure_policies"
+        )
+        self.store.close()
+        self.store = SqliteSessionStore(self.database)
+        record = self.store.get_workspace_disclosure_policy(
+            "tenant-a", "workspace-a"
+        )
+        self.assertEqual(record.version, 0)
+        self.assertFalse(record.explicit)
+        self.assertEqual(record.policy, WorkspaceDisclosurePolicy.disabled())
+
+    def test_v1_workspace_policy_history_migrates_to_rooted_record_chain(
+        self,
+    ) -> None:
+        self.store.close()
+        self.database.unlink()
+        policy = self._full_fidelity_policy()
+        policy_json = strict_canonical_json(
+            workspace_disclosure_policy_dict(policy)
+        )
+        policy_digest = workspace_disclosure_policy_digest(policy)
+        connection = sqlite3.connect(self.database)
+        connection.executescript(
+            """
+            PRAGMA user_version = 1;
+            CREATE TABLE tenants (
+                tenant_id TEXT PRIMARY KEY,
+                created_at_ns INTEGER NOT NULL
+            ) STRICT;
+            CREATE TABLE projects (
+                tenant_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                label TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                created_at_ns INTEGER NOT NULL,
+                PRIMARY KEY (tenant_id, project_id)
+            ) STRICT;
+            CREATE TABLE workspaces (
+                tenant_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                label TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                created_at_ns INTEGER NOT NULL,
+                PRIMARY KEY (tenant_id, workspace_id)
+            ) STRICT;
+            CREATE TABLE workspace_disclosure_policies (
+                tenant_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                policy_json TEXT NOT NULL,
+                policy_digest TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                created_at_ns INTEGER NOT NULL,
+                PRIMARY KEY (tenant_id, workspace_id, version)
+            ) STRICT;
+            CREATE TABLE workspace_disclosure_policy_heads (
+                tenant_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                current_version INTEGER NOT NULL,
+                current_policy_digest TEXT NOT NULL,
+                updated_at_ns INTEGER NOT NULL,
+                PRIMARY KEY (tenant_id, workspace_id)
+            ) STRICT;
+            CREATE TABLE idempotency_keys (
+                tenant_id TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                request_digest TEXT NOT NULL,
+                response_json TEXT NOT NULL,
+                created_at_ns INTEGER NOT NULL,
+                PRIMARY KEY (tenant_id, operation, idempotency_key)
+            ) STRICT;
+            """
+        )
+        connection.execute(
+            "INSERT INTO tenants VALUES (?, ?)", ("tenant-a", 10)
+        )
+        connection.execute(
+            "INSERT INTO projects VALUES (?, ?, ?, ?, ?)",
+            ("tenant-a", "project-a", "Project A", "{}", 20),
+        )
+        connection.execute(
+            "INSERT INTO workspaces VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "tenant-a",
+                "workspace-a",
+                "project-a",
+                "Workspace A",
+                "{}",
+                30,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO workspace_disclosure_policies
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "tenant-a",
+                "workspace-a",
+                1,
+                policy_json,
+                policy_digest,
+                "admin-a",
+                40,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO workspace_disclosure_policy_heads VALUES (?, ?, ?, ?, ?)",
+            ("tenant-a", "workspace-a", 1, policy_digest, 40),
+        )
+        legacy_request = {
+            "workspace_id": "workspace-a",
+            "policy": workspace_disclosure_policy_dict(policy),
+            "actor_id": "admin-a",
+            "expected_version": 0,
+        }
+        legacy_response = {
+            "tenant_id": "tenant-a",
+            "project_id": "project-a",
+            "workspace_id": "workspace-a",
+            "version": 1,
+            "policy": workspace_disclosure_policy_dict(policy),
+            "policy_digest": policy_digest,
+            "actor_id": "admin-a",
+            "created_at_ns": 40,
+            "explicit": True,
+        }
+        connection.execute(
+            "INSERT INTO idempotency_keys VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "tenant-a",
+                "set_workspace_disclosure_policy",
+                "legacy-policy",
+                canonical_json_sha256(legacy_request),
+                canonical_json(legacy_response),
+                41,
+            ),
+        )
+        connection.commit()
+        connection.close()
+
+        self.store = SqliteSessionStore(self.database)
+        record = self.store.get_workspace_disclosure_policy(
+            "tenant-a", "workspace-a"
+        )
+        self.assertEqual(record.version, 1)
+        self.assertEqual(record.policy, policy)
+        self.assertEqual(record.actor_id, "admin-a")
+        replay = self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            policy,
+            actor_id="admin-a",
+            expected_version=0,
+            idempotency_key="legacy-policy",
+        )
+        self.assertEqual(replay, record)
+        self.assertEqual(
+            self.store._connection.execute("PRAGMA user_version").fetchone()[0],
+            2,
+        )
+        foreign_key_errors = self.store._connection.execute(
+            "PRAGMA foreign_key_check"
+        ).fetchall()
+        self.assertEqual(foreign_key_errors, [])
+
+    def test_workspace_disclosure_policy_is_durable_versioned_and_audited(self) -> None:
+        self._workspace()
+        first = self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            self._full_fidelity_policy(),
+            actor_id="admin-a",
+            expected_version=0,
+            idempotency_key="policy-1",
+        )
+        replay = self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            self._full_fidelity_policy(),
+            actor_id="admin-a",
+            expected_version=0,
+            idempotency_key="policy-1",
+        )
+        self.assertEqual(replay, first)
+        second = self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            WorkspaceDisclosurePolicy.disabled(),
+            actor_id="admin-b",
+            expected_version=1,
+        )
+        self.assertEqual(second.version, 2)
+        self.assertEqual(
+            [entry.version for entry in self.store.list_workspace_disclosure_policy_history(
+                "tenant-a", "workspace-a"
+            )],
+            [2, 1],
+        )
+        self.store.close()
+        self.store = SqliteSessionStore(self.database)
+        self.assertEqual(
+            self.store.get_workspace_disclosure_policy(
+                "tenant-a", "workspace-a"
+            ),
+            second,
+        )
+
+    def test_workspace_disclosure_policy_rejects_stale_noop_and_cross_tenant(self) -> None:
+        self._workspace()
+        policy = self._full_fidelity_policy()
+        self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            policy,
+            actor_id="admin-a",
+            expected_version=0,
+        )
+        with self.assertRaises(StaleWorkspaceDisclosurePolicyVersion):
+            self.store.set_workspace_disclosure_policy(
+                "tenant-a",
+                "workspace-a",
+                WorkspaceDisclosurePolicy.disabled(),
+                actor_id="admin-a",
+                expected_version=0,
+            )
+        with self.assertRaises(SessionConflictError):
+            self.store.set_workspace_disclosure_policy(
+                "tenant-a",
+                "workspace-a",
+                policy,
+                actor_id="admin-a",
+                expected_version=1,
+            )
+        with self.assertRaises(KeyError):
+            self.store.get_workspace_disclosure_policy(
+                "tenant-b", "workspace-a"
+            )
+
+    def test_workspace_disclosure_policy_corruption_fails_closed(self) -> None:
+        self._workspace()
+        self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            self._full_fidelity_policy(),
+            actor_id="admin-a",
+            expected_version=0,
+        )
+        self.store._connection.execute(
+            "DROP TRIGGER workspace_disclosure_policy_immutable"
+        )
+        self.store._connection.execute(
+            """
+            UPDATE workspace_disclosure_policies
+            SET policy_digest = ?
+            WHERE tenant_id = ? AND workspace_id = ?
+            """,
+            ("0" * 64, "tenant-a", "workspace-a"),
+        )
+        with self.assertRaisesRegex(SessionStoreError, "stored workspace"):
+            self.store.get_workspace_disclosure_policy(
+                "tenant-a", "workspace-a"
+            )
+
+    def test_workspace_disclosure_policy_history_deletion_cannot_rollback(self) -> None:
+        self._workspace()
+        self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            self._full_fidelity_policy(),
+            actor_id="admin-a",
+            expected_version=0,
+        )
+        disabled = self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            WorkspaceDisclosurePolicy.disabled(),
+            actor_id="admin-a",
+            expected_version=1,
+            idempotency_key="disable-policy",
+        )
+        self.assertEqual(disabled.version, 2)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store._connection.execute(
+                """
+                DELETE FROM workspace_disclosure_policies
+                WHERE tenant_id = ? AND workspace_id = ? AND version = ?
+                """,
+                ("tenant-a", "workspace-a", 2),
+            )
+        self.store._connection.execute(
+            "DROP TRIGGER workspace_disclosure_policy_no_direct_delete"
+        )
+        self.store._connection.execute(
+            "DROP TRIGGER workspace_disclosure_policy_seal_no_direct_delete"
+        )
+        self.store._connection.execute(
+            "DROP TRIGGER workspace_disclosure_policy_receipt_no_direct_delete"
+        )
+        self.store._connection.execute(
+            """
+            DELETE FROM workspace_disclosure_policies
+            WHERE tenant_id = ? AND workspace_id = ? AND version = ?
+            """,
+            ("tenant-a", "workspace-a", 2),
+        )
+        with self.assertRaisesRegex(SessionStoreError, "(?:history|tip) is invalid"):
+            self.store.get_workspace_disclosure_policy(
+                "tenant-a", "workspace-a"
+            )
+        with self.assertRaisesRegex(SessionStoreError, "(?:history|tip) is invalid"):
+            self.store.set_workspace_disclosure_policy(
+                "tenant-a",
+                "workspace-a",
+                WorkspaceDisclosurePolicy.disabled(),
+                actor_id="admin-a",
+                expected_version=1,
+                idempotency_key="disable-policy",
+            )
+
+    def test_workspace_disclosure_policy_head_and_old_history_are_required(self) -> None:
+        for suffix, delete_target in (("old", "history"), ("head", "head")):
+            with self.subTest(delete_target=delete_target):
+                project = f"project-{suffix}"
+                workspace = f"workspace-{suffix}"
+                self._workspace(project=project, workspace=workspace)
+                self.store.set_workspace_disclosure_policy(
+                    "tenant-a",
+                    workspace,
+                    self._full_fidelity_policy(),
+                    actor_id="admin-a",
+                    expected_version=0,
+                )
+                self.store.set_workspace_disclosure_policy(
+                    "tenant-a",
+                    workspace,
+                    WorkspaceDisclosurePolicy.disabled(),
+                    actor_id="admin-a",
+                    expected_version=1,
+                )
+                if delete_target == "history":
+                    self.store._connection.execute(
+                        "DROP TRIGGER IF EXISTS "
+                        "workspace_disclosure_policy_no_direct_delete"
+                    )
+                    self.store._connection.execute(
+                        "DROP TRIGGER IF EXISTS "
+                        "workspace_disclosure_policy_seal_no_direct_delete"
+                    )
+                    self.store._connection.execute(
+                        """
+                        DELETE FROM workspace_disclosure_policies
+                        WHERE tenant_id = ? AND workspace_id = ? AND version = 1
+                        """,
+                        ("tenant-a", workspace),
+                    )
+                else:
+                    with self.assertRaises(sqlite3.IntegrityError):
+                        self.store._connection.execute(
+                            """
+                            DELETE FROM workspace_disclosure_policy_heads
+                            WHERE tenant_id = ? AND workspace_id = ?
+                            """,
+                            ("tenant-a", workspace),
+                        )
+                    self.store._connection.execute(
+                        "DROP TRIGGER IF EXISTS "
+                        "workspace_disclosure_policy_head_no_direct_delete"
+                    )
+                    self.store._connection.execute(
+                        """
+                        DELETE FROM workspace_disclosure_policy_heads
+                        WHERE tenant_id = ? AND workspace_id = ?
+                        """,
+                        ("tenant-a", workspace),
+                    )
+                with self.assertRaisesRegex(SessionStoreError, "history is invalid"):
+                    self.store.get_workspace_disclosure_policy(
+                        "tenant-a", workspace
+                    )
+
+    def test_old_workspace_disclosure_policy_corruption_blocks_read_and_write(
+        self,
+    ) -> None:
+        self._workspace()
+        self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            WorkspaceDisclosurePolicy.disabled(),
+            actor_id="admin-a",
+            expected_version=0,
+        )
+        self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            self._full_fidelity_policy(),
+            actor_id="admin-a",
+            expected_version=1,
+        )
+        self.store._connection.execute(
+            "DROP TRIGGER workspace_disclosure_policy_immutable"
+        )
+        self.store._connection.execute(
+            """
+            UPDATE workspace_disclosure_policies
+            SET policy_digest = ?
+            WHERE tenant_id = ? AND workspace_id = ? AND version = 1
+            """,
+            ("0" * 64, "tenant-a", "workspace-a"),
+        )
+        with self.assertRaisesRegex(SessionStoreError, "stored workspace"):
+            self.store.get_workspace_disclosure_policy(
+                "tenant-a", "workspace-a"
+            )
+        with self.assertRaisesRegex(SessionStoreError, "stored workspace"):
+            self.store.set_workspace_disclosure_policy(
+                "tenant-a",
+                "workspace-a",
+                WorkspaceDisclosurePolicy.disabled(),
+                actor_id="admin-a",
+                expected_version=2,
+            )
+
+    def test_workspace_policy_total_ledger_erasure_cannot_reset_to_v0(self) -> None:
+        self._workspace()
+        self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            self._full_fidelity_policy(),
+            actor_id="admin-a",
+            expected_version=0,
+            idempotency_key="policy-1",
+        )
+        self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            WorkspaceDisclosurePolicy.disabled(),
+            actor_id="admin-a",
+            expected_version=1,
+        )
+        for trigger in (
+            "workspace_disclosure_policy_no_direct_delete",
+            "workspace_disclosure_policy_seal_no_direct_delete",
+            "workspace_disclosure_policy_head_no_direct_delete",
+            "workspace_disclosure_policy_receipt_no_direct_delete",
+        ):
+            self.store._connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        self.store._connection.execute(
+            """
+            DELETE FROM workspace_disclosure_policy_receipts
+            WHERE tenant_id = ? AND workspace_id = ?
+            """,
+            ("tenant-a", "workspace-a"),
+        )
+        self.store._connection.execute(
+            """
+            DELETE FROM workspace_disclosure_policies
+            WHERE tenant_id = ? AND workspace_id = ?
+            """,
+            ("tenant-a", "workspace-a"),
+        )
+        self.store._connection.execute(
+            """
+            DELETE FROM workspace_disclosure_policy_heads
+            WHERE tenant_id = ? AND workspace_id = ?
+            """,
+            ("tenant-a", "workspace-a"),
+        )
+        with self.assertRaisesRegex(SessionStoreError, "tip is invalid"):
+            self.store.get_workspace_disclosure_policy(
+                "tenant-a", "workspace-a"
+            )
+        with self.assertRaisesRegex(SessionStoreError, "tip is invalid"):
+            self.store.set_workspace_disclosure_policy(
+                "tenant-a",
+                "workspace-a",
+                self._full_fidelity_policy(),
+                actor_id="admin-a",
+                expected_version=0,
+                idempotency_key="new-policy",
+            )
+
+    def test_workspace_policy_tip_cannot_be_rewritten_through_normal_sql(self) -> None:
+        self._workspace()
+        self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            self._full_fidelity_policy(),
+            actor_id="admin-a",
+            expected_version=0,
+        )
+        root_digest = self.store._connection.execute(
+            """
+            SELECT disclosure_policy_root_digest
+            FROM workspaces
+            WHERE tenant_id = ? AND workspace_id = ?
+            """,
+            ("tenant-a", "workspace-a"),
+        ).fetchone()[0]
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store._connection.execute(
+                """
+                UPDATE workspaces
+                SET disclosure_policy_tip_version = 0,
+                    disclosure_policy_tip_record_digest = ?
+                WHERE tenant_id = ? AND workspace_id = ?
+                """,
+                (root_digest, "tenant-a", "workspace-a"),
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store._connection.execute(
+                """
+                UPDATE workspaces
+                SET disclosure_policy_root_digest = ?
+                WHERE tenant_id = ? AND workspace_id = ?
+                """,
+                ("0" * 64, "tenant-a", "workspace-a"),
+            )
+
+    def test_workspace_policy_audit_field_tampering_breaks_record_chain(self) -> None:
+        self._workspace()
+        self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            self._full_fidelity_policy(),
+            actor_id="admin-a",
+            expected_version=0,
+        )
+        self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            WorkspaceDisclosurePolicy.disabled(),
+            actor_id="admin-b",
+            expected_version=1,
+        )
+        self.store._connection.execute(
+            "DROP TRIGGER workspace_disclosure_policy_immutable"
+        )
+        self.store._connection.execute(
+            """
+            UPDATE workspace_disclosure_policies
+            SET actor_id = 'forged-admin'
+            WHERE tenant_id = ? AND workspace_id = ? AND version = 1
+            """,
+            ("tenant-a", "workspace-a"),
+        )
+        with self.assertRaisesRegex(SessionStoreError, "seal is invalid"):
+            self.store.get_workspace_disclosure_policy(
+                "tenant-a", "workspace-a"
+            )
+        with self.assertRaisesRegex(SessionStoreError, "seal is invalid"):
+            self.store.set_workspace_disclosure_policy(
+                "tenant-a",
+                "workspace-a",
+                self._full_fidelity_policy(),
+                actor_id="admin-c",
+                expected_version=2,
+            )
+
+    def test_workspace_policy_receipt_is_bound_to_scope_and_history(self) -> None:
+        self._workspace()
+        first = self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            self._full_fidelity_policy(),
+            actor_id="admin-a",
+            expected_version=0,
+            idempotency_key="policy-1",
+        )
+        self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            WorkspaceDisclosurePolicy.disabled(),
+            actor_id="admin-b",
+            expected_version=1,
+        )
+        replay = self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            self._full_fidelity_policy(),
+            actor_id="admin-a",
+            expected_version=0,
+            idempotency_key="policy-1",
+        )
+        self.assertEqual(replay, first)
+        self.store._connection.execute(
+            "DROP TRIGGER workspace_disclosure_policy_receipt_immutable"
+        )
+        self.store._connection.execute(
+            """
+            UPDATE workspace_disclosure_policy_receipts
+            SET project_id = 'project-forged'
+            WHERE tenant_id = ? AND idempotency_key = ?
+            """,
+            ("tenant-a", "policy-1"),
+        )
+        with self.assertRaisesRegex(SessionStoreError, "receipt is invalid"):
+            self.store.set_workspace_disclosure_policy(
+                "tenant-a",
+                "workspace-a",
+                self._full_fidelity_policy(),
+                actor_id="admin-a",
+                expected_version=0,
+                idempotency_key="policy-1",
+            )
+
+    def test_workspace_policy_receipt_loss_invalidates_the_sealed_history(
+        self,
+    ) -> None:
+        self._workspace()
+        self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            self._full_fidelity_policy(),
+            actor_id="admin-a",
+            expected_version=0,
+            idempotency_key="policy-1",
+        )
+        self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            WorkspaceDisclosurePolicy.disabled(),
+            actor_id="admin-b",
+            expected_version=1,
+        )
+        self.store._connection.execute(
+            "DROP TRIGGER workspace_disclosure_policy_receipt_no_direct_delete"
+        )
+        self.store._connection.execute(
+            """
+            DELETE FROM workspace_disclosure_policy_receipts
+            WHERE tenant_id = ? AND idempotency_key = ?
+            """,
+            ("tenant-a", "policy-1"),
+        )
+        with self.assertRaisesRegex(SessionStoreError, "receipt is invalid"):
+            self.store.get_workspace_disclosure_policy(
+                "tenant-a", "workspace-a"
+            )
+        with self.assertRaisesRegex(SessionStoreError, "receipt is invalid"):
+            self.store.set_workspace_disclosure_policy(
+                "tenant-a",
+                "workspace-a",
+                self._full_fidelity_policy(),
+                actor_id="admin-c",
+                expected_version=2,
+            )
+        with self.assertRaisesRegex(SessionStoreError, "receipt is invalid"):
+            self.store.set_workspace_disclosure_policy(
+                "tenant-a",
+                "workspace-a",
+                self._full_fidelity_policy(),
+                actor_id="admin-a",
+                expected_version=0,
+                idempotency_key="policy-1",
+            )
+
+    def test_workspace_policy_receipt_timestamp_is_sealed(self) -> None:
+        self._workspace()
+        self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            self._full_fidelity_policy(),
+            actor_id="admin-a",
+            expected_version=0,
+            idempotency_key="policy-1",
+        )
+        self.store._connection.execute(
+            "DROP TRIGGER workspace_disclosure_policy_receipt_immutable"
+        )
+        self.store._connection.execute(
+            """
+            UPDATE workspace_disclosure_policy_receipts
+            SET created_at_ns = created_at_ns + 1
+            WHERE tenant_id = ? AND idempotency_key = ?
+            """,
+            ("tenant-a", "policy-1"),
+        )
+        with self.assertRaisesRegex(SessionStoreError, "receipt is invalid"):
+            self.store.get_workspace_disclosure_policy(
+                "tenant-a", "workspace-a"
+            )
+        with self.assertRaisesRegex(SessionStoreError, "receipt is invalid"):
+            self.store.set_workspace_disclosure_policy(
+                "tenant-a",
+                "workspace-a",
+                self._full_fidelity_policy(),
+                actor_id="admin-a",
+                expected_version=0,
+                idempotency_key="policy-1",
+            )
+
+    def test_workspace_deletion_cascades_policy_history_and_head_together(self) -> None:
+        self._workspace()
+        self.store.set_workspace_disclosure_policy(
+            "tenant-a",
+            "workspace-a",
+            self._full_fidelity_policy(),
+            actor_id="admin-a",
+            expected_version=0,
+        )
+        self.store._connection.execute(
+            "DELETE FROM workspaces WHERE tenant_id = ? AND workspace_id = ?",
+            ("tenant-a", "workspace-a"),
+        )
+        for table in (
+            "workspace_disclosure_policies",
+            "workspace_disclosure_policy_heads",
+            "workspace_disclosure_policy_seals",
+            "workspace_disclosure_policy_receipts",
+        ):
+            count = self.store._connection.execute(
+                f"SELECT COUNT(*) FROM {table}"
+            ).fetchone()[0]
+            self.assertEqual(count, 0)
 
     def test_public_catalog_text_rejects_property_based_invisibles(self) -> None:
         unsafe = (

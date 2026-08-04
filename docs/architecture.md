@@ -2040,6 +2040,7 @@ workspace-scoped:
 ```text
 GET,POST /v1/control-plane/projects
 GET,POST /v1/control-plane/projects/{project_id}/workspaces
+GET,PUT  /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/private-analysis-policy
 GET      /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/fixtures
 GET      /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/revisions
 GET,POST /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/sessions
@@ -2185,6 +2186,25 @@ fallback. An authorized private model may inspect full-fidelity proprietary
 workspace evidence through revision-scoped read-only tools, but its output is
 advisory and cannot directly mutate immutable revisions or impersonate
 plug-in/core evidence.
+
+Disclosure is bound by a dedicated append-only workspace policy, not generic
+catalog metadata. Missing policy resolves to an explicit disabled version 0.
+The closed `client_safe` tier permits only public metadata and redacted
+client-safe projections; `full_fidelity` additionally permits proprietary
+evidence. Both require an explicit subset of the two local transports, while
+`never_assistant` is an unconditional deny. Policy writes are admin-only,
+optimistic compare-and-swap mutations. A workspace-rooted canonical record
+chain seals scope, version, policy, actor, timestamp, and predecessor; its tip,
+a redundant durable head, exact-revision receipts, and complete history are
+reconciled on every read and write. This detects torn or independently
+corrupted catalog state. The SQLite file, schema/triggers, and state-directory
+administrator remain trusted: coherent replacement of every anchor or a full
+snapshot rollback requires an external independently administered WORM
+checkpoint if it belongs in the deployment threat model. The evaluator
+intersects the runner capability ceiling with
+the workspace policy, sees only the declared evidence class, and returns a
+payload-free decision, keeping later evidence retrieval and ledger recording
+on the other side of this boundary.
 
 ## 14. Delivery sequence
 

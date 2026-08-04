@@ -47,6 +47,9 @@ from router_dump_analyzer.operational_logging import (
     OperationalEventHealthSnapshot,
 )
 from router_dump_analyzer.plugin_api import DomainEvent
+from router_dump_analyzer.private_analysis import (
+    WORKSPACE_DISCLOSURE_POLICY_VERSION,
+)
 from router_dump_analyzer.session_store import CatalogRetentionPolicy
 from router_dump_analyzer.value_core import MAX_JSON_SAFE_INTEGER
 from router_dump_analyzer.web.control_plane_api import (
@@ -297,6 +300,178 @@ class ControlPlaneApiTests(unittest.TestCase):
             },
         )
         self.assertEqual(workspace.status_code, 201, workspace.text)
+
+    def test_workspace_private_analysis_policy_is_versioned_and_default_denied(
+        self,
+    ) -> None:
+        self._provision_scope(self.tenant_a)
+        path = f"{self.workspace_path}/private-analysis-policy"
+        default = self.client.get(
+            path,
+            headers=self._read_headers(self.tenant_a),
+        )
+        self.assertEqual(default.status_code, 200, default.text)
+        self.assertEqual(default.headers["etag"], '"0"')
+        self.assertFalse(default.json()["explicit"])
+        self.assertEqual(default.json()["policy"]["mode"], "disabled")
+
+        headers = {
+            **self._write_headers(
+                self.tenant_a,
+                idempotency_key="enable-private-analysis",
+            ),
+            "If-Match": '"0"',
+        }
+        body = {
+            "policy_version": WORKSPACE_DISCLOSURE_POLICY_VERSION,
+            "mode": "full_fidelity",
+            "transports": ["in_process"],
+        }
+        enabled = self.client.put(path, headers=headers, json=body)
+        self.assertEqual(enabled.status_code, 200, enabled.text)
+        self.assertEqual(enabled.headers["etag"], '"1"')
+        self.assertEqual(enabled.json()["policy"], body)
+        self.assertIsInstance(enabled.json()["created_at_ns"], str)
+
+        replay = self.client.put(path, headers=headers, json=body)
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.json(), enabled.json())
+        stale_headers = {
+            **self._write_headers(self.tenant_a),
+            "If-Match": '"0"',
+        }
+        stale = self.client.put(
+            path,
+            headers=stale_headers,
+            json={
+                "policy_version": WORKSPACE_DISCLOSURE_POLICY_VERSION,
+                "mode": "disabled",
+                "transports": [],
+            },
+        )
+        self.assertEqual(stale.status_code, 409, stale.text)
+        current = self.client.get(
+            path,
+            headers=self._read_headers(self.tenant_a),
+        )
+        self.assertEqual(current.headers["etag"], '"1"')
+        self.assertEqual(current.json(), enabled.json())
+
+    def test_workspace_private_analysis_policy_is_admin_and_scope_bound(self) -> None:
+        self._provision_scope(self.tenant_a)
+        path = f"{self.workspace_path}/private-analysis-policy"
+        body = {
+            "policy_version": WORKSPACE_DISCLOSURE_POLICY_VERSION,
+            "mode": "client_safe",
+            "transports": ["local_subprocess"],
+        }
+        original_resolver = self.client.app.state.control_plane_identity_resolver
+        self.client.app.state.control_plane_identity_resolver = lambda _request: (
+            ControlPlaneIdentity(
+                tenant_id=self.tenant_a,
+                principal_id="reader-only",
+                roles=frozenset({CONTROL_PLANE_READ_ROLE, CONTROL_PLANE_WRITE_ROLE}),
+            )
+        )
+        denied = self.client.put(
+            path,
+            headers={
+                "X-Tenant-ID": self.tenant_a,
+                "X-Principal-ID": "reader-only",
+                "If-Match": '"0"',
+            },
+            json=body,
+        )
+        self.assertEqual(denied.status_code, 403, denied.text)
+
+        self.client.app.state.control_plane_identity_resolver = lambda _request: (
+            ControlPlaneIdentity(
+                tenant_id=self.tenant_a,
+                principal_id="admin-only",
+                roles=frozenset({CONTROL_PLANE_ADMIN_ROLE}),
+                project_ids=frozenset({self.project_id}),
+                workspace_ids=frozenset({self.workspace_id}),
+            )
+        )
+        accepted = self.client.put(
+            path,
+            headers={
+                "X-Tenant-ID": self.tenant_a,
+                "X-Principal-ID": "admin-only",
+                "If-Match": '"0"',
+            },
+            json=body,
+        )
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+
+        self.client.app.state.control_plane_identity_resolver = lambda _request: (
+            ControlPlaneIdentity(
+                tenant_id=self.tenant_a,
+                principal_id="scoped-reader",
+                roles=frozenset({CONTROL_PLANE_READ_ROLE}),
+                project_ids=frozenset({"another-project"}),
+                workspace_ids=frozenset({"another-workspace"}),
+            )
+        )
+        hidden = self.client.get(
+            path,
+            headers={"X-Tenant-ID": self.tenant_a},
+        )
+        self.assertEqual(hidden.status_code, 404, hidden.text)
+        self.client.app.state.control_plane_identity_resolver = original_resolver
+        wrong_project = self.client.get(
+            (
+                "/v1/control-plane/projects/another-project/workspaces/"
+                f"{self.workspace_id}/private-analysis-policy"
+            ),
+            headers=self._read_headers(self.tenant_a),
+        )
+        self.assertEqual(wrong_project.status_code, 404, wrong_project.text)
+
+    def test_workspace_private_analysis_policy_rejects_noncanonical_body(self) -> None:
+        self._provision_scope(self.tenant_a)
+        path = f"{self.workspace_path}/private-analysis-policy"
+        headers = {
+            **self._write_headers(self.tenant_a),
+            "If-Match": '"0"',
+        }
+        cases = (
+            {},
+            {
+                "policy_version": WORKSPACE_DISCLOSURE_POLICY_VERSION,
+                "mode": "full_fidelity",
+                "transports": ["in_process"],
+                "future": True,
+            },
+            {
+                "policy_version": WORKSPACE_DISCLOSURE_POLICY_VERSION,
+                "mode": "full_fidelity",
+                "transports": ["public_api"],
+            },
+            {
+                "policy_version": WORKSPACE_DISCLOSURE_POLICY_VERSION,
+                "mode": "full_fidelity",
+                "transports": ["local_subprocess", "in_process"],
+            },
+        )
+        for body in cases:
+            with self.subTest(body=body):
+                response = self.client.put(path, headers=headers, json=body)
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertEqual(
+                    response.json(),
+                    {"detail": "workspace disclosure policy is invalid"},
+                )
+        missing_precondition = self.client.put(
+            path,
+            headers=self._write_headers(self.tenant_a),
+            json={
+                "policy_version": WORKSPACE_DISCLOSURE_POLICY_VERSION,
+                "mode": "disabled",
+                "transports": [],
+            },
+        )
+        self.assertEqual(missing_precondition.status_code, 428)
 
     def _upload(
         self,
@@ -2229,6 +2404,7 @@ class ControlPlaneApiTests(unittest.TestCase):
             "SessionStoreError": 500,
             "SessionStoreDeadlineExceeded": 504,
             "StaleSessionVersion": 409,
+            "StaleWorkspaceDisclosurePolicyVersion": 409,
             "SubjectResolutionError": 422,
             "TimeoutError": 504,
             "TypeError": 500,

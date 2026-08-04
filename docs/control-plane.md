@@ -744,6 +744,46 @@ Temporal corroboration is confident only when both events declare the same
 clock domain. Missing or different domains produce `unknown` with
 `shared_resource_clock_unaligned` and retain both clock values as evidence.
 
+### Workspace private-analysis disclosure policy
+
+Private-model disclosure is a dedicated workspace security setting, not a
+workspace-metadata convention. Every workspace without an explicit setting
+resolves to version `0`, mode `disabled`. An administrator can append a policy
+revision with:
+
+```text
+GET /v1/control-plane/projects/lab/workspaces/run-42/private-analysis-policy
+PUT /v1/control-plane/projects/lab/workspaces/run-42/private-analysis-policy
+If-Match: "0"
+```
+
+The `PUT` body is the exact versioned object documented in
+[API payload contract](api-contract.md). It requires the trusted
+`control-plane:admin` role and records the trusted resolved principal as the
+actor. Both routes enforce the same concealed tenant/project/workspace scope as
+the rest of the control plane. Each successful update increments the strong
+numeric ETag and appends immutable policy history; stale writers receive `409`.
+The workspace row owns an immutable version-zero root and a current record-chain
+tip. Each revision seal covers scope, version, canonical policy, actor,
+timestamp, and predecessor. That tip, the redundant current head, exact-result
+idempotency receipts, and the complete `1..version` history must agree, so an
+independently missing or corrupted revision is treated as storage failure.
+
+The SQLite catalog and its schema/triggers are part of the trusted local
+control-plane boundary. These checks detect torn state and non-coordinated
+corruption; they cannot distinguish a legitimate historical snapshot from a
+privileged catalog administrator coherently rewriting every root, tip, head,
+seal, history row, and receipt. Use an independently administered append-only
+policy checkpoint/WORM log when that administrator is in the threat model.
+Migration from schema v1 roots the valid prefix visible at migration time and
+cannot reconstruct a suffix already erased by such an actor.
+
+The closed tiers are `disabled`, `client_safe`, and `full_fidelity`. The last
+tier permits proprietary dump evidence only over explicitly selected core
+local transports. Credentials, tokens, keys, and `never_assistant` evidence
+remain denied. Policy decisions contain class, transport, digest, and a closed
+reason only; they do not contain the evaluated payload.
+
 ## 6. HTTP route summary
 
 All routes have the prefix `/v1/control-plane`.
@@ -754,6 +794,7 @@ All routes have the prefix `/v1/control-plane`.
 | Diagnostics | `GET /diagnostics/operational-events` (`control-plane:instance-operator`) |
 | Projects | `GET, POST /projects` |
 | Workspaces | `GET, POST /projects/{project_id}/workspaces` |
+| Private analysis | `GET, PUT .../private-analysis-policy` (`PUT` requires `control-plane:admin` and `If-Match`) |
 | Catalog | `GET /projects/{project_id}/workspaces/{workspace_id}/fixtures`; `GET .../revisions?node_id=...` |
 | Sessions | `GET, POST .../sessions`; `GET, PATCH, DELETE .../sessions/{session_id}`; `PUT, DELETE .../sessions/{session_id}/members/{member_id}`; `POST .../sessions/{session_id}/snapshots`; `GET .../snapshots`; `GET .../snapshots/{snapshot_id}` |
 | Imports | `GET, POST .../imports`; `GET .../imports/{import_id}`; `GET .../candidates`; `GET .../events`; `GET .../events/stream`; `POST .../selection`; `POST .../resume`; `POST .../cancel` |

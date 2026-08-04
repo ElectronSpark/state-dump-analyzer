@@ -58,10 +58,25 @@ dedicated section.
 
 ## Proprietary information and secrets
 
-An authorized workspace may select full-fidelity private analysis. That mode
-may expose proprietary resource identifiers, UUIDs, addresses, event payloads,
-platform names, chip names, route state, and decoded source records to the
-approved model. It is not a public egress path.
+Every workspace resolves to an explicit, versioned disclosure policy. Absence
+means immutable synthetic version `0` with mode `disabled`; policy-looking
+workspace metadata has no effect. The closed modes are:
+
+- `disabled`: disclose nothing;
+- `client_safe`: permit only public metadata and the same redacted,
+  client-safe class that core may publish to an authorized browser; and
+- `full_fidelity`: additionally permit proprietary workspace evidence.
+
+An enabled policy also names one or both approved local transports,
+`in_process` and `local_subprocess`. No string or adapter can add a third
+transport. A runner's own capability ceiling is intersected with this
+workspace policy; neither side can grant what the other denies.
+`never_assistant` dominates every mode and transport.
+
+An authorized workspace may therefore deliberately select full-fidelity
+private analysis. That mode may expose proprietary resource identifiers,
+UUIDs, addresses, event payloads, platform names, chip names, route state, and
+decoded source records to the approved model. It is not a public egress path.
 
 Full fidelity does not mean unlimited transfer. Queries remain tenant,
 workspace, revision, time, and byte scoped; results are paged and every item
@@ -71,6 +86,31 @@ has a stable evidence reference. This is required for deterministic replay and
 Credentials, private keys, tokens, and fields declared `never_assistant` are
 not exposed even in full-fidelity mode. Every run records a disclosure ledger
 with the immutable revision vector and context digest.
+
+Policy administration is durable and fail-closed. `GET
+/v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/private-analysis-policy`
+requires workspace read scope and returns a strong numeric `ETag`. `PUT` is
+restricted to `control-plane:admin`, requires that ETag in `If-Match`, and
+appends a new immutable policy revision. Stale updates return `409`; missing or
+non-canonical policy fields return `422`. The policy digest and payload-free
+decision reason can be recorded without copying the evidence being evaluated.
+The workspace row carries a version-zero root and current chain tip. Every
+explicit revision is sealed over scope, version, policy, actor, timestamp, and
+its predecessor; a redundant current head and exact-revision idempotency
+receipt are reconciled with the complete contiguous history on every read and
+write. Missing or independently corrupted rows therefore fail closed instead
+of silently reactivating an older permission.
+
+This is catalog-integrity checking, not protection from the catalog
+administrator. The local SQLite file, its schema/triggers, and the state
+directory are inside the trusted single-host boundary. A privileged writer who
+can remove those controls and coherently replace the workspace root/tip, head,
+history, seals, and receipts—or restore all of them from one older snapshot—can
+roll policy state back. Deployments requiring protection from that actor must
+put policy checkpoints in an independently administered append-only/WORM
+system. The v1-to-v2 migration similarly authenticates the valid legacy prefix
+it can observe; it cannot prove that a privileged writer did not erase a suffix
+before the first migration.
 
 ## Tool and instruction boundary
 

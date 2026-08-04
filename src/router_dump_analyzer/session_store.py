@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Self
 from uuid import uuid4
 
-from .canonical import canonical_json, canonical_json_sha256
+from .canonical import canonical_json, canonical_json_sha256, strict_canonical_json
 from .contract_validation import validate_bounded_json_value
 from .filesystem_lock import exclusive_file_lock
 from .plugin_execution_plan import (
@@ -42,6 +42,13 @@ from .plugin_execution_plan import (
     plugin_execution_plan_plugin_ids,
     snapshot_plugin_execution_plan,
 )
+from .private_analysis import (
+    WORKSPACE_DISCLOSURE_POLICY_VERSION,
+    WorkspaceDisclosurePolicy,
+    workspace_disclosure_policy_dict,
+    workspace_disclosure_policy_digest,
+    workspace_disclosure_policy_from_dict,
+)
 from .public_text import (
     contains_unsafe_identifier_text,
     contains_unsafe_invisible_text,
@@ -49,11 +56,22 @@ from .public_text import (
 )
 from .value_core import MAX_JSON_SAFE_INTEGER
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
+_WORKSPACE_DISCLOSURE_ROOT_SCHEMA_VERSION = (
+    "router_dump_analyzer.workspace_disclosure_policy_root.v1"
+)
+_WORKSPACE_DISCLOSURE_RECORD_SCHEMA_VERSION = (
+    "router_dump_analyzer.workspace_disclosure_policy_record.v1"
+)
+_WORKSPACE_DISCLOSURE_RECEIPT_SCHEMA_VERSION = (
+    "router_dump_analyzer.workspace_disclosure_policy_receipt.v1"
+)
 _MAX_ID_CHARACTERS = 256
 _MAX_LABEL_CHARACTERS = 256
 _MAX_ROLE_CHARACTERS = 128
 _MAX_METADATA_BYTES = 256 * 1024
+_MAX_DISCLOSURE_POLICY_BYTES = 4 * 1024
+_MAX_DISCLOSURE_POLICY_REVISIONS = 100_000
 _DEFAULT_PAGE_LIMIT = 1_000
 _MAX_PAGE_LIMIT = 5_000
 _MAX_SESSION_MEMBERS = 1_024
@@ -82,6 +100,10 @@ class StaleSessionVersion(SessionConflictError):
     """A mutable session changed after the caller read it."""
 
 
+class StaleWorkspaceDisclosurePolicyVersion(SessionConflictError):
+    """A workspace disclosure policy changed after the caller read it."""
+
+
 class IdempotencyConflict(SessionConflictError):
     """An idempotency key was reused for a different request."""
 
@@ -107,6 +129,39 @@ class WorkspaceDescriptor:
     label: str
     metadata: Mapping[str, Any] = field(default_factory=dict)
     created_at_ns: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceDisclosurePolicyRecord:
+    """One immutable, workspace-bound disclosure-policy revision."""
+
+    tenant_id: str
+    project_id: str
+    workspace_id: str
+    version: int
+    policy: WorkspaceDisclosurePolicy
+    policy_digest: str
+    actor_id: str
+    created_at_ns: int
+    explicit: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkspaceDisclosurePolicyState:
+    """Validated current record plus its exact chain-end digest."""
+
+    current: WorkspaceDisclosurePolicyRecord | None
+    record_digest: str
+    history: tuple[WorkspaceDisclosurePolicyRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _LegacyWorkspaceDisclosurePolicyReceipt:
+    record: WorkspaceDisclosurePolicyRecord
+    idempotency_key: str
+    request_digest: str
+    commitment: str
+    created_at_ns: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -458,6 +513,124 @@ def _metadata_json(value: Mapping[str, Any] | None, label: str) -> str:
     if len(encoded.encode("utf-8")) > _MAX_METADATA_BYTES:
         raise ValueError(f"{label} exceeds {_MAX_METADATA_BYTES} encoded UTF-8 bytes")
     return encoded
+
+
+def _workspace_disclosure_policy_json(
+    policy: WorkspaceDisclosurePolicy,
+) -> tuple[str, str]:
+    if not isinstance(policy, WorkspaceDisclosurePolicy):
+        raise TypeError("policy must be WorkspaceDisclosurePolicy")
+    encoded = strict_canonical_json(workspace_disclosure_policy_dict(policy))
+    if len(encoded.encode("utf-8")) > _MAX_DISCLOSURE_POLICY_BYTES:
+        raise ValueError("workspace disclosure policy is too large")
+    return encoded, workspace_disclosure_policy_digest(policy)
+
+
+def _workspace_disclosure_policy_root_digest(
+    *,
+    tenant_id: str,
+    project_id: str,
+    workspace_id: str,
+    workspace_created_at_ns: int,
+) -> str:
+    """Return the immutable version-zero chain anchor for one workspace."""
+
+    if type(workspace_created_at_ns) is not int or workspace_created_at_ns < 0:
+        raise SessionStoreError("stored workspace disclosure policy root is invalid")
+    document = {
+        "schema_version": _WORKSPACE_DISCLOSURE_ROOT_SCHEMA_VERSION,
+        "tenant_id": tenant_id,
+        "project_id": project_id,
+        "workspace_id": workspace_id,
+        "workspace_created_at_ns": str(workspace_created_at_ns),
+        "default_policy_digest": WorkspaceDisclosurePolicy.disabled().digest,
+    }
+    return sha256(strict_canonical_json(document).encode("utf-8")).hexdigest()
+
+
+def _workspace_disclosure_policy_record_digest(
+    record: WorkspaceDisclosurePolicyRecord,
+    *,
+    previous_record_digest: str,
+    receipt_commitment: str | None,
+) -> str:
+    """Seal every security-relevant field and the predecessor chain link."""
+
+    previous = _digest(previous_record_digest, "previous_record_digest")
+    document = {
+        "schema_version": _WORKSPACE_DISCLOSURE_RECORD_SCHEMA_VERSION,
+        "tenant_id": record.tenant_id,
+        "project_id": record.project_id,
+        "workspace_id": record.workspace_id,
+        "version": str(record.version),
+        "policy": workspace_disclosure_policy_dict(record.policy),
+        "policy_digest": record.policy_digest,
+        "actor_id": record.actor_id,
+        "created_at_ns": str(record.created_at_ns),
+        "previous_record_digest": previous,
+        "receipt_commitment": receipt_commitment,
+    }
+    return sha256(strict_canonical_json(document).encode("utf-8")).hexdigest()
+
+
+def _workspace_disclosure_policy_receipt_commitment(
+    *,
+    tenant_id: str,
+    project_id: str,
+    workspace_id: str,
+    idempotency_key: str,
+    request_digest: str,
+    result_version: int,
+    created_at_ns: int,
+) -> str:
+    """Commit one optional exact-result receipt into its revision seal."""
+
+    key = _bounded_identifier(idempotency_key, "idempotency_key")
+    request = _digest(request_digest, "request_digest")
+    if (
+        type(result_version) is not int
+        or not 1 <= result_version <= _MAX_DISCLOSURE_POLICY_REVISIONS
+        or type(created_at_ns) is not int
+        or created_at_ns < 0
+    ):
+        raise ValueError("receipt coordinates are invalid")
+    document = {
+        "schema_version": _WORKSPACE_DISCLOSURE_RECEIPT_SCHEMA_VERSION,
+        "tenant_id": tenant_id,
+        "project_id": project_id,
+        "workspace_id": workspace_id,
+        "idempotency_key": key,
+        "request_digest": request,
+        "result_version": str(result_version),
+        "created_at_ns": str(created_at_ns),
+    }
+    return sha256(strict_canonical_json(document).encode("utf-8")).hexdigest()
+
+
+def _stored_workspace_disclosure_policy(
+    policy_json: object,
+    policy_digest: object,
+) -> WorkspaceDisclosurePolicy:
+    if (
+        not isinstance(policy_json, str)
+        or len(policy_json.encode("utf-8")) > _MAX_DISCLOSURE_POLICY_BYTES
+        or not isinstance(policy_digest, str)
+        or _DIGEST_PATTERN.fullmatch(policy_digest) is None
+    ):
+        raise SessionStoreError("stored workspace disclosure policy is invalid")
+    try:
+        loaded = json.loads(policy_json)
+        if not isinstance(loaded, dict):
+            raise TypeError
+        policy = workspace_disclosure_policy_from_dict(loaded)
+        canonical, digest = _workspace_disclosure_policy_json(policy)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise SessionStoreError(
+            "stored workspace disclosure policy is invalid"
+        ) from error
+    if canonical != policy_json or digest != policy_digest:
+        raise SessionStoreError("stored workspace disclosure policy is invalid")
+    return policy
 
 
 def _validate_public_metadata_text(value: Any, label: str) -> None:
@@ -858,7 +1031,7 @@ class SqliteSessionStore:
         current_version = int(
             self._connection.execute("PRAGMA user_version").fetchone()[0]
         )
-        if current_version not in {0, _SCHEMA_VERSION}:
+        if current_version not in {0, 1, _SCHEMA_VERSION}:
             raise SessionStoreError(
                 f"unsupported session-store schema version {current_version}"
             )
@@ -887,11 +1060,153 @@ class SqliteSessionStore:
                 label TEXT NOT NULL,
                 metadata_json TEXT NOT NULL,
                 created_at_ns INTEGER NOT NULL,
+                disclosure_policy_root_digest TEXT NOT NULL,
+                disclosure_policy_tip_version INTEGER NOT NULL
+                    CHECK (disclosure_policy_tip_version >= 0),
+                disclosure_policy_tip_record_digest TEXT NOT NULL,
                 PRIMARY KEY (tenant_id, workspace_id),
                 FOREIGN KEY (tenant_id, project_id)
                     REFERENCES projects(tenant_id, project_id)
                     ON DELETE CASCADE
             ) STRICT;
+
+            CREATE TABLE IF NOT EXISTS workspace_disclosure_policies (
+                tenant_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                version INTEGER NOT NULL CHECK (version > 0),
+                policy_json TEXT NOT NULL,
+                policy_digest TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                created_at_ns INTEGER NOT NULL CHECK (created_at_ns >= 0),
+                PRIMARY KEY (tenant_id, workspace_id, version),
+                FOREIGN KEY (tenant_id, workspace_id)
+                    REFERENCES workspaces(tenant_id, workspace_id)
+                    ON DELETE CASCADE
+            ) STRICT;
+
+            CREATE TABLE IF NOT EXISTS workspace_disclosure_policy_heads (
+                tenant_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                current_version INTEGER NOT NULL CHECK (current_version > 0),
+                current_policy_digest TEXT NOT NULL,
+                updated_at_ns INTEGER NOT NULL CHECK (updated_at_ns >= 0),
+                PRIMARY KEY (tenant_id, workspace_id),
+                FOREIGN KEY (tenant_id, workspace_id)
+                    REFERENCES workspaces(tenant_id, workspace_id)
+                    ON DELETE CASCADE
+            ) STRICT;
+
+            CREATE TABLE IF NOT EXISTS workspace_disclosure_policy_seals (
+                tenant_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                version INTEGER NOT NULL CHECK (version > 0),
+                previous_record_digest TEXT NOT NULL,
+                record_digest TEXT NOT NULL,
+                receipt_commitment TEXT,
+                PRIMARY KEY (tenant_id, workspace_id, version),
+                FOREIGN KEY (tenant_id, workspace_id, version)
+                    REFERENCES workspace_disclosure_policies(
+                        tenant_id, workspace_id, version
+                    ) ON DELETE CASCADE
+            ) STRICT;
+
+            CREATE TABLE IF NOT EXISTS workspace_disclosure_policy_receipts (
+                tenant_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                request_digest TEXT NOT NULL,
+                result_version INTEGER NOT NULL CHECK (result_version > 0),
+                result_record_digest TEXT NOT NULL,
+                created_at_ns INTEGER NOT NULL CHECK (created_at_ns >= 0),
+                PRIMARY KEY (tenant_id, idempotency_key),
+                UNIQUE (tenant_id, workspace_id, result_version),
+                FOREIGN KEY (tenant_id, workspace_id)
+                    REFERENCES workspaces(tenant_id, workspace_id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY (tenant_id, workspace_id, result_version)
+                    REFERENCES workspace_disclosure_policies(
+                        tenant_id, workspace_id, version
+                    ) ON DELETE CASCADE
+            ) STRICT;
+
+            CREATE INDEX IF NOT EXISTS
+                workspace_disclosure_policies_current_idx
+            ON workspace_disclosure_policies(
+                tenant_id, workspace_id, version DESC
+            );
+
+            CREATE TRIGGER IF NOT EXISTS
+                workspace_disclosure_policy_immutable
+            BEFORE UPDATE ON workspace_disclosure_policies
+            BEGIN
+                SELECT RAISE(ABORT, 'workspace disclosure policy is immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS
+                workspace_disclosure_policy_no_direct_delete
+            BEFORE DELETE ON workspace_disclosure_policies
+            WHEN EXISTS (
+                SELECT 1 FROM workspaces
+                WHERE tenant_id = OLD.tenant_id
+                  AND workspace_id = OLD.workspace_id
+            )
+            BEGIN
+                SELECT RAISE(
+                    ABORT,
+                    'workspace disclosure policy history is immutable'
+                );
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS
+                workspace_disclosure_policy_head_no_direct_delete
+            BEFORE DELETE ON workspace_disclosure_policy_heads
+            WHEN EXISTS (
+                SELECT 1 FROM workspaces
+                WHERE tenant_id = OLD.tenant_id
+                  AND workspace_id = OLD.workspace_id
+            )
+            BEGIN
+                SELECT RAISE(
+                    ABORT,
+                    'workspace disclosure policy head is immutable'
+                );
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS
+                workspace_disclosure_policy_seal_immutable
+            BEFORE UPDATE ON workspace_disclosure_policy_seals
+            BEGIN
+                SELECT RAISE(
+                    ABORT,
+                    'workspace disclosure policy seal is immutable'
+                );
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS
+                workspace_disclosure_policy_seal_no_direct_delete
+            BEFORE DELETE ON workspace_disclosure_policy_seals
+            WHEN EXISTS (
+                SELECT 1 FROM workspaces
+                WHERE tenant_id = OLD.tenant_id
+                  AND workspace_id = OLD.workspace_id
+            )
+            BEGIN
+                SELECT RAISE(
+                    ABORT,
+                    'workspace disclosure policy seals are immutable'
+                );
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS
+                workspace_disclosure_policy_receipt_immutable
+            BEFORE UPDATE ON workspace_disclosure_policy_receipts
+            BEGIN
+                SELECT RAISE(
+                    ABORT,
+                    'workspace disclosure policy receipt is immutable'
+                );
+            END;
 
             CREATE TABLE IF NOT EXISTS fixtures (
                 tenant_id TEXT NOT NULL,
@@ -1160,8 +1475,396 @@ class SqliteSessionStore:
             END;
             """
         )
-        if current_version == 0:
-            self._connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+        if current_version < _SCHEMA_VERSION:
+            self._migrate_workspace_disclosure_policy_integrity()
+        self._install_workspace_disclosure_policy_integrity_triggers()
+
+    def _migrate_workspace_disclosure_policy_integrity(self) -> None:
+        """Anchor legacy policy rows and replace blob receipts atomically."""
+
+        connection = self._connection
+        cursor = connection.cursor()
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                "DROP TRIGGER IF EXISTS workspace_disclosure_policy_tip_guard"
+            )
+            columns = {
+                row["name"]
+                for row in cursor.execute("PRAGMA table_info(workspaces)")
+            }
+            if "disclosure_policy_root_digest" not in columns:
+                cursor.execute(
+                    "ALTER TABLE workspaces ADD COLUMN "
+                    "disclosure_policy_root_digest TEXT"
+                )
+            if "disclosure_policy_tip_version" not in columns:
+                cursor.execute(
+                    "ALTER TABLE workspaces ADD COLUMN "
+                    "disclosure_policy_tip_version INTEGER NOT NULL DEFAULT 0"
+                )
+            if "disclosure_policy_tip_record_digest" not in columns:
+                cursor.execute(
+                    "ALTER TABLE workspaces ADD COLUMN "
+                    "disclosure_policy_tip_record_digest TEXT"
+                )
+
+            legacy_receipts: dict[
+                tuple[str, str, int],
+                _LegacyWorkspaceDisclosurePolicyReceipt,
+            ] = {}
+            legacy_receipt_rows = cursor.execute(
+                """
+                SELECT tenant_id, idempotency_key, request_digest,
+                       response_json, created_at_ns
+                FROM idempotency_keys
+                WHERE operation = 'set_workspace_disclosure_policy'
+                ORDER BY tenant_id, idempotency_key
+                """
+            ).fetchall()
+            for receipt_row in legacy_receipt_rows:
+                try:
+                    payload = json.loads(receipt_row["response_json"])
+                    if not isinstance(payload, Mapping):
+                        raise TypeError
+                    record = self._workspace_disclosure_policy_from_payload(payload)
+                    tenant_id = _bounded_identifier(
+                        receipt_row["tenant_id"], "tenant_id"
+                    )
+                    if tenant_id != record.tenant_id:
+                        raise ValueError
+                    idempotency_key = _bounded_identifier(
+                        receipt_row["idempotency_key"], "idempotency_key"
+                    )
+                    stored_request_digest = _digest(
+                        receipt_row["request_digest"], "request_digest"
+                    )
+                    legacy_request = {
+                        "workspace_id": record.workspace_id,
+                        "policy": workspace_disclosure_policy_dict(record.policy),
+                        "actor_id": record.actor_id,
+                        "expected_version": record.version - 1,
+                    }
+                    if stored_request_digest != canonical_json_sha256(
+                        legacy_request
+                    ):
+                        raise ValueError
+                    request_digest = canonical_json_sha256(
+                        {
+                            "tenant_id": record.tenant_id,
+                            "project_id": record.project_id,
+                            **legacy_request,
+                        }
+                    )
+                    created_at_ns = receipt_row["created_at_ns"]
+                    if type(created_at_ns) is not int or created_at_ns < 0:
+                        raise TypeError
+                    commitment = (
+                        _workspace_disclosure_policy_receipt_commitment(
+                            tenant_id=record.tenant_id,
+                            project_id=record.project_id,
+                            workspace_id=record.workspace_id,
+                            idempotency_key=idempotency_key,
+                            request_digest=request_digest,
+                            result_version=record.version,
+                            created_at_ns=created_at_ns,
+                        )
+                    )
+                except (
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                    json.JSONDecodeError,
+                ) as error:
+                    raise SessionStoreError(
+                        "stored workspace disclosure policy receipt is invalid"
+                    ) from error
+                record_key = (
+                    record.tenant_id,
+                    record.workspace_id,
+                    record.version,
+                )
+                if record_key in legacy_receipts:
+                    raise SessionStoreError(
+                        "stored workspace disclosure policy receipt is invalid"
+                    )
+                workspace_exists = cursor.execute(
+                    """
+                    SELECT 1 FROM workspaces
+                    WHERE tenant_id = ? AND workspace_id = ?
+                    """,
+                    (record.tenant_id, record.workspace_id),
+                ).fetchone()
+                if workspace_exists is None:
+                    cursor.execute(
+                        """
+                        DELETE FROM idempotency_keys
+                        WHERE tenant_id = ?
+                          AND operation = 'set_workspace_disclosure_policy'
+                          AND idempotency_key = ?
+                        """,
+                        (record.tenant_id, idempotency_key),
+                    )
+                    continue
+                legacy_receipts[record_key] = (
+                    _LegacyWorkspaceDisclosurePolicyReceipt(
+                        record=record,
+                        idempotency_key=idempotency_key,
+                        request_digest=request_digest,
+                        commitment=commitment,
+                        created_at_ns=created_at_ns,
+                    )
+                )
+            workspaces = cursor.execute(
+                """
+                SELECT tenant_id, project_id, workspace_id, created_at_ns
+                FROM workspaces
+                ORDER BY tenant_id, workspace_id
+                """
+            ).fetchall()
+            for workspace_row in workspaces:
+                tenant_id = _bounded_identifier(
+                    workspace_row["tenant_id"], "tenant_id"
+                )
+                project_id = _bounded_identifier(
+                    workspace_row["project_id"], "project_id"
+                )
+                workspace_id = _bounded_identifier(
+                    workspace_row["workspace_id"], "workspace_id"
+                )
+                workspace_created_at_ns = workspace_row["created_at_ns"]
+                root_digest = _workspace_disclosure_policy_root_digest(
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    workspace_id=workspace_id,
+                    workspace_created_at_ns=workspace_created_at_ns,
+                )
+                previous_digest = root_digest
+                current_record: WorkspaceDisclosurePolicyRecord | None = None
+                current_record_digest = root_digest
+                history_rows = cursor.execute(
+                    """
+                    SELECT policy.*, workspaces.project_id
+                    FROM workspace_disclosure_policies AS policy
+                    JOIN workspaces
+                      ON workspaces.tenant_id = policy.tenant_id
+                     AND workspaces.workspace_id = policy.workspace_id
+                    WHERE policy.tenant_id = ? AND policy.workspace_id = ?
+                    ORDER BY policy.version
+                    """,
+                    (tenant_id, workspace_id),
+                ).fetchall()
+                for expected_version, history_row in enumerate(
+                    history_rows,
+                    start=1,
+                ):
+                    if expected_version > _MAX_DISCLOSURE_POLICY_REVISIONS:
+                        raise SessionStoreError(
+                            "stored workspace disclosure policy history is invalid"
+                        )
+                    record = self._workspace_disclosure_policy_row(history_row)
+                    if (
+                        record.tenant_id != tenant_id
+                        or record.project_id != project_id
+                        or record.workspace_id != workspace_id
+                        or record.version != expected_version
+                    ):
+                        raise SessionStoreError(
+                            "stored workspace disclosure policy history is invalid"
+                        )
+                    receipt = legacy_receipts.pop(
+                        (tenant_id, workspace_id, expected_version),
+                        None,
+                    )
+                    if receipt is not None and receipt.record != record:
+                        raise SessionStoreError(
+                            "stored workspace disclosure policy receipt is invalid"
+                        )
+                    receipt_commitment = (
+                        None if receipt is None else receipt.commitment
+                    )
+                    record_digest = _workspace_disclosure_policy_record_digest(
+                        record,
+                        previous_record_digest=previous_digest,
+                        receipt_commitment=receipt_commitment,
+                    )
+                    existing_seal = cursor.execute(
+                        """
+                        SELECT previous_record_digest, record_digest,
+                               receipt_commitment
+                        FROM workspace_disclosure_policy_seals
+                        WHERE tenant_id = ? AND workspace_id = ? AND version = ?
+                        """,
+                        (tenant_id, workspace_id, expected_version),
+                    ).fetchone()
+                    if existing_seal is None:
+                        cursor.execute(
+                            """
+                            INSERT INTO workspace_disclosure_policy_seals(
+                                tenant_id, workspace_id, version,
+                                previous_record_digest, record_digest,
+                                receipt_commitment
+                            ) VALUES (?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                tenant_id,
+                                workspace_id,
+                                expected_version,
+                                previous_digest,
+                                record_digest,
+                                receipt_commitment,
+                            ),
+                        )
+                    elif (
+                        existing_seal["previous_record_digest"] != previous_digest
+                        or existing_seal["record_digest"] != record_digest
+                        or existing_seal["receipt_commitment"]
+                        != receipt_commitment
+                    ):
+                        raise SessionStoreError(
+                            "stored workspace disclosure policy seal is invalid"
+                        )
+                    if receipt is not None:
+                        cursor.execute(
+                            """
+                            INSERT INTO workspace_disclosure_policy_receipts(
+                                tenant_id, project_id, workspace_id,
+                                idempotency_key, request_digest,
+                                result_version, result_record_digest,
+                                created_at_ns
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                record.tenant_id,
+                                record.project_id,
+                                record.workspace_id,
+                                receipt.idempotency_key,
+                                receipt.request_digest,
+                                record.version,
+                                record_digest,
+                                receipt.created_at_ns,
+                            ),
+                        )
+                        cursor.execute(
+                            """
+                            DELETE FROM idempotency_keys
+                            WHERE tenant_id = ?
+                              AND operation =
+                                  'set_workspace_disclosure_policy'
+                              AND idempotency_key = ?
+                            """,
+                            (record.tenant_id, receipt.idempotency_key),
+                        )
+                    previous_digest = record_digest
+                    current_record_digest = record_digest
+                    current_record = record
+
+                head = cursor.execute(
+                    """
+                    SELECT * FROM workspace_disclosure_policy_heads
+                    WHERE tenant_id = ? AND workspace_id = ?
+                    """,
+                    (tenant_id, workspace_id),
+                ).fetchone()
+                if current_record is None:
+                    if head is not None:
+                        raise SessionStoreError(
+                            "stored workspace disclosure policy history is invalid"
+                        )
+                    tip_version = 0
+                else:
+                    if (
+                        head is None
+                        or head["current_version"] != current_record.version
+                        or head["current_policy_digest"]
+                        != current_record.policy_digest
+                        or head["updated_at_ns"] != current_record.created_at_ns
+                    ):
+                        raise SessionStoreError(
+                            "stored workspace disclosure policy head is invalid"
+                        )
+                    tip_version = current_record.version
+                cursor.execute(
+                    """
+                    UPDATE workspaces
+                    SET disclosure_policy_root_digest = ?,
+                        disclosure_policy_tip_version = ?,
+                        disclosure_policy_tip_record_digest = ?
+                    WHERE tenant_id = ? AND workspace_id = ?
+                    """,
+                    (
+                        root_digest,
+                        tip_version,
+                        current_record_digest,
+                        tenant_id,
+                        workspace_id,
+                    ),
+                )
+
+            if legacy_receipts:
+                raise SessionStoreError(
+                    "stored workspace disclosure policy receipt is invalid"
+                )
+            if cursor.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise SessionStoreError(
+                    "session-store schema migration violates foreign-key integrity"
+                )
+            cursor.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+
+    def _install_workspace_disclosure_policy_integrity_triggers(self) -> None:
+        self._connection.executescript(
+            """
+            CREATE TRIGGER IF NOT EXISTS
+                workspace_disclosure_policy_tip_guard
+            BEFORE UPDATE OF
+                disclosure_policy_root_digest,
+                disclosure_policy_tip_version,
+                disclosure_policy_tip_record_digest
+            ON workspaces
+            WHEN NEW.disclosure_policy_root_digest
+                    IS NOT OLD.disclosure_policy_root_digest
+                 OR NEW.disclosure_policy_tip_version
+                    != OLD.disclosure_policy_tip_version + 1
+                 OR NOT EXISTS (
+                    SELECT 1
+                    FROM workspace_disclosure_policy_seals AS seal
+                    WHERE seal.tenant_id = NEW.tenant_id
+                      AND seal.workspace_id = NEW.workspace_id
+                      AND seal.version = NEW.disclosure_policy_tip_version
+                      AND seal.previous_record_digest =
+                          OLD.disclosure_policy_tip_record_digest
+                      AND seal.record_digest =
+                          NEW.disclosure_policy_tip_record_digest
+                 )
+            BEGIN
+                SELECT RAISE(
+                    ABORT,
+                    'workspace disclosure policy tip transition is invalid'
+                );
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS
+                workspace_disclosure_policy_receipt_no_direct_delete
+            BEFORE DELETE ON workspace_disclosure_policy_receipts
+            WHEN EXISTS (
+                SELECT 1 FROM workspaces
+                WHERE tenant_id = OLD.tenant_id
+                  AND workspace_id = OLD.workspace_id
+            )
+            BEGIN
+                SELECT RAISE(
+                    ABORT,
+                    'workspace disclosure policy receipt is immutable'
+                );
+            END;
+            """
+        )
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -1411,6 +2114,206 @@ class SqliteSessionStore:
             label=str(payload["label"]),
             metadata=dict(payload.get("metadata") or {}),
             created_at_ns=int(payload["created_at_ns"]),
+        )
+
+    @staticmethod
+    def _workspace_disclosure_policy_from_payload(
+        payload: Mapping[str, Any],
+    ) -> WorkspaceDisclosurePolicyRecord:
+        raw_policy = payload.get("policy")
+        if not isinstance(raw_policy, Mapping):
+            raise SessionStoreError(
+                "stored workspace disclosure policy response is invalid"
+            )
+        try:
+            raw_version = payload["version"]
+            raw_created_at_ns = payload["created_at_ns"]
+            if type(raw_version) is not int or type(raw_created_at_ns) is not int:
+                raise TypeError
+            if set(raw_policy) == {"mode", "transports"}:
+                raw_policy = {
+                    "policy_version": WORKSPACE_DISCLOSURE_POLICY_VERSION,
+                    "mode": raw_policy["mode"],
+                    "transports": raw_policy["transports"],
+                }
+            policy = workspace_disclosure_policy_from_dict(raw_policy)
+            record = WorkspaceDisclosurePolicyRecord(
+                tenant_id=_bounded_identifier(payload.get("tenant_id"), "tenant_id"),
+                project_id=_bounded_identifier(
+                    payload.get("project_id"), "project_id"
+                ),
+                workspace_id=_bounded_identifier(
+                    payload.get("workspace_id"), "workspace_id"
+                ),
+                version=raw_version,
+                policy=policy,
+                policy_digest=_digest(
+                    payload.get("policy_digest"), "policy_digest"
+                ),
+                actor_id=_bounded_identifier(payload.get("actor_id"), "actor_id"),
+                created_at_ns=raw_created_at_ns,
+                explicit=payload.get("explicit") is True,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise SessionStoreError(
+                "stored workspace disclosure policy response is invalid"
+            ) from error
+        if (
+            type(record.version) is not int
+            or record.version < 1
+            or record.version > _MAX_SQLITE_INTEGER
+            or type(record.created_at_ns) is not int
+            or record.created_at_ns < 0
+            or not record.explicit
+            or record.policy_digest != policy.digest
+        ):
+            raise SessionStoreError(
+                "stored workspace disclosure policy response is invalid"
+            )
+        return record
+
+    @classmethod
+    def _workspace_disclosure_policy_receipt(
+        cls,
+        cursor: sqlite3.Cursor,
+        *,
+        tenant_id: str,
+        project_id: str,
+        workspace_id: str,
+        idempotency_key: str | None,
+        request_digest: str,
+        expected_version: int,
+        policy: WorkspaceDisclosurePolicy,
+        actor_id: str,
+    ) -> WorkspaceDisclosurePolicyRecord | None:
+        """Resolve an idempotent replay from its exact durable revision."""
+
+        if idempotency_key is None:
+            return None
+        key = _bounded_identifier(idempotency_key, "idempotency_key")
+        receipt = cursor.execute(
+            """
+            SELECT * FROM workspace_disclosure_policy_receipts
+            WHERE tenant_id = ? AND idempotency_key = ?
+            """,
+            (tenant_id, key),
+        ).fetchone()
+        if receipt is None:
+            return None
+        try:
+            stored_request_digest = _digest(
+                receipt["request_digest"], "request_digest"
+            )
+            receipt_project_id = _bounded_identifier(
+                receipt["project_id"], "project_id"
+            )
+            receipt_workspace_id = _bounded_identifier(
+                receipt["workspace_id"], "workspace_id"
+            )
+            result_version = receipt["result_version"]
+            result_record_digest = _digest(
+                receipt["result_record_digest"], "result_record_digest"
+            )
+            created_at_ns = receipt["created_at_ns"]
+            if (
+                type(result_version) is not int
+                or not 1 <= result_version <= _MAX_DISCLOSURE_POLICY_REVISIONS
+                or type(created_at_ns) is not int
+                or created_at_ns < 0
+            ):
+                raise ValueError
+        except (KeyError, TypeError, ValueError) as error:
+            raise SessionStoreError(
+                "stored workspace disclosure policy receipt is invalid"
+            ) from error
+        if stored_request_digest != request_digest:
+            raise IdempotencyConflict(
+                "idempotency key was already used for a different request"
+            )
+        if (
+            receipt_project_id != project_id
+            or receipt_workspace_id != workspace_id
+            or result_version != expected_version + 1
+        ):
+            raise SessionStoreError(
+                "stored workspace disclosure policy receipt is invalid"
+            )
+        row = cursor.execute(
+            """
+            SELECT policy.*, workspaces.project_id,
+                   seal.record_digest AS sealed_record_digest
+            FROM workspace_disclosure_policies AS policy
+            JOIN workspaces
+              ON workspaces.tenant_id = policy.tenant_id
+             AND workspaces.workspace_id = policy.workspace_id
+            JOIN workspace_disclosure_policy_seals AS seal
+              ON seal.tenant_id = policy.tenant_id
+             AND seal.workspace_id = policy.workspace_id
+             AND seal.version = policy.version
+            WHERE policy.tenant_id = ? AND policy.workspace_id = ?
+              AND policy.version = ?
+            """,
+            (tenant_id, workspace_id, result_version),
+        ).fetchone()
+        if row is None:
+            raise SessionStoreError(
+                "stored workspace disclosure policy receipt is invalid"
+            )
+        record = cls._workspace_disclosure_policy_row(row)
+        try:
+            sealed_record_digest = _digest(
+                row["sealed_record_digest"], "sealed_record_digest"
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise SessionStoreError(
+                "stored workspace disclosure policy receipt is invalid"
+            ) from error
+        if (
+            record.tenant_id != tenant_id
+            or record.project_id != project_id
+            or record.workspace_id != workspace_id
+            or record.version != result_version
+            or record.policy != policy
+            or record.actor_id != actor_id
+            or sealed_record_digest != result_record_digest
+        ):
+            raise SessionStoreError(
+                "stored workspace disclosure policy receipt is invalid"
+            )
+        return record
+
+    @staticmethod
+    def _record_workspace_disclosure_policy_receipt(
+        cursor: sqlite3.Cursor,
+        *,
+        tenant_id: str,
+        project_id: str,
+        workspace_id: str,
+        idempotency_key: str | None,
+        request_digest: str,
+        result: WorkspaceDisclosurePolicyRecord,
+        result_record_digest: str,
+    ) -> None:
+        if idempotency_key is None:
+            return
+        cursor.execute(
+            """
+            INSERT INTO workspace_disclosure_policy_receipts(
+                tenant_id, project_id, workspace_id, idempotency_key,
+                request_digest, result_version, result_record_digest,
+                created_at_ns
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                tenant_id,
+                project_id,
+                workspace_id,
+                _bounded_identifier(idempotency_key, "idempotency_key"),
+                _digest(request_digest, "request_digest"),
+                result.version,
+                _digest(result_record_digest, "result_record_digest"),
+                result.created_at_ns,
+            ),
         )
 
     @staticmethod
@@ -1725,13 +2628,22 @@ class SqliteSessionStore:
                 "workspace_id",
             )
             created_at_ns = time.time_ns()
+            policy_root_digest = _workspace_disclosure_policy_root_digest(
+                tenant_id=tenant,
+                project_id=project,
+                workspace_id=selected_id,
+                workspace_created_at_ns=created_at_ns,
+            )
             try:
                 cursor.execute(
                     """
                     INSERT INTO workspaces(
                         tenant_id, workspace_id, project_id, label,
-                        metadata_json, created_at_ns
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        metadata_json, created_at_ns,
+                        disclosure_policy_root_digest,
+                        disclosure_policy_tip_version,
+                        disclosure_policy_tip_record_digest
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
                     """,
                     (
                         tenant,
@@ -1740,6 +2652,8 @@ class SqliteSessionStore:
                         workspace_label,
                         metadata_json,
                         created_at_ns,
+                        policy_root_digest,
+                        policy_root_digest,
                     ),
                 )
             except sqlite3.IntegrityError as error:
@@ -1846,6 +2760,601 @@ class SqliteSessionStore:
                 (tenant, project, page_limit, page_offset),
             ).fetchall()
             return tuple(self._workspace_row(row) for row in rows)
+
+    @staticmethod
+    def _workspace_disclosure_policy_row(
+        row: sqlite3.Row,
+    ) -> WorkspaceDisclosurePolicyRecord:
+        try:
+            version = row["version"]
+            created_at_ns = row["created_at_ns"]
+            if (
+                type(version) is not int
+                or not 1 <= version <= _MAX_SQLITE_INTEGER
+                or type(created_at_ns) is not int
+                or created_at_ns < 0
+            ):
+                raise ValueError
+            policy = _stored_workspace_disclosure_policy(
+                row["policy_json"],
+                row["policy_digest"],
+            )
+            return WorkspaceDisclosurePolicyRecord(
+                tenant_id=_bounded_identifier(row["tenant_id"], "tenant_id"),
+                project_id=_bounded_identifier(row["project_id"], "project_id"),
+                workspace_id=_bounded_identifier(
+                    row["workspace_id"], "workspace_id"
+                ),
+                version=version,
+                policy=policy,
+                policy_digest=_digest(row["policy_digest"], "policy_digest"),
+                actor_id=_bounded_identifier(row["actor_id"], "actor_id"),
+                created_at_ns=created_at_ns,
+                explicit=True,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise SessionStoreError(
+                "stored workspace disclosure policy record is invalid"
+            ) from error
+
+    @classmethod
+    def _workspace_disclosure_policy_state(
+        cls,
+        cursor: sqlite3.Cursor,
+        tenant_id: str,
+        workspace_id: str,
+    ) -> _WorkspaceDisclosurePolicyState:
+        """Validate the workspace-rooted tip, head, seals, and full history.
+
+        The SQLite catalog/schema is the trusted single-host authority. These
+        redundant values detect torn or independently corrupted state; no
+        in-database construction can detect a privileged writer coherently
+        replacing every anchor with one older, internally valid snapshot.
+        """
+
+        workspace_row = cursor.execute(
+            """
+            SELECT tenant_id, project_id, workspace_id, created_at_ns,
+                   disclosure_policy_root_digest,
+                   disclosure_policy_tip_version,
+                   disclosure_policy_tip_record_digest
+            FROM workspaces
+            WHERE tenant_id = ? AND workspace_id = ?
+            """,
+            (tenant_id, workspace_id),
+        ).fetchone()
+        if workspace_row is None:
+            raise KeyError(workspace_id)
+        try:
+            project_id = _bounded_identifier(
+                workspace_row["project_id"], "project_id"
+            )
+            stored_root_digest = _digest(
+                workspace_row["disclosure_policy_root_digest"],
+                "disclosure_policy_root_digest",
+            )
+            tip_record_digest = _digest(
+                workspace_row["disclosure_policy_tip_record_digest"],
+                "disclosure_policy_tip_record_digest",
+            )
+            tip_version = workspace_row["disclosure_policy_tip_version"]
+            if (
+                type(tip_version) is not int
+                or not 0 <= tip_version <= _MAX_DISCLOSURE_POLICY_REVISIONS
+            ):
+                raise ValueError
+            root_digest = _workspace_disclosure_policy_root_digest(
+                tenant_id=tenant_id,
+                project_id=project_id,
+                workspace_id=workspace_id,
+                workspace_created_at_ns=workspace_row["created_at_ns"],
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise SessionStoreError(
+                "stored workspace disclosure policy root is invalid"
+            ) from error
+        if stored_root_digest != root_digest:
+            raise SessionStoreError(
+                "stored workspace disclosure policy root is invalid"
+            )
+
+        head = cursor.execute(
+            """
+            SELECT * FROM workspace_disclosure_policy_heads
+            WHERE tenant_id = ? AND workspace_id = ?
+            """,
+            (tenant_id, workspace_id),
+        ).fetchone()
+        history_cursor = cursor.connection.execute(
+            """
+            SELECT policy.*, workspaces.project_id,
+                   seal.previous_record_digest AS sealed_previous_record_digest,
+                   seal.record_digest AS sealed_record_digest,
+                   seal.receipt_commitment AS sealed_receipt_commitment,
+                   receipt.project_id AS receipt_project_id,
+                   receipt.workspace_id AS receipt_workspace_id,
+                   receipt.idempotency_key AS receipt_idempotency_key,
+                   receipt.request_digest AS receipt_request_digest,
+                   receipt.result_version AS receipt_result_version,
+                   receipt.result_record_digest AS receipt_result_record_digest,
+                   receipt.created_at_ns AS receipt_created_at_ns
+            FROM workspace_disclosure_policies AS policy
+            JOIN workspaces
+              ON workspaces.tenant_id = policy.tenant_id
+             AND workspaces.workspace_id = policy.workspace_id
+            LEFT JOIN workspace_disclosure_policy_seals AS seal
+              ON seal.tenant_id = policy.tenant_id
+             AND seal.workspace_id = policy.workspace_id
+             AND seal.version = policy.version
+            LEFT JOIN workspace_disclosure_policy_receipts AS receipt
+              ON receipt.tenant_id = policy.tenant_id
+             AND receipt.workspace_id = policy.workspace_id
+             AND receipt.result_version = policy.version
+            WHERE policy.tenant_id = ? AND policy.workspace_id = ?
+            ORDER BY policy.version
+            """,
+            (tenant_id, workspace_id),
+        )
+        current_record: WorkspaceDisclosurePolicyRecord | None = None
+        history_records: list[WorkspaceDisclosurePolicyRecord] = []
+        history_count = 0
+        previous_record_digest = root_digest
+        try:
+            for expected_version, row in enumerate(history_cursor, start=1):
+                if expected_version > _MAX_DISCLOSURE_POLICY_REVISIONS:
+                    raise SessionStoreError(
+                        "stored workspace disclosure policy history is invalid"
+                    )
+                record = cls._workspace_disclosure_policy_row(row)
+                if (
+                    record.tenant_id != tenant_id
+                    or record.project_id != project_id
+                    or record.workspace_id != workspace_id
+                    or record.version != expected_version
+                ):
+                    raise SessionStoreError(
+                        "stored workspace disclosure policy history is invalid"
+                    )
+                try:
+                    sealed_previous = _digest(
+                        row["sealed_previous_record_digest"],
+                        "sealed_previous_record_digest",
+                    )
+                    sealed_record = _digest(
+                        row["sealed_record_digest"],
+                        "sealed_record_digest",
+                    )
+                except (KeyError, TypeError, ValueError) as error:
+                    raise SessionStoreError(
+                        "stored workspace disclosure policy seal is invalid"
+                    ) from error
+                raw_receipt_commitment = row["sealed_receipt_commitment"]
+                if raw_receipt_commitment is None:
+                    receipt_commitment = None
+                    if any(
+                        row[field] is not None
+                        for field in (
+                            "receipt_project_id",
+                            "receipt_workspace_id",
+                            "receipt_idempotency_key",
+                            "receipt_request_digest",
+                            "receipt_result_version",
+                            "receipt_result_record_digest",
+                            "receipt_created_at_ns",
+                        )
+                    ):
+                        raise SessionStoreError(
+                            "stored workspace disclosure policy receipt is invalid"
+                        )
+                else:
+                    try:
+                        receipt_commitment = _digest(
+                            raw_receipt_commitment,
+                            "sealed_receipt_commitment",
+                        )
+                        receipt_project_id = _bounded_identifier(
+                            row["receipt_project_id"], "project_id"
+                        )
+                        receipt_workspace_id = _bounded_identifier(
+                            row["receipt_workspace_id"], "workspace_id"
+                        )
+                        receipt_idempotency_key = _bounded_identifier(
+                            row["receipt_idempotency_key"], "idempotency_key"
+                        )
+                        receipt_request_digest = _digest(
+                            row["receipt_request_digest"], "request_digest"
+                        )
+                        receipt_result_version = row["receipt_result_version"]
+                        receipt_result_record_digest = _digest(
+                            row["receipt_result_record_digest"],
+                            "result_record_digest",
+                        )
+                        receipt_created_at_ns = row["receipt_created_at_ns"]
+                        if (
+                            type(receipt_result_version) is not int
+                            or type(receipt_created_at_ns) is not int
+                            or receipt_created_at_ns < 0
+                        ):
+                            raise TypeError
+                        expected_receipt_commitment = (
+                            _workspace_disclosure_policy_receipt_commitment(
+                                tenant_id=tenant_id,
+                                project_id=receipt_project_id,
+                                workspace_id=receipt_workspace_id,
+                                idempotency_key=receipt_idempotency_key,
+                                request_digest=receipt_request_digest,
+                                result_version=receipt_result_version,
+                                created_at_ns=receipt_created_at_ns,
+                            )
+                        )
+                    except (KeyError, TypeError, ValueError) as error:
+                        raise SessionStoreError(
+                            "stored workspace disclosure policy receipt is invalid"
+                        ) from error
+                    if (
+                        receipt_project_id != project_id
+                        or receipt_workspace_id != workspace_id
+                        or receipt_result_version != record.version
+                        or expected_receipt_commitment != receipt_commitment
+                    ):
+                        raise SessionStoreError(
+                            "stored workspace disclosure policy receipt is invalid"
+                        )
+                expected_record_digest = (
+                    _workspace_disclosure_policy_record_digest(
+                        record,
+                        previous_record_digest=previous_record_digest,
+                        receipt_commitment=receipt_commitment,
+                    )
+                )
+                if (
+                    sealed_previous != previous_record_digest
+                    or sealed_record != expected_record_digest
+                ):
+                    raise SessionStoreError(
+                        "stored workspace disclosure policy seal is invalid"
+                    )
+                if (
+                    receipt_commitment is not None
+                    and receipt_result_record_digest != sealed_record
+                ):
+                    raise SessionStoreError(
+                        "stored workspace disclosure policy receipt is invalid"
+                    )
+                history_count = expected_version
+                current_record = record
+                history_records.append(record)
+                previous_record_digest = sealed_record
+        finally:
+            history_cursor.close()
+        if (
+            history_count != tip_version
+            or previous_record_digest != tip_record_digest
+        ):
+            raise SessionStoreError(
+                "stored workspace disclosure policy tip is invalid"
+            )
+        if head is None:
+            if history_count:
+                raise SessionStoreError(
+                    "stored workspace disclosure policy history is invalid"
+                )
+            return _WorkspaceDisclosurePolicyState(None, root_digest, ())
+        try:
+            current_version = head["current_version"]
+            updated_at_ns = head["updated_at_ns"]
+            current_digest = _digest(
+                head["current_policy_digest"],
+                "current_policy_digest",
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise SessionStoreError(
+                "stored workspace disclosure policy head is invalid"
+            ) from error
+        if (
+            type(current_version) is not int
+            or not 1 <= current_version <= _MAX_DISCLOSURE_POLICY_REVISIONS
+            or type(updated_at_ns) is not int
+            or updated_at_ns < 0
+            or history_count != current_version
+            or current_record is None
+        ):
+            raise SessionStoreError(
+                "stored workspace disclosure policy history is invalid"
+            )
+        if (
+            current_record.policy_digest != current_digest
+            or current_record.created_at_ns != updated_at_ns
+        ):
+            raise SessionStoreError(
+                "stored workspace disclosure policy head is invalid"
+            )
+        return _WorkspaceDisclosurePolicyState(
+            current_record,
+            previous_record_digest,
+            tuple(history_records),
+        )
+
+    def get_workspace_disclosure_policy(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        *,
+        deadline_ns: int | None = None,
+    ) -> WorkspaceDisclosurePolicyRecord:
+        """Return the current policy or an explicit synthetic disabled revision 0."""
+
+        tenant = _bounded_identifier(tenant_id, "tenant_id")
+        workspace = _bounded_identifier(workspace_id, "workspace_id")
+        with self._read_cursor(deadline_ns=deadline_ns) as cursor:
+            workspace_row = self._require_workspace(cursor, tenant, workspace)
+            state = self._workspace_disclosure_policy_state(
+                cursor,
+                tenant,
+                workspace,
+            )
+            current = state.current
+            if current is not None:
+                return current
+            policy = WorkspaceDisclosurePolicy.disabled()
+            return WorkspaceDisclosurePolicyRecord(
+                tenant_id=tenant,
+                project_id=_bounded_identifier(
+                    workspace_row["project_id"], "project_id"
+                ),
+                workspace_id=workspace,
+                version=0,
+                policy=policy,
+                policy_digest=policy.digest,
+                actor_id="core-default",
+                created_at_ns=0,
+                explicit=False,
+            )
+
+    def list_workspace_disclosure_policy_history(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        *,
+        limit: int = _DEFAULT_PAGE_LIMIT,
+        offset: int = 0,
+        deadline_ns: int | None = None,
+    ) -> tuple[WorkspaceDisclosurePolicyRecord, ...]:
+        """Return append-only explicit policy revisions, newest first."""
+
+        tenant = _bounded_identifier(tenant_id, "tenant_id")
+        workspace = _bounded_identifier(workspace_id, "workspace_id")
+        page_limit, page_offset = _page_bounds(limit, offset)
+        with self._read_cursor(deadline_ns=deadline_ns) as cursor:
+            self._require_workspace(cursor, tenant, workspace)
+            state = self._workspace_disclosure_policy_state(
+                cursor,
+                tenant,
+                workspace,
+            )
+            newest_first = tuple(reversed(state.history))
+            return newest_first[page_offset : page_offset + page_limit]
+
+    def set_workspace_disclosure_policy(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        policy: WorkspaceDisclosurePolicy,
+        *,
+        actor_id: str,
+        expected_version: int,
+        idempotency_key: str | None = None,
+        deadline_ns: int | None = None,
+    ) -> WorkspaceDisclosurePolicyRecord:
+        """Append one policy revision using mandatory optimistic concurrency."""
+
+        tenant = _bounded_identifier(tenant_id, "tenant_id")
+        workspace = _bounded_identifier(workspace_id, "workspace_id")
+        actor = _bounded_identifier(actor_id, "actor_id")
+        if (
+            type(expected_version) is not int
+            or not 0 <= expected_version <= _MAX_SQLITE_INTEGER
+        ):
+            raise ValueError(
+                "expected_version must be an integer between 0 and the SQLite maximum"
+            )
+        policy_json, policy_digest = _workspace_disclosure_policy_json(policy)
+        with self._transaction(deadline_ns=deadline_ns) as cursor:
+            workspace_row = self._require_workspace(cursor, tenant, workspace)
+            project_id = _bounded_identifier(
+                workspace_row["project_id"], "project_id"
+            )
+            request = {
+                "tenant_id": tenant,
+                "project_id": project_id,
+                "workspace_id": workspace,
+                "policy": workspace_disclosure_policy_dict(policy),
+                "actor_id": actor,
+                "expected_version": expected_version,
+            }
+            request_digest = canonical_json_sha256(request)
+            state = self._workspace_disclosure_policy_state(
+                cursor,
+                tenant,
+                workspace,
+            )
+            current = state.current
+            prior = self._workspace_disclosure_policy_receipt(
+                cursor,
+                tenant_id=tenant,
+                project_id=project_id,
+                workspace_id=workspace,
+                idempotency_key=idempotency_key,
+                request_digest=request_digest,
+                expected_version=expected_version,
+                policy=policy,
+                actor_id=actor,
+            )
+            if prior is not None:
+                return prior
+            current_version = 0 if current is None else current.version
+            if current_version != expected_version:
+                raise StaleWorkspaceDisclosurePolicyVersion(
+                    "workspace disclosure policy version conflict"
+                )
+            if current is not None and current.policy_digest == policy_digest:
+                raise SessionConflictError(
+                    "workspace disclosure policy is unchanged"
+                )
+            version = current_version + 1
+            if version > _MAX_DISCLOSURE_POLICY_REVISIONS:
+                raise SessionConflictError(
+                    "workspace disclosure policy version is exhausted"
+                )
+            created_at_ns = time.time_ns()
+            result = WorkspaceDisclosurePolicyRecord(
+                tenant_id=tenant,
+                project_id=project_id,
+                workspace_id=workspace,
+                version=version,
+                policy=policy,
+                policy_digest=policy_digest,
+                actor_id=actor,
+                created_at_ns=created_at_ns,
+                explicit=True,
+            )
+            receipt_commitment = (
+                None
+                if idempotency_key is None
+                else _workspace_disclosure_policy_receipt_commitment(
+                    tenant_id=tenant,
+                    project_id=project_id,
+                    workspace_id=workspace,
+                    idempotency_key=idempotency_key,
+                    request_digest=request_digest,
+                    result_version=version,
+                    created_at_ns=result.created_at_ns,
+                )
+            )
+            record_digest = _workspace_disclosure_policy_record_digest(
+                result,
+                previous_record_digest=state.record_digest,
+                receipt_commitment=receipt_commitment,
+            )
+            try:
+                cursor.execute(
+                    """
+                    INSERT INTO workspace_disclosure_policies(
+                        tenant_id, workspace_id, version, policy_json,
+                        policy_digest, actor_id, created_at_ns
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        tenant,
+                        workspace,
+                        version,
+                        policy_json,
+                        policy_digest,
+                        actor,
+                        created_at_ns,
+                    ),
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO workspace_disclosure_policy_seals(
+                        tenant_id, workspace_id, version,
+                        previous_record_digest, record_digest,
+                        receipt_commitment
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        tenant,
+                        workspace,
+                        version,
+                        state.record_digest,
+                        record_digest,
+                        receipt_commitment,
+                    ),
+                )
+                if current is None:
+                    cursor.execute(
+                        """
+                        INSERT INTO workspace_disclosure_policy_heads(
+                            tenant_id, workspace_id, current_version,
+                            current_policy_digest, updated_at_ns
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            tenant,
+                            workspace,
+                            version,
+                            policy_digest,
+                            created_at_ns,
+                        ),
+                    )
+                else:
+                    updated = cursor.execute(
+                        """
+                        UPDATE workspace_disclosure_policy_heads
+                        SET current_version = ?, current_policy_digest = ?,
+                            updated_at_ns = ?
+                        WHERE tenant_id = ? AND workspace_id = ?
+                          AND current_version = ?
+                          AND current_policy_digest = ?
+                        """,
+                        (
+                            version,
+                            policy_digest,
+                            created_at_ns,
+                            tenant,
+                            workspace,
+                            current.version,
+                            current.policy_digest,
+                        ),
+                    )
+                    if updated.rowcount != 1:
+                        raise SessionConflictError(
+                            "workspace disclosure policy head changed concurrently"
+                        )
+                tip_updated = cursor.execute(
+                    """
+                    UPDATE workspaces
+                    SET disclosure_policy_tip_version = ?,
+                        disclosure_policy_tip_record_digest = ?
+                    WHERE tenant_id = ? AND workspace_id = ?
+                      AND disclosure_policy_root_digest = ?
+                      AND disclosure_policy_tip_version = ?
+                      AND disclosure_policy_tip_record_digest = ?
+                    """,
+                    (
+                        version,
+                        record_digest,
+                        tenant,
+                        workspace,
+                        workspace_row["disclosure_policy_root_digest"],
+                        current_version,
+                        state.record_digest,
+                    ),
+                )
+                if tip_updated.rowcount != 1:
+                    raise SessionConflictError(
+                        "workspace disclosure policy tip changed concurrently"
+                    )
+            except sqlite3.IntegrityError as error:
+                raise SessionConflictError(
+                    "workspace disclosure policy conflicts with durable state"
+                ) from error
+            try:
+                self._record_workspace_disclosure_policy_receipt(
+                    cursor,
+                    tenant_id=tenant,
+                    project_id=project_id,
+                    workspace_id=workspace,
+                    idempotency_key=idempotency_key,
+                    request_digest=request_digest,
+                    result=result,
+                    result_record_digest=record_digest,
+                )
+            except sqlite3.IntegrityError as error:
+                raise SessionConflictError(
+                    "workspace disclosure policy receipt conflicts with durable state"
+                ) from error
+            return result
 
     def attach_fixture(
         self,

@@ -108,6 +108,11 @@ from router_dump_analyzer.plugin_execution_plan import (
     PluginExecutionPlan,
     plugin_execution_plan_dict,
 )
+from router_dump_analyzer.private_analysis import (
+    WorkspaceDisclosurePolicy,
+    workspace_disclosure_policy_dict,
+    workspace_disclosure_policy_from_dict,
+)
 from router_dump_analyzer.process_control import PROCESS_CONTROL_EXCEPTIONS
 from router_dump_analyzer.public_text import (
     bounded_public_error_detail,
@@ -120,6 +125,8 @@ from router_dump_analyzer.session_store import (
     SessionStoreDeadlineExceeded,
     SessionStoreError,
     StaleSessionVersion,
+    StaleWorkspaceDisclosurePolicyVersion,
+    WorkspaceDisclosurePolicyRecord,
     validate_catalog_identifier,
     validate_catalog_label,
     validate_catalog_member_role,
@@ -2166,6 +2173,51 @@ def _review_json(value: Any) -> dict[str, Any]:
     return projected
 
 
+def _workspace_disclosure_policy_body(
+    payload: Mapping[str, Any],
+) -> WorkspaceDisclosurePolicy:
+    try:
+        return workspace_disclosure_policy_from_dict(payload)
+    except (TypeError, ValueError) as error:
+        raise _ControlPlaneHTTPResponse(
+            status_code=422,
+            detail="workspace disclosure policy is invalid",
+        ) from error
+
+
+def _workspace_disclosure_policy_json(
+    record: WorkspaceDisclosurePolicyRecord,
+) -> dict[str, Any]:
+    return {
+        "tenant_id": record.tenant_id,
+        "project_id": record.project_id,
+        "workspace_id": record.workspace_id,
+        "version": record.version,
+        "policy": workspace_disclosure_policy_dict(record.policy),
+        "policy_digest": record.policy_digest,
+        "actor_id": record.actor_id,
+        "created_at_ns": record.created_at_ns,
+        "explicit": record.explicit,
+    }
+
+
+def _scoped_workspace_disclosure_policy_json(
+    record: WorkspaceDisclosurePolicyRecord,
+    scope: ReviewScope,
+) -> dict[str, Any]:
+    """Refuse to serialize a store result outside its authorized path scope."""
+
+    if (
+        record.tenant_id != scope.tenant_id
+        or record.project_id != scope.project_id
+        or record.workspace_id != scope.workspace_id
+    ):
+        raise SessionStoreError(
+            "stored workspace disclosure policy scope is invalid"
+        )
+    return _workspace_disclosure_policy_json(record)
+
+
 @dataclass(frozen=True, slots=True)
 class _ApiErrorPolicy:
     status_code: int
@@ -2191,6 +2243,10 @@ _API_ERROR_POLICY_BY_CLASS: Mapping[type[Exception], _ApiErrorPolicy] = (
                 409,
                 "session version conflict",
                 expose_message=True,
+            ),
+            StaleWorkspaceDisclosurePolicyVersion: _ApiErrorPolicy(
+                409,
+                "workspace disclosure policy version conflict",
             ),
             SessionConflictError: _ApiErrorPolicy(
                 409,
@@ -2806,6 +2862,70 @@ def create_workspace(
             idempotency_key=operation_key,
         )
         return _json_value(result)
+    except Exception as error:
+        _raise_api_error(error)
+
+
+@control_plane_router.get(
+    "/projects/{project_id}/workspaces/{workspace_id}/private-analysis-policy"
+)
+def get_workspace_private_analysis_policy(
+    project_id: str,
+    workspace_id: str,
+    request: Request,
+    response: Response,
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
+) -> dict[str, Any]:
+    """Return the exact current policy; absent configuration is disabled v0."""
+
+    tenant_id = _tenant(x_tenant_id)
+    scope = _scope(request, tenant_id, project_id, workspace_id)
+    try:
+        record = _control_plane(request).sessions.get_workspace_disclosure_policy(
+            scope.tenant_id,
+            scope.workspace_id,
+        )
+        _etag(response, record.version)
+        return _json_value(_scoped_workspace_disclosure_policy_json(record, scope))
+    except Exception as error:
+        _raise_api_error(error)
+
+
+@control_plane_router.put(
+    "/projects/{project_id}/workspaces/{workspace_id}/private-analysis-policy"
+)
+def set_workspace_private_analysis_policy(
+    project_id: str,
+    workspace_id: str,
+    request: Request,
+    response: Response,
+    payload: dict[str, Any],
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
+    if_match: str | None = Header(default=None, alias="If-Match"),
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+    ),
+) -> dict[str, Any]:
+    """Append one admin-authorized, compare-and-swap policy revision."""
+
+    identity = _require_control_plane_admin(request)
+    tenant_id = _tenant(x_tenant_id)
+    scope = _scope(request, tenant_id, project_id, workspace_id)
+    policy = _workspace_disclosure_policy_body(_body_object(payload))
+    expected_version = _parse_if_match(if_match)
+    operation_key = _catalog_idempotency_key(idempotency_key)
+    try:
+        record = _control_plane(request).sessions.set_workspace_disclosure_policy(
+            scope.tenant_id,
+            scope.workspace_id,
+            policy,
+            actor_id=identity.principal_id,
+            expected_version=expected_version,
+            idempotency_key=operation_key,
+        )
+        _etag(response, record.version)
+        return _json_value(_scoped_workspace_disclosure_policy_json(record, scope))
     except Exception as error:
         _raise_api_error(error)
 
