@@ -33,6 +33,7 @@ def _pin(instance_id: str, plugin_id: str) -> PluginExecutionPin:
         ),
         configuration_digest=_DIGEST_A,
         schema_digest=_DIGEST_B,
+        roles=(("primary_parser",) if instance_id == "forwarding.0" else ()),
     )
 
 

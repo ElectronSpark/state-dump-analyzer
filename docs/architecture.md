@@ -169,6 +169,20 @@ distribution coordinates; direct-module loading uses an explicit
 `direct-module` / `0` sentinel. A decoder pin appears in the revision plan only
 when that decoder was actually used.
 
+Parser probing and capability routing are deliberately separate. The durable
+ingestion registry selects one primary parser for an upload. A deployment-owned
+`CapabilityProviderRegistry` may hold many configured instances, including
+distinct configurations of the same plug-in/version under distinct logical
+instance IDs. The immutable plan—not a
+mutable node map—selects which instance belongs to a revision. Exactly one pin
+has `primary_parser`; additional pins carry core-assigned composition roles.
+The registry can retain several exact releases of one logical instance so old
+and new revisions are both replayable. Plan v1 has one decoder identity, owned
+by the primary pin. A primary registration may have a decoder while a non-CTF
+revision leaves that plan field empty; a non-primary decoder is unrepresentable
+and rejected. Changing configuration creates a new logical instance ID even
+across revisions.
+
 Reprocessing after a plugin upgrade creates a new revision. Published rows are
 never reinterpreted in place. A small transaction changes the case's published
 revision pointer only after validation succeeds.
@@ -961,15 +975,30 @@ operating-system CPU/memory/output quotas in
 addition to the wall-clock fault boundary.
 
 The executable `PluginCapabilityExecutor` is the matching core boundary for
-optional semantic hooks. It manifest-gates `apply`, `revert`, `correlate`,
+optional semantic hooks. It gates `apply`, `revert`, `correlate`,
 consistency, topology, forwarding projection, and forwarding-step calls;
 wraps world access in one bounded read-only facade; closes output iterators;
 and validates every exact request, result, schema reference, and diagnostic.
+Capability authority comes from a one-time exact snapshot of the manifest set,
+not its overridable `supports()` helper.
 Correlation receives the caller's bounded/indexed reader and an independently
 validated window. Typed result envelopes retain recoverable diagnostics;
 non-recoverable or invalid output fails the call without a partial result.
 This executor makes the hook protocol testable but does not install runtime-v2
 temporal, topology, or route providers.
+
+`PlanBoundCapabilityRouter` is the production composition layer above that
+executor. It digest-verifies and detaches a revision plan, resolves an exact
+capability plus optional role/instance, and treats zero or multiple matches as
+errors rather than using plan or registration order. It revalidates the full
+registered executable identity and normalized schema before and after
+invocation; manifest-only or otherwise non-revalidatable provider records are
+rejected at registry admission. A
+mid-call mutation discards the result. A perspective-specific world must carry
+the selected instance/schema qualifiers, and forwarding steps must name the
+selected revision-set member. Every successful result retains a detached producer
+reference with catalog revision, member, node, source basis, plan digest, and
+full pin. Cross-provider aggregation remains an explicit federation concern.
 
 Plugins emit iterators/batches; they do not write the database. For production,
 use Arrow `RecordBatch` messages between the plugin worker and coordinator so

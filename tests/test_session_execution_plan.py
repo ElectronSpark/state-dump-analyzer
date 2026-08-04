@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import tempfile
+import time
 import unittest
 from dataclasses import replace
 from hashlib import sha256
@@ -10,6 +11,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from router_dump_analyzer.canonical import canonical_json, canonical_json_sha256
+from router_dump_analyzer.control_plane import SessionCatalogPublisher
+from router_dump_analyzer.ingestion_pipeline import ImportScope, PublisherCallContext
 from router_dump_analyzer.plugin_execution_plan import (
     DecoderIdentity,
     PluginArtifactIdentity,
@@ -137,6 +140,47 @@ class SessionExecutionPlanTests(unittest.TestCase):
             (published,),
         )
 
+    def test_catalog_publisher_persists_every_multi_provider_plan_identity(
+        self,
+    ) -> None:
+        primary = _pin()
+        observer = replace(
+            _pin("vendor.observer", "observer.0"),
+            roles=("observer",),
+        )
+        plan = _plan("node-a", primary, observer)
+        publisher = SessionCatalogPublisher(self.store)
+        started = time.monotonic_ns()
+
+        revision_id = publisher.publish_revision(
+            ImportScope("tenant-a", "project-a", "workspace-a"),
+            operation_id="publish-multi-provider",
+            fixture_id="fixture-a",
+            source_revision_id=plan.basis_revision_id,
+            node_id=plan.node_id,
+            plugin_id=primary.plugin_id,
+            plugin_version=primary.plugin_version,
+            dataset_ref="dataset.json",
+            dataset_sha256=_digest("multi-provider-dataset"),
+            event_count=1,
+            source_record_count=1,
+            resource_count=1,
+            execution_plan=plan,
+            call_context=PublisherCallContext(
+                operation_id="publish-multi-provider",
+                attempt_number=1,
+                started_monotonic_ns=started,
+                deadline_monotonic_ns=started + 5_000_000_000,
+            ),
+        )
+
+        published = self.store.get_revision("tenant-a", revision_id)
+        self.assertEqual(
+            published.plugin_ids,
+            ("vendor.forwarding", "vendor.observer"),
+        )
+        self.assertEqual(published.execution_plan, plan)
+
     def test_published_descriptor_detaches_from_the_callers_plan(self) -> None:
         plan = _plan()
         published = self._publish("revision-a", plan=plan)
@@ -226,8 +270,11 @@ class SessionExecutionPlanTests(unittest.TestCase):
         plan = _plan(
             "node-a",
             _pin("vendor.forwarding", "forwarding.0"),
-            _pin("vendor.forwarding", "forwarding.1"),
-            _pin("vendor.isis", "isis.0"),
+            replace(
+                _pin("vendor.forwarding", "forwarding.1"),
+                roles=("observer",),
+            ),
+            replace(_pin("vendor.isis", "isis.0"), roles=("observer",)),
         )
         published = self._publish("revision-a", plan=plan)
         self.assertEqual(

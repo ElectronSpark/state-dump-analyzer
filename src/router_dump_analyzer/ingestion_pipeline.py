@@ -77,6 +77,7 @@ from .plugin_execution_plan import (
     PluginExecutionPlan,
     plugin_execution_plan_dict,
     plugin_execution_plan_from_dict,
+    primary_parser_execution_pin,
 )
 from .plugin_identity import (
     PluginExecutableIdentityError,
@@ -1371,6 +1372,33 @@ class RegisteredPlugin:
         )
 
 
+def registered_plugin_matches_execution_pin(
+    pin: PluginExecutionPin,
+    registered: RegisteredPlugin,
+) -> bool:
+    """Compare immutable pin coordinates shared by ingestion and routing."""
+
+    if type(pin) is not PluginExecutionPin:
+        raise TypeError("pin must be an exact PluginExecutionPin")
+    if type(registered) is not RegisteredPlugin:
+        raise TypeError("registered must be an exact RegisteredPlugin")
+    artifact = pin.artifact
+    return (
+        pin.instance_id == registered.instance_id
+        and pin.plugin_id == registered.plugin_id
+        and pin.plugin_version == registered.plugin_version
+        and pin.core_api_version == registered.core_api_version
+        and artifact.distribution_name == registered.distribution_name
+        and artifact.distribution_version == registered.distribution_version
+        and artifact.package_hash == registered.package_hash
+        and artifact.entry_point_name == registered.entry_point_name
+        and artifact.module_target == registered.module_target
+        and pin.configuration_digest == registered.configuration_digest
+        and pin.schema_versions == registered.schema_versions
+        and pin.capabilities == registered.capabilities
+    )
+
+
 class PluginRegistry:
     """Allowlisted plug-in identities used by queue workers.
 
@@ -2042,24 +2070,13 @@ def _execution_plan_matches_registration(
     plan: PluginExecutionPlan,
     registered: RegisteredPlugin,
 ) -> bool:
-    if len(plan.plugins) != 1:
+    try:
+        pin = primary_parser_execution_pin(plan)
+    except (TypeError, ValueError):
         return False
-    pin = plan.plugins[0]
-    artifact = pin.artifact
     return (
-        pin.instance_id == registered.instance_id
-        and pin.plugin_id == registered.plugin_id
-        and pin.plugin_version == registered.plugin_version
-        and pin.core_api_version == registered.core_api_version
-        and artifact.distribution_name == registered.distribution_name
-        and artifact.distribution_version == registered.distribution_version
-        and artifact.package_hash == registered.package_hash
-        and artifact.entry_point_name == registered.entry_point_name
-        and artifact.module_target == registered.module_target
-        and pin.configuration_digest == registered.configuration_digest
-        and pin.schema_versions == registered.schema_versions
-        and pin.capabilities == registered.capabilities
-        and pin.roles == ("primary_parser",)
+        registered_plugin_matches_execution_pin(pin, registered)
+        and "primary_parser" in pin.roles
         and (
             plan.decoder is None
             or plan.decoder == registered.decoder_identity
@@ -8846,16 +8863,25 @@ class DurableIngestionPipeline:
                 or execution_plan.node_id != required_text["staged_node_id"]
                 or execution_plan.basis_revision_id
                 != required_text["staged_source_revision_id"]
-                or len(execution_plan.plugins) != 1
-                or execution_plan.plugins[0].plugin_id
-                != required_text["selected_plugin_id"]
-                or execution_plan.plugins[0].plugin_version
-                != required_text["selected_plugin_version"]
-                or execution_plan.plugins[0].artifact.package_hash
-                != row["selected_package_hash"]
             ):
                 raise IngestionPipelineError(
                     "staged publication execution plan does not match its revision"
+                )
+            try:
+                primary_pin = primary_parser_execution_pin(execution_plan)
+            except (TypeError, ValueError) as error:
+                raise IngestionPipelineError(
+                    "staged publication execution plan lacks one primary parser"
+                ) from error
+            if (
+                primary_pin.plugin_id != required_text["selected_plugin_id"]
+                or primary_pin.plugin_version
+                != required_text["selected_plugin_version"]
+                or primary_pin.artifact.package_hash
+                != row["selected_package_hash"]
+            ):
+                raise IngestionPipelineError(
+                    "staged publication primary parser does not match selection"
                 )
         dataset_path = self._contained_path(
             self.dataset_root,

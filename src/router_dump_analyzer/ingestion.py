@@ -75,6 +75,10 @@ from .plugin_api import (
     validate_probe_report,
     validate_probe_result,
 )
+from .plugin_schema_identity import (
+    PluginSchemaIdentityError,
+    plugin_schema_dataset,
+)
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .revision_store import (
     AssemblyDescriptor,
@@ -1493,41 +1497,10 @@ def _validate_ctf_message(
 
 
 def _schema_dataset(schema: PluginSchema) -> dict[str, Any]:
-    resource_kinds = [_json_value(item) for item in schema.resource_kinds]
-    relationship_types = [_json_value(item) for item in schema.relationship_types]
-    causal_link_types = [_json_value(item) for item in schema.causal_link_types]
-    dashboards = [_json_value(item) for item in schema.dashboards]
-    resource_table_views = [_json_value(item) for item in schema.resource_table_views]
-    source_record_groups = [_json_value(item) for item in schema.source_record_groups]
-    source_record_types = [_json_value(item) for item in schema.source_record_types]
-    record_lane_presets = [_json_value(item) for item in schema.record_lane_presets]
-    status_perspectives = [_json_value(item) for item in schema.status_perspectives]
-    topology_projections = [_json_value(item) for item in schema.topology_projections]
-    return {
-        "kind_descriptors": resource_kinds,
-        "relationship_descriptors": relationship_types,
-        "relationship_type_descriptors": relationship_types,
-        "causal_link_descriptors": causal_link_types,
-        "dashboard_descriptors": dashboards,
-        "resource_table_view_descriptors": resource_table_views,
-        "source_record_group_descriptors": source_record_groups,
-        "source_record_descriptors": source_record_types,
-        "record_lane_presets": record_lane_presets,
-        "schema": {
-            "semantic_owner": "plugin",
-            "core_interprets_domain_types": False,
-            "resource_kinds": resource_kinds,
-            "relationship_types": relationship_types,
-            "causal_link_types": causal_link_types,
-            "dashboards": dashboards,
-            "resource_table_views": resource_table_views,
-            "source_record_groups": source_record_groups,
-            "source_record_types": source_record_types,
-            "record_lane_presets": record_lane_presets,
-            "status_perspectives": status_perspectives,
-            "topology_projections": topology_projections,
-        },
-    }
+    try:
+        return plugin_schema_dataset(schema)
+    except PluginSchemaIdentityError as error:
+        raise IngestionError("plug-in schema cannot be normalized") from error
 
 
 def _source_uid(

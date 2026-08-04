@@ -138,6 +138,13 @@ The revision also carries a core-owned immutable execution plan pinning this
 demo plug-in's exact executable, configuration digest, schema, capabilities,
 role, and optional decoder identity. The demo does not build that plan, and no
 configuration values are embedded in it.
+This example currently produces only the unique `primary_parser` pin. The core
+also supports separately registered capability-provider pins through
+`PlanBoundCapabilityRouter`; the demo deliberately does not hide several
+providers behind a composite plug-in. The executable heterogeneous routing
+conformance cases live in `tests/test_capability_router.py`; they also cover
+executable and configuration lineage, decoder rules, schema budgets, and
+perspective scope.
 Installed launch records `router-dump-analyzer-demo`, its installed version,
 entry point `demo_router`, and target `rsl_demo_plugin:plugin`. Direct-module
 launch instead uses the explicit `direct-module` / `0` artifact sentinel.

@@ -75,6 +75,14 @@ decoder pin records its ID, version, and executable digest. The plan binds the
 node and source revision basis and carries a deterministic content digest. It
 contains configuration digests only—never configuration values or secrets.
 
+Exactly one pin MUST carry the core role `primary_parser`; additional pins are
+configured capability providers. `plugin_ids` remains only a deduplicated
+summary and MUST NOT be used for dispatch because it loses configured-instance
+identity. The singular catalog `plugin_id` / `plugin_version` compatibility
+fields identify that unique primary parser. A plan-level decoder belongs to
+the primary parser; a non-primary pin with its own decoder is not representable
+in plan v1 and MUST fail closed.
+
 The durable registry rejects manifest-only executable identity. The installed
 entry-point loaders record the owning distribution name/version, selected
 entry-point name, and normalized `module:attribute` target. An explicit
@@ -413,8 +421,10 @@ directly. The constructor takes the plug-in, an optional already-validated
 | `project_forwarding(request, world)` | `ForwardingProjectionExecutionResult` |
 | `resolve_forwarding_step(request, world)` | `ForwardingStepExecutionResult` |
 
-Before invocation, the executor requires the corresponding standard manifest
-capability and callable hook. For world-reading hooks it supplies a bounded
+Before invocation, the executor requires the corresponding standard capability
+from a one-time snapshot of the manifest's declared capability set and a
+callable hook. It MUST NOT delegate authority to an overridable `supports()`
+method. For world-reading hooks it supplies a bounded
 read-only facade that charges `state_of()`, `iter_states()`, `related()`, and
 `iter_relationships()` results against one budget and closes iterators.
 `correlate()` instead receives the caller-supplied bounded/indexed
@@ -448,6 +458,46 @@ This executable caller makes optional hooks directly testable and reusable; it
 does not itself publish a temporal, topology, or route provider. The current
 core-owned runtime-v2 session still leaves those providers `None` and exposes
 no route catalog.
+
+Production composition MUST use `CapabilityProviderRegistry`,
+`CapabilityRouteSelector`, and `PlanBoundCapabilityRouter` rather than selecting
+an installed plug-in or constructing an unbound executor. Provider instance IDs
+name logical deployment configurations and are unique within a plan. The
+registry may retain several exact installed releases for one logical instance
+so several revisions remain replayable; the complete pin chooses the release.
+A provider record MUST originate at
+`PluginRegistry.register()` so executable, manifest, configuration, and decoder
+identity reuse the existing registration boundary. Manifest-only compatibility
+records and caller-asserted, non-revalidatable hashes MUST NOT enter the
+capability registry. A changed configuration
+MUST use a new instance ID even when two revisions never select both
+configurations together; otherwise perspective identity would be ambiguous.
+Providers may come from separate primary-parser registries.
+
+The router digest-verifies and detaches the selected revision plan, requires
+one primary parser, resolves only pins whose exact capability plus optional
+role/instance match the selector, and rejects zero or multiple matches. Plan
+order and registration order MUST NOT break a tie. Before and after every typed
+call it revalidates all artifact coordinates, executable digest, manifest/API,
+configuration digest, schema digest/versions, declared capabilities, and the
+v1 decoder rule. The plan-level decoder belongs only to the primary pin. A
+decoder-capable primary remains usable when a non-CTF revision pins no decoder;
+a non-primary decoder registration is unrepresentable and rejected. A
+successful `CapabilityInvocation` retains a detached
+`CapabilityProviderRef` containing catalog revision, assembly member, node,
+source basis, plan digest, capability, and full producer pin. Callers MUST NOT
+merge results from different pins without an explicit federation/linker
+operation.
+
+`PluginCapabilityExecutor.for_execution_pin()` is the bound executor factory.
+It rejects a live manifest or normalized schema that differs from the pin,
+rejects nonmatching optional `plugin_instance_id` or `schema_digest`
+qualifiers on status perspectives, and requires a perspective-specific world
+to carry the exact bound instance/schema qualifiers. It also binds
+`ForwardingStepRequest.member_id` to the authorized revision-set member. Legacy
+planless revisions return
+`CapabilityPlanUnavailableError`; there is no fallback to current registry
+state.
 
 Every new `InputSpec` sets `parser_kind` explicitly:
 
@@ -2025,7 +2075,9 @@ emit no traceback and MUST NOT convert `KeyboardInterrupt`, `SystemExit`, or
 ### Optional capability caller
 
 - Invoke every advertised optional hook through
-  `PluginCapabilityExecutor`, not by calling the plug-in directly.
+  `PluginCapabilityExecutor` in isolated plug-in tests and through
+  `PlanBoundCapabilityRouter` in production composition; never call the
+  plug-in directly.
 - Undeclared capabilities fail before invocation; malformed, undeclared,
   dangling, non-recoverable, and over-limit outputs fail without a partial
   result.
@@ -2156,7 +2208,7 @@ The repository example owns a compact heterogeneous corpus:
 ```text
 python -X utf8 -m rsl_demo_generator --write-ingestion-conformance-corpus path/to/runtime-v2-ingestion-conformance.tgz
 python -X utf8 -m rsl_demo_generator --verify-ingestion-conformance-corpus path/to/runtime-v2-ingestion-conformance.tgz
-python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_capability_executor -v
+python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_capability_executor tests.test_capability_router -v
 python -m unittest discover -s state-dump-generator/tests -p "test_runtime_v2_vectors.py" -v
 ```
 

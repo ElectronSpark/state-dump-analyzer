@@ -184,6 +184,22 @@ def _snapshot_execution_pin(pin: PluginExecutionPin) -> PluginExecutionPin:
     )
 
 
+def snapshot_plugin_execution_pin(pin: PluginExecutionPin) -> PluginExecutionPin:
+    """Return a detached, validated copy of one execution pin."""
+
+    return _snapshot_execution_pin(pin)
+
+
+def plugin_execution_plan_plugin_ids(
+    plan: PluginExecutionPlan,
+) -> tuple[str, ...]:
+    """Return the ordered, distinct producer IDs represented by ``plan``."""
+
+    if type(plan) is not PluginExecutionPlan:
+        raise TypeError("plan must be an exact PluginExecutionPlan")
+    return tuple(dict.fromkeys(pin.plugin_id for pin in plan.plugins))
+
+
 def plugin_execution_pin_dict(pin: PluginExecutionPin) -> dict[str, Any]:
     pin = _snapshot_execution_pin(pin)
     artifact = pin.artifact
@@ -258,6 +274,10 @@ class PluginExecutionPlan:
         instance_ids = tuple(pin.instance_id for pin in self.plugins)
         if len(instance_ids) != len(set(instance_ids)):
             raise ValueError("plug-in instance IDs must be unique")
+        if sum("primary_parser" in pin.roles for pin in self.plugins) != 1:
+            raise ValueError(
+                "plug-in execution plan must contain exactly one primary_parser pin"
+            )
         if self.decoder is not None:
             object.__setattr__(
                 self,
@@ -298,6 +318,22 @@ def snapshot_plugin_execution_plan(plan: PluginExecutionPlan) -> PluginExecution
 
 def plugin_execution_plan_digest(plan: PluginExecutionPlan) -> str:
     return _snapshot_execution_plan(plan).plan_digest
+
+
+def primary_parser_execution_pin(
+    plan: PluginExecutionPlan,
+) -> PluginExecutionPin:
+    """Return the unique plan pin assigned the core ``primary_parser`` role."""
+
+    detached = _snapshot_execution_plan(plan)
+    matches = tuple(
+        pin for pin in detached.plugins if "primary_parser" in pin.roles
+    )
+    if len(matches) != 1:
+        raise ValueError(
+            "plug-in execution plan must contain exactly one primary_parser pin"
+        )
+    return _snapshot_execution_pin(matches[0])
 
 
 def plugin_execution_plan_dict(plan: PluginExecutionPlan) -> dict[str, Any]:
@@ -406,5 +442,8 @@ __all__ = [
     "plugin_execution_plan_dict",
     "plugin_execution_plan_digest",
     "plugin_execution_plan_from_dict",
+    "plugin_execution_plan_plugin_ids",
+    "primary_parser_execution_pin",
+    "snapshot_plugin_execution_pin",
     "snapshot_plugin_execution_plan",
 ]

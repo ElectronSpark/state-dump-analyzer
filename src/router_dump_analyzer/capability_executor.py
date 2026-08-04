@@ -80,6 +80,8 @@ from .plugin_api import (
     WorldBasisKind,
     validate_plugin_diagnostic,
 )
+from .plugin_execution_plan import PluginExecutionPin
+from .plugin_schema_identity import plugin_schema_digest
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 
 
@@ -108,6 +110,10 @@ class PluginCapabilityInputError(PluginCapabilityExecutionError):
 
 class PluginCapabilityOutputError(PluginCapabilityExecutionError):
     """The plug-in returned a malformed or over-limit capability result."""
+
+
+class PluginCapabilityBindingError(RuntimeError):
+    """A live executor does not match its immutable execution-plan pin."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,18 +228,23 @@ class _BoundedWorld:
         world: ReadOnlyWorld,
         maximum_reads: int,
         capability: PluginCapability,
+        *,
+        basis: WorldBasis,
+        perspective_ref: StatusPerspectiveRef | None,
     ) -> None:
         self._world = world
         self._remaining = maximum_reads
         self._capability = capability
+        self._basis = basis
+        self._perspective_ref = perspective_ref
 
     @property
     def basis(self) -> WorldBasis:
-        return self._world.basis
+        return self._basis
 
     @property
     def perspective_ref(self) -> StatusPerspectiveRef | None:
-        return self._world.perspective_ref
+        return self._perspective_ref
 
     @property
     def remaining_reads(self) -> int:
@@ -434,16 +445,20 @@ class PluginCapabilityExecutor:
         if not isinstance(manifest, PluginManifest):
             raise TypeError("capability executor requires a PluginManifest")
         try:
-            manifest_supports = manifest.supports
-        except PROCESS_CONTROL_EXCEPTIONS:
-            raise
-        except BaseException as error:
-            raise TypeError(
-                "capability executor could not resolve manifest supports()"
-            ) from error
-        if not callable(manifest_supports):
-            raise TypeError("capability executor manifest requires supports()")
-        try:
+            raw_capabilities = manifest.capabilities
+            if type(raw_capabilities) is not frozenset:
+                raise TypeError(
+                    "manifest capabilities must be an exact frozenset"
+                )
+            declared_capabilities = frozenset(
+                item.value if type(item) is PluginCapability else item
+                for item in raw_capabilities
+            )
+            if any(type(item) is not str for item in declared_capabilities):
+                raise TypeError(
+                    "manifest capabilities must contain strings or "
+                    "PluginCapability values"
+                )
             forwarding_ir_versions = manifest.forwarding_ir_versions
             if type(forwarding_ir_versions) is not tuple or any(
                 type(version) is not str for version in forwarding_ir_versions
@@ -470,13 +485,82 @@ class PluginCapabilityExecutor:
             selected_schema = schema
         if type(selected_schema) is not PluginSchema:
             raise TypeError("capability executor requires an exact PluginSchema")
+        try:
+            schema_identity = plugin_schema_digest(selected_schema)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise TypeError(
+                "capability executor requires a bounded plug-in schema"
+            ) from error
         self.plugin = plugin
         self.manifest = manifest
-        self._manifest_supports = manifest_supports
+        self._declared_capabilities = declared_capabilities
         self._forwarding_ir_versions = forwarding_ir_versions
         self.schema = selected_schema
         self.limits = limits or PluginCapabilityLimits()
-        self._schema = _SchemaIndex.build(selected_schema)
+        try:
+            self._schema = _SchemaIndex.build(selected_schema)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise TypeError(
+                "capability executor could not index the plug-in schema"
+            ) from error
+        self._schema_identity = schema_identity
+        self._bound_instance_id: str | None = None
+        self._bound_schema_digest: str | None = None
+        self._bound_member_id: str | None = None
+
+    @classmethod
+    def for_execution_pin(
+        cls,
+        plugin: AnalyzerPlugin,
+        pin: PluginExecutionPin,
+        *,
+        member_id: str,
+        schema: PluginSchema | None = None,
+        limits: PluginCapabilityLimits | None = None,
+    ) -> PluginCapabilityExecutor:
+        """Build an executor constrained to one exact plan pin and member."""
+
+        if type(pin) is not PluginExecutionPin:
+            raise TypeError("pin must be an exact PluginExecutionPin")
+        if type(member_id) is not str or not member_id or len(member_id) > 256:
+            raise ValueError("member_id must contain 1 to 256 characters")
+        executor = cls(plugin, schema, limits=limits)
+        try:
+            manifest = executor.manifest
+            manifest_plugin_id = manifest.plugin_id
+            manifest_plugin_version = manifest.plugin_version
+            manifest_core_api_version = manifest.core_api_version
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise PluginCapabilityBindingError(
+                "plug-in manifest identity could not be bound"
+            ) from error
+        if (
+            type(manifest_plugin_id) is not str
+            or type(manifest_plugin_version) is not str
+            or type(manifest_core_api_version) is not str
+            or manifest_plugin_id != pin.plugin_id
+            or manifest_plugin_version != pin.plugin_version
+            or manifest_core_api_version != pin.core_api_version
+            or tuple(sorted(executor._declared_capabilities)) != pin.capabilities
+        ):
+            raise PluginCapabilityBindingError(
+                "plug-in manifest does not match the execution-plan pin"
+            )
+        actual_schema_digest = executor._schema_identity
+        if actual_schema_digest != pin.schema_digest:
+            raise PluginCapabilityBindingError(
+                "plug-in schema does not match the execution-plan pin"
+            )
+        executor._bound_instance_id = pin.instance_id
+        executor._bound_schema_digest = pin.schema_digest
+        executor._bound_member_id = member_id
+        return executor
 
     def _error(
         self,
@@ -529,16 +613,7 @@ class PluginCapabilityExecutor:
         capability: PluginCapability,
         hook_name: str,
     ) -> Callable[..., Any]:
-        try:
-            supported = self._manifest_supports(capability)
-        except PROCESS_CONTROL_EXCEPTIONS:
-            raise
-        except BaseException as error:
-            raise self._error(
-                capability,
-                "plug-in manifest capability check failed",
-            ) from error
-        if not supported:
+        if capability.value not in self._declared_capabilities:
             raise PluginCapabilityUnavailableError(
                 f"plug-in does not advertise {capability.value!r}",
                 capability=capability,
@@ -657,7 +732,13 @@ class PluginCapabilityExecutor:
             raise self._error(capability, str(error)) from error
         return tuple(diagnostics)
 
-    def _perspective(self, value: StatusPerspectiveRef | None, label: str) -> None:
+    def _perspective(
+        self,
+        value: StatusPerspectiveRef | None,
+        label: str,
+        *,
+        require_bound_qualifiers: bool = False,
+    ) -> None:
         if value is None:
             return
         if type(value) is not StatusPerspectiveRef:
@@ -667,6 +748,86 @@ class PluginCapabilityExecutor:
                 f"{label} references undeclared perspective "
                 f"{value.perspective_id!r}"
             )
+        if (
+            value.plugin_instance_id is not None
+            and self._bound_instance_id is not None
+            and value.plugin_instance_id != self._bound_instance_id
+        ):
+            raise ValueError(
+                f"{label} references a different plug-in instance"
+            )
+        if (
+            require_bound_qualifiers
+            and self._bound_instance_id is not None
+            and value.plugin_instance_id != self._bound_instance_id
+        ):
+            raise ValueError(
+                f"{label} must identify the bound plug-in instance"
+            )
+        if (
+            value.schema_digest is not None
+            and self._bound_schema_digest is not None
+            and value.schema_digest != self._bound_schema_digest
+        ):
+            raise ValueError(f"{label} references a different schema")
+        if (
+            require_bound_qualifiers
+            and self._bound_schema_digest is not None
+            and value.schema_digest != self._bound_schema_digest
+        ):
+            raise ValueError(f"{label} must identify the bound schema")
+
+    def _bounded_world(
+        self,
+        world: ReadOnlyWorld,
+        capability: PluginCapability,
+        maximum_reads: int,
+        *,
+        expected_perspective_id: str | None = None,
+    ) -> ReadOnlyWorld:
+        """Validate and snapshot a core-owned world before a plug-in sees it."""
+
+        snapshot: list[Any] = []
+
+        def validate_world() -> None:
+            basis = world.basis
+            perspective_ref = world.perspective_ref
+            self._world_basis(basis, "world.basis")
+            if expected_perspective_id is not None and perspective_ref is None:
+                raise ValueError(
+                    "world.perspective_ref is required for a perspective-specific request"
+                )
+            self._perspective(
+                perspective_ref,
+                "world.perspective_ref",
+                require_bound_qualifiers=expected_perspective_id is not None,
+            )
+            if (
+                expected_perspective_id is not None
+                and perspective_ref is not None
+                and perspective_ref.perspective_id != expected_perspective_id
+            ):
+                raise ValueError(
+                    "world.perspective_ref does not match the requested perspective"
+                )
+            snapshot.extend((basis, perspective_ref))
+
+        self._validate_caller_input(
+            capability,
+            validate_world,
+            unreadable_message="world binding could not be validated",
+        )
+        basis, perspective_ref = snapshot
+        return cast(
+            ReadOnlyWorld,
+            _BoundedWorld(
+                world,
+                maximum_reads,
+                capability,
+                basis=cast(WorldBasis, basis),
+                perspective_ref=cast(StatusPerspectiveRef | None, perspective_ref),
+            ),
+        )
 
     def _patch(
         self,
@@ -1009,19 +1170,14 @@ class PluginCapabilityExecutor:
             lambda: self._event(event, "event"),
             unreadable_message="event could not be validated",
         )
+        bounded_world = self._bounded_world(
+            world,
+            capability,
+            self.limits.max_world_reads,
+        )
         hook = self._require(capability, "apply")
         try:
-            result = hook(
-                event,
-                cast(
-                    ReadOnlyWorld,
-                    _BoundedWorld(
-                        world,
-                        self.limits.max_world_reads,
-                        capability,
-                    ),
-                ),
-            )
+            result = hook(event, bounded_world)
         except PluginCapabilityExecutionError:
             raise
         except PROCESS_CONTROL_EXCEPTIONS:
@@ -1051,19 +1207,14 @@ class PluginCapabilityExecutor:
             lambda: self._event(event, "event"),
             unreadable_message="event could not be validated",
         )
+        bounded_world = self._bounded_world(
+            world_after,
+            capability,
+            self.limits.max_world_reads,
+        )
         hook = self._require(capability, "revert")
         try:
-            result = hook(
-                event,
-                cast(
-                    ReadOnlyWorld,
-                    _BoundedWorld(
-                        world_after,
-                        self.limits.max_world_reads,
-                        capability,
-                    ),
-                ),
-            )
+            result = hook(event, bounded_world)
         except PluginCapabilityExecutionError:
             raise
         except PROCESS_CONTROL_EXCEPTIONS:
@@ -1373,18 +1524,14 @@ class PluginCapabilityExecutor:
         world: ReadOnlyWorld,
     ) -> ConsistencyExecutionResult:
         capability = PluginCapability.CONSISTENCY_CHECK
+        bounded_world = self._bounded_world(
+            world,
+            capability,
+            self.limits.max_world_reads,
+        )
         hook = self._require(capability, "check_consistency")
         try:
-            outputs = hook(
-                cast(
-                    ReadOnlyWorld,
-                    _BoundedWorld(
-                        world,
-                        self.limits.max_world_reads,
-                        capability,
-                    ),
-                )
-            )
+            outputs = hook(bounded_world)
             values, diagnostics = self._consume(
                 capability,
                 outputs,
@@ -1512,20 +1659,16 @@ class PluginCapabilityExecutor:
             validate_request,
             unreadable_message="topology request could not be validated",
         )
+        bounded_world = self._bounded_world(
+            world,
+            capability,
+            min(request.max_world_reads, self.limits.max_world_reads),
+            expected_perspective_id=request.status_perspective_id,
+        )
         hook = self._require(capability, "project_topology")
         maximum = min(request.max_records, self.limits.max_topology_outputs)
         try:
-            outputs = hook(
-                request,
-                cast(
-                    ReadOnlyWorld,
-                    _BoundedWorld(
-                        world,
-                        min(request.max_world_reads, self.limits.max_world_reads),
-                        capability,
-                    ),
-                ),
-            )
+            outputs = hook(request, bounded_world)
             values, diagnostics = self._consume(
                 capability,
                 outputs,
@@ -1690,20 +1833,20 @@ class PluginCapabilityExecutor:
             validate_request,
             unreadable_message="forwarding projection request could not be validated",
         )
+        bounded_world = self._bounded_world(
+            world,
+            capability,
+            min(request.max_world_reads, self.limits.max_world_reads),
+            expected_perspective_id=(
+                request.status_perspective.perspective_id
+                if request.status_perspective is not None
+                else None
+            ),
+        )
         hook = self._require(capability, "project_forwarding")
         maximum = min(request.max_records, self.limits.max_forwarding_outputs)
         try:
-            outputs = hook(
-                request,
-                cast(
-                    ReadOnlyWorld,
-                    _BoundedWorld(
-                        world,
-                        min(request.max_world_reads, self.limits.max_world_reads),
-                        capability,
-                    ),
-                ),
-            )
+            outputs = hook(request, bounded_world)
             values, diagnostics = self._consume(
                 capability,
                 outputs,
@@ -1782,6 +1925,13 @@ class PluginCapabilityExecutor:
             )
 
         def validate_request() -> None:
+            if (
+                self._bound_member_id is not None
+                and request.member_id != self._bound_member_id
+            ):
+                raise ValueError(
+                    "request.member_id does not match the bound revision-set member"
+                )
             self._supported_ir(capability, request.ir_version)
             self._perspective(
                 request.status_perspective,
@@ -1808,19 +1958,19 @@ class PluginCapabilityExecutor:
             validate_request,
             unreadable_message="forwarding step request could not be validated",
         )
+        bounded_world = self._bounded_world(
+            world,
+            capability,
+            self.limits.max_world_reads,
+            expected_perspective_id=(
+                request.status_perspective.perspective_id
+                if request.status_perspective is not None
+                else None
+            ),
+        )
         hook = self._require(capability, "resolve_forwarding_step")
         try:
-            output = hook(
-                request,
-                cast(
-                    ReadOnlyWorld,
-                    _BoundedWorld(
-                        world,
-                        self.limits.max_world_reads,
-                        capability,
-                    ),
-                ),
-            )
+            output = hook(request, bounded_world)
         except PluginCapabilityExecutionError:
             raise
         except PROCESS_CONTROL_EXCEPTIONS:
@@ -1865,6 +2015,7 @@ __all__ = [
     "CorrelationExecutionResult",
     "ForwardingProjectionExecutionResult",
     "ForwardingStepExecutionResult",
+    "PluginCapabilityBindingError",
     "PluginCapabilityExecutionError",
     "PluginCapabilityExecutor",
     "PluginCapabilityInputError",

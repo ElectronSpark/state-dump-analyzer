@@ -34,6 +34,10 @@ cross-layer inconsistency.
 > plan for the exact plug-in artifact, configuration digest, schema,
 > capabilities, role, and optional decoder that interpreted it. Legacy
 > revisions remain explicit when that provenance is unavailable.
+> A core-owned plan-bound capability router can then compose different
+> plug-ins, versions, and configured instances across nodes without choosing
+> by install order. It executes only an exact provider named by that revision's
+> plan and retains the complete producer pin with every result.
 
 ## Start here
 
@@ -404,8 +408,12 @@ its runtime-v1 fixture adapter for compatibility.
 
 For advanced reducers, correlation, consistency, topology, or forwarding,
 host-side tests call the root-exported `PluginCapabilityExecutor`. It is the
-bounded, schema-validating caller for optional hooks; it does not make the
-currently unavailable runtime-v2 temporal, topology, or route providers appear.
+bounded, schema-validating caller for optional hooks. Production coordinators
+route those calls through `PlanBoundCapabilityRouter`, so heterogeneous nodes
+and multiple configured instances retain exact revision provenance instead of
+using install order. Historical releases may retain one logical instance ID;
+a configuration change receives a new ID. Neither facility makes the currently unavailable
+runtime-v2 temporal, topology, or route HTTP providers appear.
 
 The maintained author smoke path is:
 
@@ -419,7 +427,7 @@ router-dump-plugin-validate demo_router `
   --node-hint router-1 `
   --metadata platform=demo-router-os `
   --metadata software_version=1
-python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_capability_executor -v
+python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_capability_executor tests.test_capability_router -v
 python -m unittest discover -s demo/tests -v
 python -m unittest discover -s state-dump-generator/tests `
   -p "test_runtime_v2_vectors.py" -v

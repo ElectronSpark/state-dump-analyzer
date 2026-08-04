@@ -14,6 +14,7 @@ from router_dump_analyzer.plugin_execution_plan import (
     plugin_execution_plan_dict,
     plugin_execution_plan_digest,
     plugin_execution_plan_from_dict,
+    primary_parser_execution_pin,
 )
 
 DIGEST_A = "sha256:" + "a" * 64
@@ -74,12 +75,12 @@ class PluginExecutionPlanTests(unittest.TestCase):
 
     def test_digest_covers_order_and_every_identity_dimension(self) -> None:
         first = _pin("forwarding.0")
-        second = _pin("forwarding.1")
+        second = replace(_pin("forwarding.1"), roles=("forwarding_observer",))
         self.assertNotEqual(_plan(first, second).plan_digest, _plan(second, first).plan_digest)
         mutations = (
             replace(first, configuration_digest=DIGEST_B),
             replace(first, schema_digest=DIGEST_A),
-            replace(first, roles=("secondary_parser",)),
+            replace(first, roles=("primary_parser", "secondary_parser")),
             replace(first, capabilities=("dump.parse",)),
         )
         base_digest = _plan(first).plan_digest
@@ -90,7 +91,7 @@ class PluginExecutionPlanTests(unittest.TestCase):
     def test_tampering_and_unknown_fields_fail_closed(self) -> None:
         document = plugin_execution_plan_dict(_plan())
         tampered = copy.deepcopy(document)
-        tampered["plugins"][0]["roles"] = ["different"]
+        tampered["plugins"][0]["plugin_version"] = "different"
         with self.assertRaisesRegex(ValueError, "digest does not match"):
             plugin_execution_plan_from_dict(tampered)
         unknown = copy.deepcopy(document)
@@ -134,6 +135,19 @@ class PluginExecutionPlanTests(unittest.TestCase):
             plan_digest=plan.plan_digest,
         )
         self.assertEqual(reference.plan_digest, plan.plan_digest)
+
+    def test_primary_parser_role_is_unique_without_forbidding_provider_pins(self) -> None:
+        primary = _pin("parser")
+        secondary = replace(
+            _pin("observer"),
+            roles=("forwarding_observer",),
+        )
+        plan = _plan(primary, secondary)
+        self.assertEqual(primary_parser_execution_pin(plan).instance_id, "parser")
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            _plan(replace(primary, roles=("observer",)), secondary)
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            _plan(primary, replace(secondary, roles=("primary_parser",)))
 
     def test_identity_scalars_reject_string_subclasses_without_executing_them(
         self,

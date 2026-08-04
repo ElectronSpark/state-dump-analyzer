@@ -81,6 +81,8 @@ from .normalized_data import (
 from .plugin_api import MAX_TIMESTAMP_NS, MIN_TIMESTAMP_NS
 from .plugin_execution_plan import (
     PluginExecutionPlan,
+    plugin_execution_plan_plugin_ids,
+    primary_parser_execution_pin,
     snapshot_plugin_execution_plan,
 )
 from .session_store import (
@@ -939,16 +941,22 @@ class SessionCatalogPublisher(RevisionCatalogPublisher):
                 raise ControlPlaneScopeError(
                     "fixture does not belong to the requested workspace"
                 )
-            if execution_plan is not None and (
-                execution_plan.node_id != node_id
-                or execution_plan.basis_revision_id != source_revision_id
-                or len(execution_plan.plugins) != 1
-                or execution_plan.plugins[0].plugin_id != plugin_id
-                or execution_plan.plugins[0].plugin_version != plugin_version
-            ):
-                raise DatasetIntegrityError(
-                    "execution plan does not match the published revision basis"
-                )
+            if execution_plan is not None:
+                try:
+                    primary_pin = primary_parser_execution_pin(execution_plan)
+                except (TypeError, ValueError) as error:
+                    raise DatasetIntegrityError(
+                        "execution plan must contain one primary parser"
+                    ) from error
+                if (
+                    execution_plan.node_id != node_id
+                    or execution_plan.basis_revision_id != source_revision_id
+                    or primary_pin.plugin_id != plugin_id
+                    or primary_pin.plugin_version != plugin_version
+                ):
+                    raise DatasetIntegrityError(
+                        "execution plan does not match the published revision basis"
+                    )
             catalog_revision_id = self.catalog_revision_id(
                 scope,
                 fixture_id=fixture_id,
@@ -984,7 +992,11 @@ class SessionCatalogPublisher(RevisionCatalogPublisher):
                 catalog_revision_id,
                 node_id=node_id,
                 identity_digest=dataset_sha256,
-                plugin_ids=(plugin_id,),
+                plugin_ids=(
+                    plugin_execution_plan_plugin_ids(execution_plan)
+                    if execution_plan is not None
+                    else (plugin_id,)
+                ),
                 execution_plan=execution_plan,
                 metadata=metadata,
                 idempotency_key=f"publication:{operation_id}",
@@ -1588,11 +1600,12 @@ class ControlPlane:
                 raise DatasetIntegrityError(
                     "execution-plan basis does not match the dataset source revision"
                 )
-            if len(execution_plan.plugins) != 1:
+            try:
+                pin = primary_parser_execution_pin(execution_plan)
+            except (TypeError, ValueError) as error:
                 raise DatasetIntegrityError(
-                    "catalog ingestion revision must contain one execution-plan pin"
-                )
-            pin = execution_plan.plugins[0]
+                    "catalog ingestion revision must contain one primary parser"
+                ) from error
             if (
                 descriptor.metadata.get("plugin_id") != pin.plugin_id
                 or descriptor.metadata.get("plugin_version")

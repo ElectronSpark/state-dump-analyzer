@@ -94,9 +94,9 @@ entry-point/module, configuration digest, and optional decoder identity. The
 public plan stores only a configuration digest, never configuration values.
 Changing any pinned executable, configuration, schema, capability, or decoder
 identity changes the plan digest. Current ordinary ingestion produces one pin
-with the core role `primary_parser`; multi-plug-in routing is a separate
-core-owned composition concern and must not be emulated with a synthetic
-composite plug-in.
+with the core role `primary_parser`. A deployment may add separately configured
+capability-provider pins. The core's `PlanBoundCapabilityRouter` composes them;
+never emulate composition with a synthetic composite plug-in.
 
 Installed entry points are pinned with their real distribution and
 `module:attribute` coordinates. Direct `--plugin-module` use is deliberately
@@ -526,9 +526,38 @@ host call such as `apply(None, world)` from being blamed on a plug-in that was
 never invoked.
 
 Use this executor in tests for every capability you advertise. Do not construct
-it inside the plug-in or treat it as a temporal, topology, or route provider.
-The current runtime-v2 session does not yet wire these optional results into
-those services.
+it inside the plug-in. A production coordinator must route through the
+revision plan instead of constructing an unbound executor or consulting the
+currently installed plug-ins. This is host integration, not code a device
+plug-in should copy. Run the complete executable examples with:
+
+```text
+python -m unittest tests.test_capability_router -v
+```
+
+Those cases construct every registry, plan, member, reader, and window they
+use; this guide intentionally avoids a partial snippet with deployment-owned
+values left undefined.
+
+Use `instance_id` as the deployment's logical configured-instance identity.
+IDs are unique within one plan; the provider registry may retain several exact
+installed releases for that same logical ID so old and new revisions remain
+replayable. A configuration change always requires a new logical instance ID,
+even if only one configuration appears in a plan. A node/revision selects one
+exact release only through its immutable plan.
+A selector that matches zero or several pins fails closed.
+Role and instance qualifiers disambiguate; plan order is never a tie-breaker.
+The router revalidates artifact, manifest, configuration, schema, capability,
+and decoder identity before and after each call. Manifest-only compatibility
+records cannot be capability providers. A perspective-specific world
+must carry the pin's complete instance/schema qualification, and forwarding
+steps must name the selected revision-set member. The returned
+`CapabilityInvocation` always retains a
+detached `CapabilityProviderRef`; do not merge different providers' results
+without an explicit core-owned federation/linking operation.
+
+The current runtime-v2 session does not yet publish these routed optional
+results as temporal, topology, or route HTTP providers.
 
 The generic node browser can show a bounded list of plug-in-projected route
 choices, but v1 has no separate route-catalog hook. The coordinator derives
@@ -1151,7 +1180,7 @@ standalone normative vector synchronized:
 ```text
 python -X utf8 -m rsl_demo_generator --write-ingestion-conformance-corpus path/to/runtime-v2-ingestion-conformance.tgz
 python -X utf8 -m rsl_demo_generator --verify-ingestion-conformance-corpus path/to/runtime-v2-ingestion-conformance.tgz
-python -m unittest tests.test_ingestion tests.test_capability_executor -v
+python -m unittest tests.test_ingestion tests.test_capability_executor tests.test_capability_router -v
 python -m unittest discover -s state-dump-generator/tests -p "test_runtime_v2_vectors.py" -v
 ```
 

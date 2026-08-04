@@ -39,6 +39,7 @@ from .plugin_execution_plan import (
     plugin_execution_plan_dict,
     plugin_execution_plan_digest,
     plugin_execution_plan_from_dict,
+    plugin_execution_plan_plugin_ids,
     snapshot_plugin_execution_plan,
 )
 from .public_text import (
@@ -588,7 +589,7 @@ def _plugin_ids(value: Sequence[str]) -> tuple[str, ...]:
 def _execution_plan_plugin_ids(plan: PluginExecutionPlan) -> tuple[str, ...]:
     """Return ordered distinct producer identities represented by a plan."""
 
-    return tuple(dict.fromkeys(pin.plugin_id for pin in plan.plugins))
+    return plugin_execution_plan_plugin_ids(plan)
 
 
 def _stored_execution_plan(

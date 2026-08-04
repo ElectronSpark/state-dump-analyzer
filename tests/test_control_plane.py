@@ -413,6 +413,33 @@ class ControlPlaneTests(unittest.TestCase):
                 changed_basis_dataset,
             )
 
+        secondary_pin = replace(
+            execution_plan.plugins[0],
+            instance_id="secondary.observer",
+            roles=("forwarding_observer",),
+        )
+        multi_provider_plan = replace(
+            execution_plan,
+            plugins=(*execution_plan.plugins, secondary_pin),
+            plan_digest="",
+        )
+        multi_provider_metadata = dict(revision.metadata)
+        multi_provider_metadata["plugin_execution_plan_digest"] = (
+            multi_provider_plan.plan_digest
+        )
+        multi_provider_dataset = json.loads(json.dumps(dataset))
+        multi_provider_dataset["_ingestion"][
+            "plugin_execution_plan_digest"
+        ] = multi_provider_plan.plan_digest
+        control._index_dataset(
+            replace(
+                revision,
+                execution_plan=multi_provider_plan,
+                metadata=multi_provider_metadata,
+            ),
+            multi_provider_dataset,
+        )
+
         planless_metadata = dict(revision.metadata)
         planless_metadata.pop("plugin_execution_plan_digest")
         planless_dataset = json.loads(json.dumps(dataset))

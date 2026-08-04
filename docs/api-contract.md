@@ -379,6 +379,18 @@ current registry state. Unfinished pre-contract queue entries are re-probed
 before execution; an already staged legacy publication remains planless so its
 idempotent crash replay uses the original payload.
 
+Exactly one pin has role `primary_parser`; the compatibility `plugin_id` and
+`plugin_version` fields name that pin. Additional pins may name configured
+capability providers, including several instances of one plug-in/version.
+Clients MUST retain `instance_id`, roles, and `plan_digest`; `plugin_ids` is a
+display/index summary and cannot route a call. There is not yet a public HTTP
+endpoint for optional-capability routing. In-process coordinators use the
+core-owned `PlanBoundCapabilityRouter`, which fails for a null plan and returns
+producer-qualified results through typed capability methods. The router and
+provider registry are trusted in-process composition objects; underscore
+attributes and Python introspection are outside the supported API and are not
+a sandbox for hostile in-process callers.
+
 Retention preview and execute accept a closed object with optional `catalog`
 and `review` policy objects. Cutoffs use canonical decimal strings. The router
 derives catalog external-reference protection itself and rejects a caller

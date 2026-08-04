@@ -30,7 +30,10 @@ _EAGER_ITERABLE_CONSUMERS = frozenset(
 # both the evidence and its expectation.  Counts may grow without maintenance;
 # lowering a floor requires an explicit review of the removed boundary.
 _CENSUS_FLOOR_BY_MODULE = {
-    "src/router_dump_analyzer/capability_executor.py": 12,
+    # Step 3 validates and snapshots the schema before indexing it, so the
+    # former second executor.schema descriptor read no longer exists. That
+    # removed a core snapshot access, not a plug-in invocation boundary.
+    "src/router_dump_analyzer/capability_executor.py": 11,
     "src/router_dump_analyzer/ingestion.py": 7,
     "src/router_dump_analyzer/ingestion_pipeline.py": 7,
     "src/router_dump_analyzer/multi_node_route.py": 2,

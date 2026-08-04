@@ -4,9 +4,11 @@ import unittest
 from collections.abc import Iterable
 from dataclasses import replace
 from typing import Any, Self
+from unittest.mock import patch
 from uuid import UUID
 
 from router_dump_analyzer.capability_executor import (
+    PluginCapabilityBindingError,
     PluginCapabilityExecutionError,
     PluginCapabilityExecutor,
     PluginCapabilityInputError,
@@ -71,6 +73,11 @@ from router_dump_analyzer.plugin_api import (
     WorldBasis,
     WorldBasisKind,
 )
+from router_dump_analyzer.plugin_execution_plan import (
+    PluginArtifactIdentity,
+    PluginExecutionPin,
+)
+from router_dump_analyzer.plugin_schema_identity import plugin_schema_digest
 
 CAPABILITIES = frozenset(
     {
@@ -152,6 +159,33 @@ def _manifest(
     )
 
 
+def _execution_pin(plugin: _Plugin) -> PluginExecutionPin:
+    schema = plugin.describe()
+    return PluginExecutionPin(
+        instance_id="opaque.instance",
+        plugin_id=plugin.manifest.plugin_id,
+        plugin_version=plugin.manifest.plugin_version,
+        core_api_version=plugin.manifest.core_api_version,
+        artifact=PluginArtifactIdentity(
+            distribution_name="opaque-plugin",
+            distribution_version="1",
+            package_hash="package-sha256:" + "a" * 64,
+            entry_point_name="opaque",
+            module_target="opaque:plugin",
+        ),
+        configuration_digest="sha256:" + "b" * 64,
+        schema_digest=plugin_schema_digest(schema),
+        schema_versions=("router_dump_analyzer.plugin_schema.v1",),
+        capabilities=tuple(
+            sorted(
+                item.value if type(item) is PluginCapability else item
+                for item in plugin.manifest.capabilities
+            )
+        ),
+        roles=("primary_parser",),
+    )
+
+
 RESOURCE = ResourceKey(
     namespace="opaque",
     node="node-a",
@@ -194,8 +228,14 @@ EVENT = DomainEvent(
 
 
 class _World:
-    def __init__(self, states: Iterable[Any] = ()) -> None:
+    def __init__(
+        self,
+        states: Iterable[Any] = (),
+        *,
+        perspective_ref: StatusPerspectiveRef | None = PERSPECTIVE,
+    ) -> None:
         self._states = states
+        self._perspective_ref = perspective_ref
         self.last_limit: int | None = None
 
     @property
@@ -203,8 +243,8 @@ class _World:
         return BASIS
 
     @property
-    def perspective_ref(self) -> StatusPerspectiveRef:
-        return PERSPECTIVE
+    def perspective_ref(self) -> StatusPerspectiveRef | None:
+        return self._perspective_ref
 
     def state_of(self, resource: ResourceKey) -> None:
         return None
@@ -564,6 +604,28 @@ def _step_result(request: ForwardingStepRequest) -> ForwardingStepResult:
 
 
 class PluginCapabilityExecutorTests(unittest.TestCase):
+    def test_schema_budget_is_checked_before_building_the_executor_index(self) -> None:
+        oversized = PluginSchema(
+            resource_kinds=tuple(
+                ResourceKindDescriptor(
+                    kind=f"opaque.item.{index}",
+                    label="Opaque item",
+                    key_fields=("id",),
+                    properties=(),
+                )
+                for index in range(1_025)
+            ),
+            relationship_types=(),
+        )
+        with (
+            patch(
+                "router_dump_analyzer.capability_executor._SchemaIndex.build"
+            ) as build,
+            self.assertRaisesRegex(TypeError, "bounded plug-in schema"),
+        ):
+            PluginCapabilityExecutor(_Plugin(), oversized)
+        build.assert_not_called()
+
     def test_executor_is_available_from_the_curated_core_surface(self) -> None:
         import router_dump_analyzer
 
@@ -672,31 +734,26 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
             hook_executor.apply(EVENT, _World())  # type: ignore[arg-type]
         self.assertNotIn(supplied, str(hook_error.exception))
 
-    def test_manifest_capability_check_contains_nonstandard_base_exceptions(
+    def test_manifest_capability_gate_uses_the_snapshotted_declared_set(
         self,
     ) -> None:
         supplied = r"manifest failed at C:\private\tenant\plugin.py"
-        executor = PluginCapabilityExecutor(
-            _Plugin(manifest=_exploding_supports_manifest(Boom(supplied)))
-        )
-        with self.assertRaisesRegex(
-            PluginCapabilityOutputError,
-            "manifest capability check failed",
-        ) as caught:
-            executor.apply(EVENT, _World())  # type: ignore[arg-type]
-        self.assertNotIn(supplied, str(caught.exception))
-
-        for exception_type in (KeyboardInterrupt, SystemExit, GeneratorExit):
-            with self.subTest(exception_type=exception_type.__name__):
-                executor = PluginCapabilityExecutor(
-                    _Plugin(
-                        manifest=_exploding_supports_manifest(
-                            exception_type("process control")
-                        )
-                    )
+        for failure in (
+            Boom(supplied),
+            KeyboardInterrupt("process control"),
+            SystemExit("process control"),
+            GeneratorExit("process control"),
+        ):
+            with self.subTest(failure=type(failure).__name__):
+                plugin = _Plugin(
+                    manifest=_exploding_supports_manifest(failure)
                 )
-                with self.assertRaises(exception_type):
-                    executor.apply(EVENT, _World())  # type: ignore[arg-type]
+                executor = PluginCapabilityExecutor(plugin)
+                self.assertEqual(
+                    executor.apply(EVENT, _World()),  # type: ignore[arg-type]
+                    ChangeSet(),
+                )
+                self.assertTrue(plugin.apply_called)
 
     def test_forwarding_ir_versions_descriptor_is_snapshotted_once(
         self,
@@ -722,6 +779,119 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
         )
         self.assertEqual(manifest.reads, 1)
 
+    def test_plan_bound_executor_rejects_foreign_perspective_and_member(self) -> None:
+        plugin = _Plugin()
+        pin = _execution_pin(plugin)
+        executor = PluginCapabilityExecutor.for_execution_pin(
+            plugin,
+            pin,
+            member_id="member-a",
+        )
+        foreign_instance = replace(
+            _projection_request(),
+            status_perspective=StatusPerspectiveRef(
+                "opaque.status",
+                plugin_instance_id="other.instance",
+                schema_digest=pin.schema_digest,
+            ),
+        )
+        with self.assertRaisesRegex(
+            PluginCapabilityInputError,
+            "different plug-in instance",
+        ):
+            executor.project_forwarding(
+                foreign_instance,
+                _World(),  # type: ignore[arg-type]
+            )
+        foreign_schema = replace(
+            _projection_request(),
+            status_perspective=StatusPerspectiveRef(
+                "opaque.status",
+                plugin_instance_id=pin.instance_id,
+                schema_digest="sha256:" + "f" * 64,
+            ),
+        )
+        with self.assertRaisesRegex(
+            PluginCapabilityInputError,
+            "different schema",
+        ):
+            executor.project_forwarding(
+                foreign_schema,
+                _World(),  # type: ignore[arg-type]
+            )
+        with self.assertRaisesRegex(
+            PluginCapabilityInputError,
+            "revision-set member",
+        ):
+            executor.resolve_forwarding_step(
+                replace(_step_request(), member_id="member-b"),
+                _World(),  # type: ignore[arg-type]
+            )
+        foreign_world = _World(
+            perspective_ref=StatusPerspectiveRef(
+                "opaque.status",
+                plugin_instance_id="other.instance",
+                schema_digest=pin.schema_digest,
+            )
+        )
+        with self.assertRaisesRegex(
+            PluginCapabilityInputError,
+            "different plug-in instance",
+        ):
+            executor.project_forwarding(
+                _projection_request(),
+                foreign_world,  # type: ignore[arg-type]
+            )
+        with self.assertRaisesRegex(
+            PluginCapabilityInputError,
+            "different plug-in instance",
+        ):
+            request = _step_request()
+            plugin.step_output = _step_result(request)
+            executor.resolve_forwarding_step(
+                request,
+                foreign_world,  # type: ignore[arg-type]
+            )
+        with self.assertRaisesRegex(
+            PluginCapabilityInputError,
+            "required for a perspective-specific request",
+        ):
+            executor.project_forwarding(
+                _projection_request(),
+                _World(perspective_ref=None),  # type: ignore[arg-type]
+            )
+        with self.assertRaisesRegex(
+            PluginCapabilityInputError,
+            "must identify the bound plug-in instance",
+        ):
+            executor.project_forwarding(
+                _projection_request(),
+                _World(),  # type: ignore[arg-type]
+            )
+        self.assertFalse(plugin.forwarding_called)
+        self.assertFalse(plugin.forwarding_step_called)
+
+    def test_plan_bound_executor_rejects_manifest_and_schema_mismatch(self) -> None:
+        plugin = _Plugin()
+        pin = _execution_pin(plugin)
+        with self.assertRaisesRegex(
+            PluginCapabilityBindingError,
+            "manifest does not match",
+        ):
+            PluginCapabilityExecutor.for_execution_pin(
+                plugin,
+                replace(pin, plugin_version="other"),
+                member_id="member-a",
+            )
+        with self.assertRaisesRegex(
+            PluginCapabilityBindingError,
+            "schema does not match",
+        ):
+            PluginCapabilityExecutor.for_execution_pin(
+                plugin,
+                replace(pin, schema_digest="sha256:" + "f" * 64),
+                member_id="member-a",
+            )
     def test_forwarding_ir_versions_descriptor_uses_the_plugin_error_domain(
         self,
     ) -> None:
