@@ -485,8 +485,16 @@ arbitrary diagnostics. Core also exports an inert, self-digested catalog
 containing exactly `query_evidence` and `read_evidence`, plus typed calls,
 keyset cursors, page/read results, and payload-free errors. Those values carry
 no handler, database/filesystem handle, shell, network, or plug-in callback.
-They are reusable library/local-wire values today, not a public-model
-integration, evidence retrieval service, or enabled model-run endpoint. See the
+The catalog remains inert, while a separate trusted
+`PrivateAnalysisToolService` now executes those two calls for one exact
+request. It re-authorizes and re-evaluates current workspace policy per call
+and before release, validates every reference against deployment-owned catalog
+bindings, conceals foreign or denied reads, detects changed query snapshots,
+and atomically enforces cumulative call, unique-reference, and canonical-byte
+budgets. Query references join the same request-local citation ledger as read
+envelopes. Provider callbacks are contained and cannot leak diagnostics into
+tool errors. The service is ephemeral and owns no model runner, persistence,
+HTTP endpoint, network, shell, or plug-in invocation authority. See the
 [private AI analysis boundary](docs/private-ai-analysis.md).
 
 For a headless multi-fixture run:

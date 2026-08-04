@@ -1,6 +1,7 @@
 # Private AI analysis boundary
 
-Status: normative architecture decision for the implementation backlog.
+Status: normative architecture decision with an incrementally implemented
+local contract and trusted read-only evidence-tool boundary.
 
 ## Decision
 
@@ -166,9 +167,11 @@ tenant/project/workspace without repeating those IDs inside the decision;
 cross-workspace replay fails closed. `never_assistant` cannot produce an
 envelope. Wire parsers require non-empty reference and envelope digests and
 never switch into construction mode for missing identity. This decision object
-is not an authorization token: the future read-only tool service must resolve
-the reference from the trusted catalog, re-evaluate current policy before
-retrieval, and ledger the reference before delivery.
+is not an authorization token. The implemented trusted read-only tool service
+resolves references through deployment adapters, requires an independent
+catalog-binding validator, re-authorizes the exact request, re-evaluates
+current policy before release, and records every disclosed reference in its
+request-local citation ledger.
 
 Multi-node claims cite multiple atomic references. They do not turn a mutable
 session, snapshot member, transient topology context, or route-trace ID into a
@@ -176,10 +179,10 @@ synthetic source fact.
 
 ## Typed request and advisory-output values
 
-Core exports a versioned request/result contract for later runner and tool
-implementations. This is still a library and local wire contract; it does not
-enable a model, retrieve evidence, authorize a caller, persist a run, or add an
-HTTP analysis endpoint.
+Core exports a versioned request/result contract for the implemented evidence
+tool service and later model-runner stages. The values alone remain a library
+and local wire contract: they do not enable a model, retrieve evidence,
+authorize a caller, persist a run, or add an HTTP analysis endpoint.
 
 A `PrivateAnalysisRequest` binds all authority-relevant inputs before model
 execution:
@@ -232,8 +235,10 @@ and oversized wire values.
 Summary, claim, and proposal text is proprietary analysis output, not
 automatically client-safe text. Display and export surfaces added later must
 apply their own authorization, disclosure, and safe-rendering boundaries.
-Run storage, retrieval, the disclosure ledger itself, execution, and promotion
-remain separate implementation stages.
+Run storage, durable disclosure-ledger persistence, model execution, and
+promotion remain separate implementation stages. The ephemeral evidence-tool
+service described below now supplies retrieval and a request-local citation
+ledger only.
 
 ## Inert read-only tool contract
 
@@ -265,10 +270,79 @@ matching, already disclosure-gated `EvidenceEnvelope`.
 
 Tool calls and results are canonical, bounded, self-digested values. Tool
 errors use a closed, payload-free taxonomy and static local messages; runner
-or storage exception text does not cross the wire. These contracts do not
-look up a revision, authorize a caller, evaluate a current disclosure policy,
-materialize payloads, record the disclosure ledger, or execute a model. Those
-responsibilities are added by later trusted orchestration stages.
+or storage exception text does not cross the wire. The catalog and its wire
+values still do not look up a revision, authorize a caller, evaluate
+disclosure, materialize payloads, record a ledger, or execute a model. A
+separate trusted service now interprets those inert values; this does not add
+executable authority to the catalog itself.
+
+## Trusted ephemeral evidence-tool service
+
+`PrivateAnalysisToolService` is the implemented request-local adapter between
+the inert tool contract and deployment-owned evidence stores. Construction
+deep-detaches one exact `PrivateAnalysisRequest`, requires the catalog digest
+to equal the shipped closed catalog, and requires the supplied runner policy's
+transport to equal the request transport. Every call is parsed into a detached
+value and must bind that same request digest and catalog digest. Reusing a
+`call_id` is a runner protocol error.
+
+The service receives six deliberately separate trusted callbacks:
+
+- an authorizer returning a `PrivateAnalysisAuthorizationDecision` bound to
+  the exact request and tenant/project/workspace scope digest;
+- a current workspace-policy resolver returning a
+  `PrivateAnalysisWorkspacePolicySnapshot` with the exact scope, version,
+  policy, and verified policy digest;
+- a reference query that returns the complete bounded candidate set for one
+  query;
+- an exact reference lookup for one digest;
+- a required trusted-catalog binding validator; and
+- a payload materializer that is callable only after reference, scope,
+  revision, binding, and initial disclosure checks.
+
+The separation prevents a payload callback from becoming a discovery API and
+prevents a reference lookup from claiming catalog validity. The callbacks are
+trusted deployment composition, but their returned values are not: the
+service detaches and validates them. Callback exceptions other than process
+control are contained and become static payload-free service or tool errors;
+arbitrary callback diagnostics never cross the tool wire.
+
+Authorization and disclosure are live decisions, not construction-time
+capabilities. The authorizer is called on every tool call and again immediately
+before any successful release. Current policy is resolved on every call and
+again before release; its digest must remain the digest bound into the
+request. Query candidates from another scope or an unrelated requested
+revision are omitted without revealing their existence. A same-node,
+same-revision identity conflict fails the query closed. A direct read of a
+foreign or disclosure-denied reference returns the same `evidence_not_found`
+shape as an absent reference. Binding failures and malformed provider values
+fail unavailable rather than becoming citations.
+
+Queries ledger the returned references even though they contain no payload.
+This is intentional: a model can cite metadata learned from a query page.
+Every continuation re-runs the reference query and reconstructs the eligible
+set. The keyset cursor's snapshot digest therefore detects membership or
+policy-eligibility drift rather than silently continuing over a changed set.
+Payload reads return one freshly disclosure-bound `EvidenceEnvelope`.
+
+One lock protects the request-local call-ID set, unique-reference ledger, and
+cumulative budgets. An authorized call that passes runner-protocol admission
+consumes one tool-call unit before evidence-provider work. Authorization
+denials and malformed runner calls do not consume request budget. The item
+budget counts unique disclosed reference digests across query
+and read results; the byte budget counts every successful transfer, including
+repeated references. Query bytes are the UTF-8 sizes of canonical reference
+objects, while read bytes are the UTF-8 size of the canonical envelope.
+Ledger additions and cumulative byte charging commit atomically; a result that
+would exceed either limit returns `budget_exceeded` without partially adding
+references or bytes. `budget_state` and `disclosed_references` expose detached
+snapshots for later result validation.
+
+This service is intentionally ephemeral and read-only. It owns no database,
+filesystem, network, shell, model runner, plug-in invocation, HTTP endpoint,
+run lifecycle, durable accounting, or promotion authority. Durable run and
+ledger storage, execution isolation, API composition, and user-visible model
+workflows remain later stages.
 
 ## Tool and instruction boundary
 

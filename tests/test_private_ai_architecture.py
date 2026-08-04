@@ -26,6 +26,7 @@ from router_dump_analyzer.private_analysis import (
 ROOT = Path(__file__).resolve().parents[1]
 CORE_SOURCE = ROOT / "src" / "router_dump_analyzer"
 PRIVATE_ANALYSIS_SOURCE = CORE_SOURCE / "private_analysis"
+PRIVATE_ANALYSIS_TOOL_SERVICE_SOURCE = CORE_SOURCE / "private_analysis_tool_service.py"
 DECISION_DOCUMENT = ROOT / "docs" / "private-ai-analysis.md"
 
 APPROVED_PROJECT_REQUIREMENTS = {
@@ -1578,6 +1579,115 @@ class PrivateAiArchitectureTests(unittest.TestCase):
             _private_analysis_resource_violations(PRIVATE_ANALYSIS_SOURCE),
             (),
         )
+
+    def test_private_analysis_tool_service_has_narrow_trusted_dependencies(
+        self,
+    ) -> None:
+        expected_members = {
+            "__future__": {"annotations"},
+            "collections.abc": {"Callable"},
+            "dataclasses": {"dataclass"},
+            "enum": {"StrEnum"},
+            "threading": {"Lock"},
+            "typing": {"Any", "Final"},
+            ".canonical": {"strict_canonical_json"},
+            ".private_analysis.contracts": {
+                "PrivateAnalysisError",
+                "PrivateAnalysisErrorCode",
+                "PrivateAnalysisErrorStage",
+                "PrivateAnalysisRequest",
+                "private_analysis_request_from_json",
+                "private_analysis_request_json",
+            },
+            ".private_analysis.disclosure": {
+                "DisclosureDecision",
+                "PrivateAnalysisEvidenceClass",
+                "WorkspaceDisclosurePolicy",
+                "disclosure_scope_digest",
+                "evaluate_workspace_disclosure",
+            },
+            ".private_analysis.evidence": {
+                "EvidenceReference",
+                "EvidenceScope",
+                "evidence_envelope_json",
+                "evidence_reference_dict",
+                "evidence_reference_from_dict",
+                "make_evidence_envelope",
+            },
+            ".private_analysis.policy": {"PrivateAnalysisPolicy"},
+            ".private_analysis.tool_catalog": {
+                "MAX_PRIVATE_ANALYSIS_SNAPSHOT_REFERENCES",
+                "PrivateAnalysisQueryArguments",
+                "PrivateAnalysisReadArguments",
+                "PrivateAnalysisToolCall",
+                "PrivateAnalysisToolError",
+                "PrivateAnalysisToolErrorCode",
+                "PrivateAnalysisToolName",
+                "PrivateAnalysisToolResult",
+                "PrivateAnalysisToolResultKind",
+                "default_private_analysis_tool_catalog",
+                "make_private_analysis_query_page",
+                "private_analysis_tool_call_dict",
+                "private_analysis_tool_call_from_dict",
+            },
+            ".process_control": {"PROCESS_CONTROL_EXCEPTIONS"},
+        }
+        self.assertEqual(
+            {
+                name
+                for _, name in _literal_imports(PRIVATE_ANALYSIS_TOOL_SERVICE_SOURCE)
+            },
+            set(expected_members),
+        )
+        source = PRIVATE_ANALYSIS_TOOL_SERVICE_SOURCE.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(PRIVATE_ANALYSIS_TOOL_SERVICE_SOURCE))
+        actual_members: dict[str, set[str]] = {}
+        for node in ast.walk(tree):
+            self.assertNotIsInstance(node, ast.Import)
+            if isinstance(node, ast.ImportFrom):
+                module = "." * node.level + (node.module or "")
+                actual_members[module] = {alias.name for alias in node.names}
+            if isinstance(node, ast.ExceptHandler):
+                retained_service_errors = tuple(
+                    child
+                    for child in ast.walk(node)
+                    if isinstance(child, ast.Raise)
+                    and isinstance(child.exc, ast.Call)
+                    and isinstance(child.exc.func, ast.Name)
+                    and child.exc.func.id == "_service_error"
+                )
+                self.assertEqual(
+                    retained_service_errors,
+                    (),
+                    "service errors must be raised after leaving exception handlers",
+                )
+        self.assertEqual(actual_members, expected_members)
+        for forbidden in (
+            "annotation_store",
+            "capability_executor",
+            "control_plane",
+            "plugin_api",
+            "revision_store",
+            "session_store",
+            "sqlite",
+            "subprocess",
+            "web.",
+        ):
+            self.assertNotIn(forbidden, source)
+
+    def test_private_analysis_tool_service_is_not_wired_before_runner_stage(
+        self,
+    ) -> None:
+        consumers: list[str] = []
+        for path in _python_files(CORE_SOURCE):
+            if path == PRIVATE_ANALYSIS_TOOL_SERVICE_SOURCE:
+                continue
+            for line, imported in _literal_imports(path):
+                if imported.endswith("private_analysis_tool_service"):
+                    consumers.append(
+                        f"{path.relative_to(CORE_SOURCE).as_posix()}:{line}"
+                    )
+        self.assertEqual(consumers, [])
 
     def test_deployable_sources_have_no_model_endpoint_or_key_configuration(
         self,

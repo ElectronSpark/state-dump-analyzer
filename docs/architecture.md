@@ -2271,7 +2271,40 @@ snapshot digest, and last reference digest. This makes filter, request,
 catalog, and snapshot replay detectable without giving the model an offset,
 database handle, filesystem path, shell, socket, dynamic loader, or plug-in
 callback. Closed payload-free errors keep storage and runner diagnostics out of
-the wire. The values still do not authorize, retrieve, ledger, or execute.
+the wire. The values themselves still do not authorize, retrieve, ledger, or
+execute.
+
+A separate core-owned `PrivateAnalysisToolService` now interprets those inert
+calls for one exact request. It admits only the shipped catalog digest and a
+runner policy whose transport matches the request, then re-authorizes each
+request/call binding and resolves the current matching workspace policy both
+at call admission and immediately before release. Its six deployment-owned
+adapters deliberately separate authorization, scope-bound policy-snapshot
+lookup, candidate
+reference query, exact reference lookup, trusted-catalog binding validation,
+and payload materialization. Provider values are detached and checked;
+provider failures are contained behind static payload-free errors, except for
+process-control signals.
+
+Query acts on a complete bounded candidate snapshot. Foreign-scope and
+unrelated-revision references are omitted, while conflicting identity or
+binding data fails closed. Every continuation recomputes disclosure eligibility
+and the canonical keyset snapshot, making reference-set or policy-eligibility
+drift visible as an invalid cursor. Direct read conceals absent, foreign, and
+disclosure-denied references with one `evidence_not_found` result. Payload
+materialization occurs only after reference identity, membership, binding, and
+initial disclosure checks, followed by authorization and policy readmission
+before envelope release.
+
+The service has an in-memory, request-local unique-reference citation ledger;
+query results join it because their metadata can support a claim. One lock
+protects call-ID admission and atomic ledger/byte commits. The tool-call budget
+is consumed before provider work, the item budget counts unique reference
+digests, and the cumulative byte budget counts canonical UTF-8 reference or
+envelope bytes for every successful transfer. A rejected commit cannot add a
+partial reference or byte charge. The service remains ephemeral and read-only:
+it owns no model runner, durable run or ledger store, HTTP API, database,
+filesystem, network, shell, plug-in call, mutation, or promotion authority.
 
 ## 14. Delivery sequence
 

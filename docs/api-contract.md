@@ -484,9 +484,10 @@ characters per atom. Payload JSON numbers are limited to the exact JavaScript
 range; larger integers use canonical decimal strings. Envelope parsers reject
 duplicate/missing/unknown fields and require, rather than mint, all wire
 digests before verifying content, reference, and envelope identity.
-Construction alone grants no access: a future tool layer must resolve these
-claims against tenant-scoped catalog descriptors and evaluate disclosure
-before materializing the payload.
+Construction alone grants no access. The implemented trusted tool service
+resolves these claims through tenant-scoped deployment adapters, requires an
+independent catalog-binding validation, and evaluates disclosure before
+materializing the payload and again before release.
 
 Multi-node output uses several atomic reference digests. Mutable session IDs,
 snapshot member IDs, topology contexts, route-trace IDs, and plug-in run IDs
@@ -543,8 +544,53 @@ closed static payload-free vocabulary. These values perform no authorization,
 retrieval, disclosure evaluation or recording, runner execution, or plug-in
 callback.
 
-Runner execution, disclosure-ledger persistence, run lifecycle, HTTP routes,
-and human promotion are later contracts.
+The core library now also exports `PrivateAnalysisToolService`, a distinct
+trusted interpreter for that inert catalog. One service instance is bound to
+one detached `PrivateAnalysisRequest`, the shipped catalog digest, and a
+runner policy whose transport matches the request. Each detached call must
+bind the same request and catalog digests; duplicate call IDs fail as a runner
+protocol error. The catalog definitions themselves remain value-only and gain
+no executable handler.
+
+Service composition requires six separate callbacks: exact-request
+authorization, current scope-bound `PrivateAnalysisWorkspacePolicySnapshot`
+resolution, candidate-reference
+query, exact reference lookup, trusted-catalog binding validation, and payload
+materialization. Authorization decisions carry the request digest and a
+domain-separated tenant/project/workspace scope digest. Authorization and
+policy are checked for every call and again before release. The current policy
+digest must equal the request's policy digest. Callback failures are contained
+except for process-control exceptions and map to closed payload-free errors;
+callback exception text is never returned.
+
+A query callback supplies a complete bounded candidate snapshot. The service
+deep-detaches each reference, requires unique digests and a valid catalog
+binding, applies the typed filters and disclosure policy, and omits foreign or
+unrequested-revision references. A conflicting identity for the same node and
+revision fails unavailable. Continuation queries rebuild the eligible set, so
+the cursor snapshot digest detects keyset membership or eligibility drift.
+Successful query-page references enter the citation ledger even though no
+payload was transferred. An exact read resolves separately; absent, foreign,
+and disclosure-denied references all return `evidence_not_found`. Only an
+eligible, catalog-valid reference reaches the payload materializer, and a
+second authorization/policy check occurs before the envelope is released.
+
+The service exposes detached `budget_state` and `disclosed_references`
+snapshots. One lock atomically reserves unique call IDs and commits ledger and
+byte-accounting updates. `max_tool_calls` counts admitted calls before provider
+work. `max_evidence_items` counts unique reference digests disclosed by either
+query or read. `max_evidence_bytes` is cumulative transfer accounting: query
+pages charge each canonical reference's UTF-8 size and reads charge the
+canonical envelope's UTF-8 size, including repeated transfers. A result that
+would cross an item or byte ceiling returns `budget_exceeded` without a
+partial ledger or byte update; its already admitted tool-call unit remains
+consumed.
+
+The service is ephemeral and has no `/v1` route. Model runner execution,
+durable disclosure-ledger persistence, run lifecycle/cancellation, durable
+quotas/accounting, HTTP composition, and human promotion are later contracts.
+It owns no database, filesystem, network, shell, or plug-in invocation
+authority.
 
 Retention preview and execute accept a closed object with optional `catalog`
 and `review` policy objects. Cutoffs use canonical decimal strings. The router
