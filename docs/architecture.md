@@ -2075,6 +2075,8 @@ containing more than a few times the viewport's drawable glyph count.
 
 ## 13. Security and proprietary-data handling
 
+### 13.1 General dump and service security
+
 Treat every dump as hostile and sensitive.
 
 - Reject absolute paths, `..`, symlinks, hard links, devices, path-normalization
@@ -2123,6 +2125,17 @@ sandbox/container isolation and OS resource controls also remain production
 work; the current durable child boundary provides wall-time fault isolation
 only. The Python documentation still requires archive inspection and
 additional resource limits.
+
+### 13.2 Private AI analysis
+
+The private-model trust, transport, disclosure, provenance, and promotion
+boundary is frozen in [Private AI analysis boundary](private-ai-analysis.md).
+Core supplies only trusted in-process and local-subprocess model transports;
+it does not ship a public-model SDK, endpoint, API-key setting, or network
+fallback. An authorized private model may inspect full-fidelity proprietary
+workspace evidence through revision-scoped read-only tools, but its output is
+advisory and cannot directly mutate immutable revisions or impersonate
+plug-in/core evidence.
 
 ## 14. Delivery sequence
 

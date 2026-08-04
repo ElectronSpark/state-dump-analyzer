@@ -767,6 +767,7 @@ the demo guide owns the current projection and evidence contract.
 | Document | Use it for |
 |---|---|
 | [Architecture and library decisions](docs/architecture.md) | System boundaries, temporal model, reconstruction, performance, and security |
+| [Private AI analysis boundary](docs/private-ai-analysis.md) | Local-only model transport, full-fidelity private evidence, advisory provenance, and promotion rules |
 | [Durable control plane](docs/control-plane.md) | Local durable ingestion, catalogs, sessions, annotations, reports, routes, and operations |
 | [API payload contract](docs/api-contract.md) | External state, topology, history, timeline, correlation, and route APIs |
 | [Plug-in author quickstart](docs/plugin-author-quickstart.md) | A linear, copy-paste path to a first plug-in |
