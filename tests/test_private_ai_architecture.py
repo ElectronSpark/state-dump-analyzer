@@ -68,6 +68,9 @@ APPROVED_PACKAGING_MANIFESTS = {
             "router-dump-plugin-validate": (
                 "router_dump_analyzer.plugin_validation:main"
             ),
+            "router-dump-private-analysis": (
+                "router_dump_analyzer.private_analysis_cli:main"
+            ),
             "router-dump-server": "router_dump_analyzer.server_cli:main",
         },
         "entry-points": {},
@@ -993,6 +996,10 @@ def _core_dynamic_import_violations(source_root: Path) -> tuple[str, ...]:
     }
     allowed_import_module_sites = {
         ("plugin_loading.py", "load_plugin_module"),
+        (
+            "private_analysis_deployment.py",
+            "load_private_analysis_deployment",
+        ),
         ("server_cli.py", "_load_identity_resolver"),
     }
     forbidden_loader_import_prefixes = (

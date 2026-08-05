@@ -34,6 +34,7 @@ router-dump-maintain = "router_dump_analyzer.maintenance_cli:main"
 router-dump-health = "router_dump_analyzer.health_cli:main"
 router-dump-server = "router_dump_analyzer.server_cli:main"
 router-dump-plugin-validate = "router_dump_analyzer.plugin_validation:main"
+router-dump-private-analysis = "router_dump_analyzer.private_analysis_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/router_dump_analyzer"]

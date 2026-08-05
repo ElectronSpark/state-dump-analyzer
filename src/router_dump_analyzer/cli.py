@@ -18,6 +18,10 @@ from .plugin_loading import (
     loaded_entry_point,
     loaded_module,
 )
+from .private_analysis_deployment import (
+    PrivateAnalysisDeploymentContext,
+    load_private_analysis_deployment,
+)
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .public_text import bounded_public_error_detail
 from .runtime import (
@@ -163,6 +167,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--private-analysis-deployment-module",
+        metavar="PACKAGE:ATTRIBUTE",
+        help=(
+            "process-trusted local private-analysis deployment descriptor or "
+            "factory; requires --control-plane-dir"
+        ),
+    )
+    parser.add_argument(
         "--expose-api-docs",
         action="store_true",
         help=(
@@ -188,6 +200,7 @@ class LaunchConfiguration:
     grant_instance_operator: bool = False
     control_plane_retention_policy: Path | None = None
     expose_api_docs: bool = False
+    private_analysis_deployment_module: str | None = None
 
 
 def parse_args(argv: Sequence[str] | None = None) -> LaunchConfiguration:
@@ -210,6 +223,13 @@ def parse_args(argv: Sequence[str] | None = None) -> LaunchConfiguration:
         build_parser().error(
             "--control-plane-retention-policy requires --control-plane-dir"
         )
+    if (
+        namespace.private_analysis_deployment_module is not None
+        and namespace.control_plane_dir is None
+    ):
+        build_parser().error(
+            "--private-analysis-deployment-module requires --control-plane-dir"
+        )
     return LaunchConfiguration(
         plugin_name=namespace.plugin,
         plugin_module=namespace.plugin_module,
@@ -224,6 +244,9 @@ def parse_args(argv: Sequence[str] | None = None) -> LaunchConfiguration:
         grant_instance_operator=namespace.grant_instance_operator,
         control_plane_retention_policy=(namespace.control_plane_retention_policy),
         expose_api_docs=namespace.expose_api_docs,
+        private_analysis_deployment_module=(
+            namespace.private_analysis_deployment_module
+        ),
     )
 
 
@@ -317,7 +340,7 @@ def _run_uvicorn(application: Any, *, host: str, port: int) -> None:
     else:
         setup_event_loop = getattr(configuration, "setup_event_loop", None)
         if not callable(setup_event_loop):
-            raise RuntimeError(
+            raise RuntimeError(  # noqa: TRY004 - dependency capability is absent.
                 "installed Uvicorn does not expose a supported event-loop "
                 "configuration API"
             )
@@ -341,6 +364,9 @@ def run(
     application_factory: RuntimeApplicationFactory | None = None,
     server_runner: Callable[..., None] = _run_uvicorn,
     browser_opener: Callable[[str], Any] = webbrowser.open,
+    private_analysis_deployment_loader: Callable[..., Any] = (
+        load_private_analysis_deployment
+    ),
 ) -> None:
     if configuration.expose_api_docs and not _is_loopback_host(configuration.host):
         raise ValueError("API documentation may be exposed only on a loopback host")
@@ -357,6 +383,13 @@ def run(
     ):
         raise ValueError(
             "the instance-operator role may be granted only on a loopback host"
+        )
+    if (
+        configuration.private_analysis_deployment_module is not None
+        and configuration.control_plane_dir is None
+    ):
+        raise ValueError(
+            "private-analysis deployment requires the durable control plane"
         )
     input_path = configuration.input_path.expanduser().resolve()
     if not input_path.exists():
@@ -404,10 +437,23 @@ def run(
                 (plugin,),
                 require_executable_identity=True,
             )
+        state_root = configuration.control_plane_dir.expanduser().resolve()
+        private_analysis_options: dict[str, Any] = {}
+        if configuration.private_analysis_deployment_module is not None:
+            deployment = private_analysis_deployment_loader(
+                configuration.private_analysis_deployment_module,
+                context=PrivateAnalysisDeploymentContext(state_dir=state_root),
+            )
+            private_analysis_options = {
+                "private_analysis_runners": deployment.registrations,
+                "private_analysis_execution_limits": deployment.execution_limits,
+                "private_analysis_ceilings": deployment.ceilings,
+            }
         control_plane = ControlPlane(
-            configuration.control_plane_dir.expanduser().resolve(),
+            state_root,
             registry=registry,
             retention_policy=retention_policy,
+            **private_analysis_options,
         )
         authority = _listener_authority(
             configuration.host,
@@ -482,6 +528,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         and namespace.control_plane_dir is None
     ):
         parser.error("--control-plane-retention-policy requires --control-plane-dir")
+    if (
+        namespace.private_analysis_deployment_module is not None
+        and namespace.control_plane_dir is None
+    ):
+        parser.error(
+            "--private-analysis-deployment-module requires --control-plane-dir"
+        )
     configuration = LaunchConfiguration(
         plugin_name=namespace.plugin,
         plugin_module=namespace.plugin_module,
@@ -496,6 +549,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         grant_instance_operator=namespace.grant_instance_operator,
         control_plane_retention_policy=(namespace.control_plane_retention_policy),
         expose_api_docs=namespace.expose_api_docs,
+        private_analysis_deployment_module=(
+            namespace.private_analysis_deployment_module
+        ),
     )
     try:
         run(configuration)

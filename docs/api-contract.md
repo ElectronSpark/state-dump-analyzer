@@ -1016,6 +1016,58 @@ The serialized display report is capped at 64 MiB; an oversized projection
 fails closed as service unavailable. `Cache-Control: no-store` is set on every
 successful lifecycle response.
 
+### Local private-analysis deployment and CLI adapter
+
+Private-analysis execution is disabled by default. `router-dump-server` and
+the embedded analyzer accept the optional
+`--private-analysis-deployment-module PACKAGE:ATTRIBUTE`; the latter requires
+`--control-plane-dir`. The process-trusted target must be an exact frozen
+`PrivateAnalysisDeployment`, or a callable returning one after receiving one
+frozen `PrivateAnalysisDeploymentContext` whose only field is the canonical
+absolute state directory. The descriptor carries 1..256 exact local runner
+registrations, optional `PrivateAnalysisExecutionLimits`, and optional
+`PrivateAnalysisDeploymentCeilings`. Public runner ID/version pairs are
+unique. The loader invokes a factory once, detaches its result, preserves
+process-control exceptions, and maps every other load/extension failure to a
+static error. It is not a sandbox and is unrelated to device plug-in
+selection.
+
+`router-dump-private-analysis` exposes the same application lifecycle without
+HTTP. Its global contract requires exactly one repeatable `--plugin` or
+`--plugin-module` family, `--state-dir`, `--tenant`, `--project`,
+`--workspace`, and the deployment target; `--output` and `--pretty` are
+optional. It opens existing scope and policy state and starts neither a web
+server nor ingestion workers.
+
+| Subcommand | Required operation fields |
+|---|---|
+| `runners` | none beyond the global scope/composition fields |
+| `create` | `--request`, `--actor`, `--idempotency-key`; optional `--run-id` |
+| `get` | `--run-id` |
+| `list` | optional bounded `--limit`; paired `--after-created-at-ns` and `--after-run-id` |
+| `execute` | `--run-id`, `--actor`, `--expected-version`; optional `--execution-id` |
+| `cancel` | `--run-id`, `--actor`, `--expected-version` |
+| `report` | `--run-id` |
+| `run` | create fields plus optional `--execution-id`; create, execute, report |
+
+The request file is 1..1,048,576 bytes of strict UTF-8 JSON, rejects duplicate
+object keys and non-finite constants, and is parsed as the exact closed HTTP
+caller-intent object shown above. In particular, the query appears only in
+that file; it has no command-line form. Output is one bounded JSON document
+with schema `router_dump_analyzer.private_analysis_cli_result.v1`, operation,
+scope, success, exit code, and the operation-specific runner/run/report value.
+Lossless integer and display-safe report rules are the same as HTTP. Exit `0`
+means success; exit `2` is reserved for a completed `run` whose terminal
+outcome contains an advisory error rather than a result; exit `1` means a
+bounded command or service failure and emits the closed error document on
+stderr. No CLI command retries, falls back to another runner or transport, or
+promotes proposals into annotations/correlations.
+
+Neither startup flag nor CLI document admits a public provider, model endpoint,
+API key, network transport, arbitrary command, shell, ambient environment, or
+fallback. The deployment owns the adapter to its approved local model and the
+corresponding host/container egress controls.
+
 Retention preview and execute accept a closed object with optional `catalog`
 and `review` policy objects. Cutoffs use canonical decimal strings. The router
 derives catalog external-reference protection itself and rejects a caller

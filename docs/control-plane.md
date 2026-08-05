@@ -820,6 +820,45 @@ runner plus its request-bound tool-service factory. The exact bodies, response
 shapes, bounds, status mapping, and privacy contract are normative in
 [API payload contract](api-contract.md).
 
+### Local runner deployment and headless operation
+
+`router-dump-server` accepts the optional
+`--private-analysis-deployment-module PACKAGE:ATTRIBUTE`. The embedded
+`router-dump-analyzer` accepts the same option only when
+`--control-plane-dir` is present. Omission is meaningful: no private-analysis
+runner is registered and the lifecycle stays inert.
+
+The target is process-trusted local Python. It must be an exact frozen
+`PrivateAnalysisDeployment` or a factory invoked once with an exact frozen
+`PrivateAnalysisDeploymentContext`. The only context field is the canonical
+absolute control-plane state directory. A descriptor contains a bounded,
+non-empty, deterministic tuple of exact runner registrations, plus optional
+execution limits and application ceilings. Public `(runner_id,
+runner_version)` pairs are unique. It supplies no caller-selected endpoint,
+key, provider, command, environment, network transport, or fallback. The
+local model adapter and any OS/container egress boundary remain deployment
+responsibilities. This loader is not device plug-in discovery and does not
+sandbox the trusted factory.
+
+`router-dump-private-analysis` is the no-server/no-ingestion adapter for CI and
+operator scripts. Its global options select the state directory, exact
+tenant/project/workspace, one plug-in allowlist family, deployment target, and
+optional output formatting. It supports `runners`, `create`, `get`, `list`,
+`execute`, `cancel`, `report`, and `run`. `run` is the convenience sequence
+create -> execute -> terminal report; it does not retry or fall back.
+
+Create/run read the HTTP caller-intent JSON from `--request PATH`; the 1-MiB
+strict UTF-8 object rejects duplicate keys/non-finite constants and is the
+only CLI location for the proprietary query. Actor and idempotency key remain
+separate command metadata. Execute/cancel require an exact run version, and
+list continuation uses the paired creation-time/run-ID cursor. The command
+opens only existing project/workspace/revision/policy state, starts neither
+ASGI nor workers, and never promotes a proposal into annotations or manual
+correlations. It writes the bounded
+`router_dump_analyzer.private_analysis_cli_result.v1` document to stdout and
+optionally `--output`; exit `0` means success, `2` means `run` produced a
+terminal advisory error, and `1` means bounded command/service failure.
+
 ## 6. HTTP route summary
 
 All routes have the prefix `/v1/control-plane`.

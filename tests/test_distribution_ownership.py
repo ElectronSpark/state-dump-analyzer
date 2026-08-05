@@ -4,7 +4,6 @@ import tomllib
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -20,13 +19,14 @@ class DistributionOwnershipTests(unittest.TestCase):
             {
                 "router-dump-analyzer": "router_dump_analyzer.cli:main",
                 "router-dump-ingest": "router_dump_analyzer.pipeline_cli:main",
-                "router-dump-maintain": (
-                    "router_dump_analyzer.maintenance_cli:main"
-                ),
+                "router-dump-maintain": ("router_dump_analyzer.maintenance_cli:main"),
                 "router-dump-health": "router_dump_analyzer.health_cli:main",
                 "router-dump-server": "router_dump_analyzer.server_cli:main",
                 "router-dump-plugin-validate": (
                     "router_dump_analyzer.plugin_validation:main"
+                ),
+                "router-dump-private-analysis": (
+                    "router_dump_analyzer.private_analysis_cli:main"
                 ),
             },
         )
@@ -34,11 +34,7 @@ class DistributionOwnershipTests(unittest.TestCase):
         self.assertNotIn("gui-scripts", demo["project"])
         self.assertEqual(
             demo["project"]["entry-points"],
-            {
-                "router_dump_analyzer.plugins": {
-                    "demo_router": "rsl_demo_plugin:plugin"
-                }
-            },
+            {"router_dump_analyzer.plugins": {"demo_router": "rsl_demo_plugin:plugin"}},
         )
 
     def test_demo_distribution_contains_no_web_application_module(self) -> None:
@@ -70,9 +66,7 @@ class DistributionOwnershipTests(unittest.TestCase):
             force_include["fixtures/minimal-status.jsonl"],
             "rsl_demo_plugin/fixtures/minimal-status.jsonl",
         )
-        self.assertTrue(
-            (ROOT / "demo" / "fixtures" / "minimal-status.jsonl").is_file()
-        )
+        self.assertTrue((ROOT / "demo" / "fixtures" / "minimal-status.jsonl").is_file())
 
     def test_setup_removes_the_retired_demo_application_distribution(self) -> None:
         for relative_path in ("scripts/setup_demo.ps1", "scripts/setup_demo.sh"):

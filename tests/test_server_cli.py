@@ -98,18 +98,15 @@ class ServerCliTests(unittest.TestCase):
         private_path = r"C:\Users\private-operator\secret\resolver.py"
         for stage, imported in (
             ("import", None),
-            ("descriptor", _HostileResolverModule(
-                _HostileResolverFailure(private_path)
-            )),
+            (
+                "descriptor",
+                _HostileResolverModule(_HostileResolverFailure(private_path)),
+            ),
         ):
             with self.subTest(stage=stage):
                 failure = _HostileResolverFailure(private_path)
                 side_effect = failure if stage == "import" else None
-                return_value = (
-                    imported
-                    if imported is not None
-                    else DEFAULT
-                )
+                return_value = imported if imported is not None else DEFAULT
                 with (
                     patch(
                         "router_dump_analyzer.server_cli.importlib.import_module",
@@ -126,15 +123,18 @@ class ServerCliTests(unittest.TestCase):
             for stage in ("import", "descriptor"):
                 with self.subTest(failure=failure_type.__name__, stage=stage):
                     failure = failure_type()
-                    with patch(
-                        "router_dump_analyzer.server_cli.importlib.import_module",
-                        side_effect=failure if stage == "import" else None,
-                        return_value=(
-                            _HostileResolverModule(failure)
-                            if stage == "descriptor"
-                            else DEFAULT
+                    with (
+                        patch(
+                            "router_dump_analyzer.server_cli.importlib.import_module",
+                            side_effect=failure if stage == "import" else None,
+                            return_value=(
+                                _HostileResolverModule(failure)
+                                if stage == "descriptor"
+                                else DEFAULT
+                            ),
                         ),
-                    ), self.assertRaises(failure_type):
+                        self.assertRaises(failure_type),
+                    ):
                         _load_identity_resolver("deployment.identity:resolver")
 
     def test_parser_accepts_repeated_plugin_allowlist_and_production_resolver(
@@ -175,6 +175,7 @@ class ServerCliTests(unittest.TestCase):
         self.assertFalse(parsed.grant_instance_operator)
         self.assertEqual(parsed.retention_policy_path, Path("retention.json"))
         self.assertFalse(parsed.expose_api_docs)
+        self.assertIsNone(parsed.private_analysis_deployment_module)
 
     def test_parser_requires_plugin_identity_and_safe_identity_mode(self) -> None:
         with self.assertRaises(SystemExit) as missing_plugin:
@@ -380,6 +381,108 @@ class ServerCliTests(unittest.TestCase):
         self.assertFalse(hasattr(configuration, "input_path"))
         self.assertFalse(hasattr(configuration, "no_browser"))
 
+    def test_local_private_analysis_deployment_reaches_control_plane(self) -> None:
+        registrations = (object(),)
+        execution_limits = object()
+        ceilings = object()
+        deployment = type(
+            "Deployment",
+            (),
+            {
+                "registrations": registrations,
+                "execution_limits": execution_limits,
+                "ceilings": ceilings,
+            },
+        )()
+        control_planes: list[_ControlPlane] = []
+        deployment_calls: list[tuple[str, Any]] = []
+
+        def control_plane_factory(root: Path, **values: Any) -> _ControlPlane:
+            result = _ControlPlane(root, **values)
+            control_planes.append(result)
+            return result
+
+        configuration = ServerConfiguration(
+            state_dir=Path("state"),
+            plugin_names=("router",),
+            plugin_modules=(),
+            host="127.0.0.1",
+            port=8765,
+            identity_resolver_module="deployment.identity:resolver",
+            trust_control_plane_headers=False,
+            private_analysis_deployment_module="deployment.private:build",
+        )
+        run(
+            configuration,
+            entry_point_loader=lambda _name: object(),
+            identity_resolver_loader=lambda _target: lambda _request: object(),
+            private_analysis_deployment_loader=lambda target, **values: (
+                deployment_calls.append((target, values["context"])) or deployment
+            ),
+            registry_factory=lambda _plugins, **_values: object(),
+            control_plane_factory=control_plane_factory,
+            application_factory=lambda _request: object(),
+            server_runner=lambda _application, **_values: None,
+        )
+
+        self.assertEqual(deployment_calls[0][0], "deployment.private:build")
+        self.assertTrue(deployment_calls[0][1].state_dir.is_absolute())
+        values = control_planes[0].values
+        self.assertIs(values["private_analysis_runners"], registrations)
+        self.assertIs(values["private_analysis_execution_limits"], execution_limits)
+        self.assertIs(values["private_analysis_ceilings"], ceilings)
+
+    def test_server_parser_accepts_explicit_local_private_analysis_deployment(
+        self,
+    ) -> None:
+        parsed = parse_args(
+            [
+                "--plugin",
+                "router",
+                "--state-dir",
+                "state",
+                "--identity-resolver-module",
+                "deployment.identity:resolver",
+                "--private-analysis-deployment-module",
+                "deployment.private:build",
+            ]
+        )
+        self.assertEqual(
+            parsed.private_analysis_deployment_module,
+            "deployment.private:build",
+        )
+
+    def test_deployment_failure_precedes_durable_control_plane_construction(
+        self,
+    ) -> None:
+        configuration = ServerConfiguration(
+            state_dir=Path("state"),
+            plugin_names=("router",),
+            plugin_modules=(),
+            host="127.0.0.1",
+            port=8765,
+            identity_resolver_module="deployment.identity:resolver",
+            trust_control_plane_headers=False,
+            private_analysis_deployment_module="deployment.private:build",
+        )
+        with self.assertRaisesRegex(RuntimeError, "deployment rejected"):
+            run(
+                configuration,
+                entry_point_loader=lambda _name: object(),
+                identity_resolver_loader=lambda _target: lambda _request: object(),
+                private_analysis_deployment_loader=(
+                    lambda _target, **_values: (_ for _ in ()).throw(
+                        RuntimeError("deployment rejected")
+                    )
+                ),
+                registry_factory=lambda _plugins, **_values: object(),
+                control_plane_factory=lambda *_args, **_values: self.fail(
+                    "durable control plane was constructed"
+                ),
+                application_factory=lambda _request: self.fail(),
+                server_runner=lambda _application, **_values: self.fail(),
+            )
+
     def test_run_passes_role_grant_only_to_trusted_header_resolver(self) -> None:
         resolver = lambda _request: object()
         resolver_options: dict[str, Any] = {}
@@ -401,8 +504,7 @@ class ServerCliTests(unittest.TestCase):
             grant_instance_operator=True,
         )
         with patch(
-            "router_dump_analyzer.web.control_plane_api."
-            "TrustedHeaderIdentityResolver",
+            "router_dump_analyzer.web.control_plane_api.TrustedHeaderIdentityResolver",
             side_effect=resolver_factory,
         ):
             run(

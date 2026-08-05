@@ -2067,7 +2067,11 @@ It can be hosted independently with `router-dump-server`. That composition
 requires one repeatable plug-in allowlist family and a verified synchronous
 identity resolver. It constructs no single-node analyzer runtime or frontend
 host; the private-analysis lifecycle is present but inert because the shipped
-composition registers no model runner.
+composition registers no model runner. An operator may explicitly add
+`--private-analysis-deployment-module PACKAGE:ATTRIBUTE`; the embedded analyzer
+accepts the same option only with `--control-plane-dir`. Both entry points pass
+the canonical state root to the frozen local deployment boundary and otherwise
+keep the empty default.
 The loopback-only trusted-header resolver is a development adapter, not the
 production identity boundary.
 
@@ -2195,6 +2199,32 @@ fallback. An authorized private model may inspect full-fidelity proprietary
 workspace evidence through revision-scoped read-only tools, but its output is
 advisory and cannot directly mutate immutable revisions or impersonate
 plug-in/core evidence.
+
+Local runner composition is deployment-owned. One explicit
+`PACKAGE:ATTRIBUTE` resolves to an exact frozen `PrivateAnalysisDeployment` or
+a factory invoked once with a frozen context containing only the canonical
+absolute state directory. The bounded descriptor holds exact runner/service
+registrations and optional copied execution limits and application ceilings;
+public runner ID/version pairs cannot be ambiguous. The loader contains
+ordinary import, attribute, factory, and descriptor failures behind static
+messages while preserving process-control signals. This is a trusted Python
+composition root, not a sandbox, device plug-in capability, public-provider
+adapter, or caller-controlled configuration surface. With no selected target,
+all shipped hosts remain inert.
+
+The separate `router-dump-private-analysis` composition root opens the same
+durable catalog, policy, run store, and application service without ASGI or
+ingestion workers. It requires exact plug-in allowlisting and
+tenant/project/workspace scope, then offers `runners`, `create`, `get`, `list`,
+`execute`, `cancel`, `report`, and create-execute-report `run` operations. The
+proprietary query is accepted only inside a strict bounded JSON file using the
+same caller-intent shape as HTTP, never as command-line text. It emits a closed
+bounded JSON result for CI/document workflows. It does not create workspace
+authority, retry, change runners/transports, or promote advisory proposals.
+Exit `0` is success, `2` is a terminal advisory error from `run`, and `1` is a
+bounded command/service failure. The actual bridge to a locally approved model
+remains deployment code, with no core network, key, endpoint, shell, ambient
+environment, or fallback path.
 
 Disclosure is bound by a dedicated append-only workspace policy, not generic
 catalog metadata. Missing policy resolves to an explicit disabled version 0.

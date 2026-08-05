@@ -770,6 +770,64 @@ endpoint, API-key, SDK, arbitrary command, environment, network-transport, or
 plug-in-selection field. Deployment composition must supply an approved local
 runner and request-bound tool-service factory before any run can execute.
 
+## Trusted local deployment and headless lifecycle
+
+The shipped composition remains inert: `ControlPlane`, `router-dump-server`,
+and the embedded analyzer register no private-analysis runner unless an
+operator explicitly selects
+`--private-analysis-deployment-module PACKAGE:ATTRIBUTE`. The embedded analyzer
+accepts that option only with `--control-plane-dir`; omitting the option always
+keeps runner discovery empty and execution unavailable.
+
+The selected target is a process-trust boundary, not device plug-in discovery
+or model-provider configuration. It is either one exact frozen
+`PrivateAnalysisDeployment` or a factory called exactly once with a detached,
+frozen `PrivateAnalysisDeploymentContext`. That context contains only the
+canonical absolute durable state directory: no tenant, request, credential,
+plug-in object, model setting, or network handle is ambiently supplied. The
+descriptor contains a bounded non-empty tuple of exact
+`PrivateAnalysisRunnerRegistration` values, plus optional detached execution
+limits and application ceilings. Public runner ID/version pairs must be
+unique; registrations are sorted deterministically. Import, attribute,
+factory, and descriptor failures become static load errors while
+`KeyboardInterrupt`, `SystemExit`, and `GeneratorExit` retain their normal
+process-control behavior. Deployment code nevertheless has the full authority
+of the Python host and must be trusted accordingly.
+
+`router-dump-private-analysis` is the scriptable adapter over the same durable
+application service. All commands require one plug-in allowlist family, state
+directory, tenant/project/workspace scope, and the trusted deployment target.
+Its subcommands are:
+
+| Command | Operation |
+|---|---|
+| `runners` | List local runners allowed by the current workspace policy. |
+| `create` | Idempotently admit a queued run from a request document. |
+| `get` / `list` | Read one run or a bounded keyset page. |
+| `execute` / `cancel` | Mutate one exact durable version. |
+| `report` | Read a display-safe terminal report. |
+| `run` | Idempotently create, execute, and emit the terminal report. |
+
+`create` and `run` require `--request PATH`, `--actor`, and
+`--idempotency-key`. The bounded UTF-8 JSON document has exactly the HTTP
+caller-intent shape; it is capped at 1 MiB, rejects duplicate keys and
+non-finite constants, and carries the proprietary query. There is no query
+command-line option, avoiding process-list and shell-history disclosure.
+Execute and cancel require `--run-id`, `--actor`, and `--expected-version`;
+list uses the paired `--after-created-at-ns`/`--after-run-id` cursor. Global
+`--output` and `--pretty` control the bounded JSON projection.
+
+The command opens the existing catalog, workspace, revisions, disclosure
+policy, and run store. It does not create a project or policy, start the web
+application or ingestion workers, retry a run, choose a different runner or
+transport, or promote any assistant proposal. Output schema
+`router_dump_analyzer.private_analysis_cli_result.v1` goes to stdout and the
+optional file. Exit `0` is successful, `2` means the `run` command produced a
+terminal advisory error with no result, and `1` is a bounded command/service
+failure. A local model adapter remains deployment-owned; core still contains
+no public-provider SDK, API-key or endpoint option, network fallback,
+arbitrary shell, or automatic retry/promotion path.
+
 ## Tool and instruction boundary
 
 The model receives a closed catalog of read-only analysis tools rather than a

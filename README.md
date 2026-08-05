@@ -617,6 +617,7 @@ allowlisted installed plug-in and a deployment-owned identity resolver:
 router-dump-server --plugin your_plugin `
   --state-dir .\.runtime\control-plane `
   --identity-resolver-module deployment.identity:resolve_control_plane_identity `
+  --private-analysis-deployment-module deployment.private_analysis:build `
   --host 0.0.0.0 --port 8765
 ```
 
@@ -624,8 +625,14 @@ Repeat `--plugin` for more installed candidates; source development may repeat
 the mutually exclusive `--plugin-module PACKAGE[:ATTRIBUTE]` form. This server
 serves aggregate root `/health` and `/v1/control-plane`: it accepts no startup
 dump and mounts no single-node analyzer routes, frontend, or assets. Its
-private-analysis lifecycle routes remain inert until deployment composition
-registers an approved local runner. OpenAPI, Swagger UI,
+private-analysis lifecycle routes remain inert when the optional deployment
+module is omitted. The `PACKAGE:ATTRIBUTE` target is process-trusted local
+Python: it must return a frozen `PrivateAnalysisDeployment`, or be a factory
+called once with a frozen context containing only the canonical state
+directory. It registers approved in-process or shell-free local-subprocess
+runners and their request-bound evidence services; it is not a device plug-in
+or a sandbox. The analyzer entry point accepts the same option only together
+with `--control-plane-dir`. OpenAPI, Swagger UI,
 and ReDoc are disabled by default. `--expose-api-docs` enables them only on a
 loopback listener; a non-loopback configuration is rejected. The resolver
 target must be a synchronous module-level
@@ -649,9 +656,43 @@ response is deliberately hybrid: `operational_events` is process-global, while
 It is an advisory troubleshooting snapshot, not a durable audit or compliance
 record, and resets when the process restarts.
 
+For CI or another frontend-free workflow, use the same durable lifecycle
+without starting HTTP or ingestion:
+
+```powershell
+router-dump-private-analysis --plugin your_plugin `
+  --state-dir .\.runtime\control-plane `
+  --tenant example-tenant --project lab-project --workspace regression-2026-07 `
+  --private-analysis-deployment-module deployment.private_analysis:build `
+  --output .\artifacts\private-analysis-report.json --pretty `
+  run --request .\private-analysis-request.json `
+  --actor ci-review --idempotency-key build-1042
+```
+
+The strict, at-most-1-MiB UTF-8 request file uses the same caller-intent object
+as HTTP: revision IDs, public runner ID/version, task kind, query, clock, and
+optional limits. The proprietary query is file-only and never a command-line
+argument. `runners`, `create`, `get`, `list`, `execute`, `cancel`, `report`,
+and the create-execute-report convenience command `run` are available. The
+command opens the existing tenant/project/workspace and disclosure policy; it
+does not create scope, start workers or a server, retry a failed runner,
+switch transports, or promote a proposal into review data. It writes bounded
+JSON (`router_dump_analyzer.private_analysis_cli_result.v1`) to stdout and,
+optionally, `--output`. Exit `0` means success, `2` means `run` reached a
+terminal advisory error rather than a model result, and `1` means command or
+service failure.
+
+Core contains no public-model SDK, endpoint, API-key setting, network
+transport, arbitrary-shell command, or automatic fallback. The adapter from a
+locally approved model to the runner contract remains deployment-owned and
+should be protected with the deployment's own process/network controls.
+
 To mount the same control-plane routes beside one browser analysis, add
 `--control-plane-dir .\.runtime\control-plane` to `router-dump-analyzer`; the
-routes then appear under `/v1/control-plane`.
+routes then appear under `/v1/control-plane`. Add
+`--private-analysis-deployment-module PACKAGE:ATTRIBUTE` only when that
+embedded control plane should load the same explicitly trusted local runner
+composition; the option is rejected without `--control-plane-dir`.
 On the default loopback listener this explicitly installs the local
 trusted-header development adapter. A non-loopback listener is rejected unless
 the unsafe development override is supplied; production ASGI hosting must

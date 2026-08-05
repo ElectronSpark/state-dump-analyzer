@@ -32,6 +32,10 @@ from .plugin_loading import (
     loaded_entry_point,
     loaded_module,
 )
+from .private_analysis_deployment import (
+    PrivateAnalysisDeploymentContext,
+    load_private_analysis_deployment,
+)
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .public_text import bounded_public_error_detail
 
@@ -52,6 +56,7 @@ class ServerConfiguration:
     grant_instance_operator: bool = False
     retention_policy_path: Path | None = None
     expose_api_docs: bool = False
+    private_analysis_deployment_module: str | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -97,6 +102,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional router_dump_analyzer.retention_policy.v1 JSON",
     )
     parser.add_argument(
+        "--private-analysis-deployment-module",
+        metavar="PACKAGE:ATTRIBUTE",
+        help=(
+            "process-trusted local private-analysis deployment descriptor or "
+            "factory; no runner is configured when omitted"
+        ),
+    )
+    parser.add_argument(
         "--expose-api-docs",
         action="store_true",
         help=(
@@ -116,13 +129,9 @@ def parse_args(argv: Sequence[str] | None = None) -> ServerConfiguration:
     if namespace.trust_control_plane_headers and not _is_loopback_host(host):
         parser.error("--trust-control-plane-headers is allowed only on a loopback host")
     if namespace.grant_instance_operator and not namespace.trust_control_plane_headers:
-        parser.error(
-            "--grant-instance-operator requires --trust-control-plane-headers"
-        )
+        parser.error("--grant-instance-operator requires --trust-control-plane-headers")
     if namespace.grant_instance_operator and not _is_loopback_host(host):
-        parser.error(
-            "--grant-instance-operator is allowed only on a loopback host"
-        )
+        parser.error("--grant-instance-operator is allowed only on a loopback host")
     if namespace.expose_api_docs and not _is_loopback_host(host):
         parser.error("--expose-api-docs is allowed only on a loopback host")
     return ServerConfiguration(
@@ -136,6 +145,9 @@ def parse_args(argv: Sequence[str] | None = None) -> ServerConfiguration:
         grant_instance_operator=namespace.grant_instance_operator,
         retention_policy_path=namespace.retention_policy_path,
         expose_api_docs=namespace.expose_api_docs,
+        private_analysis_deployment_module=(
+            namespace.private_analysis_deployment_module
+        ),
     )
 
 
@@ -154,9 +166,7 @@ def _load_identity_resolver(target: str) -> Callable[[Any], Any]:
     except Exception as error:
         raise RuntimeError("identity resolver module could not be imported") from error
     except BaseException:  # noqa: BLE001 - deployment extensions are hostile code.
-        raise RuntimeError(
-            "identity resolver module could not be imported"
-        ) from None
+        raise RuntimeError("identity resolver module could not be imported") from None
     try:
         resolver = getattr(module, attribute)
     except AttributeError as error:
@@ -166,9 +176,7 @@ def _load_identity_resolver(target: str) -> Callable[[Any], Any]:
     except Exception:
         raise
     except BaseException:  # noqa: BLE001 - module attributes may be descriptors.
-        raise RuntimeError(
-            "identity resolver target could not be resolved"
-        ) from None
+        raise RuntimeError("identity resolver target could not be resolved") from None
     if not callable(resolver):
         raise TypeError("identity resolver target must be callable")
     return resolver
@@ -223,6 +231,9 @@ def run(
     identity_resolver_loader: Callable[
         [str], Callable[[Any], Any]
     ] = _load_identity_resolver,
+    private_analysis_deployment_loader: Callable[..., Any] = (
+        load_private_analysis_deployment
+    ),
     application_factory: ControlPlaneApplicationFactory = (
         create_control_plane_application
     ),
@@ -284,10 +295,23 @@ def run(
         retention_policy = load_policy(
             configuration.retention_policy_path.expanduser().resolve()
         ).ingestion
+    state_root = configuration.state_dir.expanduser().resolve()
+    private_analysis_options: dict[str, Any] = {}
+    if configuration.private_analysis_deployment_module is not None:
+        deployment = private_analysis_deployment_loader(
+            configuration.private_analysis_deployment_module,
+            context=PrivateAnalysisDeploymentContext(state_dir=state_root),
+        )
+        private_analysis_options = {
+            "private_analysis_runners": deployment.registrations,
+            "private_analysis_execution_limits": deployment.execution_limits,
+            "private_analysis_ceilings": deployment.ceilings,
+        }
     control_plane = control_plane_factory(
-        configuration.state_dir.expanduser().resolve(),
+        state_root,
         registry=registry,
         retention_policy=retention_policy,
+        **private_analysis_options,
     )
     try:
         application = application_factory(

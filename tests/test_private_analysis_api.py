@@ -273,6 +273,10 @@ class PrivateAnalysisApiTests(unittest.TestCase):
             json=authority,
         )
         self.assertEqual(response.status_code, 422)
+        self.assertEqual(
+            response.json(),
+            {"detail": "private-analysis request has an invalid field set"},
+        )
 
         unsafe_time = self._request_body()
         unsafe_time["clock"] = {
@@ -285,6 +289,10 @@ class PrivateAnalysisApiTests(unittest.TestCase):
             json=unsafe_time,
         )
         self.assertEqual(response.status_code, 422)
+        self.assertEqual(
+            response.json(),
+            {"detail": "selected_time_ns must be a canonical decimal string"},
+        )
         self.assertEqual(self.service.create.call_count, 0)
 
     def test_lifecycle_routes_use_etags_keyset_cursor_and_no_store(self) -> None:
@@ -356,11 +364,6 @@ class PrivateAnalysisApiTests(unittest.TestCase):
             response.json()["query"],
             "Why did left\\u202eright change?",
         )
-        self.assertEqual(
-            control_plane_api._private_analysis_display_json("left\u202eright"),
-            "left\\u202eright",
-        )
-
     def test_service_conflicts_are_static_and_scope_denials_are_concealed(self) -> None:
         self.service.get.side_effect = PrivateAnalysisServiceConflict()
         response = self.client.get(

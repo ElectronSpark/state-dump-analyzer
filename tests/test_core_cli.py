@@ -165,6 +165,7 @@ class CoreCliTests(unittest.TestCase):
             parsed.control_plane_retention_policy,
             Path("retention.json"),
         )
+        self.assertIsNone(parsed.private_analysis_deployment_module)
 
         with self.assertRaises(SystemExit) as missing_control_plane:
             parse_args(
@@ -203,6 +204,71 @@ class CoreCliTests(unittest.TestCase):
             ]
         )
         self.assertTrue(loopback_docs.expose_api_docs)
+
+        with self.assertRaises(SystemExit) as missing_control_plane_for_analysis:
+            parse_args(
+                [
+                    "--plugin",
+                    "router",
+                    "--input",
+                    "fixture.tgz",
+                    "--private-analysis-deployment-module",
+                    "deployment.private:build",
+                ]
+            )
+        self.assertEqual(missing_control_plane_for_analysis.exception.code, 2)
+
+    def test_local_private_analysis_deployment_reaches_embedded_control_plane(
+        self,
+    ) -> None:
+        registrations = (object(),)
+        deployment = type(
+            "Deployment",
+            (),
+            {
+                "registrations": registrations,
+                "execution_limits": object(),
+                "ceilings": object(),
+            },
+        )()
+        captured: dict[str, Any] = {}
+
+        def control_plane_factory(_root: Path, **values: Any) -> Any:
+            captured.update(values)
+            return _ClosableControlPlane()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = Path(temporary_directory) / "fixture.tgz"
+            fixture.touch()
+            with patch(
+                "router_dump_analyzer.control_plane.ControlPlane",
+                side_effect=control_plane_factory,
+            ):
+                run(
+                    LaunchConfiguration(
+                        plugin_name="router",
+                        plugin_module=None,
+                        input_path=fixture,
+                        host="127.0.0.1",
+                        port=8765,
+                        no_browser=True,
+                        control_plane_dir=Path(temporary_directory) / "state",
+                        private_analysis_deployment_module=("deployment.private:build"),
+                    ),
+                    entry_point_loader=lambda _name: _RegisteredRuntimePlugin(),
+                    private_analysis_deployment_loader=(
+                        lambda _target, **_values: deployment
+                    ),
+                    application_factory=lambda _request: object(),
+                    server_runner=lambda _app, **_values: None,
+                )
+
+        self.assertIs(captured["private_analysis_runners"], registrations)
+        self.assertIs(
+            captured["private_analysis_execution_limits"],
+            deployment.execution_limits,
+        )
+        self.assertIs(captured["private_analysis_ceilings"], deployment.ceilings)
 
     def test_instance_operator_role_flag_requires_loopback_control_plane(self) -> None:
         parsed = parse_args(
@@ -334,6 +400,25 @@ class CoreCliTests(unittest.TestCase):
                     control_plane_dir=Path("state"),
                     trust_control_plane_headers=True,
                     **base,
+                ),
+                entry_point_loader=lambda _name: self.fail(),
+                application_factory=lambda _request: self.fail(),
+                server_runner=lambda _app, **_values: self.fail(),
+            )
+
+    def test_programmatic_private_analysis_deployment_requires_control_plane(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(ValueError, "requires the durable control plane"):
+            run(
+                LaunchConfiguration(
+                    plugin_name="router",
+                    plugin_module=None,
+                    input_path=Path("fixture.tgz"),
+                    host="127.0.0.1",
+                    port=8765,
+                    no_browser=True,
+                    private_analysis_deployment_module="deployment.private:build",
                 ),
                 entry_point_loader=lambda _name: self.fail(),
                 application_factory=lambda _request: self.fail(),
@@ -550,6 +635,42 @@ class CoreCliTests(unittest.TestCase):
         self.assertIn("analyzer configuration or startup failed", rendered)
         self.assertNotIn("private", rendered)
         self.assertNotIn("missing-dump.tgz", rendered)
+
+    def test_main_forwards_and_validates_private_analysis_deployment(self) -> None:
+        with patch("router_dump_analyzer.cli.run") as launch:
+            main(
+                [
+                    "--plugin",
+                    "router",
+                    "--input",
+                    "fixture.tgz",
+                    "--control-plane-dir",
+                    "state",
+                    "--private-analysis-deployment-module",
+                    "deployment.private:build",
+                    "--no-browser",
+                ]
+            )
+
+        configuration = launch.call_args.args[0]
+        self.assertEqual(
+            configuration.private_analysis_deployment_module,
+            "deployment.private:build",
+        )
+
+        with self.assertRaises(SystemExit) as stopped:
+            main(
+                [
+                    "--plugin",
+                    "router",
+                    "--input",
+                    "fixture.tgz",
+                    "--private-analysis-deployment-module",
+                    "deployment.private:build",
+                    "--no-browser",
+                ]
+            )
+        self.assertEqual(stopped.exception.code, 2)
 
     def test_runtime_capability_and_core_application_factory(self) -> None:
         self.assertIsInstance(_Session(), PluginRuntimeSession)
