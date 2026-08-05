@@ -137,6 +137,37 @@ class PrivateAnalysisRunnerRegistration:
 
 
 @dataclass(frozen=True, slots=True)
+class PrivateAnalysisRegisteredRunner:
+    """Detached public identity of one exact configured local runner."""
+
+    selection: PrivateAnalysisRunnerSelection
+    instruction_profile_digest: str
+
+    def __post_init__(self) -> None:
+        if type(self.selection) is not PrivateAnalysisRunnerSelection:
+            raise TypeError("selection must be PrivateAnalysisRunnerSelection")
+        selection = PrivateAnalysisRunnerSelection(
+            runner_id=self.selection.runner_id,
+            runner_version=self.selection.runner_version,
+            transport=self.selection.transport,
+            configuration_digest=self.selection.configuration_digest,
+        )
+        if (
+            type(self.instruction_profile_digest) is not str
+            or len(self.instruction_profile_digest) != 71
+            or not self.instruction_profile_digest.startswith("sha256:")
+            or any(
+                character not in "0123456789abcdef"
+                for character in self.instruction_profile_digest[7:]
+            )
+        ):
+            raise ValueError(
+                "instruction_profile_digest must be a sha256-prefixed digest"
+            )
+        object.__setattr__(self, "selection", selection)
+
+
+@dataclass(frozen=True, slots=True)
 class PrivateAnalysisExecutionLimits:
     """Bounded local concurrency, lease, and cancellation polling controls."""
 
@@ -450,6 +481,7 @@ class PrivateAnalysisExecutionCoordinator:
         if type(selected_limits) is not PrivateAnalysisExecutionLimits:
             raise TypeError("limits must be PrivateAnalysisExecutionLimits or None")
         routes: dict[tuple[str, str, object, str], _RegisteredRunner] = {}
+        public_routes: dict[tuple[str, str], _RegisteredRunner] = {}
         for registration in registrations:
             if type(registration) is not PrivateAnalysisRunnerRegistration:
                 raise TypeError(
@@ -458,9 +490,20 @@ class PrivateAnalysisExecutionCoordinator:
             key = _runner_key(registration.runner.selection)
             if key in routes:
                 raise ValueError("private-analysis runner selection is duplicated")
-            routes[key] = _RegisteredRunner(registration)
+            public_key = (
+                registration.runner.selection.runner_id,
+                registration.runner.selection.runner_version,
+            )
+            if public_key in public_routes:
+                raise ValueError(
+                    "private-analysis runner ID and version are duplicated"
+                )
+            selected = _RegisteredRunner(registration)
+            routes[key] = selected
+            public_routes[public_key] = selected
         self._store = store
         self._routes = routes
+        self._public_routes = public_routes
         self._limits = selected_limits
         self._condition = threading.Condition(threading.RLock())
         self._active: dict[tuple[EvidenceScope, str], _DurableExecutionAttempt] = {}
@@ -468,6 +511,55 @@ class PrivateAnalysisExecutionCoordinator:
         self._active_monitor_count = 0
         self._closing = False
         self._closed = False
+
+    def resolve_runner(
+        self,
+        runner_id: str,
+        runner_version: str,
+    ) -> PrivateAnalysisRegisteredRunner:
+        """Resolve one unambiguous registration without exposing its callback."""
+
+        if type(runner_id) is not str or type(runner_version) is not str:
+            raise TypeError("runner identity fields must be strings")
+        registered = self._public_routes.get((runner_id, runner_version))
+        if registered is None:
+            raise PrivateAnalysisExecutionUnavailable(
+                "private-analysis runner is not configured"
+            )
+        runner = registered.registration.runner
+        return PrivateAnalysisRegisteredRunner(
+            selection=runner.selection,
+            instruction_profile_digest=runner.instruction_profile_digest,
+        )
+
+    def list_runners(self) -> tuple[PrivateAnalysisRegisteredRunner, ...]:
+        """Return detached registrations in canonical public identity order."""
+
+        runners = tuple(
+            PrivateAnalysisRegisteredRunner(
+                selection=route.registration.runner.selection,
+                instruction_profile_digest=(
+                    route.registration.runner.instruction_profile_digest
+                ),
+            )
+            for route in self._routes.values()
+        )
+        return tuple(
+            sorted(
+                runners,
+                key=lambda item: (
+                    item.selection.runner_id,
+                    item.selection.runner_version,
+                    item.selection.transport.value,
+                    item.selection.configuration_digest,
+                ),
+            )
+        )
+
+    def is_bound_to_store(self, store: object) -> bool:
+        """Check composition identity without exposing the durable store."""
+
+        return store is self._store
 
     def execute_run(
         self,
@@ -483,7 +575,7 @@ class PrivateAnalysisExecutionCoordinator:
         _bounded_integer(
             expected_version,
             "expected_version",
-            minimum=0,
+            minimum=1,
             maximum=(1 << 63) - 1,
         )
         actor = _actor_id(actor_id)
@@ -493,6 +585,10 @@ class PrivateAnalysisExecutionCoordinator:
         runner_lock_acquired = False
         try:
             record = self._store.get_run(scope, run_id)
+            if record.version != expected_version:
+                raise PrivateAnalysisRunStaleVersion(
+                    "private-analysis run version is stale"
+                )
             if record.state.is_terminal:
                 return record
             if record.state is not PrivateAnalysisRunState.QUEUED:

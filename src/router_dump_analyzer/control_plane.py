@@ -98,6 +98,10 @@ from .private_analysis_execution import (
     PrivateAnalysisRunnerRegistration,
 )
 from .private_analysis_run_store import SqlitePrivateAnalysisRunStore
+from .private_analysis_service import (
+    PrivateAnalysisDeploymentCeilings,
+    PrivateAnalysisService,
+)
 from .session_store import (
     AnalysisRevisionDescriptor,
     AnalysisSession,
@@ -1082,6 +1086,7 @@ class ControlPlane:
         limits: ControlPlaneLimits | None = None,
         private_analysis_runners: tuple[PrivateAnalysisRunnerRegistration, ...] = (),
         private_analysis_execution_limits: PrivateAnalysisExecutionLimits | None = None,
+        private_analysis_ceilings: PrivateAnalysisDeploymentCeilings | None = None,
     ) -> None:
         registry.require_executable_identities()
         # Validate the longest core-owned ingestion pathname before creating
@@ -1159,6 +1164,12 @@ class ControlPlane:
                 limits=private_analysis_execution_limits,
             )
             self.private_analysis_execution = private_analysis_execution
+            self.private_analysis = PrivateAnalysisService(
+                self.sessions,
+                private_analysis_runs,
+                private_analysis_execution,
+                ceilings=private_analysis_ceilings,
+            )
             self.publisher = SessionCatalogPublisher(self.sessions)
             self.ingestion = DurableIngestionPipeline(
                 self.root,

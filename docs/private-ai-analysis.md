@@ -2,8 +2,8 @@
 
 Status: normative architecture decision with implemented local value/tool
 contracts, trusted in-process and shell-free local-subprocess runners, a
-durable local-only run/lifecycle store, and a core-owned synchronous execution
-coordinator.
+durable local-only run/lifecycle store, a core-owned synchronous execution
+coordinator, and an authenticated application/HTTP lifecycle facade.
 
 ## Decision
 
@@ -353,12 +353,12 @@ latch, not inferred only from counters. The first admitted direct attempt
 permanently prevents lease acquisition even if a zero-call budget returns
 `budget_exceeded` or authorization fails before a call unit is charged.
 
-This service is intentionally ephemeral and read-only. It owns no database,
-filesystem, network, shell, model runner, plug-in invocation, HTTP endpoint,
-run lifecycle, durable accounting, or promotion authority. The two adjacent
-runner adapters consume an exclusive service lease; durable run and ledger
-storage, API composition, and user-visible model workflows remain later
-stages.
+This tool service is intentionally ephemeral and read-only. It owns no
+database, filesystem, network, shell, model runner, plug-in invocation, HTTP
+endpoint, run lifecycle, durable accounting, or promotion authority. The two
+adjacent runner adapters consume an exclusive service lease. Durable run and
+ledger storage plus the authenticated lifecycle facade are separate implemented
+layers; a browser workflow and proposal promotion remain later stages.
 
 ## Trusted in-process runner
 
@@ -556,9 +556,11 @@ Unlike the subprocess child, the in-process callback is deployment-trusted,
 unsandboxed Python and cannot be forcibly preempted; it can acquire process
 globals outside its supported gateway. The subprocess peer is treated as
 untrusted at every frame and its direct process is killable, but it is still
-not an OS security sandbox. Neither transport adds a public model provider,
-network client, endpoint/API-key setting, automatic fallback, model-run HTTP or
-CLI route, UI workflow, automatic retry, annotation write, or promotion path.
+not an OS security sandbox. Neither transport itself adds a public model
+provider, network client, endpoint/API-key setting, automatic fallback,
+HTTP/CLI route, UI workflow, automatic retry, annotation write, or promotion
+path. The separate application facade can invoke only an explicitly registered
+local transport through a durable fenced run.
 
 ## Durable local run and disclosure store
 
@@ -719,10 +721,54 @@ does not configure a model. Shutdown closes the execution coordinator before
 its store; if trusted in-process code does not cooperate before the timeout,
 shutdown fails and leaves dependent stores open for a later retry.
 
-This layer exposes no model-run HTTP endpoint, CLI/UI workflow, public-provider
-configuration, network fallback, plug-in call, automatic retry, annotation
-mutation, or proposal promotion. Those authorities require later explicit
-composition and must preserve the coordinator's write-ahead and fence rules.
+The coordinator itself exposes no HTTP, CLI/UI, provider, network, plug-in,
+annotation, or promotion authority. The adjacent application facade described
+below is the only supported route from authenticated caller intent to this
+durable coordinator and preserves its write-ahead and fence rules.
+
+## Authorized run application service and HTTP lifecycle
+
+`PrivateAnalysisService` is a core-owned application facade over the session
+catalog, durable run store, and execution coordinator. Its request spec contains
+only caller-owned intent: a workspace scope, a canonical set of revision IDs,
+one public runner ID/version pair, task kind, query, clock selection, and bounded
+limits. The service re-resolves the workspace and every immutable revision,
+requires plan-bound catalog identity, reads the current workspace disclosure
+policy, resolves one unambiguous local runner registration, and derives the
+policy, instruction-profile, runner-configuration, and closed tool-catalog
+digests. Callers cannot submit or override those authority-bearing values.
+
+Runner discovery returns detached identities only and filters them through the
+current workspace policy. Registrations must have a unique public
+`(runner_id, runner_version)` pair even when their complete internal selections
+differ, preventing an advertised choice from routing ambiguously. The default
+registration tuple remains empty.
+
+Authenticated control-plane routes expose the resulting lifecycle under
+`/v1/control-plane/projects/{project_id}/workspaces/{workspace_id}`: list local
+runners, create/list/read runs, execute or cancel an exact version, and read a
+terminal report. Reads require `control-plane:read`; mutations require
+`control-plane:write`. Create requires `Idempotency-Key`; execute and cancel
+require a strong numeric `If-Match`. Create, single-run read, execute, cancel,
+and report responses carry numeric ETags; list responses do not. Run views use
+decimal strings for nanosecond coordinates and omit query text, evidence
+payloads, transcripts, execution IDs, leases, callback objects, and internal
+audit state. The terminal report adds the original query and canonical advisory
+outcome through a display-safe projection that is not canonical wire/digest
+input; it remains advisory and has no
+mutation or proposal-promotion authority. Execution runs the already durable,
+fenced request once off the event loop through the server's thread executor;
+the application service first requires the current run version and rechecks
+that the workspace policy still enables the request transport, while the tool
+service performs the final race-safe policy check before disclosure. The
+coordinator limits concurrently active executions. Even a terminal replay
+requires the current version. Execution never retries or falls back to another
+transport.
+
+This lifecycle is not model-provider configuration. The public contract has no
+endpoint, API-key, SDK, arbitrary command, environment, network-transport, or
+plug-in-selection field. Deployment composition must supply an approved local
+runner and request-bound tool-service factory before any run can execute.
 
 ## Tool and instruction boundary
 

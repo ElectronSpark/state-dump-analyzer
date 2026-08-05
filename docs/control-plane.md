@@ -2,7 +2,7 @@
 
 Status: implemented local/single-host profile
 
-The durable control plane adds five core-owned capabilities without changing
+The durable control plane adds six core-owned capabilities without changing
 the normalized plug-in contract:
 
 1. a tenant, project, and workspace catalog for immutable fixtures and
@@ -10,8 +10,10 @@ the normalized plug-in contract:
 2. mutable multi-revision sessions plus immutable revision-set snapshots;
 3. durable upload, plug-in selection, ingestion, retry, and progress records;
 4. mutable review annotations and manual event correlations, with a
-   deterministic JSON or Markdown correlation report; and
-5. bounded, disabled-by-default retention with quotas, dry-run inventory,
+   deterministic JSON or Markdown correlation report;
+5. a default-deny private-analysis policy plus a durable, authenticated local
+   runner/run/report lifecycle; and
+6. bounded, disabled-by-default retention with quotas, dry-run inventory,
    durable audit journals, and crash-safe artifact-release replay.
 
 It is available through the Python API, the HTTP routes under
@@ -79,7 +81,7 @@ request and the exact `Origin` on mutations when one is present. This closes
 the DNS-rebinding gap for the local profile; it does not turn caller-supplied
 identity headers into authentication.
 
-For an analysis-independent production HTTP process, use the core-owned
+For a browser-runtime-independent production HTTP process, use the core-owned
 API-only entry point and a deployment-owned resolver:
 
 ```powershell
@@ -99,8 +101,10 @@ listener. Uploaded data can select only from the resulting immutable plug-in
 allowlist.
 
 The API-only process exposes aggregate root `/health` and
-`/v1/control-plane`; it has no `--input`, analysis session/runtime, frontend,
-or static assets. OpenAPI JSON, Swagger UI, and ReDoc are disabled by default.
+`/v1/control-plane`; it has no `--input`, single-node browser analysis runtime,
+frontend, or static assets. It does construct the durable private-analysis
+service/coordinator, but its local runner registration is empty by default.
+OpenAPI JSON, Swagger UI, and ReDoc are disabled by default.
 Operators may opt in with `--expose-api-docs` only on a loopback listener; both
 argument parsing and the composition root reject a non-loopback combination.
 Its ASGI lifespan owns worker start and close, and a construction or bind
@@ -784,6 +788,38 @@ local transports. Credentials, tokens, keys, and `never_assistant` evidence
 remain denied. Policy decisions contain class, transport, digest, and a closed
 reason only; they do not contain the evaluated payload.
 
+### Private-analysis run lifecycle
+
+The workspace run surface is an authenticated facade over the durable
+private-analysis store and exact local execution coordinator. It accepts only
+revision IDs, a public runner ID/version pair, task kind, query, clock, and
+bounded limits. Core derives tenant/project/workspace scope from the authorized
+path, reconstructs every immutable revision/plan binding, reads the current
+workspace policy, resolves one unambiguous registered local runner, and seals
+the policy, instruction-profile, configuration, and tool-catalog digests.
+Transport, callback, provider, endpoint/key, actor, execution fence, and those
+digests are not caller fields.
+
+Reads require `control-plane:read`; create, execute, and cancel require
+`control-plane:write`. Create requires `Idempotency-Key`. Execute and cancel
+require the current strong numeric `If-Match`; their resulting single-run
+projections return the next ETag. Run views contain detached lifecycle identity,
+digests, and payload-free accounting, but no query, evidence payload,
+transcript, execution/lease ID, callback, or audit internals. The terminal
+report adds the original query and a display-safe advisory-outcome projection;
+it is not canonical digest input and cannot mutate annotations or promote a
+proposal. There is no automatic retry or runner/transport fallback.
+Execute re-reads the current policy before claiming a nonterminal run, and the
+request-bound tool service performs the final race-safe policy check before
+disclosure. Even a terminal execute replay rejects a stale ETag.
+
+The shipped `router-dump-server` registration tuple is empty. Runner discovery
+therefore returns no item, and execution is unavailable, until deployment
+composition explicitly supplies an approved in-process or local-subprocess
+runner plus its request-bound tool-service factory. The exact bodies, response
+shapes, bounds, status mapping, and privacy contract are normative in
+[API payload contract](api-contract.md).
+
 ## 6. HTTP route summary
 
 All routes have the prefix `/v1/control-plane`.
@@ -794,7 +830,7 @@ All routes have the prefix `/v1/control-plane`.
 | Diagnostics | `GET /diagnostics/operational-events` (`control-plane:instance-operator`) |
 | Projects | `GET, POST /projects` |
 | Workspaces | `GET, POST /projects/{project_id}/workspaces` |
-| Private analysis | `GET, PUT .../private-analysis-policy` (`PUT` requires `control-plane:admin` and `If-Match`) |
+| Private analysis | `GET, PUT .../private-analysis-policy` (`PUT` requires `control-plane:admin` and `If-Match`); `GET .../private-analysis-runners`; `GET, POST .../private-analysis-runs`; `GET .../private-analysis-runs/{run_id}`; `POST .../private-analysis-runs/{run_id}/execute`; `POST .../private-analysis-runs/{run_id}/cancel`; `GET .../private-analysis-runs/{run_id}/report` |
 | Catalog | `GET /projects/{project_id}/workspaces/{workspace_id}/fixtures`; `GET .../revisions?node_id=...` |
 | Sessions | `GET, POST .../sessions`; `GET, PATCH, DELETE .../sessions/{session_id}`; `PUT, DELETE .../sessions/{session_id}/members/{member_id}`; `POST .../sessions/{session_id}/snapshots`; `GET .../snapshots`; `GET .../snapshots/{snapshot_id}` |
 | Imports | `GET, POST .../imports`; `GET .../imports/{import_id}`; `GET .../candidates`; `GET .../events`; `GET .../events/stream`; `POST .../selection`; `POST .../resume`; `POST .../cancel` |
@@ -845,6 +881,13 @@ using the same language, emits the stored event type as the SSE event name,
 sends keep-alives while idle, and ends after a terminal import has no more
 stored events.
 
+Private-analysis run lists use an ascending two-part cursor because several
+runs can share one timestamp. They are ordered by
+`(created_at_ns ASC, run_id ASC)`, default to 100, cap at 1,000, and return
+paired `after_created_at_ns` and `after_run_id` values only when another page
+may exist. Both fields are required together; the nanosecond coordinate is a
+canonical non-negative decimal string.
+
 ### Request boundary
 
 Every request requires `X-Tenant-ID`. Every mutation also requires
@@ -856,7 +899,9 @@ server recursion error. The raw upload endpoint retains its separate 8 GiB
 streaming limit and does not buffer the artifact as JSON.
 
 Create/admit routes accept `Idempotency-Key`, and plug-in selection requires
-it. Versioned mutations require `If-Match`. `GET /context` returns the
+it. Private-analysis create specifically requires `Idempotency-Key`;
+private-analysis execute and cancel require the current strong numeric
+`If-Match`. Other versioned mutations require `If-Match`. `GET /context` returns the
 resolved `principal_id` and `can_write`; a read-only identity can list,
 inspect, and generate explicitly scoped reports but receives `403` for every
 mutation.
@@ -1404,6 +1449,11 @@ Important fixed contract bounds are:
 | Selected revisions per report (default) | 128 |
 | Aggregate serialized datasets per report (default) | 8 GiB |
 | Selected manual correlation edges per report (default) | 20,000 |
+| Private-analysis revisions per request | 128 hard maximum; deployment may lower |
+| Private-analysis query | 32,768 characters / 131,072 UTF-8 bytes |
+| Private-analysis run-list page | 100 default / 1,000 maximum |
+| Private-analysis display report | 64 MiB serialized maximum |
+| Private-analysis request defaults | 10,000 evidence items; 64 MiB evidence; 256 tool calls; 4 MiB output; 128 claims; 64 proposals; 300,000 ms |
 | One catalog/review retention inventory | 5,000 candidates |
 | One ingestion retention delete batch / scan | 10,000 / 100,000 hard maximum |
 
@@ -1446,6 +1496,8 @@ python -m unittest `
   tests.test_control_plane `
   tests.test_control_plane_api `
   tests.test_control_plane_server `
+  tests.test_private_analysis_service `
+  tests.test_private_analysis_api `
   tests.test_server_cli `
   tests.test_web_health `
   tests.test_operational_logging `
@@ -1460,4 +1512,6 @@ exact subject validation, tombstones and audit, report determinism, bounded
 matching, conservative corroboration, upload streaming, HTTP error
 translation, retention dry runs, protected references, crash replay, quotas,
 bounded audit retrieval, API-only lifecycle/identity boundaries, total health
-projection, and bounded non-blocking operational telemetry.
+projection, private-analysis authority derivation and lifecycle preconditions,
+payload-free run/report projections, and bounded non-blocking operational
+telemetry.

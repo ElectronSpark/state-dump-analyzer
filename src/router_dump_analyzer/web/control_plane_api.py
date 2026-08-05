@@ -109,13 +109,37 @@ from router_dump_analyzer.plugin_execution_plan import (
     plugin_execution_plan_dict,
 )
 from router_dump_analyzer.private_analysis import (
+    MAX_PRIVATE_ANALYSIS_REVISIONS,
+    EvidenceScope,
+    PrivateAnalysisClockMode,
+    PrivateAnalysisLimits,
+    PrivateAnalysisTaskKind,
     WorkspaceDisclosurePolicy,
+    private_analysis_outcome_dict,
     workspace_disclosure_policy_dict,
     workspace_disclosure_policy_from_dict,
+)
+from router_dump_analyzer.private_analysis_execution import (
+    PrivateAnalysisRegisteredRunner,
+)
+from router_dump_analyzer.private_analysis_service import (
+    PrivateAnalysisRequestSpec,
+    PrivateAnalysisRunReport,
+    PrivateAnalysisRunView,
+    PrivateAnalysisService,
+    PrivateAnalysisServiceConflict,
+    PrivateAnalysisServiceError,
+    PrivateAnalysisServiceInvalidRequest,
+    PrivateAnalysisServiceNotFound,
+    PrivateAnalysisServicePolicyDenied,
+    PrivateAnalysisServiceReportNotReady,
+    PrivateAnalysisServiceRunnerUnavailable,
+    PrivateAnalysisServiceUnavailable,
 )
 from router_dump_analyzer.process_control import PROCESS_CONTROL_EXCEPTIONS
 from router_dump_analyzer.public_text import (
     bounded_public_error_detail,
+    escape_unsafe_display_text,
 )
 from router_dump_analyzer.session_store import (
     CatalogRetentionDisabledError,
@@ -152,6 +176,9 @@ MAX_RETENTION_OPERATION_ID_LENGTH = 248
 MAX_RETENTION_PROTECTED_IDS = 5_000
 MAX_RETENTION_ACTOR_LENGTH = 256
 _MAX_SQLITE_INTEGER = (1 << 63) - 1
+_MIN_SQLITE_INTEGER = -(1 << 63)
+_MAX_PRIVATE_ANALYSIS_RUN_LIST = 1_000
+_MAX_PRIVATE_ANALYSIS_DISPLAY_BYTES = 64 * 1024 * 1024
 _MAX_PUBLIC_ERROR_DETAIL_CHARACTERS = 1_024
 _ACCESS_DENIAL_EVENT = "control_plane.access.denied"
 _ACCESS_DENIAL_TENANT_KEY = secrets.token_bytes(32)
@@ -2218,6 +2245,281 @@ def _scoped_workspace_disclosure_policy_json(
     return _workspace_disclosure_policy_json(record)
 
 
+_PRIVATE_ANALYSIS_REQUEST_FIELDS = frozenset(
+    {"revision_ids", "runner", "task_kind", "query", "clock", "limits"}
+)
+_PRIVATE_ANALYSIS_RUNNER_FIELDS = frozenset({"runner_id", "runner_version"})
+_PRIVATE_ANALYSIS_CLOCK_FIELDS = frozenset({"mode", "selected_time_ns"})
+_PRIVATE_ANALYSIS_LIMIT_FIELDS = frozenset(
+    {
+        "max_evidence_items",
+        "max_evidence_bytes",
+        "max_tool_calls",
+        "max_output_bytes",
+        "max_claims",
+        "max_proposals",
+        "deadline_ms",
+    }
+)
+
+
+def _private_analysis_closed_body(
+    value: object,
+    label: str,
+    *,
+    allowed: frozenset[str],
+    required: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise _ControlPlaneHTTPResponse(
+            status_code=422,
+            detail=f"{label} must be an object",
+        )
+    unknown = set(value).difference(allowed)
+    missing = required.difference(value)
+    if unknown or missing:
+        raise _ControlPlaneHTTPResponse(
+            status_code=422,
+            detail=f"{label} has an invalid field set",
+        )
+    return value
+
+
+def _private_analysis_limits_body(value: object) -> PrivateAnalysisLimits:
+    payload = _private_analysis_closed_body(
+        value,
+        "limits",
+        allowed=_PRIVATE_ANALYSIS_LIMIT_FIELDS,
+    )
+    defaults = PrivateAnalysisLimits()
+    minima = {
+        "max_evidence_items": 1,
+        "max_evidence_bytes": 1,
+        "max_tool_calls": 0,
+        "max_output_bytes": 1,
+        "max_claims": 1,
+        "max_proposals": 0,
+        "deadline_ms": 1,
+    }
+    selected: dict[str, int] = {}
+    for field_name in _PRIVATE_ANALYSIS_LIMIT_FIELDS:
+        selected[field_name] = (
+            getattr(defaults, field_name)
+            if field_name not in payload
+            else _request_canonical_integer(
+                payload[field_name],
+                field_name,
+                minimum=minima[field_name],
+                maximum=MAX_JSON_SAFE_INTEGER,
+            )
+        )
+    try:
+        return PrivateAnalysisLimits(**selected)
+    except (TypeError, ValueError) as error:
+        raise _ControlPlaneHTTPResponse(
+            status_code=422,
+            detail="private-analysis limits are invalid",
+        ) from error
+
+
+def _private_analysis_request_spec(
+    scope: EvidenceScope,
+    payload: Mapping[str, Any],
+) -> PrivateAnalysisRequestSpec:
+    body = _private_analysis_closed_body(
+        dict(payload),
+        "private-analysis request",
+        allowed=_PRIVATE_ANALYSIS_REQUEST_FIELDS,
+        required=frozenset({"revision_ids", "runner", "task_kind", "query", "clock"}),
+    )
+    revision_values = body.get("revision_ids")
+    if (
+        not isinstance(revision_values, list)
+        or not 1 <= len(revision_values) <= MAX_PRIVATE_ANALYSIS_REVISIONS
+        or any(type(value) is not str for value in revision_values)
+        or len(set(revision_values)) != len(revision_values)
+    ):
+        raise _ControlPlaneHTTPResponse(
+            status_code=422,
+            detail="revision_ids must contain 1 to 128 unique strings",
+        )
+    runner = _private_analysis_closed_body(
+        body.get("runner"),
+        "runner",
+        allowed=_PRIVATE_ANALYSIS_RUNNER_FIELDS,
+        required=_PRIVATE_ANALYSIS_RUNNER_FIELDS,
+    )
+    clock = _private_analysis_closed_body(
+        body.get("clock"),
+        "clock",
+        allowed=_PRIVATE_ANALYSIS_CLOCK_FIELDS,
+        required=frozenset({"mode"}),
+    )
+    try:
+        clock_mode = PrivateAnalysisClockMode(_required_text(clock, "mode"))
+        task_kind = PrivateAnalysisTaskKind(_required_text(body, "task_kind"))
+    except ValueError as error:
+        raise _ControlPlaneHTTPResponse(
+            status_code=422,
+            detail="private-analysis request vocabulary is invalid",
+        ) from error
+    selected_time_wire = clock.get("selected_time_ns")
+    if selected_time_wire is None:
+        selected_time_ns = None
+    else:
+        if type(selected_time_wire) is not str:
+            raise _ControlPlaneHTTPResponse(
+                status_code=422,
+                detail="selected_time_ns must be a canonical decimal string",
+            )
+        selected_time_ns = _request_canonical_integer(
+            selected_time_wire,
+            "selected_time_ns",
+            minimum=(
+                0
+                if clock_mode is PrivateAnalysisClockMode.ABSOLUTE_UNIX_NS
+                else _MIN_SQLITE_INTEGER
+            ),
+            maximum=_MAX_SQLITE_INTEGER,
+        )
+    try:
+        return PrivateAnalysisRequestSpec(
+            scope=scope,
+            revision_ids=tuple(sorted(revision_values)),
+            runner_id=_required_text(runner, "runner_id"),
+            runner_version=_required_text(runner, "runner_version"),
+            task_kind=task_kind,
+            query=_required_text(body, "query"),
+            clock_mode=clock_mode,
+            selected_time_ns=selected_time_ns,
+            limits=_private_analysis_limits_body(body.get("limits", {})),
+        )
+    except (TypeError, ValueError) as error:
+        raise _ControlPlaneHTTPResponse(
+            status_code=422,
+            detail="private-analysis request is invalid",
+        ) from error
+
+
+def _private_analysis_runner_json(
+    value: PrivateAnalysisRegisteredRunner,
+) -> dict[str, Any]:
+    if type(value) is not PrivateAnalysisRegisteredRunner:
+        raise TypeError("private-analysis runner projection is invalid")
+    selection = value.selection
+    return {
+        "runner_id": selection.runner_id,
+        "runner_version": selection.runner_version,
+        "transport": selection.transport.value,
+        "configuration_digest": selection.configuration_digest,
+        "instruction_profile_digest": value.instruction_profile_digest,
+    }
+
+
+def _private_analysis_run_json(value: PrivateAnalysisRunView) -> dict[str, Any]:
+    if type(value) is not PrivateAnalysisRunView:
+        raise TypeError("private-analysis run projection is invalid")
+    return {
+        "scope": {
+            "tenant_id": value.scope.tenant_id,
+            "project_id": value.scope.project_id,
+            "workspace_id": value.scope.workspace_id,
+        },
+        "run_id": value.run_id,
+        "state": value.state.value,
+        "terminal": value.state.is_terminal,
+        "version": str(value.version),
+        "request_digest": value.request_digest,
+        "task_kind": value.task_kind.value,
+        "revision_ids": list(value.revision_ids),
+        "node_ids": list(value.node_ids),
+        "runner": {
+            "runner_id": value.runner.runner_id,
+            "runner_version": value.runner.runner_version,
+            "transport": value.runner.transport.value,
+            "configuration_digest": value.runner.configuration_digest,
+        },
+        "workspace_policy_digest": value.workspace_policy_digest,
+        "instruction_profile_digest": value.instruction_profile_digest,
+        "tool_catalog_digest": value.tool_catalog_digest,
+        "clock": {
+            "mode": value.clock_mode.value,
+            "selected_time_ns": (
+                None if value.selected_time_ns is None else str(value.selected_time_ns)
+            ),
+        },
+        "limits": {
+            "max_evidence_items": value.limits.max_evidence_items,
+            "max_evidence_bytes": value.limits.max_evidence_bytes,
+            "max_tool_calls": value.limits.max_tool_calls,
+            "max_output_bytes": value.limits.max_output_bytes,
+            "max_claims": value.limits.max_claims,
+            "max_proposals": value.limits.max_proposals,
+            "deadline_ms": value.limits.deadline_ms,
+        },
+        "evidence_ledger_digest": value.evidence_ledger_digest,
+        "disclosed_reference_count": value.disclosed_reference_count,
+        "budget": {
+            "max_tool_calls": value.budget_state.max_tool_calls,
+            "tool_calls_consumed": value.budget_state.tool_calls_consumed,
+            "max_evidence_items": value.budget_state.max_evidence_items,
+            "evidence_items_disclosed": value.budget_state.evidence_items_disclosed,
+            "max_evidence_bytes": value.budget_state.max_evidence_bytes,
+            "evidence_bytes_disclosed": value.budget_state.evidence_bytes_disclosed,
+        },
+        "outcome_digest": value.outcome_digest,
+        "created_at_ns": str(value.created_at_ns),
+        "updated_at_ns": str(value.updated_at_ns),
+        "completed_at_ns": (
+            None if value.completed_at_ns is None else str(value.completed_at_ns)
+        ),
+    }
+
+
+def _private_analysis_display_json(value: Any) -> Any:
+    if type(value) is str:
+        return escape_unsafe_display_text(
+            value,
+            make_escapes_unambiguous=True,
+        )
+    if isinstance(value, dict):
+        return {
+            escape_unsafe_display_text(
+                str(key),
+                make_escapes_unambiguous=True,
+            ): _private_analysis_display_json(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_private_analysis_display_json(item) for item in value]
+    return value
+
+
+def _private_analysis_report_json(
+    value: PrivateAnalysisRunReport,
+) -> dict[str, Any]:
+    if type(value) is not PrivateAnalysisRunReport:
+        raise TypeError("private-analysis report projection is invalid")
+    displayed = _private_analysis_display_json(
+        private_analysis_outcome_dict(value.outcome)
+    )
+    result = {
+        "display_contract": "router_dump_analyzer.private_analysis.display.v1",
+        "run": _private_analysis_run_json(value.run),
+        "query": _private_analysis_display_json(value.query),
+        "outcome": displayed,
+    }
+    serialized = json.dumps(
+        result,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(serialized) > _MAX_PRIVATE_ANALYSIS_DISPLAY_BYTES:
+        raise PrivateAnalysisServiceUnavailable()
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class _ApiErrorPolicy:
     status_code: int
@@ -2267,6 +2569,38 @@ _API_ERROR_POLICY_BY_CLASS: Mapping[type[Exception], _ApiErrorPolicy] = (
                 409,
                 "review idempotency conflict",
                 expose_message=True,
+            ),
+            PrivateAnalysisServiceInvalidRequest: _ApiErrorPolicy(
+                422,
+                "private-analysis request was rejected",
+            ),
+            PrivateAnalysisServicePolicyDenied: _ApiErrorPolicy(
+                403,
+                "private analysis is not allowed for this workspace",
+            ),
+            PrivateAnalysisServiceRunnerUnavailable: _ApiErrorPolicy(
+                503,
+                "private-analysis runner is unavailable",
+            ),
+            PrivateAnalysisServiceNotFound: _ApiErrorPolicy(
+                404,
+                "resource not found",
+            ),
+            PrivateAnalysisServiceReportNotReady: _ApiErrorPolicy(
+                409,
+                "private-analysis report is not ready",
+            ),
+            PrivateAnalysisServiceConflict: _ApiErrorPolicy(
+                409,
+                "private-analysis run conflicts with durable state",
+            ),
+            PrivateAnalysisServiceUnavailable: _ApiErrorPolicy(
+                503,
+                "private-analysis service is unavailable",
+            ),
+            PrivateAnalysisServiceError: _ApiErrorPolicy(
+                500,
+                "private-analysis operation failed",
             ),
             ImportConflictError: _ApiErrorPolicy(
                 409,
@@ -2371,6 +2705,7 @@ _API_ERROR_DOMAIN_ROOTS = (
     SessionStoreError,
     ReviewOverlayError,
     IngestionPipelineError,
+    PrivateAnalysisServiceError,
 )
 
 
@@ -2926,6 +3261,303 @@ def set_workspace_private_analysis_policy(
         )
         _etag(response, record.version)
         return _json_value(_scoped_workspace_disclosure_policy_json(record, scope))
+    except Exception as error:
+        _raise_api_error(error)
+
+
+def _private_analysis_service(request: Request) -> PrivateAnalysisService:
+    service = getattr(_control_plane(request), "private_analysis", None)
+    if type(service) is not PrivateAnalysisService:
+        raise _ControlPlaneHTTPResponse(
+            status_code=503,
+            detail="private-analysis service is unavailable",
+        )
+    return service
+
+
+def _private_analysis_scope_from_path(
+    request: Request,
+    x_tenant_id: str | None,
+    project_id: str,
+    workspace_id: str,
+) -> EvidenceScope:
+    selected = _scope(
+        request,
+        _tenant(x_tenant_id),
+        project_id,
+        workspace_id,
+    )
+    return EvidenceScope(
+        tenant_id=selected.tenant_id,
+        project_id=selected.project_id,
+        workspace_id=selected.workspace_id,
+    )
+
+
+@control_plane_router.get(
+    "/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runners"
+)
+def list_private_analysis_runners(
+    project_id: str,
+    workspace_id: str,
+    request: Request,
+    response: Response,
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
+) -> dict[str, Any]:
+    """List policy-approved local runner identities without executable authority."""
+
+    scope = _private_analysis_scope_from_path(
+        request,
+        x_tenant_id,
+        project_id,
+        workspace_id,
+    )
+    try:
+        values = _private_analysis_service(request).list_runners(scope)
+        response.headers["Cache-Control"] = "no-store"
+        return {"items": [_private_analysis_runner_json(value) for value in values]}
+    except Exception as error:
+        _raise_api_error(error)
+
+
+@control_plane_router.post(
+    "/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runs",
+    status_code=201,
+)
+def create_private_analysis_run(
+    project_id: str,
+    workspace_id: str,
+    request: Request,
+    response: Response,
+    payload: dict[str, Any],
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+    ),
+) -> dict[str, Any]:
+    """Derive trusted request bindings and durably admit one queued run."""
+
+    if idempotency_key is None:
+        raise _ControlPlaneHTTPResponse(
+            status_code=428,
+            detail="Idempotency-Key is required",
+        )
+    operation_key = _catalog_identifier(idempotency_key, "Idempotency-Key")
+    identity = _resolved_identity(request)
+    scope = _private_analysis_scope_from_path(
+        request,
+        x_tenant_id,
+        project_id,
+        workspace_id,
+    )
+    spec = _private_analysis_request_spec(scope, _body_object(payload))
+    try:
+        value = _private_analysis_service(request).create(
+            spec,
+            actor_id=identity.principal_id,
+            idempotency_key=operation_key,
+        )
+        _etag(response, value.version)
+        response.headers["Cache-Control"] = "no-store"
+        return _private_analysis_run_json(value)
+    except Exception as error:
+        _raise_api_error(error)
+
+
+@control_plane_router.get(
+    "/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runs"
+)
+def list_private_analysis_runs(
+    project_id: str,
+    workspace_id: str,
+    request: Request,
+    response: Response,
+    limit: int = Query(
+        default=100,
+        ge=1,
+        le=_MAX_PRIVATE_ANALYSIS_RUN_LIST,
+    ),
+    after_created_at_ns: str | None = Query(default=None),
+    after_run_id: str | None = Query(default=None),
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
+) -> dict[str, Any]:
+    """List scoped run summaries with a stable two-part keyset cursor."""
+
+    if (after_created_at_ns is None) is not (after_run_id is None):
+        raise _ControlPlaneHTTPResponse(
+            status_code=422,
+            detail="both private-analysis cursor fields are required",
+        )
+    after_time = (
+        None
+        if after_created_at_ns is None
+        else _request_canonical_integer(
+            after_created_at_ns,
+            "after_created_at_ns",
+            minimum=0,
+            maximum=_MAX_SQLITE_INTEGER,
+        )
+    )
+    selected_after_run_id = (
+        None
+        if after_run_id is None
+        else _catalog_identifier(after_run_id, "after_run_id")
+    )
+    scope = _private_analysis_scope_from_path(
+        request,
+        x_tenant_id,
+        project_id,
+        workspace_id,
+    )
+    try:
+        values = _private_analysis_service(request).list(
+            scope,
+            limit=limit,
+            after_created_at_ns=after_time,
+            after_run_id=selected_after_run_id,
+        )
+        items = [_private_analysis_run_json(value) for value in values]
+        next_cursor = None
+        if len(values) == limit:
+            last = values[-1]
+            next_cursor = {
+                "after_created_at_ns": str(last.created_at_ns),
+                "after_run_id": last.run_id,
+            }
+        response.headers["Cache-Control"] = "no-store"
+        return {"items": items, "next_cursor": next_cursor}
+    except Exception as error:
+        _raise_api_error(error)
+
+
+@control_plane_router.get(
+    "/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runs/{run_id}"
+)
+def get_private_analysis_run(
+    project_id: str,
+    workspace_id: str,
+    run_id: str,
+    request: Request,
+    response: Response,
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
+) -> dict[str, Any]:
+    scope = _private_analysis_scope_from_path(
+        request,
+        x_tenant_id,
+        project_id,
+        workspace_id,
+    )
+    try:
+        value = _private_analysis_service(request).get(scope, run_id)
+        _etag(response, value.version)
+        response.headers["Cache-Control"] = "no-store"
+        return _private_analysis_run_json(value)
+    except Exception as error:
+        _raise_api_error(error)
+
+
+@control_plane_router.post(
+    "/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runs/"
+    "{run_id}/execute"
+)
+async def execute_private_analysis_run(
+    project_id: str,
+    workspace_id: str,
+    run_id: str,
+    request: Request,
+    response: Response,
+    if_match: str | None = Header(default=None, alias="If-Match"),
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
+) -> dict[str, Any]:
+    """Execute one queued local run without retry or transport fallback."""
+
+    expected_version = _parse_if_match(if_match)
+    identity = _resolved_identity(request)
+    scope = _private_analysis_scope_from_path(
+        request,
+        x_tenant_id,
+        project_id,
+        workspace_id,
+    )
+    try:
+        value = await asyncio.to_thread(
+            _private_analysis_service(request).execute,
+            scope,
+            run_id,
+            expected_version=expected_version,
+            actor_id=identity.principal_id,
+        )
+        _etag(response, value.version)
+        response.headers["Cache-Control"] = "no-store"
+        return _private_analysis_run_json(value)
+    except Exception as error:
+        _raise_api_error(error)
+
+
+@control_plane_router.post(
+    "/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runs/"
+    "{run_id}/cancel"
+)
+async def cancel_private_analysis_run(
+    project_id: str,
+    workspace_id: str,
+    run_id: str,
+    request: Request,
+    response: Response,
+    if_match: str | None = Header(default=None, alias="If-Match"),
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
+) -> dict[str, Any]:
+    """Commit cancellation durably before signalling a matching local attempt."""
+
+    expected_version = _parse_if_match(if_match)
+    identity = _resolved_identity(request)
+    scope = _private_analysis_scope_from_path(
+        request,
+        x_tenant_id,
+        project_id,
+        workspace_id,
+    )
+    try:
+        value = await asyncio.to_thread(
+            _private_analysis_service(request).cancel,
+            scope,
+            run_id,
+            expected_version=expected_version,
+            actor_id=identity.principal_id,
+        )
+        _etag(response, value.version)
+        response.headers["Cache-Control"] = "no-store"
+        return _private_analysis_run_json(value)
+    except Exception as error:
+        _raise_api_error(error)
+
+
+@control_plane_router.get(
+    "/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runs/"
+    "{run_id}/report"
+)
+def get_private_analysis_report(
+    project_id: str,
+    workspace_id: str,
+    run_id: str,
+    request: Request,
+    response: Response,
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
+) -> dict[str, Any]:
+    """Return an authorized, display-safe projection of one terminal outcome."""
+
+    scope = _private_analysis_scope_from_path(
+        request,
+        x_tenant_id,
+        project_id,
+        workspace_id,
+    )
+    try:
+        value = _private_analysis_service(request).get_report(scope, run_id)
+        _etag(response, value.run.version)
+        response.headers["Cache-Control"] = "no-store"
+        return _private_analysis_report_json(value)
     except Exception as error:
         _raise_api_error(error)
 

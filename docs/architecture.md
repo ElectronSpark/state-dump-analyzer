@@ -1,7 +1,7 @@
 # Architecture and library decisions
 
 Status: distributed-production target plus implemented local-profile notes,
-updated 2026-08-01
+updated 2026-08-04
 Runtime: Python 3.12; the local prototype supports Windows and Linux/WSL, while
 the production server and isolated analysis workers target Linux
 
@@ -2035,13 +2035,19 @@ and never reuses partial unpublished output from a different plugin build.
 Apply limits to upload size, selected lanes, graph breadth/depth, timeline span,
 bucket count, raw context bytes, route recursion, and query duration.
 
-The implemented durable administrative/review surface is separate and
-workspace-scoped:
+The implemented durable administrative, review, and private-analysis surface
+is separate and workspace-scoped:
 
 ```text
 GET,POST /v1/control-plane/projects
 GET,POST /v1/control-plane/projects/{project_id}/workspaces
 GET,PUT  /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/private-analysis-policy
+GET      /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runners
+GET,POST /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runs
+GET      .../private-analysis-runs/{run_id}
+POST     .../private-analysis-runs/{run_id}/execute
+POST     .../private-analysis-runs/{run_id}/cancel
+GET      .../private-analysis-runs/{run_id}/report
 GET      /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/fixtures
 GET      /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/revisions
 GET,POST /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/sessions
@@ -2059,7 +2065,9 @@ POST        .../correlation-report
 
 It can be hosted independently with `router-dump-server`. That composition
 requires one repeatable plug-in allowlist family and a verified synchronous
-identity resolver, and never constructs an analysis runtime or frontend host.
+identity resolver. It constructs no single-node analyzer runtime or frontend
+host; the private-analysis lifecycle is present but inert because the shipped
+composition registers no model runner.
 The loopback-only trusted-header resolver is a development adapter, not the
 production identity boundary.
 
@@ -2386,8 +2394,30 @@ boundary instead. Thus a cancelled receipt cannot lag its durable evidence
 ledger.
 
 `ControlPlane` creates this coordinator with an empty registration set by
-default and closes it before the durable run store. This adds no model endpoint,
-credential, network client, HTTP/CLI route, scheduler, or promotion authority.
+default and closes it before the durable run store. The coordinator adds no
+model endpoint, credential, network client, HTTP/CLI route, scheduler, or
+promotion authority.
+
+The core-owned `PrivateAnalysisService` is the application boundary above the
+catalog, run store, and coordinator. It accepts only caller intent and derives
+all authority-bearing values from the authenticated workspace path, immutable
+catalog records, current disclosure policy, exact local registration, and
+closed tool catalog. It returns immutable payload-free run views and a terminal
+report whose outcome is re-bound to the same request digest. Public runner
+identity is unique by `(runner_id, runner_version)` even though internal
+execution routing retains the complete transport/configuration selection.
+
+The control-plane router exposes that service through authenticated read/write
+routes for runner discovery and run create/list/get/execute/cancel/report.
+Create is idempotent, mutations are optimistic-versioned, detail/mutation/report
+responses have a matching ETag, and all responses are non-cacheable. Execute waits through
+`asyncio.to_thread` for the already durable synchronous coordinator; it is not
+a FastAPI background task, does not retry, and does not switch registrations.
+The router never accepts provider endpoint/key, transport, configuration,
+policy/instruction/catalog digest, callback, plug-in, execution-fence, or
+evidence-payload authority. The shipped registration set remains empty, so
+this lifecycle is inert until deployment composition supplies an approved
+local runner.
 
 Runner composition claims a pristine service through a permanent single-run
 lease. Lease acquisition is atomic with direct-call execution, refuses an
@@ -2551,9 +2581,11 @@ child cannot reach the parent's Python object graph through the supported
 interface; unlike a container, it still has the host user's filesystem and
 network authority and no core-applied CPU/memory limit. Deployments must add
 those controls and must enforce the no-descendants rule when required. The
-implementation is not wired to a model-run HTTP/CLI/UI, package-level product
-configuration, durable scheduler, public provider SDK, endpoint/key setting,
-network fallback, retry, annotation mutation, or promotion workflow.
+adapter itself is not wired to package-level provider configuration, a durable
+scheduler, public-provider SDK, endpoint/key setting, network fallback, retry,
+annotation mutation, or promotion workflow. The application service above may
+invoke an explicitly registered local adapter only through the exact durable
+run and fence.
 
 ## 14. Delivery sequence
 

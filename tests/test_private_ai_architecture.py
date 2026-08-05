@@ -28,6 +28,7 @@ CORE_SOURCE = ROOT / "src" / "router_dump_analyzer"
 PRIVATE_ANALYSIS_SOURCE = CORE_SOURCE / "private_analysis"
 PRIVATE_ANALYSIS_TOOL_SERVICE_SOURCE = CORE_SOURCE / "private_analysis_tool_service.py"
 PRIVATE_ANALYSIS_EXECUTION_SOURCE = CORE_SOURCE / "private_analysis_execution.py"
+PRIVATE_ANALYSIS_SERVICE_SOURCE = CORE_SOURCE / "private_analysis_service.py"
 PRIVATE_ANALYSIS_IN_PROCESS_RUNNER_SOURCE = (
     CORE_SOURCE / "private_analysis_in_process_runner.py"
 )
@@ -1708,9 +1709,42 @@ class PrivateAiArchitectureTests(unittest.TestCase):
                 PRIVATE_ANALYSIS_EXECUTION_SOURCE.name,
                 PRIVATE_ANALYSIS_RUNNER_SUPPORT_SOURCE.name,
                 "private_analysis_run_store.py",
+                "private_analysis_service.py",
                 PRIVATE_ANALYSIS_SUBPROCESS_RUNNER_SOURCE.name,
             },
         )
+
+    def test_private_analysis_application_service_has_no_transport_authority(
+        self,
+    ) -> None:
+        source = PRIVATE_ANALYSIS_SERVICE_SOURCE.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(PRIVATE_ANALYSIS_SERVICE_SOURCE))
+        for node in ast.walk(tree):
+            self.assertNotIsInstance(node, ast.Import)
+            if isinstance(node, ast.ImportFrom):
+                module = "." * node.level + (node.module or "")
+                self.assertNotIn(module, {".plugin_api", ".plugin_validation"})
+                self.assertFalse(module.startswith(".web"))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                self.assertNotIn(
+                    node.func.id,
+                    {
+                        "__import__",
+                        "compile",
+                        "eval",
+                        "exec",
+                        "open",
+                    },
+                )
+        for forbidden in (
+            "api_key",
+            "endpoint_url",
+            "http://",
+            "https://",
+            "socket",
+            "subprocess",
+        ):
+            self.assertNotIn(forbidden, source.casefold())
 
     def test_private_analysis_in_process_runner_has_narrow_authority(self) -> None:
         source = PRIVATE_ANALYSIS_IN_PROCESS_RUNNER_SOURCE.read_text(encoding="utf-8")

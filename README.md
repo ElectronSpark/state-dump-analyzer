@@ -559,9 +559,9 @@ OS reaping guarantee.
 Adapter-created descendants are forbidden because this portable implementation
 does not provide a Windows Job Object or process-tree kill guarantee. The child
 boundary is killable but is not a filesystem/network/CPU/memory sandbox, so a
-deployment must add those OS controls. No model-run HTTP/CLI/UI, public provider
-SDK, endpoint/key configuration, automatic network fallback, durable run, or
-promotion workflow is wired to either runner. See the
+deployment must add those OS controls. Neither runner contains a public-provider
+SDK, endpoint/key configuration, automatic network fallback, or promotion
+workflow. See the
 [private AI analysis boundary](docs/private-ai-analysis.md).
 
 Private-analysis runs can now be executed and retained locally without wiring
@@ -582,11 +582,16 @@ commits complete accounting before every tool response, observes durable
 cancellation, and persists the exact transport-neutral receipt without
 automatic retry. The in-process path remains cooperative; the subprocess path
 reports cancellation only after its child and helper cleanup is attested.
-`ControlPlane` owns the coordinator but configures no runners by default. There
-is still no model-run HTTP/CLI/UI workflow, public-provider configuration,
-endpoint/key setting, or network fallback; deployment composition must
-explicitly register its approved local runner and request-bound tool-service
-factory.
+`ControlPlane` owns the coordinator and an authenticated application service
+for listing approved local runners, admitting runs, executing or cancelling
+them with optimistic version checks, and reading display-safe terminal reports.
+The shipped server configures no runners, so the catalog is empty and execution
+is unavailable until deployment composition explicitly registers an approved
+local runner and request-bound tool-service factory. The HTTP surface accepts
+analysis intent only; it derives scope, immutable revision bindings, current
+workspace policy, runner configuration, instruction profile, and the closed
+tool-catalog digest. It exposes no public-provider configuration, endpoint/key
+setting, network fallback, transcript, evidence payload, or executable callback.
 
 For a headless multi-fixture run:
 
@@ -605,7 +610,7 @@ router-dump-ingest --plugin demo_router `
 
 Repeat `--input` for additional fixtures. The optional node hint and bounded
 JSON metadata are plug-in-visible parsing inputs; catalog and identity scope
-remain core-private. Run an analysis-independent, API-only service with an
+remain core-private. Run the frontend-free API service with an
 allowlisted installed plug-in and a deployment-owned identity resolver:
 
 ```powershell
@@ -618,7 +623,9 @@ router-dump-server --plugin your_plugin `
 Repeat `--plugin` for more installed candidates; source development may repeat
 the mutually exclusive `--plugin-module PACKAGE[:ATTRIBUTE]` form. This server
 serves aggregate root `/health` and `/v1/control-plane`: it accepts no startup
-dump and mounts no analysis routes, frontend, or assets. OpenAPI, Swagger UI,
+dump and mounts no single-node analyzer routes, frontend, or assets. Its
+private-analysis lifecycle routes remain inert until deployment composition
+registers an approved local runner. OpenAPI, Swagger UI,
 and ReDoc are disabled by default. `--expose-api-docs` enables them only on a
 loopback listener; a non-loopback configuration is rejected. The resolver
 target must be a synchronous module-level

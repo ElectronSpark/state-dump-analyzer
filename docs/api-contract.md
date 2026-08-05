@@ -6,8 +6,9 @@ Encoding: UTF-8 JSON; Arrow/Parquet exports use equivalent typed columns
 The endpoint list in `architecture.md` is intentionally compact. This document
 fixes the payload rules other tools need. Sections that describe a target
 rather than a shipped provider say so explicitly. The durable
-`/v1/control-plane` catalog, ingestion, session, annotation, and report surface
-is implemented; its operational guide is
+`/v1/control-plane` catalog, ingestion, session, annotation,
+correlation-report, and private-analysis run surface is implemented; its
+operational guide is
 [`control-plane.md`](control-plane.md).
 
 ## 1. Global rules
@@ -306,8 +307,10 @@ the visible project page:
 generation are unavailable. It means all mutation routes require a different
 authorized identity and return `403` for this one.
 
-Create/admit mutations accept `Idempotency-Key`. Plug-in selection requires
-that header. Session update/delete, session member/snapshot mutation,
+Create/admit mutations accept `Idempotency-Key`. Plug-in selection and
+private-analysis run creation require that header. Private-analysis execute
+and cancel require `If-Match` with the current strong numeric run version.
+Session update/delete, session member/snapshot mutation,
 annotation/correlation patch/delete, and import cancellation require
 `If-Match` with the current non-negative integer version. The executable
 accepts exactly one strong, quoted, canonical non-negative decimal validator
@@ -325,6 +328,7 @@ tenant
         |-- immutable fixtures
         |   `-- immutable analysis revisions
         |-- versioned private-analysis disclosure policy
+        |-- durable private-analysis runs and terminal reports
         |-- mutable sessions -> immutable revision-set snapshots
         |-- durable imports
         `-- mutable annotations/correlations -> append-only review audit
@@ -340,6 +344,12 @@ All paths below are relative to `/v1/control-plane`.
 | `GET, POST` | `/projects` | List or create tenant projects. |
 | `GET, POST` | `/projects/{project_id}/workspaces` | List or create project workspaces. |
 | `GET, PUT` | `/projects/{project_id}/workspaces/{workspace_id}/private-analysis-policy` | Read the current workspace disclosure policy or append an admin-authorized compare-and-swap revision. |
+| `GET` | `/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runners` | List detached local runner identities allowed by the current workspace policy. |
+| `GET, POST` | `/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runs` | Page scoped run summaries or admit one derived, idempotent request. |
+| `GET` | `/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runs/{run_id}` | Read one payload-free run summary and strong version ETag. |
+| `POST` | `.../private-analysis-runs/{run_id}/execute` | Execute the exact queued run under its durable fence; requires `If-Match`. |
+| `POST` | `.../private-analysis-runs/{run_id}/cancel` | Commit cancellation before signalling a matching local attempt; requires `If-Match`. |
+| `GET` | `.../private-analysis-runs/{run_id}/report` | Read a display-safe projection of the terminal query and advisory outcome. |
 | `GET` | `/projects/{project_id}/workspaces/{workspace_id}/fixtures` | List immutable fixtures. |
 | `GET` | `/projects/{project_id}/workspaces/{workspace_id}/revisions` | List immutable revisions; optional `node_id` or `fixture_id`. |
 | `GET, POST` | `/projects/{project_id}/workspaces/{workspace_id}/sessions` | List or create mutable sessions. |
@@ -419,8 +429,10 @@ provider registry are trusted in-process composition objects; underscore
 attributes and Python introspection are outside the supported API and are not
 a sandbox for hostile in-process callers.
 
-The exported private-analysis evidence values are also implemented, but no
-`/v1` evidence or model-run route exists yet. An atomic reference has this
+The exported private-analysis evidence values are also implemented. There is
+no direct `/v1` evidence browser or payload-read route; the authorized run
+lifecycle described below exposes only derived request/run metadata and a
+terminal display projection. An atomic reference has this
 exact shape (digest text is abbreviated here only for readability):
 
 ```json
@@ -494,8 +506,9 @@ snapshot member IDs, topology contexts, route-trace IDs, and plug-in run IDs
 are not citation identity.
 
 The exported private-analysis request and advisory-output values are also
-implemented as a library/local-wire contract. They still have no `/v1` run
-endpoint. `PrivateAnalysisRequest` wire version 2 binds the exact scope, a
+implemented as a library/local-wire contract. The authorized `/v1` lifecycle
+does not expose these canonical wire values directly; it admits caller intent
+and returns bounded projections. `PrivateAnalysisRequest` wire version 2 binds the exact scope, a
 canonical unique
 vector of 1 to 128 revision bindings, selected runner ID/version/closed
 transport/configuration digest, workspace policy digest, trusted instruction
@@ -597,7 +610,8 @@ direct-call attempt permanently selects direct-call mode even when it returns
 therefore do not make that service pristine again.
 
 The core also implements a trusted local
-`ConfiguredPrivateAnalysisInProcessRunner`; it still exposes no `/v1` route.
+`ConfiguredPrivateAnalysisInProcessRunner`; the runner object itself owns no
+`/v1` route.
 Construction binds an exact in-process runner ID, version, configuration
 digest, and trusted instruction-profile digest. Execution accepts one exact
 fresh leased service. It requires current authorization and pinned workspace
@@ -654,12 +668,12 @@ budget after every tool operation. The observer must return successfully
 before the local snapshot is published and before that tool response reaches
 the model. These two hooks let the adjacent durable run store enforce
 write-ahead disclosure accounting without giving either transport database
-authority. Model-run HTTP composition and human promotion remain later
-contracts.
+authority. The separate authenticated lifecycle facade composes those hooks;
+human review and promotion remain later contracts.
 
 The local-child library boundary is implemented by
-`ConfiguredPrivateAnalysisSubprocessRunner`; it still exposes no `/v1`, CLI, or
-UI model-run surface. Construction requires a `local_subprocess` selection and
+`ConfiguredPrivateAnalysisSubprocessRunner`; the runner object itself owns no
+`/v1`, CLI, or UI model-run surface. Construction requires a `local_subprocess` selection and
 an exact equality between its configuration digest and the sealed launch
 configuration. The request must equal that runner selection and bind the same
 instruction-profile and shipped tool-catalog digests. A runner-selection
@@ -848,9 +862,9 @@ storage-layer copy. `ControlPlane` binds its opaque installation identity to a
 root initialization record and refuses a missing binding, missing/truncated database, or replacement
 database after first initialization. Deployments must protect the state
 directory and backups and use disk encryption appropriate to the selected
-disclosure mode. This API adds no provider SDK, public-network fallback,
-model-run HTTP/CLI/UI, automatic retry, annotation mutation, or proposal
-promotion.
+disclosure mode. This storage API adds no provider SDK, public-network
+fallback, automatic retry, annotation mutation, or proposal promotion. The
+separate application facade below is the only HTTP owner of its run lifecycle.
 
 ### Local private-analysis execution API
 
@@ -898,6 +912,109 @@ stops admission and waits for active calls and monitors; it never pretends to
 preempt a non-cooperative trusted callback. `ControlPlane` owns one coordinator
 whose registration set is empty unless deployment composition explicitly
 supplies approved local runners.
+
+### Authorized private-analysis run HTTP API
+
+These routes are relative to
+`/v1/control-plane/projects/{project_id}/workspaces/{workspace_id}`:
+
+| Method | Path | Contract |
+|---|---|---|
+| `GET` | `/private-analysis-runners` | Policy-filtered detached runner identities; `control-plane:read`. |
+| `POST` | `/private-analysis-runs` | Derive and admit one queued request; `control-plane:write` and `Idempotency-Key`. |
+| `GET` | `/private-analysis-runs` | Bounded `(created_at_ns, run_id)` keyset page; `control-plane:read`. |
+| `GET` | `/private-analysis-runs/{run_id}` | One run summary with a strong numeric `ETag`. |
+| `POST` | `/private-analysis-runs/{run_id}/execute` | Synchronously wait for one fenced local execution; `control-plane:write` and strong numeric `If-Match`. |
+| `POST` | `/private-analysis-runs/{run_id}/cancel` | Durably request cancellation before local signalling; `control-plane:write` and strong numeric `If-Match`. |
+| `GET` | `/private-analysis-runs/{run_id}/report` | Display-safe terminal query/outcome projection plus `ETag`; conflicts while nonterminal. |
+
+Create accepts this closed caller-intent shape; `limits` is optional and every
+listed nested object rejects unknown fields:
+
+```json
+{
+  "revision_ids": ["revision-a", "revision-b"],
+  "runner": {
+    "runner_id": "approved-local-model",
+    "runner_version": "1"
+  },
+  "task_kind": "route_trace_analysis",
+  "query": "Explain the asymmetric reachability.",
+  "clock": {
+    "mode": "absolute_unix_ns",
+    "selected_time_ns": "1759686025000000000"
+  },
+  "limits": {
+    "max_tool_calls": 32,
+    "max_evidence_items": 256,
+    "max_evidence_bytes": 8388608,
+    "max_output_bytes": 1048576,
+    "max_claims": 128,
+    "max_proposals": 64,
+    "deadline_ms": 120000
+  }
+}
+```
+
+Caller revision order is canonicalized before the service builds the immutable
+binding vector. `task_kind` is one of `lttng_analysis`,
+`resource_correlation`, `cross_node_corroboration`, `route_trace_analysis`, or
+`general_evidence_review`. Clock `mode` is `latest_per_revision` (with no
+selected time), `absolute_unix_ns` (non-negative selected time), or
+`revision_end_relative_ns` (signed selected time). Queries are non-empty and
+bounded to 32,768 characters and 131,072 UTF-8 bytes.
+
+Omitted limits use `PrivateAnalysisLimits` defaults: 10,000 evidence items,
+64 MiB evidence, 256 tool calls, 4 MiB output, 128 claims, 64 proposals, and a
+300,000 ms deadline. The deployment may configure lower ceilings; a request
+cannot raise them. The closed contract maxima remain an additional hard bound.
+
+Tenant, principal, actor, policy digest, transport, configuration digest,
+instruction-profile digest, tool-catalog digest, execution ID, and run ID are
+not request-body authority. Core derives scope from the authorized path,
+reconstructs canonical revision bindings from the catalog, reads the current
+workspace policy, and resolves one exact deployment registration. Disabled
+policy, disallowed transport, planless/cross-workspace revisions, unknown
+runner, or deployment-ceiling violations fail before persistence or execution.
+Execute checks the supplied run version before policy evaluation, then re-reads
+the current workspace policy before claiming a nonterminal run. The request-
+bound tool service remains the final race-safe policy gate before evidence is
+disclosed. A terminal execute replay also requires its current ETag; stale
+terminal validators do not bypass optimistic concurrency.
+
+Run summaries deliberately omit the query, evidence payloads, disclosed
+references, transcript, execution/lease identifiers, callback values, and
+audit internals. They include only detached lifecycle/request identity,
+payload-free accounting, digests, and timestamps. Nanosecond fields and run
+versions cross JSON as canonical decimal strings; the ETag is the same numeric
+version. Every response is `Cache-Control: no-store`. List cursors require both
+`after_created_at_ns` and `after_run_id`; the response returns the same pair as
+`next_cursor` only when another page may exist.
+
+Runner discovery returns `{"items": [...]}`. Each item contains only
+`runner_id`, `runner_version`, closed local `transport`, `configuration_digest`,
+and `instruction_profile_digest`; it exposes no callable or tool-service
+factory. A disabled workspace policy, an empty registration set, or no
+transport intersection returns an empty list. Run-list responses are
+`{"items": [run-view...], "next_cursor": object-or-null}` ordered ascending by
+`(created_at_ns, run_id)`, with default page size 100 and maximum 1,000. A run
+view contains `scope`, `run_id`, state/terminal/version/request identity,
+task/revision/node/runner identity, derived digests, clock, limits,
+payload-free budget and ledger digest, outcome digest, and lifecycle times.
+
+The report is available only for a terminal run and has
+`display_contract: router_dump_analyzer.private_analysis.display.v1`. It adds
+the original query and an advisory-outcome display projection after making
+unsafe or ambiguous display characters explicit. This projection is not the
+canonical outcome wire JSON and must not be used as digest-verification input.
+It does not grant annotation mutation
+or proposal promotion. Stable failures use `422` for invalid intent, `403` for
+policy denial, concealed `404` for inaccessible scope/run, `409` for stale or
+nonterminal state, `428` for missing preconditions, and `503` for unavailable
+runner/service. Execution has no automatic retry or runner/transport fallback.
+The serialized display report is capped at 64 MiB; an oversized projection
+fails closed as service unavailable. `Cache-Control: no-store` is set on every
+successful lifecycle response.
 
 Retention preview and execute accept a closed object with optional `catalog`
 and `review` policy objects. Cutoffs use canonical decimal strings. The router

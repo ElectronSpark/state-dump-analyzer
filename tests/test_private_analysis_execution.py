@@ -29,6 +29,7 @@ from router_dump_analyzer.private_analysis_in_process_runner import (
 )
 from router_dump_analyzer.private_analysis_run_store import (
     PrivateAnalysisRunConflict,
+    PrivateAnalysisRunStaleVersion,
     PrivateAnalysisRunState,
     SqlitePrivateAnalysisRunStore,
 )
@@ -431,7 +432,7 @@ class PrivateAnalysisExecutionCoordinatorTests(unittest.TestCase):
         self.assertEqual(counts, {"factory": 1, "callback": 1})
         self.assertEqual(
             sum(
-                isinstance(item, PrivateAnalysisExecutionUnavailable)
+                isinstance(item, PrivateAnalysisRunStaleVersion)
                 for item in outcomes
             ),
             1,
@@ -606,11 +607,18 @@ class PrivateAnalysisExecutionCoordinatorTests(unittest.TestCase):
         replay = coordinator.execute_run(
             request.scope,
             queued.run_id,
-            expected_version=queued.version,
+            expected_version=cancelled.version,
             actor_id="worker-1",
         )
         self.assertEqual(replay, cancelled)
         self.assertEqual(calls, {"factory": 0, "runner": 0})
+        with self.assertRaises(PrivateAnalysisRunStaleVersion):
+            coordinator.execute_run(
+                request.scope,
+                queued.run_id,
+                expected_version=queued.version,
+                actor_id="worker-1",
+            )
 
     def test_cancellation_between_claim_and_registration_uses_no_service(self) -> None:
         request = _request()
