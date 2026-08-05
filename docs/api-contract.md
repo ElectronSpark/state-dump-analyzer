@@ -647,8 +647,14 @@ The resulting payload-free transcript keeps the real last-complete disclosure
 ledger and budget. Calls that reached the private lease without a gateway hash
 chain entry are counted by `unattributed_tool_call_count`; they are not rewritten
 as a zero-use run.
-Durable disclosure-ledger persistence, run lifecycle/cancellation,
-durable quotas/accounting, HTTP composition, and human promotion remain later
+Both configured runners expose a transport-neutral, payload-free
+`PrivateAnalysisTranscriptSummary`. Their accounting snapshots also accept an
+optional observer that receives the complete detached reference ledger and
+budget after every tool operation. The observer must return successfully
+before the local snapshot is published and before that tool response reaches
+the model. These two hooks let the adjacent durable run store enforce
+write-ahead disclosure accounting without giving either transport database
+authority. Model-run HTTP composition and human promotion remain later
 contracts.
 
 The local-child library boundary is implemented by
@@ -775,7 +781,8 @@ digests; and the final tool-budget snapshot. Each message-chain link contains
 only direction, sequence, kind, message digest, and frame size. It retains no
 argv/environment value, request/query, evidence/tool payload, model output,
 stderr text, exception, path, or timestamp. Its detached execution receipt is
-not persisted or returned by an HTTP API in this stage.
+not returned by an HTTP API in this stage; the receipt's transport-neutral
+summary is the value accepted by the separate durable run store.
 
 The subprocess runner is a killable direct-child fault boundary, not an OS
 sandbox. The peer is untrusted at the JSONL boundary and cannot receive Python
@@ -785,8 +792,65 @@ filesystem and network authority and receives no core CPU/memory quota;
 deployment containment must remove those capabilities and enforce the
 no-descendants policy when required. Neither runner is wired to public model
 APIs, a provider SDK, endpoint/API-key settings, network fallback, product
-configuration, durable scheduling/cancellation, retry, annotation mutation,
-or promotion.
+configuration, model-run HTTP scheduling, automatic retry, annotation
+mutation, or promotion.
+
+### Local private-analysis run-store API
+
+`SqlitePrivateAnalysisRunStore` is a local library API, not an HTTP or CLI
+surface. It persists the exact canonical `PrivateAnalysisRequest`, its ordered
+multi-revision vector, write-ahead evidence ledger and budget, a payload-free
+transport summary, and a sealed terminal outcome. Its lifecycle vocabulary is
+closed to `queued`, `running`, `cancel_requested`, `completed`, and
+`cancelled`.
+
+Admission uses `create_run(request, idempotency_key, actor_id, now_ns=...)`.
+The `ControlPlane` composition supplies a catalog validator and holds the same
+single-host file fence used by catalog retention while it re-derives every
+workspace, fixture, revision, identity, and immutable execution-plan binding
+and inserts the run. A standalone store must supply equivalent atomicity when
+its catalog can change concurrently. Scope-bound reads are `get_run` and the
+bounded keyset `list_runs`.
+
+Execution is fenced and optimistic-versioned. `claim_run` returns one opaque
+execution ID and bounded lease; `renew_lease` and `commit_accounting` require
+that identity, the expected record version, and an unexpired lease.
+`commit_accounting` accepts only an append-only reference set and monotonic
+budget counters within the exact request ceilings. `request_cancellation`
+completes a queued run immediately and marks a running run cooperatively.
+`complete_run` accepts a terminal result only when its request, outcome,
+ledger, budget, catalog, instruction, runner, and transcript commitments equal
+the persisted values. A successful result is also revalidated against the
+exact durable ledger and request-specific output, claim, and proposal limits.
+Once cancellation wins the version race, an ordinary result cannot overwrite
+it. `recover_expired_runs` never retries: an expired attempt becomes static
+`runner_failed`, or `cancelled` when cancellation was already requested.
+
+Each transition appends one contiguous, predecessor-sealed, payload-free audit
+entry. `list_audit` reconstructs and verifies that chain against the redundant
+run head. A run has at most 10,000 audit entries, with capacity reserved for
+cancellation and terminalization. `referenced_revision_ids` returns all
+revisions protected from catalog retention by retained runs. Run retention is
+disabled by default;
+`inventory_retention`, `run_retention`, and `list_retention_journal` are
+bounded library operations. Execution purges only terminal proprietary run
+rows and preserves a payload-free tombstone and self-digested journal. Active
+heads have independent guard and live-admission anchors; paired loss therefore
+still fails catalog protection closed, and admission caps one scope at 10,000 active runs. Purge
+uses secure deletion and a truncating WAL checkpoint before reporting
+completion. It deliberately does not run a full-database `VACUUM`; optional
+freelist page reclamation is offline maintenance. An already committed journal
+makes a failed checkpoint safe to retry.
+
+The dedicated SQLite database contains proprietary requests and successful
+outcomes at rest, including in its active WAL and every pre-purge backup or
+storage-layer copy. `ControlPlane` binds its opaque installation identity to a
+root initialization record and refuses a missing binding, missing/truncated database, or replacement
+database after first initialization. Deployments must protect the state
+directory and backups and use disk encryption appropriate to the selected
+disclosure mode. This API adds no provider SDK, public-network fallback,
+model-run HTTP/CLI/UI, automatic retry, annotation mutation, or proposal
+promotion.
 
 Retention preview and execute accept a closed object with optional `catalog`
 and `review` policy objects. Cutoffs use canonical decimal strings. The router

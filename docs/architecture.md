@@ -553,9 +553,10 @@ imply a distributed coordinator.
 Retention is a core orchestration saga, not plug-in behavior. Quotas can be
 enabled independently from deletion. Destructive policy is disabled by
 default, inventories are bounded, catalog deletion is protected by session,
-snapshot, review, idempotency, and explicit references, and review audit is
+snapshot, review, retained private-analysis run, idempotency, and explicit
+references, and review audit is
 preserved unless an explicit compliance mode permits pruning. One advisory
-single-host fence serializes review reference creation with catalog retention
+single-host fence serializes review/private-run reference creation with catalog retention
 across cooperating processes. Catalog deletion commits before exact artifact
 pins are released; unacknowledged releases are replayed after a crash. A
 versioned saga receipt freezes the actor, policies, and effective clock, then
@@ -2258,7 +2259,8 @@ result or one error. Every request, citation, claim, proposal, result, error,
 and outcome is exact-field, bounded, canonical, and self-digested. Parsing
 checks representation and integrity only; it does not perform authorization,
 retrieve evidence, establish policy freshness, execute a runner, persist a
-run, or promote a proposal. Those remain separate orchestration stages.
+run, or promote a proposal. The durable run store is a separate orchestration
+stage and revalidates these values against current catalog identity.
 
 The adjacent tool layer is intentionally inert. A self-digested catalog fixes
 the complete vocabulary to `query_evidence` and `read_evidence`, with closed
@@ -2306,6 +2308,52 @@ partial reference or byte charge. The service remains ephemeral and read-only:
 it owns no model runner, durable run or ledger store, HTTP API, database,
 filesystem, network, shell, plug-in call, mutation, or promotion authority.
 
+The core-owned `SqlitePrivateAnalysisRunStore` is a separate local persistence
+boundary. It admits an exact multi-revision request only after `ControlPlane`
+re-derives every durable fixture/revision/execution-plan binding while holding
+the same single-host fence used by catalog retention. Its closed lifecycle is
+optimistic-versioned and lease-fenced; expiry terminalizes without automatic
+model retry. A cancellation request is one-way and race-linearized, but does
+not pretend to preempt arbitrary in-process Python. If cancellation commits
+first, an ordinary result cannot overwrite it; if terminal completion commits
+first, the later cancellation conflicts.
+
+Disclosure accounting is write-ahead. A runner's optional accounting observer
+must commit the complete canonical reference ledger and budget before the
+corresponding response is released. The ledger cannot shrink, replace an
+identity, cross scope/revision bindings, or move counters backwards. Terminal
+commit revalidates successful output against the exact stored ledger and the
+request's output/claim/proposal limits, then requires that ledger/budget and a
+`PrivateAnalysisTranscriptSummary` binding request, catalog, instruction,
+runner configuration, transport, outcome, and evidence snapshot.
+
+The store keeps proprietary canonical request/outcome documents and disclosed
+references in a dedicated SQLite database with WAL, `synchronous=FULL`,
+`secure_delete=ON`, strict tables, bounded busy waits, schema locking,
+snapshot-consistent reads, `BEGIN IMMEDIATE`, self-digest reconstruction, and
+fail-closed audit-chain verification. The state seal includes accounting and
+all lifecycle timestamps as well as state and content digests. Its audit and
+retention journals contain only identities, closed lifecycle vocabulary,
+timestamps, and digests. Audit chains are capped at 10,000 entries per run and
+reserve terminal capacity. Retention is disabled by default, selects only
+terminal runs, preserves payload-free tombstones, and removes a run's catalog
+revision protection only when its proprietary data is purged. An independent
+active-run guard plus live-admission anchor make missing head/guard combinations
+fail closed, and a 10,000-run per-scope ceiling bounds catalog-reference reconstruction. A committed logical
+purge is replayable until a truncating WAL checkpoint completes. Secure
+deletion clears candidate cells without a full-database `VACUUM`, so online
+retention work does not scale with unrelated runs; optional page reclamation
+is offline maintenance. Pre-purge backups and storage-layer copies remain a
+deployment responsibility.
+
+`ControlPlane` binds the database's opaque installation identity to a
+root-level initialization record under a file lock. Once initialized, a missing binding or missing,
+zero-length, or replacement database fails startup closed rather than being
+silently recreated with an empty revision-reference set. SQLite
+administrators remain trusted; coherent rollback or replacement of both files
+requires an external WORM checkpoint to detect. No HTTP/CLI/model scheduler is
+added by this layer.
+
 Runner composition claims a pristine service through a permanent single-run
 lease. Lease acquisition is atomic with direct-call execution, refuses an
 active or previously used service, and blocks every non-lease call while and
@@ -2343,12 +2391,17 @@ closes the gateway, rechecks current run access, snapshots the detached ledger,
 strictly parses canonical result JSON, applies output/count limits, and binds
 citations with `validate_private_analysis_result`. The internal receipt is a
 detached outcome plus ledger/budget snapshots and the payload-free transcript
-seal; it is neither routed nor persisted at this stage.
+seal. It also projects a transport-neutral, payload-free summary that a
+separate durable coordinator can persist; the runner itself neither routes nor
+stores it.
 
 The in-process and local-child adapters share one last-complete detached
 accounting primitive. Successful tool work refreshes it before any later
-attestation can fail; final snapshot and lease-close faults retain the prior
-complete pair and become static runner failures. Receipt construction also
+attestation can fail; an optional observer durably commits the complete pair
+before local publication and before the tool response returns to the model.
+Observer failure propagates with the prior pair intact. Final snapshot and
+lease-close faults retain that prior complete pair and become static runner
+failures. Receipt construction also
 detaches the supplied transcript before storing it. For detected reflective
 private-lease bypass, the in-process transcript binds the real disclosure
 ledger and budget and counts calls not represented in the gateway hash chain
@@ -2454,7 +2507,8 @@ size; the seal additionally binds request/catalog/instruction/runner/launch/run
 digests, counts, admitted stderr bytes, budget state, evidence-ledger digest,
 and outcome digest. It retains no model text, request/query, evidence or tool
 payload, stderr, exception, path, argument, environment value, or timestamp.
-The detached receipt is not persisted or routed by this stage.
+The detached receipt exposes the same transport-neutral summary for later
+durable routing, but is not persisted or routed by the subprocess stage.
 
 This subprocess boundary provides killable direct-child fault isolation, not
 an OS security sandbox. Unlike the process-trusted in-process callback, the

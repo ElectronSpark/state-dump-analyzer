@@ -564,6 +564,22 @@ SDK, endpoint/key configuration, automatic network fallback, durable run, or
 promotion workflow is wired to either runner. See the
 [private AI analysis boundary](docs/private-ai-analysis.md).
 
+Private-analysis runs can now be retained locally without wiring a public
+model service. `SqlitePrivateAnalysisRunStore` persists the exact scoped,
+multi-revision request; a fenced lease/cancellation lifecycle; write-ahead
+evidence-ledger and budget snapshots; a payload-free transport summary; and a
+sealed terminal outcome. The `ControlPlane` owns this dedicated database and
+protects every referenced revision from catalog retention. Run retention is
+bounded and disabled by default, and preserves only payload-free tombstone and
+journal commitments after proprietary request/outcome data is purged. It uses
+secure deletion and a truncating WAL checkpoint without making a bounded purge
+run full-database compaction. Independent active-run guards and live admission
+anchors make missing heads fail catalog protection closed. A missing root
+binding, missing/truncated database, or replacement database also fails closed
+after first initialization. There is still no model-run HTTP/CLI/UI workflow or public-provider configuration;
+deployment composition must route one approved local runner and commit every
+accounting snapshot before its response reaches the model.
+
 For a headless multi-fixture run:
 
 ```powershell

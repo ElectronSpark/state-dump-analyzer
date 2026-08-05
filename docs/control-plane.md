@@ -1057,12 +1057,38 @@ schema is `router_dump_analyzer.retention_policy.v1`:
 Review audit history is preserved unless `audit_mode` is explicitly
 `prune_explicit` and `audit_before_sequence` is supplied. Catalog deletion is
 reference-aware: current session members, immutable snapshots, live and
-retained review subjects, idempotency receipts, explicitly protected IDs, and
-the latest snapshot policy can each block a candidate. The caller cannot set
-the catalog's external-reference attestation over HTTP; `ControlPlane`
-calculates it after checking the review store.
+retained review subjects, idempotency receipts, explicitly protected IDs,
+retained private-analysis runs, and the latest snapshot policy can each block
+a candidate. The caller cannot set the catalog's external-reference
+attestation over HTTP; `ControlPlane` calculates it after checking both the
+review store and its dedicated `private-analysis-runs.sqlite3` store. Review
+and private-run reference admission use the same
+`.review-catalog-retention.lock` as catalog-retention planning, so a revision
+cannot disappear between validation and durable reference insertion.
 `audit_before_sequence` uses the same canonical `0..9007199254740991` audit
 domain as review cursors and watermarks; it is not a signed-64-bit coordinate.
+
+Private-run catalog protection is fail-closed and bounded. Each active run has
+independent guard and live-admission anchors, so deleting a head and either
+single anchor cannot silently erase its revision protection. Admission caps one tenant/project/workspace scope at
+10,000 active runs; reference reconstruction validates every guarded run and
+refuses an inconsistent or over-limit store instead of attesting a partial
+protected set.
+
+Private-analysis run retention is intentionally not part of this maintenance
+HTTP/CLI policy surface yet. Its bounded library policy is disabled by default
+and purges only terminal runs while preserving payload-free commitments. The
+maintenance CLI nevertheless requires the private-run database to exist before
+catalog retention can run, because silently replacing a missing reference
+store with an empty one could release revisions still needed by retained runs.
+After upgrading a legacy state directory, open it once through the normal
+`ControlPlane` startup path to create and validate this database before using
+`router-dump-maintain`. That first open also binds the database's opaque
+installation identity to `.private-analysis-run-store.binding.json` under a
+dedicated file lock. Later startup refuses a missing binding or a missing,
+zero-length, or different database rather than silently creating an empty reference store. Recovery from
+actual loss therefore requires restoring the matching database and binding;
+deleting the binding to bypass this check is not a supported repair.
 
 Opening a control plane or ingestion pipeline is non-destructive even when the
 loaded policy has `enabled: true`. Workspace ingestion retention considers only

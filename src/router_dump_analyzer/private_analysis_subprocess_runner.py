@@ -59,9 +59,15 @@ from .private_analysis.local_subprocess_protocol import (
     validate_private_analysis_local_subprocess_sequence,
 )
 from .private_analysis_runner_support import (
+    MAX_PRIVATE_ANALYSIS_SUBPROCESS_STDERR_BYTES,
+    MAX_PRIVATE_ANALYSIS_SUBPROCESS_TRANSCRIPT_BYTES,
+    PrivateAnalysisAccountingObserver,
+    PrivateAnalysisLocalSubprocessTranscriptSummaryMetadata,
     PrivateAnalysisRunAccountingSnapshot,
+    PrivateAnalysisTranscriptSummary,
     detached_private_analysis_budget_state,
     detached_private_analysis_error,
+    detached_private_analysis_transcript_summary,
     empty_private_analysis_budget_state,
     private_analysis_budget_payload,
     private_analysis_deadline_expired,
@@ -91,8 +97,6 @@ MAX_PRIVATE_ANALYSIS_SUBPROCESS_ARG_BYTES: Final = 32_768
 MAX_PRIVATE_ANALYSIS_SUBPROCESS_COMMAND_UTF16_UNITS: Final = 30_000
 MAX_PRIVATE_ANALYSIS_SUBPROCESS_ENVIRONMENT_ITEMS: Final = 256
 MAX_PRIVATE_ANALYSIS_SUBPROCESS_ENVIRONMENT_BYTES: Final = 256 * 1024
-MAX_PRIVATE_ANALYSIS_SUBPROCESS_STDERR_BYTES: Final = 256 * 1024
-MAX_PRIVATE_ANALYSIS_SUBPROCESS_TRANSCRIPT_BYTES: Final = 8 * 1024 * 1024
 MIN_PRIVATE_ANALYSIS_SUBPROCESS_REAP_GRACE_MS: Final = 10
 MAX_PRIVATE_ANALYSIS_SUBPROCESS_REAP_GRACE_MS: Final = 10_000
 
@@ -437,10 +441,44 @@ def _detached_subprocess_transcript(
     )
 
 
+def _subprocess_transcript_summary(
+    value: PrivateAnalysisSubprocessTranscript,
+) -> PrivateAnalysisTranscriptSummary:
+    """Project one sealed child transcript into the shared payload-free contract."""
+
+    transcript = _detached_subprocess_transcript(value)
+    return PrivateAnalysisTranscriptSummary(
+        transport=PrivateAnalysisTransport.LOCAL_SUBPROCESS,
+        request_digest=transcript.request_digest,
+        catalog_digest=transcript.catalog_digest,
+        instruction_profile_digest=transcript.instruction_profile_digest,
+        runner_configuration_digest=transcript.runner_configuration_digest,
+        outcome_digest=transcript.outcome_digest,
+        evidence_ledger_digest=transcript.evidence_ledger_digest,
+        budget_state=transcript.budget_state,
+        metadata=PrivateAnalysisLocalSubprocessTranscriptSummaryMetadata(
+            transcript_digest=transcript.transcript_digest,
+            launch_configuration_digest=transcript.launch_configuration_digest,
+            run_digest=transcript.run_digest,
+            message_count=transcript.message_count,
+            tool_call_count=transcript.tool_call_count,
+            message_metadata_bytes=transcript.message_metadata_bytes,
+            message_chain_digest=transcript.message_chain_digest,
+            stderr_bytes=transcript.stderr_bytes,
+        ),
+    )
+
+
 class PrivateAnalysisSubprocessExecutionReceipt:
     """Detached internal result of one shell-free local-child execution."""
 
-    __slots__ = ("_budget", "_outcome_json", "_references", "_transcript")
+    __slots__ = (
+        "_budget",
+        "_outcome_json",
+        "_references",
+        "_transcript",
+        "_transcript_summary",
+    )
 
     def __init__(
         self,
@@ -468,6 +506,7 @@ class PrivateAnalysisSubprocessExecutionReceipt:
         self._transcript = detached_transcript
         self._references = references
         self._budget = budget
+        self._transcript_summary = _subprocess_transcript_summary(detached_transcript)
 
     @property
     def outcome(self) -> PrivateAnalysisOutcome:
@@ -505,6 +544,12 @@ class PrivateAnalysisSubprocessExecutionReceipt:
     @property
     def budget_state(self) -> PrivateAnalysisToolBudgetState:
         return detached_private_analysis_budget_state(self._budget)
+
+    @property
+    def transcript_summary(self) -> PrivateAnalysisTranscriptSummary:
+        """Return a detached transport-neutral transcript summary."""
+
+        return detached_private_analysis_transcript_summary(self._transcript_summary)
 
     def __repr__(self) -> str:
         outcome = self.outcome
@@ -1218,9 +1263,13 @@ class ConfiguredPrivateAnalysisSubprocessRunner:
     def execute(
         self,
         tool_service: PrivateAnalysisToolService,
+        *,
+        accounting_observer: PrivateAnalysisAccountingObserver | None = None,
     ) -> PrivateAnalysisSubprocessExecutionReceipt:
         if type(tool_service) is not PrivateAnalysisToolService:
             raise TypeError("tool_service must be PrivateAnalysisToolService")
+        if accounting_observer is not None and not callable(accounting_observer):
+            raise TypeError("accounting_observer must be callable or None")
         request = tool_service.request
         deadline_ns = monotonic_ns() + request.limits.deadline_ms * 1_000_000
         catalog = default_private_analysis_tool_catalog()
@@ -1247,7 +1296,11 @@ class ConfiguredPrivateAnalysisSubprocessRunner:
         outcome_error: PrivateAnalysisError | None = None
         raw_result: str | None = None
         budget_state = empty_private_analysis_budget_state(request)
-        accounting = PrivateAnalysisRunAccountingSnapshot((), budget_state)
+        accounting = PrivateAnalysisRunAccountingSnapshot(
+            (),
+            budget_state,
+            observer=accounting_observer,
+        )
         transcript = _SubprocessTranscriptAccumulator(
             request_digest=request.request_digest,
             catalog_digest=catalog.catalog_digest,

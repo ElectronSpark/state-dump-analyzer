@@ -1,7 +1,8 @@
 # Private AI analysis boundary
 
 Status: normative architecture decision with implemented local value/tool
-contracts and trusted in-process and shell-free local-subprocess runners.
+contracts, trusted in-process and shell-free local-subprocess runners, and a
+durable local-only run/lifecycle store.
 
 ## Decision
 
@@ -235,10 +236,10 @@ and oversized wire values.
 Summary, claim, and proposal text is proprietary analysis output, not
 automatically client-safe text. Display and export surfaces added later must
 apply their own authorization, disclosure, and safe-rendering boundaries.
-Run storage, durable disclosure-ledger persistence, model execution, and
-promotion remain separate implementation stages. The ephemeral evidence-tool
-service described below now supplies retrieval and a request-local citation
-ledger only.
+Model execution and promotion remain separate from the value contract. The
+ephemeral evidence-tool service described below supplies retrieval and a
+request-local citation ledger; the durable run store described later records
+that ledger only through an explicit write-ahead accounting boundary.
 
 ## Inert read-only tool contract
 
@@ -545,7 +546,10 @@ frame-size links; message/tool-call counts; the discarded-stderr byte count;
 budget and evidence-ledger snapshots; and the final outcome digest. It retains
 no request/query, evidence payload, tool payload, model text, stderr,
 exception, path, timestamp, argument, or environment value. The receipt is an
-internal detached value and is neither persisted nor routed by this stage.
+internal detached value. Both runner receipts expose a transport-neutral,
+payload-free `PrivateAnalysisTranscriptSummary` suitable for the durable
+store; a separate coordinator must route it and the runner itself still owns
+no persistence.
 
 Unlike the subprocess child, the in-process callback is deployment-trusted,
 unsandboxed Python and cannot be forcibly preempted; it can acquire process
@@ -553,8 +557,98 @@ globals outside its supported gateway. The subprocess peer is treated as
 untrusted at every frame and its direct process is killable, but it is still
 not an OS security sandbox. Neither transport adds a public model provider,
 network client, endpoint/API-key setting, automatic fallback, model-run HTTP or
-CLI route, UI workflow, durable lifecycle, retry, annotation write, or
-promotion path.
+CLI route, UI workflow, automatic retry, annotation write, or promotion path.
+
+## Durable local run and disclosure store
+
+`SqlitePrivateAnalysisRunStore` is the first durable orchestration layer. It
+is a core-owned, model-neutral SQLite store with exact
+tenant/project/workspace keys and a closed lifecycle: `queued`, `running`,
+`cancel_requested`, `completed`, or `cancelled`. Admission persists the exact
+canonical `PrivateAnalysisRequest` and its complete ordered revision vector
+only after a trusted catalog validator re-derives every fixture, revision,
+node, identity, and immutable plug-in execution-plan binding. The
+`ControlPlane` supplies that validator and holds its existing cross-store file
+fence across validation and insertion, so catalog retention cannot remove a
+revision between those operations.
+
+Every mutation is optimistic-versioned. A claim creates one opaque execution
+fence and bounded lease; no expired attempt is retried automatically. Recovery
+turns an expired running attempt into the static `runner_failed` outcome, or
+an already cancel-requested attempt into `cancelled`, preserving the last
+durable accounting. Queued cancellation completes immediately. In-process
+cancellation remains cooperative: setting `cancel_requested` does not claim
+that arbitrary Python was preempted. Once that request commits, however, an
+ordinary worker result cannot overwrite it. Subprocess termination belongs to
+the later coordinator that owns the child execution, not this storage module.
+
+The runner accounting snapshot accepts an optional observer. After a tool
+operation, it invokes that observer with a complete detached reference ledger
+and budget before publishing the local snapshot and before the tool response
+returns to the model. An observer/store failure propagates and leaves the last
+complete snapshot unchanged. `commit_accounting` enforces an append-only
+reference set, monotonic counters, exact request ceilings, exact scope and
+revision bindings, and a canonical ledger digest. `complete_run` accepts a
+terminal value only when the persisted ledger/budget exactly equals the
+receipt. Successful results are revalidated at this storage boundary against
+that exact ledger and the request's output, claim, and proposal ceilings. The
+transport summary must also bind the request, catalog, instruction profile,
+runner configuration, outcome, and ledger. Thus a future coordinator cannot
+persist only a terminal receipt after evidence was already disclosed or seal
+a result that cites evidence outside the durable ledger.
+
+Each transition appends one bounded audit row. The row contains scope,
+run/version/attempt identity, closed reason and states, actor, timestamp, and
+request/ledger/transcript/outcome digests—never the query, result text,
+proposal, evidence/tool payload, stderr, exception, path, argv, or environment.
+Entries are contiguous, predecessor-sealed, and checked against a redundant
+run head and state-snapshot digest on one SQLite read snapshot. The state seal
+includes the exact budget and creation/update/completion times, so accounting
+or retention-time edits also fail closed. This detects torn or independently
+corrupted rows inside the trusted local database. One run is capped at 10,000
+audit transitions, with slots reserved for cancellation and terminalization,
+so record reconstruction cannot grow without bound. `ControlPlane` additionally
+binds the database's opaque installation identity to a root-level record and
+refuses a missing binding, zero-length or missing database, or replacement
+database after first initialization. A privileged administrator can still coherently replace or
+roll back both files; that stronger threat model requires independently
+administered append-only/WORM checkpoints.
+
+The run database deliberately does contain proprietary data at rest: canonical
+requests and successful outcomes, plus disclosed references. Its active WAL
+and every pre-purge backup or storage-layer copy can retain them. It therefore
+uses a dedicated database, `foreign_keys=ON`, WAL, `synchronous=FULL`,
+`secure_delete=ON`, bounded busy waits, snapshot-consistent reads,
+`BEGIN IMMEDIATE`, a schema lock, strict tables, self-digest reconstruction,
+and fail-closed integrity checks. Deployments must apply state-directory ACLs,
+backup controls, and disk encryption appropriate to the admitted disclosure
+mode.
+
+Run retention is disabled by default. Preview and execution are bounded;
+execution is operation-ID idempotent and purges only terminal proprietary run
+rows. Queued, running, and cancel-requested runs are never candidates. A
+payload-free tombstone and separate self-digested retention journal preserve
+the request/ledger/transcript/outcome and audit-tip commitments. While a run is
+retained, all of its revision IDs join review references in the catalog's
+protected set under the same cross-store retention fence. Independent
+active-run guard and live-admission anchors make whole-head or paired-row loss
+observable, and admission refuses
+more than 10,000 active runs in one scope so catalog-reference reconstruction
+has a hard bound. Logical deletion uses SQLite secure deletion inside the
+bounded candidate transaction and then a truncating WAL checkpoint. It does
+not run a full-database `VACUUM`, whose work would scale with unrelated runs.
+If the checkpoint is busy or fails, the committed idempotency journal makes
+the same operation safe to retry and the call does not report successful
+purge completion. Freelist page reclamation, if desired, is separate offline
+database maintenance; secure deletion has already removed the retained
+payload bytes from those cells. Retention replaces the live admission with a
+scoped idempotency-key digest in the tombstone, preserving replay conflict
+semantics without retaining the raw key or growing live-reference scans.
+
+This layer exposes no model-run HTTP endpoint, CLI/UI workflow, public-provider
+configuration, network fallback, plug-in call, automatic retry, annotation
+mutation, or proposal promotion. Those authorities require later explicit
+composition and must preserve this store's write-ahead and fence rules.
 
 ## Tool and instruction boundary
 

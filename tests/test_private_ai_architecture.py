@@ -1688,7 +1688,7 @@ class PrivateAiArchitectureTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source)
 
-    def test_private_analysis_tool_service_has_only_declared_runner_consumers(
+    def test_private_analysis_tool_service_has_only_declared_runtime_consumers(
         self,
     ) -> None:
         consumers: list[str] = []
@@ -1705,6 +1705,7 @@ class PrivateAiArchitectureTests(unittest.TestCase):
             {
                 PRIVATE_ANALYSIS_IN_PROCESS_RUNNER_SOURCE.name,
                 PRIVATE_ANALYSIS_RUNNER_SUPPORT_SOURCE.name,
+                "private_analysis_run_store.py",
                 PRIVATE_ANALYSIS_SUBPROCESS_RUNNER_SOURCE.name,
             },
         )

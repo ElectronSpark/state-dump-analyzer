@@ -44,6 +44,11 @@ from router_dump_analyzer.private_analysis.local_subprocess_protocol import (
     PrivateAnalysisLocalSubprocessRunnerFailureReason,
     encode_private_analysis_local_subprocess_message,
 )
+from router_dump_analyzer.private_analysis_runner_support import (
+    PrivateAnalysisLocalSubprocessTranscriptSummaryMetadata,
+    private_analysis_transcript_summary_from_json,
+    private_analysis_transcript_summary_json,
+)
 from router_dump_analyzer.private_analysis_subprocess_runner import (
     ConfiguredPrivateAnalysisSubprocessRunner,
     PrivateAnalysisSubprocessExecutionReceipt,
@@ -1039,9 +1044,51 @@ class PrivateAnalysisSubprocessExecutionTests(unittest.TestCase):
                 )
                 self.assertEqual(receipt.transcript.budget_state, receipt.budget_state)
                 self.assertGreater(receipt.transcript.message_metadata_bytes, 0)
+                summary = receipt.transcript_summary
+                self.assertIs(
+                    summary.transport,
+                    PrivateAnalysisTransport.LOCAL_SUBPROCESS,
+                )
+                self.assertEqual(
+                    summary.request_digest,
+                    receipt.transcript.request_digest,
+                )
+                self.assertEqual(
+                    summary.outcome_digest,
+                    receipt.outcome.outcome_digest,
+                )
+                self.assertEqual(summary.budget_state, receipt.budget_state)
+                self.assertIs(
+                    type(summary.metadata),
+                    PrivateAnalysisLocalSubprocessTranscriptSummaryMetadata,
+                )
+                assert isinstance(
+                    summary.metadata,
+                    PrivateAnalysisLocalSubprocessTranscriptSummaryMetadata,
+                )
+                self.assertEqual(
+                    summary.metadata.transcript_digest,
+                    receipt.transcript.transcript_digest,
+                )
+                self.assertEqual(
+                    private_analysis_transcript_summary_from_json(
+                        private_analysis_transcript_summary_json(summary)
+                    ),
+                    summary,
+                )
                 self.assertEqual(harness.authorization_calls, 3)
                 self.assertEqual(harness.policy_calls, 3)
             self.assertEqual(receipts[0].transcript, receipts[1].transcript)
+            detached_summary = receipts[0].transcript_summary
+            assert isinstance(
+                detached_summary.metadata,
+                PrivateAnalysisLocalSubprocessTranscriptSummaryMetadata,
+            )
+            object.__setattr__(detached_summary.metadata, "message_count", 999)
+            self.assertEqual(
+                receipts[0].transcript_summary.metadata.message_count,
+                4,
+            )
 
             source = receipts[0].transcript
             transcript_fields = {
@@ -1160,6 +1207,190 @@ class PrivateAnalysisSubprocessExecutionTests(unittest.TestCase):
             budget = receipt.budget_state
             object.__setattr__(budget, "tool_calls_consumed", 999)
             self.assertEqual(receipt.budget_state.tool_calls_consumed, 1)
+
+    def test_accounting_observer_is_write_ahead_and_fails_closed(self) -> None:
+        real_exchange = subprocess_runner_module._exchange_message
+
+        with tempfile.TemporaryDirectory() as temporary:
+            case = _build_case(Path(temporary))
+            reference = _reference()
+            call = _query_call(case.request)
+            expected_harness = _Harness(case.request, (reference,), policy=case.policy)
+            expected_service, _ = _service(case, expected_harness)
+            expected_response = expected_service.execute(call)
+            expected_tool_result = _message(
+                case,
+                4,
+                PrivateAnalysisLocalSubprocessMessageKind.TOOL_RESULT,
+                {"tool_result": private_analysis_tool_result_dict(expected_response)},
+            )
+            result = _supported_result(case.request, reference)
+            _write_control(
+                case.control_path,
+                [
+                    _read_action(_hello(case)),
+                    _write_action(_ready(case)),
+                    _read_action(_start(case)),
+                    _write_action(
+                        _message(
+                            case,
+                            3,
+                            PrivateAnalysisLocalSubprocessMessageKind.TOOL_CALL,
+                            {"tool_call": private_analysis_tool_call_dict(call)},
+                        )
+                    ),
+                    _read_action(expected_tool_result),
+                    _write_action(_analysis_result(case, result, sequence=5)),
+                ],
+            )
+            committed: list[tuple[tuple[Any, ...], Any]] = []
+            tool_result_saw_complete_accounting = False
+
+            def observer(references: tuple[Any, ...], budget_state: Any) -> None:
+                committed.append((references, budget_state))
+
+            def exchange_after_observer(
+                session: Any,
+                outbound: PrivateAnalysisLocalSubprocessMessage,
+                previous: PrivateAnalysisLocalSubprocessMessage | None,
+                transcript: Any,
+                deadline_ns: int,
+            ) -> Any:
+                nonlocal tool_result_saw_complete_accounting
+                if outbound.kind is (
+                    PrivateAnalysisLocalSubprocessMessageKind.TOOL_RESULT
+                ):
+                    observed_references, observed_budget = committed[-1]
+                    self.assertEqual(observed_references, (reference,))
+                    self.assertEqual(observed_budget.tool_calls_consumed, 1)
+                    self.assertEqual(observed_budget.evidence_items_disclosed, 1)
+                    self.assertGreater(observed_budget.evidence_bytes_disclosed, 0)
+                    tool_result_saw_complete_accounting = True
+                return real_exchange(
+                    session,
+                    outbound,
+                    previous,
+                    transcript,
+                    deadline_ns,
+                )
+
+            service, _ = _service(
+                case,
+                _Harness(case.request, (reference,), policy=case.policy),
+            )
+            with patch.object(
+                subprocess_runner_module,
+                "_exchange_message",
+                new=exchange_after_observer,
+            ):
+                receipt = case.runner.execute(
+                    service,
+                    accounting_observer=observer,
+                )
+
+            self.assertTrue(tool_result_saw_complete_accounting)
+            self.assertIs(receipt.outcome.kind, PrivateAnalysisOutcomeKind.RESULT)
+            self.assertEqual(receipt.outcome.result, result)
+            self.assertEqual(
+                committed[-1],
+                (receipt.disclosed_references, receipt.budget_state),
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            case = _build_case(Path(temporary))
+            reference = _reference()
+            call = _query_call(case.request)
+            _write_control(
+                case.control_path,
+                [
+                    _read_action(_hello(case)),
+                    _write_action(_ready(case)),
+                    _read_action(_start(case)),
+                    _write_action(
+                        _message(
+                            case,
+                            3,
+                            PrivateAnalysisLocalSubprocessMessageKind.TOOL_CALL,
+                            {"tool_call": private_analysis_tool_call_dict(call)},
+                        )
+                    ),
+                    _read_action(),
+                ],
+            )
+            failed_commits: list[tuple[tuple[Any, ...], Any]] = []
+            failed_attempts: list[tuple[tuple[Any, ...], Any]] = []
+            published_tool_responses: list[
+                PrivateAnalysisLocalSubprocessMessageKind
+            ] = []
+
+            def failing_observer(
+                references: tuple[Any, ...],
+                budget_state: Any,
+            ) -> None:
+                failed_attempts.append((references, budget_state))
+                if budget_state.tool_calls_consumed:
+                    raise RuntimeError("durable accounting unavailable")
+                failed_commits.append((references, budget_state))
+
+            def capture_tool_response(
+                session: Any,
+                outbound: PrivateAnalysisLocalSubprocessMessage,
+                previous: PrivateAnalysisLocalSubprocessMessage | None,
+                transcript: Any,
+                deadline_ns: int,
+            ) -> Any:
+                if outbound.kind in {
+                    PrivateAnalysisLocalSubprocessMessageKind.TOOL_RESULT,
+                    PrivateAnalysisLocalSubprocessMessageKind.TOOL_ERROR,
+                }:
+                    published_tool_responses.append(outbound.kind)
+                return real_exchange(
+                    session,
+                    outbound,
+                    previous,
+                    transcript,
+                    deadline_ns,
+                )
+
+            failed_harness = _Harness(
+                case.request,
+                (reference,),
+                policy=case.policy,
+            )
+            failed_service, _ = _service(case, failed_harness)
+            with patch.object(
+                subprocess_runner_module,
+                "_exchange_message",
+                new=capture_tool_response,
+            ):
+                failed = case.runner.execute(
+                    failed_service,
+                    accounting_observer=failing_observer,
+                )
+
+            self.assertEqual(published_tool_responses, [])
+            self.assertTrue(
+                any(
+                    references == (reference,)
+                    and budget.tool_calls_consumed == 1
+                    and budget.evidence_items_disclosed == 1
+                    for references, budget in failed_attempts
+                )
+            )
+            self.assertEqual(len(failed_commits), 1)
+            self.assertEqual(failed_commits[0][0], ())
+            self.assertEqual(failed_commits[0][1].tool_calls_consumed, 0)
+            _assert_error(
+                self,
+                failed,
+                PrivateAnalysisErrorCode.RUNNER_FAILED,
+                PrivateAnalysisErrorStage.RUNNER,
+            )
+            self.assertEqual(failed_harness.query_calls, 1)
+            self.assertEqual(failed.disclosed_references, ())
+            self.assertEqual(failed.budget_state, failed_commits[0][1])
+            self.assertEqual(failed.transcript.message_count, 4)
+            self.assertEqual(failed.transcript.tool_call_count, 1)
 
     def test_attestation_fallback_preserves_real_disclosure_accounting(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

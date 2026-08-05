@@ -67,6 +67,11 @@ from router_dump_analyzer.private_analysis_in_process_runner import (
     PrivateAnalysisInProcessToolResponse,
     PrivateAnalysisInProcessToolResponseKind,
 )
+from router_dump_analyzer.private_analysis_runner_support import (
+    PrivateAnalysisInProcessTranscriptSummaryMetadata,
+    private_analysis_transcript_summary_from_json,
+    private_analysis_transcript_summary_json,
+)
 from router_dump_analyzer.private_analysis_tool_service import (
     PrivateAnalysisAuthorizationDecision,
     PrivateAnalysisAuthorizationReason,
@@ -836,12 +841,131 @@ class PrivateAnalysisInProcessRunnerTests(unittest.TestCase):
         )
         self.assertEqual(receipt.transcript.budget_state, receipt.budget_state)
         self.assertGreater(receipt.transcript.exchange_metadata_bytes, 0)
+        summary = receipt.transcript_summary
+        self.assertIs(summary.transport, PrivateAnalysisTransport.IN_PROCESS)
+        self.assertEqual(summary.request_digest, receipt.transcript.request_digest)
+        self.assertEqual(summary.outcome_digest, receipt.outcome.outcome_digest)
+        self.assertEqual(summary.budget_state, receipt.budget_state)
+        self.assertIs(
+            type(summary.metadata),
+            PrivateAnalysisInProcessTranscriptSummaryMetadata,
+        )
+        assert isinstance(
+            summary.metadata,
+            PrivateAnalysisInProcessTranscriptSummaryMetadata,
+        )
+        self.assertEqual(
+            summary.metadata.transcript_digest,
+            receipt.transcript.transcript_digest,
+        )
+        self.assertEqual(
+            private_analysis_transcript_summary_from_json(
+                private_analysis_transcript_summary_json(summary)
+            ),
+            summary,
+        )
+        object.__setattr__(summary.metadata, "exchange_count", 999)
+        self.assertEqual(receipt.transcript_summary.metadata.exchange_count, 2)
         self.assertEqual(harness.query_calls, 1)
         self.assertEqual(harness.resolve_calls, 1)
         self.assertEqual(harness.materialize_calls, 1)
         for rendered in observed.values():
             self.assertNotIn("route_withdrawn", str(rendered))
             self.assertNotIn("203.0.113", str(rendered))
+
+    def test_accounting_observer_is_write_ahead_and_fails_closed(self) -> None:
+        reference = _reference()
+        request = _request()
+        committed: list[tuple[tuple[EvidenceReference, ...], Any]] = []
+        response_saw_complete_accounting = False
+
+        def observer(
+            references: tuple[EvidenceReference, ...],
+            budget_state: Any,
+        ) -> None:
+            committed.append((references, budget_state))
+
+        def callback(
+            _context: PrivateAnalysisInProcessContext,
+            gateway: PrivateAnalysisInProcessToolGateway,
+        ) -> str:
+            nonlocal response_saw_complete_accounting
+            response = gateway.execute(
+                private_analysis_tool_call_json(_query_call(request))
+            )
+            self.assertIs(
+                response.kind,
+                PrivateAnalysisInProcessToolResponseKind.RESULT,
+            )
+            observed_references, observed_budget = committed[-1]
+            self.assertEqual(observed_references, (reference,))
+            self.assertEqual(observed_budget.tool_calls_consumed, 1)
+            self.assertEqual(observed_budget.evidence_items_disclosed, 1)
+            self.assertGreater(observed_budget.evidence_bytes_disclosed, 0)
+            response_saw_complete_accounting = True
+            return private_analysis_result_json(_supported_result(request, reference))
+
+        receipt = _runner(callback).execute(
+            _Harness(request, (reference,)).service(),
+            accounting_observer=observer,
+        )
+
+        self.assertTrue(response_saw_complete_accounting)
+        self.assertIs(receipt.outcome.kind, PrivateAnalysisOutcomeKind.RESULT)
+        self.assertEqual(
+            committed[-1], (receipt.disclosed_references, receipt.budget_state)
+        )
+
+        failed_commits: list[tuple[tuple[EvidenceReference, ...], Any]] = []
+        failed_attempts: list[tuple[tuple[EvidenceReference, ...], Any]] = []
+        failed_response_returned = False
+
+        def failing_observer(
+            references: tuple[EvidenceReference, ...],
+            budget_state: Any,
+        ) -> None:
+            failed_attempts.append((references, budget_state))
+            if budget_state.tool_calls_consumed:
+                raise RuntimeError("durable accounting unavailable")
+            failed_commits.append((references, budget_state))
+
+        def failing_callback(
+            _context: PrivateAnalysisInProcessContext,
+            gateway: PrivateAnalysisInProcessToolGateway,
+        ) -> str:
+            nonlocal failed_response_returned
+            gateway.execute(private_analysis_tool_call_json(_query_call(request)))
+            failed_response_returned = True
+            return private_analysis_result_json(_supported_result(request, reference))
+
+        failed_harness = _Harness(request, (reference,))
+        failed = _runner(failing_callback).execute(
+            failed_harness.service(),
+            accounting_observer=failing_observer,
+        )
+
+        self.assertFalse(failed_response_returned)
+        self.assertTrue(
+            any(
+                references == (reference,)
+                and budget.tool_calls_consumed == 1
+                and budget.evidence_items_disclosed == 1
+                for references, budget in failed_attempts
+            )
+        )
+        self.assertEqual(len(failed_commits), 1)
+        self.assertEqual(failed_commits[0][0], ())
+        self.assertEqual(failed_commits[0][1].tool_calls_consumed, 0)
+        _assert_receipt_error(
+            self,
+            failed,
+            PrivateAnalysisErrorCode.RUNNER_FAILED,
+            PrivateAnalysisErrorStage.RUNNER,
+        )
+        self.assertEqual(failed_harness.query_calls, 1)
+        self.assertEqual(failed.disclosed_references, ())
+        self.assertEqual(failed.budget_state, failed_commits[0][1])
+        self.assertEqual(failed.transcript.exchange_count, 0)
 
     def test_zero_tool_run_is_access_checked_before_and_after_callback(self) -> None:
         request = _request(limits=_limits(max_tool_calls=0))

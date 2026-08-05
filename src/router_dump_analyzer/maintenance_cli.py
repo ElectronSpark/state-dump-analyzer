@@ -473,6 +473,7 @@ def run(
         state_dir / "sessions.sqlite3",
         state_dir / "annotations.sqlite3",
         state_dir / "control-plane.sqlite3",
+        state_dir / "private-analysis-runs.sqlite3",
     )
     if not state_dir.is_dir() or any(not path.is_file() for path in required_state):
         raise RetentionMaintenanceScopeError(

@@ -46,6 +46,15 @@ from .private_analysis import (
     private_analysis_tool_result_json,
 )
 from .private_analysis_runner_support import (
+    MAX_PRIVATE_ANALYSIS_IN_PROCESS_TRANSCRIPT_BYTES,
+    PrivateAnalysisAccountingObserver,
+    PrivateAnalysisTranscriptSummary,
+    private_analysis_run_access_error,
+)
+from .private_analysis_runner_support import (
+    PrivateAnalysisInProcessTranscriptSummaryMetadata as _TranscriptSummaryMetadata,
+)
+from .private_analysis_runner_support import (
     PrivateAnalysisRunAccountingSnapshot as _RunAccountingSnapshot,
 )
 from .private_analysis_runner_support import (
@@ -53,6 +62,9 @@ from .private_analysis_runner_support import (
 )
 from .private_analysis_runner_support import (
     detached_private_analysis_error as _detached_error,
+)
+from .private_analysis_runner_support import (
+    detached_private_analysis_transcript_summary as _detached_transcript_summary,
 )
 from .private_analysis_runner_support import (
     empty_private_analysis_budget_state as _empty_budget_state,
@@ -73,9 +85,6 @@ from .private_analysis_runner_support import (
     private_analysis_prefixed_sha256 as _prefixed_sha256,
 )
 from .private_analysis_runner_support import (
-    private_analysis_run_access_error,
-)
-from .private_analysis_runner_support import (
     validate_private_analysis_result_json as _validated_callback_result,
 )
 from .private_analysis_tool_service import (
@@ -92,7 +101,6 @@ PRIVATE_ANALYSIS_IN_PROCESS_CONTEXT_VERSION: Final = (
 PRIVATE_ANALYSIS_IN_PROCESS_TRANSCRIPT_VERSION: Final = (
     "router_dump_analyzer.private_analysis_in_process_transcript.v1"
 )
-MAX_PRIVATE_ANALYSIS_IN_PROCESS_TRANSCRIPT_BYTES: Final = 4 * 1024 * 1024
 
 
 class PrivateAnalysisInProcessToolResponseKind(StrEnum):
@@ -293,10 +301,41 @@ def _detached_in_process_transcript(
     )
 
 
+def _in_process_transcript_summary(
+    value: PrivateAnalysisInProcessTranscript,
+) -> PrivateAnalysisTranscriptSummary:
+    """Project one sealed transcript into the shared payload-free contract."""
+
+    transcript = _detached_in_process_transcript(value)
+    return PrivateAnalysisTranscriptSummary(
+        transport=PrivateAnalysisTransport.IN_PROCESS,
+        request_digest=transcript.request_digest,
+        catalog_digest=transcript.catalog_digest,
+        instruction_profile_digest=transcript.instruction_profile_digest,
+        runner_configuration_digest=transcript.runner_configuration_digest,
+        outcome_digest=transcript.outcome_digest,
+        evidence_ledger_digest=transcript.evidence_ledger_digest,
+        budget_state=transcript.budget_state,
+        metadata=_TranscriptSummaryMetadata(
+            transcript_digest=transcript.transcript_digest,
+            exchange_count=transcript.exchange_count,
+            unattributed_tool_call_count=transcript.unattributed_tool_call_count,
+            exchange_metadata_bytes=transcript.exchange_metadata_bytes,
+            exchange_chain_digest=transcript.exchange_chain_digest,
+        ),
+    )
+
+
 class PrivateAnalysisInProcessExecutionReceipt:
     """Trusted internal, detached result of one in-process execution."""
 
-    __slots__ = ("_budget", "_outcome_json", "_references", "_transcript")
+    __slots__ = (
+        "_budget",
+        "_outcome_json",
+        "_references",
+        "_transcript",
+        "_transcript_summary",
+    )
 
     def __init__(
         self,
@@ -324,6 +363,7 @@ class PrivateAnalysisInProcessExecutionReceipt:
         self._transcript = detached_transcript
         self._references = detached_references
         self._budget = budget
+        self._transcript_summary = _in_process_transcript_summary(detached_transcript)
 
     @property
     def outcome(self) -> PrivateAnalysisOutcome:
@@ -358,6 +398,12 @@ class PrivateAnalysisInProcessExecutionReceipt:
     @property
     def budget_state(self) -> PrivateAnalysisToolBudgetState:
         return _detached_budget_state(self._budget)
+
+    @property
+    def transcript_summary(self) -> PrivateAnalysisTranscriptSummary:
+        """Return a detached transport-neutral transcript summary."""
+
+        return _detached_transcript_summary(self._transcript_summary)
 
     def __repr__(self) -> str:
         outcome = self.outcome
@@ -796,9 +842,13 @@ class ConfiguredPrivateAnalysisInProcessRunner:
     def execute(
         self,
         tool_service: PrivateAnalysisToolService,
+        *,
+        accounting_observer: PrivateAnalysisAccountingObserver | None = None,
     ) -> PrivateAnalysisInProcessExecutionReceipt:
         if type(tool_service) is not PrivateAnalysisToolService:
             raise TypeError("tool_service must be PrivateAnalysisToolService")
+        if accounting_observer is not None and not callable(accounting_observer):
+            raise TypeError("accounting_observer must be callable or None")
         request = tool_service.request
         start_ns = monotonic_ns()
         deadline_ns = start_ns + request.limits.deadline_ms * 1_000_000
@@ -831,7 +881,11 @@ class ConfiguredPrivateAnalysisInProcessRunner:
             )
 
         budget_state = _empty_budget_state(request)
-        accounting = _RunAccountingSnapshot((), budget_state)
+        accounting = _RunAccountingSnapshot(
+            (),
+            budget_state,
+            observer=accounting_observer,
+        )
         gateway: PrivateAnalysisInProcessToolGateway | None = None
         gateway_state = _PrivateAnalysisInProcessGatewayState(
             terminal_error=None,

@@ -9,17 +9,21 @@ from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
-from router_dump_analyzer.control_plane import ControlPlane
+from router_dump_analyzer.control_plane import ControlPlane, ControlPlaneError
 from router_dump_analyzer.ingestion_pipeline import ImportScope, PluginRegistry
 from router_dump_analyzer.maintenance_cli import (
     POLICY_SCHEMA_VERSION,
     RESULT_SCHEMA_VERSION,
     RetentionMaintenanceConfiguration,
     RetentionMaintenanceInputError,
+    RetentionMaintenanceScopeError,
     load_policy,
     main,
     parse_args,
     run,
+)
+from router_dump_analyzer.private_analysis_run_store import (
+    SqlitePrivateAnalysisRunStore,
 )
 
 
@@ -306,6 +310,55 @@ class RetentionMaintenanceCliTests(unittest.TestCase):
             self.assertEqual(catalog_audit[0].actor, "ci-maintenance")
             self.assertEqual(review_audit[0].actor, "ci-maintenance")
             self.assertEqual(len(ingestion_audit), 1)
+
+    def test_missing_private_run_reference_store_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_dir = root / "state"
+            self._create_scope(state_dir)
+            (state_dir / "private-analysis-runs.sqlite3").unlink()
+            policy_path = self._write_policy(root, enabled=True)
+
+            with self.assertRaisesRegex(
+                RetentionMaintenanceScopeError,
+                "requested maintenance scope does not exist",
+            ):
+                run(self._configuration(state_dir, policy_path))
+
+    def test_normal_reopen_cannot_replace_a_bound_private_run_store(self) -> None:
+        for replacement in ("missing", "empty", "different"):
+            with (
+                self.subTest(replacement=replacement),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                state_dir = Path(directory) / "state"
+                self._create_scope(state_dir)
+                database = state_dir / "private-analysis-runs.sqlite3"
+                database.unlink()
+                if replacement == "empty":
+                    database.write_bytes(b"")
+                elif replacement == "different":
+                    replacement_store = SqlitePrivateAnalysisRunStore(
+                        database,
+                        admission_validator=lambda _request: None,
+                    )
+                    replacement_store.close()
+
+                with self.assertRaisesRegex(
+                    ControlPlaneError,
+                    (
+                        "does not match its binding"
+                        if replacement == "different"
+                        else "missing or truncated"
+                    ),
+                ):
+                    ControlPlane(
+                        state_dir,
+                        registry=PluginRegistry((), require_executable_identity=True),
+                    )
+                self.assertEqual(database.exists(), replacement != "missing")
+                if replacement == "empty":
+                    self.assertEqual(database.stat().st_size, 0)
 
     def test_missing_scope_and_internal_failures_have_closed_cli_errors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

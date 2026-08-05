@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import threading
 from collections import OrderedDict
 from collections.abc import Iterable, Iterator, Mapping
@@ -85,6 +87,12 @@ from .plugin_execution_plan import (
     primary_parser_execution_pin,
     snapshot_plugin_execution_plan,
 )
+from .private_analysis import EvidenceScope, PrivateAnalysisRequest
+from .private_analysis_binding import (
+    PrivateAnalysisEvidenceBindingError,
+    bind_private_analysis_revision,
+)
+from .private_analysis_run_store import SqlitePrivateAnalysisRunStore
 from .session_store import (
     AnalysisRevisionDescriptor,
     AnalysisSession,
@@ -117,10 +125,62 @@ _MAX_RETENTION_ACTOR_LENGTH = 256
 _MAX_RETENTION_OPERATION_ID_LENGTH = 248
 _RETENTION_SAGA_SCHEMA = "router_dump_analyzer.retention_saga.v1"
 _RETENTION_PHASE_SCHEMA = "router_dump_analyzer.retention_phase.v1"
+_PRIVATE_RUN_STORE_BINDING_SCHEMA = (
+    "router_dump_analyzer.private_analysis.store_binding.v1"
+)
+_PRIVATE_RUN_STORE_BINDING_NAME = ".private-analysis-run-store.binding.json"
+_PRIVATE_RUN_STORE_BINDING_LOCK_NAME = ".private-analysis-run-store.binding.lock"
+_MAX_PRIVATE_RUN_STORE_BINDING_BYTES = 1_024
 
 
 class ControlPlaneError(RuntimeError):
     """Base error for cross-store composition failures."""
+
+
+def _private_run_store_binding(path: Path) -> str | None:
+    """Read one exact root-to-database binding without creating state."""
+
+    try:
+        try:
+            path_status = path.stat()
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISREG(path_status.st_mode) or (
+            path_status.st_size > _MAX_PRIVATE_RUN_STORE_BINDING_BYTES
+        ):
+            raise ControlPlaneError("private-analysis run-store binding is invalid")
+        wire = path.read_text(encoding="utf-8")
+        document = json.loads(wire)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ControlPlaneError(
+            "private-analysis run-store binding is invalid"
+        ) from error
+    expected_fields = {"schema_version", "installation_id"}
+    if (
+        type(document) is not dict
+        or set(document) != expected_fields
+        or document.get("schema_version") != _PRIVATE_RUN_STORE_BINDING_SCHEMA
+        or type(document.get("installation_id")) is not str
+        or canonical_json(document) != wire
+    ):
+        raise ControlPlaneError("private-analysis run-store binding is invalid")
+    return str(document["installation_id"])
+
+
+def _write_private_run_store_binding(path: Path, installation_id: str) -> None:
+    document = {
+        "schema_version": _PRIVATE_RUN_STORE_BINDING_SCHEMA,
+        "installation_id": installation_id,
+    }
+    try:
+        with path.open("x", encoding="utf-8", newline="\n") as stream:
+            stream.write(canonical_json(document))
+            stream.flush()
+            os.fsync(stream.fileno())
+    except OSError as error:
+        raise ControlPlaneError(
+            "private-analysis run-store binding could not be persisted"
+        ) from error
 
 
 class ControlPlaneScopeError(ValueError, ControlPlaneError):
@@ -924,9 +984,7 @@ class SessionCatalogPublisher(RevisionCatalogPublisher):
                 try:
                     if type(execution_plan) is not PluginExecutionPlan:
                         raise TypeError
-                    execution_plan = snapshot_plugin_execution_plan(
-                        execution_plan
-                    )
+                    execution_plan = snapshot_plugin_execution_plan(execution_plan)
                 except (TypeError, ValueError) as error:
                     raise DatasetIntegrityError(
                         "execution plan must use the core contract type"
@@ -976,11 +1034,7 @@ class SessionCatalogPublisher(RevisionCatalogPublisher):
                 "source_record_count": source_record_count,
                 "resource_count": resource_count,
                 **(
-                    {
-                        "plugin_execution_plan_digest": (
-                            execution_plan.plan_digest
-                        )
-                    }
+                    {"plugin_execution_plan_digest": (execution_plan.plan_digest)}
                     if execution_plan is not None
                     else {}
                 ),
@@ -1037,11 +1091,60 @@ class ControlPlane:
         self._started = False
         self._cache: OrderedDict[str, _LoadedRevision] = OrderedDict()
         self._retention_review_lock_path = self.root / ".review-catalog-retention.lock"
+        self._private_run_store_binding_path = (
+            self.root / _PRIVATE_RUN_STORE_BINDING_NAME
+        )
+        self._private_run_store_binding_lock_path = (
+            self.root / _PRIVATE_RUN_STORE_BINDING_LOCK_NAME
+        )
         self.sessions = SqliteSessionStore(self.root / "sessions.sqlite3")
         annotations: ReviewOverlayStore | None = None
+        private_analysis_runs: SqlitePrivateAnalysisRunStore | None = None
         try:
             annotations = ReviewOverlayStore(self.root / "annotations.sqlite3")
             self.annotations = annotations
+            private_run_database = self.root / "private-analysis-runs.sqlite3"
+            with exclusive_file_lock(self._private_run_store_binding_lock_path):
+                expected_installation = _private_run_store_binding(
+                    self._private_run_store_binding_path
+                )
+                try:
+                    try:
+                        database_status = private_run_database.stat()
+                    except FileNotFoundError:
+                        database_status = None
+                except OSError as error:
+                    raise ControlPlaneError(
+                        "private-analysis run store could not be inspected"
+                    ) from error
+                if expected_installation is None and database_status is not None:
+                    raise ControlPlaneError(
+                        "private-analysis run-store binding is missing"
+                    )
+                if expected_installation is not None:
+                    database_is_missing = database_status is None or (
+                        not stat.S_ISREG(database_status.st_mode)
+                        or database_status.st_size == 0
+                    )
+                    if database_is_missing:
+                        raise ControlPlaneError(
+                            "private-analysis run store is missing or truncated"
+                        )
+                private_analysis_runs = SqlitePrivateAnalysisRunStore(
+                    private_run_database,
+                    admission_validator=self._validate_private_analysis_request,
+                    admission_fence=self._coordinated_review_catalog,
+                )
+                if expected_installation is None:
+                    _write_private_run_store_binding(
+                        self._private_run_store_binding_path,
+                        private_analysis_runs.installation_id,
+                    )
+                elif private_analysis_runs.installation_id != expected_installation:
+                    raise ControlPlaneError(
+                        "private-analysis run store does not match its binding"
+                    )
+            self.private_analysis_runs = private_analysis_runs
             self.publisher = SessionCatalogPublisher(self.sessions)
             self.ingestion = DurableIngestionPipeline(
                 self.root,
@@ -1051,6 +1154,8 @@ class ControlPlane:
                 retention_policy=retention_policy,
             )
         except BaseException:
+            if private_analysis_runs is not None:
+                private_analysis_runs.close()
             if annotations is not None:
                 annotations.close()
             self.sessions.close()
@@ -1078,9 +1183,12 @@ class ControlPlane:
             if self._closed:
                 return
             try:
-                self.annotations.close()
+                self.private_analysis_runs.close()
             finally:
-                self.sessions.close()
+                try:
+                    self.annotations.close()
+                finally:
+                    self.sessions.close()
             self._closed = True
             self._cache.clear()
             self._started = False
@@ -1108,6 +1216,39 @@ class ControlPlane:
             )
         return workspace
 
+    def _validate_private_analysis_request(
+        self,
+        request: PrivateAnalysisRequest,
+    ) -> None:
+        """Bind every requested revision to current durable catalog identity."""
+
+        if type(request) is not PrivateAnalysisRequest:
+            raise TypeError("request must be an exact PrivateAnalysisRequest")
+        scope = request.scope
+        workspace = self.validate_scope(
+            scope.tenant_id,
+            scope.project_id,
+            scope.workspace_id,
+        )
+        for binding in request.revisions:
+            fixture = self.sessions.get_fixture(
+                scope.tenant_id,
+                binding.fixture_id,
+            )
+            revision = self.sessions.get_revision(
+                scope.tenant_id,
+                binding.revision_id,
+            )
+            expected_scope, expected_binding = bind_private_analysis_revision(
+                workspace,
+                fixture,
+                revision,
+            )
+            if expected_scope != scope or expected_binding != binding:
+                raise PrivateAnalysisEvidenceBindingError(
+                    "private-analysis request revision binding has drifted"
+                )
+
     def scope(
         self,
         tenant_id: str,
@@ -1128,7 +1269,7 @@ class ControlPlane:
 
     @contextmanager
     def _coordinated_review_catalog(self) -> Iterator[None]:
-        """Serialize cross-store reference changes on this single host."""
+        """Serialize review/run references against catalog retention."""
 
         with self._lock, exclusive_file_lock(self._retention_review_lock_path):
             yield
@@ -1210,11 +1351,19 @@ class ControlPlane:
         policy: CatalogRetentionPolicy,
     ) -> CatalogRetentionPolicy:
         retained_review_revisions = self.annotations.referenced_revision_ids(scope)
+        retained_run_revisions = self.private_analysis_runs.referenced_revision_ids(
+            EvidenceScope(
+                tenant_id=scope.tenant_id,
+                project_id=scope.project_id,
+                workspace_id=scope.workspace_id,
+            )
+        )
         protected = tuple(
             sorted(
                 {
                     *policy.protected_revision_ids,
                     *retained_review_revisions,
+                    *retained_run_revisions,
                 }
             )
         )
@@ -1578,9 +1727,7 @@ class ControlPlane:
             raise DatasetIntegrityError(
                 "catalog revision has an invalid execution plan"
             ) from error
-        catalog_plan_digest = descriptor.metadata.get(
-            "plugin_execution_plan_digest"
-        )
+        catalog_plan_digest = descriptor.metadata.get("plugin_execution_plan_digest")
         dataset_plan_digest = ingestion.get("plugin_execution_plan_digest")
         if execution_plan is None:
             if catalog_plan_digest is not None or dataset_plan_digest is not None:
@@ -1593,8 +1740,7 @@ class ControlPlane:
                 or dataset_plan_digest != execution_plan.plan_digest
             ):
                 raise DatasetIntegrityError(
-                    "dataset execution-plan digest does not match its full "
-                    "catalog plan"
+                    "dataset execution-plan digest does not match its full catalog plan"
                 )
             if execution_plan.basis_revision_id != source_revision_id:
                 raise DatasetIntegrityError(
@@ -1608,8 +1754,7 @@ class ControlPlane:
                 ) from error
             if (
                 descriptor.metadata.get("plugin_id") != pin.plugin_id
-                or descriptor.metadata.get("plugin_version")
-                != pin.plugin_version
+                or descriptor.metadata.get("plugin_version") != pin.plugin_version
             ):
                 raise DatasetIntegrityError(
                     "catalog plug-in metadata does not match its full execution plan"
