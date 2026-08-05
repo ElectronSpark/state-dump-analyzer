@@ -14,7 +14,13 @@ from enum import StrEnum
 from json import JSONDecodeError, loads
 from typing import Any, Final
 
-from ..canonical import strict_canonical_json, strict_canonical_json_sha256
+from ..canonical import (
+    strict_canonical_json,
+    strict_canonical_json_sha256,
+)
+from ..canonical import (
+    validate_prefixed_lowercase_sha256 as _prefixed_sha256,
+)
 from ..contract_validation import validate_bounded_json_value
 from ._wire import (
     SealedContractValue,
@@ -133,17 +139,6 @@ _SAFE_TOOL_ERROR_MESSAGES: Final = {
         "Private analysis tool budget was exceeded."
     ),
 }
-
-
-def _prefixed_sha256(value: object, label: str) -> str:
-    if (
-        type(value) is not str
-        or len(value) != 71
-        or not value.startswith("sha256:")
-        or any(character not in "0123456789abcdef" for character in value[7:])
-    ):
-        raise ValueError(f"{label} must be a sha256-prefixed lowercase digest")
-    return value
 
 
 def _exact_tuple(value: object, label: str, maximum: int) -> tuple[Any, ...]:

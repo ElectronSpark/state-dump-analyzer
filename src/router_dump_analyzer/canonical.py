@@ -62,6 +62,19 @@ class CanonicalValueError(ValueError):
     """A value cannot be represented by the requested canonical profile."""
 
 
+def validate_prefixed_lowercase_sha256(value: object, label: str) -> str:
+    """Return one exact ``sha256:``-prefixed lowercase hexadecimal digest."""
+
+    if (
+        type(value) is not str
+        or len(value) != 71
+        or not value.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in value[7:])
+    ):
+        raise ValueError(f"{label} must be a sha256-prefixed lowercase digest")
+    return value
+
+
 def bounded_value_key(
     value: Any,
     *,
@@ -105,21 +118,15 @@ def bounded_value_key(
         return ("float", value)
     if isinstance(value, str):
         if len(value) > MAX_COMPARISON_ATOM_UNITS:
-            raise CanonicalValueError(
-                "comparison strings exceed 65536 characters"
-            )
+            raise CanonicalValueError("comparison strings exceed 65536 characters")
         return ("string", value)
     if isinstance(value, bytes):
         if len(value) > MAX_COMPARISON_ATOM_UNITS:
-            raise CanonicalValueError(
-                "comparison byte strings exceed 65536 bytes"
-            )
+            raise CanonicalValueError("comparison byte strings exceed 65536 bytes")
         return ("bytes", value)
     if isinstance(value, Mapping):
         if len(value) > MAX_COMPARISON_CONTAINER_ITEMS:
-            raise CanonicalValueError(
-                "comparison mappings support at most 1024 items"
-            )
+            raise CanonicalValueError("comparison mappings support at most 1024 items")
         container_id = id(value)
         if container_id in _active_container_ids:
             raise CanonicalValueError(
@@ -149,9 +156,7 @@ def bounded_value_key(
             _active_container_ids.remove(container_id)
     if isinstance(value, (list, tuple)):
         if len(value) > MAX_COMPARISON_CONTAINER_ITEMS:
-            raise CanonicalValueError(
-                "comparison sequences support at most 1024 items"
-            )
+            raise CanonicalValueError("comparison sequences support at most 1024 items")
         container_id = id(value)
         if container_id in _active_container_ids:
             raise CanonicalValueError(
@@ -622,9 +627,7 @@ def _normalized_opaque_value_json(
             )
         digits = payload.removeprefix("-")
         if len(digits) > _MAX_OPAQUE_INTEGER_DECIMAL_DIGITS:
-            raise CanonicalValueError(
-                "opaque matcher key integers exceed 4096 bits"
-            )
+            raise CanonicalValueError("opaque matcher key integers exceed 4096 bits")
         try:
             integer = int(payload)
         except ValueError as error:
@@ -667,9 +670,7 @@ def _normalized_opaque_value_json(
             value,
             frozenset({"type", "encoding", "value"}),
         )
-        if tagged["encoding"] != "rfc4122" or not isinstance(
-            tagged["value"], str
-        ):
+        if tagged["encoding"] != "rfc4122" or not isinstance(tagged["value"], str):
             raise CanonicalValueError(
                 "normalized UUID matcher values require rfc4122 encoding"
             )

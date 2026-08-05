@@ -18,14 +18,12 @@ from typing import Final
 from .canonical import strict_canonical_json, strict_canonical_json_sha256
 from .private_analysis import (
     EvidenceReference,
-    PrivateAnalysisContractError,
     PrivateAnalysisError,
     PrivateAnalysisErrorCode,
     PrivateAnalysisErrorStage,
     PrivateAnalysisOutcome,
     PrivateAnalysisOutcomeKind,
     PrivateAnalysisRequest,
-    PrivateAnalysisResult,
     PrivateAnalysisRunnerSelection,
     PrivateAnalysisToolCatalog,
     PrivateAnalysisToolError,
@@ -37,11 +35,8 @@ from .private_analysis import (
     evidence_reference_from_dict,
     evidence_snapshot_digest,
     private_analysis_outcome_from_json,
-    private_analysis_outcome_json,
     private_analysis_request_from_json,
     private_analysis_request_json,
-    private_analysis_result_from_json,
-    private_analysis_result_json,
     private_analysis_tool_call_from_json,
     private_analysis_tool_catalog_from_json,
     private_analysis_tool_catalog_json,
@@ -49,7 +44,39 @@ from .private_analysis import (
     private_analysis_tool_error_json,
     private_analysis_tool_result_from_json,
     private_analysis_tool_result_json,
-    validate_private_analysis_result,
+)
+from .private_analysis_runner_support import (
+    PrivateAnalysisRunAccountingSnapshot as _RunAccountingSnapshot,
+)
+from .private_analysis_runner_support import (
+    detached_private_analysis_budget_state as _detached_budget_state,
+)
+from .private_analysis_runner_support import (
+    detached_private_analysis_error as _detached_error,
+)
+from .private_analysis_runner_support import (
+    empty_private_analysis_budget_state as _empty_budget_state,
+)
+from .private_analysis_runner_support import (
+    private_analysis_budget_payload as _budget_payload,
+)
+from .private_analysis_runner_support import (
+    private_analysis_error as _analysis_error,
+)
+from .private_analysis_runner_support import (
+    private_analysis_error_outcome as _error_outcome,
+)
+from .private_analysis_runner_support import (
+    private_analysis_execution_receipt_values as _execution_receipt_values,
+)
+from .private_analysis_runner_support import (
+    private_analysis_prefixed_sha256 as _prefixed_sha256,
+)
+from .private_analysis_runner_support import (
+    private_analysis_run_access_error,
+)
+from .private_analysis_runner_support import (
+    validate_private_analysis_result_json as _validated_callback_result,
 )
 from .private_analysis_tool_service import (
     PrivateAnalysisToolBudgetState,
@@ -182,6 +209,7 @@ class PrivateAnalysisInProcessTranscript:
     instruction_profile_digest: str
     runner_configuration_digest: str
     exchange_count: int
+    unattributed_tool_call_count: int
     exchange_metadata_bytes: int
     exchange_chain_digest: str
     evidence_ledger_digest: str
@@ -206,6 +234,13 @@ class PrivateAnalysisInProcessTranscript:
         if type(self.exchange_count) is not int or self.exchange_count < 0:
             raise ValueError("exchange_count must be a non-negative integer")
         if (
+            type(self.unattributed_tool_call_count) is not int
+            or self.unattributed_tool_call_count < 0
+        ):
+            raise ValueError(
+                "unattributed_tool_call_count must be a non-negative integer"
+            )
+        if (
             type(self.exchange_metadata_bytes) is not int
             or not 0
             <= self.exchange_metadata_bytes
@@ -214,9 +249,10 @@ class PrivateAnalysisInProcessTranscript:
             raise ValueError("exchange metadata exceeds its bounded domain")
         budget = _detached_budget_state(self.budget_state)
         object.__setattr__(self, "budget_state", budget)
+        attributed_call_count = self.exchange_count + self.unattributed_tool_call_count
         if not (
             budget.tool_calls_consumed
-            <= self.exchange_count
+            <= attributed_call_count
             <= budget.tool_calls_consumed + 1
         ):
             raise ValueError("transcript exchange count disagrees with tool budget")
@@ -237,6 +273,26 @@ class PrivateAnalysisInProcessTranscript:
         )
 
 
+def _detached_in_process_transcript(
+    value: PrivateAnalysisInProcessTranscript,
+) -> PrivateAnalysisInProcessTranscript:
+    return PrivateAnalysisInProcessTranscript(
+        request_digest=value.request_digest,
+        catalog_digest=value.catalog_digest,
+        instruction_profile_digest=value.instruction_profile_digest,
+        runner_configuration_digest=value.runner_configuration_digest,
+        exchange_count=value.exchange_count,
+        unattributed_tool_call_count=value.unattributed_tool_call_count,
+        exchange_metadata_bytes=value.exchange_metadata_bytes,
+        exchange_chain_digest=value.exchange_chain_digest,
+        evidence_ledger_digest=value.evidence_ledger_digest,
+        budget_state=value.budget_state,
+        outcome_digest=value.outcome_digest,
+        contract_version=value.contract_version,
+        transcript_digest=value.transcript_digest,
+    )
+
+
 class PrivateAnalysisInProcessExecutionReceipt:
     """Trusted internal, detached result of one in-process execution."""
 
@@ -250,41 +306,22 @@ class PrivateAnalysisInProcessExecutionReceipt:
         disclosed_references: tuple[EvidenceReference, ...],
         budget_state: PrivateAnalysisToolBudgetState,
     ) -> None:
-        if type(outcome) is not PrivateAnalysisOutcome:
-            raise TypeError("outcome must be PrivateAnalysisOutcome")
         if type(transcript) is not PrivateAnalysisInProcessTranscript:
             raise TypeError("transcript must be PrivateAnalysisInProcessTranscript")
-        if type(disclosed_references) is not tuple:
-            raise TypeError("disclosed_references must be a tuple")
-        detached_references = tuple(
-            evidence_reference_from_dict(evidence_reference_dict(item))
-            for item in disclosed_references
+        detached_transcript = _detached_in_process_transcript(transcript)
+        outcome_json, detached_references, budget = _execution_receipt_values(
+            outcome=outcome,
+            disclosed_references=disclosed_references,
+            budget_state=budget_state,
+            transcript_request_digest=detached_transcript.request_digest,
+            transcript_evidence_ledger_digest=(
+                detached_transcript.evidence_ledger_digest
+            ),
+            transcript_budget_state=detached_transcript.budget_state,
+            transcript_outcome_digest=detached_transcript.outcome_digest,
         )
-        digests = tuple(item.reference_digest for item in detached_references)
-        if digests != tuple(sorted(digests)) or len(digests) != len(set(digests)):
-            raise ValueError("disclosed references must be unique and canonical")
-        budget = _detached_budget_state(budget_state)
-        if transcript.evidence_ledger_digest != evidence_snapshot_digest(
-            detached_references
-        ):
-            raise ValueError("transcript does not bind the disclosed ledger")
-        if budget.evidence_items_disclosed != len(detached_references):
-            raise ValueError("budget snapshot disagrees with disclosed ledger")
-        if transcript.outcome_digest != outcome.outcome_digest:
-            raise ValueError("transcript does not bind the outcome")
-        if transcript.budget_state != budget:
-            raise ValueError("transcript does not bind the budget snapshot")
-        outcome_request_digest = (
-            outcome.result.request_digest
-            if outcome.result is not None
-            else outcome.error.request_digest
-            if outcome.error is not None
-            else None
-        )
-        if outcome_request_digest != transcript.request_digest:
-            raise ValueError("transcript does not bind the outcome request")
-        self._outcome_json = private_analysis_outcome_json(outcome)
-        self._transcript = transcript
+        self._outcome_json = outcome_json
+        self._transcript = detached_transcript
         self._references = detached_references
         self._budget = budget
 
@@ -301,6 +338,7 @@ class PrivateAnalysisInProcessExecutionReceipt:
             instruction_profile_digest=value.instruction_profile_digest,
             runner_configuration_digest=value.runner_configuration_digest,
             exchange_count=value.exchange_count,
+            unattributed_tool_call_count=value.unattributed_tool_call_count,
             exchange_metadata_bytes=value.exchange_metadata_bytes,
             exchange_chain_digest=value.exchange_chain_digest,
             evidence_ledger_digest=value.evidence_ledger_digest,
@@ -341,6 +379,7 @@ class PrivateAnalysisInProcessToolGateway:
     """Thread-affine closed-tool gateway visible to one trusted callback."""
 
     __slots__ = (
+        "_accounting",
         "_budget_exhausted",
         "_catalog_digest",
         "_chain_digest",
@@ -363,14 +402,18 @@ class PrivateAnalysisInProcessToolGateway:
         self,
         lease: PrivateAnalysisToolRunLease,
         *,
+        accounting: _RunAccountingSnapshot,
         instruction_profile_digest: str,
         runner_configuration_digest: str,
         deadline_ns: int,
     ) -> None:
         if type(lease) is not PrivateAnalysisToolRunLease:
             raise TypeError("lease must be PrivateAnalysisToolRunLease")
+        if type(accounting) is not _RunAccountingSnapshot:
+            raise TypeError("accounting must be PrivateAnalysisRunAccountingSnapshot")
         request = lease.request
         self._lease = lease
+        self._accounting = accounting
         self._request_digest = request.request_digest
         self._catalog_digest = request.tool_catalog_digest
         self._instruction_profile_digest = _prefixed_sha256(
@@ -411,6 +454,7 @@ class PrivateAnalysisInProcessToolGateway:
             call = private_analysis_tool_call_from_json(call_json)
             call_digest = call.call_digest
             raw_response = self._lease.execute(call)
+            self._accounting.refresh(self._lease)
             if type(raw_response) is PrivateAnalysisToolResult:
                 result = private_analysis_tool_result_from_json(
                     private_analysis_tool_result_json(raw_response)
@@ -786,124 +830,245 @@ class ConfiguredPrivateAnalysisInProcessRunner:
                 budget_state=_empty_budget_state(request),
             )
 
-        gateway = PrivateAnalysisInProcessToolGateway(
-            lease,
-            instruction_profile_digest=self._instruction_profile_digest,
-            runner_configuration_digest=self._selection.configuration_digest,
-            deadline_ns=deadline_ns,
+        budget_state = _empty_budget_state(request)
+        accounting = _RunAccountingSnapshot((), budget_state)
+        gateway: PrivateAnalysisInProcessToolGateway | None = None
+        gateway_state = _PrivateAnalysisInProcessGatewayState(
+            terminal_error=None,
+            exchange_count=0,
+            exchange_metadata_bytes=0,
+            chain_digest=_transcript_seed(
+                request_digest=request.request_digest,
+                catalog_digest=catalog.catalog_digest,
+                instruction_profile_digest=self._instruction_profile_digest,
+                runner_configuration_digest=self._selection.configuration_digest,
+            ),
         )
         raw_result: object = None
         outcome_error: PrivateAnalysisError | None = None
-        references: tuple[EvidenceReference, ...] = ()
-        budget_state = lease.budget_state
+        outcome = _error_outcome(
+            _analysis_error(
+                request.request_digest,
+                PrivateAnalysisErrorStage.RUNNER,
+                PrivateAnalysisErrorCode.RUNNER_FAILED,
+            )
+        )
+        pending_process_control: BaseException | None = None
+        execution_failed = False
+        finalizer_failed = False
         try:
             try:
-                outcome_error = _access_or_deadline_error(lease, request, deadline_ns)
-                if outcome_error is None:
-                    context = PrivateAnalysisInProcessContext(
-                        request=request,
-                        catalog=catalog,
+                accounting.refresh(lease)
+                gateway = PrivateAnalysisInProcessToolGateway(
+                    lease,
+                    accounting=accounting,
+                    instruction_profile_digest=self._instruction_profile_digest,
+                    runner_configuration_digest=self._selection.configuration_digest,
+                    deadline_ns=deadline_ns,
+                )
+                try:
+                    outcome_error = _access_or_deadline_error(
+                        lease,
+                        request,
+                        deadline_ns,
                     )
-                    try:
-                        raw_result = self._callback(context, gateway)
-                    except PROCESS_CONTROL_EXCEPTIONS:
-                        raise
-                    except BaseException:  # noqa: BLE001 - runner boundary.
-                        outcome_error = _analysis_error(
-                            request.request_digest,
-                            PrivateAnalysisErrorStage.RUNNER,
-                            PrivateAnalysisErrorCode.RUNNER_FAILED,
+                    if outcome_error is None:
+                        context = PrivateAnalysisInProcessContext(
+                            request=request,
+                            catalog=catalog,
                         )
-            finally:
-                gateway.close()
+                        try:
+                            raw_result = self._callback(context, gateway)
+                        except PROCESS_CONTROL_EXCEPTIONS:
+                            raise
+                        except BaseException:  # noqa: BLE001 - runner boundary.
+                            outcome_error = _analysis_error(
+                                request.request_digest,
+                                PrivateAnalysisErrorStage.RUNNER,
+                                PrivateAnalysisErrorCode.RUNNER_FAILED,
+                            )
+                finally:
+                    gateway.close()
 
-            gateway_state = gateway._final_state()
-            terminal = gateway_state.terminal_error
-            if terminal is not None:
-                outcome_error = terminal
-            elif outcome_error is None and _deadline_expired(deadline_ns):
-                outcome_error = _analysis_error(
-                    request.request_digest,
-                    PrivateAnalysisErrorStage.RUNNER,
-                    PrivateAnalysisErrorCode.TIMEOUT,
-                )
-            elif outcome_error is None:
-                outcome_error = _access_or_deadline_error(lease, request, deadline_ns)
-
-            references = lease.disclosed_references
-            budget_state = lease.budget_state
-            if outcome_error is None:
-                result, result_error = _validated_callback_result(
-                    raw_result,
-                    request,
-                    references,
-                )
-                if _deadline_expired(deadline_ns):
+                gateway_state = gateway._final_state()
+                terminal = gateway_state.terminal_error
+                if terminal is not None:
+                    outcome_error = terminal
+                elif outcome_error is None and _deadline_expired(deadline_ns):
                     outcome_error = _analysis_error(
                         request.request_digest,
                         PrivateAnalysisErrorStage.RUNNER,
                         PrivateAnalysisErrorCode.TIMEOUT,
                     )
-                elif result_error is not None:
-                    outcome_error = result_error
-                elif result is not None:
-                    outcome = PrivateAnalysisOutcome(
-                        kind=PrivateAnalysisOutcomeKind.RESULT,
-                        result=result,
+                elif outcome_error is None:
+                    outcome_error = _access_or_deadline_error(
+                        lease,
+                        request,
+                        deadline_ns,
                     )
-                else:  # helper makes this unreachable
+
+                try:
+                    accounting.refresh(lease)
+                except PROCESS_CONTROL_EXCEPTIONS:
+                    raise
+                except BaseException:  # noqa: BLE001 - snapshot boundary.
                     outcome_error = _analysis_error(
                         request.request_digest,
-                        PrivateAnalysisErrorStage.OUTPUT_VALIDATION,
-                        PrivateAnalysisErrorCode.INVALID_RESULT,
+                        PrivateAnalysisErrorStage.RUNNER,
+                        PrivateAnalysisErrorCode.RUNNER_FAILED,
                     )
-            if outcome_error is not None:
-                outcome = _error_outcome(outcome_error)
-        finally:
-            lease.close()
-
-        try:
-            transcript = _sealed_transcript(
-                request=request,
-                catalog=catalog,
-                instruction_profile_digest=self._instruction_profile_digest,
-                runner_configuration_digest=self._selection.configuration_digest,
-                exchange_count=gateway_state.exchange_count,
-                exchange_metadata_bytes=gateway_state.exchange_metadata_bytes,
-                exchange_chain_digest=gateway_state.chain_digest,
-                references=references,
-                budget_state=budget_state,
-                outcome=outcome,
-            )
-            return PrivateAnalysisInProcessExecutionReceipt(
-                outcome=outcome,
-                transcript=transcript,
-                disclosed_references=references,
-                budget_state=budget_state,
-            )
-        except PROCESS_CONTROL_EXCEPTIONS:
-            raise
-        except BaseException:  # noqa: BLE001 - trusted callback integrity boundary.
-            # Deliberate Python reflection is outside this transport's trust
-            # contract, but an accidental use of unsupported private gateway
-            # state must still fail closed instead of leaking a constructor
-            # diagnostic.  Do not attest the untrusted counters or ledger in
-            # the fallback receipt.
-            return _standalone_receipt(
-                request=request,
-                instruction_profile_digest=self._instruction_profile_digest,
-                runner_configuration_digest=self._selection.configuration_digest,
-                catalog=catalog,
-                outcome=_error_outcome(
-                    _analysis_error(
+                if (
+                    accounting.budget_state.tool_calls_consumed
+                    > gateway_state.exchange_count
+                ):
+                    outcome_error = _analysis_error(
                         request.request_digest,
                         PrivateAnalysisErrorStage.RUNNER,
                         PrivateAnalysisErrorCode.RUNNER_PROTOCOL_ERROR,
                     )
-                ),
-                references=(),
-                budget_state=_empty_budget_state(request),
+                references = accounting.references
+                if outcome_error is None:
+                    result, result_error = _validated_callback_result(
+                        raw_result,
+                        request,
+                        references,
+                    )
+                    if _deadline_expired(deadline_ns):
+                        outcome_error = _analysis_error(
+                            request.request_digest,
+                            PrivateAnalysisErrorStage.RUNNER,
+                            PrivateAnalysisErrorCode.TIMEOUT,
+                        )
+                    elif result_error is not None:
+                        outcome_error = result_error
+                    elif result is not None:
+                        outcome = PrivateAnalysisOutcome(
+                            kind=PrivateAnalysisOutcomeKind.RESULT,
+                            result=result,
+                        )
+                    else:  # helper makes this unreachable
+                        outcome_error = _analysis_error(
+                            request.request_digest,
+                            PrivateAnalysisErrorStage.OUTPUT_VALIDATION,
+                            PrivateAnalysisErrorCode.INVALID_RESULT,
+                        )
+                if outcome_error is not None:
+                    outcome = _error_outcome(outcome_error)
+            except PROCESS_CONTROL_EXCEPTIONS as error:
+                pending_process_control = error
+            except BaseException:  # noqa: BLE001 - runner boundary.
+                execution_failed = True
+        finally:
+            if gateway is not None:
+                try:
+                    gateway.close()
+                except PROCESS_CONTROL_EXCEPTIONS as error:
+                    if pending_process_control is None:
+                        pending_process_control = error
+                except BaseException:  # noqa: BLE001 - finalizer boundary.
+                    finalizer_failed = True
+            try:
+                accounting.refresh(lease)
+            except PROCESS_CONTROL_EXCEPTIONS as error:
+                if pending_process_control is None:
+                    pending_process_control = error
+            except BaseException:  # noqa: BLE001 - finalizer boundary.
+                finalizer_failed = True
+            try:
+                lease.close()
+            except PROCESS_CONTROL_EXCEPTIONS as error:
+                if pending_process_control is None:
+                    pending_process_control = error
+            except BaseException:  # noqa: BLE001 - finalizer boundary.
+                finalizer_failed = True
+
+        if pending_process_control is not None:
+            raise pending_process_control.with_traceback(
+                pending_process_control.__traceback__
             )
+        if execution_failed or finalizer_failed:
+            outcome = _error_outcome(
+                _analysis_error(
+                    request.request_digest,
+                    PrivateAnalysisErrorStage.RUNNER,
+                    PrivateAnalysisErrorCode.TIMEOUT
+                    if _deadline_expired(deadline_ns)
+                    else PrivateAnalysisErrorCode.RUNNER_FAILED,
+                )
+            )
+        elif _deadline_expired(deadline_ns):
+            outcome = _error_outcome(
+                _analysis_error(
+                    request.request_digest,
+                    PrivateAnalysisErrorStage.RUNNER,
+                    PrivateAnalysisErrorCode.TIMEOUT,
+                )
+            )
+
+        references = accounting.references
+        budget_state = accounting.budget_state
+
+        try:
+            return _deadline_checked_execution_receipt(
+                request=request,
+                catalog=catalog,
+                instruction_profile_digest=self._instruction_profile_digest,
+                runner_configuration_digest=self._selection.configuration_digest,
+                gateway_state=gateway_state,
+                references=references,
+                budget_state=budget_state,
+                outcome=outcome,
+                deadline_ns=deadline_ns,
+            )
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException:  # noqa: BLE001 - trusted callback integrity boundary.
+            fallback_outcome = _error_outcome(
+                _analysis_error(
+                    request.request_digest,
+                    PrivateAnalysisErrorStage.RUNNER,
+                    PrivateAnalysisErrorCode.RUNNER_PROTOCOL_ERROR,
+                )
+            )
+            try:
+                return _deadline_checked_execution_receipt(
+                    request=request,
+                    instruction_profile_digest=self._instruction_profile_digest,
+                    runner_configuration_digest=(self._selection.configuration_digest),
+                    catalog=catalog,
+                    gateway_state=gateway_state,
+                    outcome=fallback_outcome,
+                    references=references,
+                    budget_state=budget_state,
+                    deadline_ns=deadline_ns,
+                )
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except BaseException:  # noqa: BLE001 - corrupted private state.
+                safe_gateway_state = _PrivateAnalysisInProcessGatewayState(
+                    terminal_error=None,
+                    exchange_count=0,
+                    exchange_metadata_bytes=0,
+                    chain_digest=_transcript_seed(
+                        request_digest=request.request_digest,
+                        catalog_digest=catalog.catalog_digest,
+                        instruction_profile_digest=self._instruction_profile_digest,
+                        runner_configuration_digest=(
+                            self._selection.configuration_digest
+                        ),
+                    ),
+                )
+                return _deadline_checked_execution_receipt(
+                    request=request,
+                    instruction_profile_digest=self._instruction_profile_digest,
+                    runner_configuration_digest=(self._selection.configuration_digest),
+                    catalog=catalog,
+                    gateway_state=safe_gateway_state,
+                    outcome=fallback_outcome,
+                    references=references,
+                    budget_state=budget_state,
+                    deadline_ns=deadline_ns,
+                )
 
     def _binding_error(
         self,
@@ -942,103 +1107,16 @@ def _access_or_deadline_error(
     request: PrivateAnalysisRequest,
     deadline_ns: int,
 ) -> PrivateAnalysisError | None:
-    if _deadline_expired(deadline_ns):
-        return _analysis_error(
-            request.request_digest,
-            PrivateAnalysisErrorStage.RUNNER,
-            PrivateAnalysisErrorCode.TIMEOUT,
-        )
-    access_error: PrivateAnalysisError | None = None
-    try:
-        lease.require_run_access()
-    except PROCESS_CONTROL_EXCEPTIONS:
-        raise
-    except PrivateAnalysisToolServiceError as error:
-        access_error = _detached_error(error.error)
-    except BaseException:  # noqa: BLE001 - executable trust boundary.
-        access_error = _analysis_error(
-            request.request_digest,
-            PrivateAnalysisErrorStage.RUNNER,
-            PrivateAnalysisErrorCode.RUNNER_FAILED,
-        )
-    if _deadline_expired(deadline_ns):
-        return _analysis_error(
-            request.request_digest,
-            PrivateAnalysisErrorStage.RUNNER,
-            PrivateAnalysisErrorCode.TIMEOUT,
-        )
-    return access_error
+    return private_analysis_run_access_error(
+        lease,
+        request,
+        deadline_ns,
+        deadline_expired=_deadline_expired,
+    )
 
 
-def _validated_callback_result(
-    raw_result: object,
-    request: PrivateAnalysisRequest,
-    references: tuple[EvidenceReference, ...],
-) -> tuple[PrivateAnalysisResult | None, PrivateAnalysisError | None]:
-    if type(raw_result) is not str:
-        return None, _analysis_error(
-            request.request_digest,
-            PrivateAnalysisErrorStage.OUTPUT_VALIDATION,
-            PrivateAnalysisErrorCode.INVALID_RESULT,
-        )
-    if len(raw_result) > request.limits.max_output_bytes:
-        return None, _analysis_error(
-            request.request_digest,
-            PrivateAnalysisErrorStage.OUTPUT_VALIDATION,
-            PrivateAnalysisErrorCode.BUDGET_EXCEEDED,
-        )
-    try:
-        encoded_size = len(raw_result.encode("utf-8"))
-    except UnicodeEncodeError:
-        return None, _analysis_error(
-            request.request_digest,
-            PrivateAnalysisErrorStage.OUTPUT_VALIDATION,
-            PrivateAnalysisErrorCode.INVALID_RESULT,
-        )
-    if encoded_size > request.limits.max_output_bytes:
-        return None, _analysis_error(
-            request.request_digest,
-            PrivateAnalysisErrorStage.OUTPUT_VALIDATION,
-            PrivateAnalysisErrorCode.BUDGET_EXCEEDED,
-        )
-    try:
-        result = private_analysis_result_from_json(raw_result)
-    except PROCESS_CONTROL_EXCEPTIONS:
-        raise
-    except BaseException:  # noqa: BLE001 - untrusted model output boundary.
-        return None, _analysis_error(
-            request.request_digest,
-            PrivateAnalysisErrorStage.OUTPUT_VALIDATION,
-            PrivateAnalysisErrorCode.INVALID_RESULT,
-        )
-    canonical_size = len(private_analysis_result_json(result).encode("utf-8"))
-    if (
-        canonical_size > request.limits.max_output_bytes
-        or 1 + len(result.claims) > request.limits.max_claims
-        or len(result.proposals) > request.limits.max_proposals
-    ):
-        return None, _analysis_error(
-            request.request_digest,
-            PrivateAnalysisErrorStage.OUTPUT_VALIDATION,
-            PrivateAnalysisErrorCode.BUDGET_EXCEEDED,
-        )
-    try:
-        validate_private_analysis_result(result, request, references)
-    except PROCESS_CONTROL_EXCEPTIONS:
-        raise
-    except PrivateAnalysisContractError:
-        return None, _analysis_error(
-            request.request_digest,
-            PrivateAnalysisErrorStage.OUTPUT_VALIDATION,
-            PrivateAnalysisErrorCode.INVALID_RESULT,
-        )
-    except BaseException:  # noqa: BLE001 - untrusted model output boundary.
-        return None, _analysis_error(
-            request.request_digest,
-            PrivateAnalysisErrorStage.OUTPUT_VALIDATION,
-            PrivateAnalysisErrorCode.INVALID_RESULT,
-        )
-    return private_analysis_result_from_json(private_analysis_result_json(result)), None
+def _deadline_expired(deadline_ns: int) -> bool:
+    return monotonic_ns() >= deadline_ns
 
 
 def _standalone_receipt(
@@ -1072,6 +1150,68 @@ def _standalone_receipt(
     return PrivateAnalysisInProcessExecutionReceipt(
         outcome=outcome,
         transcript=transcript,
+        disclosed_references=references,
+        budget_state=budget_state,
+    )
+
+
+def _deadline_checked_execution_receipt(
+    *,
+    request: PrivateAnalysisRequest,
+    instruction_profile_digest: str,
+    runner_configuration_digest: str,
+    catalog: PrivateAnalysisToolCatalog,
+    gateway_state: _PrivateAnalysisInProcessGatewayState,
+    outcome: PrivateAnalysisOutcome,
+    references: tuple[EvidenceReference, ...],
+    budget_state: PrivateAnalysisToolBudgetState,
+    deadline_ns: int,
+) -> PrivateAnalysisInProcessExecutionReceipt:
+    transcript = _sealed_transcript(
+        request=request,
+        catalog=catalog,
+        instruction_profile_digest=instruction_profile_digest,
+        runner_configuration_digest=runner_configuration_digest,
+        exchange_count=gateway_state.exchange_count,
+        exchange_metadata_bytes=gateway_state.exchange_metadata_bytes,
+        exchange_chain_digest=gateway_state.chain_digest,
+        references=references,
+        budget_state=budget_state,
+        outcome=outcome,
+    )
+    receipt = PrivateAnalysisInProcessExecutionReceipt(
+        outcome=outcome,
+        transcript=transcript,
+        disclosed_references=references,
+        budget_state=budget_state,
+    )
+    if (
+        outcome.error is not None
+        and outcome.error.code is PrivateAnalysisErrorCode.TIMEOUT
+    ) or not _deadline_expired(deadline_ns):
+        return receipt
+    timeout_outcome = _error_outcome(
+        _analysis_error(
+            request.request_digest,
+            PrivateAnalysisErrorStage.RUNNER,
+            PrivateAnalysisErrorCode.TIMEOUT,
+        )
+    )
+    timeout_transcript = _sealed_transcript(
+        request=request,
+        catalog=catalog,
+        instruction_profile_digest=instruction_profile_digest,
+        runner_configuration_digest=runner_configuration_digest,
+        exchange_count=gateway_state.exchange_count,
+        exchange_metadata_bytes=gateway_state.exchange_metadata_bytes,
+        exchange_chain_digest=gateway_state.chain_digest,
+        references=references,
+        budget_state=budget_state,
+        outcome=timeout_outcome,
+    )
+    return PrivateAnalysisInProcessExecutionReceipt(
+        outcome=timeout_outcome,
+        transcript=timeout_transcript,
         disclosed_references=references,
         budget_state=budget_state,
     )
@@ -1112,6 +1252,10 @@ def _sealed_transcript(
         instruction_profile_digest=instruction_profile_digest,
         runner_configuration_digest=runner_configuration_digest,
         exchange_count=exchange_count,
+        unattributed_tool_call_count=max(
+            0,
+            budget_state.tool_calls_consumed - exchange_count,
+        ),
         exchange_metadata_bytes=exchange_metadata_bytes,
         exchange_chain_digest=sealed_chain,
         evidence_ledger_digest=ledger_digest,
@@ -1149,105 +1293,13 @@ def _transcript_payload(
         "instruction_profile_digest": value.instruction_profile_digest,
         "runner_configuration_digest": value.runner_configuration_digest,
         "exchange_count": value.exchange_count,
+        "unattributed_tool_call_count": value.unattributed_tool_call_count,
         "exchange_metadata_bytes": value.exchange_metadata_bytes,
         "exchange_chain_digest": value.exchange_chain_digest,
         "evidence_ledger_digest": value.evidence_ledger_digest,
         "budget_state": _budget_payload(value.budget_state),
         "outcome_digest": value.outcome_digest,
     }
-
-
-def _budget_payload(value: PrivateAnalysisToolBudgetState) -> dict[str, int]:
-    value = _detached_budget_state(value)
-    return {
-        "max_tool_calls": value.max_tool_calls,
-        "tool_calls_consumed": value.tool_calls_consumed,
-        "max_evidence_items": value.max_evidence_items,
-        "evidence_items_disclosed": value.evidence_items_disclosed,
-        "max_evidence_bytes": value.max_evidence_bytes,
-        "evidence_bytes_disclosed": value.evidence_bytes_disclosed,
-    }
-
-
-def _detached_budget_state(
-    value: PrivateAnalysisToolBudgetState,
-) -> PrivateAnalysisToolBudgetState:
-    if type(value) is not PrivateAnalysisToolBudgetState:
-        raise TypeError("budget_state must be PrivateAnalysisToolBudgetState")
-    return PrivateAnalysisToolBudgetState(
-        max_tool_calls=value.max_tool_calls,
-        tool_calls_consumed=value.tool_calls_consumed,
-        max_evidence_items=value.max_evidence_items,
-        evidence_items_disclosed=value.evidence_items_disclosed,
-        max_evidence_bytes=value.max_evidence_bytes,
-        evidence_bytes_disclosed=value.evidence_bytes_disclosed,
-    )
-
-
-def _empty_budget_state(
-    request: PrivateAnalysisRequest,
-) -> PrivateAnalysisToolBudgetState:
-    return PrivateAnalysisToolBudgetState(
-        max_tool_calls=request.limits.max_tool_calls,
-        tool_calls_consumed=0,
-        max_evidence_items=request.limits.max_evidence_items,
-        evidence_items_disclosed=0,
-        max_evidence_bytes=request.limits.max_evidence_bytes,
-        evidence_bytes_disclosed=0,
-    )
-
-
-def _analysis_error(
-    request_digest: str,
-    stage: PrivateAnalysisErrorStage,
-    code: PrivateAnalysisErrorCode,
-) -> PrivateAnalysisError:
-    return PrivateAnalysisError(
-        request_digest=request_digest,
-        stage=stage,
-        code=code,
-        retryable=code
-        in {
-            PrivateAnalysisErrorCode.RUNNER_UNAVAILABLE,
-            PrivateAnalysisErrorCode.RUNNER_FAILED,
-            PrivateAnalysisErrorCode.TIMEOUT,
-        },
-    )
-
-
-def _error_outcome(error: PrivateAnalysisError) -> PrivateAnalysisOutcome:
-    return PrivateAnalysisOutcome(
-        kind=PrivateAnalysisOutcomeKind.ERROR,
-        error=_detached_error(error),
-    )
-
-
-def _detached_error(value: PrivateAnalysisError) -> PrivateAnalysisError:
-    if type(value) is not PrivateAnalysisError:
-        raise TypeError("error must be PrivateAnalysisError")
-    return PrivateAnalysisError(
-        request_digest=value.request_digest,
-        stage=value.stage,
-        code=value.code,
-        retryable=value.retryable,
-        contract_version=value.contract_version,
-        error_digest=value.error_digest,
-    )
-
-
-def _prefixed_sha256(value: object, label: str) -> str:
-    if (
-        type(value) is not str
-        or not value.startswith("sha256:")
-        or len(value) != 71
-        or any(character not in "0123456789abcdef" for character in value[7:])
-    ):
-        raise ValueError(f"{label} must be a prefixed lowercase SHA-256 digest")
-    return value
-
-
-def _deadline_expired(deadline_ns: int) -> bool:
-    return monotonic_ns() >= deadline_ns
 
 
 __all__ = [

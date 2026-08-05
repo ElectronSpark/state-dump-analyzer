@@ -1,8 +1,9 @@
 """Private, advisory AI-analysis boundary owned by the core.
 
 The package deliberately contains no public-model client.  Deployments may
-eventually provide an in-process runner or a local subprocess runner, but all
-model interaction remains behind the closed policy declared in :mod:`policy`.
+provide a trusted in-process adapter or a shell-free local subprocess adapter,
+but all model interaction remains behind the closed policy declared in
+:mod:`policy`.
 """
 
 from .contracts import (
@@ -114,6 +115,23 @@ from .evidence import (
     evidence_scope_from_dict,
     make_evidence_envelope,
 )
+from .local_subprocess_protocol import (
+    MAX_PRIVATE_ANALYSIS_LOCAL_SUBPROCESS_FRAME_BYTES,
+    MAX_PRIVATE_ANALYSIS_LOCAL_SUBPROCESS_PAYLOAD_BYTES,
+    PRIVATE_ANALYSIS_LOCAL_SUBPROCESS_PROTOCOL_VERSION,
+    PrivateAnalysisLocalSubprocessFailureReason,
+    PrivateAnalysisLocalSubprocessKind,
+    PrivateAnalysisLocalSubprocessMessage,
+    PrivateAnalysisLocalSubprocessMessageKind,
+    PrivateAnalysisLocalSubprocessRunnerFailureReason,
+    decode_private_analysis_local_subprocess_message,
+    encode_private_analysis_local_subprocess_message,
+    private_analysis_local_subprocess_message_dict,
+    private_analysis_local_subprocess_message_frame,
+    private_analysis_local_subprocess_message_from_dict,
+    private_analysis_local_subprocess_message_from_frame,
+    validate_private_analysis_local_subprocess_sequence,
+)
 from .policy import (
     ASSISTANT_DIRECT_GROUND_TRUTH_MUTATION_ALLOWED,
     ASSISTANT_DIRECT_PLUGIN_AUTHORITY_ALLOWED,
@@ -208,6 +226,8 @@ __all__ = [
     "MAX_PRIVATE_ANALYSIS_CITATIONS_PER_ITEM",
     "MAX_PRIVATE_ANALYSIS_CLAIMS",
     "MAX_PRIVATE_ANALYSIS_CLAIM_CHARACTERS",
+    "MAX_PRIVATE_ANALYSIS_LOCAL_SUBPROCESS_FRAME_BYTES",
+    "MAX_PRIVATE_ANALYSIS_LOCAL_SUBPROCESS_PAYLOAD_BYTES",
     "MAX_PRIVATE_ANALYSIS_PROPOSALS",
     "MAX_PRIVATE_ANALYSIS_PROPOSAL_PAYLOAD_BYTES",
     "MAX_PRIVATE_ANALYSIS_PROPOSAL_TEXT_CHARACTERS",
@@ -225,6 +245,7 @@ __all__ = [
     "PRIVATE_ANALYSIS_CURSOR_VERSION",
     "PRIVATE_ANALYSIS_ERROR_VERSION",
     "PRIVATE_ANALYSIS_EVIDENCE_SNAPSHOT_VERSION",
+    "PRIVATE_ANALYSIS_LOCAL_SUBPROCESS_PROTOCOL_VERSION",
     "PRIVATE_ANALYSIS_OUTCOME_VERSION",
     "PRIVATE_ANALYSIS_POLICY_VERSION",
     "PRIVATE_ANALYSIS_PROPOSAL_VERSION",
@@ -268,6 +289,11 @@ __all__ = [
     "PrivateAnalysisErrorStage",
     "PrivateAnalysisEvidenceClass",
     "PrivateAnalysisLimits",
+    "PrivateAnalysisLocalSubprocessFailureReason",
+    "PrivateAnalysisLocalSubprocessKind",
+    "PrivateAnalysisLocalSubprocessMessage",
+    "PrivateAnalysisLocalSubprocessMessageKind",
+    "PrivateAnalysisLocalSubprocessRunnerFailureReason",
     "PrivateAnalysisOutcome",
     "PrivateAnalysisOutcomeKind",
     "PrivateAnalysisPolicy",
@@ -291,10 +317,12 @@ __all__ = [
     "PrivateAnalysisToolResultKind",
     "PrivateAnalysisTransport",
     "WorkspaceDisclosurePolicy",
+    "decode_private_analysis_local_subprocess_message",
     "default_private_analysis_tool_catalog",
     "disclosure_decision_dict",
     "disclosure_decision_from_dict",
     "disclosure_scope_digest",
+    "encode_private_analysis_local_subprocess_message",
     "evaluate_workspace_disclosure",
     "evidence_envelope_dict",
     "evidence_envelope_from_dict",
@@ -325,6 +353,10 @@ __all__ = [
     "private_analysis_error_from_dict",
     "private_analysis_error_from_json",
     "private_analysis_error_json",
+    "private_analysis_local_subprocess_message_dict",
+    "private_analysis_local_subprocess_message_frame",
+    "private_analysis_local_subprocess_message_from_dict",
+    "private_analysis_local_subprocess_message_from_frame",
     "private_analysis_outcome_dict",
     "private_analysis_outcome_from_dict",
     "private_analysis_outcome_from_json",
@@ -371,6 +403,7 @@ __all__ = [
     "private_analysis_tool_result_from_dict",
     "private_analysis_tool_result_from_json",
     "private_analysis_tool_result_json",
+    "validate_private_analysis_local_subprocess_sequence",
     "validate_private_analysis_result",
     "workspace_disclosure_policy_dict",
     "workspace_disclosure_policy_digest",

@@ -30,6 +30,12 @@ PRIVATE_ANALYSIS_TOOL_SERVICE_SOURCE = CORE_SOURCE / "private_analysis_tool_serv
 PRIVATE_ANALYSIS_IN_PROCESS_RUNNER_SOURCE = (
     CORE_SOURCE / "private_analysis_in_process_runner.py"
 )
+PRIVATE_ANALYSIS_RUNNER_SUPPORT_SOURCE = (
+    CORE_SOURCE / "private_analysis_runner_support.py"
+)
+PRIVATE_ANALYSIS_SUBPROCESS_RUNNER_SOURCE = (
+    CORE_SOURCE / "private_analysis_subprocess_runner.py"
+)
 DECISION_DOCUMENT = ROOT / "docs" / "private-ai-analysis.md"
 
 APPROVED_PROJECT_REQUIREMENTS = {
@@ -642,7 +648,11 @@ def _private_analysis_import_violations(source_root: Path) -> tuple[str, ...]:
     )
     allowed_external_members = {
         "..canonical": frozenset(
-            {"strict_canonical_json", "strict_canonical_json_sha256"}
+            {
+                "strict_canonical_json",
+                "strict_canonical_json_sha256",
+                "validate_prefixed_lowercase_sha256",
+            }
         ),
         "..contract_validation": frozenset({"validate_bounded_json_value"}),
         "..public_text": frozenset(
@@ -1678,7 +1688,7 @@ class PrivateAiArchitectureTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source)
 
-    def test_private_analysis_tool_service_has_only_the_in_process_runner_consumer(
+    def test_private_analysis_tool_service_has_only_declared_runner_consumers(
         self,
     ) -> None:
         consumers: list[str] = []
@@ -1691,13 +1701,12 @@ class PrivateAiArchitectureTests(unittest.TestCase):
                         f"{path.relative_to(CORE_SOURCE).as_posix()}:{line}"
                     )
         self.assertEqual(
-            len(consumers),
-            1,
-            consumers,
-        )
-        self.assertTrue(
-            consumers[0].startswith("private_analysis_in_process_runner.py:"),
-            consumers,
+            {item.split(":", 1)[0] for item in consumers},
+            {
+                PRIVATE_ANALYSIS_IN_PROCESS_RUNNER_SOURCE.name,
+                PRIVATE_ANALYSIS_RUNNER_SUPPORT_SOURCE.name,
+                PRIVATE_ANALYSIS_SUBPROCESS_RUNNER_SOURCE.name,
+            },
         )
 
     def test_private_analysis_in_process_runner_has_narrow_authority(self) -> None:
@@ -1744,6 +1753,7 @@ class PrivateAiArchitectureTests(unittest.TestCase):
                 "typing",
                 ".canonical",
                 ".private_analysis",
+                ".private_analysis_runner_support",
                 ".private_analysis_tool_service",
                 ".process_control",
             },
@@ -1766,6 +1776,37 @@ class PrivateAiArchitectureTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source)
 
+    def test_private_analysis_subprocess_runner_is_the_only_process_launcher(
+        self,
+    ) -> None:
+        subprocess_importers: set[str] = set()
+        for path in _python_files(CORE_SOURCE):
+            for _line, imported in _literal_imports(path):
+                if imported == "subprocess":
+                    subprocess_importers.add(path.relative_to(CORE_SOURCE).as_posix())
+        self.assertEqual(
+            subprocess_importers,
+            {PRIVATE_ANALYSIS_SUBPROCESS_RUNNER_SOURCE.name},
+        )
+        source = PRIVATE_ANALYSIS_SUBPROCESS_RUNNER_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("shell=False", source)
+        self.assertIn("close_fds=True", source)
+        self.assertIn("start_new_session=False", source)
+        for forbidden in (
+            "annotation_store",
+            "asyncio",
+            "capability_executor",
+            "control_plane",
+            "multiprocessing",
+            "plugin_api",
+            "revision_store",
+            "session_store",
+            "socket",
+            "sqlite",
+            "web.",
+        ):
+            self.assertNotIn(forbidden, source)
+
     def test_in_process_runner_is_not_wired_to_product_surfaces_yet(self) -> None:
         consumers: list[str] = []
         for path in _python_files(CORE_SOURCE):
@@ -1773,6 +1814,18 @@ class PrivateAiArchitectureTests(unittest.TestCase):
                 continue
             for line, imported in _literal_imports(path):
                 if imported.endswith("private_analysis_in_process_runner"):
+                    consumers.append(
+                        f"{path.relative_to(CORE_SOURCE).as_posix()}:{line}"
+                    )
+        self.assertEqual(consumers, [])
+
+    def test_subprocess_runner_is_not_wired_to_product_surfaces_yet(self) -> None:
+        consumers: list[str] = []
+        for path in _python_files(CORE_SOURCE):
+            if path == PRIVATE_ANALYSIS_SUBPROCESS_RUNNER_SOURCE:
+                continue
+            for line, imported in _literal_imports(path):
+                if imported.endswith("private_analysis_subprocess_runner"):
                     consumers.append(
                         f"{path.relative_to(CORE_SOURCE).as_posix()}:{line}"
                     )

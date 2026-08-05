@@ -639,12 +639,154 @@ promotion authority through the callback's supported interface and ships no
 provider SDK, endpoint/key setting, or public-network fallback. Because Python
 reflection can reach any in-process object's private implementation graph, a
 callback that deliberately reads or mutates private gateway state is outside
-this trusted transport's contract; it must use the later local-child transport
-when that threat exists. Unsupported private-state bypass is not an evidence
-API and finalization fails it closed with a static protocol error when detected.
+this trusted transport's contract; it must use the implemented local-child
+transport when that threat exists. Unsupported private-state bypass is not an
+evidence API and finalization fails it closed with a static protocol error when
+detected.
+The resulting payload-free transcript keeps the real last-complete disclosure
+ledger and budget. Calls that reached the private lease without a gateway hash
+chain entry are counted by `unattributed_tool_call_count`; they are not rewritten
+as a zero-use run.
 Durable disclosure-ledger persistence, run lifecycle/cancellation,
-durable quotas/accounting, HTTP composition, hard-kill subprocess isolation,
-and human promotion remain later contracts.
+durable quotas/accounting, HTTP composition, and human promotion remain later
+contracts.
+
+The local-child library boundary is implemented by
+`ConfiguredPrivateAnalysisSubprocessRunner`; it still exposes no `/v1`, CLI, or
+UI model-run surface. Construction requires a `local_subprocess` selection and
+an exact equality between its configuration digest and the sealed launch
+configuration. The request must equal that runner selection and bind the same
+instruction-profile and shipped tool-catalog digests. A runner-selection
+mismatch produces runner-stage `runner_unavailable`; instruction or catalog
+binding mismatch produces request-validation `invalid_request`. No child is
+started for either failure.
+
+`PrivateAnalysisSubprocessLaunchConfiguration` is an exact, frozen launch
+value, not an ambient-process overlay. `argv` MUST be a built-in tuple of 1 to
+128 nonempty scalar strings, each at most 32,768 UTF-8 bytes and containing no
+NUL or control character. `argv[0]` MUST be absolute; `.bat` and `.cmd` are
+forbidden; and `subprocess.list2cmdline(argv)` MUST fit 30,000 UTF-16 units. The
+working directory MUST be an absolute scalar string of at most 16,384 UTF-8
+bytes. On Windows, no executable or working-directory path component may end
+in a period or space; this validation precedes normalized executable-name
+`.bat`/`.cmd` rejection so Win32 normalization cannot change the sealed
+effective path. The environment MUST be a built-in tuple of at most 256 built-in
+two-string tuples. Names MUST match `[A-Za-z_][A-Za-z0-9_]{0,127}`, be unique
+case-insensitively, and are sorted for sealing. Values may be empty but contain
+no controls and are limited to 65,536 UTF-8 bytes; encoded names and values
+together are limited to 256 KiB. Stderr admission is 1 through 256 KiB, and
+terminate and kill grace values are independently 10 through 10,000 ms.
+
+The launch self digest covers the exact argv, cwd, sorted complete environment,
+adapter-identity digest, stderr limit, both reap graces, and literal
+`descendant_policy: forbidden`. The adapter-identity digest is a
+deployment-supplied binding value; core validates its syntax but does not hash
+or authenticate executable bytes, and executable/cwd existence is decided only
+by launch. Core supplies `list(argv)`, the absolute `executable`, `shell=False`,
+binary unbuffered pipes, exact cwd, `env=dict(environment)`, `close_fds=True`,
+and `start_new_session=False`; Windows additionally uses `CREATE_NO_WINDOW`
+when present. Therefore the child receives no ambient-environment merge, shell
+expansion, or `PATH` executable lookup.
+
+Protocol version
+`router_dump_analyzer.private_analysis.local_subprocess_protocol.v1` admits
+only exact message objects with fields `contract_version`, `run_digest`,
+`sequence`, `kind`, `payload`, and `message_digest`. `message_digest` is the
+`sha256:` digest of the strict-canonical object containing the other five
+fields. `run_digest` binds the request, shipped catalog, instruction profile,
+runner configuration, launch configuration, and a `local_subprocess_run`
+domain. Sequence is a nonnegative JSON-safe integer. The closed kinds are
+`hello`, `ready`, `start`, `tool_call`, `tool_result`, `tool_error`,
+`analysis_result`, and `runner_failure`; the last kind contains only closed
+reason `unavailable` or `failed`.
+
+`hello` and `ready` payloads MUST be `{}`. `start` MUST contain exactly object
+members `request` and `tool_catalog`. Each tool or result payload MUST contain
+exactly its same-named object (`tool_call`, `tool_result`, `tool_error`, or
+`analysis_result`); the transport deep-detaches and bounds that object but
+leaves its typed interpretation to the existing nested contract. Payload is
+limited to 8 MiB, 20 container levels, 1,024 items per container, 2,000,000
+value units, 1,048,576 characters per atom, and JSON-safe integers. The total
+frame adds a 64 KiB envelope allowance.
+
+Encoding is the strict canonical UTF-8 JSON envelope followed by exactly one
+LF byte. Decoding accepts exact `bytes` containing exactly one complete frame
+and rejects an empty body, missing or multiple LF, every CR/CRLF, leading UTF-8
+BOM, invalid UTF-8, duplicate object members, `NaN` or infinity, non-object
+root, noncanonical serialization, oversized data, unknown or missing fields,
+unsupported kinds/reasons/versions, and invalid or mismatched digests.
+
+The state machine is one lockstep, same-run global sequence:
+
+1. parent sends `HELLO 0 {}`; no request or catalog has been disclosed;
+2. child MUST answer `READY 1 {}`;
+3. core re-runs live authorization and pinned-policy admission;
+4. parent sends `START 2 {request, tool_catalog}`; and
+5. the child sends `TOOL_CALL` or a terminal message at sequence 3, with every
+   later message in either direction incrementing exactly one.
+
+A typed child tool call is executed only through the exclusive run lease and
+receives the next-sequence `TOOL_RESULT` or `TOOL_ERROR`. After one
+`budget_exceeded` tool error, another tool call terminates the run as
+`budget_exceeded`. Core checks the monotonic deadline before and after lease
+admission, after typed call parsing but before provider entry, and after the
+provider returns; an expired call never begins provider work. The only terminal child kinds are `ANALYSIS_RESULT` and
+`RUNNER_FAILURE`. After either, core closes stdin; the next stdout read MUST be
+EOF, not another frame; the direct child MUST then exit zero before the same
+monotonic request deadline; and live access MUST pass once more. Only then may
+the failure reason be mapped or the result be parsed, budget-checked, and
+citation-validated.
+
+Launch `OSError`, selection mismatch, or child failure reason `unavailable`
+maps to `runner_unavailable`. Generic launch/runtime failure, premature EOF,
+stdio failure, admitted-stderr overflow, nonzero exit, child reason `failed`,
+or failed direct-child/helper cleanup maps to `runner_failed`. Invalid frame,
+digest, sequence, kind, typed tool call, trailing post-terminal frame, or
+transcript integrity maps to `runner_protocol_error`. Deadline expiry while
+waiting for a frame, final EOF, exit, access, cleanup completion, result
+validation, or final outcome/transcript/receipt attestation maps to `timeout`
+and takes precedence over every non-timeout outcome after the late operation.
+Malformed final output maps to output-validation `invalid_result`; output,
+claim, or proposal ceilings map to `budget_exceeded`. Existing closed
+tool-service errors are detached and preserved. These error wires remain
+payload-free and never serialize child stderr or exception/path diagnostics.
+
+Two non-daemon threads drain protocol stdio and stderr concurrently. Stderr
+content is discarded; only its admitted byte count is retained. Cleanup runs
+in `finally`, signals the pump, applies bounded terminate-then-kill waits while
+the direct child remains live, closes stdin/stdout, and preserves stderr until
+its helper drains buffered bytes to EOF after child exit. A still-live child
+has stderr closed to unblock the helper. Both helpers are bounded-joined before
+sealing. Failure to observe child exit and stopped helpers becomes
+static `runner_failed` (or `timeout` after deadline precedence). This is a
+fail-closed receipt condition, not an unconditional OS reaping guarantee, and
+it covers the direct child only. Adapter-created descendants are contractually
+forbidden because the portable implementation has no Windows Job Object or
+equivalent process-tree reaper.
+Ordinary cleanup, snapshot, or lease-close exceptions are contained as
+`runner_failed`; a pending process-control exception is preserved across those
+best-effort finalizers.
+
+`PrivateAnalysisSubprocessTranscript` is a payload-free self-digested seal. It
+binds request, catalog, instruction-profile, runner-configuration,
+launch-configuration and run digests; message/tool-call counts; admitted
+metadata and stderr byte counts; message-chain, evidence-ledger and outcome
+digests; and the final tool-budget snapshot. Each message-chain link contains
+only direction, sequence, kind, message digest, and frame size. It retains no
+argv/environment value, request/query, evidence/tool payload, model output,
+stderr text, exception, path, or timestamp. Its detached execution receipt is
+not persisted or returned by an HTTP API in this stage.
+
+The subprocess runner is a killable direct-child fault boundary, not an OS
+sandbox. The peer is untrusted at the JSONL boundary and cannot receive Python
+objects through its supported interface, unlike the deployment-trusted,
+unsandboxed in-process callback. It nevertheless inherits the host user's
+filesystem and network authority and receives no core CPU/memory quota;
+deployment containment must remove those capabilities and enforce the
+no-descendants policy when required. Neither runner is wired to public model
+APIs, a provider SDK, endpoint/API-key settings, network fallback, product
+configuration, durable scheduling/cancellation, retry, annotation mutation,
+or promotion.
 
 Retention preview and execute accept a closed object with optional `catalog`
 and `review` policy objects. Cutoffs use canonical decimal strings. The router

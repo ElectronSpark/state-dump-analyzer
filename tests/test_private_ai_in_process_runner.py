@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Any
 from unittest.mock import patch
 
+import router_dump_analyzer.private_analysis_in_process_runner as in_process_runner_module
 from router_dump_analyzer.canonical import (
     strict_canonical_json,
     strict_canonical_json_sha256,
@@ -1625,7 +1626,7 @@ class PrivateAnalysisInProcessRunnerTests(unittest.TestCase):
                 side_effect=lambda: now["value"],
             ),
             patch(
-                "router_dump_analyzer.private_analysis_in_process_runner."
+                "router_dump_analyzer.private_analysis_runner_support."
                 "private_analysis_result_from_json",
                 side_effect=late_result_parse,
             ),
@@ -1664,8 +1665,10 @@ class PrivateAnalysisInProcessRunnerTests(unittest.TestCase):
             PrivateAnalysisErrorCode.RUNNER_PROTOCOL_ERROR,
             PrivateAnalysisErrorStage.RUNNER,
         )
-        self.assertEqual(bypass.disclosed_references, ())
-        self.assertEqual(bypass.budget_state.tool_calls_consumed, 0)
+        self.assertEqual(bypass.disclosed_references, (reference,))
+        self.assertEqual(bypass.budget_state.tool_calls_consumed, 1)
+        self.assertEqual(bypass.transcript.exchange_count, 0)
+        self.assertEqual(bypass.transcript.unattributed_tool_call_count, 1)
 
         def corrupt_callback(
             context: PrivateAnalysisInProcessContext,
@@ -2019,12 +2022,124 @@ class PrivateAnalysisInProcessRunnerTests(unittest.TestCase):
         self.assertNotEqual(receipt.outcome.result.summary.text, "mutated outcome")
 
         transcript = receipt.transcript
+        reconstructed_receipt = PrivateAnalysisInProcessExecutionReceipt(
+            outcome=receipt.outcome,
+            transcript=transcript,
+            disclosed_references=receipt.disclosed_references,
+            budget_state=receipt.budget_state,
+        )
+        expected_outcome_digest = reconstructed_receipt.outcome.outcome_digest
+        object.__setattr__(
+            transcript,
+            "outcome_digest",
+            "sha256:" + "e" * 64,
+        )
+        object.__setattr__(transcript, "transcript_digest", "")
+        self.assertEqual(
+            reconstructed_receipt.transcript.outcome_digest,
+            expected_outcome_digest,
+        )
+        self.assertEqual(
+            reconstructed_receipt.transcript.outcome_digest,
+            reconstructed_receipt.outcome.outcome_digest,
+        )
+
+        transcript = receipt.transcript
         object.__setattr__(transcript, "exchange_count", 999)
         self.assertEqual(receipt.transcript.exchange_count, 1)
 
         budget = receipt.budget_state
         object.__setattr__(budget, "tool_calls_consumed", 999)
         self.assertEqual(receipt.budget_state.tool_calls_consumed, 1)
+
+    def test_attestation_fallback_preserves_real_disclosure_accounting(self) -> None:
+        reference = _reference()
+        request = _request()
+        harness = _Harness(request, (reference,))
+
+        def callback(
+            _context: PrivateAnalysisInProcessContext,
+            gateway: PrivateAnalysisInProcessToolGateway,
+        ) -> str:
+            gateway.execute(private_analysis_tool_call_json(_query_call(request)))
+            return private_analysis_result_json(_supported_result(request, reference))
+
+        seal_attempts = 0
+        real_seal = in_process_runner_module._sealed_transcript
+
+        def fail_result_seal(*args: Any, **kwargs: Any) -> Any:
+            nonlocal seal_attempts
+            seal_attempts += 1
+            outcome = kwargs["outcome"]
+            if outcome.kind is PrivateAnalysisOutcomeKind.RESULT:
+                raise RuntimeError("synthetic final attestation failure")
+            return real_seal(*args, **kwargs)
+
+        with patch(
+            "router_dump_analyzer.private_analysis_in_process_runner."
+            "_sealed_transcript",
+            new=fail_result_seal,
+        ):
+            receipt = _runner(callback).execute(harness.service())
+
+        self.assertEqual(seal_attempts, 2)
+        _assert_receipt_error(
+            self,
+            receipt,
+            PrivateAnalysisErrorCode.RUNNER_PROTOCOL_ERROR,
+            PrivateAnalysisErrorStage.RUNNER,
+        )
+        self.assertEqual(harness.query_calls, 1)
+        self.assertEqual(receipt.disclosed_references, (reference,))
+        self.assertEqual(receipt.budget_state.tool_calls_consumed, 1)
+        self.assertEqual(receipt.budget_state.evidence_items_disclosed, 1)
+        self.assertEqual(receipt.transcript.exchange_count, 1)
+        self.assertEqual(receipt.transcript.budget_state, receipt.budget_state)
+
+    def test_snapshot_failure_retains_last_complete_accounting(self) -> None:
+        reference = _reference()
+        request = _request()
+        harness = _Harness(request, (reference,))
+
+        def callback(
+            _context: PrivateAnalysisInProcessContext,
+            gateway: PrivateAnalysisInProcessToolGateway,
+        ) -> str:
+            gateway.execute(private_analysis_tool_call_json(_query_call(request)))
+            return private_analysis_result_json(_supported_result(request, reference))
+
+        disclosed_reads = 0
+        disclosed_property = PrivateAnalysisToolRunLease.disclosed_references
+        assert disclosed_property.fget is not None
+
+        def fail_post_callback_snapshot(
+            lease: PrivateAnalysisToolRunLease,
+        ) -> Any:
+            nonlocal disclosed_reads
+            disclosed_reads += 1
+            if disclosed_reads == 3:
+                raise RuntimeError("synthetic final ledger snapshot failure")
+            return disclosed_property.fget(lease)
+
+        with patch.object(
+            PrivateAnalysisToolRunLease,
+            "disclosed_references",
+            new=property(fail_post_callback_snapshot),
+        ):
+            receipt = _runner(callback).execute(harness.service())
+
+        self.assertEqual(disclosed_reads, 4)
+        _assert_receipt_error(
+            self,
+            receipt,
+            PrivateAnalysisErrorCode.RUNNER_FAILED,
+            PrivateAnalysisErrorStage.RUNNER,
+        )
+        self.assertEqual(harness.query_calls, 1)
+        self.assertEqual(receipt.disclosed_references, (reference,))
+        self.assertEqual(receipt.budget_state.tool_calls_consumed, 1)
+        self.assertEqual(receipt.budget_state.evidence_items_disclosed, 1)
+        self.assertEqual(receipt.transcript.exchange_count, 1)
 
 
 if __name__ == "__main__":

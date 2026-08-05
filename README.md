@@ -508,13 +508,60 @@ The callback returns canonical
 `PrivateAnalysisResult` JSON; core closes the gateway, rechecks access, then
 validates output budgets and every citation against the exact disclosure
 ledger. A constant-memory digest chain records call/response identities
-without retaining payloads or model text. Cooperative monotonic deadline
+without retaining payloads or model text. Core refreshes one detached
+last-complete ledger/budget snapshot after tool work and during finalization;
+an ordinary snapshot, close, or receipt failure returns a static error without
+resetting already consumed calls or disclosed evidence. The transcript records
+unsupported private-lease bypasses as unattributed calls rather than pretending
+that the disclosure never happened. Cooperative monotonic deadline
 checks after result validation discard output that becomes late while parsing,
 but this trusted in-process transport cannot
 preempt a callback that never returns. It is not a sandbox and adds no public
 provider, endpoint, key, network fallback, persistence, HTTP route, shell, or
-plug-in authority. Hard isolation is reserved for the separate local-child
-transport. The tool service and runner remain ephemeral. See the
+plug-in authority. The tool service and runner remain ephemeral.
+
+`ConfiguredPrivateAnalysisSubprocessRunner` implements the complementary
+killable local-child library boundary. Its launch contract requires a bounded
+exact argument tuple whose executable is an absolute non-`.bat`/`.cmd` path,
+an absolute working directory, and a complete explicit bounded environment.
+On Windows, executable and working-directory components ending in a period or
+space are rejected before extension checks so Win32 normalization cannot alter
+the digest-bound effective path;
+the child is started with `shell=False`, binary pipes, closed unrelated file
+descriptors, and no ambient-environment merge or `PATH` executable lookup.
+Those inputs, the adapter identity, stderr/reaping limits, and the explicit
+`descendant_policy: forbidden` declaration are covered by the launch digest
+that the selected runner must bind.
+
+The parent first sends payload-free `HELLO` sequence 0 carrying only the run
+digest; only an empty `READY` sequence 1 permits a fresh access check and
+`START` sequence 2 with the detached request and closed tool catalog. Later
+`TOOL_CALL`, `TOOL_RESULT`/`TOOL_ERROR`, and terminal
+`ANALYSIS_RESULT`/`RUNNER_FAILURE` messages use one same-run global sequence.
+Every frame is an exact self-digested JSON object serialized as bounded strict
+canonical UTF-8 JSON plus exactly one LF. A terminal message is accepted only
+after stdin is closed, stdout reaches EOF without another frame, and the child
+exits zero before the monotonic deadline.
+Deadline precedence is checked before and after lease admission, after typed
+tool-call parsing but before provider entry, after provider return, and after
+result/transcript/receipt finalization. Ordinary cleanup/finalizer failures
+become `runner_failed`; process-control exceptions retain precedence.
+
+Stdout and stderr are drained concurrently; stderr content is discarded and
+only its bounded byte count is sealed. Cleanup runs on every exit path: it
+signals the pump, applies bounded terminate-then-kill waits while the direct
+child remains live, closes stdin/stdout, and lets the stderr helper drain to
+EOF before closing stderr; a still-live child instead has stderr closed to
+unblock the helper. Both non-daemon helpers are bounded-joined before sealing.
+Failure to observe child exit and stopped helpers becomes static
+`runner_failed`; this is fail-closed receipt acceptance, not an unconditional
+OS reaping guarantee.
+Adapter-created descendants are forbidden because this portable implementation
+does not provide a Windows Job Object or process-tree kill guarantee. The child
+boundary is killable but is not a filesystem/network/CPU/memory sandbox, so a
+deployment must add those OS controls. No model-run HTTP/CLI/UI, public provider
+SDK, endpoint/key configuration, automatic network fallback, durable run, or
+promotion workflow is wired to either runner. See the
 [private AI analysis boundary](docs/private-ai-analysis.md).
 
 For a headless multi-fixture run:

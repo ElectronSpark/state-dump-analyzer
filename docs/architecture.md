@@ -2345,6 +2345,16 @@ citations with `validate_private_analysis_result`. The internal receipt is a
 detached outcome plus ledger/budget snapshots and the payload-free transcript
 seal; it is neither routed nor persisted at this stage.
 
+The in-process and local-child adapters share one last-complete detached
+accounting primitive. Successful tool work refreshes it before any later
+attestation can fail; final snapshot and lease-close faults retain the prior
+complete pair and become static runner failures. Receipt construction also
+detaches the supplied transcript before storing it. For detected reflective
+private-lease bypass, the in-process transcript binds the real disclosure
+ledger and budget and counts calls not represented in the gateway hash chain
+as `unattributed_tool_call_count`; it never rewrites a consumed run into an
+empty one.
+
 Gateway exchange counters, chain state, and terminal state have no public
 callback-facing properties. After owner-thread close, runner finalization uses
 one private atomic snapshot, avoiding individually observable metadata reads
@@ -2364,10 +2374,97 @@ adapter starts no worker thread to fake cancellation. Its callback is
 process-trusted and unsandboxed; core can avoid granting a filesystem, network,
 shell, subprocess, plug-in, database, or mutation handle but cannot prevent
 deliberately hostile code already running in-process from acquiring global
-Python authority. The later local-child runner is the hard-kill isolation
-boundary. No public provider dependency, endpoint/key setting, automatic
+Python authority. The adjacent implemented local-child runner is the hard-kill
+fault boundary. No public provider dependency, endpoint/key setting, automatic
 network fallback, API/CLI, durable lifecycle, retry, annotation write, or
 promotion is introduced here.
+
+#### Local-subprocess execution boundary
+
+`ConfiguredPrivateAnalysisSubprocessRunner` consumes the same exclusive
+request-local tool-service lease but treats its operator-approved peer as
+untrusted protocol input. The runner selection must name `local_subprocess` and
+bind the exact launch-configuration digest. That launch value covers a bounded
+argument vector, an absolute executable, an absolute working directory, the
+complete explicit bounded environment, adapter identity digest, stderr and
+terminate/kill limits, and the invariant `descendant_policy: forbidden`.
+Command-interpreter `.bat`/`.cmd` files are rejected. On Windows, executable
+and working-directory components ending in a period or space are rejected
+before that extension check so Win32 normalization cannot change the sealed
+effective path. Core invokes the absolute
+executable with `shell=False`, binary pipes, `close_fds=True`, the supplied cwd
+and environment, and no new process session; it does not merge the host
+environment or resolve the executable through `PATH`.
+
+The protocol layer remains a separate inert value module with no process or
+I/O authority. Its bounded frames are strict canonical UTF-8 JSON objects plus
+exactly one LF. Each exact envelope carries the protocol version, run digest,
+global JSON-safe sequence, closed kind, one kind-specific object payload, and a
+self digest. Duplicate, missing, unknown, noncanonical, non-object,
+non-finite, BOM, CR/CRLF, invalid-UTF-8, oversized, or incomplete frames fail
+closed. The run digest binds request, catalog, instruction, runner
+configuration, and launch configuration without disclosing those values in the
+initial handshake.
+
+The parent sends empty `HELLO 0`; only an empty, same-run `READY 1` triggers a
+fresh authorization/policy check and `START 2` carrying the detached request
+and closed catalog. All later child and parent messages share one sequence and
+advance by exactly one. Child `TOOL_CALL` objects are typed only after frame
+admission, executed through the lease, and answered with `TOOL_RESULT` or
+`TOOL_ERROR`. The only terminal child messages are `ANALYSIS_RESULT` and a
+payload-free `RUNNER_FAILURE` reason (`unavailable` or `failed`). This
+pre-disclosure handshake prevents a merely launchable executable from
+receiving proprietary request/catalog content before it demonstrates protocol
+readiness for the bound run.
+
+The monotonic deadline brackets lease admission and every tool-provider call:
+core checks it after typed-call parsing and before provider entry, then again
+after provider return. Result outcome construction, transcript sealing, and
+receipt detachment also receive late checks, so successful release cannot be
+based on an earlier clock sample. Ordinary finalizer failures become the
+static runner failure; captured process-control exceptions retain precedence
+while cleanup and lease close run best effort.
+
+Terminal acceptance has a transport-level commit condition: core closes
+stdin, requires stdout EOF with no trailing frame, waits for exit status zero,
+and rechecks live access, all before the original monotonic request deadline.
+An extra frame is `runner_protocol_error`; premature EOF, stdio or stderr-limit
+failure, nonzero exit, generic child failure, or unsuccessful cleanup is
+`runner_failed`; launch unavailability and child reason `unavailable` are
+`runner_unavailable`; and deadline expiry is `timeout` with post-operation
+precedence. Final typed result parsing still maps malformed content to
+`invalid_result` and request ceilings to `budget_exceeded`.
+
+One non-daemon helper performs lockstep stdin/stdout exchange while another
+continuously drains stderr. Stderr content is discarded; only its bounded byte
+count reaches the transcript. A `finally` cleanup signals the pump, terminates
+the direct child, escalates to kill after a bounded grace, waits again, closes
+stdin/stdout, and preserves stderr until its helper drains buffered bytes to EOF after child
+exit. A still-live child has stderr closed to unblock the helper; both helpers
+are bounded-joined before sealing. A cleanup that cannot observe direct
+child exit and stopped helpers becomes static `runner_failed` (or a later
+`timeout`); this is fail-closed receipt acceptance, not an unconditional OS
+reaping guarantee. The runner also does not claim process-tree containment:
+adapter-created descendants are forbidden because this portable implementation
+does not establish a Windows Job Object or equivalent tree-reaping boundary.
+
+The subprocess transcript is a constant-memory, payload-free hash chain. Its
+message links retain only direction, sequence, kind, message digest, and frame
+size; the seal additionally binds request/catalog/instruction/runner/launch/run
+digests, counts, admitted stderr bytes, budget state, evidence-ledger digest,
+and outcome digest. It retains no model text, request/query, evidence or tool
+payload, stderr, exception, path, argument, environment value, or timestamp.
+The detached receipt is not persisted or routed by this stage.
+
+This subprocess boundary provides killable direct-child fault isolation, not
+an OS security sandbox. Unlike the process-trusted in-process callback, the
+child cannot reach the parent's Python object graph through the supported
+interface; unlike a container, it still has the host user's filesystem and
+network authority and no core-applied CPU/memory limit. Deployments must add
+those controls and must enforce the no-descendants rule when required. The
+implementation is not wired to a model-run HTTP/CLI/UI, package-level product
+configuration, durable scheduler, public provider SDK, endpoint/key setting,
+network fallback, retry, annotation mutation, or promotion workflow.
 
 ## 14. Delivery sequence
 
