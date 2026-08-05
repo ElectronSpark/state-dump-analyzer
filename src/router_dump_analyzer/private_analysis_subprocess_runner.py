@@ -62,8 +62,10 @@ from .private_analysis_runner_support import (
     MAX_PRIVATE_ANALYSIS_SUBPROCESS_STDERR_BYTES,
     MAX_PRIVATE_ANALYSIS_SUBPROCESS_TRANSCRIPT_BYTES,
     PrivateAnalysisAccountingObserver,
+    PrivateAnalysisCancellationProbe,
     PrivateAnalysisLocalSubprocessTranscriptSummaryMetadata,
     PrivateAnalysisRunAccountingSnapshot,
+    PrivateAnalysisRunnerExecutionOwner,
     PrivateAnalysisTranscriptSummary,
     detached_private_analysis_budget_state,
     detached_private_analysis_error,
@@ -99,6 +101,7 @@ MAX_PRIVATE_ANALYSIS_SUBPROCESS_ENVIRONMENT_ITEMS: Final = 256
 MAX_PRIVATE_ANALYSIS_SUBPROCESS_ENVIRONMENT_BYTES: Final = 256 * 1024
 MIN_PRIVATE_ANALYSIS_SUBPROCESS_REAP_GRACE_MS: Final = 10
 MAX_PRIVATE_ANALYSIS_SUBPROCESS_REAP_GRACE_MS: Final = 10_000
+PRIVATE_ANALYSIS_SUBPROCESS_CANCELLATION_POLL_MS: Final = 50
 
 _ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
 _STOP_PUMP: Final = object()
@@ -474,6 +477,7 @@ class PrivateAnalysisSubprocessExecutionReceipt:
 
     __slots__ = (
         "_budget",
+        "_cancellation_attested",
         "_outcome_json",
         "_references",
         "_transcript",
@@ -487,10 +491,13 @@ class PrivateAnalysisSubprocessExecutionReceipt:
         transcript: PrivateAnalysisSubprocessTranscript,
         disclosed_references: tuple[EvidenceReference, ...],
         budget_state: PrivateAnalysisToolBudgetState,
+        cancellation_attested: bool = False,
     ) -> None:
         if type(transcript) is not PrivateAnalysisSubprocessTranscript:
             raise TypeError("transcript must be PrivateAnalysisSubprocessTranscript")
         detached_transcript = _detached_subprocess_transcript(transcript)
+        if type(cancellation_attested) is not bool:
+            raise TypeError("cancellation_attested must be a boolean")
         outcome_json, references, budget = private_analysis_execution_receipt_values(
             outcome=outcome,
             disclosed_references=disclosed_references,
@@ -506,6 +513,7 @@ class PrivateAnalysisSubprocessExecutionReceipt:
         self._transcript = detached_transcript
         self._references = references
         self._budget = budget
+        self._cancellation_attested = cancellation_attested
         self._transcript_summary = _subprocess_transcript_summary(detached_transcript)
 
     @property
@@ -551,6 +559,52 @@ class PrivateAnalysisSubprocessExecutionReceipt:
 
         return detached_private_analysis_transcript_summary(self._transcript_summary)
 
+    @property
+    def cancellation_attested(self) -> bool:
+        """Return whether direct-child and helper cleanup completed."""
+
+        return self._cancellation_attested
+
+    def as_cancelled(self) -> PrivateAnalysisSubprocessExecutionReceipt:
+        """Reseal this receipt as cancelled after attested transport cleanup."""
+
+        if not self._cancellation_attested:
+            raise RuntimeError(
+                "subprocess receipt cannot be cancelled without cleanup attestation"
+            )
+        cancelled_outcome = private_analysis_error_outcome(
+            private_analysis_error(
+                self._transcript.request_digest,
+                PrivateAnalysisErrorStage.RUNNER,
+                PrivateAnalysisErrorCode.CANCELLED,
+            )
+        )
+        transcript = self._transcript
+        cancelled_transcript = PrivateAnalysisSubprocessTranscript(
+            request_digest=transcript.request_digest,
+            catalog_digest=transcript.catalog_digest,
+            instruction_profile_digest=transcript.instruction_profile_digest,
+            runner_configuration_digest=transcript.runner_configuration_digest,
+            launch_configuration_digest=transcript.launch_configuration_digest,
+            run_digest=transcript.run_digest,
+            message_count=transcript.message_count,
+            tool_call_count=transcript.tool_call_count,
+            message_metadata_bytes=transcript.message_metadata_bytes,
+            message_chain_digest=transcript.message_chain_digest,
+            stderr_bytes=transcript.stderr_bytes,
+            evidence_ledger_digest=transcript.evidence_ledger_digest,
+            budget_state=transcript.budget_state,
+            outcome_digest=cancelled_outcome.outcome_digest,
+            contract_version=transcript.contract_version,
+        )
+        return PrivateAnalysisSubprocessExecutionReceipt(
+            outcome=cancelled_outcome,
+            transcript=cancelled_transcript,
+            disclosed_references=self._references,
+            budget_state=self._budget,
+            cancellation_attested=True,
+        )
+
     def __repr__(self) -> str:
         outcome = self.outcome
         return (
@@ -588,6 +642,7 @@ class _PumpEventKind(StrEnum):
     EOF = "eof"
     IO_FAILED = "io_failed"
     STDERR_LIMIT = "stderr_limit"
+    CANCELLED = "cancelled"
 
 
 @dataclass(frozen=True, slots=True)
@@ -614,6 +669,31 @@ class _ProcessCleanupState:
     exited: bool = False
     failed: bool = False
     process_control: BaseException | None = None
+
+
+class _CancellationState:
+    """Memoized, strictly typed view of one external cancellation probe."""
+
+    __slots__ = ("_probe", "_requested")
+
+    def __init__(self, probe: PrivateAnalysisCancellationProbe | None) -> None:
+        self._probe = probe
+        self._requested = False
+
+    @property
+    def requested(self) -> bool:
+        return self._requested
+
+    def poll(self) -> bool:
+        if self._requested:
+            return True
+        if self._probe is None:
+            return False
+        value = self._probe()
+        if type(value) is not bool:
+            raise TypeError("cancellation_probe must return a boolean")
+        self._requested = value
+        return value
 
 
 def _remember_cleanup_process_control(
@@ -886,6 +966,7 @@ def _stderr_drain(
 
 class _LocalChildSession:
     __slots__ = (
+        "_cancellation",
         "_commands",
         "_configuration",
         "_events",
@@ -902,11 +983,13 @@ class _LocalChildSession:
         self,
         process: subprocess.Popen[bytes],
         configuration: PrivateAnalysisSubprocessLaunchConfiguration,
+        cancellation: _CancellationState,
     ) -> None:
         if process.stdin is None or process.stdout is None or process.stderr is None:
             raise RuntimeError("subprocess standard streams were not created")
         self._process = process
         self._configuration = configuration
+        self._cancellation = cancellation
         self._commands: queue.Queue[object] = queue.Queue(maxsize=1)
         self._events: queue.Queue[_PumpEvent] = queue.Queue()
         self._stop = Event()
@@ -962,43 +1045,76 @@ class _LocalChildSession:
     def stderr_failed(self) -> bool:
         return self._stderr_state.overflowed or self._stderr_state.io_failed
 
+    @property
+    def cancellation_requested(self) -> bool:
+        return self._cancellation.requested
+
     def exchange(self, frame: bytes, deadline_ns: int) -> _PumpEvent | None:
         if not self._put_command(_PumpCommand(frame=frame), deadline_ns):
-            return None
+            return (
+                _PumpEvent(_PumpEventKind.CANCELLED)
+                if self._cancellation.requested
+                else None
+            )
         return self._wait_event(deadline_ns)
 
     def finish(self, deadline_ns: int) -> _PumpEvent | None:
         if not self._put_command(_PumpCommand(finish=True), deadline_ns):
-            return None
+            return (
+                _PumpEvent(_PumpEventKind.CANCELLED)
+                if self._cancellation.requested
+                else None
+            )
         return self._wait_event(deadline_ns)
 
     def wait_for_exit(self, deadline_ns: int) -> int | None:
-        remaining = deadline_ns - monotonic_ns()
-        if remaining <= 0:
-            return None
-        try:
-            return self._process.wait(timeout=remaining / 1_000_000_000)
-        except subprocess.TimeoutExpired:
-            return None
+        while True:
+            remaining = deadline_ns - monotonic_ns()
+            if remaining <= 0:
+                return None
+            if self._cancellation.poll():
+                return None
+            wait_ns = min(
+                remaining,
+                PRIVATE_ANALYSIS_SUBPROCESS_CANCELLATION_POLL_MS * 1_000_000,
+            )
+            try:
+                return self._process.wait(timeout=wait_ns / 1_000_000_000)
+            except subprocess.TimeoutExpired:
+                continue
 
     def _put_command(self, command: _PumpCommand, deadline_ns: int) -> bool:
-        remaining = deadline_ns - monotonic_ns()
-        if remaining <= 0:
-            return False
-        try:
-            self._commands.put(command, timeout=remaining / 1_000_000_000)
-        except queue.Full:
-            return False
-        return True
+        while True:
+            remaining = deadline_ns - monotonic_ns()
+            if remaining <= 0:
+                return False
+            if self._cancellation.poll():
+                return False
+            wait_ns = min(
+                remaining,
+                PRIVATE_ANALYSIS_SUBPROCESS_CANCELLATION_POLL_MS * 1_000_000,
+            )
+            try:
+                self._commands.put(command, timeout=wait_ns / 1_000_000_000)
+            except queue.Full:
+                continue
+            return True
 
     def _wait_event(self, deadline_ns: int) -> _PumpEvent | None:
-        remaining = deadline_ns - monotonic_ns()
-        if remaining <= 0:
-            return None
-        try:
-            return self._events.get(timeout=remaining / 1_000_000_000)
-        except queue.Empty:
-            return None
+        while True:
+            remaining = deadline_ns - monotonic_ns()
+            if remaining <= 0:
+                return None
+            if self._cancellation.poll():
+                return _PumpEvent(_PumpEventKind.CANCELLED)
+            wait_ns = min(
+                remaining,
+                PRIVATE_ANALYSIS_SUBPROCESS_CANCELLATION_POLL_MS * 1_000_000,
+            )
+            try:
+                return self._events.get(timeout=wait_ns / 1_000_000_000)
+            except queue.Empty:
+                continue
 
     def cleanup(self) -> bool:
         state = _ProcessCleanupState()
@@ -1011,6 +1127,9 @@ class _LocalChildSession:
             _remember_cleanup_process_control(state, error)
         except BaseException:  # noqa: BLE001 - cleanup still stops the child.
             state.failed = True
+        # Closing stdin first prevents a blocked peer from waiting for more
+        # protocol input while bounded terminate/kill/reap cleanup proceeds.
+        _close_cleanup_stream(self._process.stdin, state)
         process_state = _best_effort_stop_process(
             self._process,
             terminate_grace_ms=self._configuration.terminate_grace_ms,
@@ -1023,7 +1142,6 @@ class _LocalChildSession:
         # Once the child has exited, leave stderr open until its dedicated
         # reader reaches EOF.  Closing it first can discard buffered bytes and
         # let a delayed overflow race a successful terminal response.
-        _close_cleanup_stream(self._process.stdin, state)
         _close_cleanup_stream(self._process.stdout, state)
         stderr = self._process.stderr
         if not state.exited:
@@ -1083,6 +1201,14 @@ def _is_timeout_outcome(outcome: PrivateAnalysisOutcome) -> bool:
         outcome.kind is PrivateAnalysisOutcomeKind.ERROR
         and outcome.error is not None
         and outcome.error.code is PrivateAnalysisErrorCode.TIMEOUT
+    )
+
+
+def _is_cancelled_outcome(outcome: PrivateAnalysisOutcome) -> bool:
+    return (
+        outcome.kind is PrivateAnalysisOutcomeKind.ERROR
+        and outcome.error is not None
+        and outcome.error.code is PrivateAnalysisErrorCode.CANCELLED
     )
 
 
@@ -1159,6 +1285,8 @@ def _exchange_message(
     event = session.exchange(frame, deadline_ns)
     if event is None:
         return None, PrivateAnalysisErrorCode.TIMEOUT
+    if event.kind is _PumpEventKind.CANCELLED:
+        return None, PrivateAnalysisErrorCode.CANCELLED
     if event.kind is _PumpEventKind.STDERR_LIMIT:
         return None, PrivateAnalysisErrorCode.RUNNER_FAILED
     if event.kind in {_PumpEventKind.EOF, _PumpEventKind.IO_FAILED}:
@@ -1181,6 +1309,8 @@ def _finish_child_protocol(
     event = session.finish(deadline_ns)
     if event is None:
         return PrivateAnalysisErrorCode.TIMEOUT
+    if event.kind is _PumpEventKind.CANCELLED:
+        return PrivateAnalysisErrorCode.CANCELLED
     if event.kind is _PumpEventKind.STDERR_LIMIT:
         return PrivateAnalysisErrorCode.RUNNER_FAILED
     if event.kind is not _PumpEventKind.EOF:
@@ -1191,20 +1321,20 @@ def _finish_child_protocol(
         )
     return_code = session.wait_for_exit(deadline_ns)
     if return_code is None:
-        return PrivateAnalysisErrorCode.TIMEOUT
+        return (
+            PrivateAnalysisErrorCode.CANCELLED
+            if session.cancellation_requested
+            else PrivateAnalysisErrorCode.TIMEOUT
+        )
     if return_code != 0:
         return PrivateAnalysisErrorCode.RUNNER_FAILED
     return None
 
 
-class ConfiguredPrivateAnalysisSubprocessRunner:
+class ConfiguredPrivateAnalysisSubprocessRunner(PrivateAnalysisRunnerExecutionOwner):
     """Run one request through an exact, shell-free direct-child adapter."""
 
-    __slots__ = (
-        "_instruction_profile_digest",
-        "_launch_configuration",
-        "_selection",
-    )
+    __slots__ = ("_launch_configuration",)
 
     def __init__(
         self,
@@ -1213,15 +1343,11 @@ class ConfiguredPrivateAnalysisSubprocessRunner:
         instruction_profile_digest: str,
         launch_configuration: PrivateAnalysisSubprocessLaunchConfiguration,
     ) -> None:
-        if type(selection) is not PrivateAnalysisRunnerSelection:
-            raise TypeError("selection must be PrivateAnalysisRunnerSelection")
-        detached = PrivateAnalysisRunnerSelection(
-            runner_id=selection.runner_id,
-            runner_version=selection.runner_version,
-            transport=selection.transport,
-            configuration_digest=selection.configuration_digest,
+        super().__init__(
+            selection,
+            instruction_profile_digest=instruction_profile_digest,
         )
-        if detached.transport is not PrivateAnalysisTransport.LOCAL_SUBPROCESS:
+        if self._selection.transport is not PrivateAnalysisTransport.LOCAL_SUBPROCESS:
             raise ValueError("subprocess runner requires local_subprocess transport")
         if (
             type(launch_configuration)
@@ -1241,35 +1367,24 @@ class ConfiguredPrivateAnalysisSubprocessRunner:
             contract_version=launch_configuration.contract_version,
             configuration_digest=launch_configuration.configuration_digest,
         )
-        if detached.configuration_digest != private_launch.configuration_digest:
+        if self._selection.configuration_digest != private_launch.configuration_digest:
             raise ValueError("runner selection does not bind the launch configuration")
-        self._selection = detached
-        self._instruction_profile_digest = private_analysis_prefixed_sha256(
-            instruction_profile_digest,
-            "instruction_profile_digest",
-        )
         self._launch_configuration = private_launch
-
-    @property
-    def selection(self) -> PrivateAnalysisRunnerSelection:
-        value = self._selection
-        return PrivateAnalysisRunnerSelection(
-            runner_id=value.runner_id,
-            runner_version=value.runner_version,
-            transport=value.transport,
-            configuration_digest=value.configuration_digest,
-        )
 
     def execute(
         self,
         tool_service: PrivateAnalysisToolService,
         *,
         accounting_observer: PrivateAnalysisAccountingObserver | None = None,
+        cancellation_probe: PrivateAnalysisCancellationProbe | None = None,
     ) -> PrivateAnalysisSubprocessExecutionReceipt:
         if type(tool_service) is not PrivateAnalysisToolService:
             raise TypeError("tool_service must be PrivateAnalysisToolService")
         if accounting_observer is not None and not callable(accounting_observer):
             raise TypeError("accounting_observer must be callable or None")
+        if cancellation_probe is not None and not callable(cancellation_probe):
+            raise TypeError("cancellation_probe must be callable or None")
+        cancellation = _CancellationState(cancellation_probe)
         request = tool_service.request
         deadline_ns = monotonic_ns() + request.limits.deadline_ms * 1_000_000
         catalog = default_private_analysis_tool_catalog()
@@ -1315,6 +1430,34 @@ class ConfiguredPrivateAnalysisSubprocessRunner:
         stderr_bytes = 0
         stderr_failed = False
         cleanup_succeeded = True
+
+        try:
+            cancellation_before_lease = cancellation.poll()
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException:  # noqa: BLE001 - deployment-owned probe boundary.
+            cancellation_before_lease = False
+            outcome_error = _static_runner_error(
+                request,
+                PrivateAnalysisErrorCode.RUNNER_FAILED,
+            )
+        if cancellation_before_lease:
+            outcome_error = _static_runner_error(
+                request,
+                PrivateAnalysisErrorCode.CANCELLED,
+            )
+        if outcome_error is not None:
+            return _deadline_checked_standalone_subprocess_receipt(
+                request=request,
+                catalog=catalog,
+                instruction_profile_digest=self._instruction_profile_digest,
+                launch_configuration=self._launch_configuration,
+                run_digest=run_digest,
+                outcome=private_analysis_error_outcome(outcome_error),
+                references=(),
+                budget_state=budget_state,
+                deadline_ns=deadline_ns,
+            )
 
         if private_analysis_deadline_expired(deadline_ns):
             return _deadline_checked_standalone_subprocess_receipt(
@@ -1365,10 +1508,17 @@ class ConfiguredPrivateAnalysisSubprocessRunner:
             try:
                 accounting.refresh(lease)
                 budget_state = accounting.budget_state
-                outcome_error = _access_or_deadline_error(
-                    lease,
-                    request,
-                    deadline_ns,
+                outcome_error = (
+                    _static_runner_error(
+                        request,
+                        PrivateAnalysisErrorCode.CANCELLED,
+                    )
+                    if cancellation.poll()
+                    else _access_or_deadline_error(
+                        lease,
+                        request,
+                        deadline_ns,
+                    )
                 )
                 if outcome_error is None:
                     process: subprocess.Popen[bytes] | None = None
@@ -1377,6 +1527,7 @@ class ConfiguredPrivateAnalysisSubprocessRunner:
                         session = _LocalChildSession(
                             process,
                             self._launch_configuration,
+                            cancellation,
                         )
                     except PROCESS_CONTROL_EXCEPTIONS:
                         if process is not None:
@@ -1464,18 +1615,38 @@ class ConfiguredPrivateAnalysisSubprocessRunner:
             raise pending_process_control.with_traceback(
                 pending_process_control.__traceback__
             )
+        cancellation_attested = cleanup_succeeded
         if pending_failure is not None or finalizer_failed:
             cleanup_succeeded = False
+
+        try:
+            cancellation.poll()
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException:  # noqa: BLE001 - cancellation probe boundary.
+            pending_failure = pending_failure or RuntimeError(
+                "private-analysis cancellation probe failed"
+            )
 
         references = accounting.references
         budget_state = accounting.budget_state
 
-        if not cleanup_succeeded or stderr_failed:
+        if (
+            not cleanup_succeeded
+            or stderr_failed
+            or pending_failure is not None
+            or finalizer_failed
+        ):
             outcome_error = _static_runner_error(
                 request,
                 PrivateAnalysisErrorCode.RUNNER_FAILED,
             )
-        if private_analysis_deadline_expired(deadline_ns):
+        elif cancellation.requested:
+            outcome_error = _static_runner_error(
+                request,
+                PrivateAnalysisErrorCode.CANCELLED,
+            )
+        elif private_analysis_deadline_expired(deadline_ns):
             outcome_error = _static_runner_error(
                 request,
                 PrivateAnalysisErrorCode.TIMEOUT,
@@ -1506,8 +1677,10 @@ class ConfiguredPrivateAnalysisSubprocessRunner:
                 )
         if outcome_error is not None:
             outcome = private_analysis_error_outcome(outcome_error)
-        if not _is_timeout_outcome(outcome) and private_analysis_deadline_expired(
-            deadline_ns
+        if (
+            not _is_timeout_outcome(outcome)
+            and not _is_cancelled_outcome(outcome)
+            and private_analysis_deadline_expired(deadline_ns)
         ):
             outcome = private_analysis_error_outcome(
                 _static_runner_error(
@@ -1529,6 +1702,7 @@ class ConfiguredPrivateAnalysisSubprocessRunner:
                 budget_state=budget_state,
                 outcome=outcome,
                 deadline_ns=deadline_ns,
+                cancellation_attested=cancellation_attested,
             )
         except PROCESS_CONTROL_EXCEPTIONS:
             raise
@@ -1555,6 +1729,7 @@ class ConfiguredPrivateAnalysisSubprocessRunner:
                 references=references,
                 budget_state=budget_state,
                 deadline_ns=deadline_ns,
+                cancellation_attested=cancellation_attested,
             )
 
     def _drive_protocol(
@@ -1862,6 +2037,7 @@ def _deadline_checked_execution_receipt(
     references: tuple[EvidenceReference, ...],
     budget_state: PrivateAnalysisToolBudgetState,
     deadline_ns: int,
+    cancellation_attested: bool,
 ) -> PrivateAnalysisSubprocessExecutionReceipt:
     transcript = _sealed_subprocess_transcript(
         request=request,
@@ -1880,9 +2056,12 @@ def _deadline_checked_execution_receipt(
         transcript=transcript,
         disclosed_references=references,
         budget_state=budget_state,
+        cancellation_attested=cancellation_attested,
     )
-    if _is_timeout_outcome(outcome) or not private_analysis_deadline_expired(
-        deadline_ns
+    if (
+        _is_timeout_outcome(outcome)
+        or _is_cancelled_outcome(outcome)
+        or not private_analysis_deadline_expired(deadline_ns)
     ):
         return receipt
     timeout_outcome = private_analysis_error_outcome(
@@ -1908,6 +2087,7 @@ def _deadline_checked_execution_receipt(
         transcript=timeout_transcript,
         disclosed_references=references,
         budget_state=budget_state,
+        cancellation_attested=cancellation_attested,
     )
 
 
@@ -1947,6 +2127,7 @@ def _standalone_subprocess_receipt(
         transcript=transcript,
         disclosed_references=references,
         budget_state=budget_state,
+        cancellation_attested=True,
     )
 
 
@@ -2002,6 +2183,7 @@ __all__ = [
     "MAX_PRIVATE_ANALYSIS_SUBPROCESS_ENVIRONMENT_ITEMS",
     "MAX_PRIVATE_ANALYSIS_SUBPROCESS_STDERR_BYTES",
     "MAX_PRIVATE_ANALYSIS_SUBPROCESS_TRANSCRIPT_BYTES",
+    "PRIVATE_ANALYSIS_SUBPROCESS_CANCELLATION_POLL_MS",
     "PRIVATE_ANALYSIS_SUBPROCESS_LAUNCH_VERSION",
     "PRIVATE_ANALYSIS_SUBPROCESS_TRANSCRIPT_VERSION",
     "ConfiguredPrivateAnalysisSubprocessRunner",

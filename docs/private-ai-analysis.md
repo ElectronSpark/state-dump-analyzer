@@ -1,8 +1,9 @@
 # Private AI analysis boundary
 
 Status: normative architecture decision with implemented local value/tool
-contracts, trusted in-process and shell-free local-subprocess runners, and a
-durable local-only run/lifecycle store.
+contracts, trusted in-process and shell-free local-subprocess runners, a
+durable local-only run/lifecycle store, and a core-owned synchronous execution
+coordinator.
 
 ## Decision
 
@@ -580,7 +581,7 @@ durable accounting. Queued cancellation completes immediately. In-process
 cancellation remains cooperative: setting `cancel_requested` does not claim
 that arbitrary Python was preempted. Once that request commits, however, an
 ordinary worker result cannot overwrite it. Subprocess termination belongs to
-the later coordinator that owns the child execution, not this storage module.
+the execution coordinator that owns the child, not this storage module.
 
 The runner accounting snapshot accepts an optional observer. After a tool
 operation, it invokes that observer with a complete detached reference ledger
@@ -645,10 +646,83 @@ payload bytes from those cells. Retention replaces the live admission with a
 scoped idempotency-key digest in the tombstone, preserving replay conflict
 semantics without retaining the raw key or growing live-reference scans.
 
+`finalize_unstarted_attempt` is the one transcript-free active transition. It
+requires the exact live fence, an unexpired lease, and zero disclosed evidence
+and tool consumption. It exists so a request-bound service factory that fails
+after the winner has claimed the run can be sealed as a static runner failure
+without inventing a transcript. A concurrently committed cancellation wins
+and seals the same unstarted attempt as cancelled.
+
+## Core-owned local execution coordinator
+
+`PrivateAnalysisExecutionCoordinator` is the synchronous composition boundary
+between the durable store, one exact configured runner, and one trusted
+request-bound `PrivateAnalysisToolService` factory. Registrations are a closed
+tuple keyed by the complete runner ID, version, transport, and configuration
+digest. The runner's sealed instruction-profile digest must also equal the
+request. There is no selection by prefix, transport fallback, registration
+order, or live plug-in state. Duplicate exact selections are rejected.
+
+An execution reads one scoped queued record, resolves its exact registration,
+and claims the durable fence before invoking the service factory. This means
+two coordinators racing on one run cannot both create services or invoke a
+model. A factory failure, wrong-request service, or service whose visible
+accounting or permanent zero-tool lifetime latch is non-pristine seals the
+claimed zero-disclosure attempt without a fabricated transcript. An
+unknown runner or instruction profile is rejected before claim and leaves the
+run queued.
+
+One non-daemon monitor per active attempt polls the durable state, observes
+cross-process cancellation, and renews the lease. Heartbeats, accounting, and
+completion share one per-attempt optimistic-version owner. A stale mutation is
+reconciled at most once and only when the same execution fence is still active
+and unexpired. Fence loss, expiry, repeated churn, or monitor/store failure
+fails closed and leaves recovery—not a second model invocation—to own the
+terminal transition. The configured local concurrency bound and one lock owned
+by each runner instance prevent accidental concurrent use of a non-thread-safe
+model callback even when that same runner object is registered with multiple
+coordinators, while different runner instances can operate concurrently.
+Immediately after local registration, the coordinator re-reads the durable
+record before it constructs a service. This closes the claim-to-registration
+window: a cancellation committed while the attempt was not yet locally visible
+finishes without creating or consuming a tool service.
+
+Both runner transports accept the same cancellation probe. The in-process
+adapter observes it cooperatively before/after tool and callback boundaries;
+Python that never returns and never uses the gateway still cannot be forcibly
+preempted. The subprocess adapter polls while writing, reading, and waiting for
+exit, then closes input and uses its existing terminate/kill/join cleanup.
+`cancelled` is attestable only after the direct child and helpers are stopped;
+a cleanup-unattested receipt remains `runner_failed`. If cancellation commits
+after a runner sealed an ordinary receipt but before durable completion, the
+same transcript metadata, ledger, and budget are re-sealed against a closed
+cancelled outcome rather than discarded or rewritten.
+
+Accounting remains write-ahead: an identical snapshot is checked but not
+appended again, while every new complete ledger/budget pair commits before the
+tool response reaches the model. If cancellation is already durable at that
+commit, the observer still returns after the commit so the runner can publish
+the identical local accounting snapshot; the immediately following probe then
+performs the cooperative cancellation. Completion uses the latest durable version
+and exact transport-neutral transcript summary. A terminal race is accepted
+only when the store proves the local receipt exactly equals the already-sealed
+receipt; a conflicting recovery or writer is never treated as idempotent.
+Terminal replay before execution returns the stored record and never invokes
+the runner again. Ordinary runner errors are
+stored as typed receipts; process-control signals propagate after bounded
+cleanup and leave the fence for explicit expiry recovery. There is no
+automatic retry.
+
+`ControlPlane` constructs this coordinator over its bound run store. Its
+runner-registration tuple is empty by default, so merely starting the product
+does not configure a model. Shutdown closes the execution coordinator before
+its store; if trusted in-process code does not cooperate before the timeout,
+shutdown fails and leaves dependent stores open for a later retry.
+
 This layer exposes no model-run HTTP endpoint, CLI/UI workflow, public-provider
 configuration, network fallback, plug-in call, automatic retry, annotation
 mutation, or proposal promotion. Those authorities require later explicit
-composition and must preserve this store's write-ahead and fence rules.
+composition and must preserve the coordinator's write-ahead and fence rules.
 
 ## Tool and instruction boundary
 

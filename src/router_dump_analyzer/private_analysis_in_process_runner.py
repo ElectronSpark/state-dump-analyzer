@@ -48,6 +48,8 @@ from .private_analysis import (
 from .private_analysis_runner_support import (
     MAX_PRIVATE_ANALYSIS_IN_PROCESS_TRANSCRIPT_BYTES,
     PrivateAnalysisAccountingObserver,
+    PrivateAnalysisCancellationProbe,
+    PrivateAnalysisRunnerExecutionOwner,
     PrivateAnalysisTranscriptSummary,
     private_analysis_run_access_error,
 )
@@ -405,6 +407,42 @@ class PrivateAnalysisInProcessExecutionReceipt:
 
         return _detached_transcript_summary(self._transcript_summary)
 
+    def as_cancelled(self) -> PrivateAnalysisInProcessExecutionReceipt:
+        """Return a cancelled receipt preserving the truthful execution ledger.
+
+        Cancellation changes only the terminal outcome.  The already-observed
+        tool exchange metadata, disclosed-reference ledger, and budget remain
+        byte-for-byte bound into a newly sealed transcript.
+        """
+
+        transcript = self._transcript
+        cancelled_outcome = _error_outcome(
+            _analysis_error(
+                transcript.request_digest,
+                PrivateAnalysisErrorStage.RUNNER,
+                PrivateAnalysisErrorCode.CANCELLED,
+            )
+        )
+        cancelled_transcript = PrivateAnalysisInProcessTranscript(
+            request_digest=transcript.request_digest,
+            catalog_digest=transcript.catalog_digest,
+            instruction_profile_digest=transcript.instruction_profile_digest,
+            runner_configuration_digest=transcript.runner_configuration_digest,
+            exchange_count=transcript.exchange_count,
+            unattributed_tool_call_count=transcript.unattributed_tool_call_count,
+            exchange_metadata_bytes=transcript.exchange_metadata_bytes,
+            exchange_chain_digest=transcript.exchange_chain_digest,
+            evidence_ledger_digest=transcript.evidence_ledger_digest,
+            budget_state=self._budget,
+            outcome_digest=cancelled_outcome.outcome_digest,
+        )
+        return PrivateAnalysisInProcessExecutionReceipt(
+            outcome=cancelled_outcome,
+            transcript=cancelled_transcript,
+            disclosed_references=self._references,
+            budget_state=self._budget,
+        )
+
     def __repr__(self) -> str:
         outcome = self.outcome
         return (
@@ -427,6 +465,7 @@ class PrivateAnalysisInProcessToolGateway:
     __slots__ = (
         "_accounting",
         "_budget_exhausted",
+        "_cancellation_probe",
         "_catalog_digest",
         "_chain_digest",
         "_closed",
@@ -452,14 +491,18 @@ class PrivateAnalysisInProcessToolGateway:
         instruction_profile_digest: str,
         runner_configuration_digest: str,
         deadline_ns: int,
+        cancellation_probe: PrivateAnalysisCancellationProbe | None = None,
     ) -> None:
         if type(lease) is not PrivateAnalysisToolRunLease:
             raise TypeError("lease must be PrivateAnalysisToolRunLease")
         if type(accounting) is not _RunAccountingSnapshot:
             raise TypeError("accounting must be PrivateAnalysisRunAccountingSnapshot")
+        if cancellation_probe is not None and not callable(cancellation_probe):
+            raise TypeError("cancellation_probe must be callable or None")
         request = lease.request
         self._lease = lease
         self._accounting = accounting
+        self._cancellation_probe = cancellation_probe
         self._request_digest = request.request_digest
         self._catalog_digest = request.tool_catalog_digest
         self._instruction_profile_digest = _prefixed_sha256(
@@ -497,10 +540,16 @@ class PrivateAnalysisInProcessToolGateway:
         protocol_error: PrivateAnalysisError | None = None
         unexpected_failure = False
         try:
+            self._probe_cancellation()
             call = private_analysis_tool_call_from_json(call_json)
             call_digest = call.call_digest
+            self._probe_cancellation()
             raw_response = self._lease.execute(call)
             self._accounting.refresh(self._lease)
+            # A completed tool call may already have disclosed evidence.  The
+            # detached accounting snapshot is therefore published before a
+            # newly requested cancellation can suppress its response.
+            self._probe_cancellation()
             if type(raw_response) is PrivateAnalysisToolResult:
                 result = private_analysis_tool_result_from_json(
                     private_analysis_tool_result_json(raw_response)
@@ -576,6 +625,7 @@ class PrivateAnalysisInProcessToolGateway:
                 and response.error.code is PrivateAnalysisToolErrorCode.BUDGET_EXCEEDED
             ):
                 self._budget_exhausted = True
+        self._probe_cancellation()
         self._raise_if_terminal()
         if response is None:
             self._latch_error(
@@ -593,6 +643,7 @@ class PrivateAnalysisInProcessToolGateway:
         """Cooperatively observe terminal state and the monotonic deadline."""
 
         self._require_owner_and_open()
+        self._probe_cancellation()
         if _deadline_expired(self._deadline_ns):
             self._latch_error(
                 _analysis_error(
@@ -669,6 +720,7 @@ class PrivateAnalysisInProcessToolGateway:
 
     def _begin_exchange(self) -> None:
         self._require_owner_and_open()
+        self._probe_cancellation()
         with self._lock:
             terminal = self._terminal_error is not None
             if self._in_flight and self._terminal_error is None:
@@ -707,6 +759,12 @@ class PrivateAnalysisInProcessToolGateway:
                     PrivateAnalysisErrorCode.TIMEOUT,
                 )
             )
+            self._raise_if_terminal()
+
+    def _probe_cancellation(self) -> None:
+        error = _cancellation_error(self._request_digest, self._cancellation_probe)
+        if error is not None:
+            self._latch_error(error)
             self._raise_if_terminal()
 
     def _require_owner_and_open(self) -> None:
@@ -799,10 +857,10 @@ class PrivateAnalysisInProcessToolGateway:
         )
 
 
-class ConfiguredPrivateAnalysisInProcessRunner:
+class ConfiguredPrivateAnalysisInProcessRunner(PrivateAnalysisRunnerExecutionOwner):
     """Execute one request with a process-trusted local callback."""
 
-    __slots__ = ("_callback", "_instruction_profile_digest", "_selection")
+    __slots__ = ("_callback",)
 
     def __init__(
         self,
@@ -811,44 +869,36 @@ class ConfiguredPrivateAnalysisInProcessRunner:
         instruction_profile_digest: str,
         model_callback: PrivateAnalysisInProcessModelCallback,
     ) -> None:
-        if type(selection) is not PrivateAnalysisRunnerSelection:
-            raise TypeError("selection must be PrivateAnalysisRunnerSelection")
-        detached = PrivateAnalysisRunnerSelection(
-            runner_id=selection.runner_id,
-            runner_version=selection.runner_version,
-            transport=selection.transport,
-            configuration_digest=selection.configuration_digest,
+        super().__init__(
+            selection,
+            instruction_profile_digest=instruction_profile_digest,
         )
-        if detached.transport is not PrivateAnalysisTransport.IN_PROCESS:
+        if self._selection.transport is not PrivateAnalysisTransport.IN_PROCESS:
             raise ValueError("in-process runner requires in_process transport")
         if not callable(model_callback):
             raise TypeError("model_callback must be callable")
-        self._selection = detached
-        self._instruction_profile_digest = _prefixed_sha256(
-            instruction_profile_digest, "instruction_profile_digest"
-        )
         self._callback = model_callback
-
-    @property
-    def selection(self) -> PrivateAnalysisRunnerSelection:
-        value = self._selection
-        return PrivateAnalysisRunnerSelection(
-            runner_id=value.runner_id,
-            runner_version=value.runner_version,
-            transport=value.transport,
-            configuration_digest=value.configuration_digest,
-        )
 
     def execute(
         self,
         tool_service: PrivateAnalysisToolService,
         *,
         accounting_observer: PrivateAnalysisAccountingObserver | None = None,
+        cancellation_probe: PrivateAnalysisCancellationProbe | None = None,
     ) -> PrivateAnalysisInProcessExecutionReceipt:
+        """Execute once with cooperative cancellation at trusted boundaries.
+
+        In-process callbacks are trusted code and cannot be forcibly
+        preempted.  A callback that neither returns nor calls its gateway will
+        not observe cancellation until it next reaches one of those points.
+        """
+
         if type(tool_service) is not PrivateAnalysisToolService:
             raise TypeError("tool_service must be PrivateAnalysisToolService")
         if accounting_observer is not None and not callable(accounting_observer):
             raise TypeError("accounting_observer must be callable or None")
+        if cancellation_probe is not None and not callable(cancellation_probe):
+            raise TypeError("cancellation_probe must be callable or None")
         request = tool_service.request
         start_ns = monotonic_ns()
         deadline_ns = start_ns + request.limits.deadline_ms * 1_000_000
@@ -861,6 +911,21 @@ class ConfiguredPrivateAnalysisInProcessRunner:
                 runner_configuration_digest=self._selection.configuration_digest,
                 catalog=catalog,
                 outcome=_error_outcome(binding_error),
+                references=(),
+                budget_state=_empty_budget_state(request),
+            )
+
+        cancellation_error = _cancellation_error(
+            request.request_digest,
+            cancellation_probe,
+        )
+        if cancellation_error is not None:
+            return _standalone_receipt(
+                request=request,
+                instruction_profile_digest=self._instruction_profile_digest,
+                runner_configuration_digest=self._selection.configuration_digest,
+                catalog=catalog,
+                outcome=_error_outcome(cancellation_error),
                 references=(),
                 budget_state=_empty_budget_state(request),
             )
@@ -913,19 +978,27 @@ class ConfiguredPrivateAnalysisInProcessRunner:
         try:
             try:
                 accounting.refresh(lease)
+                cancellation_error = _cancellation_error(
+                    request.request_digest,
+                    cancellation_probe,
+                )
+                if cancellation_error is not None:
+                    outcome_error = cancellation_error
                 gateway = PrivateAnalysisInProcessToolGateway(
                     lease,
                     accounting=accounting,
                     instruction_profile_digest=self._instruction_profile_digest,
                     runner_configuration_digest=self._selection.configuration_digest,
                     deadline_ns=deadline_ns,
+                    cancellation_probe=cancellation_probe,
                 )
                 try:
-                    outcome_error = _access_or_deadline_error(
-                        lease,
-                        request,
-                        deadline_ns,
-                    )
+                    if outcome_error is None:
+                        outcome_error = _access_or_deadline_error(
+                            lease,
+                            request,
+                            deadline_ns,
+                        )
                     if outcome_error is None:
                         context = PrivateAnalysisInProcessContext(
                             request=request,
@@ -941,6 +1014,12 @@ class ConfiguredPrivateAnalysisInProcessRunner:
                                 PrivateAnalysisErrorStage.RUNNER,
                                 PrivateAnalysisErrorCode.RUNNER_FAILED,
                             )
+                        cancellation_error = _cancellation_error(
+                            request.request_digest,
+                            cancellation_probe,
+                        )
+                        if cancellation_error is not None:
+                            outcome_error = cancellation_error
                 finally:
                     gateway.close()
 
@@ -981,6 +1060,11 @@ class ConfiguredPrivateAnalysisInProcessRunner:
                         PrivateAnalysisErrorCode.RUNNER_PROTOCOL_ERROR,
                     )
                 references = accounting.references
+                if outcome_error is None:
+                    outcome_error = _cancellation_error(
+                        request.request_digest,
+                        cancellation_probe,
+                    )
                 if outcome_error is None:
                     result, result_error = _validated_callback_result(
                         raw_result,
@@ -1061,6 +1145,13 @@ class ConfiguredPrivateAnalysisInProcessRunner:
 
         references = accounting.references
         budget_state = accounting.budget_state
+
+        final_cancellation_error = _cancellation_error(
+            request.request_digest,
+            cancellation_probe,
+        )
+        if final_cancellation_error is not None:
+            outcome = _error_outcome(final_cancellation_error)
 
         try:
             return _deadline_checked_execution_receipt(
@@ -1167,6 +1258,39 @@ def _access_or_deadline_error(
         deadline_ns,
         deadline_expired=_deadline_expired,
     )
+
+
+def _cancellation_error(
+    request_digest: str,
+    cancellation_probe: PrivateAnalysisCancellationProbe | None,
+) -> PrivateAnalysisError | None:
+    """Project one cooperative cancellation observation into a static error."""
+
+    if cancellation_probe is None:
+        return None
+    try:
+        cancelled = cancellation_probe()
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except BaseException:  # noqa: BLE001 - deployment-owned probe boundary.
+        return _analysis_error(
+            request_digest,
+            PrivateAnalysisErrorStage.RUNNER,
+            PrivateAnalysisErrorCode.RUNNER_FAILED,
+        )
+    if type(cancelled) is not bool:
+        return _analysis_error(
+            request_digest,
+            PrivateAnalysisErrorStage.RUNNER,
+            PrivateAnalysisErrorCode.RUNNER_FAILED,
+        )
+    if cancelled:
+        return _analysis_error(
+            request_digest,
+            PrivateAnalysisErrorStage.RUNNER,
+            PrivateAnalysisErrorCode.CANCELLED,
+        )
+    return None
 
 
 def _deadline_expired(deadline_ns: int) -> bool:

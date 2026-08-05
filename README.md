@@ -564,8 +564,8 @@ SDK, endpoint/key configuration, automatic network fallback, durable run, or
 promotion workflow is wired to either runner. See the
 [private AI analysis boundary](docs/private-ai-analysis.md).
 
-Private-analysis runs can now be retained locally without wiring a public
-model service. `SqlitePrivateAnalysisRunStore` persists the exact scoped,
+Private-analysis runs can now be executed and retained locally without wiring
+a public model service. `SqlitePrivateAnalysisRunStore` persists the exact scoped,
 multi-revision request; a fenced lease/cancellation lifecycle; write-ahead
 evidence-ledger and budget snapshots; a payload-free transport summary; and a
 sealed terminal outcome. The `ControlPlane` owns this dedicated database and
@@ -576,9 +576,17 @@ secure deletion and a truncating WAL checkpoint without making a bounded purge
 run full-database compaction. Independent active-run guards and live admission
 anchors make missing heads fail catalog protection closed. A missing root
 binding, missing/truncated database, or replacement database also fails closed
-after first initialization. There is still no model-run HTTP/CLI/UI workflow or public-provider configuration;
-deployment composition must route one approved local runner and commit every
-accounting snapshot before its response reaches the model.
+after first initialization. `PrivateAnalysisExecutionCoordinator` now routes a
+queued record to one exact registered local runner, maintains its fenced lease,
+commits complete accounting before every tool response, observes durable
+cancellation, and persists the exact transport-neutral receipt without
+automatic retry. The in-process path remains cooperative; the subprocess path
+reports cancellation only after its child and helper cleanup is attested.
+`ControlPlane` owns the coordinator but configures no runners by default. There
+is still no model-run HTTP/CLI/UI workflow, public-provider configuration,
+endpoint/key setting, or network fallback; deployment composition must
+explicitly register its approved local runner and request-bound tool-service
+factory.
 
 For a headless multi-fixture run:
 

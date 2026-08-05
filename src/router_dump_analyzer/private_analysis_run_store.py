@@ -124,6 +124,8 @@ class PrivateAnalysisRunAuditReason(StrEnum):
     CANCELLED_BEFORE_START = "cancelled_before_start"
     COMPLETED = "completed"
     CANCELLED_DURING_RUN = "cancelled_during_run"
+    CANCELLED_BEFORE_RUNNER = "cancelled_before_runner"
+    FAILED_BEFORE_RUNNER = "failed_before_runner"
     EXPIRED_RUNNER_FAILED = "expired_runner_failed"
     EXPIRED_CANCELLED = "expired_cancelled"
 
@@ -404,6 +406,18 @@ def _cancelled_outcome(request_digest: str) -> PrivateAnalysisOutcome:
 
 
 def _expired_outcome(request_digest: str) -> PrivateAnalysisOutcome:
+    return PrivateAnalysisOutcome(
+        kind=PrivateAnalysisOutcomeKind.ERROR,
+        error=PrivateAnalysisError(
+            request_digest=request_digest,
+            stage=PrivateAnalysisErrorStage.RUNNER,
+            code=PrivateAnalysisErrorCode.RUNNER_FAILED,
+            retryable=True,
+        ),
+    )
+
+
+def _unstarted_failure_outcome(request_digest: str) -> PrivateAnalysisOutcome:
     return PrivateAnalysisOutcome(
         kind=PrivateAnalysisOutcomeKind.ERROR,
         error=PrivateAnalysisError(
@@ -2199,6 +2213,96 @@ class SqlitePrivateAnalysisRunStore:
                 prior,
                 desired,
                 reason=reason,
+                actor_id=actor,
+            )
+
+    def finalize_unstarted_attempt(
+        self,
+        scope: EvidenceScope,
+        run_id: str,
+        *,
+        expected_version: int,
+        execution_id: str,
+        actor_id: str,
+        now_ns: int | None = None,
+    ) -> PrivateAnalysisRunRecord:
+        """Seal a claimed attempt that failed before a runner could start.
+
+        This narrow transition exists for the execution composition boundary:
+        runner selection is resolved before the claim, but construction of the
+        request-bound tool service happens after the durable claim so two
+        coordinators cannot both invoke a stateful factory.  No transcript is
+        invented for an execution that never entered a runner.
+        """
+
+        selected_scope = _scope(scope)
+        selected_run_id = _identity(run_id, "run_id")
+        attempt = _identity(execution_id, "execution_id")
+        actor = _identity(actor_id, "actor_id")
+        now = _bounded_integer(
+            time.time_ns() if now_ns is None else now_ns,
+            "now_ns",
+            minimum=0,
+            maximum=_MAX_SIGNED_64,
+        )
+        with self._transaction() as cursor:
+            prior = self._record_from_row(
+                cursor,
+                self._require_run_row(cursor, selected_scope, selected_run_id),
+            )
+            self._require_expected_version(prior, expected_version)
+            if prior.state not in {
+                PrivateAnalysisRunState.RUNNING,
+                PrivateAnalysisRunState.CANCEL_REQUESTED,
+            }:
+                raise PrivateAnalysisRunConflict(
+                    "only an active private-analysis attempt can be finalized"
+                )
+            if prior.execution_id != attempt:
+                raise PrivateAnalysisRunConflict("execution fence does not match")
+            if prior.lease_expires_at_ns is None or prior.lease_expires_at_ns < now:
+                raise PrivateAnalysisRunConflict("private-analysis lease has expired")
+            budget = prior.budget_state
+            if prior.disclosed_references or any(
+                (
+                    budget.tool_calls_consumed,
+                    budget.evidence_items_disclosed,
+                    budget.evidence_bytes_disclosed,
+                )
+            ):
+                raise PrivateAnalysisRunConflict(
+                    "started private-analysis attempt requires a transcript"
+                )
+            cancelled = prior.state is PrivateAnalysisRunState.CANCEL_REQUESTED
+            outcome = (
+                _cancelled_outcome(prior.request_digest)
+                if cancelled
+                else _unstarted_failure_outcome(prior.request_digest)
+            )
+            desired = replace(
+                prior,
+                state=(
+                    PrivateAnalysisRunState.CANCELLED
+                    if cancelled
+                    else PrivateAnalysisRunState.COMPLETED
+                ),
+                version=prior.version + 1,
+                execution_id=None,
+                lease_expires_at_ns=None,
+                outcome=outcome,
+                transcript_summary=None,
+                updated_at_ns=now,
+                completed_at_ns=now,
+            )
+            return self._persist_transition(
+                cursor,
+                prior,
+                desired,
+                reason=(
+                    PrivateAnalysisRunAuditReason.CANCELLED_BEFORE_RUNNER
+                    if cancelled
+                    else PrivateAnalysisRunAuditReason.FAILED_BEFORE_RUNNER
+                ),
                 actor_id=actor,
             )
 

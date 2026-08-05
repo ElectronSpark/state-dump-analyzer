@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CORE_SOURCE = ROOT / "src" / "router_dump_analyzer"
 PRIVATE_ANALYSIS_SOURCE = CORE_SOURCE / "private_analysis"
 PRIVATE_ANALYSIS_TOOL_SERVICE_SOURCE = CORE_SOURCE / "private_analysis_tool_service.py"
+PRIVATE_ANALYSIS_EXECUTION_SOURCE = CORE_SOURCE / "private_analysis_execution.py"
 PRIVATE_ANALYSIS_IN_PROCESS_RUNNER_SOURCE = (
     CORE_SOURCE / "private_analysis_in_process_runner.py"
 )
@@ -1704,6 +1705,7 @@ class PrivateAiArchitectureTests(unittest.TestCase):
             {item.split(":", 1)[0] for item in consumers},
             {
                 PRIVATE_ANALYSIS_IN_PROCESS_RUNNER_SOURCE.name,
+                PRIVATE_ANALYSIS_EXECUTION_SOURCE.name,
                 PRIVATE_ANALYSIS_RUNNER_SUPPORT_SOURCE.name,
                 "private_analysis_run_store.py",
                 PRIVATE_ANALYSIS_SUBPROCESS_RUNNER_SOURCE.name,
@@ -1808,7 +1810,7 @@ class PrivateAiArchitectureTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source)
 
-    def test_in_process_runner_is_not_wired_to_product_surfaces_yet(self) -> None:
+    def test_configured_runners_have_only_the_core_execution_consumer(self) -> None:
         consumers: list[str] = []
         for path in _python_files(CORE_SOURCE):
             if path == PRIVATE_ANALYSIS_IN_PROCESS_RUNNER_SOURCE:
@@ -1818,10 +1820,12 @@ class PrivateAiArchitectureTests(unittest.TestCase):
                     consumers.append(
                         f"{path.relative_to(CORE_SOURCE).as_posix()}:{line}"
                     )
-        self.assertEqual(consumers, [])
+        self.assertEqual(
+            {item.split(":", 1)[0] for item in consumers},
+            {PRIVATE_ANALYSIS_EXECUTION_SOURCE.name},
+        )
 
-    def test_subprocess_runner_is_not_wired_to_product_surfaces_yet(self) -> None:
-        consumers: list[str] = []
+        consumers = []
         for path in _python_files(CORE_SOURCE):
             if path == PRIVATE_ANALYSIS_SUBPROCESS_RUNNER_SOURCE:
                 continue
@@ -1830,7 +1834,38 @@ class PrivateAiArchitectureTests(unittest.TestCase):
                     consumers.append(
                         f"{path.relative_to(CORE_SOURCE).as_posix()}:{line}"
                     )
-        self.assertEqual(consumers, [])
+        self.assertEqual(
+            {item.split(":", 1)[0] for item in consumers},
+            {PRIVATE_ANALYSIS_EXECUTION_SOURCE.name},
+        )
+
+    def test_private_analysis_execution_has_narrow_local_authority(self) -> None:
+        source = PRIVATE_ANALYSIS_EXECUTION_SOURCE.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(PRIVATE_ANALYSIS_EXECUTION_SOURCE))
+        imported_modules: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported_modules.update(alias.name for alias in node.names)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                self.assertNotIn(
+                    node.func.id,
+                    {"compile", "eval", "exec", "open", "__import__"},
+                )
+        self.assertEqual(imported_modules, {"math", "threading", "time"})
+        for forbidden in (
+            "annotation_store",
+            "asyncio",
+            "capability_executor",
+            "importlib",
+            "plugin_api",
+            "plugin_loader",
+            "requests",
+            "socket",
+            "subprocess.Popen",
+            "urllib",
+            "web.",
+        ):
+            self.assertNotIn(forbidden, source)
 
     def test_deployable_sources_have_no_model_endpoint_or_key_configuration(
         self,

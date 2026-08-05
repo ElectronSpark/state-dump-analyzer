@@ -378,6 +378,19 @@ class PrivateAnalysisToolService:
             references = tuple(self._ledger[digest] for digest in sorted(self._ledger))
         return tuple(_detached_reference(reference) for reference in references)
 
+    @property
+    def runner_lease_eligible(self) -> bool:
+        """Return whether this service can still be claimed by one runner.
+
+        The value includes permanent zero-tool lifetime latches that are not
+        visible in the public ledger or budget counters.  Deployment-owned
+        factories hand a service to the coordinator and must not use it again;
+        the runner's atomic lease acquisition remains the final authority.
+        """
+
+        with self._lock:
+            return self._runner_lease_eligible_locked()
+
     def execute(
         self,
         call: PrivateAnalysisToolCall,
@@ -402,15 +415,7 @@ class PrivateAnalysisToolService:
         request = self.request
         token = object()
         with self._lock:
-            pristine = (
-                self._active_executions == 0
-                and not self._direct_use_claimed
-                and not self._runner_lease_claimed
-                and self._tool_calls_consumed == 0
-                and self._evidence_bytes_disclosed == 0
-                and not self._call_ids
-                and not self._ledger
-            )
+            pristine = self._runner_lease_eligible_locked()
             if pristine:
                 self._runner_lease_claimed = True
                 self._runner_lease_open = True
@@ -422,6 +427,17 @@ class PrivateAnalysisToolService:
                 PrivateAnalysisErrorCode.RUNNER_PROTOCOL_ERROR,
             )
         return PrivateAnalysisToolRunLease(self, token)
+
+    def _runner_lease_eligible_locked(self) -> bool:
+        return (
+            self._active_executions == 0
+            and not self._direct_use_claimed
+            and not self._runner_lease_claimed
+            and self._tool_calls_consumed == 0
+            and self._evidence_bytes_disclosed == 0
+            and not self._call_ids
+            and not self._ledger
+        )
 
     def _execute_for_lease(
         self,

@@ -852,6 +852,53 @@ disclosure mode. This API adds no provider SDK, public-network fallback,
 model-run HTTP/CLI/UI, automatic retry, annotation mutation, or proposal
 promotion.
 
+### Local private-analysis execution API
+
+`PrivateAnalysisExecutionCoordinator` is also a local library API; it is not a
+web route, scheduler, provider adapter, or CLI. A
+`PrivateAnalysisRunnerRegistration` binds one exact configured in-process or
+local-subprocess runner to a trusted `PrivateAnalysisToolService` factory.
+Resolution uses the full `PrivateAnalysisRunnerSelection` plus the sealed
+instruction-profile digest. Duplicate registrations and all fallback routing
+are rejected.
+
+`execute_run(scope, run_id, expected_version, actor_id, execution_id=...)`
+executes one already-admitted queued record. It claims before constructing the
+request-bound service, rejects both visible and zero-counter lifetime reuse,
+maintains the lease, commits each new complete
+ledger/budget snapshot before response release, and seals the exact runner
+receipt. A factory or service-binding failure after claim uses
+`finalize_unstarted_attempt`: it is permitted only with the exact live fence
+and zero accounting, produces a static error, and stores no invented
+transcript. An absent runner/profile leaves the record queued. No path retries
+the model automatically.
+
+The execution gate belongs to the configured runner instance rather than a
+coordinator registration, so two coordinators sharing one runner cannot enter
+it concurrently. A completion that encounters an already-terminal record is
+idempotent only when the store validates the exact same execution receipt;
+conflicting expiry recovery or terminal output raises a conflict.
+
+`request_cancellation` first commits the durable one-way state change and only
+then signals a matching local attempt. Other coordinator processes observe it
+through polling. An immediate durable refresh after local attempt registration
+prevents the claim/registration race from consuming a service. An accounting
+observer that discovers cancellation commits and publishes the same complete
+snapshot before the following cancellation probe unwinds. In-process
+cancellation is cooperative; local-subprocess
+cancellation terminates and reaps the direct child and helper threads before a
+cancelled receipt is accepted. A cancellation between receipt creation and
+completion re-seals that same transcript, ledger, and budget against the
+cancelled outcome. Cleanup without attestation remains a runner failure and is
+left for expiry recovery.
+
+`PrivateAnalysisExecutionLimits` bounds concurrent local runs, lease duration,
+heartbeat cadence, cancellation polling, and monitor joining. `close(timeout)`
+stops admission and waits for active calls and monitors; it never pretends to
+preempt a non-cooperative trusted callback. `ControlPlane` owns one coordinator
+whose registration set is empty unless deployment composition explicitly
+supplies approved local runners.
+
 Retention preview and execute accept a closed object with optional `catalog`
 and `review` policy objects. Cutoffs use canonical decimal strings. The router
 derives catalog external-reference protection itself and rejects a caller

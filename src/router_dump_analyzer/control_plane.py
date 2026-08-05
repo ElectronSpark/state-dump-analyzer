@@ -92,6 +92,11 @@ from .private_analysis_binding import (
     PrivateAnalysisEvidenceBindingError,
     bind_private_analysis_revision,
 )
+from .private_analysis_execution import (
+    PrivateAnalysisExecutionCoordinator,
+    PrivateAnalysisExecutionLimits,
+    PrivateAnalysisRunnerRegistration,
+)
 from .private_analysis_run_store import SqlitePrivateAnalysisRunStore
 from .session_store import (
     AnalysisRevisionDescriptor,
@@ -1075,6 +1080,8 @@ class ControlPlane:
         pipeline_limits: PipelineLimits | None = None,
         retention_policy: RetentionPolicy | None = None,
         limits: ControlPlaneLimits | None = None,
+        private_analysis_runners: tuple[PrivateAnalysisRunnerRegistration, ...] = (),
+        private_analysis_execution_limits: PrivateAnalysisExecutionLimits | None = None,
     ) -> None:
         registry.require_executable_identities()
         # Validate the longest core-owned ingestion pathname before creating
@@ -1100,6 +1107,7 @@ class ControlPlane:
         self.sessions = SqliteSessionStore(self.root / "sessions.sqlite3")
         annotations: ReviewOverlayStore | None = None
         private_analysis_runs: SqlitePrivateAnalysisRunStore | None = None
+        private_analysis_execution: PrivateAnalysisExecutionCoordinator | None = None
         try:
             annotations = ReviewOverlayStore(self.root / "annotations.sqlite3")
             self.annotations = annotations
@@ -1145,6 +1153,12 @@ class ControlPlane:
                         "private-analysis run store does not match its binding"
                     )
             self.private_analysis_runs = private_analysis_runs
+            private_analysis_execution = PrivateAnalysisExecutionCoordinator(
+                private_analysis_runs,
+                registrations=private_analysis_runners,
+                limits=private_analysis_execution_limits,
+            )
+            self.private_analysis_execution = private_analysis_execution
             self.publisher = SessionCatalogPublisher(self.sessions)
             self.ingestion = DurableIngestionPipeline(
                 self.root,
@@ -1154,6 +1168,8 @@ class ControlPlane:
                 retention_policy=retention_policy,
             )
         except BaseException:
+            if private_analysis_execution is not None:
+                private_analysis_execution.close(timeout=0)
             if private_analysis_runs is not None:
                 private_analysis_runs.close()
             if annotations is not None:
@@ -1178,6 +1194,7 @@ class ControlPlane:
         # worker has stopped.  If a plug-in ignores shutdown long enough for
         # the timeout to expire, ``DurableIngestionPipeline.close`` raises and
         # a later call may retry without workers touching closed dependencies.
+        self.private_analysis_execution.close(timeout=timeout)
         self.ingestion.close(timeout=timeout)
         with self._lock:
             if self._closed:

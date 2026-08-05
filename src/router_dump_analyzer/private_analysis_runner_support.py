@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from json import JSONDecodeError, loads
+from threading import Lock
 from time import monotonic_ns
 from typing import Final
 
@@ -31,6 +32,7 @@ from .private_analysis import (
     PrivateAnalysisOutcomeKind,
     PrivateAnalysisRequest,
     PrivateAnalysisResult,
+    PrivateAnalysisRunnerSelection,
     PrivateAnalysisTransport,
     evidence_reference_dict,
     evidence_reference_from_dict,
@@ -68,6 +70,59 @@ PrivateAnalysisAccountingObserver = Callable[
     [tuple[EvidenceReference, ...], PrivateAnalysisToolBudgetState],
     None,
 ]
+PrivateAnalysisCancellationProbe = Callable[[], bool]
+
+
+class PrivateAnalysisRunnerExecutionOwner:
+    """Own immutable runner identity and its cross-coordinator execution gate."""
+
+    __slots__ = (
+        "_instruction_profile_digest",
+        "_private_analysis_execution_lock",
+        "_selection",
+    )
+
+    def __init__(
+        self,
+        selection: PrivateAnalysisRunnerSelection,
+        *,
+        instruction_profile_digest: str,
+    ) -> None:
+        if type(selection) is not PrivateAnalysisRunnerSelection:
+            raise TypeError("selection must be PrivateAnalysisRunnerSelection")
+        self._selection = PrivateAnalysisRunnerSelection(
+            runner_id=selection.runner_id,
+            runner_version=selection.runner_version,
+            transport=selection.transport,
+            configuration_digest=selection.configuration_digest,
+        )
+        self._instruction_profile_digest = private_analysis_prefixed_sha256(
+            instruction_profile_digest,
+            "instruction_profile_digest",
+        )
+        self._private_analysis_execution_lock = Lock()
+
+    @property
+    def selection(self) -> PrivateAnalysisRunnerSelection:
+        value = self._selection
+        return PrivateAnalysisRunnerSelection(
+            runner_id=value.runner_id,
+            runner_version=value.runner_version,
+            transport=value.transport,
+            configuration_digest=value.configuration_digest,
+        )
+
+    @property
+    def instruction_profile_digest(self) -> str:
+        """Return the sealed instruction profile used by this runner."""
+
+        return self._instruction_profile_digest
+
+    @property
+    def execution_lock(self) -> Lock:
+        """Return the runner-instance gate used by core composition."""
+
+        return self._private_analysis_execution_lock
 
 
 @dataclass(slots=True)
@@ -882,9 +937,11 @@ __all__ = [
     "MAX_PRIVATE_ANALYSIS_TRANSCRIPT_SUMMARY_BYTES",
     "PRIVATE_ANALYSIS_TRANSCRIPT_SUMMARY_VERSION",
     "PrivateAnalysisAccountingObserver",
+    "PrivateAnalysisCancellationProbe",
     "PrivateAnalysisInProcessTranscriptSummaryMetadata",
     "PrivateAnalysisLocalSubprocessTranscriptSummaryMetadata",
     "PrivateAnalysisRunAccountingSnapshot",
+    "PrivateAnalysisRunnerExecutionOwner",
     "PrivateAnalysisTranscriptSummary",
     "PrivateAnalysisTranscriptSummaryMetadata",
     "detached_private_analysis_budget_state",

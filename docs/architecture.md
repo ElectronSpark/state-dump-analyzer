@@ -2354,6 +2354,41 @@ administrators remain trusted; coherent rollback or replacement of both files
 requires an external WORM checkpoint to detect. No HTTP/CLI/model scheduler is
 added by this layer.
 
+The adjacent `PrivateAnalysisExecutionCoordinator` is the core-owned,
+synchronous execution composition. Its immutable registrations route by exact
+runner ID, version, transport, configuration digest, and instruction-profile
+digest; no plug-in discovery, registration-order selection, or fallback is
+allowed. It claims the durable run before constructing the request-bound tool
+service, so one fence winner is the only process that creates a service or
+invokes the runner. A zero-accounting factory/binding failure, including a
+permanently consumed zero-tool service lifetime, is terminalized without
+inventing a transcript.
+
+One bounded monitor owns lease renewal and cross-process cancellation polling.
+Monitor, write-ahead accounting, and terminal completion serialize through one
+attempt-local version owner, reconcile a stale version once only under the
+same live fence, and never retry model execution. In-process cancellation is
+cooperative. Local-child cancellation participates in bounded protocol waits
+and seals `cancelled` only after child/helper cleanup is attested. A late
+cancellation re-seals the existing payload-free transcript commitments against
+the cancelled outcome. Store/fence/monitor failures discard late receipts and
+leave explicit expiry recovery authoritative. If completion races a terminal
+writer, the store's exact receipt comparison—not terminal state alone—decides
+whether replay is idempotent. Each configured runner carries its own execution
+gate, so sharing one runner instance across coordinators cannot invoke it
+concurrently.
+
+After the attempt is registered locally, an immediate durable refresh precedes
+service construction, closing cancellation in the claim/registration gap. A
+post-tool accounting commit never aborts its observer before the runner adopts
+the same snapshot; cancellation is latched and observed at the next runner
+boundary instead. Thus a cancelled receipt cannot lag its durable evidence
+ledger.
+
+`ControlPlane` creates this coordinator with an empty registration set by
+default and closes it before the durable run store. This adds no model endpoint,
+credential, network client, HTTP/CLI route, scheduler, or promotion authority.
+
 Runner composition claims a pristine service through a permanent single-run
 lease. Lease acquisition is atomic with direct-call execution, refuses an
 active or previously used service, and blocks every non-lease call while and
