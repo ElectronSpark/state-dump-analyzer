@@ -13,4 +13,6 @@ PROCESS_CONTROL_EXCEPTIONS: tuple[type[BaseException], ...] = (
     GeneratorExit,
 )
 
-__all__ = ["PROCESS_CONTROL_EXCEPTIONS"]
+__all__ = [
+    "PROCESS_CONTROL_EXCEPTIONS",
+]

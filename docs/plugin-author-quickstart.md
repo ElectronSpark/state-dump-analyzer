@@ -95,8 +95,66 @@ public plan stores only a configuration digest, never configuration values.
 Changing any pinned executable, configuration, schema, capability, or decoder
 identity changes the plan digest. Current ordinary ingestion produces one pin
 with the core role `primary_parser`. A deployment may add separately configured
-capability-provider pins. The core's `PlanBoundCapabilityRouter` composes them;
-never emulate composition with a synthetic composite plug-in.
+capability-provider pins through a content-addressed
+`PluginCompositionPolicy`. A rule matches the exact primary instance and
+registered execution identity, then lists canonically ordered auxiliary
+instance identities and roles. The core freezes that policy digest with the
+import and as the v2 plan's `composition_policy_digest`, then rejects worker
+or child-plan drift. Therefore any policy edit changes the plan, normalized
+dataset, catalog revision, session member, and private-analysis revision
+identity even when this primary parser selects the same rule. Retained plan-v1
+rows remain displayable but cannot route capabilities or produce private
+evidence. The core's `PlanBoundCapabilityRouter`
+resolves the resulting plan; never emulate composition with a synthetic
+composite plug-in, infer a provider from names, or depend on registration
+order. Immediately before an auxiliary pin is frozen, core revalidates that
+provider's executable bytes and manifest in both inline and process execution;
+registration-time validation alone is not execution authority. Because a
+process child may parse for a long time, the parent repeats those live checks
+around identity/schema reads and at the final child-plan acceptance edge.
+Auxiliary drift after spawn fails the import before revision staging.
+The trusted process composition root packages that policy with its exact
+`PluginRegistry` and `CapabilityProviderRegistry` in one frozen
+`PluginCompositionDeployment`. Load it with the mutually exclusive
+`--plugin-deployment-module PACKAGE:ATTRIBUTE` selector. Its factory receives
+only `PluginCompositionDeploymentContext.state_dir`; platform names, firmware
+rules, chip identities, credentials, and configuration values remain in the
+deployment module rather than core or the durable plan.
+
+That flag spelling applies to the standalone server, headless ingester, and
+private-analysis CLI. The interactive analyzer has two separate authorities:
+its required `--plugin` or `--plugin-module` selects the immediate startup
+input, while its optional embedded durable control plane uses
+`--plugin-composition-deployment-module` and requires
+`--control-plane-dir`. A runnable source-tree command is:
+
+```text
+python -m router_dump_analyzer \
+  --plugin-module rsl_demo_plugin \
+  --input demo/fixtures/minimal-status.jsonl \
+  --control-plane-dir .runtime/plugin-author-embedded \
+  --plugin-composition-deployment-module rsl_demo_plugin.deployment:build_plugin_deployment \
+  --no-browser
+```
+
+The immediate runtime selector is not inferred from the deployment descriptor,
+and the descriptor is not inferred from the immediate runtime plug-in.
+
+Private-model evidence follows the same plan boundary. Generic normalized
+records are attributed to the exact `primary_parser` role; optional evidence
+names one declared capability. The supported plug-in contract supplies no
+model client, runner selector, disclosure authority, or prompt assembly
+interface. Plug-in code remains trusted and unsandboxed; authors must not use
+ambient host privileges to add a model/network side channel. If full-fidelity
+local analysis is enabled by deployment and workspace policy, retained
+`SourceRecordEmission.copy_text` and plug-in-owned normalized values may enter
+the core's immutable evidence corpus, so keep them bounded, deterministic, and
+truthful. Plug-ins do not assign the core-owned evidence class per item. Keep
+material that must never reach an assistant out of `copy_text` and other
+full-fidelity normalized values, and mark sensitive client-view fields through
+the declared descriptor policy. A deployment must not authorize full-fidelity
+analysis for a data set whose retained plug-in values are unsafe to disclose;
+the core rejects a corpus classified `never_assistant` entirely.
 
 Installed entry points are pinned with their real distribution and
 `module:attribute` coordinates. Direct `--plugin-module` use is deliberately
@@ -259,8 +317,24 @@ manifest = PluginManifest(
     supported_software_versions=">=1,<2",
     capabilities=frozenset({PluginCapability.STATUS_PARSE}),
     reconstruction_default=ReconstructionSupport.EXACT,
+    timeline_time_basis=TimelineTimeBasis.ABSOLUTE_UNIX_NS,
 )
 ```
+
+Import `TimelineTimeBasis` beside the other `plugin_api` values. The example's
+`captured_at_ns` values are Unix nanoseconds, so it declares
+`ABSOLUTE_UNIX_NS` explicitly. Use the default
+`REVISION_START_RELATIVE_NS` only when normalized timestamps are signed offsets
+from the revision start. Use `SOURCE_CLOCK_NS` for another producer clock and
+also set one path-safe opaque `timeline_clock_domain` such as
+`vendor.clock.asic-0`. Do not label uptime, monotonic, device-local, or
+revision-relative counters as Unix time. Emit relative offsets exactly once:
+core preserves those coordinates, and treats `timeline_start_ns` only as the
+lower bound rather than subtracting it as another origin. Core includes
+timestamp uncertainty in published bounds and rejects negative absolute
+coordinates or a relative span larger than signed 64-bit nanoseconds. Changing
+the declaration changes the frozen execution identity, plan, and revision
+identity.
 
 Use the standard `PluginCapability` enum. A capability is a promise that its
 hook is implemented. `AnalyzerPluginBase` raises instead of silently ignoring
@@ -489,6 +563,7 @@ Everything else is capability-gated:
 | `TOPOLOGY_PROJECTION` | `project_topology()` | bounded typed topology records |
 | `FORWARDING_PROJECTION` | `project_forwarding()` | bounded forwarding IR mutations |
 | `FORWARDING_TRACE` | `resolve_forwarding_step()` | one bounded node-local packet transition |
+| `EVIDENCE_ANALYSIS` | `analyze_evidence()` | citation-scoped advisory observations over already-authorized evidence |
 
 Inherit undeclared hooks from `AnalyzerPluginBase`; they return safe empty
 results. Do not copy placeholder implementations into a new plug-in.
@@ -519,6 +594,33 @@ the one exception to the world wrapper: the caller supplies the already
 bounded/indexed `CorrelationReader`, and the executor validates its exact
 bounded `CorrelationWindow` and outputs.
 
+`analyze_evidence()` is also deliberately narrower than a world-reading hook.
+It receives an immutable `EvidenceAnalysisRequest` containing only evidence
+facts that core has already authorized and disclosed for this private-analysis
+request. Each fact carries the immutable reference digest, exact node/revision,
+schema/provenance/time metadata, and a deeply detached bounded JSON payload.
+Return canonically ordered `EvidenceAnalysisObservation` values; every
+observation must cite one or more input reference digests and cannot cite
+anything outside the request. This hook is advisory: its request supplies no
+artifact reader, world query, model/network client, mutation interface, runner
+selector, or plug-in selector. Core/deployment selects the exact configured
+instance from the retained execution plan and stores validated output as
+derived evidence. The core validates only this supported interface; because
+plug-ins are trusted unsandboxed Python, authors remain responsible for not
+reaching ambient filesystem, network, process, or model facilities directly.
+
+An evidence interpreter does not need to be the primary parser. For mixed
+platform, firmware, or chip deployments, register it as a separately
+identified capability-only instance and attach it to the exact primary parser
+identity with a `PluginCompositionPolicy` role such as
+`private_analysis_evidence`. Keep capability-only instances out of the primary
+parser registry and register them only in the capability-provider registry.
+Core then freezes both pins into the revision plan and later routes only to
+that retained auxiliary; registration order, display names, and model arguments
+never choose it. The runnable demo's
+`rsl_demo_plugin.deployment:build_plugin_deployment` and semantic contract test
+exercise this pattern end to end.
+
 The input/execution/output distinction is deliberate: validate the request
 before invoking the hook, report a hook failure as execution failure, and
 report only the plug-in's returned value as output failure. This keeps a bad
@@ -540,6 +642,11 @@ use; this guide intentionally avoids a partial snippet with deployment-owned
 values left undefined.
 
 Use `instance_id` as the deployment's logical configured-instance identity.
+Two configured instances may intentionally share the same plug-in ID, version,
+and executable package. Their probe candidates remain distinct because core
+also records `instance_id` and the content-addressed
+`registered_execution_identity`; selection clients echo those two fields as a
+pair.
 IDs are unique within one plan; the provider registry may retain several exact
 installed releases for that same logical ID so old and new revisions remain
 replayable. A configuration change always requires a new logical instance ID,
@@ -720,12 +827,60 @@ search root changes its executable identity, while dropping the defining root
 is rejected.
 
 The durable servers and headless command invoke both probe and ingestion in a
-fresh child created with Python's `spawn` start method. Keep the exported
-plug-in and any custom coordinator importable and spawn-picklable: define
-their classes/functions at module scope, avoid non-picklable captured state,
-and open files, sockets, native iterators, or thread-affine objects inside the
-called hook rather than retaining them on the plug-in object. The default
-child deadline is 300 seconds; `router-dump-ingest --timeout` may lower it.
+fresh child created with Python's `spawn` start method. Core serializes only a
+bounded inert bootstrap: it never pickles the live plug-in, registry,
+coordinator, decoder, provider, or a bound method. Installed/direct-module
+loading uses the exported module-level plug-in instance. A programmatically
+registered default-constructed plug-in, custom coordinator, or decoder may use
+an importable no-argument class constructor. Stateful or configured objects
+MUST instead expose a module-level instance and register its explicit
+`plugin_process_module_target`, `coordinator_module_target`, or
+`decoder_module_target`; the target must reconstruct the same frozen execution
+identity. A non-default `configuration_digest` is the programmatic signal that
+configured state exists: PROCESS mode rejects the registration unless
+`plugin_process_module_target` names a module-level instance (not a class
+constructor), plus explicit coordinator/decoder targets when those custom
+objects carry the asserted state. Installed entry-point and direct-module
+loaders already provide the plug-in target. Trusted inline-only tests may keep
+a live object, but that does not make it PROCESS-capable. Open files, sockets,
+native iterators, and thread-affine objects only
+inside the child hook. The default child deadline is 300 seconds;
+`router-dump-ingest --timeout` may lower it.
+A registered-execution identity covers the complete non-recursive process
+bootstrap: loader kinds and targets for the plug-in/coordinator/decoder,
+source-backed executable identities for every external target,
+package-verification mode, artifact and configuration coordinates, frozen
+ingestion/artifact limits, and optional decoder identity. Target identity binds
+the exact import coordinate, bounded module/package bytes, and Python
+implementation code. Dynamic aliases, sourceless targets, and unverifiable
+re-exports fail closed. Live Python functions/classes must still match their
+source-declared recursive code, signatures, defaults, and safe global/static
+dependencies. The identity traversal follows the exact globals, static
+attribute paths, and statically resolvable local imports named by helper
+bytecode across package boundaries; it does not stop at the target package.
+Identity calculation never executes an import to discover authority. Load any
+bytecode-referenced local import during deterministic package initialization;
+the installed entry point must register strictly in a fresh process without a
+separate warm-up call.
+Function-owned executable state is part of the same identity. One identity has a shared limit of 64 value levels,
+32,768 value nodes, 2,048 code objects, and 32 MiB of runtime value bytes.
+Local-import source is token-count preflighted against the remaining node
+budget before its AST is constructed; keep module declarations bounded rather
+than relying on unreachable code to hide a large source graph.
+Callable module instances also bind their canonical `__dict__` and slot values,
+ordinary class state, properties, callable members, and descriptors. Use
+immutable bounded scalar/tuple/frozenset state (or the supported frozen
+dataclass and enum forms); opaque native state and unsupported mutable state
+are not PROCESS-capable. Runtime-generated code, unsafe closures, and custom
+builtins likewise fail closed. Keep process targets as ordinary module
+declarations with immutable defaults and source-backed helper callables. Only the expected
+identity sent to the child is excluded to avoid hashing itself. Retained live
+class and mutable-object snapshots are rechecked after the complete traversal,
+before the digest is returned. Changing only
+a process target or one of those limits therefore changes the plan/revision
+authority. Core revalidates target bytes immediately before spawn, the child
+re-attests before invoking them, and the parent checks again after the child
+and at final revision staging.
 A timeout or crashed/invalid child fails the import without publishing a
 partial revision and removes its partial staged dataset.
 An embedding may explicitly choose synchronous `inline` execution only for
@@ -764,20 +919,37 @@ an applicable fixture in `awaiting_selection` and exit with status 2 rather
 than allowing the plug-in to choose itself. The full operator contract is in
 [`control-plane.md`](control-plane.md).
 
+The runnable demo also exercises the trusted descriptor path:
+
+```text
+router-dump-ingest \
+  --plugin-deployment-module rsl_demo_plugin.deployment:build_plugin_deployment \
+  --state-dir .runtime/plugin-author-composed \
+  --tenant quickstart --project plugin-author --workspace composed \
+  --input demo/fixtures/minimal-status.jsonl
+```
+
+Use a deployment descriptor when several exact platform, firmware, or helper
+instances must coexist. Keep the ordinary `--plugin` smoke above for the
+single plug-in's parser conformance; neither form lets a plug-in choose its own
+peers.
+
 To verify that your installed entry point can participate in the production
 API-only composition, start the core server with an explicit allowlist and a
 deployment identity resolver:
 
 ```text
-router-dump-server --plugin demo_router --state-dir .runtime/plugin-server \
+router-dump-server --plugin-deployment-module rsl_demo_plugin.deployment:build_plugin_deployment --state-dir .runtime/plugin-server \
   --trust-control-plane-headers --host 127.0.0.1
 ```
 
-After the known-good check, replace `demo_router` with your installed entry
-point. This command does not load an analysis input or frontend. It uses the
+After the known-good check, replace the demo descriptor with your trusted
+deployment target (or use one ordinary `--plugin` selector). This command does
+not load an analysis input or frontend. It uses the
 same standard hooks and process boundary, and uploaded bytes cannot add another
 plug-in. `--plugin-module PACKAGE[:ATTRIBUTE]` is the mutually exclusive
-source-development form. The shown trusted-header mode is only a loopback
+source-development form; all three selector families are mutually exclusive.
+The shown trusted-header mode is only a loopback
 development adapter, never a plug-in feature or production authentication; a
 production host uses `--identity-resolver-module PACKAGE:ATTRIBUTE` backed by
 verified credentials.
@@ -1180,7 +1352,7 @@ standalone normative vector synchronized:
 ```text
 python -X utf8 -m rsl_demo_generator --write-ingestion-conformance-corpus path/to/runtime-v2-ingestion-conformance.tgz
 python -X utf8 -m rsl_demo_generator --verify-ingestion-conformance-corpus path/to/runtime-v2-ingestion-conformance.tgz
-python -m unittest tests.test_ingestion tests.test_capability_executor tests.test_capability_router -v
+python -m unittest tests.test_ingestion tests.test_capability_executor tests.test_plugin_composition tests.test_capability_router -v
 python -m unittest discover -s state-dump-generator/tests -p "test_runtime_v2_vectors.py" -v
 ```
 

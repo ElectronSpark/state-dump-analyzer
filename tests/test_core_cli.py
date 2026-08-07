@@ -78,6 +78,10 @@ class CoreCliTests(unittest.TestCase):
                 entry_point_name="vendor_router",
                 module_target="vendor_router_plugin:plugin",
             ),
+            process_module_target=(
+                "tests.test_core_cli:_RegisteredRuntimePlugin"
+            ),
+            process_construct_class=True,
         )
         registry_values: dict[str, Any] = {}
 
@@ -166,6 +170,7 @@ class CoreCliTests(unittest.TestCase):
             Path("retention.json"),
         )
         self.assertIsNone(parsed.private_analysis_deployment_module)
+        self.assertIsNone(parsed.plugin_composition_deployment_module)
 
         with self.assertRaises(SystemExit) as missing_control_plane:
             parse_args(
@@ -217,6 +222,77 @@ class CoreCliTests(unittest.TestCase):
                 ]
             )
         self.assertEqual(missing_control_plane_for_analysis.exception.code, 2)
+
+        with self.assertRaises(SystemExit) as missing_control_plane_for_composition:
+            parse_args(
+                [
+                    "--plugin",
+                    "router",
+                    "--input",
+                    "fixture.tgz",
+                    "--plugin-composition-deployment-module",
+                    "deployment.plugins:build",
+                ]
+            )
+        self.assertEqual(missing_control_plane_for_composition.exception.code, 2)
+
+    def test_plugin_composition_deployment_reaches_embedded_control_plane(
+        self,
+    ) -> None:
+        registry = object()
+        providers = object()
+        policy = object()
+        deployment = type(
+            "Deployment",
+            (),
+            {
+                "primary_registry": registry,
+                "capability_providers": providers,
+                "policy": policy,
+            },
+        )()
+        captured: dict[str, Any] = {}
+        contexts: list[Any] = []
+
+        def control_plane_factory(_root: Path, **values: Any) -> Any:
+            captured.update(values)
+            return _ClosableControlPlane()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = Path(temporary_directory) / "fixture.tgz"
+            fixture.touch()
+            state = Path(temporary_directory) / "state"
+            with patch(
+                "router_dump_analyzer.control_plane.ControlPlane",
+                side_effect=control_plane_factory,
+            ):
+                run(
+                    LaunchConfiguration(
+                        plugin_name="router",
+                        plugin_module=None,
+                        input_path=fixture,
+                        host="127.0.0.1",
+                        port=8765,
+                        no_browser=True,
+                        control_plane_dir=state,
+                        plugin_composition_deployment_module=(
+                            "deployment.plugins:build"
+                        ),
+                    ),
+                    entry_point_loader=lambda _name: _RegisteredRuntimePlugin(),
+                    plugin_composition_deployment_loader=(
+                        lambda _target, **values: (
+                            contexts.append(values["context"]) or deployment
+                        )
+                    ),
+                    application_factory=lambda _request: object(),
+                    server_runner=lambda _app, **_values: None,
+                )
+
+        self.assertEqual(contexts[0].state_dir, state.resolve())
+        self.assertIs(captured["registry"], registry)
+        self.assertIs(captured["capability_providers"], providers)
+        self.assertIs(captured["plugin_composition_policy"], policy)
 
     def test_local_private_analysis_deployment_reaches_embedded_control_plane(
         self,

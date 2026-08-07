@@ -14,13 +14,30 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, TypeVar
 
+from router_dump_analyzer.multi_node_route import MultiNodeRouteService
+from router_dump_analyzer.multi_node_topology import MultiNodeTopologyService
 from router_dump_analyzer.normalized_data import NormalizedDataService
 from router_dump_analyzer.runtime import PLUGIN_RUNTIME_CAPABILITY_ID
+from router_dump_analyzer.temporal_topology import TemporalTopologyService
 
 from . import data
 from .assembly_store import DemoAssemblyStore
+from .route_policy import (
+    DEMO_ROUTE_POLICY,
+    build_route_projection_set,
+)
 from .scale_data import load_scale_dataset
 from .source_records import lazy_demo_ctf_source_record
+from .temporal_contract import (
+    build_demo_plugin_contract,
+    build_temporal_metadata,
+)
+from .topology_contract import (
+    DEMO_TOPOLOGY_ID,
+    build_topology_contract,
+    build_topology_metadata,
+    build_topology_profiles,
+)
 
 _Result = TypeVar("_Result")
 
@@ -61,9 +78,11 @@ class DemoDatasetSource:
         """Select an exact revision for one core request/task."""
 
         self.revision_store.revision(revision_id)
-        with data.revision_store_scope(self.revision_store):
-            with data.demo_revision_scope(revision_id):
-                yield
+        with (
+            data.revision_store_scope(self.revision_store),
+            data.demo_revision_scope(revision_id),
+        ):
+            yield
 
     def load_dataset(
         self,
@@ -164,15 +183,6 @@ class DemoTemporalProvider:
             revision_id
             or self._data_source.revision_store.default_revision_id
         )
-        from router_dump_analyzer.temporal_topology import (
-            TemporalTopologyService,
-        )
-
-        from .temporal_contract import (
-            build_demo_plugin_contract,
-            build_temporal_metadata,
-        )
-
         dataset = self._data_source.load_dataset(selected_revision_id)
 
         def state_reader(
@@ -218,23 +228,11 @@ class DemoTopologyProvider:
 
     @property
     def topology_id(self) -> str:
-        from .topology_contract import DEMO_TOPOLOGY_ID
-
         return DEMO_TOPOLOGY_ID
 
     def get(self) -> Any:
         with self._lock:
             if self._service is None:
-                from router_dump_analyzer.multi_node_topology import (
-                    MultiNodeTopologyService,
-                )
-
-                from .topology_contract import (
-                    build_topology_contract,
-                    build_topology_metadata,
-                    build_topology_profiles,
-                )
-
                 dataset = self._data_source.load_dataset(
                     self._revision_store.default_revision_id
                 )
@@ -270,15 +268,6 @@ class DemoRouteProvider:
     def get(self) -> Any:
         with self._lock:
             if self._service is None:
-                from router_dump_analyzer.multi_node_route import (
-                    MultiNodeRouteService,
-                )
-
-                from .route_policy import (
-                    DEMO_ROUTE_POLICY,
-                    build_route_projection_set,
-                )
-
                 self._service = MultiNodeRouteService(
                     self._topology_provider.get(),
                     projections=build_route_projection_set(

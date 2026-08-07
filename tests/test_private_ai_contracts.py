@@ -392,7 +392,7 @@ class PrivateAnalysisContractTests(unittest.TestCase):
                     ),
                 )
                 expected_suffix = (
-                    ".v2" if type(value) is PrivateAnalysisRequest else ".v1"
+                    ".v3" if type(value) is PrivateAnalysisRequest else ".v1"
                 )
                 self.assertTrue(value.contract_version.endswith(expected_suffix))
 

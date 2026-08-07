@@ -106,7 +106,7 @@ class FrontendBoundaryTests(unittest.TestCase):
 
         self.assertEqual(
             set(bundle.page_routes),
-            {"/", "/topology", "/node"},
+            {"/", "/topology", "/node", "/analysis"},
         )
         self.assertEqual(bundle.assets_url_prefix, "/assets")
         self.assertEqual(bundle.assets_directory, FRONTEND_ROOT / "assets")
@@ -117,6 +117,10 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertEqual(
             bundle.page_for_route("/node").name,
             "node.html",
+        )
+        self.assertEqual(
+            bundle.page_for_route("/analysis").name,
+            "private-analysis.html",
         )
 
     def test_pages_reference_only_declared_local_assets(self) -> None:
@@ -300,6 +304,7 @@ class FrontendBoundaryTests(unittest.TestCase):
                     "/": "../outside.html",
                     "/topology": "page.html",
                     "/node": "page.html",
+                    "/analysis": "page.html",
                 },
             }
             (root / "frontend-manifest.json").write_text(
@@ -327,6 +332,7 @@ class FrontendBoundaryTests(unittest.TestCase):
                     "/": "page.html",
                     "/topology": "page.html",
                     "/node": "page.html",
+                    "/analysis": "page.html",
                     "/health": "page.html",
                 },
             }
@@ -348,9 +354,15 @@ class FrontendBoundaryTests(unittest.TestCase):
 
         self.assertTrue(host.enabled)
         self.assertIsNone(host.bundle)
-        self.assertEqual(set(host.page_routes), {"/", "/topology", "/node"})
+        self.assertEqual(
+            set(host.page_routes),
+            {"/", "/topology", "/node", "/analysis"},
+        )
         host.configure(enabled=False)
         self.assertFalse(host.enabled)
         self.assertIsNone(host.bundle)
-        self.assertEqual(set(host.page_routes), {"/", "/topology", "/node"})
+        self.assertEqual(
+            set(host.page_routes),
+            {"/", "/topology", "/node", "/analysis"},
+        )
         self.assertFalse(host.owns_request_path("/"))

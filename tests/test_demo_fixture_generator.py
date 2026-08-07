@@ -34,39 +34,43 @@ from rsl_demo_generator import (
     probe_demo_fixture_for_launch,
     validate_demo_fixture,
 )
+from rsl_demo_generator import _scale as scale_generator
 from rsl_demo_generator import catalog as generator_catalog
 from rsl_demo_generator._archive import (
-    write_deterministic_tgz,
     validate_archive_name,
-)
-from rsl_demo_generator.conformance import (
-    EXPECTATIONS_MEMBER as INGESTION_EXPECTATIONS_MEMBER,
-    MANIFEST_MEMBER as INGESTION_MANIFEST_MEMBER,
+    write_deterministic_tgz,
 )
 from rsl_demo_generator.assembly import (
+    _GENERATED_JSONL_REWRITE_PLANS,
     _case_candidate_paths,
     _compact_json_line,
-    _GENERATED_JSONL_REWRITE_PLANS,
-    _projection_rows,
     _loaded_source_scenario_descriptor,
-    _source_resource_id,
+    _projection_rows,
     _source_event_rows,
+    _source_resource_id,
     _topology_projection,
     _transform_generated_json_line,
     _transform_value,
     _validate_projection_member,
 )
-from rsl_demo_generator import _scale as scale_generator
+from rsl_demo_generator.conformance import (
+    EXPECTATIONS_MEMBER as INGESTION_EXPECTATIONS_MEMBER,
+)
+from rsl_demo_generator.conformance import (
+    MANIFEST_MEMBER as INGESTION_MANIFEST_MEMBER,
+)
 from rsl_demo_plugin import (
+    GENERATED_COVERAGE_FORMAT_VERSION,
+    GENERATED_COVERAGE_REGISTRY_ID,
     GENERATED_PROJECTION_POLICY,
     PLUGIN_ID,
     PLUGIN_VERSION,
     plugin,
     render_conformance_status_fixture,
 )
-from rsl_demo_plugin.scale_data import load_scale_dataset
-from router_dump_analyzer import multi_node_route
 from rsl_demo_plugin.advanced_trace import ADVANCED_TRACE_SCENARIOS
+from rsl_demo_plugin.route_policy import DEMO_ROUTE_POLICY
+from rsl_demo_plugin.scale_data import load_scale_dataset
 from rsl_demo_plugin.scenario_registry import (
     PACKET_TRACE_SCENARIOS,
     ROUTE_INVENTORY_CONTEXTS,
@@ -74,8 +78,8 @@ from rsl_demo_plugin.scenario_registry import (
     ROUTE_TRACE_SCENARIOS,
     SCENARIO_BY_ID,
 )
-from rsl_demo_plugin.route_policy import DEMO_ROUTE_POLICY
 
+from router_dump_analyzer import multi_node_route
 
 NODE_PACK_ROOT = "router-state-lab-100k"
 
@@ -959,6 +963,44 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
             {item["case_id"] for item in coverage["cases"]},
             {item.case_id for item in COVERAGE_CASES},
         )
+        self.assertEqual(
+            coverage["format_version"],
+            GENERATED_COVERAGE_FORMAT_VERSION,
+        )
+        self.assertEqual(
+            coverage["registry_id"],
+            GENERATED_COVERAGE_REGISTRY_ID,
+        )
+        self.assertEqual(
+            {
+                intent
+                for item in coverage["cases"]
+                for intent in item["private_analysis_intents"]
+            },
+            {
+                "route_trace",
+                "trace_correlation",
+                "evidence_correlation",
+                "evidence_interpretation",
+            },
+        )
+        self.assertTrue(
+            all(
+                item["private_analysis_intents"]
+                == list(spec.private_analysis_intents)
+                for item, spec in zip(
+                    coverage["cases"],
+                    COVERAGE_CASES,
+                    strict=True,
+                )
+            )
+        )
+        self.assertTrue(
+            all(
+                "evidence_analysis" in item["required_capabilities"]
+                for item in coverage["cases"]
+            )
+        )
         # A selected-node developer fixture still enumerates every public case,
         # but truthfully identifies cases whose other evidence packs are absent.
         self.assertFalse(coverage["complete"])
@@ -972,6 +1014,16 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
             )
         with tarfile.open(fileobj=io.BytesIO(node_bytes), mode="r:gz") as node:
             node_names = set(node.getnames())
+            intent_bearing_node_members = []
+            for member in node.getmembers():
+                if not member.isfile() or not member.name.endswith(
+                    (".json", ".jsonl")
+                ):
+                    continue
+                source = node.extractfile(member)
+                assert source is not None
+                if b'"private_analysis_intents"' in source.read():
+                    intent_bearing_node_members.append(member.name)
             pack_manifest = json.loads(
                 _member_bytes(node, f"{NODE_PACK_ROOT}/manifest.json")
             )
@@ -989,6 +1041,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
                 f"{NODE_PACK_ROOT}/containers/evpn-control.tgz",
             )
         self.assertEqual(pack_manifest["node_id"], "node-a")
+        self.assertEqual(intent_bearing_node_members, [])
         self.assertEqual(
             pack_manifest["source"]["authoring_scenario"]["sha256"],
             generator_catalog.DEFAULT_SCENARIO_SOURCE.sha256,

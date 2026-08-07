@@ -4,6 +4,7 @@ import unittest
 from dataclasses import replace
 from typing import Any
 
+from router_dump_analyzer.capability_executor import PluginCapabilityOutputError
 from router_dump_analyzer.capability_router import (
     CapabilityPlanUnavailableError,
     CapabilityProviderRegistry,
@@ -12,6 +13,9 @@ from router_dump_analyzer.capability_router import (
     CapabilityRouteSelector,
     CapabilityRouteStaleError,
     PlanBoundCapabilityRouter,
+    RevisionSetCapabilityFailureCode,
+    RevisionSetCapabilityKey,
+    RevisionSetCapabilityRouter,
 )
 from router_dump_analyzer.ingestion import IngestionCoordinator
 from router_dump_analyzer.ingestion_pipeline import PluginRegistry, RegisteredPlugin
@@ -19,13 +23,19 @@ from router_dump_analyzer.plugin_api import (
     CORE_PLUGIN_API_VERSION,
     AnalyzerPluginBase,
     CorrelationWindow,
+    EvidenceAnalysisFact,
+    EvidenceAnalysisKind,
+    EvidenceAnalysisObservation,
+    EvidenceAnalysisRequest,
     PluginCapability,
     PluginManifest,
     PluginSchema,
+    Quality,
     ReconstructionSupport,
     ResourceKindDescriptor,
 )
 from router_dump_analyzer.plugin_execution_plan import (
+    PLUGIN_EXECUTION_PLAN_VERSION_V1,
     DecoderIdentity,
     PluginArtifactIdentity,
     PluginExecutionPin,
@@ -68,6 +78,7 @@ class _RoutingPlugin(AnalyzerPluginBase):
         schema: PluginSchema | None = None,
         *,
         plugin_version: str = "1",
+        capabilities: frozenset[PluginCapability] | None = None,
     ) -> None:
         self.manifest = PluginManifest(
             plugin_id=plugin_id,
@@ -75,12 +86,17 @@ class _RoutingPlugin(AnalyzerPluginBase):
             core_api_version=CORE_PLUGIN_API_VERSION,
             supported_platforms=("test",),
             supported_software_versions="*",
-            capabilities=frozenset({PluginCapability.CORRELATION}),
+            capabilities=(
+                frozenset({PluginCapability.CORRELATION})
+                if capabilities is None
+                else capabilities
+            ),
             reconstruction_default=ReconstructionSupport.EXACT,
         )
         self.schema = schema or _schema()
         self.correlate_calls = 0
         self.mutate_schema_during_correlation = False
+        self.analyze_calls = 0
 
     def describe(self) -> PluginSchema:
         return self.schema
@@ -91,6 +107,19 @@ class _RoutingPlugin(AnalyzerPluginBase):
         if self.mutate_schema_during_correlation:
             self.schema = _schema("opaque.changed")
         return ()
+
+    def analyze_evidence(self, request: EvidenceAnalysisRequest):
+        self.analyze_calls += 1
+        digest = request.facts[0].reference_digest
+        return (
+            EvidenceAnalysisObservation(
+                observation_id="observation-1",
+                category="route_resolution",
+                summary="The selected provider interpreted the route evidence.",
+                cited_reference_digests=(digest,),
+                quality=Quality.EXACT,
+            ),
+        )
 
 
 def _registered(
@@ -112,7 +141,6 @@ def _registered(
         distribution_name=f"{plugin.manifest.plugin_id}.distribution",
         distribution_version="1+test",
         entry_point_name=instance_id,
-        module_target=f"tests:{instance_id}",
         configuration_digest=configuration_digest,
         decoder_identity=decoder_identity,
     )
@@ -137,6 +165,7 @@ def _pin(
         ),
         configuration_digest=registered.configuration_digest,
         schema_digest=plugin_schema_digest(schema),
+        registered_execution_identity=registered.registered_execution_identity,
         schema_versions=registered.schema_versions,
         capabilities=registered.capabilities,
         roles=tuple(roles),
@@ -167,6 +196,83 @@ def _router(
 
 
 class CapabilityRouterTests(unittest.TestCase):
+    def test_evidence_analysis_routes_to_one_exact_plan_instance(self) -> None:
+        capabilities = frozenset({PluginCapability.EVIDENCE_ANALYSIS})
+        first = _RoutingPlugin("test.analysis", capabilities=capabilities)
+        second = _RoutingPlugin("test.analysis", capabilities=capabilities)
+        first_registered = _registered(first, "analysis.first")
+        second_registered = _registered(second, "analysis.second")
+        router = _router(
+            CapabilityProviderRegistry(
+                (first_registered, second_registered)
+            ),
+            _plan(
+                "node-a",
+                "basis-a",
+                _pin(first_registered, first.schema, "primary_parser"),
+                _pin(second_registered, second.schema, "analysis_assistant"),
+            ),
+            catalog_revision_id="revision-a",
+            member_id="revision-a",
+        )
+        route = router.resolve(
+            CapabilityRouteSelector(
+                PluginCapability.EVIDENCE_ANALYSIS,
+                instance_id="analysis.second",
+            )
+        )
+        digest = "sha256:" + "a" * 64
+        request = EvidenceAnalysisRequest(
+            invocation_id="invocation-a",
+            analysis_kind=EvidenceAnalysisKind.ROUTE_TRACE,
+            facts=(
+                EvidenceAnalysisFact(
+                    reference_digest=digest,
+                    evidence_kind="event",
+                    subject_kind="normalized_event",
+                    node_id="node-a",
+                    revision_id="revision-a",
+                    payload_schema="example.event.v1",
+                    fact_provenance="log_derived",
+                    time_basis="revision_start_relative_ns",
+                    time_start_ns=1,
+                    time_end_ns=1,
+                    time_clock_domain=None,
+                    payload={"event": "route-change"},
+                ),
+            ),
+            max_observations=2,
+        )
+        invocation = route.analyze_evidence(request)
+        self.assertEqual(invocation.provider.pin.instance_id, "analysis.second")
+        self.assertEqual(invocation.provider.catalog_revision_id, "revision-a")
+        self.assertEqual(len(invocation.result.observations), 1)
+        self.assertEqual(first.analyze_calls, 0)
+        self.assertEqual(second.analyze_calls, 1)
+
+    def test_retained_v1_plan_is_passive_and_cannot_bind_provider(self) -> None:
+        plugin = _RoutingPlugin("test.legacy")
+        registered = _registered(plugin, "legacy.primary")
+        legacy_pin = replace(
+            _pin(registered, plugin.schema, "primary_parser", "correlator"),
+            registered_execution_identity="sha256:" + "0" * 64,
+        )
+        plan = PluginExecutionPlan(
+            node_id="node-a",
+            basis_revision_id="basis-a",
+            plugins=(legacy_pin,),
+            contract_version=PLUGIN_EXECUTION_PLAN_VERSION_V1,
+        )
+        with self.assertRaisesRegex(
+            CapabilityPlanUnavailableError,
+            "passive catalog records",
+        ):
+            _router(
+                CapabilityProviderRegistry((registered,)),
+                plan,
+            )
+        self.assertEqual(plugin.correlate_calls, 0)
+
     def test_two_nodes_bind_different_plugins_for_the_same_capability(self) -> None:
         alpha = _RoutingPlugin("test.alpha")
         beta = _RoutingPlugin("test.beta")
@@ -210,7 +316,9 @@ class CapabilityRouterTests(unittest.TestCase):
         self.assertEqual(alpha_result.provider.node_id, "node-a")
         self.assertEqual(beta_result.provider.member_id, "member-2")
 
-    def test_same_plugin_instances_require_role_or_instance_disambiguation(self) -> None:
+    def test_same_plugin_instances_require_role_or_instance_disambiguation(
+        self,
+    ) -> None:
         first = _RoutingPlugin("test.same")
         second = _RoutingPlugin("test.same")
         first_record = _registered(first, "same.primary")
@@ -286,12 +394,8 @@ class CapabilityRouterTests(unittest.TestCase):
             ),
         )
         with self.assertRaises(CapabilityRouteMissingError):
-            router.resolve(
-                CapabilityRouteSelector(PluginCapability.CONSISTENCY_CHECK)
-            )
-        route = router.resolve(
-            CapabilityRouteSelector(PluginCapability.CORRELATION)
-        )
+            router.resolve(CapabilityRouteSelector(PluginCapability.CONSISTENCY_CHECK))
+        route = router.resolve(CapabilityRouteSelector(PluginCapability.CORRELATION))
         with self.assertRaises(CapabilityRouteMissingError):
             route.check_consistency(object())  # type: ignore[arg-type]
         self.assertEqual(plugin.correlate_calls, 0)
@@ -352,9 +456,7 @@ class CapabilityRouterTests(unittest.TestCase):
         )
         providers = CapabilityProviderRegistry((record,))
         router = _router(providers, plan)
-        route = router.resolve(
-            CapabilityRouteSelector(PluginCapability.CORRELATION)
-        )
+        route = router.resolve(CapabilityRouteSelector(PluginCapability.CORRELATION))
         plugin.mutate_schema_during_correlation = True
         with self.assertRaises(CapabilityRouteStaleError):
             route.correlate(
@@ -502,6 +604,213 @@ class CapabilityRouterTests(unittest.TestCase):
         )
         with self.assertRaises(PluginSchemaIdentityError):
             plugin_schema_digest(schema)
+
+    def test_revision_set_has_exact_unique_bounded_canonical_keys(self) -> None:
+        plugin = _RoutingPlugin("test.revision-set")
+        record = _registered(plugin, "revision-set.primary")
+        providers = CapabilityProviderRegistry((record,))
+        plan = _plan(
+            "node-a",
+            "source-a",
+            _pin(record, plugin.schema, "primary_parser"),
+        )
+        first = _router(
+            providers,
+            plan,
+            catalog_revision_id="catalog-b",
+            member_id="member-b",
+        )
+        second = _router(
+            providers,
+            plan,
+            catalog_revision_id="catalog-a",
+            member_id="member-a",
+        )
+        revision_set = RevisionSetCapabilityRouter((first, second))
+
+        self.assertEqual(
+            revision_set.keys,
+            (
+                RevisionSetCapabilityKey("catalog-a", "member-a"),
+                RevisionSetCapabilityKey("catalog-b", "member-b"),
+            ),
+        )
+        selected = revision_set.resolve(
+            RevisionSetCapabilityKey("catalog-b", "member-b"),
+            CapabilityRouteSelector(PluginCapability.CORRELATION),
+        )
+        self.assertEqual(selected.provider.catalog_revision_id, "catalog-b")
+        with self.assertRaises(CapabilityRouteMissingError):
+            revision_set.resolve(
+                RevisionSetCapabilityKey("catalog-missing", "member-missing"),
+                CapabilityRouteSelector(PluginCapability.CORRELATION),
+            )
+        with self.assertRaisesRegex(ValueError, "unique"):
+            RevisionSetCapabilityRouter((first, first))
+        with self.assertRaisesRegex(ValueError, "at least one"):
+            RevisionSetCapabilityRouter(())
+
+        over_limit = tuple(
+            _router(
+                providers,
+                plan,
+                catalog_revision_id=f"catalog-{index:03d}",
+                member_id=f"member-{index:03d}",
+            )
+            for index in range(129)
+        )
+        with self.assertRaisesRegex(ValueError, "at most 128"):
+            RevisionSetCapabilityRouter(over_limit)
+
+    def test_revision_set_resolve_all_reports_missing_without_first_match(self) -> None:
+        capable = _RoutingPlugin("test.capable")
+        incapable = _RoutingPlugin(
+            "test.incapable",
+            capabilities=frozenset(),
+        )
+        capable_record = _registered(capable, "capable.primary")
+        incapable_record = _registered(incapable, "incapable.primary")
+        providers = CapabilityProviderRegistry((incapable_record, capable_record))
+        capable_router = _router(
+            providers,
+            _plan(
+                "node-b",
+                "source-b",
+                _pin(capable_record, capable.schema, "primary_parser"),
+            ),
+            catalog_revision_id="catalog-b",
+            member_id="member-b",
+        )
+        incapable_router = _router(
+            providers,
+            _plan(
+                "node-a",
+                "source-a",
+                _pin(incapable_record, incapable.schema, "primary_parser"),
+            ),
+            catalog_revision_id="catalog-a",
+            member_id="member-a",
+        )
+
+        resolution = RevisionSetCapabilityRouter(
+            (capable_router, incapable_router)
+        ).resolve_all(CapabilityRouteSelector(PluginCapability.CORRELATION))
+
+        self.assertEqual(
+            tuple(route.provider.member_id for route in resolution.routes),
+            ("member-b",),
+        )
+        self.assertEqual(
+            resolution.missing,
+            (RevisionSetCapabilityKey("catalog-a", "member-a"),),
+        )
+
+    def test_revision_set_resolve_all_rejects_one_ambiguous_member(self) -> None:
+        primary_plugin = _RoutingPlugin("test.ambiguous")
+        observer_plugin = _RoutingPlugin("test.ambiguous")
+        primary = _registered(primary_plugin, "ambiguous.primary")
+        observer = _registered(
+            observer_plugin,
+            "ambiguous.observer",
+            configuration_digest="sha256:" + "a" * 64,
+        )
+        providers = CapabilityProviderRegistry((primary, observer))
+        router = _router(
+            providers,
+            _plan(
+                "node-a",
+                "source-a",
+                _pin(primary, primary_plugin.schema, "primary_parser"),
+                _pin(observer, observer_plugin.schema, "observer"),
+            ),
+        )
+
+        with self.assertRaises(CapabilityRouteAmbiguousError):
+            RevisionSetCapabilityRouter((router,)).resolve_all(
+                CapabilityRouteSelector(PluginCapability.CORRELATION)
+            )
+
+    def test_revision_set_fanout_keeps_successes_and_bounded_failures(self) -> None:
+        plugins = tuple(
+            _RoutingPlugin(f"test.fanout.{suffix}") for suffix in ("a", "b", "c")
+        )
+        records = tuple(
+            _registered(plugin, f"fanout.{suffix}")
+            for plugin, suffix in zip(plugins, ("a", "b", "c"), strict=True)
+        )
+        providers = CapabilityProviderRegistry(reversed(records))
+        routers = tuple(
+            _router(
+                providers,
+                _plan(
+                    f"node-{suffix}",
+                    f"source-{suffix}",
+                    _pin(record, plugin.schema, "primary_parser"),
+                ),
+                catalog_revision_id=f"catalog-{suffix}",
+                member_id=f"member-{suffix}",
+            )
+            for plugin, record, suffix in zip(
+                plugins,
+                records,
+                ("a", "b", "c"),
+                strict=True,
+            )
+        )
+        window = CorrelationWindow(0, 1, max_events=1, max_world_reads=1)
+
+        def invoke(route):
+            if route.provider.member_id == "member-b":
+                raise PluginCapabilityOutputError(
+                    "hostile detail must not be retained",
+                    capability=PluginCapability.CORRELATION,
+                )
+            return route.correlate(object(), window)  # type: ignore[arg-type]
+
+        result = RevisionSetCapabilityRouter(reversed(routers)).fanout(
+            CapabilityRouteSelector(PluginCapability.CORRELATION),
+            invoke,
+        )
+
+        self.assertEqual(
+            tuple(item.provider.member_id for item in result.invocations),
+            ("member-a", "member-c"),
+        )
+        self.assertEqual(result.missing, ())
+        self.assertEqual(len(result.failures), 1)
+        self.assertEqual(result.failures[0].key.member_id, "member-b")
+        self.assertEqual(
+            result.failures[0].code,
+            RevisionSetCapabilityFailureCode.OUTPUT_REJECTED,
+        )
+        self.assertNotIn("hostile", repr(result.failures[0]))
+        self.assertEqual(
+            tuple(plugin.correlate_calls for plugin in plugins),
+            (1, 0, 1),
+        )
+
+    def test_revision_set_fanout_never_downgrades_stale_provider(self) -> None:
+        plugin = _RoutingPlugin("test.fanout-stale")
+        record = _registered(plugin, "fanout-stale.primary")
+        providers = CapabilityProviderRegistry((record,))
+        router = _router(
+            providers,
+            _plan(
+                "node-a",
+                "source-a",
+                _pin(record, plugin.schema, "primary_parser"),
+            ),
+        )
+        plugin.schema = _schema("opaque.stale")
+
+        with self.assertRaises(CapabilityRouteStaleError):
+            RevisionSetCapabilityRouter((router,)).fanout(
+                CapabilityRouteSelector(PluginCapability.CORRELATION),
+                lambda route: route.correlate(
+                    object(),  # type: ignore[arg-type]
+                    CorrelationWindow(0, 1, max_events=1, max_world_reads=1),
+                ),
+            )
 
 
 if __name__ == "__main__":

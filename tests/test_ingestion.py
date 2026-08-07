@@ -57,6 +57,7 @@ from router_dump_analyzer.plugin_api import (
     StatusPerspectiveDescriptor,
     StatusPerspectiveRef,
     StatusPerspectiveRole,
+    TimelineTimeBasis,
     UnknownField,
 )
 from router_dump_analyzer.runtime import (
@@ -736,6 +737,49 @@ class ForgedEventTimestampPlugin(TemporalEventPlugin):
             yield output
 
 
+class DeclaredTimelineEventPlugin(TemporalEventPlugin):
+    def __init__(
+        self,
+        basis: TimelineTimeBasis,
+        *,
+        clock_domain: str | None = None,
+        uncertain_tail: bool = False,
+        negative: bool = False,
+        oversize_relative_span: bool = False,
+    ) -> None:
+        self.manifest = replace(
+            TemporalEventPlugin.manifest,
+            plugin_id=f"tests.timeline-{basis.value}",
+            timeline_time_basis=basis,
+            timeline_clock_domain=clock_domain,
+        )
+        self.uncertain_tail = uncertain_tail
+        self.negative = negative
+        self.oversize_relative_span = oversize_relative_span
+
+    def parse_text_trace(self, reader, spec):
+        known = 0
+        for output in super().parse_text_trace(reader, spec):
+            if output.timestamp_ns is not None:
+                known += 1
+                if self.negative:
+                    output = replace(output, timestamp_ns=-1)
+                elif self.oversize_relative_span:
+                    output = replace(
+                        output,
+                        timestamp_ns=(
+                            -(1 << 63) if known == 1 else (1 << 63) - 1
+                        ),
+                    )
+                elif self.uncertain_tail:
+                    output = replace(
+                        output,
+                        timestamp_ns=50 if known == 1 else 250,
+                        timestamp_uncertainty_ns=20,
+                    )
+            yield output
+
+
 class CoreIngestionTests(unittest.TestCase):
     def _fixture(self, directory: str) -> Path:
         path = Path(directory) / "status.jsonl"
@@ -1189,6 +1233,87 @@ class CoreIngestionTests(unittest.TestCase):
             [item["event_uid"] for item in result.dataset["events"]],
             [b"a".hex(), b"c".hex(), b"b".hex(), b"z".hex()],
         )
+
+    def test_declared_timeline_semantics_are_emitted_and_identity_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._fixture(directory)
+            (root / "router.log").write_text("events\n", encoding="utf-8")
+            relative = IngestionCoordinator().ingest(
+                DeclaredTimelineEventPlugin(
+                    TimelineTimeBasis.REVISION_START_RELATIVE_NS
+                ),
+                root,
+            )
+            source = IngestionCoordinator().ingest(
+                DeclaredTimelineEventPlugin(
+                    TimelineTimeBasis.SOURCE_CLOCK_NS,
+                    clock_domain="tests.source.clock",
+                ),
+                root,
+            )
+            absolute = IngestionCoordinator().ingest(
+                DeclaredTimelineEventPlugin(TimelineTimeBasis.ABSOLUTE_UNIX_NS),
+                root,
+            )
+
+        self.assertEqual(
+            relative.dataset["_ingestion"]["timeline_time_basis"],
+            "revision_start_relative_ns",
+        )
+        self.assertIsNone(
+            relative.dataset["_ingestion"]["timeline_clock_domain"]
+        )
+        self.assertEqual(
+            source.dataset["_ingestion"]["timeline_clock_domain"],
+            "tests.source.clock",
+        )
+        self.assertEqual(
+            absolute.dataset["_ingestion"]["timeline_time_basis"],
+            "absolute_unix_ns",
+        )
+        self.assertEqual(
+            len({relative.revision_id, source.revision_id, absolute.revision_id}),
+            3,
+        )
+
+    def test_timeline_bounds_include_uncertainty_and_reject_invalid_domains(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._fixture(directory)
+            (root / "router.log").write_text("events\n", encoding="utf-8")
+            uncertain = IngestionCoordinator().ingest(
+                DeclaredTimelineEventPlugin(
+                    TimelineTimeBasis.SOURCE_CLOCK_NS,
+                    clock_domain="tests.source.clock",
+                    uncertain_tail=True,
+                ),
+                root,
+            )
+            self.assertEqual(
+                uncertain.dataset["_ingestion"]["timeline_start_ns"],
+                "30",
+            )
+            self.assertEqual(
+                uncertain.dataset["_ingestion"]["timeline_end_ns"],
+                "270",
+            )
+            with self.assertRaisesRegex(IngestionError, "absolute-unix"):
+                IngestionCoordinator().ingest(
+                    DeclaredTimelineEventPlugin(
+                        TimelineTimeBasis.ABSOLUTE_UNIX_NS,
+                        negative=True,
+                    ),
+                    root,
+                )
+            with self.assertRaisesRegex(IngestionError, "span exceeds signed 64-bit"):
+                IngestionCoordinator().ingest(
+                    DeclaredTimelineEventPlugin(
+                        TimelineTimeBasis.REVISION_START_RELATIVE_NS,
+                        oversize_relative_span=True,
+                    ),
+                    root,
+                )
 
     def test_forged_event_timestamp_overflow_fails_at_ingestion_boundary(
         self,

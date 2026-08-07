@@ -80,6 +80,8 @@ class LoadedPlugin:
 
     plugin: Any
     coordinates: PluginArtifactCoordinates | None = None
+    process_module_target: str | None = None
+    process_construct_class: bool = False
 
     def __post_init__(self) -> None:
         if self.coordinates is not None:
@@ -88,12 +90,40 @@ class LoadedPlugin:
                 "coordinates",
                 _snapshot_artifact_coordinates(self.coordinates),
             )
+        if self.process_module_target is not None:
+            object.__setattr__(
+                self,
+                "process_module_target",
+                normalize_plugin_module_target(self.process_module_target),
+            )
+        if type(self.process_construct_class) is not bool:
+            raise TypeError("process_construct_class must be an exact boolean")
+        if self.process_construct_class and self.process_module_target is None:
+            raise ValueError(
+                "process_construct_class requires process_module_target"
+            )
 
-    def register(self, registry: Any) -> Any:
+    def register(
+        self,
+        registry: Any,
+        *,
+        instance_id: str | None = None,
+        configuration_digest: str | None = None,
+    ) -> Any:
         """Register the instance while preserving known loader coordinates."""
 
+        overrides: dict[str, str] = {}
+        if instance_id is not None:
+            overrides["instance_id"] = instance_id
+        if configuration_digest is not None:
+            overrides["configuration_digest"] = configuration_digest
         if self.coordinates is None:
-            return registry.register(self.plugin)
+            return registry.register(
+                self.plugin,
+                plugin_process_module_target=self.process_module_target,
+                plugin_process_construct_class=self.process_construct_class,
+                **overrides,
+            )
         coordinates = _snapshot_artifact_coordinates(self.coordinates)
         return registry.register(
             self.plugin,
@@ -101,7 +131,25 @@ class LoadedPlugin:
             distribution_version=coordinates.distribution_version,
             entry_point_name=coordinates.entry_point_name,
             module_target=coordinates.module_target,
+            plugin_process_module_target=self.process_module_target,
+            plugin_process_construct_class=self.process_construct_class,
+            **overrides,
         )
+
+
+def _instance_class_target(value: Any) -> str:
+    implementation = type(value)
+    module_name = implementation.__module__
+    qualified_name = implementation.__qualname__
+    if (
+        type(module_name) is not str
+        or type(qualified_name) is not str
+        or not module_name
+        or not qualified_name
+        or "<locals>" in qualified_name
+    ):
+        raise ValueError("injected plug-in must have an importable module-level class")
+    return normalize_plugin_module_target(f"{module_name}:{qualified_name}")
 
 
 def installed_plugin_entry_points() -> tuple[metadata.EntryPoint, ...]:
@@ -332,12 +380,19 @@ def load_plugin_entry_point_with_coordinates(
             entry_point_name=entry_point_name,
             module_target=module_target,
         ),
+        process_module_target=module_target,
     )
 
 
-def load_plugin_module(target: str) -> Any:
+def load_plugin_module(
+    target: str,
+    *,
+    _construct_class: bool = False,
+) -> Any:
     """Load ``module[:attribute]``; the default attribute is ``plugin``."""
 
+    if type(_construct_class) is not bool:
+        raise TypeError("_construct_class must be an exact boolean")
     normalized_target = normalize_plugin_module_target(target)
     module_name, attribute = normalized_target.split(":", 1)
     try:
@@ -353,7 +408,11 @@ def load_plugin_module(target: str) -> Any:
             "failed to import the selected plug-in module"
         ) from None
     try:
-        loaded = getattr(module, attribute)
+        loaded: Any = module
+        for component in attribute.split("."):
+            if not component or component in {"<locals>", "<lambda>"}:
+                raise ValueError("plug-in module target is not module-level")
+            loaded = getattr(loaded, component)
     except AttributeError:
         raise LookupError(
             f"plug-in module {module_name!r} has no attribute {attribute!r}"
@@ -364,9 +423,38 @@ def load_plugin_module(target: str) -> Any:
         raise RuntimeError(
             "could not resolve the selected plug-in module attribute"
         ) from None
-    return _validated_instance(
-        loaded,
-        target=f"module target {normalized_target}",
+    if not _construct_class:
+        return _validated_instance(
+            loaded,
+            target=f"module target {normalized_target}",
+        )
+    if not inspect.isclass(loaded):
+        raise TypeError("process bootstrap constructor target must be a class")
+    try:
+        return loaded()
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except BaseException as error:
+        raise RuntimeError("process bootstrap class construction failed") from error
+
+
+def load_process_bootstrap_target(
+    target: str,
+    *,
+    construct_class: bool,
+) -> Any:
+    """Resolve one inert process-bootstrap target in the spawned child.
+
+    The parent passes only the normalized string and this core-owned boolean.
+    Import, descriptor resolution, and optional no-argument construction all
+    happen after the killable child deadline exists.
+    """
+
+    if type(construct_class) is not bool:
+        raise TypeError("construct_class must be an exact boolean")
+    return load_plugin_module(
+        target,
+        _construct_class=construct_class,
     )
 
 
@@ -377,6 +465,7 @@ def load_plugin_module_with_coordinates(target: str) -> LoadedPlugin:
     return LoadedPlugin(
         plugin=load_plugin_module(coordinates.module_target),
         coordinates=coordinates,
+        process_module_target=coordinates.module_target,
     )
 
 
@@ -407,10 +496,19 @@ def loaded_module(
     if loader is load_plugin_module:
         return load_plugin_module_with_coordinates(target)
     loaded = loader(target)
-    plugin = loaded.plugin if isinstance(loaded, LoadedPlugin) else loaded
+    if isinstance(loaded, LoadedPlugin):
+        plugin = loaded.plugin
+        process_module_target = loaded.process_module_target
+        process_construct_class = loaded.process_construct_class
+    else:
+        plugin = loaded
+        process_module_target = _instance_class_target(plugin)
+        process_construct_class = True
     return LoadedPlugin(
         plugin=plugin,
         coordinates=PluginArtifactCoordinates.direct_module(target),
+        process_module_target=process_module_target,
+        process_construct_class=process_construct_class,
     )
 
 
@@ -425,6 +523,7 @@ __all__ = [
     "load_plugin_entry_point_with_coordinates",
     "load_plugin_module",
     "load_plugin_module_with_coordinates",
+    "load_process_bootstrap_target",
     "loaded_entry_point",
     "loaded_module",
     "normalize_plugin_module_target",

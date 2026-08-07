@@ -32,6 +32,10 @@ from router_dump_analyzer.plugin_api import (
     DiagnosticStage,
     DomainEvent,
     Evidence,
+    EvidenceAnalysisFact,
+    EvidenceAnalysisKind,
+    EvidenceAnalysisObservation,
+    EvidenceAnalysisRequest,
     FindingResult,
     ForwardingMutation,
     ForwardingOperation,
@@ -88,6 +92,7 @@ CAPABILITIES = frozenset(
         PluginCapability.TOPOLOGY_PROJECTION,
         PluginCapability.FORWARDING_PROJECTION,
         PluginCapability.FORWARDING_TRACE,
+        PluginCapability.EVIDENCE_ANALYSIS,
     }
 )
 
@@ -175,6 +180,7 @@ def _execution_pin(plugin: _Plugin) -> PluginExecutionPin:
         ),
         configuration_digest="sha256:" + "b" * 64,
         schema_digest=plugin_schema_digest(schema),
+        registered_execution_identity="sha256:" + "e" * 64,
         schema_versions=("router_dump_analyzer.plugin_schema.v1",),
         capabilities=tuple(
             sorted(
@@ -292,12 +298,15 @@ class _Plugin(AnalyzerPluginBase):
         self.topology_output: Iterable[Any] = ()
         self.forwarding_output: Iterable[Any] = ()
         self.step_output: Any = None
+        self.evidence_analysis_output: Iterable[Any] = ()
         self.apply_called = False
         self.revert_called = False
         self.correlate_called = False
         self.topology_called = False
         self.forwarding_called = False
         self.forwarding_step_called = False
+        self.evidence_analysis_called = False
+        self.evidence_analysis_request: Any = None
 
     def describe(self) -> PluginSchema:
         return _schema()
@@ -334,6 +343,11 @@ class _Plugin(AnalyzerPluginBase):
     def resolve_forwarding_step(self, request: Any, world: Any) -> Any:
         self.forwarding_step_called = True
         return self.step_output
+
+    def analyze_evidence(self, request: Any) -> Iterable[Any]:
+        self.evidence_analysis_called = True
+        self.evidence_analysis_request = request
+        return self.evidence_analysis_output
 
 
 class _ExplodingManifestPlugin:
@@ -892,6 +906,23 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
                 replace(pin, schema_digest="sha256:" + "f" * 64),
                 member_id="member-a",
             )
+
+    def test_plan_bound_executor_rejects_retained_v1_pin(self) -> None:
+        plugin = _Plugin()
+        legacy_pin = replace(
+            _execution_pin(plugin),
+            registered_execution_identity="sha256:" + "0" * 64,
+        )
+        with self.assertRaisesRegex(
+            PluginCapabilityBindingError,
+            "retained v1",
+        ):
+            PluginCapabilityExecutor.for_execution_pin(
+                plugin,
+                legacy_pin,
+                member_id="member-a",
+            )
+
     def test_forwarding_ir_versions_descriptor_uses_the_plugin_error_domain(
         self,
     ) -> None:
@@ -1326,6 +1357,127 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
             caught.exception.diagnostics,
             (_diagnostic(recoverable=False),),
         )
+
+    def test_evidence_analysis_is_bounded_canonical_and_citation_scoped(self) -> None:
+        digest = "sha256:" + "a" * 64
+        fact = EvidenceAnalysisFact(
+            reference_digest=digest,
+            evidence_kind="source_record",
+            subject_kind="normalized_source_record",
+            node_id="node-a",
+            revision_id="revision-a",
+            payload_schema="example.source.v1",
+            fact_provenance="log_derived",
+            time_basis="source_clock_ns",
+            time_start_ns=10,
+            time_end_ns=10,
+            time_clock_domain="trace.clock",
+            payload={
+                "tracepoint": "fib.lookup",
+                "packet": {"labels": [16000, 16001]},
+            },
+        )
+        request = EvidenceAnalysisRequest(
+            invocation_id="invocation-a",
+            analysis_kind=EvidenceAnalysisKind.TRACE_CORRELATION,
+            facts=(fact,),
+            parameters={"vrf": "blue", "constraints": {"layers": ["fib"]}},
+            max_observations=2,
+        )
+        observation = EvidenceAnalysisObservation(
+            observation_id="observation-1",
+            category="route_resolution",
+            summary="The tracepoint belongs to one route-resolution step.",
+            cited_reference_digests=(digest,),
+            quality=Quality.EXACT,
+            details={"step": 1, "packet": {"labels": [16000, 16001]}},
+        )
+        plugin = _Plugin()
+        plugin.evidence_analysis_output = (observation, _diagnostic())
+        executor = PluginCapabilityExecutor(plugin)
+        result = executor.analyze_evidence(request)
+        self.assertTrue(plugin.evidence_analysis_called)
+        self.assertEqual(result.observations, (observation,))
+        self.assertEqual(result.diagnostics, (_diagnostic(),))
+        self.assertIsNot(result.observations[0], observation)
+        object.__setattr__(
+            observation,
+            "cited_reference_digests",
+            ("sha256:" + "b" * 64,),
+        )
+        self.assertEqual(result.observations[0].cited_reference_digests, (digest,))
+
+        late_mutated = replace(
+            observation,
+            cited_reference_digests=(digest,),
+        )
+
+        def mutate_after_yield() -> Any:
+            yield late_mutated
+            object.__setattr__(
+                late_mutated,
+                "cited_reference_digests",
+                ("sha256:" + "b" * 64,),
+            )
+
+        plugin.evidence_analysis_output = mutate_after_yield()
+        late_snapshot = executor.analyze_evidence(request)
+        self.assertEqual(
+            late_snapshot.observations[0].cited_reference_digests,
+            (digest,),
+        )
+
+        observation = replace(
+            observation,
+            cited_reference_digests=(digest,),
+        )
+
+        valid_other_digest = "sha256:" + "b" * 64
+        valid_to_valid = replace(observation)
+
+        def mutate_valid_values_after_yield() -> Any:
+            yield valid_to_valid
+            assert plugin.evidence_analysis_request is not None
+            object.__setattr__(
+                plugin.evidence_analysis_request.facts[0],
+                "reference_digest",
+                valid_other_digest,
+            )
+            object.__setattr__(
+                valid_to_valid,
+                "cited_reference_digests",
+                (valid_other_digest,),
+            )
+
+        plugin.evidence_analysis_output = mutate_valid_values_after_yield()
+        valid_snapshot = executor.analyze_evidence(request)
+        self.assertEqual(
+            valid_snapshot.observations[0].cited_reference_digests,
+            (digest,),
+        )
+        self.assertEqual(request.facts[0].reference_digest, digest)
+
+        plugin.evidence_analysis_output = (
+            replace(
+                observation,
+                cited_reference_digests=("sha256:" + "b" * 64,),
+            ),
+        )
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "outside its request",
+        ):
+            executor.analyze_evidence(request)
+
+        plugin.evidence_analysis_output = (
+            replace(observation, observation_id="observation-2"),
+            observation,
+        )
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "canonically ordered",
+        ):
+            executor.analyze_evidence(request)
 
 
 if __name__ == "__main__":

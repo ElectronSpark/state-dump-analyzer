@@ -146,8 +146,15 @@ python -m router_dump_analyzer `
   --plugin-module rsl_demo_plugin `
   --input $demoArchive `
   --control-plane-dir .\.runtime\control-plane `
+  --plugin-composition-deployment-module rsl_demo_plugin.deployment:build_plugin_deployment `
   --no-browser
 ```
+
+The ordinary selector owns the immediate startup input. The separate
+`--plugin-composition-deployment-module` descriptor owns uploads processed by
+the embedded durable control plane and is accepted only with
+`--control-plane-dir`; standalone durable commands use
+`--plugin-deployment-module` instead.
 
 `--plugin` selects an installed `router_dump_analyzer.plugins` entry point.
 `--plugin-module PACKAGE[:ATTRIBUTE]` imports a module-level instance directly;
@@ -188,6 +195,7 @@ development-only `--trust-control-plane-headers` override.
 | `http://127.0.0.1:8765/` | Multi-node topology and route tracing |
 | `http://127.0.0.1:8765/topology` | Compatibility alias for the topology home |
 | `http://127.0.0.1:8765/node` | Individual-node temporal workspace |
+| `http://127.0.0.1:8765/analysis` | Private workspace analysis lifecycle, evidence report, and explicit human proposal review |
 | `http://127.0.0.1:8765/docs` | Interactive API documentation; available only after a loopback launch with `--expose-api-docs` |
 | `http://127.0.0.1:8765/health` | Server and fixture health |
 | `http://127.0.0.1:8765/v1/control-plane/health` | Session-independent durable worker and queue health |
@@ -475,25 +483,38 @@ Disclosure-gated envelopes deep-detach bounded canonical JSON and reject
 `never_assistant` and cross-workspace decision replay; wire parsers never mint
 missing identity digests. Multi-node claims compose several atomic references.
 Versioned requests bind the exact revision vector, local runner selection,
-policy/instruction digests, the closed read-only tool-catalog digest, clock,
-query, and budgets. Advisory results contain
+policy/instruction digests, the closed read-only tool-catalog digest, the
+deployment-owned evidence-service digest, clock, query, and budgets. The core
+corpus is independently bounded by entry count and canonical payload bytes
+(512 MiB by default, 2 GiB maximum), so operators can size local proprietary
+analysis without enabling a network model service. Advisory results contain
 citation-backed claims or explicitly unsupported hypotheses and
 `assistant_suggested` proposals. The summary is itself a support-labeled claim,
 not an uncited text channel; validation accepts citations only from the
 references actually disclosed for that request. Typed failures do not carry
 arbitrary diagnostics. Core also exports an inert, self-digested catalog
-containing exactly `query_evidence` and `read_evidence`, plus typed calls,
-keyset cursors, page/read results, and payload-free errors. Those values carry
-no handler, database/filesystem handle, shell, network, or plug-in callback.
+containing exactly `query_evidence`, `read_evidence`, and `analyze_evidence`,
+plus typed calls, keyset cursors, page/read/derived results, and payload-free
+errors. Those values carry no handler, database/filesystem handle, shell,
+network, or live plug-in object. The third tool carries only an exact
+node/revision selector, a closed analysis intent,
+already-disclosed parent-reference digests, bounded JSON parameters, and an
+output ceiling. The model cannot provide evidence payloads or select a plug-in
+by package/platform name.
 The catalog remains inert, while a separate trusted
-`PrivateAnalysisToolService` now executes those two calls for one exact
+`PrivateAnalysisToolService` executes catalog calls for one exact
 request. It re-authorizes and re-evaluates current workspace policy per call
 and before release, validates every reference against deployment-owned catalog
 bindings, conceals foreign or denied reads, detects changed query snapshots,
 and atomically enforces cumulative call, unique-reference, and canonical-byte
 budgets. Query references join the same request-local citation ledger as read
 envelopes. Provider callbacks are contained and cannot leak diagnostics into
-tool errors.
+tool errors. The default `ControlPlane` revision-evidence composition supplies
+the analysis callback: it selects the unique `EVIDENCE_ANALYSIS` provider from
+the target revision's retained execution plan, passes only already-disclosed
+parent envelopes, and registers the resulting v3 derived reference for exact
+request-local rereads. Missing, ambiguous, or stale providers return the
+closed `capability_unavailable` result.
 
 `ConfiguredPrivateAnalysisInProcessRunner` now composes one pristine tool
 service with an operator-supplied, process-trusted local callback. It binds the
@@ -553,9 +574,12 @@ signals the pump, applies bounded terminate-then-kill waits while the direct
 child remains live, closes stdin/stdout, and lets the stderr helper drain to
 EOF before closing stderr; a still-live child instead has stderr closed to
 unblock the helper. Both non-daemon helpers are bounded-joined before sealing.
-Failure to observe child exit and stopped helpers becomes static
-`runner_failed`; this is fail-closed receipt acceptance, not an unconditional
-OS reaping guarantee.
+Failure to observe child exit and stopped helpers withholds the receipt and
+leaves the durable run behind a cleanup fence. The owning coordinator retains
+the exact live process/session handle and retries one bounded cleanup operation
+at a time; only confirmed cleanup reseals and releases the withheld receipt.
+No PID is persisted or reconstructed. This is fail-closed terminal acceptance,
+not an unconditional OS reaping guarantee.
 Adapter-created descendants are forbidden because this portable implementation
 does not provide a Windows Job Object or process-tree kill guarantee. The child
 boundary is killable but is not a filesystem/network/CPU/memory sandbox, so a
@@ -587,17 +611,80 @@ for listing approved local runners, admitting runs, executing or cancelling
 them with optimistic version checks, and reading display-safe terminal reports.
 The shipped server configures no runners, so the catalog is empty and execution
 is unavailable until deployment composition explicitly registers an approved
-local runner and request-bound tool-service factory. The HTTP surface accepts
+local runner with exactly one evidence mode: a trusted spawned process-factory
+target, an explicitly cooperative/unbounded trusted-inline compatibility
+factory, or the core's revision-evidence policy. Process factories use inert
+canonical configuration and bind target, configuration, deployment semantics,
+and content-addressed executable identity into the request. Registration
+accepts only an exact source-backed module callable, hashes either its
+top-level module file or complete import-package scope, and binds its live,
+source-declared recursive bytecode, signature/default state, class methods, and
+safe static global references. Exact bytecode-referenced helper globals,
+static attribute paths, and statically resolvable local imports are followed
+recursively even when the helper is in a different package. Fingerprinting
+never executes an import to discover authority: a bytecode-referenced local
+import must already be loaded by deterministic package initialization.
+Function-owned executable state participates too. Callable instances additionally bind bounded canonical
+`__dict__`/slot state, behavior-bearing class attributes, and callable or
+descriptor dependencies. The shared traversal is cycle-safe and capped at 64
+value levels, 32,768 value nodes, 2,048 code objects, and 32 MiB of runtime
+value bytes. Source used for local-import analysis is lexically preflighted
+against the remaining node budget before CPython constructs its AST. All retained live class and mutable-object snapshots are checked
+again after traversal and before the digest is returned. Generated code, unsafe closures, custom builtins, unsupported
+mutable state, and dynamic global dereferences fail closed; frozen dataclass
+and enum constants are bounded and bound by value. Core retains only the detached
+digest, never the callable, path, or bytes, and re-imports and
+revalidates that identity immediately before spawn and again in the child
+before invocation; module-attribute or file-byte drift fails with a static
+outcome. The exact service remains behind bounded canonical IPC and is killed
+and reaped on preparation timeout or durable cancellation. The local
+model-adapter child uses the same terminal rule. Before either child launch,
+core records a payload-free cleanup fence for the exact run and execution. The
+fence stores no PID or release secret: it retains only a domain-separated
+one-way verifier. The owning coordinator keeps the random 256-bit release
+capability beside the exact live service or runner handle, hidden from
+representations and diagnostics. A failed reap keeps cleanup retryable and
+prevents any durable terminal outcome from being sealed; a model receipt is
+withheld until cleanup is confirmed. Generic lease recovery skips the fence,
+and only confirmed reap plus that in-memory capability can enter an atomic
+terminal transition that removes it; there is no standalone fence-clear API.
+If process control interrupts in-process receipt sealing after the callback
+returns, core retains the started transcript/accounting snapshot and retries a
+`runner_failed` receipt instead of finalizing the run as unstarted. After a
+coordinator restart an unmatched fence remains diagnosable and nonterminal
+instead of risking a reused PID or treating copied durable fields as authority.
+The HTTP surface
+accepts
 analysis intent only; it derives scope, immutable revision bindings, current
 workspace policy, runner configuration, instruction profile, and the closed
 tool-catalog digest. It exposes no public-provider configuration, endpoint/key
 setting, network fallback, transcript, evidence payload, or executable callback.
 
+After a cleanup-complete terminal report, `/analysis` also supports an explicit
+human review step. A reviewer can reject one exact digest-pinned proposal or
+write a separate annotation/manual-correlation target and promote it. The model
+payload is always read-only and is never copied into that target. Decisions are
+durable, actor-attributed, idempotent receipts; a process interruption leaves a
+visible pending promotion that resumes only after another explicit,
+version-guarded action. Subject existence is proven before reservation under
+the review/catalog retention fence. Replaying the decision request cannot
+resume work. The scope-bound request digest deterministically projects the
+decision and overlay-target IDs, and every store read verifies them before
+deriving the overlay key. A separately stored HMAC key authenticates the
+reservation, so coherent SQLite rewrites cannot mint new authority; back up the
+key file and proposal-review database together. Recovery rechecks that authority and the exact overlay,
+and pending decisions protect their receipts and revision references from
+retention. The browser accepts decision authority only from the same frozen
+report; an ambiguous mutation requires reload and inspection rather than
+guessing which human intent won. See the
+[private AI analysis boundary](docs/private-ai-analysis.md) for the trust model
+and [API payload contract](docs/api-contract.md) for exact bodies.
+
 For a headless multi-fixture run:
 
 ```powershell
 $env:PYTHONUTF8 = "1"
-router-dump-ingest --plugin demo_router `
+router-dump-ingest --plugin-deployment-module rsl_demo_plugin.deployment:build_plugin_deployment `
   --state-dir .\.runtime\control-plane `
   --tenant example-tenant `
   --project lab-project `
@@ -614,24 +701,47 @@ remain core-private. Run the frontend-free API service with an
 allowlisted installed plug-in and a deployment-owned identity resolver:
 
 ```powershell
-router-dump-server --plugin your_plugin `
+router-dump-server --plugin-deployment-module deployment.plugins:build `
   --state-dir .\.runtime\control-plane `
   --identity-resolver-module deployment.identity:resolve_control_plane_identity `
   --private-analysis-deployment-module deployment.private_analysis:build `
   --host 0.0.0.0 --port 8765
 ```
 
-Repeat `--plugin` for more installed candidates; source development may repeat
-the mutually exclusive `--plugin-module PACKAGE[:ATTRIBUTE]` form. This server
+Choose exactly one plug-in source: repeat `--plugin` for ordinary installed
+candidates, repeat `--plugin-module PACKAGE[:ATTRIBUTE]` during source
+development, or use one mutually exclusive
+`--plugin-deployment-module PACKAGE:ATTRIBUTE` trusted descriptor. The
+descriptor binds the complete primary registry, auxiliary-provider directory,
+and immutable composition policy as one content-addressed deployment. This server
 serves aggregate root `/health` and `/v1/control-plane`: it accepts no startup
 dump and mounts no single-node analyzer routes, frontend, or assets. Its
+configured instances remain distinct through probing, manual selection,
+restart, publication, and capability routing by their paired `instance_id` and
+`registered_execution_identity`.
 private-analysis lifecycle routes remain inert when the optional deployment
 module is omitted. The `PACKAGE:ATTRIBUTE` target is process-trusted local
 Python: it must return a frozen `PrivateAnalysisDeployment`, or be a factory
 called once with a frozen context containing only the canonical state
 directory. It registers approved in-process or shell-free local-subprocess
-runners and their request-bound evidence services; it is not a device plug-in
-or a sandbox. The analyzer entry point accepts the same option only together
+runners. Each runner selects exactly one evidence mode: a deployment-owned
+spawned request-bound service factory, an explicitly unbounded trusted-inline
+compatibility factory, or the core's immutable indexed corpus for the exact
+requested revision set. The spawned form is the bounded production custom
+mode; it accepts only a module-level target and canonical configuration, never
+a live pickled callable. An in-process runner retains a detached clone and a
+bounded seal of its exact callback code, imports, closures, executable state,
+and callable class/instance state; it revalidates that seal immediately before
+invocation. A local-subprocess runner instead seals its actual executable and
+ordered helper artifacts by canonical path, metadata, and bytes. Every argv
+file operand must be an attested helper or an explicitly classified runtime-data
+argument, and the classification is rechecked immediately before shell-free
+launch; `-c` and `-m` dynamic-code forms are ineligible. Runtime-data arguments
+must never identify or load executable code. The latter core mode can expose
+client-safe projections, or full-fidelity proprietary normalized records only
+when both workspace policy
+and runner policy explicitly allow it. This is not a device plug-in, a public
+model API, or a sandbox. The analyzer entry point accepts the same option only together
 with `--control-plane-dir`. OpenAPI, Swagger UI,
 and ReDoc are disabled by default. `--expose-api-docs` enables them only on a
 loopback listener; a non-loopback configuration is rejected. The resolver
@@ -656,11 +766,33 @@ response is deliberately hybrid: `operational_events` is process-global, while
 It is an advisory troubleshooting snapshot, not a durable audit or compliance
 record, and resets when the process restarts.
 
+Durable ingestion also freezes the plug-in composition policy used for every
+import. The primary parser still comes from probe/selection. A
+content-addressed deployment rule may attach exact auxiliary capability
+providers and roles to that exact primary executable identity; registration
+order and matching names never select them. The policy digest is stored with
+the queued import and in the current v2 execution plan; a worker refuses to
+continue if deployment composition has changed. Process workers also
+live-revalidate selected auxiliaries after the child returns and before its
+plan can be staged, so executable or manifest drift during parsing fails the
+import. An unfinished pre-contract import is migrated only by clearing its old
+candidates/selection and binding the explicitly active policy before re-probe;
+staged and completed history is never rewritten. Even an unrelated policy edit
+therefore changes the durable revision/session/private-analysis identity.
+Retained plan-v1 rows stay readable but cannot route or produce private
+evidence. This lets one topology contain different platforms, firmware,
+and chip-specific helpers without merging their authority.
+`ControlPlane.capability_router_for_revision()` and
+`capability_router_for_revision_set()` are the production consumers: they load
+the retained plan, preserve session or snapshot member IDs, and resolve only
+the exact configured providers from that deployment. They never substitute a
+newly installed provider for a stale or missing pin.
+
 For CI or another frontend-free workflow, use the same durable lifecycle
 without starting HTTP or ingestion:
 
 ```powershell
-router-dump-private-analysis --plugin your_plugin `
+router-dump-private-analysis --plugin-deployment-module deployment.plugins:build `
   --state-dir .\.runtime\control-plane `
   --tenant example-tenant --project lab-project --workspace regression-2026-07 `
   --private-analysis-deployment-module deployment.private_analysis:build `
@@ -673,14 +805,24 @@ The strict, at-most-1-MiB UTF-8 request file uses the same caller-intent object
 as HTTP: revision IDs, public runner ID/version, task kind, query, clock, and
 optional limits. The proprietary query is file-only and never a command-line
 argument. `runners`, `create`, `get`, `list`, `execute`, `cancel`, `report`,
-and the create-execute-report convenience command `run` are available. The
-command opens the existing tenant/project/workspace and disclosure policy; it
+`recover-expired`, `decide-proposal`, `list-decisions`, `get-decision`,
+`recover-decision`, and the create-execute-report convenience command `run`
+are available. The command opens the existing tenant/project/workspace and
+disclosure policy; it
 does not create scope, start workers or a server, retry a failed runner,
-switch transports, or promote a proposal into review data. It writes bounded
+switch transports, or automatically promote a proposal. Promotion requires a
+separate human-authored decision file and the explicit `decide-proposal`
+command; recovery requires an explicit `recover-decision`. It writes bounded
 JSON (`router_dump_analyzer.private_analysis_cli_result.v1`) to stdout and,
 optionally, `--output`. Exit `0` means success, `2` means `run` reached a
 terminal advisory error rather than a model result, and `1` means command or
 service failure.
+
+`recover-expired --actor ACTOR [--limit N]` is the no-retry crash-recovery
+operation. It affects only the selected tenant/project/workspace and returns
+the runs it terminalized. It never invokes the model; attempts protected by an
+unowned cleanup fence remain pending because a restarted process cannot prove
+the original child was reaped.
 
 Core contains no public-model SDK, endpoint, API-key setting, network
 transport, arbitrary-shell command, or automatic fallback. The adapter from a
@@ -721,10 +863,11 @@ terminated, killed if necessary, and reaped at the deadline. The built-in
 SQLite catalog reopens its durable database in that child and also bounds lock
 and database waits cooperatively. An ambiguous timeout keeps the exact outbox
 retryable, pins its artifact, and degrades health immediately until it is
-reconciled. Custom production publishers must be spawn-picklable (or implement
-pickling that reconstructs their client); trusted embeddings may explicitly
-select synchronous publisher `inline` mode, which has no enforced-cancellation
-claim. The browser
+reconciled. Core never pickles a live custom publisher. Process mode rebuilds
+it from an explicit module-level `publisher_module_target`, or from an
+importable no-argument class; stateful/configured publishers must use the
+explicit target. Trusted embeddings may explicitly select synchronous
+publisher `inline` mode, which has no enforced-cancellation claim. The browser
 follows bounded catalog/review pages, honors the context's `can_write` result,
 and reconciles ambiguous marker/correlation responses by stable client record
 and operation IDs. Annotation pages are bound to one audit watermark; one
@@ -746,12 +889,25 @@ embedding (`allow_manifest_identity=True`) and cannot back durable execution.
 The durable servers and `router-dump-ingest` run plug-in probe and parsing in
 spawned child processes with a bounded deadline (300 seconds by default).
 Timeouts are killed and reaped, become durable import failures, and never
-publish a partial dataset. Plug-ins must therefore be importable and
-spawn-picklable. This protects the control-plane process from a hung or crashed
-plug-in; it does not remove the plug-in's filesystem, network, or host-user
-access. Programmatic embeddings may explicitly choose synchronous `inline`
-execution for trusted local/tests, but it has no timeout or bounded-cancellation
-claim; process mode is the only killable boundary.
+publish a partial dataset. Core sends only an inert scalar/tuple bootstrap,
+then reloads module-level targets or invokes importable no-argument constructors
+inside the child. It never pickles live plug-ins, registries, coordinators,
+decoders, providers, or bound methods. Configured/stateful components use
+explicit process module targets. A non-default programmatic configuration
+digest requires an explicit module-instance plug-in target, with corresponding
+targets for asserted custom coordinator/decoder state; installed/direct-module
+loaders provide their target automatically. The child must reproduce the frozen
+execution identity. That identity includes every non-recursive loader target,
+each target's source-backed module/package and Python-code identity, loader
+mode, package-verification choice, and frozen ingestion/artifact limit used by
+the child, so a target-only or target-file change cannot retain the same plan
+authority. Target bytes are checked before spawn, in the child, after child
+return, and before final revision staging. Dynamic aliases and sourceless
+targets fail closed. This protects the control-plane process from a hung or
+crashed plug-in; it does not remove the plug-in's filesystem, network, or
+host-user access. Programmatic embeddings may explicitly choose synchronous
+`inline` execution for trusted local/tests, but it has no timeout or
+bounded-cancellation claim; process mode is the only killable boundary.
 Across validator descriptors/hooks, capability execution, registry probing,
 trusted inline ingestion, installed loading, runtime/session providers, and
 normalized temporal/topology/route callbacks, the core boundary policy rethrows
@@ -932,7 +1088,7 @@ the demo guide owns the current projection and evidence contract.
 |---|---|
 | [`src/router_dump_analyzer/`](src/router_dump_analyzer) | Protocol-neutral core contracts and engines, the only CLI/FastAPI application and routes, runtime lifecycle, plug-in loaders, and frontend host |
 | [`docs/control-plane.md`](docs/control-plane.md) | Durable catalog, queue, sessions, review overlay, reports, HTTP/CLI use, and operational boundary |
-| [`demo/rsl_demo_plugin/`](demo/rsl_demo_plugin) | The standalone example plug-in: parser and presentation policy, non-web fixture input/session providers, and topology/route fixture policy; no executable or web application |
+| [`demo/rsl_demo_plugin/`](demo/rsl_demo_plugin) | The standalone example plug-ins: one primary parser plus one separately identified private-evidence auxiliary, their exact deployment policy, presentation policy, non-web fixture input/session providers, and topology/route fixture policy; no executable or web application |
 | [`demo/router-state-lab-default.scenario.json`](demo/router-state-lab-default.scenario.json) | Canonical human-authored scenario save consumed by future demo generations |
 | [`demo/rsl_demo_generator/`](demo/rsl_demo_generator) | The separate standard-library scenario adapter and scalable mock-dump materializer, with an explicit one-way dependency on the example plug-in's declared fixture semantics |
 | [`frontend/`](frontend) | Core-owned HTML pages, JavaScript, CSS, page manifest, and dependency-free checks |
@@ -948,7 +1104,7 @@ the demo guide owns the current projection and evidence contract.
 | Document | Use it for |
 |---|---|
 | [Architecture and library decisions](docs/architecture.md) | System boundaries, temporal model, reconstruction, performance, and security |
-| [Private AI analysis boundary](docs/private-ai-analysis.md) | Local-only model transport, default-deny workspace disclosure policy, full-fidelity private evidence, advisory provenance, and promotion rules |
+| [Private AI analysis boundary](docs/private-ai-analysis.md) | Local-only model transport, default-deny workspace disclosure policy, full-fidelity private evidence, advisory provenance, and explicit human proposal-review rules |
 | [Durable control plane](docs/control-plane.md) | Local durable ingestion, catalogs, sessions, annotations, reports, routes, and operations |
 | [API payload contract](docs/api-contract.md) | External state, topology, history, timeline, correlation, and route APIs |
 | [Plug-in author quickstart](docs/plugin-author-quickstart.md) | A linear, copy-paste path to a first plug-in |

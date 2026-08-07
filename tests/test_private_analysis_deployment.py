@@ -53,7 +53,8 @@ def _registration(
     )
     return PrivateAnalysisRunnerRegistration(
         runner=runner,
-        tool_service_factory=lambda _request: None,  # type: ignore[arg-type]
+        trusted_inline_tool_service_factory=lambda _request: None,  # type: ignore[arg-type]
+        custom_evidence_service_digest="sha256:" + "f" * 64,
     )
 
 

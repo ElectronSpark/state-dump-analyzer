@@ -69,6 +69,7 @@ from .plugin_api import (
     SourceRecordEmission,
     SourceRecordRef,
     StatusPerspectiveRef,
+    TimelineTimeBasis,
     TraceDecoder,
     UnknownField,
     validate_plugin_diagnostic,
@@ -144,6 +145,8 @@ class _IngestionManifestSnapshot:
     capabilities: frozenset[PluginCapability | str]
     reconstruction_default: Any
     forwarding_ir_versions: tuple[str, ...]
+    timeline_time_basis: TimelineTimeBasis
+    timeline_clock_domain: str | None
     _supports: Callable[[PluginCapability | str], Any] = field(
         repr=False,
         compare=False,
@@ -249,6 +252,8 @@ class _IngestionPluginSnapshot:
                 capabilities=manifest.capabilities,
                 reconstruction_default=manifest.reconstruction_default,
                 forwarding_ir_versions=manifest.forwarding_ir_versions,
+                timeline_time_basis=manifest.timeline_time_basis,
+                timeline_clock_domain=manifest.timeline_clock_domain,
                 _supports=supports,
             )
 
@@ -1549,6 +1554,8 @@ def _build_dataset(
     events: Sequence[DomainEvent],
     source_records: Sequence[_ParsedSourceRecord],
     diagnostics: Sequence[PluginDiagnostic],
+    timeline_time_basis: TimelineTimeBasis,
+    timeline_clock_domain: str | None,
 ) -> dict[str, Any]:
     resources_by_key: dict[ResourceKey, dict[str, Any]] = {}
     snapshots_by_key: dict[ResourceKey, list[SnapshotObservation]] = defaultdict(list)
@@ -1578,6 +1585,26 @@ def _build_dataset(
     state_intervals: list[dict[str, Any]] = []
     lifecycle_intervals: list[dict[str, Any]] = []
     time_values: list[int] = []
+
+    def add_observation_time_bounds(
+        timestamp_ns: int,
+        uncertainty_ns: int | None,
+    ) -> None:
+        if (
+            timeline_time_basis is TimelineTimeBasis.ABSOLUTE_UNIX_NS
+            and timestamp_ns < 0
+        ):
+            raise IngestionError(
+                "absolute-unix plug-in timelines cannot contain negative timestamps"
+            )
+        uncertainty = uncertainty_ns or 0
+        minimum = (
+            0
+            if timeline_time_basis is TimelineTimeBasis.ABSOLUTE_UNIX_NS
+            else MIN_TIMESTAMP_NS
+        )
+        time_values.append(max(minimum, timestamp_ns - uncertainty))
+        time_values.append(min(MAX_TIMESTAMP_NS, timestamp_ns + uncertainty))
 
     for resource in sorted(
         resources_by_key,
@@ -1820,7 +1847,10 @@ def _build_dataset(
         ),
     ):
         if event.timestamp_ns is not None:
-            time_values.append(event.timestamp_ns)
+            add_observation_time_bounds(
+                event.timestamp_ns,
+                event.timestamp_uncertainty_ns,
+            )
         normalized_events.append(
             {
                 "event_uid": event.event_uid.hex(),
@@ -1872,7 +1902,10 @@ def _build_dataset(
         ordinal = parsed_record.output_ordinal
         emission = parsed_record.emission
         if emission.timestamp_ns is not None:
-            time_values.append(emission.timestamp_ns)
+            add_observation_time_bounds(
+                emission.timestamp_ns,
+                emission.timestamp_uncertainty_ns,
+            )
         matched = [value.hex() for value in emission.matched_event_uids]
         if emission.matched_event_uid is not None:
             matched.insert(0, emission.matched_event_uid.hex())
@@ -1960,6 +1993,20 @@ def _build_dataset(
     layer_names = sorted({resource.layer for resource in resources_by_key})
     timeline_start = min(time_values) if time_values else 0
     timeline_end = max(time_values) if time_values else timeline_start
+    if (
+        timeline_time_basis is TimelineTimeBasis.ABSOLUTE_UNIX_NS
+        and timeline_start < 0
+    ):
+        raise IngestionError(
+            "absolute-unix plug-in timelines cannot contain negative timestamps"
+        )
+    if (
+        timeline_time_basis is TimelineTimeBasis.REVISION_START_RELATIVE_NS
+        and timeline_end - timeline_start > MAX_TIMESTAMP_NS
+    ):
+        raise IngestionError(
+            "revision-relative timeline span exceeds signed 64-bit nanoseconds"
+        )
     matched_event_uids = {
         event_uid
         for record in normalized_source_records
@@ -2036,6 +2083,8 @@ def _build_dataset(
             "source_record_count": len(normalized_source_records),
             "timeline_start_ns": str(timeline_start),
             "timeline_end_ns": str(timeline_end),
+            "timeline_time_basis": timeline_time_basis.value,
+            "timeline_clock_domain": timeline_clock_domain,
             "capture_ns": str(timeline_end),
             "history_mode": "embedded-history",
             "historical_state_mode": "embedded",
@@ -2170,6 +2219,8 @@ def _fingerprint(
                 ),
                 "reconstruction_default": (manifest.reconstruction_default.value),
                 "forwarding_ir_versions": list(manifest.forwarding_ir_versions),
+                "timeline_time_basis": manifest.timeline_time_basis.value,
+                "timeline_clock_domain": manifest.timeline_clock_domain,
             }
         ).encode("utf-8")
     )
@@ -2839,6 +2890,8 @@ class IngestionCoordinator:
                 events=events,
                 source_records=source_records,
                 diagnostics=diagnostics,
+                timeline_time_basis=selected.manifest.timeline_time_basis,
+                timeline_clock_domain=selected.manifest.timeline_clock_domain,
             )
 
         revision_id, dataset = _plugin_execution_boundary(

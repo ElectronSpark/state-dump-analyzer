@@ -24,18 +24,25 @@ from ..canonical import (
 from ..contract_validation import validate_bounded_json_value
 from ._wire import (
     SealedContractValue,
+    bounded_canonical_decimal_integer,
     exact_contract_version,
     exact_json_object,
     reject_duplicate_json_object_pairs,
     strict_string_enum,
 )
 from .evidence import (
+    EVIDENCE_REFERENCE_VERSION,
     MAX_EVIDENCE_SUBJECT_KIND_CHARACTERS,
+    EvidenceAuthority,
     EvidenceEnvelope,
+    EvidenceFactProvenance,
     EvidenceKind,
     EvidenceReference,
+    EvidenceTimeBasis,
+    EvidenceTimeRange,
     evidence_envelope_dict,
     evidence_envelope_from_dict,
+    evidence_locator_digest,
     evidence_reference_dict,
     evidence_reference_from_dict,
     validate_evidence_identifier,
@@ -43,16 +50,16 @@ from .evidence import (
 )
 
 PRIVATE_ANALYSIS_TOOL_DEFINITION_VERSION: Final = (
-    "router_dump_analyzer.private_analysis.tool_definition.v1"
+    "router_dump_analyzer.private_analysis.tool_definition.v2"
 )
 PRIVATE_ANALYSIS_TOOL_CATALOG_VERSION: Final = (
-    "router_dump_analyzer.private_analysis.tool_catalog.v1"
+    "router_dump_analyzer.private_analysis.tool_catalog.v2"
 )
 PRIVATE_ANALYSIS_TOOL_BINDING_VERSION: Final = (
-    "router_dump_analyzer.private_analysis.tool_binding.v1"
+    "router_dump_analyzer.private_analysis.tool_binding.v2"
 )
 PRIVATE_ANALYSIS_QUERY_ARGUMENTS_VERSION: Final = (
-    "router_dump_analyzer.private_analysis.query_evidence.arguments.v1"
+    "router_dump_analyzer.private_analysis.query_evidence.arguments.v2"
 )
 PRIVATE_ANALYSIS_QUERY_PAGE_VERSION: Final = (
     "router_dump_analyzer.private_analysis.query_evidence.page.v1"
@@ -63,17 +70,23 @@ PRIVATE_ANALYSIS_READ_ARGUMENTS_VERSION: Final = (
 PRIVATE_ANALYSIS_READ_RESULT_VERSION: Final = (
     "router_dump_analyzer.private_analysis.read_evidence.result.v1"
 )
+PRIVATE_ANALYSIS_CAPABILITY_ARGUMENTS_VERSION: Final = (
+    "router_dump_analyzer.private_analysis.analyze_evidence.arguments.v1"
+)
+PRIVATE_ANALYSIS_CAPABILITY_RESULT_VERSION: Final = (
+    "router_dump_analyzer.private_analysis.analyze_evidence.result.v1"
+)
 PRIVATE_ANALYSIS_CURSOR_VERSION: Final = (
     "router_dump_analyzer.private_analysis.query_evidence.cursor.v1"
 )
 PRIVATE_ANALYSIS_TOOL_CALL_VERSION: Final = (
-    "router_dump_analyzer.private_analysis.tool_call.v1"
+    "router_dump_analyzer.private_analysis.tool_call.v2"
 )
 PRIVATE_ANALYSIS_TOOL_RESULT_VERSION: Final = (
-    "router_dump_analyzer.private_analysis.tool_result.v1"
+    "router_dump_analyzer.private_analysis.tool_result.v2"
 )
 PRIVATE_ANALYSIS_TOOL_ERROR_VERSION: Final = (
-    "router_dump_analyzer.private_analysis.tool_error.v1"
+    "router_dump_analyzer.private_analysis.tool_error.v2"
 )
 PRIVATE_ANALYSIS_EVIDENCE_SNAPSHOT_VERSION: Final = (
     "router_dump_analyzer.private_analysis.evidence_snapshot.v1"
@@ -85,6 +98,14 @@ MAX_PRIVATE_ANALYSIS_QUERY_FILTER_ITEMS: Final = 64
 MAX_PRIVATE_ANALYSIS_QUERY_REFERENCES: Final = MAX_PRIVATE_ANALYSIS_QUERY_PAGE_SIZE
 MAX_PRIVATE_ANALYSIS_SNAPSHOT_REFERENCES: Final = 100_000
 MAX_PRIVATE_ANALYSIS_TOOL_IDENTIFIER_CHARACTERS: Final = 256
+MAX_PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_ITEMS: Final = 256
+MAX_PRIVATE_ANALYSIS_CAPABILITY_OBSERVATIONS: Final = 64
+PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_SUBJECT_KIND: Final = "evidence_analysis"
+PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_PAYLOAD_SCHEMA: Final = (
+    "router_dump_analyzer.plugin.evidence_analysis.result.v1"
+)
+_MIN_SIGNED_NS: Final = -(1 << 63)
+_MAX_SIGNED_NS: Final = (1 << 63) - 1
 
 
 class PrivateAnalysisToolName(StrEnum):
@@ -92,11 +113,37 @@ class PrivateAnalysisToolName(StrEnum):
 
     QUERY_EVIDENCE = "query_evidence"
     READ_EVIDENCE = "read_evidence"
+    ANALYZE_EVIDENCE = "analyze_evidence"
+
+
+class PrivateAnalysisCapabilityIntent(StrEnum):
+    """Closed model-visible intents mapped to plug-in evidence analysis."""
+
+    ROUTE_TRACE = "route_trace"
+    TRACE_CORRELATION = "trace_correlation"
+    EVIDENCE_CORRELATION = "evidence_correlation"
+    EVIDENCE_INTERPRETATION = "evidence_interpretation"
+
+
+class _PrivateAnalysisEvidenceQuality(StrEnum):
+    """Closed wire vocabulary mirrored at the plug-in adapter boundary.
+
+    The inert private-analysis package must not import the executable plug-in
+    API merely to validate serialized result text.  The trusted adapter maps
+    the public ``Quality`` enum to these exact wire values before a result
+    reaches this package.
+    """
+
+    EXACT = "exact"
+    BEST_EFFORT = "best_effort"
+    AMBIGUOUS = "ambiguous"
+    UNKNOWN = "unknown"
 
 
 class PrivateAnalysisToolResultKind(StrEnum):
     QUERY_PAGE = "query_page"
     EVIDENCE_ENVELOPE = "evidence_envelope"
+    DERIVED_EVIDENCE_ENVELOPE = "derived_evidence_envelope"
 
 
 class PrivateAnalysisToolErrorCode(StrEnum):
@@ -106,6 +153,17 @@ class PrivateAnalysisToolErrorCode(StrEnum):
     EVIDENCE_NOT_FOUND = "evidence_not_found"
     EVIDENCE_UNAVAILABLE = "evidence_unavailable"
     BUDGET_EXCEEDED = "budget_exceeded"
+    CAPABILITY_UNAVAILABLE = "capability_unavailable"
+
+
+class PrivateAnalysisEvidenceCursorInvalidError(ValueError):
+    """A trusted query provider rejected an invalid or evicted cursor.
+
+    This is the only callback failure that the generic tool service projects
+    as ``cursor_invalid``.  All other provider failures remain retryable
+    evidence-unavailable errors, even when the call happened to carry a
+    syntactically valid cursor.
+    """
 
 
 _TOOL_CONTRACT_MATRIX: Final = {
@@ -117,10 +175,15 @@ _TOOL_CONTRACT_MATRIX: Final = {
         PRIVATE_ANALYSIS_READ_ARGUMENTS_VERSION,
         PRIVATE_ANALYSIS_READ_RESULT_VERSION,
     ),
+    PrivateAnalysisToolName.ANALYZE_EVIDENCE: (
+        PRIVATE_ANALYSIS_CAPABILITY_ARGUMENTS_VERSION,
+        PRIVATE_ANALYSIS_CAPABILITY_RESULT_VERSION,
+    ),
 }
 _TOOL_ORDER: Final = (
     PrivateAnalysisToolName.QUERY_EVIDENCE,
     PrivateAnalysisToolName.READ_EVIDENCE,
+    PrivateAnalysisToolName.ANALYZE_EVIDENCE,
 )
 _RETRYABLE_TOOL_ERRORS: Final = frozenset(
     {PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE}
@@ -137,6 +200,9 @@ _SAFE_TOOL_ERROR_MESSAGES: Final = {
     ),
     PrivateAnalysisToolErrorCode.BUDGET_EXCEEDED: (
         "Private analysis tool budget was exceeded."
+    ),
+    PrivateAnalysisToolErrorCode.CAPABILITY_UNAVAILABLE: (
+        "Private analysis plug-in evidence analysis is unavailable."
     ),
 }
 
@@ -227,6 +293,26 @@ def _load_canonical_json(value: object, label: str) -> dict[str, Any]:
     return parsed
 
 
+def _capability_parameters(value: object) -> dict[str, Any]:
+    parsed = _load_canonical_json(value, "capability parameters")
+    snapshot = validate_bounded_json_value(
+        parsed,
+        "capability parameters",
+        maximum_depth=8,
+        maximum_container_items=256,
+        maximum_units=1_024,
+        maximum_atom_units=8_192,
+        maximum_integer_bits=53,
+        exact_types=True,
+        allow_exact_tuples=False,
+        maximum_encoded_bytes=262_144,
+        snapshot=True,
+    )
+    if type(snapshot) is not dict:
+        raise TypeError("capability parameters must be an exact dictionary")
+    return snapshot
+
+
 @dataclass(frozen=True, slots=True)
 class PrivateAnalysisToolDefinition(SealedContractValue):
     name: PrivateAnalysisToolName
@@ -291,7 +377,9 @@ class PrivateAnalysisToolCatalog(SealedContractValue):
         )
         items = _exact_tuple(self.tools, "tools", len(_TOOL_ORDER))
         if len(items) != len(_TOOL_ORDER):
-            raise ValueError("tool catalog must contain exactly two tools")
+            raise ValueError(
+                f"tool catalog must contain exactly {len(_TOOL_ORDER)} tools"
+            )
         detached: list[PrivateAnalysisToolDefinition] = []
         for expected_name, item in zip(_TOOL_ORDER, items, strict=True):
             if type(item) is not PrivateAnalysisToolDefinition:
@@ -411,6 +499,10 @@ class PrivateAnalysisQueryArguments(SealedContractValue):
     node_ids: tuple[str, ...] = ()
     producer_ids: tuple[str, ...] = ()
     subject_kinds: tuple[str, ...] = ()
+    time_basis: EvidenceTimeBasis | None = None
+    time_start_ns: int | None = None
+    time_end_ns: int | None = None
+    time_clock_domain: str | None = None
     page_size: int = 128
     cursor: PrivateAnalysisCursor | None = None
     contract_version: str = PRIVATE_ANALYSIS_QUERY_ARGUMENTS_VERSION
@@ -439,6 +531,31 @@ class PrivateAnalysisQueryArguments(SealedContractValue):
         object.__setattr__(self, "node_ids", node_ids)
         object.__setattr__(self, "producer_ids", producer_ids)
         object.__setattr__(self, "subject_kinds", subject_kinds)
+        time_values = (
+            self.time_basis,
+            self.time_start_ns,
+            self.time_end_ns,
+            self.time_clock_domain,
+        )
+        if all(value is None for value in time_values):
+            pass
+        elif (
+            type(self.time_basis) is not EvidenceTimeBasis
+            or type(self.time_start_ns) is not int
+            or type(self.time_end_ns) is not int
+        ):
+            raise ValueError(
+                "time_basis, time_start_ns, and time_end_ns must be supplied together"
+            )
+        else:
+            # Reuse the evidence coordinate validator so query windows and
+            # reference intervals have identical signedness/domain semantics.
+            EvidenceTimeRange(
+                basis=self.time_basis,
+                start_ns=self.time_start_ns,
+                end_ns=self.time_end_ns,
+                clock_domain=self.time_clock_domain,
+            )
         if (
             type(self.page_size) is not int
             or not 1 <= self.page_size <= MAX_PRIVATE_ANALYSIS_QUERY_PAGE_SIZE
@@ -462,6 +579,32 @@ class PrivateAnalysisQueryArguments(SealedContractValue):
             object.__setattr__(self, "query_digest", expected)
         if cursor is not None and cursor.query_digest != expected:
             raise ValueError("cursor and query arguments disagree")
+
+
+@dataclass(frozen=True, slots=True)
+class PrivateAnalysisEvidenceQueryPage:
+    """One provider page from an immutable candidate snapshot."""
+
+    snapshot_digest: str
+    references: tuple[EvidenceReference, ...]
+    has_more: bool
+
+    def __post_init__(self) -> None:
+        _prefixed_sha256(self.snapshot_digest, "snapshot_digest")
+        references = _exact_tuple(
+            self.references,
+            "references",
+            MAX_PRIVATE_ANALYSIS_QUERY_PAGE_SIZE,
+        )
+        if any(type(item) is not EvidenceReference for item in references):
+            raise TypeError("references must contain EvidenceReference values")
+        digests = tuple(item.reference_digest for item in references)
+        if tuple(sorted(digests)) != digests or len(set(digests)) != len(digests):
+            raise ValueError("references must be unique and canonically ordered")
+        if type(self.has_more) is not bool:
+            raise TypeError("has_more must be a boolean")
+        if self.has_more and not references:
+            raise ValueError("an empty query page cannot continue")
 
 
 @dataclass(frozen=True, slots=True)
@@ -493,8 +636,80 @@ class PrivateAnalysisReadArguments(SealedContractValue):
             object.__setattr__(self, "arguments_digest", expected)
 
 
+@dataclass(frozen=True, slots=True)
+class PrivateAnalysisCapabilityArguments(SealedContractValue):
+    """One exact, bounded request for plug-in interpretation of evidence.
+
+    The arguments contain no plug-in object, executable name, filesystem
+    location, model configuration, network endpoint, or mutation handle.
+    ``revision_id`` selects one immutable request member. The trusted host,
+    never the model, resolves that member's exact configured provider.
+    """
+
+    node_id: str
+    revision_id: str
+    intent: PrivateAnalysisCapabilityIntent
+    parent_reference_digests: tuple[str, ...]
+    parameters_json: str = "{}"
+    max_observations: int = MAX_PRIVATE_ANALYSIS_CAPABILITY_OBSERVATIONS
+    contract_version: str = PRIVATE_ANALYSIS_CAPABILITY_ARGUMENTS_VERSION
+    arguments_digest: str = ""
+
+    def __post_init__(self) -> None:
+        exact_contract_version(
+            self.contract_version,
+            PRIVATE_ANALYSIS_CAPABILITY_ARGUMENTS_VERSION,
+            "analyze-evidence arguments",
+        )
+        validate_evidence_identifier(self.node_id, "node_id")
+        validate_evidence_identifier(self.revision_id, "revision_id")
+        if type(self.intent) is not PrivateAnalysisCapabilityIntent:
+            raise TypeError("intent must be PrivateAnalysisCapabilityIntent")
+        digests = _exact_tuple(
+            self.parent_reference_digests,
+            "parent_reference_digests",
+            MAX_PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_ITEMS,
+        )
+        if not digests:
+            raise ValueError("analyze_evidence requires at least one evidence item")
+        for digest in digests:
+            _prefixed_sha256(digest, "parent_reference_digest")
+        if tuple(sorted(digests)) != digests or len(set(digests)) != len(digests):
+            raise ValueError(
+                "parent_reference_digests must be unique and canonically ordered"
+            )
+        _capability_parameters(self.parameters_json)
+        if (
+            type(self.max_observations) is not int
+            or not 1
+            <= self.max_observations
+            <= MAX_PRIVATE_ANALYSIS_CAPABILITY_OBSERVATIONS
+        ):
+            raise ValueError(
+                "max_observations must be between 1 and "
+                f"{MAX_PRIVATE_ANALYSIS_CAPABILITY_OBSERVATIONS}"
+            )
+        if type(self.arguments_digest) is not str:
+            raise TypeError("arguments_digest must be a string")
+        expected = "sha256:" + strict_canonical_json_sha256(
+            _capability_arguments_payload(self)
+        )
+        if self.arguments_digest:
+            _prefixed_sha256(self.arguments_digest, "arguments_digest")
+            if self.arguments_digest != expected:
+                raise ValueError("analyze-evidence arguments digest does not match")
+        else:
+            object.__setattr__(self, "arguments_digest", expected)
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return _capability_parameters(self.parameters_json)
+
+
 PrivateAnalysisToolArguments = (
-    PrivateAnalysisQueryArguments | PrivateAnalysisReadArguments
+    PrivateAnalysisQueryArguments
+    | PrivateAnalysisReadArguments
+    | PrivateAnalysisCapabilityArguments
 )
 
 
@@ -518,6 +733,10 @@ def _detached_query_arguments(value: object) -> PrivateAnalysisQueryArguments:
         node_ids=value.node_ids,
         producer_ids=value.producer_ids,
         subject_kinds=value.subject_kinds,
+        time_basis=value.time_basis,
+        time_start_ns=value.time_start_ns,
+        time_end_ns=value.time_end_ns,
+        time_clock_domain=value.time_clock_domain,
         page_size=value.page_size,
         cursor=value.cursor,
         contract_version=value.contract_version,
@@ -530,6 +749,23 @@ def _detached_read_arguments(value: object) -> PrivateAnalysisReadArguments:
         raise TypeError("arguments must be PrivateAnalysisReadArguments")
     return PrivateAnalysisReadArguments(
         evidence_reference_digest=value.evidence_reference_digest,
+        contract_version=value.contract_version,
+        arguments_digest=value.arguments_digest,
+    )
+
+
+def _detached_capability_arguments(
+    value: object,
+) -> PrivateAnalysisCapabilityArguments:
+    if type(value) is not PrivateAnalysisCapabilityArguments:
+        raise TypeError("arguments must be PrivateAnalysisCapabilityArguments")
+    return PrivateAnalysisCapabilityArguments(
+        node_id=value.node_id,
+        revision_id=value.revision_id,
+        intent=value.intent,
+        parent_reference_digests=value.parent_reference_digests,
+        parameters_json=value.parameters_json,
+        max_observations=value.max_observations,
         contract_version=value.contract_version,
         arguments_digest=value.arguments_digest,
     )
@@ -563,8 +799,10 @@ class PrivateAnalysisToolCall(SealedContractValue):
                     raise ValueError("cursor belongs to another request")
                 if arguments.cursor.tool_catalog_digest != binding.tool_catalog_digest:
                     raise ValueError("cursor belongs to another tool catalog")
-        else:
+        elif binding.name is PrivateAnalysisToolName.READ_EVIDENCE:
             arguments = _detached_read_arguments(self.arguments)
+        else:
+            arguments = _detached_capability_arguments(self.arguments)
         object.__setattr__(self, "binding", binding)
         object.__setattr__(self, "arguments", arguments)
         if type(self.call_digest) is not str:
@@ -606,7 +844,7 @@ def _reference_matches_query(
     reference: EvidenceReference,
     arguments: PrivateAnalysisQueryArguments,
 ) -> bool:
-    return (
+    matches = (
         (not arguments.evidence_kinds or reference.kind in arguments.evidence_kinds)
         and (not arguments.node_ids or reference.revision.node_id in arguments.node_ids)
         and (
@@ -618,6 +856,161 @@ def _reference_matches_query(
             or reference.subject_kind in arguments.subject_kinds
         )
     )
+    if not matches or arguments.time_basis is None:
+        return matches
+    time_range = reference.time_range
+    if not (
+        time_range.basis is arguments.time_basis
+        and time_range.clock_domain == arguments.time_clock_domain
+        and time_range.start_ns is not None
+        and time_range.end_ns is not None
+    ):
+        return False
+    uncertainty = time_range.uncertainty_ns or 0
+    minimum = (
+        0 if time_range.basis is EvidenceTimeBasis.ABSOLUTE_UNIX_NS else _MIN_SIGNED_NS
+    )
+    start = max(minimum, time_range.start_ns - uncertainty)
+    end = min(_MAX_SIGNED_NS, time_range.end_ns + uncertainty)
+    return start <= arguments.time_end_ns and end >= arguments.time_start_ns
+
+
+def _validate_capability_result_payload(
+    arguments: PrivateAnalysisCapabilityArguments,
+    payload: object,
+) -> None:
+    item = exact_json_object(
+        payload,
+        "derived evidence payload",
+        {
+            "arguments_digest",
+            "intent",
+            "parent_reference_digests",
+            "observations",
+        },
+    )
+    if item["arguments_digest"] != arguments.arguments_digest:
+        raise ValueError("derived evidence arguments digest does not match")
+    if item["intent"] != arguments.intent.value:
+        raise ValueError("derived evidence intent does not match")
+    parents = _wire_list(
+        item["parent_reference_digests"],
+        "derived evidence parent_reference_digests",
+        MAX_PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_ITEMS,
+    )
+    if tuple(parents) != arguments.parent_reference_digests:
+        raise ValueError("derived evidence parent references do not match")
+    observations = _wire_list(
+        item["observations"],
+        "derived evidence observations",
+        arguments.max_observations,
+    )
+    observation_ids: list[str] = []
+    admitted = frozenset(arguments.parent_reference_digests)
+    for index, raw_observation in enumerate(observations):
+        label = f"derived evidence observations[{index}]"
+        observation = exact_json_object(
+            raw_observation,
+            label,
+            {
+                "observation_id",
+                "category",
+                "summary",
+                "cited_reference_digests",
+                "quality",
+                "details",
+            },
+        )
+        observation_id = validate_evidence_identifier(
+            observation["observation_id"],
+            f"{label}.observation_id",
+        )
+        validate_evidence_identifier(
+            observation["category"],
+            f"{label}.category",
+        )
+        summary = observation["summary"]
+        if (
+            type(summary) is not str
+            or not 1 <= len(summary) <= 8_192
+            or "\x00" in summary
+        ):
+            raise ValueError(f"{label}.summary is invalid")
+        citations = _wire_list(
+            observation["cited_reference_digests"],
+            f"{label}.cited_reference_digests",
+            MAX_PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_ITEMS,
+        )
+        if not citations:
+            raise ValueError(f"{label} requires at least one citation")
+        for digest in citations:
+            _prefixed_sha256(digest, f"{label}.citation")
+        if (
+            tuple(sorted(citations)) != tuple(citations)
+            or len(set(citations)) != len(citations)
+        ):
+            raise ValueError(f"{label}.citations must be unique and ordered")
+        if any(digest not in admitted for digest in citations):
+            raise ValueError(f"{label} cites evidence outside its request")
+        strict_string_enum(
+            _PrivateAnalysisEvidenceQuality,
+            observation["quality"],
+            f"{label}.quality",
+        )
+        details = validate_bounded_json_value(
+            observation["details"],
+            f"{label}.details",
+            maximum_depth=12,
+            maximum_container_items=512,
+            maximum_units=2_048,
+            maximum_atom_units=32_768,
+            maximum_integer_bits=53,
+            exact_types=True,
+            allow_exact_tuples=False,
+            maximum_encoded_bytes=524_288,
+            snapshot=True,
+        )
+        if type(details) is not dict:
+            raise TypeError(f"{label}.details must be an exact dictionary")
+        observation_ids.append(observation_id)
+    if (
+        observation_ids != sorted(observation_ids)
+        or len(set(observation_ids)) != len(observation_ids)
+    ):
+        raise ValueError("derived evidence observation IDs must be unique and ordered")
+
+
+def _validate_capability_result_envelope(
+    arguments: PrivateAnalysisCapabilityArguments,
+    envelope: EvidenceEnvelope,
+) -> None:
+    reference = envelope.reference
+    if reference.contract_version != EVIDENCE_REFERENCE_VERSION:
+        raise ValueError("derived evidence requires the current reference contract")
+    if (
+        reference.kind is not EvidenceKind.PLUGIN_CAPABILITY_RESULT
+        or reference.subject_kind
+        != PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_SUBJECT_KIND
+        or reference.payload_schema
+        != PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_PAYLOAD_SCHEMA
+        or reference.fact_provenance is not EvidenceFactProvenance.PLUGIN_ANALYZED
+        or reference.producer.authority is not EvidenceAuthority.PLUGIN_INFERRED
+        or reference.producer.plugin_instance_id is None
+        or reference.producer.plugin_capability != "evidence_analysis"
+        or reference.time_range.basis is not EvidenceTimeBasis.UNKNOWN
+    ):
+        raise ValueError("derived evidence has invalid capability provenance")
+    if (
+        reference.revision.revision_id != arguments.revision_id
+        or reference.revision.node_id != arguments.node_id
+        or reference.locator_digest
+        != evidence_locator_digest(
+            PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_SUBJECT_KIND,
+            {"arguments_digest": arguments.arguments_digest},
+        )
+    ):
+        raise ValueError("derived evidence does not match its capability request")
+    _validate_capability_result_payload(arguments, envelope.payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -692,7 +1085,7 @@ class PrivateAnalysisToolResult(SealedContractValue):
                     raise ValueError("next cursor belongs to another snapshot")
                 if next_cursor.after_reference_digest != reference_digests[-1]:
                     raise ValueError("next cursor does not follow the query page")
-        else:
+        elif self.kind is PrivateAnalysisToolResultKind.EVIDENCE_ENVELOPE:
             if call.binding.name is not PrivateAnalysisToolName.READ_EVIDENCE:
                 raise ValueError("evidence result requires read_evidence")
             if type(call.arguments) is not PrivateAnalysisReadArguments:
@@ -708,6 +1101,26 @@ class PrivateAnalysisToolResult(SealedContractValue):
                 != call.arguments.evidence_reference_digest
             ):
                 raise ValueError("read result does not match the requested reference")
+        else:
+            if call.binding.name is not PrivateAnalysisToolName.ANALYZE_EVIDENCE:
+                raise ValueError(
+                    "derived-evidence result requires analyze_evidence"
+                )
+            if type(call.arguments) is not PrivateAnalysisCapabilityArguments:
+                raise TypeError("derived-evidence result call has invalid arguments")
+            if self.snapshot_digest is not None:
+                raise ValueError(
+                    "derived-evidence result must not contain a snapshot digest"
+                )
+            if detached_references or next_cursor is not None:
+                raise ValueError(
+                    "derived-evidence result must not contain query-page values"
+                )
+            if envelope is None:
+                raise ValueError(
+                    "derived-evidence result requires an evidence envelope"
+                )
+            _validate_capability_result_envelope(call.arguments, envelope)
         object.__setattr__(self, "call", call)
         object.__setattr__(self, "references", detached_references)
         object.__setattr__(self, "next_cursor", next_cursor)
@@ -870,6 +1283,70 @@ def make_private_analysis_query_page(
     )
 
 
+def make_private_analysis_query_page_from_snapshot(
+    call: PrivateAnalysisToolCall,
+    page_references: tuple[EvidenceReference, ...],
+    *,
+    snapshot_digest: str,
+    has_more: bool,
+) -> PrivateAnalysisToolResult:
+    """Build one page from an already-frozen, keyset-addressed snapshot.
+
+    Unlike :func:`make_private_analysis_query_page`, this helper never receives
+    or reconstructs the complete candidate set.  The trusted query adapter
+    supplies the snapshot digest and whether a later key exists.
+    """
+
+    call = _detached_call(call)
+    if call.binding.name is not PrivateAnalysisToolName.QUERY_EVIDENCE:
+        raise ValueError("query paging requires query_evidence")
+    if type(call.arguments) is not PrivateAnalysisQueryArguments:
+        raise TypeError("query call has invalid arguments")
+    _prefixed_sha256(snapshot_digest, "snapshot_digest")
+    if type(has_more) is not bool:
+        raise TypeError("has_more must be a boolean")
+    raw_references = _exact_tuple(
+        page_references,
+        "page_references",
+        MAX_PRIVATE_ANALYSIS_QUERY_REFERENCES,
+    )
+    references = tuple(_detached_reference(item) for item in raw_references)
+    digests = tuple(item.reference_digest for item in references)
+    if tuple(sorted(digests)) != digests or len(set(digests)) != len(digests):
+        raise ValueError("page_references must be unique and canonically ordered")
+    if len(references) > call.arguments.page_size:
+        raise ValueError("page_references exceed the requested page_size")
+    if any(
+        not _reference_matches_query(reference, call.arguments)
+        for reference in references
+    ):
+        raise ValueError("page_references contain an item outside the query")
+    cursor = call.arguments.cursor
+    if cursor is not None:
+        if cursor.snapshot_digest != snapshot_digest:
+            raise ValueError("cursor belongs to another evidence snapshot")
+        if any(digest <= cursor.after_reference_digest for digest in digests):
+            raise ValueError("page does not follow its input cursor")
+    if has_more and not references:
+        raise ValueError("an empty query page cannot continue")
+    next_cursor = (
+        make_private_analysis_cursor(
+            call,
+            snapshot_digest=snapshot_digest,
+            after_reference_digest=references[-1].reference_digest,
+        )
+        if has_more
+        else None
+    )
+    return PrivateAnalysisToolResult(
+        call=call,
+        kind=PrivateAnalysisToolResultKind.QUERY_PAGE,
+        snapshot_digest=snapshot_digest,
+        references=references,
+        next_cursor=next_cursor,
+    )
+
+
 def _tool_definition_payload(
     value: PrivateAnalysisToolDefinition,
 ) -> dict[str, object]:
@@ -966,6 +1443,12 @@ def _query_fingerprint_payload(
         "node_ids": list(value.node_ids),
         "producer_ids": list(value.producer_ids),
         "subject_kinds": list(value.subject_kinds),
+        "time_basis": None if value.time_basis is None else value.time_basis.value,
+        "time_start_ns": (
+            None if value.time_start_ns is None else str(value.time_start_ns)
+        ),
+        "time_end_ns": None if value.time_end_ns is None else str(value.time_end_ns),
+        "time_clock_domain": value.time_clock_domain,
         "page_size": value.page_size,
     }
 
@@ -1001,11 +1484,36 @@ def private_analysis_read_arguments_dict(
     return result
 
 
+def _capability_arguments_payload(
+    value: PrivateAnalysisCapabilityArguments,
+) -> dict[str, object]:
+    return {
+        "contract_version": value.contract_version,
+        "node_id": value.node_id,
+        "revision_id": value.revision_id,
+        "intent": value.intent.value,
+        "parent_reference_digests": list(value.parent_reference_digests),
+        "parameters": value.parameters,
+        "max_observations": value.max_observations,
+    }
+
+
+def private_analysis_capability_arguments_dict(
+    value: PrivateAnalysisCapabilityArguments,
+) -> dict[str, object]:
+    value = _detached_capability_arguments(value)
+    result = _capability_arguments_payload(value)
+    result["arguments_digest"] = value.arguments_digest
+    return result
+
+
 def _tool_call_payload(value: PrivateAnalysisToolCall) -> dict[str, object]:
     if isinstance(value.arguments, PrivateAnalysisQueryArguments):
         arguments = private_analysis_query_arguments_dict(value.arguments)
     elif isinstance(value.arguments, PrivateAnalysisReadArguments):
         arguments = private_analysis_read_arguments_dict(value.arguments)
+    elif isinstance(value.arguments, PrivateAnalysisCapabilityArguments):
+        arguments = private_analysis_capability_arguments_dict(value.arguments)
     else:
         raise TypeError("tool call contains unsupported arguments")
     return {
@@ -1033,7 +1541,11 @@ def _tool_result_payload(value: PrivateAnalysisToolResult) -> dict[str, object]:
         "payload_contract_version": (
             PRIVATE_ANALYSIS_QUERY_PAGE_VERSION
             if value.kind is PrivateAnalysisToolResultKind.QUERY_PAGE
-            else PRIVATE_ANALYSIS_READ_RESULT_VERSION
+            else (
+                PRIVATE_ANALYSIS_READ_RESULT_VERSION
+                if value.kind is PrivateAnalysisToolResultKind.EVIDENCE_ENVELOPE
+                else PRIVATE_ANALYSIS_CAPABILITY_RESULT_VERSION
+            )
         ),
         "snapshot_digest": value.snapshot_digest,
         "references": [evidence_reference_dict(item) for item in value.references],
@@ -1195,6 +1707,10 @@ def private_analysis_query_arguments_from_dict(
             "node_ids",
             "producer_ids",
             "subject_kinds",
+            "time_basis",
+            "time_start_ns",
+            "time_end_ns",
+            "time_clock_domain",
             "page_size",
             "cursor",
             "query_digest",
@@ -1221,6 +1737,7 @@ def private_analysis_query_arguments_from_dict(
         MAX_PRIVATE_ANALYSIS_QUERY_FILTER_ITEMS,
     )
     cursor_value = item["cursor"]
+    raw_time_basis = item["time_basis"]
     return PrivateAnalysisQueryArguments(
         contract_version=item["contract_version"],
         evidence_kinds=tuple(
@@ -1230,6 +1747,36 @@ def private_analysis_query_arguments_from_dict(
         node_ids=tuple(raw_nodes),
         producer_ids=tuple(raw_producers),
         subject_kinds=tuple(raw_subjects),
+        time_basis=(
+            None
+            if raw_time_basis is None
+            else strict_string_enum(
+                EvidenceTimeBasis,
+                raw_time_basis,
+                "evidence time basis",
+            )
+        ),
+        time_start_ns=(
+            None
+            if item["time_start_ns"] is None
+            else bounded_canonical_decimal_integer(
+                item["time_start_ns"],
+                "time_start_ns",
+                minimum=_MIN_SIGNED_NS,
+                maximum=_MAX_SIGNED_NS,
+            )
+        ),
+        time_end_ns=(
+            None
+            if item["time_end_ns"] is None
+            else bounded_canonical_decimal_integer(
+                item["time_end_ns"],
+                "time_end_ns",
+                minimum=_MIN_SIGNED_NS,
+                maximum=_MAX_SIGNED_NS,
+            )
+        ),
+        time_clock_domain=item["time_clock_domain"],
         page_size=item["page_size"],
         cursor=(
             None
@@ -1262,6 +1809,60 @@ def private_analysis_read_arguments_from_dict(
     )
 
 
+def private_analysis_capability_arguments_from_dict(
+    value: object,
+) -> PrivateAnalysisCapabilityArguments:
+    item = exact_json_object(
+        value,
+        "analyze-evidence arguments",
+        {
+            "contract_version",
+            "node_id",
+            "revision_id",
+            "intent",
+            "parent_reference_digests",
+            "parameters",
+            "max_observations",
+            "arguments_digest",
+        },
+    )
+    raw_digests = _wire_list(
+        item["parent_reference_digests"],
+        "parent_reference_digests",
+        MAX_PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_ITEMS,
+    )
+    parameters = validate_bounded_json_value(
+        item["parameters"],
+        "capability parameters",
+        maximum_depth=8,
+        maximum_container_items=256,
+        maximum_units=1_024,
+        maximum_atom_units=8_192,
+        maximum_integer_bits=53,
+        exact_types=True,
+        allow_exact_tuples=False,
+        maximum_encoded_bytes=262_144,
+        snapshot=True,
+    )
+    if type(parameters) is not dict:
+        raise TypeError("capability parameters must be an exact dictionary")
+    return PrivateAnalysisCapabilityArguments(
+        contract_version=item["contract_version"],
+        node_id=item["node_id"],
+        revision_id=item["revision_id"],
+        intent=strict_string_enum(
+            PrivateAnalysisCapabilityIntent,
+            item["intent"],
+            "capability intent",
+        ),
+        parent_reference_digests=tuple(raw_digests),
+        parameters_json=strict_canonical_json(parameters),
+        max_observations=item["max_observations"],
+        arguments_digest=_prefixed_sha256(
+            item["arguments_digest"],
+            "arguments_digest",
+        ),
+    )
 def private_analysis_tool_call_from_dict(value: object) -> PrivateAnalysisToolCall:
     item = exact_json_object(
         value,
@@ -1272,8 +1873,12 @@ def private_analysis_tool_call_from_dict(value: object) -> PrivateAnalysisToolCa
     arguments: PrivateAnalysisToolArguments
     if binding.name is PrivateAnalysisToolName.QUERY_EVIDENCE:
         arguments = private_analysis_query_arguments_from_dict(item["arguments"])
-    else:
+    elif binding.name is PrivateAnalysisToolName.READ_EVIDENCE:
         arguments = private_analysis_read_arguments_from_dict(item["arguments"])
+    else:
+        arguments = private_analysis_capability_arguments_from_dict(
+            item["arguments"]
+        )
     return PrivateAnalysisToolCall(
         contract_version=item["contract_version"],
         call_id=item["call_id"],
@@ -1322,11 +1927,17 @@ def private_analysis_tool_result_from_dict(
         item["kind"],
         "tool result kind",
     )
-    expected_payload_version = (
-        PRIVATE_ANALYSIS_QUERY_PAGE_VERSION
-        if kind is PrivateAnalysisToolResultKind.QUERY_PAGE
-        else PRIVATE_ANALYSIS_READ_RESULT_VERSION
-    )
+    expected_payload_version = {
+        PrivateAnalysisToolResultKind.QUERY_PAGE: (
+            PRIVATE_ANALYSIS_QUERY_PAGE_VERSION
+        ),
+        PrivateAnalysisToolResultKind.EVIDENCE_ENVELOPE: (
+            PRIVATE_ANALYSIS_READ_RESULT_VERSION
+        ),
+        PrivateAnalysisToolResultKind.DERIVED_EVIDENCE_ENVELOPE: (
+            PRIVATE_ANALYSIS_CAPABILITY_RESULT_VERSION
+        ),
+    }[kind]
     exact_contract_version(
         item["payload_contract_version"],
         expected_payload_version,
@@ -1431,6 +2042,15 @@ def private_analysis_read_arguments_json(
     )
 
 
+def private_analysis_capability_arguments_json(
+    value: PrivateAnalysisCapabilityArguments,
+) -> str:
+    return _canonical_json(
+        private_analysis_capability_arguments_dict(value),
+        "capability arguments",
+    )
+
+
 def private_analysis_tool_call_json(value: PrivateAnalysisToolCall) -> str:
     return _canonical_json(private_analysis_tool_call_dict(value), "tool call")
 
@@ -1491,6 +2111,14 @@ def private_analysis_read_arguments_from_json(
     )
 
 
+def private_analysis_capability_arguments_from_json(
+    value: str,
+) -> PrivateAnalysisCapabilityArguments:
+    return private_analysis_capability_arguments_from_dict(
+        _load_canonical_json(value, "capability arguments")
+    )
+
+
 def private_analysis_tool_call_from_json(value: str) -> PrivateAnalysisToolCall:
     return private_analysis_tool_call_from_dict(
         _load_canonical_json(value, "tool call")
@@ -1512,10 +2140,16 @@ def private_analysis_tool_error_from_json(value: str) -> PrivateAnalysisToolErro
 
 
 __all__ = [
+    "MAX_PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_ITEMS",
+    "MAX_PRIVATE_ANALYSIS_CAPABILITY_OBSERVATIONS",
     "MAX_PRIVATE_ANALYSIS_QUERY_FILTER_ITEMS",
     "MAX_PRIVATE_ANALYSIS_QUERY_PAGE_SIZE",
     "MAX_PRIVATE_ANALYSIS_SNAPSHOT_REFERENCES",
     "MAX_PRIVATE_ANALYSIS_TOOL_WIRE_BYTES",
+    "PRIVATE_ANALYSIS_CAPABILITY_ARGUMENTS_VERSION",
+    "PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_PAYLOAD_SCHEMA",
+    "PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_SUBJECT_KIND",
+    "PRIVATE_ANALYSIS_CAPABILITY_RESULT_VERSION",
     "PRIVATE_ANALYSIS_CURSOR_VERSION",
     "PRIVATE_ANALYSIS_EVIDENCE_SNAPSHOT_VERSION",
     "PRIVATE_ANALYSIS_QUERY_ARGUMENTS_VERSION",
@@ -1528,7 +2162,11 @@ __all__ = [
     "PRIVATE_ANALYSIS_TOOL_DEFINITION_VERSION",
     "PRIVATE_ANALYSIS_TOOL_ERROR_VERSION",
     "PRIVATE_ANALYSIS_TOOL_RESULT_VERSION",
+    "PrivateAnalysisCapabilityArguments",
+    "PrivateAnalysisCapabilityIntent",
     "PrivateAnalysisCursor",
+    "PrivateAnalysisEvidenceCursorInvalidError",
+    "PrivateAnalysisEvidenceQueryPage",
     "PrivateAnalysisQueryArguments",
     "PrivateAnalysisReadArguments",
     "PrivateAnalysisToolArguments",
@@ -1545,6 +2183,11 @@ __all__ = [
     "evidence_snapshot_digest",
     "make_private_analysis_cursor",
     "make_private_analysis_query_page",
+    "make_private_analysis_query_page_from_snapshot",
+    "private_analysis_capability_arguments_dict",
+    "private_analysis_capability_arguments_from_dict",
+    "private_analysis_capability_arguments_from_json",
+    "private_analysis_capability_arguments_json",
     "private_analysis_cursor_dict",
     "private_analysis_cursor_from_dict",
     "private_analysis_cursor_from_json",

@@ -28,7 +28,13 @@ from .contract_validation import (
     strict_boolean,
     strict_integer,
     typed_tuple,
+    validate_bounded_json_value,
     validity_bounds,
+)
+from .public_text import (
+    contains_filesystem_identity_path,
+    contains_unsafe_identifier_text,
+    has_visible_identity_anchor,
 )
 from .temporal_core import MAX_TEMPORAL_NS, MIN_TEMPORAL_NS
 
@@ -218,6 +224,7 @@ class PluginCapability(StrEnum):
     TOPOLOGY_PROJECTION = "topology_projection"
     FORWARDING_PROJECTION = "forwarding_projection"
     FORWARDING_TRACE = "forwarding_trace"
+    EVIDENCE_ANALYSIS = "evidence_analysis"
 
 
 class InputParserKind(StrEnum):
@@ -246,6 +253,7 @@ PLUGIN_CAPABILITY_HOOKS: Mapping[PluginCapability, tuple[str, ...]] = MappingPro
         PluginCapability.TOPOLOGY_PROJECTION: ("project_topology",),
         PluginCapability.FORWARDING_PROJECTION: ("project_forwarding",),
         PluginCapability.FORWARDING_TRACE: ("resolve_forwarding_step",),
+        PluginCapability.EVIDENCE_ANALYSIS: ("analyze_evidence",),
     }
 )
 
@@ -732,6 +740,32 @@ class RelativeToWatermarkSelector:
 type TemporalSelector = AbsoluteTimeSelector | RelativeToWatermarkSelector
 
 
+class TimelineTimeBasis(StrEnum):
+    """Declared semantics of normalized parser timestamp coordinates."""
+
+    ABSOLUTE_UNIX_NS = "absolute_unix_ns"
+    REVISION_START_RELATIVE_NS = "revision_start_relative_ns"
+    SOURCE_CLOCK_NS = "source_clock_ns"
+
+
+def _validate_timeline_clock_domain(value: object) -> str:
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > 256
+        or value != value.strip()
+        or any(character.isspace() for character in value)
+        or contains_filesystem_identity_path(value)
+        or contains_unsafe_identifier_text(value)
+        or not has_visible_identity_anchor(value)
+    ):
+        raise ValueError(
+            "timeline_clock_domain must be a path-safe opaque token of 1 to 256 "
+            "visible characters"
+        )
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class PluginManifest:
     plugin_id: str
@@ -742,6 +776,10 @@ class PluginManifest:
     capabilities: frozenset[PluginCapability | str]
     reconstruction_default: ReconstructionSupport
     forwarding_ir_versions: tuple[str, ...] = ()
+    timeline_time_basis: TimelineTimeBasis = (
+        TimelineTimeBasis.REVISION_START_RELATIVE_NS
+    )
+    timeline_clock_domain: str | None = None
 
     def __post_init__(self) -> None:
         normalized: set[PluginCapability | str] = set()
@@ -763,6 +801,18 @@ class PluginManifest:
                     ) from None
                 normalized.add(capability)
         object.__setattr__(self, "capabilities", frozenset(normalized))
+        if type(self.timeline_time_basis) is not TimelineTimeBasis:
+            raise TypeError("timeline_time_basis must be an exact TimelineTimeBasis")
+        if self.timeline_time_basis is TimelineTimeBasis.SOURCE_CLOCK_NS:
+            if self.timeline_clock_domain is None:
+                raise ValueError(
+                    "source-clock plug-in timelines require timeline_clock_domain"
+                )
+            _validate_timeline_clock_domain(self.timeline_clock_domain)
+        elif self.timeline_clock_domain is not None:
+            raise ValueError(
+                "timeline_clock_domain is valid only for source-clock timelines"
+            )
 
     def supports(self, capability: PluginCapability | str) -> bool:
         """Return whether the manifest advertises one standard or custom capability."""
@@ -3408,6 +3458,303 @@ class CorrelationReader(Protocol):
         ...
 
 
+class EvidenceAnalysisKind(StrEnum):
+    """Closed intents for plug-in assistance over disclosed evidence.
+
+    The core understands only the safety and routing consequence of these
+    values. Platform, firmware, chip, tracepoint, and protocol semantics stay
+    in the selected plug-in.
+    """
+
+    ROUTE_TRACE = "route_trace"
+    TRACE_CORRELATION = "trace_correlation"
+    EVIDENCE_CORRELATION = "evidence_correlation"
+    EVIDENCE_INTERPRETATION = "evidence_interpretation"
+
+
+def _validate_evidence_analysis_digest(value: object, label: str) -> str:
+    if (
+        type(value) is not str
+        or len(value) != 71
+        or not value.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in value[7:])
+    ):
+        raise ValueError(f"{label} must be a prefixed SHA-256")
+    return value
+
+
+def _freeze_evidence_analysis_json(value: object) -> object:
+    if type(value) is dict:
+        return MappingProxyType(
+            {
+                key: _freeze_evidence_analysis_json(item)
+                for key, item in value.items()
+            }
+        )
+    if type(value) is list:
+        return tuple(_freeze_evidence_analysis_json(item) for item in value)
+    return value
+
+
+_EVIDENCE_ANALYSIS_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
+
+
+class _EvidenceAnalysisThawBudget:
+    def __init__(self) -> None:
+        self.units = 0
+        self.active: set[int] = set()
+
+
+def _thaw_frozen_evidence_analysis_json(
+    value: object,
+    *,
+    budget: _EvidenceAnalysisThawBudget | None = None,
+    depth: int = 0,
+) -> object:
+    """Boundedly thaw only a DTO's internal mapping-proxy representation."""
+
+    current = budget or _EvidenceAnalysisThawBudget()
+    current.units += 1
+    if current.units > 4_096:
+        raise ValueError("evidence analysis JSON exceeds 4096 value units")
+    if depth > 16:
+        raise ValueError("evidence analysis JSON exceeds 16 container levels")
+    container_type = type(value)
+    if container_type not in {
+        dict,
+        list,
+        tuple,
+        _EVIDENCE_ANALYSIS_MAPPING_PROXY_TYPE,
+    }:
+        return value
+    if len(value) > 1_024:  # type: ignore[arg-type]
+        raise ValueError("evidence analysis JSON container exceeds 1024 items")
+    identity = id(value)
+    if identity in current.active:
+        raise ValueError("evidence analysis JSON contains a reference cycle")
+    current.active.add(identity)
+    try:
+        if container_type in {dict, _EVIDENCE_ANALYSIS_MAPPING_PROXY_TYPE}:
+            return {
+                key: _thaw_frozen_evidence_analysis_json(
+                    item,
+                    budget=current,
+                    depth=depth + 1,
+                )
+                for key, item in value.items()  # type: ignore[union-attr]
+            }
+        return [
+            _thaw_frozen_evidence_analysis_json(
+                item,
+                budget=current,
+                depth=depth + 1,
+            )
+            for item in value  # type: ignore[union-attr]
+        ]
+    finally:
+        current.active.remove(identity)
+
+
+def _evidence_analysis_json_input(value: object) -> object:
+    if type(value) is _EVIDENCE_ANALYSIS_MAPPING_PROXY_TYPE:
+        return _thaw_frozen_evidence_analysis_json(value)
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceAnalysisFact:
+    """One immutable, already-authorized evidence fact passed to a plug-in."""
+
+    reference_digest: str
+    evidence_kind: str
+    subject_kind: str
+    node_id: str
+    revision_id: str
+    payload_schema: str
+    fact_provenance: str
+    time_basis: str
+    time_start_ns: int | None
+    time_end_ns: int | None
+    time_clock_domain: str | None
+    payload: Properties
+
+    def __post_init__(self) -> None:
+        _validate_evidence_analysis_digest(
+            self.reference_digest,
+            "evidence fact reference_digest",
+        )
+        for label, value in (
+            ("evidence kind", self.evidence_kind),
+            ("evidence subject kind", self.subject_kind),
+            ("evidence node ID", self.node_id),
+            ("evidence revision ID", self.revision_id),
+            ("evidence payload schema", self.payload_schema),
+            ("evidence fact provenance", self.fact_provenance),
+            ("evidence time basis", self.time_basis),
+        ):
+            _validate_opaque_id(value, label)
+        if (self.time_start_ns is None) != (self.time_end_ns is None):
+            raise ValueError("evidence fact time bounds must be supplied together")
+        if self.time_start_ns is not None:
+            _exact_temporal_ns(self.time_start_ns, "evidence fact time_start_ns")
+            _exact_temporal_ns(self.time_end_ns, "evidence fact time_end_ns")
+            if self.time_start_ns > self.time_end_ns:
+                raise ValueError("evidence fact time bounds are reversed")
+        if self.time_clock_domain is not None:
+            _validate_opaque_id(
+                self.time_clock_domain,
+                "evidence fact time clock domain",
+            )
+        snapshot = validate_bounded_json_value(
+            _evidence_analysis_json_input(self.payload),
+            "evidence fact payload",
+            maximum_depth=16,
+            maximum_container_items=1_024,
+            maximum_units=4_096,
+            maximum_atom_units=65_536,
+            maximum_integer_bits=53,
+            exact_types=True,
+            allow_exact_tuples=False,
+            maximum_encoded_bytes=1_048_576,
+            snapshot=True,
+        )
+        if type(snapshot) is not dict:
+            raise TypeError("evidence fact payload must be an exact dictionary")
+        object.__setattr__(
+            self,
+            "payload",
+            _freeze_evidence_analysis_json(snapshot),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceAnalysisRequest:
+    """A bounded advisory request with no artifact, model, or mutation handle."""
+
+    invocation_id: str
+    analysis_kind: EvidenceAnalysisKind
+    facts: tuple[EvidenceAnalysisFact, ...]
+    parameters: Properties = field(default_factory=dict)
+    max_observations: int = 64
+
+    def __post_init__(self) -> None:
+        _validate_opaque_id(self.invocation_id, "evidence analysis invocation ID")
+        if type(self.analysis_kind) is not EvidenceAnalysisKind:
+            raise TypeError("analysis_kind must be an exact EvidenceAnalysisKind")
+        facts = typed_tuple(
+            self.facts,
+            "evidence analysis facts",
+            EvidenceAnalysisFact,
+            maximum=256,
+            unique_key=lambda fact: fact.reference_digest,
+            tuple_message="evidence analysis facts must be a tuple",
+            bounds_message="evidence analysis supports at most 256 facts",
+            item_message="evidence analysis facts must be EvidenceAnalysisFact values",
+            duplicate_message="evidence analysis facts must be unique",
+        )
+        if not self.facts:
+            raise ValueError("evidence analysis requires at least one fact")
+        detached_facts = tuple(
+            EvidenceAnalysisFact(
+                reference_digest=fact.reference_digest,
+                evidence_kind=fact.evidence_kind,
+                subject_kind=fact.subject_kind,
+                node_id=fact.node_id,
+                revision_id=fact.revision_id,
+                payload_schema=fact.payload_schema,
+                fact_provenance=fact.fact_provenance,
+                time_basis=fact.time_basis,
+                time_start_ns=fact.time_start_ns,
+                time_end_ns=fact.time_end_ns,
+                time_clock_domain=fact.time_clock_domain,
+                payload=fact.payload,
+            )
+            for fact in facts
+        )
+        object.__setattr__(self, "facts", detached_facts)
+        snapshot = validate_bounded_json_value(
+            _evidence_analysis_json_input(self.parameters),
+            "evidence analysis parameters",
+            maximum_depth=8,
+            maximum_container_items=256,
+            maximum_units=1_024,
+            maximum_atom_units=8_192,
+            maximum_integer_bits=53,
+            exact_types=True,
+            allow_exact_tuples=False,
+            maximum_encoded_bytes=262_144,
+            snapshot=True,
+        )
+        if type(snapshot) is not dict:
+            raise TypeError("evidence analysis parameters must be an exact dictionary")
+        object.__setattr__(
+            self,
+            "parameters",
+            _freeze_evidence_analysis_json(snapshot),
+        )
+        strict_integer(
+            self.max_observations,
+            "evidence analysis max_observations",
+            minimum=1,
+            maximum=1_000,
+            exact=True,
+            message="evidence analysis max_observations must be between 1 and 1000",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceAnalysisObservation:
+    """One plug-in-owned interpretation retained only as derived evidence."""
+
+    observation_id: str
+    category: str
+    summary: str
+    cited_reference_digests: tuple[str, ...]
+    quality: Quality
+    details: Properties = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _validate_opaque_id(self.observation_id, "evidence analysis observation ID")
+        _validate_opaque_id(self.category, "evidence analysis category")
+        if type(self.summary) is not str or not 1 <= len(self.summary) <= 8_192:
+            raise ValueError("evidence analysis summary must contain 1 to 8192 characters")
+        if type(self.cited_reference_digests) is not tuple:
+            raise TypeError("evidence analysis citations must be a tuple")
+        if not 1 <= len(self.cited_reference_digests) <= 256:
+            raise ValueError("evidence analysis requires 1 to 256 citations")
+        if tuple(sorted(self.cited_reference_digests)) != self.cited_reference_digests:
+            raise ValueError("evidence analysis citations must use canonical order")
+        if len(set(self.cited_reference_digests)) != len(self.cited_reference_digests):
+            raise ValueError("evidence analysis citations must be unique")
+        for digest in self.cited_reference_digests:
+            _validate_evidence_analysis_digest(
+                digest,
+                "evidence analysis citation",
+            )
+        if type(self.quality) is not Quality:
+            raise TypeError("evidence analysis quality must be an exact Quality")
+        snapshot = validate_bounded_json_value(
+            _evidence_analysis_json_input(self.details),
+            "evidence analysis details",
+            maximum_depth=12,
+            maximum_container_items=512,
+            maximum_units=2_048,
+            maximum_atom_units=32_768,
+            maximum_integer_bits=53,
+            exact_types=True,
+            allow_exact_tuples=False,
+            maximum_encoded_bytes=524_288,
+            snapshot=True,
+        )
+        if type(snapshot) is not dict:
+            raise TypeError("evidence analysis details must be an exact dictionary")
+        object.__setattr__(
+            self,
+            "details",
+            _freeze_evidence_analysis_json(snapshot),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class RoutePresentationDescriptor:
     """Plug-in-owned, declarative graph presentation for forwarding output.
@@ -4947,6 +5294,16 @@ class AnalyzerPluginBase:
             "resolve_forwarding_step() is unavailable without forwarding_trace"
         )
 
+    def analyze_evidence(
+        self,
+        request: EvidenceAnalysisRequest,
+    ) -> Iterable[EvidenceAnalysisObservation | PluginDiagnostic]:
+        self._require_capability_override(
+            PluginCapability.EVIDENCE_ANALYSIS,
+            "analyze_evidence",
+        )
+        return ()
+
 
 class AnalyzerPlugin(Protocol):
     """Platform/version plugin discovered through Python entry points."""
@@ -5018,3 +5375,8 @@ class AnalyzerPlugin(Protocol):
         request: ForwardingStepRequest,
         world: ReadOnlyWorld,
     ) -> ForwardingStepResult | PluginDiagnostic: ...
+
+    def analyze_evidence(
+        self,
+        request: EvidenceAnalysisRequest,
+    ) -> Iterable[EvidenceAnalysisObservation | PluginDiagnostic]: ...

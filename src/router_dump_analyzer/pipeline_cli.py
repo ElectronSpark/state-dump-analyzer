@@ -30,6 +30,10 @@ from .ingestion_pipeline import (
     PluginExecutionMode,
     PluginRegistry,
 )
+from .plugin_composition_deployment import (
+    PluginCompositionDeploymentContext,
+    load_plugin_composition_deployment,
+)
 from .plugin_loading import (
     LoadedPlugin,
     load_plugin_entry_point,
@@ -86,6 +90,7 @@ class HeadlessIngestionConfiguration:
     output_path: Path | None
     pretty: bool
     retention_policy_path: Path | None = None
+    plugin_deployment_module: str | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -191,6 +196,7 @@ def parse_args(
         output_path=namespace.output_path,
         pretty=namespace.pretty,
         retention_policy_path=namespace.retention_policy_path,
+        plugin_deployment_module=namespace.plugin_deployment_module,
     )
 
 
@@ -282,10 +288,10 @@ def _idempotency_key(
     content_sha256: str,
     *,
     effective_content_type: str,
-    registry_fingerprint: str,
+    execution_environment_fingerprint: str,
 ) -> str:
     material = {
-        "schema_version": "router_dump_analyzer.headless_import.v2",
+        "schema_version": "router_dump_analyzer.headless_import.v3",
         "tenant_id": configuration.tenant_id,
         "project_id": configuration.project_id,
         "workspace_id": configuration.workspace_id,
@@ -296,7 +302,9 @@ def _idempotency_key(
         "content_type": effective_content_type,
         "node_hint": configuration.node_hint,
         "metadata": configuration.metadata,
-        "plugin_registry_fingerprint": registry_fingerprint,
+        "plugin_execution_environment_fingerprint": (
+            execution_environment_fingerprint
+        ),
     }
     return (
         "headless:"
@@ -338,22 +346,51 @@ def run(
     *,
     entry_point_loader: Callable[[str], Any] = load_plugin_entry_point,
     module_loader: Callable[[str], Any] = load_plugin_module,
+    plugin_deployment_loader: Callable[..., Any] = (
+        load_plugin_composition_deployment
+    ),
     stdout: TextIO = sys.stdout,
     pipeline_limits: PipelineLimits | None = None,
+    control_plane_factory: Callable[..., Any] = ControlPlane,
 ) -> int:
     inputs = tuple(path.expanduser().resolve() for path in configuration.input_paths)
     for path in inputs:
         if not path.is_file():
             raise FileNotFoundError(f"ingestion input is not a file: {path}")
-    loaded_plugins = _load_plugins(
-        configuration,
-        entry_point_loader=entry_point_loader,
-        module_loader=module_loader,
+    selector_count = sum(
+        (
+            bool(configuration.plugin_names),
+            bool(configuration.plugin_modules),
+            configuration.plugin_deployment_module is not None,
+        )
     )
-    registry = PluginRegistry(require_executable_identity=True)
-    for loaded_plugin in loaded_plugins:
-        loaded_plugin.register(registry)
-    registry_fingerprint = registry.fingerprint()
+    if selector_count != 1:
+        raise ValueError(
+            "configure exactly one plug-in allowlist or composition deployment"
+        )
+    state_dir = configuration.state_dir.expanduser().resolve()
+    composition_options: dict[str, Any] = {}
+    if configuration.plugin_deployment_module is not None:
+        composition = plugin_deployment_loader(
+            configuration.plugin_deployment_module,
+            context=PluginCompositionDeploymentContext(state_dir=state_dir),
+        )
+        registry = composition.primary_registry
+        execution_environment_fingerprint = composition.deployment_digest
+        composition_options = {
+            "plugin_composition_policy": composition.policy,
+            "capability_providers": composition.capability_providers,
+        }
+    else:
+        loaded_plugins = _load_plugins(
+            configuration,
+            entry_point_loader=entry_point_loader,
+            module_loader=module_loader,
+        )
+        registry = PluginRegistry(require_executable_identity=True)
+        for loaded_plugin in loaded_plugins:
+            loaded_plugin.register(registry)
+        execution_environment_fingerprint = registry.fingerprint()
     effective_pipeline_limits = pipeline_limits or PipelineLimits()
     effective_pipeline_limits = replace(
         effective_pipeline_limits,
@@ -373,7 +410,6 @@ def run(
             ),
         ),
     )
-    state_dir = configuration.state_dir.expanduser().resolve()
     retention_policy = None
     if configuration.retention_policy_path is not None:
         from .maintenance_cli import load_policy
@@ -381,11 +417,12 @@ def run(
         retention_policy = load_policy(configuration.retention_policy_path).ingestion
     records: list[dict[str, Any]] = []
     exit_code = 0
-    with ControlPlane(
+    with control_plane_factory(
         state_dir,
         registry=registry,
         pipeline_limits=effective_pipeline_limits,
         retention_policy=retention_policy,
+        **composition_options,
     ) as control_plane:
         _ensure_scope(control_plane, configuration)
         scope = control_plane.import_scope(
@@ -415,7 +452,9 @@ def run(
                     path,
                     content_sha256,
                     effective_content_type=effective_content_type,
-                    registry_fingerprint=registry_fingerprint,
+                    execution_environment_fingerprint=(
+                        execution_environment_fingerprint
+                    ),
                 ),
                 auto_select=configuration.auto_select,
                 preferred_plugin_id=configuration.preferred_plugin_id,
@@ -465,6 +504,9 @@ def run(
 
     document = {
         "schema_version": "router_dump_analyzer.headless_result.v1",
+        "plugin_execution_environment_fingerprint": (
+            execution_environment_fingerprint
+        ),
         "scope": {
             "tenant_id": configuration.tenant_id,
             "project_id": configuration.project_id,

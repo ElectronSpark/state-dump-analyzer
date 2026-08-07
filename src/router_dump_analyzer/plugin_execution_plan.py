@@ -12,14 +12,21 @@ import re
 from dataclasses import dataclass
 from typing import Any, Final
 
-from .canonical import strict_canonical_json_sha256
+from .canonical import strict_canonical_json_bytes, strict_canonical_json_sha256
 from .contract_validation import bounded_string
+from .plugin_composition import DEFAULT_PLUGIN_COMPOSITION_POLICY_DIGEST
 from .public_text import contains_unsafe_identifier_text, has_visible_identity_anchor
 
-PLUGIN_EXECUTION_PLAN_VERSION: Final = (
+PLUGIN_EXECUTION_PLAN_VERSION_V1: Final = (
     "router_dump_analyzer.plugin_execution_plan.v1"
 )
+PLUGIN_EXECUTION_PLAN_VERSION: Final = (
+    "router_dump_analyzer.plugin_execution_plan.v2"
+)
+_LEGACY_REGISTERED_EXECUTION_IDENTITY: Final = "sha256:" + "0" * 64
+_LEGACY_COMPOSITION_POLICY_DIGEST: Final = "sha256:" + "0" * 64
 _MAX_PLUGINS = 128
+MAX_PLUGIN_EXECUTION_PLAN_WIRE_BYTES: Final = 512 * 1024
 _OPAQUE_PATTERN = re.compile(r"^[^\s\x00-\x1f\x7f]+$")
 _SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PACKAGE_DIGEST_PATTERN = re.compile(
@@ -134,6 +141,7 @@ class PluginExecutionPin:
     artifact: PluginArtifactIdentity
     configuration_digest: str
     schema_digest: str
+    registered_execution_identity: str = _LEGACY_REGISTERED_EXECUTION_IDENTITY
     schema_versions: tuple[str, ...] = ()
     capabilities: tuple[str, ...] = ()
     roles: tuple[str, ...] = ()
@@ -150,6 +158,10 @@ class PluginExecutionPin:
         )
         _digest(self.configuration_digest, "configuration_digest")
         _digest(self.schema_digest, "schema_digest")
+        _digest(
+            self.registered_execution_identity,
+            "registered_execution_identity",
+        )
         object.__setattr__(
             self,
             "schema_versions",
@@ -178,6 +190,7 @@ def _snapshot_execution_pin(pin: PluginExecutionPin) -> PluginExecutionPin:
         artifact=pin.artifact,
         configuration_digest=pin.configuration_digest,
         schema_digest=pin.schema_digest,
+        registered_execution_identity=pin.registered_execution_identity,
         schema_versions=pin.schema_versions,
         capabilities=pin.capabilities,
         roles=pin.roles,
@@ -190,6 +203,18 @@ def snapshot_plugin_execution_pin(pin: PluginExecutionPin) -> PluginExecutionPin
     return _snapshot_execution_pin(pin)
 
 
+def plugin_execution_pin_uses_legacy_identity(pin: PluginExecutionPin) -> bool:
+    """Return whether *pin* was decoded from the retained V1 contract.
+
+    Current V2 plans reject the reserved all-zero identity, so skipping the
+    added identity comparison for this sentinel cannot weaken V2 matching.
+    """
+
+    if type(pin) is not PluginExecutionPin:
+        raise TypeError("pin must be an exact PluginExecutionPin")
+    return pin.registered_execution_identity == _LEGACY_REGISTERED_EXECUTION_IDENTITY
+
+
 def plugin_execution_plan_plugin_ids(
     plan: PluginExecutionPlan,
 ) -> tuple[str, ...]:
@@ -200,10 +225,14 @@ def plugin_execution_plan_plugin_ids(
     return tuple(dict.fromkeys(pin.plugin_id for pin in plan.plugins))
 
 
-def plugin_execution_pin_dict(pin: PluginExecutionPin) -> dict[str, Any]:
+def _plugin_execution_pin_payload(
+    pin: PluginExecutionPin,
+    *,
+    include_registered_execution_identity: bool,
+) -> dict[str, Any]:
     pin = _snapshot_execution_pin(pin)
     artifact = pin.artifact
-    return {
+    result = {
         "instance_id": pin.instance_id,
         "plugin_id": pin.plugin_id,
         "plugin_version": pin.plugin_version,
@@ -221,14 +250,34 @@ def plugin_execution_pin_dict(pin: PluginExecutionPin) -> dict[str, Any]:
         "capabilities": list(pin.capabilities),
         "roles": list(pin.roles),
     }
+    if include_registered_execution_identity:
+        result["registered_execution_identity"] = (
+            pin.registered_execution_identity
+        )
+    return result
+
+
+def plugin_execution_pin_dict(pin: PluginExecutionPin) -> dict[str, Any]:
+    return _plugin_execution_pin_payload(
+        pin,
+        include_registered_execution_identity=True,
+    )
 
 
 def _plan_payload(plan: PluginExecutionPlan) -> dict[str, Any]:
-    return {
+    payload = {
         "contract_version": plan.contract_version,
         "node_id": plan.node_id,
         "basis_revision_id": plan.basis_revision_id,
-        "plugins": [plugin_execution_pin_dict(pin) for pin in plan.plugins],
+        "plugins": [
+            _plugin_execution_pin_payload(
+                pin,
+                include_registered_execution_identity=(
+                    plan.contract_version != PLUGIN_EXECUTION_PLAN_VERSION_V1
+                ),
+            )
+            for pin in plan.plugins
+        ],
         "decoder": (
             {
                 "decoder_id": plan.decoder.decoder_id,
@@ -239,6 +288,11 @@ def _plan_payload(plan: PluginExecutionPlan) -> dict[str, Any]:
             else None
         ),
     }
+    if plan.contract_version != PLUGIN_EXECUTION_PLAN_VERSION_V1:
+        payload["composition_policy_digest"] = (
+            plan.composition_policy_digest
+        )
+    return payload
 
 
 def _unchecked_plugin_execution_plan_digest(plan: PluginExecutionPlan) -> str:
@@ -256,13 +310,52 @@ class PluginExecutionPlan:
     plugins: tuple[PluginExecutionPin, ...]
     decoder: DecoderIdentity | None = None
     contract_version: str = PLUGIN_EXECUTION_PLAN_VERSION
+    composition_policy_digest: str = ""
     plan_digest: str = ""
 
     def __post_init__(self) -> None:
         if type(self.contract_version) is not str:
             raise TypeError("contract_version must be an exact string")
-        if self.contract_version != PLUGIN_EXECUTION_PLAN_VERSION:
+        if self.contract_version not in (
+            PLUGIN_EXECUTION_PLAN_VERSION_V1,
+            PLUGIN_EXECUTION_PLAN_VERSION,
+        ):
             raise ValueError("unsupported plug-in execution-plan version")
+        if type(self.composition_policy_digest) is not str:
+            raise TypeError(
+                "composition_policy_digest must be an exact string"
+            )
+        if self.contract_version == PLUGIN_EXECUTION_PLAN_VERSION_V1:
+            if self.composition_policy_digest not in (
+                "",
+                _LEGACY_COMPOSITION_POLICY_DIGEST,
+            ):
+                raise ValueError(
+                    "v1 plug-in execution plans cannot carry a composition "
+                    "policy digest"
+                )
+            object.__setattr__(
+                self,
+                "composition_policy_digest",
+                _LEGACY_COMPOSITION_POLICY_DIGEST,
+            )
+        else:
+            selected_policy_digest = (
+                DEFAULT_PLUGIN_COMPOSITION_POLICY_DIGEST
+                if self.composition_policy_digest == ""
+                else self.composition_policy_digest
+            )
+            _digest(selected_policy_digest, "composition_policy_digest")
+            if selected_policy_digest == _LEGACY_COMPOSITION_POLICY_DIGEST:
+                raise ValueError(
+                    "v2 plug-in execution plans require a non-legacy "
+                    "composition policy digest"
+                )
+            object.__setattr__(
+                self,
+                "composition_policy_digest",
+                selected_policy_digest,
+            )
         _opaque(self.node_id, "node_id")
         _opaque(self.basis_revision_id, "basis_revision_id")
         if type(self.plugins) is not tuple:
@@ -271,6 +364,22 @@ class PluginExecutionPlan:
             raise ValueError("plugins must contain 1 to 128 pins")
         pins = tuple(_snapshot_execution_pin(pin) for pin in self.plugins)
         object.__setattr__(self, "plugins", pins)
+        if self.contract_version == PLUGIN_EXECUTION_PLAN_VERSION and any(
+            pin.registered_execution_identity
+            == _LEGACY_REGISTERED_EXECUTION_IDENTITY
+            for pin in pins
+        ):
+            raise ValueError(
+                "v2 plug-in execution pins require registered execution identities"
+            )
+        if self.contract_version == PLUGIN_EXECUTION_PLAN_VERSION_V1 and any(
+            pin.registered_execution_identity
+            != _LEGACY_REGISTERED_EXECUTION_IDENTITY
+            for pin in pins
+        ):
+            raise ValueError(
+                "v1 plug-in execution pins cannot carry registered execution identities"
+            )
         instance_ids = tuple(pin.instance_id for pin in self.plugins)
         if len(instance_ids) != len(set(instance_ids)):
             raise ValueError("plug-in instance IDs must be unique")
@@ -283,6 +392,13 @@ class PluginExecutionPlan:
                 self,
                 "decoder",
                 _snapshot_decoder_identity(self.decoder),
+            )
+        if (
+            len(strict_canonical_json_bytes(_plan_payload(self)))
+            > MAX_PLUGIN_EXECUTION_PLAN_WIRE_BYTES
+        ):
+            raise ValueError(
+                "plug-in execution plan exceeds the canonical wire-size limit"
             )
         if type(self.plan_digest) is not str:
             raise TypeError("plan_digest must be an exact string")
@@ -306,6 +422,7 @@ def _snapshot_execution_plan(plan: PluginExecutionPlan) -> PluginExecutionPlan:
         plugins=plan.plugins,
         decoder=plan.decoder,
         contract_version=plan.contract_version,
+        composition_policy_digest=plan.composition_policy_digest,
         plan_digest=plan.plan_digest,
     )
 
@@ -314,6 +431,18 @@ def snapshot_plugin_execution_plan(plan: PluginExecutionPlan) -> PluginExecution
     """Return a detached, digest-verified copy of one immutable plan."""
 
     return _snapshot_execution_plan(plan)
+
+
+def plugin_execution_plan_is_executable(plan: PluginExecutionPlan) -> bool:
+    """Return whether *plan* carries the current executable identity contract.
+
+    Retained V1 plans remain valid passive catalog values, but they predate
+    both registered execution identities and composition-policy binding.  No
+    live provider or private evidence producer may be selected from them.
+    """
+
+    detached = _snapshot_execution_plan(plan)
+    return detached.contract_version == PLUGIN_EXECUTION_PLAN_VERSION
 
 
 def plugin_execution_plan_digest(plan: PluginExecutionPlan) -> str:
@@ -358,11 +487,25 @@ def _exact_mapping(value: object, label: str, keys: set[str]) -> dict[str, Any]:
 def plugin_execution_plan_from_dict(value: object) -> PluginExecutionPlan:
     """Strictly parse one wire projection and revalidate its content digest."""
 
-    plan = _exact_mapping(
-        value,
-        "execution plan",
-        {"contract_version", "node_id", "basis_revision_id", "plugins", "decoder", "plan_digest"},
-    )
+    if type(value) is not dict:
+        raise ValueError("execution plan must contain an exact object")
+    contract_version = value.get("contract_version")
+    if contract_version not in (
+        PLUGIN_EXECUTION_PLAN_VERSION_V1,
+        PLUGIN_EXECUTION_PLAN_VERSION,
+    ):
+        raise ValueError("unsupported plug-in execution-plan version")
+    plan_keys = {
+        "contract_version",
+        "node_id",
+        "basis_revision_id",
+        "plugins",
+        "decoder",
+        "plan_digest",
+    }
+    if contract_version == PLUGIN_EXECUTION_PLAN_VERSION:
+        plan_keys.add("composition_policy_digest")
+    plan = _exact_mapping(value, "execution plan", plan_keys)
     _digest(plan["plan_digest"], "plan_digest")
     raw_plugins = plan["plugins"]
     if type(raw_plugins) is not list:
@@ -372,6 +515,8 @@ def plugin_execution_plan_from_dict(value: object) -> PluginExecutionPlan:
         "instance_id", "plugin_id", "plugin_version", "core_api_version", "artifact",
         "configuration_digest", "schema_digest", "schema_versions", "capabilities", "roles",
     }
+    if contract_version == PLUGIN_EXECUTION_PLAN_VERSION:
+        pin_keys.add("registered_execution_identity")
     artifact_keys = {
         "distribution_name", "distribution_version", "package_hash", "entry_point_name", "module_target",
     }
@@ -387,6 +532,11 @@ def plugin_execution_plan_from_dict(value: object) -> PluginExecutionPlan:
                 artifact=PluginArtifactIdentity(**artifact),
                 configuration_digest=parsed["configuration_digest"],
                 schema_digest=parsed["schema_digest"],
+                registered_execution_identity=(
+                    parsed["registered_execution_identity"]
+                    if contract_version == PLUGIN_EXECUTION_PLAN_VERSION
+                    else _LEGACY_REGISTERED_EXECUTION_IDENTITY
+                ),
                 schema_versions=_wire_tuple(parsed["schema_versions"], "schema_versions"),
                 capabilities=_wire_tuple(parsed["capabilities"], "capabilities"),
                 roles=_wire_tuple(parsed["roles"], "roles"),
@@ -402,11 +552,16 @@ def plugin_execution_plan_from_dict(value: object) -> PluginExecutionPlan:
         )
         decoder = DecoderIdentity(**decoder_map)
     return PluginExecutionPlan(
-        contract_version=plan["contract_version"],
+        contract_version=contract_version,
         node_id=plan["node_id"],
         basis_revision_id=plan["basis_revision_id"],
         plugins=tuple(pins),
         decoder=decoder,
+        composition_policy_digest=(
+            plan["composition_policy_digest"]
+            if contract_version == PLUGIN_EXECUTION_PLAN_VERSION
+            else _LEGACY_COMPOSITION_POLICY_DIGEST
+        ),
         plan_digest=plan["plan_digest"],
     )
 
@@ -432,16 +587,20 @@ class RevisionExecutionPlanRef:
 
 
 __all__ = [
+    "MAX_PLUGIN_EXECUTION_PLAN_WIRE_BYTES",
     "PLUGIN_EXECUTION_PLAN_VERSION",
+    "PLUGIN_EXECUTION_PLAN_VERSION_V1",
     "DecoderIdentity",
     "PluginArtifactIdentity",
     "PluginExecutionPin",
     "PluginExecutionPlan",
     "RevisionExecutionPlanRef",
     "plugin_execution_pin_dict",
+    "plugin_execution_pin_uses_legacy_identity",
     "plugin_execution_plan_dict",
     "plugin_execution_plan_digest",
     "plugin_execution_plan_from_dict",
+    "plugin_execution_plan_is_executable",
     "plugin_execution_plan_plugin_ids",
     "primary_parser_execution_pin",
     "snapshot_plugin_execution_pin",

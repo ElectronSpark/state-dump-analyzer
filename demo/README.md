@@ -110,15 +110,20 @@ python -m router_dump_analyzer `
   --plugin-module rsl_demo_plugin `
   --input $demoArchive `
   --control-plane-dir .\.runtime\control-plane `
+  --plugin-composition-deployment-module rsl_demo_plugin.deployment:build_plugin_deployment `
   --no-browser
 ```
+
+The ordinary module selector owns this startup archive. The longer composition
+selector independently configures uploads processed later by the embedded
+durable control plane; it is valid only with `--control-plane-dir`.
 
 To exercise the demo's ordinary parser through the durable core queue, use the
 small conformance fixture rather than the precomputed runtime-v1 assembly:
 
 ```powershell
 $env:PYTHONUTF8 = "1"
-router-dump-ingest --plugin demo_router `
+router-dump-ingest --plugin-deployment-module rsl_demo_plugin.deployment:build_plugin_deployment `
   --state-dir .\.runtime\demo-headless `
   --tenant demo-tenant `
   --project plugin-conformance `
@@ -137,23 +142,46 @@ response uses the same operation ID; publication replay does not parse again.
 The revision also carries a core-owned immutable execution plan pinning this
 demo plug-in's exact executable, configuration digest, schema, capabilities,
 role, and optional decoder identity. The demo does not build that plan, and no
-configuration values are embedded in it.
-This example currently produces only the unique `primary_parser` pin. The core
-also supports separately registered capability-provider pins through
-`PlanBoundCapabilityRouter`; the demo deliberately does not hide several
-providers behind a composite plug-in. The executable heterogeneous routing
-conformance cases live in `tests/test_capability_router.py`; they also cover
-executable and configuration lineage, decoder rules, schema budgets, and
-perspective scope.
+configuration values are embedded in it. The current plan also pins the exact
+composition-policy digest, so every policy change produces a distinct durable
+revision identity. The demo's current policy freezes both its primary parser
+pin and its separate `private_analysis_evidence` auxiliary pin.
+The demo's trusted `rsl_demo_plugin.deployment:build_plugin_deployment` factory
+keeps only the unique `primary_parser` in the parser registry and exposes both
+exact records through the capability-provider registry. This exercises the
+same descriptor and launch path used by a heterogeneous installation. A
+deployment uses a content-addressed `PluginCompositionPolicy` to attach
+canonically
+ordered exact auxiliary identities and roles to the exact selected primary;
+the durable import stores that policy digest and workers reject restart drift.
+`PlanBoundCapabilityRouter` then consumes the already-published plan. The demo
+deliberately does not hide several providers behind a composite plug-in. The
+process parent also revalidates every selected auxiliary after child parsing
+before accepting its returned plan; live drift cannot reach revision staging.
+The executable heterogeneous cases live in
+`tests/test_demo_plugin_semantic_contract.py`,
+`tests/test_plugin_composition.py`, and `tests/test_capability_router.py`; they
+cover admission/restart drift,
+registration-order independence, executable/configuration lineage, decoder
+rules, schema budgets, and perspective scope.
 Installed launch records `router-dump-analyzer-demo`, its installed version,
 entry point `demo_router`, and target `rsl_demo_plugin:plugin`. Direct-module
 launch instead uses the explicit `direct-module` / `0` artifact sentinel.
 Probe and parsing run in fresh `spawn` child processes with the core's bounded
 deadline (300 seconds by default, capped by the command's `--timeout`). The
-demo plug-in and coordinator are module-level, importable, and spawn-picklable
-for this reason. A timeout/crash is killed and reaped and cannot publish a
-partial dataset; the child remains trusted host-user code rather than a
-security sandbox.
+demo exports a module-level plug-in target. Core sends only inert import
+coordinates, reloads that target in the child, re-registers it, and verifies
+the same frozen execution identity before use. That identity commits to the
+target, its source-backed executable bytes/code, bytecode-referenced helper
+globals and statically resolvable local imports across package boundaries,
+function-owned executable state, and the exported instance's bounded
+canonical state (including its frozen manifest), plus every other non-recursive
+bootstrap coordinate. Keep module-level process-target state immutable and
+source-verifiable. Parent and child revalidate that target before execution
+and the parent checks it again before staging; core never pickles the live demo
+plug-in or coordinator. A timeout/crash is killed and reaped and
+cannot publish a partial dataset; the child remains trusted host-user code
+rather than a security sandbox.
 The `.runtime\demo-headless` directory is disposable local state. Repeat
 `--input` to exercise several independently versioned fixtures in one
 workspace.
@@ -162,13 +190,16 @@ To serve that state without opening the demo analysis or frontend, run the
 core-owned API-only server on loopback:
 
 ```powershell
-router-dump-server --plugin demo_router `
+router-dump-server --plugin-deployment-module rsl_demo_plugin.deployment:build_plugin_deployment `
   --state-dir .\.runtime\demo-headless `
   --trust-control-plane-headers `
   --port 8876
 ```
 
-This trusted-header mode is development-only. A real deployment replaces it
+`--plugin-deployment-module` is mutually exclusive with the repeatable
+`--plugin` and `--plugin-module` allowlists. Its process-trusted factory receives
+only the resolved state root and returns the exact primary/provider/policy
+descriptor. This trusted-header mode is development-only. A real deployment replaces it
 with `--identity-resolver-module PACKAGE:ATTRIBUTE`, whose synchronous callable
 verifies credentials and returns `ControlPlaneIdentity`. The plug-in selector
 is an immutable allowlist; repeat `--plugin` for additional installed
@@ -213,6 +244,13 @@ The teaching implementation is
 [`rsl_demo_plugin/__init__.py`](rsl_demo_plugin/__init__.py).
 It recognizes `minimal-status.jsonl` and maps each accepted row to a typed
 `INTERFACE` snapshot plus a retained source record.
+Its manifest explicitly declares `TimelineTimeBasis.ABSOLUTE_UNIX_NS` because
+the fixture's `captured_at_ns` values are UTC/Unix nanoseconds; the conformance
+test asserts that declaration. This is semantic input, not presentation: a
+plug-in with monotonic or revision-relative counters must declare the matching
+basis instead of copying the example blindly. A relative plug-in emits its
+revision-start offsets directly; `timeline_start_ns` is only the lower bound
+and is not an origin that core subtracts again.
 
 Run the linear, copy-paste
 [`plugin-author-quickstart.md`](../docs/plugin-author-quickstart.md#1-run-the-known-good-example)
@@ -379,6 +417,12 @@ members and the standalone
 label their required execution stage. In particular, the core has no built-in
 CTF decoder; CTF dispatch requires an explicitly supplied `TraceDecoder`.
 
+The richer browser fixture's `ctf` source-record rows are likewise labeled
+**Synthetic CTF projections**: the demo derives those bounded presentation
+records from its generated normalized events and marks their projection origin.
+They demonstrate CTF-shaped retention and correlation UI, not successful CTF
+or LTTng decoding.
+
 The vector covers exact integer timestamps, equal-time `source_sequence`
 ordering, create/modify and insert-as-create lifecycle semantics, a window-only
 uncertain observation, native numeric/UUID/byte/compound keys, exact versus
@@ -445,10 +489,12 @@ projection is explicitly `precomputed_during_generation` with
 that the small status parser rebuilt the comprehensive corpus. This policy is
 a demo-owned facade, not a generic core hook or a second plug-in.
 
-The generated assembly, coverage registry, and precomputed projection currently
-use format version 2. The projection capability is immutable and names every
-member with its relative path, media type, serialization, and record
-collection. The archive also records a
+The generated assembly and precomputed projection use format version 2. The
+outer coverage registry uses version 3, which makes the exact private-analysis
+intent set and its required `evidence_analysis` capability authoritative for
+every case. Those intent declarations never enter a node dump. The projection
+capability is immutable and names every member with its relative path, media
+type, serialization, and record collection. The archive also records a
 `precomputed_projection_capability` and `generated_schema_contract`; the
 installed entry point exposes the same information through
 `describe_generated_fixture()` so generation, validation, and runtime loading
@@ -516,7 +562,7 @@ validity, and calculation metadata. The five temporal cases use
 `temporal_event` evidence resolved from the matching generated phase and event
 shape, including its real event UID, resource, outcome, and `state_changed`
 value. The installed policy validates these discriminated shapes at generation
-and lazy runtime load; archive validation additionally proves node/revision
+and runtime archive load; archive validation additionally proves node/revision
 namespacing.
 
 The single-node workspace advertises the selected node's bounded route choices
@@ -543,6 +589,26 @@ Test every advertised optional hook through `PluginCapabilityExecutor` so
 manifest gating, bounded reads/results, schema references, and recoverable
 versus fatal diagnostics exercise the same core boundary as a future host
 integration. Do not call those hooks directly in an author golden test.
+
+The demo deployment deliberately composes two separately identified plug-ins.
+`rsl_demo_plugin:plugin` is the primary parser and advertises only
+`STATUS_PARSE`; `rsl_demo_plugin:evidence_plugin` advertises only
+`EVIDENCE_ANALYSIS`. The deployment policy attaches the second instance with
+the `private_analysis_evidence` role to the exact primary executable identity.
+It lives in the capability-provider registry, not the primary parser registry.
+A real minimal ingestion test proves that it therefore never becomes a parser
+candidate and that both exact instances are frozen into the resulting revision
+plan.
+
+The small deterministic `analyze_evidence()` teaching hook accepts only
+core-supplied, already-disclosed facts and returns one canonically identified
+observation citing those exact facts. It covers route resolution, trace-event
+correlation, cross-evidence correlation, and generic evidence interpretation;
+the generated outer coverage manifest declares the applicable intents for
+each case. It does not call a model or infer a provider, and node dump archives
+remain topology-neutral. The production bridge resolves the exact configured
+instance from each retained node revision; the example demonstrates both the
+plug-in-owned interpretation contract and heterogeneous plug-in composition.
 
 Advanced implementations must distinguish complete known-empty scope data from
 incomplete scope evidence. They must also keep immutable packet endpoints

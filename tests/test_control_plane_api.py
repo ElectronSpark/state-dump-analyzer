@@ -509,6 +509,10 @@ class ControlPlaneApiTests(unittest.TestCase):
         body = admitted.json()
         self.assertEqual(body["state"], "admitting")
         self.assertFalse(body["terminal"])
+        self.assertRegex(
+            body["plugin_composition_policy_digest"],
+            r"^sha256:[0-9a-f]{64}$",
+        )
         completed = self.control_plane.ingestion.wait(
             ImportScope(
                 self.tenant_a,
@@ -529,6 +533,10 @@ class ControlPlaneApiTests(unittest.TestCase):
         )
         self.assertEqual(fetched.status_code, 200, fetched.text)
         self.assertEqual(fetched.json()["state"], "completed")
+        self.assertEqual(
+            fetched.json()["plugin_composition_policy_digest"],
+            body["plugin_composition_policy_digest"],
+        )
         events = self.client.get(
             f"{self.workspace_path}/imports/{body['import_id']}/events",
             headers=self._read_headers(self.tenant_a),
@@ -557,6 +565,136 @@ class ControlPlaneApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()["items"]
+
+    def test_manual_selection_forwards_exact_configured_instance_identity(
+        self,
+    ) -> None:
+        registry = self.control_plane.ingestion.registry
+        existing = registry.records()[0]
+        configured = registry.register(
+            _PluginNsEventPlugin(),
+            package_hash=existing.package_hash,
+            instance_id="tests.event-plugin.configured",
+            configuration_digest="sha256:" + ("2" * 64),
+        )
+        self._provision_scope(self.tenant_a)
+        admitted = self.client.post(
+            f"{self.workspace_path}/imports",
+            params={"original_name": "status.jsonl"},
+            headers={
+                **self._write_headers(
+                    self.tenant_a,
+                    idempotency_key="same-release-upload",
+                ),
+                "Content-Type": "application/x-ndjson",
+            },
+            content=_fixture_bytes(ifindex=29),
+        )
+        self.assertEqual(admitted.status_code, 202, admitted.text)
+        import_id = admitted.json()["import_id"]
+        scope = ImportScope(self.tenant_a, self.project_id, self.workspace_id)
+        awaiting = None
+        for _ in range(500):
+            current = self.control_plane.ingestion.get_import(scope, import_id)
+            if current.state is ImportState.AWAITING_SELECTION:
+                awaiting = current
+                break
+            self.assertFalse(current.state.terminal, current.error_message)
+            threading.Event().wait(0.01)
+        self.assertIsNotNone(awaiting)
+        assert awaiting is not None
+
+        candidate_response = self.client.get(
+            f"{self.workspace_path}/imports/{import_id}/candidates",
+            headers=self._read_headers(self.tenant_a),
+        )
+        self.assertEqual(candidate_response.status_code, 200, candidate_response.text)
+        candidates = candidate_response.json()["items"]
+        self.assertEqual(len(candidates), 2)
+        self.assertEqual(
+            {candidate["instance_id"] for candidate in candidates},
+            {existing.instance_id, configured.instance_id},
+        )
+        self.assertEqual(
+            len(
+                {
+                    candidate["registered_execution_identity"]
+                    for candidate in candidates
+                }
+            ),
+            2,
+        )
+        selected = next(
+            candidate
+            for candidate in candidates
+            if candidate["instance_id"] == configured.instance_id
+        )
+        legacy_body = {
+            "probe_set_hash": awaiting.probe_set_hash,
+            "plugin_id": selected["plugin_id"],
+            "plugin_version": selected["plugin_version"],
+            "package_hash": selected["package_hash"],
+        }
+        ambiguous = self.client.post(
+            f"{self.workspace_path}/imports/{import_id}/selection",
+            headers={
+                **self._write_headers(self.tenant_a),
+                "Idempotency-Key": "ambiguous-selection",
+            },
+            json=legacy_body,
+        )
+        self.assertEqual(ambiguous.status_code, 409, ambiguous.text)
+        partial = self.client.post(
+            f"{self.workspace_path}/imports/{import_id}/selection",
+            headers={
+                **self._write_headers(self.tenant_a),
+                "Idempotency-Key": "partial-selection",
+            },
+            json={**legacy_body, "instance_id": selected["instance_id"]},
+        )
+        self.assertEqual(partial.status_code, 422, partial.text)
+        malformed = self.client.post(
+            f"{self.workspace_path}/imports/{import_id}/selection",
+            headers={
+                **self._write_headers(self.tenant_a),
+                "Idempotency-Key": "malformed-selection",
+            },
+            json={
+                **legacy_body,
+                "instance_id": selected["instance_id"],
+                "registered_execution_identity": "sha256:not-a-digest",
+            },
+        )
+        self.assertEqual(malformed.status_code, 422, malformed.text)
+
+        accepted = self.client.post(
+            f"{self.workspace_path}/imports/{import_id}/selection",
+            headers={
+                **self._write_headers(self.tenant_a),
+                "Idempotency-Key": "exact-selection",
+            },
+            json={
+                **legacy_body,
+                "instance_id": selected["instance_id"],
+                "registered_execution_identity": selected[
+                    "registered_execution_identity"
+                ],
+            },
+        )
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        completed = self.control_plane.ingestion.wait(scope, import_id, timeout=10)
+        self.assertEqual(completed.state, ImportState.COMPLETED, completed.error_message)
+        assert completed.revision_id is not None
+        plan = self.control_plane.sessions.get_revision(
+            self.tenant_a,
+            completed.revision_id,
+        ).execution_plan
+        assert plan is not None
+        self.assertEqual(plan.plugins[0].instance_id, configured.instance_id)
+        self.assertEqual(
+            plan.plugins[0].registered_execution_identity,
+            configured.registered_execution_identity,
+        )
 
     def test_time_range_subject_accepts_precise_decimal_nanoseconds(self) -> None:
         self._provision_scope(self.tenant_a)
@@ -1488,11 +1626,43 @@ class ControlPlaneApiTests(unittest.TestCase):
         self,
     ) -> None:
         mutations = (
-            ("status", lambda denial: setattr(denial, "status_code", 418), "GET", "route", False),
-            ("role", lambda denial: setattr(denial, "required_role", "private-role"), "GET", "route", False),
-            ("concealed", lambda denial: setattr(denial, "concealed", 1), "GET", "route", False),
-            ("tenant", lambda denial: setattr(denial, "tenant_correlation", "bad"), "GET", "route", False),
-            ("pair", lambda denial: setattr(denial, "reason", ControlPlaneAccessReason.ORIGIN_REJECTED), "GET", "route", False),
+            (
+                "status",
+                lambda denial: setattr(denial, "status_code", 418),
+                "GET",
+                "route",
+                False,
+            ),
+            (
+                "role",
+                lambda denial: setattr(denial, "required_role", "private-role"),
+                "GET",
+                "route",
+                False,
+            ),
+            (
+                "concealed",
+                lambda denial: setattr(denial, "concealed", 1),
+                "GET",
+                "route",
+                False,
+            ),
+            (
+                "tenant",
+                lambda denial: setattr(denial, "tenant_correlation", "bad"),
+                "GET",
+                "route",
+                False,
+            ),
+            (
+                "pair",
+                lambda denial: setattr(
+                    denial, "reason", ControlPlaneAccessReason.ORIGIN_REJECTED
+                ),
+                "GET",
+                "route",
+                False,
+            ),
             ("method", lambda denial: None, "TRACE", "route", False),
             ("route", lambda denial: None, "GET", "PRIVATE C:\\tenant", False),
             ("mutating", lambda denial: None, "GET", "route", 1),
@@ -1502,10 +1672,9 @@ class ControlPlaneApiTests(unittest.TestCase):
                 captured: list[dict[str, object]] = []
                 reporter = ControlPlaneAccessDenialReporter(
                     emitter=(
-                        lambda _event, _captured=captured, **fields: _captured.append(
-                            dict(fields)
+                        lambda _event, _captured=captured, **fields: (
+                            _captured.append(dict(fields)) or True
                         )
-                        or True
                     ),
                     monotonic=lambda: 0.0,
                     max_keys=1,
@@ -2395,6 +2564,11 @@ class ControlPlaneApiTests(unittest.TestCase):
             "OSError": 500,
             "PluginExecutionProcessError": 422,
             "PluginExecutionTimeoutError": 422,
+            "ProposalReviewConflictError": 409,
+            "ProposalReviewError": 500,
+            "ProposalReviewNotFoundError": 404,
+            "ProposalReviewUnavailableError": 503,
+            "ProposalReviewValidationError": 422,
             "PrivateAnalysisServiceConflict": 409,
             "PrivateAnalysisServiceError": 500,
             "PrivateAnalysisServiceInvalidRequest": 422,
@@ -2436,6 +2610,7 @@ class ControlPlaneApiTests(unittest.TestCase):
                 "IdempotencyConflict",
                 "ImportConflictError",
                 "ImportQuotaExceededError",
+                "ProposalReviewValidationError",
                 "ReviewConflictError",
                 "ReviewIdempotencyConflictError",
                 "ReviewValidationError",

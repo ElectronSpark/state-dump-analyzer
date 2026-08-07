@@ -13,6 +13,7 @@ from router_dump_analyzer.plugin_execution_plan import (
     PluginExecutionPlan,
 )
 from router_dump_analyzer.private_analysis import (
+    EvidenceReference,
     EvidenceScope,
     PrivateAnalysisClockMode,
     PrivateAnalysisDisclosureMode,
@@ -23,6 +24,7 @@ from router_dump_analyzer.private_analysis import (
     PrivateAnalysisTransport,
     WorkspaceDisclosurePolicy,
     default_private_analysis_tool_catalog,
+    evidence_snapshot_digest,
     private_analysis_result_json,
 )
 from router_dump_analyzer.private_analysis_execution import (
@@ -58,13 +60,17 @@ from router_dump_analyzer.session_store import SqliteSessionStore
 try:
     from tests.test_private_ai_in_process_runner import (
         _Harness,
+        _reference,
         _selection,
+        _supported_result,
         _unsupported_result,
     )
 except ModuleNotFoundError:
     from test_private_ai_in_process_runner import (  # type: ignore[no-redef]
         _Harness,
+        _reference,
         _selection,
+        _supported_result,
         _unsupported_result,
     )
 
@@ -94,6 +100,7 @@ def _plan(node_id: str, suffix: str) -> PluginExecutionPlan:
                 ),
                 configuration_digest="sha256:" + "c" * 64,
                 schema_digest="sha256:" + "d" * 64,
+                registered_execution_identity="sha256:" + suffix * 64,
                 capabilities=("source_record_parser",),
                 roles=("primary_parser",),
             ),
@@ -159,10 +166,11 @@ class PrivateAnalysisServiceTests(unittest.TestCase):
             registrations=(
                 PrivateAnalysisRunnerRegistration(
                     runner=self.runner,
-                    tool_service_factory=lambda request: _Harness(
+                    trusted_inline_tool_service_factory=lambda request: _Harness(
                         request,
                         policy=self.policy,
                     ).service(),
+                    custom_evidence_service_digest="sha256:" + "f" * 64,
                 ),
             ),
         )
@@ -183,7 +191,9 @@ class PrivateAnalysisServiceTests(unittest.TestCase):
         context: PrivateAnalysisInProcessContext,
         _gateway: PrivateAnalysisInProcessToolGateway,
     ) -> str:
-        return private_analysis_result_json(_unsupported_result(context.request))
+        return private_analysis_result_json(
+            _unsupported_result(context.request)
+        )
 
     @staticmethod
     def _scope(
@@ -248,6 +258,34 @@ class PrivateAnalysisServiceTests(unittest.TestCase):
             default_private_analysis_tool_catalog().catalog_digest,
         )
 
+    def test_expired_recovery_is_explicit_scoped_and_never_reexecutes(self) -> None:
+        queued = self._create(run_id="expired-service-run")
+        self.runs.claim_run(
+            self._scope(),
+            queued.run_id,
+            expected_version=queued.version,
+            actor_id="worker",
+            execution_id="interrupted-service-attempt",
+            lease_duration_ns=1,
+            now_ns=queued.created_at_ns,
+        )
+
+        recovered = self.service.recover_expired(
+            self._scope(),
+            actor_id="operator-recovery",
+            limit=1,
+        )
+
+        self.assertEqual(len(recovered), 1)
+        self.assertEqual(recovered[0].run_id, queued.run_id)
+        self.assertIs(recovered[0].state, PrivateAnalysisRunState.COMPLETED)
+        with self.assertRaises(PrivateAnalysisServiceInvalidRequest):
+            self.service.recover_expired(
+                self._scope(),
+                actor_id="operator-recovery",
+                limit=0,
+            )
+
     def test_runner_catalog_is_policy_filtered_and_empty_by_default(self) -> None:
         self.assertEqual(
             self.service.list_runners(self._scope())[0].selection,
@@ -261,6 +299,50 @@ class PrivateAnalysisServiceTests(unittest.TestCase):
         )
         self.assertEqual(empty_service.list_runners(self._scope()), ())
         empty_execution.close(timeout=1)
+
+    def test_capabilities_are_closed_scoped_and_policy_filtered(self) -> None:
+        capabilities = self.service.capabilities(self._scope())
+
+        self.assertEqual(capabilities.scope, self._scope())
+        self.assertTrue(capabilities.enabled)
+        self.assertEqual(
+            tuple(item.value for item in capabilities.task_kinds),
+            tuple(sorted(item.value for item in PrivateAnalysisTaskKind)),
+        )
+        self.assertEqual(
+            capabilities.request_limit_ceilings,
+            PrivateAnalysisLimits(),
+        )
+        self.assertEqual(
+            capabilities.transports,
+            (PrivateAnalysisTransport.IN_PROCESS,),
+        )
+        self.assertEqual(
+            tuple(item.value for item in capabilities.states),
+            ("queued", "running", "cancel_requested", "completed", "cancelled"),
+        )
+        self.assertEqual(
+            tuple(item.value for item in capabilities.actions),
+            ("create", "list", "get", "execute", "cancel", "report"),
+        )
+
+        disabled = self.sessions.create_workspace(
+            "tenant-a",
+            "project-a",
+            "Disabled",
+            workspace_id="workspace-capabilities-disabled",
+        )
+        unavailable = self.service.capabilities(
+            self._scope(workspace_id=disabled.workspace_id)
+        )
+        self.assertFalse(unavailable.enabled)
+        self.assertEqual(unavailable.transports, ())
+
+    def test_capabilities_reject_cross_project_and_missing_workspace_scope(self) -> None:
+        with self.assertRaises(PrivateAnalysisServiceInvalidRequest):
+            self.service.capabilities(self._scope(project_id="project-other"))
+        with self.assertRaises(PrivateAnalysisServiceNotFound):
+            self.service.capabilities(self._scope(workspace_id="workspace-missing"))
 
     def test_public_runner_identity_cannot_select_ambiguous_configuration(self) -> None:
         alternate = ConfiguredPrivateAnalysisInProcessRunner(
@@ -278,10 +360,12 @@ class PrivateAnalysisServiceTests(unittest.TestCase):
                     PrivateAnalysisRunnerRegistration(
                         self.runner,
                         lambda request: _Harness(request, policy=self.policy).service(),
+                        custom_evidence_service_digest="sha256:" + "f" * 64,
                     ),
                     PrivateAnalysisRunnerRegistration(
                         alternate,
                         lambda request: _Harness(request, policy=self.policy).service(),
+                        custom_evidence_service_digest="sha256:" + "e" * 64,
                     ),
                 ),
             )
@@ -455,6 +539,177 @@ class PrivateAnalysisServiceTests(unittest.TestCase):
         self.assertTrue(
             forbidden.isdisjoint({item.name for item in fields(report.run)})
         )
+
+    def test_report_projects_only_exact_cited_disclosed_reference_metadata(
+        self,
+    ) -> None:
+        queued = self._create(run_id="run-cited-evidence")
+        self.service.execute(
+            self._scope(),
+            queued.run_id,
+            expected_version=queued.version,
+            actor_id="worker",
+        )
+        stored = self.runs.get_run(self._scope(), queued.run_id)
+        references: tuple[EvidenceReference, ...] = tuple(
+            sorted(
+                (
+                    _reference(
+                        ordinal,
+                        scope=stored.request.scope,
+                        revision=stored.request.revisions[0],
+                    )
+                    for ordinal in (1, 2)
+                ),
+                key=lambda item: item.reference_digest,
+            )
+        )
+        outcome = PrivateAnalysisOutcome(
+            kind=PrivateAnalysisOutcomeKind.RESULT,
+            result=_supported_result(stored.request, references[0]),
+        )
+        forged = replace(
+            stored,
+            disclosed_references=references,
+            evidence_ledger_digest=evidence_snapshot_digest(references),
+            budget_state=replace(
+                stored.budget_state,
+                evidence_items_disclosed=len(references),
+            ),
+            outcome=outcome,
+        )
+        with patch.object(self.runs, "get_run", return_value=forged):
+            report = self.service.get_report(self._scope(), queued.run_id)
+
+        self.assertEqual(report.run.disclosed_reference_count, 2)
+        self.assertEqual(len(report.evidence_references), 1)
+        projected = report.evidence_references[0]
+        cited = references[0]
+        self.assertEqual(projected.reference_digest, cited.reference_digest)
+        self.assertEqual(projected.revision_id, cited.revision.revision_id)
+        self.assertEqual(projected.node_id, cited.revision.node_id)
+        self.assertEqual(projected.producer, cited.producer)
+        self.assertEqual(projected.kind, cited.kind)
+        self.assertEqual(projected.time_range, cited.time_range)
+        self.assertNotEqual(
+            projected.reference_digest,
+            references[1].reference_digest,
+        )
+        self.assertTrue(
+            {
+                "content_digest",
+                "locator_digest",
+                "payload",
+                "payload_json",
+                "fixture_id",
+                "execution_plan_digest",
+            }.isdisjoint({item.name for item in fields(projected)})
+        )
+
+    def test_report_rejects_missing_duplicate_extra_and_mismatched_disclosures(
+        self,
+    ) -> None:
+        queued = self._create(run_id="run-cited-evidence-invalid")
+        self.service.execute(
+            self._scope(),
+            queued.run_id,
+            expected_version=queued.version,
+            actor_id="worker",
+        )
+        stored = self.runs.get_run(self._scope(), queued.run_id)
+        references = tuple(
+            sorted(
+                (
+                    _reference(
+                        ordinal,
+                        scope=stored.request.scope,
+                        revision=stored.request.revisions[0],
+                    )
+                    for ordinal in (1, 2)
+                ),
+                key=lambda item: item.reference_digest,
+            )
+        )
+        reference = references[0]
+        outcome = PrivateAnalysisOutcome(
+            kind=PrivateAnalysisOutcomeKind.RESULT,
+            result=_supported_result(stored.request, reference),
+        )
+        forged = replace(
+            stored,
+            disclosed_references=references,
+            evidence_ledger_digest=evidence_snapshot_digest(references),
+            budget_state=replace(
+                stored.budget_state,
+                evidence_items_disclosed=len(references),
+            ),
+            outcome=outcome,
+        )
+        with patch.object(self.runs, "get_run", return_value=forged):
+            valid = self.service.get_report(self._scope(), queued.run_id)
+        arguments = {
+            "run": valid.run,
+            "query": stored.request.query,
+            "outcome": outcome,
+        }
+        empty_run = replace(
+            valid.run,
+            evidence_ledger_digest=evidence_snapshot_digest(()),
+            disclosed_reference_count=0,
+            budget_state=replace(
+                valid.run.budget_state,
+                evidence_items_disclosed=0,
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "undisclosed evidence"):
+            PrivateAnalysisRunReport(
+                **{**arguments, "run": empty_run},
+                disclosed_references=(),
+            )
+        with self.assertRaisesRegex(ValueError, "unique and canonical"):
+            PrivateAnalysisRunReport(
+                **arguments,
+                disclosed_references=(reference, reference),
+            )
+        with self.assertRaisesRegex(ValueError, "ledger does not match"):
+            PrivateAnalysisRunReport(
+                **arguments,
+                disclosed_references=(reference,),
+            )
+        extra = _reference(
+            3,
+            scope=stored.request.scope,
+            revision=stored.request.revisions[0],
+        )
+        with self.assertRaisesRegex(ValueError, "ledger does not match"):
+            PrivateAnalysisRunReport(
+                **arguments,
+                disclosed_references=tuple(
+                    sorted(
+                        (*references, extra),
+                        key=lambda item: item.reference_digest,
+                    )
+                ),
+            )
+        mismatched = replace(
+            reference,
+            scope=EvidenceScope("tenant-a", "project-a", "workspace-other"),
+            reference_digest="",
+        )
+        mismatched_run = replace(
+            valid.run,
+            evidence_ledger_digest=evidence_snapshot_digest((mismatched,)),
+            disclosed_reference_count=1,
+            budget_state=replace(
+                valid.run.budget_state,
+                evidence_items_disclosed=1,
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "run scope"):
+            PrivateAnalysisRunReport(
+                **{**arguments, "run": mismatched_run},
+                disclosed_references=(mismatched,),
+            )
 
     def test_get_list_cancel_and_error_translation_use_only_service_values(
         self,

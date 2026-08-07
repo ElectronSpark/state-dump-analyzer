@@ -11,14 +11,17 @@ Windows Job Object process-tree guarantee.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import queue
 import re
+import stat
 import subprocess
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from time import monotonic_ns
 from typing import IO, BinaryIO, Final, cast
 
@@ -58,6 +61,10 @@ from .private_analysis.local_subprocess_protocol import (
     encode_private_analysis_local_subprocess_message,
     validate_private_analysis_local_subprocess_sequence,
 )
+from .private_analysis_factory_process import (
+    PrivateAnalysisRemoteToolRunLease,
+    PrivateAnalysisRemoteToolService,
+)
 from .private_analysis_runner_support import (
     MAX_PRIVATE_ANALYSIS_SUBPROCESS_STDERR_BYTES,
     MAX_PRIVATE_ANALYSIS_SUBPROCESS_TRANSCRIPT_BYTES,
@@ -89,7 +96,7 @@ from .private_analysis_tool_service import (
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 
 PRIVATE_ANALYSIS_SUBPROCESS_LAUNCH_VERSION: Final = (
-    "router_dump_analyzer.private_analysis.subprocess_launch.v1"
+    "router_dump_analyzer.private_analysis.subprocess_launch.v2"
 )
 PRIVATE_ANALYSIS_SUBPROCESS_TRANSCRIPT_VERSION: Final = (
     "router_dump_analyzer.private_analysis.subprocess_transcript.v1"
@@ -99,6 +106,9 @@ MAX_PRIVATE_ANALYSIS_SUBPROCESS_ARG_BYTES: Final = 32_768
 MAX_PRIVATE_ANALYSIS_SUBPROCESS_COMMAND_UTF16_UNITS: Final = 30_000
 MAX_PRIVATE_ANALYSIS_SUBPROCESS_ENVIRONMENT_ITEMS: Final = 256
 MAX_PRIVATE_ANALYSIS_SUBPROCESS_ENVIRONMENT_BYTES: Final = 256 * 1024
+MAX_PRIVATE_ANALYSIS_SUBPROCESS_HELPER_ARTIFACTS: Final = 128
+MAX_PRIVATE_ANALYSIS_SUBPROCESS_ARTIFACT_BYTES: Final = 512 * 1024 * 1024
+MAX_PRIVATE_ANALYSIS_SUBPROCESS_ARTIFACT_TOTAL_BYTES: Final = 1024 * 1024 * 1024
 MIN_PRIVATE_ANALYSIS_SUBPROCESS_REAP_GRACE_MS: Final = 10
 MAX_PRIVATE_ANALYSIS_SUBPROCESS_REAP_GRACE_MS: Final = 10_000
 PRIVATE_ANALYSIS_SUBPROCESS_CANCELLATION_POLL_MS: Final = 50
@@ -106,6 +116,29 @@ PRIVATE_ANALYSIS_SUBPROCESS_CANCELLATION_POLL_MS: Final = 50
 _ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
 _STOP_PUMP: Final = object()
 _FINISH_PUMP: Final = object()
+_EXECUTABLE_ATTESTATION_SCHEMA: Final = (
+    b"router_dump_analyzer.private_analysis.subprocess_artifacts.v1\0"
+)
+_ARTIFACT_READ_CHUNK_BYTES: Final = 1024 * 1024
+
+
+class _PrivateAnalysisSubprocessArtifactChanged(RuntimeError):
+    """A registered local executable artifact no longer matches its seal."""
+
+
+class _PrivateAnalysisSubprocessAttestationInterrupted(RuntimeError):
+    """A bounded executable-artifact scan observed cancellation or timeout."""
+
+
+class PrivateAnalysisSubprocessCleanupPending(RuntimeError):
+    """Local child cleanup or its exact receipt requires bounded retry."""
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _ExecutableArtifactAttestation:
+    digest: str
+    file_identities: tuple[tuple[int, int, int, int, int], ...]
+    total_bytes: int
 
 
 def _bounded_scalar_text(
@@ -152,6 +185,301 @@ def _reject_win32_normalization_ambiguous_path(value: str, label: str) -> None:
             )
 
 
+def _artifact_file_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    """Return stable same-host metadata used to detect replacement or touching."""
+
+    return (
+        int(value.st_dev),
+        int(value.st_ino),
+        int(value.st_mode),
+        int(value.st_size),
+        int(value.st_mtime_ns),
+    )
+
+
+def _artifact_handle_identity(
+    value: os.stat_result,
+) -> tuple[int, int, int, int, int]:
+    """Normalize platform-specific handle permission reporting for race checks."""
+
+    return (
+        int(value.st_dev),
+        int(value.st_ino),
+        int(stat.S_IFMT(value.st_mode)),
+        int(value.st_size),
+        int(value.st_mtime_ns),
+    )
+
+
+def _argument_regular_file_keys(
+    argument: str,
+    working_directory: str,
+) -> tuple[str, ...]:
+    """Return canonical existing file operands encoded by one argv item."""
+
+    candidates = [argument]
+    if argument.startswith("-") and "=" in argument:
+        candidates.append(argument.split("=", maxsplit=1)[1])
+    keys: list[str] = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if not path.is_absolute():
+            path = Path(working_directory) / path
+        try:
+            candidate_stat = os.stat(path, follow_symlinks=False)
+        except OSError:
+            continue
+        if stat.S_ISREG(candidate_stat.st_mode):
+            keys.append(os.path.normcase(os.path.normpath(str(path))))
+    return tuple(keys)
+
+
+def _validate_argument_artifact_coverage(
+    argv: tuple[str, ...],
+    working_directory: str,
+    helper_artifacts: tuple[str, ...],
+    runtime_data_indices: set[int],
+) -> None:
+    """Require every observable argv file to be attested or declared as data."""
+
+    helper_keys = {
+        os.path.normcase(os.path.normpath(value)) for value in helper_artifacts
+    }
+    for index, argument in enumerate(argv[1:], start=1):
+        file_keys = _argument_regular_file_keys(argument, working_directory)
+        if index in runtime_data_indices:
+            if any(key in helper_keys for key in file_keys):
+                raise ValueError(
+                    "runtime data arguments cannot name attested helper artifacts"
+                )
+            continue
+        if any(key not in helper_keys for key in file_keys):
+            raise ValueError(
+                "every subprocess argv file must be an attested helper artifact "
+                "or explicitly declared runtime data"
+            )
+        argument_key = os.path.normcase(os.path.normpath(argument))
+        if not argument.startswith("-") and argument_key not in helper_keys:
+            raise ValueError(
+                "every non-option subprocess argument must be an attested "
+                "helper artifact or explicitly declared runtime data"
+            )
+
+
+_DYNAMIC_EXECUTION_FLAGS = frozenset({"c", "m"})
+_NO_VALUE_SHORT_OPTIONS = frozenset("bBdEhiIOPqRsSuvVx?")
+_VALUE_SHORT_OPTIONS = frozenset({"W", "X"})
+_NO_VALUE_LONG_OPTIONS = frozenset(
+    {
+        "--help",
+        "--help-all",
+        "--help-env",
+        "--help-xoptions",
+        "--version",
+    }
+)
+_SEPARATED_VALUE_LONG_OPTIONS = frozenset({"--check-hash-based-pycs"})
+_LONG_OPTION_NAME = re.compile(r"--[A-Za-z][A-Za-z0-9-]*\Z")
+
+
+def _is_exact_helper_operand(argument: str, helper_keys: set[str]) -> bool:
+    """Return whether one direct operand names a declared helper exactly."""
+
+    if argument.startswith("-"):
+        return False
+    argument_key = os.path.normcase(os.path.normpath(argument))
+    return argument_key in helper_keys
+
+
+def _short_option_requires_separated_value(argument: str) -> bool:
+    """Validate one supported short-option cluster and classify its value."""
+
+    short_options = argument[1:]
+    if not short_options:
+        raise ValueError(
+            "subprocess launcher-control prefix contains an ambiguous operand"
+        )
+    for index, option in enumerate(short_options):
+        if option in _DYNAMIC_EXECUTION_FLAGS:
+            raise ValueError(
+                "inline or module execution cannot provide exact artifact attestation"
+            )
+        if option in _NO_VALUE_SHORT_OPTIONS:
+            continue
+        if option in _VALUE_SHORT_OPTIONS:
+            return index == len(short_options) - 1
+        raise ValueError(
+            "subprocess launcher-control prefix contains an unsupported "
+            "or ambiguous option"
+        )
+    return False
+
+
+def _validate_dynamic_execution_mode(
+    argv: tuple[str, ...],
+    _working_directory: str,
+    helper_artifacts: tuple[str, ...],
+) -> None:
+    """Parse the launcher-control prefix without relying on executable names.
+
+    Only supported switch-only flags and unambiguous attached/separated value
+    options are admitted.  ``--`` and an exact direct helper operand terminate
+    launcher option parsing; a helper consumed as an option value does not.
+    """
+
+    helper_keys = {
+        os.path.normcase(os.path.normpath(value)) for value in helper_artifacts
+    }
+    consume_separated_value = False
+    for argument in argv[1:]:
+        if consume_separated_value:
+            consume_separated_value = False
+            continue
+        if argument == "--":
+            return
+        if _is_exact_helper_operand(argument, helper_keys):
+            return
+        if not argument.startswith("-"):
+            raise ValueError(
+                "subprocess launcher-control prefix contains an ambiguous operand"
+            )
+        if argument.startswith("--"):
+            if argument in _NO_VALUE_LONG_OPTIONS:
+                continue
+            if argument in _SEPARATED_VALUE_LONG_OPTIONS:
+                consume_separated_value = True
+                continue
+            option_name, separator, _value = argument.partition("=")
+            if separator and _LONG_OPTION_NAME.fullmatch(option_name) is not None:
+                continue
+            raise ValueError(
+                "subprocess launcher-control prefix contains an unsupported "
+                "or ambiguous option"
+            )
+        consume_separated_value = _short_option_requires_separated_value(argument)
+    if consume_separated_value:
+        raise ValueError(
+            "subprocess launcher-control prefix ends before an option value"
+        )
+
+
+def _validate_launch_argument_contract(
+    argv: tuple[str, ...],
+    working_directory: str,
+    helper_artifacts: tuple[str, ...],
+    runtime_data_indices: set[int],
+) -> None:
+    """Validate argv artifact classification and execution-mode safety."""
+
+    _validate_argument_artifact_coverage(
+        argv,
+        working_directory,
+        helper_artifacts,
+        runtime_data_indices,
+    )
+    _validate_dynamic_execution_mode(
+        argv,
+        working_directory,
+        helper_artifacts,
+    )
+
+
+def _attest_executable_artifacts(
+    executable: str,
+    helper_artifacts: tuple[str, ...],
+    *,
+    continue_attestation: Callable[[], bool] | None = None,
+) -> _ExecutableArtifactAttestation:
+    """Content-address bounded executable inputs without retaining their bytes."""
+
+    paths = (executable, *helper_artifacts)
+    digest = hashlib.sha256()
+    digest.update(_EXECUTABLE_ATTESTATION_SCHEMA)
+    identities: list[tuple[int, int, int, int, int]] = []
+    total_bytes = 0
+    for index, raw_path in enumerate(paths):
+        if continue_attestation is not None and not continue_attestation():
+            raise _PrivateAnalysisSubprocessAttestationInterrupted(
+                "private-analysis executable attestation was interrupted"
+            )
+        try:
+            path_stat = os.stat(raw_path, follow_symlinks=False)
+            if stat.S_ISLNK(path_stat.st_mode) or not stat.S_ISREG(path_stat.st_mode):
+                raise _PrivateAnalysisSubprocessArtifactChanged(
+                    "private-analysis executable artifact is not a regular file"
+                )
+            file_hash = hashlib.sha256()
+            with open(raw_path, "rb", buffering=0) as stream:
+                before = os.fstat(stream.fileno())
+                if not stat.S_ISREG(before.st_mode):
+                    raise _PrivateAnalysisSubprocessArtifactChanged(
+                        "private-analysis executable artifact is not a regular file"
+                    )
+                artifact_bytes = 0
+                while True:
+                    if continue_attestation is not None and not continue_attestation():
+                        raise _PrivateAnalysisSubprocessAttestationInterrupted(
+                            "private-analysis executable attestation was interrupted"
+                        )
+                    chunk = stream.read(_ARTIFACT_READ_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    artifact_bytes += len(chunk)
+                    total_bytes += len(chunk)
+                    if artifact_bytes > MAX_PRIVATE_ANALYSIS_SUBPROCESS_ARTIFACT_BYTES:
+                        raise _PrivateAnalysisSubprocessArtifactChanged(
+                            "private-analysis executable artifact exceeds its byte limit"
+                        )
+                    if total_bytes > (
+                        MAX_PRIVATE_ANALYSIS_SUBPROCESS_ARTIFACT_TOTAL_BYTES
+                    ):
+                        raise _PrivateAnalysisSubprocessArtifactChanged(
+                            "private-analysis executable artifacts exceed their byte limit"
+                        )
+                    file_hash.update(chunk)
+                after = os.fstat(stream.fileno())
+            final_path_stat = os.stat(raw_path, follow_symlinks=False)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except _PrivateAnalysisSubprocessAttestationInterrupted:
+            raise
+        except _PrivateAnalysisSubprocessArtifactChanged:
+            raise
+        except (OSError, ValueError) as error:
+            raise _PrivateAnalysisSubprocessArtifactChanged(
+                "private-analysis executable artifact cannot be attested"
+            ) from error
+        identity = _artifact_file_identity(path_stat)
+        if (
+            _artifact_handle_identity(before) != _artifact_handle_identity(after)
+            or _artifact_handle_identity(before) != _artifact_handle_identity(path_stat)
+            or identity != _artifact_file_identity(final_path_stat)
+            or artifact_bytes != before.st_size
+        ):
+            raise _PrivateAnalysisSubprocessArtifactChanged(
+                "private-analysis executable artifact changed while being attested"
+            )
+        identities.append(identity)
+        digest.update(index.to_bytes(4, "big"))
+        canonical_path = os.path.normcase(os.path.abspath(raw_path)).encode("utf-8")
+        digest.update(len(canonical_path).to_bytes(4, "big"))
+        digest.update(canonical_path)
+        digest.update(identity[2].to_bytes(8, "big", signed=False))
+        digest.update(identity[3].to_bytes(8, "big", signed=False))
+        digest.update(file_hash.digest())
+    if continue_attestation is not None and not continue_attestation():
+        raise _PrivateAnalysisSubprocessAttestationInterrupted(
+            "private-analysis executable attestation was interrupted"
+        )
+    return _ExecutableArtifactAttestation(
+        digest="sha256:" + digest.hexdigest(),
+        file_identities=tuple(identities),
+        total_bytes=total_bytes,
+    )
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class PrivateAnalysisSubprocessLaunchConfiguration:
     """Exact internal launch inputs for one operator-approved local adapter."""
@@ -165,6 +493,14 @@ class PrivateAnalysisSubprocessLaunchConfiguration:
     kill_grace_ms: int = 2_000
     contract_version: str = PRIVATE_ANALYSIS_SUBPROCESS_LAUNCH_VERSION
     configuration_digest: str = ""
+    helper_artifacts: tuple[str, ...] = ()
+    runtime_data_argument_indices: tuple[int, ...] = ()
+    executable_artifact_digest: str = field(init=False, repr=False)
+    _artifact_attestation: _ExecutableArtifactAttestation = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if self.contract_version != PRIVATE_ANALYSIS_SUBPROCESS_LAUNCH_VERSION:
@@ -237,6 +573,61 @@ class PrivateAnalysisSubprocessLaunchConfiguration:
             normalized_environment.append((name, value))
         environment = tuple(sorted(normalized_environment, key=lambda item: item[0]))
 
+        if (
+            type(self.helper_artifacts) is not tuple
+            or len(self.helper_artifacts)
+            > MAX_PRIVATE_ANALYSIS_SUBPROCESS_HELPER_ARTIFACTS
+        ):
+            raise ValueError("subprocess helper_artifacts must be a bounded tuple")
+        helper_artifacts: list[str] = []
+        helper_keys: set[str] = set()
+        executable_key = os.path.normcase(os.path.normpath(argv[0]))
+        for raw_helper in self.helper_artifacts:
+            helper = _bounded_scalar_text(
+                raw_helper,
+                "subprocess helper artifact",
+                maximum_bytes=16_384,
+            )
+            helper_path = Path(helper)
+            if not helper_path.is_absolute():
+                raise ValueError("subprocess helper artifacts must use absolute paths")
+            _reject_win32_normalization_ambiguous_path(
+                helper,
+                "subprocess helper artifact",
+            )
+            helper_key = os.path.normcase(os.path.normpath(helper))
+            if helper_key == executable_key or helper_key in helper_keys:
+                raise ValueError("subprocess executable artifacts must be unique")
+            helper_keys.add(helper_key)
+            helper_artifacts.append(helper)
+        normalized_helpers = tuple(helper_artifacts)
+
+        if type(self.runtime_data_argument_indices) is not tuple:
+            raise ValueError(
+                "runtime_data_argument_indices must be a bounded integer tuple"
+            )
+        runtime_data_indices: set[int] = set()
+        for index in self.runtime_data_argument_indices:
+            if (
+                type(index) is not int
+                or not 1 <= index < len(argv)
+                or index in runtime_data_indices
+            ):
+                raise ValueError(
+                    "runtime_data_argument_indices must contain unique argv indices"
+                )
+            runtime_data_indices.add(index)
+        _validate_launch_argument_contract(
+            argv,
+            working_directory,
+            normalized_helpers,
+            runtime_data_indices,
+        )
+        artifact_attestation = _attest_executable_artifacts(
+            argv[0],
+            normalized_helpers,
+        )
+
         private_analysis_prefixed_sha256(
             self.adapter_identity_digest,
             "adapter_identity_digest",
@@ -263,6 +654,18 @@ class PrivateAnalysisSubprocessLaunchConfiguration:
         object.__setattr__(self, "argv", argv)
         object.__setattr__(self, "working_directory", working_directory)
         object.__setattr__(self, "environment", environment)
+        object.__setattr__(self, "helper_artifacts", normalized_helpers)
+        object.__setattr__(
+            self,
+            "runtime_data_argument_indices",
+            tuple(sorted(runtime_data_indices)),
+        )
+        object.__setattr__(
+            self,
+            "executable_artifact_digest",
+            artifact_attestation.digest,
+        )
+        object.__setattr__(self, "_artifact_attestation", artifact_attestation)
         expected = "sha256:" + strict_canonical_json_sha256(
             _launch_configuration_payload(self)
         )
@@ -278,11 +681,51 @@ class PrivateAnalysisSubprocessLaunchConfiguration:
         else:
             object.__setattr__(self, "configuration_digest", expected)
 
+    def revalidate_executable_artifacts(
+        self,
+        *,
+        continue_attestation: Callable[[], bool] | None = None,
+    ) -> None:
+        """Fail closed unless the executable byte/metadata seal still matches."""
+
+        try:
+            _validate_launch_argument_contract(
+                self.argv,
+                self.working_directory,
+                self.helper_artifacts,
+                set(self.runtime_data_argument_indices),
+            )
+        except ValueError as error:
+            raise _PrivateAnalysisSubprocessArtifactChanged(
+                "private-analysis argv artifact coverage changed"
+            ) from error
+        current = _attest_executable_artifacts(
+            self.argv[0],
+            self.helper_artifacts,
+            continue_attestation=continue_attestation,
+        )
+        if current != self._artifact_attestation:
+            raise _PrivateAnalysisSubprocessArtifactChanged(
+                "private-analysis executable artifact identity changed"
+            )
+        try:
+            _validate_launch_argument_contract(
+                self.argv,
+                self.working_directory,
+                self.helper_artifacts,
+                set(self.runtime_data_argument_indices),
+            )
+        except ValueError as error:
+            raise _PrivateAnalysisSubprocessArtifactChanged(
+                "private-analysis argv artifact coverage changed"
+            ) from error
+
     def __repr__(self) -> str:
         return (
             "PrivateAnalysisSubprocessLaunchConfiguration("
             f"argument_count={len(self.argv)}, "
             f"environment_count={len(self.environment)}, "
+            f"helper_artifact_count={len(self.helper_artifacts)}, "
             f"configuration_digest={self.configuration_digest!r})"
         )
 
@@ -296,6 +739,10 @@ def _launch_configuration_payload(
         "working_directory": value.working_directory,
         "environment": [list(item) for item in value.environment],
         "adapter_identity_digest": value.adapter_identity_digest,
+        "executable_artifact_digest": value.executable_artifact_digest,
+        "helper_artifact_count": len(value.helper_artifacts),
+        "helper_artifacts": list(value.helper_artifacts),
+        "runtime_data_argument_indices": list(value.runtime_data_argument_indices),
         "stderr_limit_bytes": value.stderr_limit_bytes,
         "terminate_grace_ms": value.terminate_grace_ms,
         "kill_grace_ms": value.kill_grace_ms,
@@ -564,6 +1011,19 @@ class PrivateAnalysisSubprocessExecutionReceipt:
         """Return whether direct-child and helper cleanup completed."""
 
         return self._cancellation_attested
+
+    def _with_cleanup_attested(self) -> PrivateAnalysisSubprocessExecutionReceipt:
+        """Reseal a withheld receipt after its owned child is confirmed stopped."""
+
+        if self._cancellation_attested:
+            return self
+        return PrivateAnalysisSubprocessExecutionReceipt(
+            outcome=self.outcome,
+            transcript=self._transcript,
+            disclosed_references=self._references,
+            budget_state=self._budget,
+            cancellation_attested=True,
+        )
 
     def as_cancelled(self) -> PrivateAnalysisSubprocessExecutionReceipt:
         """Reseal this receipt as cancelled after attested transport cleanup."""
@@ -1019,23 +1479,19 @@ class _LocalChildSession:
             name="private-analysis-stderr-drain",
             daemon=False,
         )
-        try:
-            self._pump.start()
-            self._pump_started = True
-            self._stderr.start()
-            self._stderr_started = True
-        except PROCESS_CONTROL_EXCEPTIONS:
-            try:
-                self.cleanup()
-            except BaseException:  # noqa: BLE001, S110 - preserve control flow.
-                pass
-            raise
-        except BaseException as error:
-            if not self.cleanup():
-                raise RuntimeError(
-                    "subprocess helper startup cleanup did not complete"
-                ) from error
-            raise
+
+    def start(self) -> None:
+        """Start helpers after the caller has retained this exact session.
+
+        A thread start can fail after the helper became live.  Mark each start
+        as attempted first so cleanup treats an uninspectable helper as owned,
+        and let the caller's single finalizer perform the bounded cleanup.
+        """
+
+        self._pump_started = True
+        self._pump.start()
+        self._stderr_started = True
+        self._stderr.start()
 
     @property
     def stderr_bytes(self) -> int:
@@ -1184,6 +1640,31 @@ class _LocalChildSession:
         _raise_cleanup_process_control(state)
         return not state.failed and state.exited and pump_stopped and stderr_stopped
 
+    def cleanup_authority_required(self) -> bool:
+        """Return whether this live object still owns child/thread cleanup.
+
+        This deliberately treats an uninspectable process or helper thread as
+        live.  Cleanup authority may be released only after direct observation
+        that the child and both non-daemon helpers stopped.
+        """
+
+        if not _process_exit_confirmed(self._process):
+            return True
+        for started, thread in (
+            (self._pump_started, self._pump),
+            (self._stderr_started, self._stderr),
+        ):
+            if not started:
+                continue
+            try:
+                if thread.is_alive():
+                    return True
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except BaseException:  # noqa: BLE001 - unknown means still owned.
+                return True
+        return False
+
 
 def _static_runner_error(
     request: PrivateAnalysisRequest,
@@ -1213,12 +1694,12 @@ def _is_cancelled_outcome(outcome: PrivateAnalysisOutcome) -> bool:
 
 
 def _access_or_deadline_error(
-    lease: PrivateAnalysisToolRunLease,
+    lease: PrivateAnalysisToolRunLease | PrivateAnalysisRemoteToolRunLease,
     request: PrivateAnalysisRequest,
     deadline_ns: int,
 ) -> PrivateAnalysisError | None:
     return private_analysis_run_access_error(
-        lease,
+        cast(PrivateAnalysisToolRunLease, lease),
         request,
         deadline_ns,
         deadline_expired=private_analysis_deadline_expired,
@@ -1262,6 +1743,97 @@ def _reap_unmanaged_child(
     _close_cleanup_stream(process.stderr, state)
     _raise_cleanup_process_control(state)
     return not state.failed and state.exited
+
+
+def _process_exit_confirmed(process: subprocess.Popen[bytes]) -> bool:
+    """Observe direct-child exit without converting uncertainty into success."""
+
+    try:
+        return process.poll() is not None
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except BaseException:  # noqa: BLE001 - an uninspectable handle remains owned.
+        return False
+
+
+@dataclass(slots=True)
+class _DeferredSubprocessReceipt:
+    """Receipt-capable state retained when process control interrupts sealing."""
+
+    request: PrivateAnalysisRequest
+    catalog: PrivateAnalysisToolCatalog
+    instruction_profile_digest: str
+    launch_configuration: PrivateAnalysisSubprocessLaunchConfiguration
+    run_digest: str
+    accumulator: _SubprocessTranscriptAccumulator
+    stderr_bytes: int
+    references: tuple[EvidenceReference, ...]
+    budget_state: PrivateAnalysisToolBudgetState
+
+    def seal(self) -> PrivateAnalysisSubprocessExecutionReceipt:
+        outcome = private_analysis_error_outcome(
+            _static_runner_error(
+                self.request,
+                PrivateAnalysisErrorCode.RUNNER_FAILED,
+            )
+        )
+        transcript = _sealed_subprocess_transcript(
+            request=self.request,
+            catalog=self.catalog,
+            instruction_profile_digest=self.instruction_profile_digest,
+            launch_configuration=self.launch_configuration,
+            run_digest=self.run_digest,
+            accumulator=self.accumulator,
+            stderr_bytes=self.stderr_bytes,
+            references=self.references,
+            budget_state=self.budget_state,
+            outcome=outcome,
+        )
+        return PrivateAnalysisSubprocessExecutionReceipt(
+            outcome=outcome,
+            transcript=transcript,
+            disclosed_references=self.references,
+            budget_state=self.budget_state,
+            cancellation_attested=True,
+        )
+
+
+@dataclass(slots=True)
+class _PendingLocalChildCleanup:
+    """Same-process child authority or receipt state awaiting durable handoff."""
+
+    configuration: PrivateAnalysisSubprocessLaunchConfiguration
+    session: _LocalChildSession | None = None
+    process: subprocess.Popen[bytes] | None = None
+    receipt: PrivateAnalysisSubprocessExecutionReceipt | None = None
+    deferred_receipt: _DeferredSubprocessReceipt | None = None
+    retry_lock: Lock = field(default_factory=Lock)
+
+    def __post_init__(self) -> None:
+        if (self.session is None) == (self.process is None):
+            raise ValueError("pending cleanup requires exactly one live owner")
+
+    def authority_required(self) -> bool:
+        if self.session is not None:
+            return self.session.cleanup_authority_required()
+        if self.process is None:
+            raise RuntimeError("pending subprocess cleanup lost its child handle")
+        return not _process_exit_confirmed(self.process)
+
+    def cleanup(self) -> bool:
+        if self.session is not None:
+            return self.session.cleanup()
+        if self.process is None:
+            raise RuntimeError("pending subprocess cleanup lost its child handle")
+        return _reap_unmanaged_child(self.process, self.configuration)
+
+
+@dataclass(slots=True)
+class _LocalChildCleanupOwner:
+    """Cleanup state shared by every detached view of one configured runner."""
+
+    lock: Lock = field(default_factory=Lock)
+    pending: _PendingLocalChildCleanup | None = None
 
 
 def _exchange_message(
@@ -1334,7 +1906,7 @@ def _finish_child_protocol(
 class ConfiguredPrivateAnalysisSubprocessRunner(PrivateAnalysisRunnerExecutionOwner):
     """Run one request through an exact, shell-free direct-child adapter."""
 
-    __slots__ = ("_launch_configuration",)
+    __slots__ = ("_cleanup_owner", "_launch_configuration")
 
     def __init__(
         self,
@@ -1361,6 +1933,10 @@ class ConfiguredPrivateAnalysisSubprocessRunner(PrivateAnalysisRunnerExecutionOw
             working_directory=launch_configuration.working_directory,
             environment=launch_configuration.environment,
             adapter_identity_digest=launch_configuration.adapter_identity_digest,
+            helper_artifacts=launch_configuration.helper_artifacts,
+            runtime_data_argument_indices=(
+                launch_configuration.runtime_data_argument_indices
+            ),
             stderr_limit_bytes=launch_configuration.stderr_limit_bytes,
             terminate_grace_ms=launch_configuration.terminate_grace_ms,
             kill_grace_ms=launch_configuration.kill_grace_ms,
@@ -1370,23 +1946,160 @@ class ConfiguredPrivateAnalysisSubprocessRunner(PrivateAnalysisRunnerExecutionOw
         if self._selection.configuration_digest != private_launch.configuration_digest:
             raise ValueError("runner selection does not bind the launch configuration")
         self._launch_configuration = private_launch
+        self._cleanup_owner = _LocalChildCleanupOwner()
+
+    def detached(self) -> ConfiguredPrivateAnalysisSubprocessRunner:
+        """Return an independently sealed runner for an owning registration."""
+
+        detached = ConfiguredPrivateAnalysisSubprocessRunner(
+            self.selection,
+            instruction_profile_digest=self.instruction_profile_digest,
+            launch_configuration=self._launch_configuration,
+        )
+        # Independent launch seals remain one configured runner authority and
+        # therefore share both its cross-coordinator execution gate and the
+        # only live cleanup handle retained after a failed bounded reap.
+        detached._private_analysis_execution_lock = self.execution_lock
+        detached._cleanup_owner = self._cleanup_owner
+        return detached
+
+    @property
+    def cleanup_pending(self) -> bool:
+        """Return whether child cleanup or receipt handoff remains pending."""
+
+        with self._cleanup_owner.lock:
+            return self._cleanup_owner.pending is not None
+
+    def _retain_pending_cleanup(
+        self,
+        *,
+        session: _LocalChildSession | None = None,
+        process: subprocess.Popen[bytes] | None = None,
+    ) -> _PendingLocalChildCleanup:
+        pending = _PendingLocalChildCleanup(
+            configuration=self._launch_configuration,
+            session=session,
+            process=process,
+        )
+        with self._cleanup_owner.lock:
+            if self._cleanup_owner.pending is not None:
+                raise RuntimeError("subprocess cleanup ownership already exists")
+            self._cleanup_owner.pending = pending
+        return pending
+
+    def _attach_pending_receipt(
+        self,
+        pending: _PendingLocalChildCleanup,
+        receipt: PrivateAnalysisSubprocessExecutionReceipt,
+    ) -> None:
+        with self._cleanup_owner.lock:
+            if self._cleanup_owner.pending is not pending:
+                raise RuntimeError("subprocess cleanup ownership changed")
+            pending.receipt = receipt
+
+    def _attach_deferred_receipt(
+        self,
+        pending: _PendingLocalChildCleanup,
+        receipt: _DeferredSubprocessReceipt,
+    ) -> None:
+        with self._cleanup_owner.lock:
+            if self._cleanup_owner.pending is not pending:
+                raise RuntimeError("subprocess cleanup ownership changed")
+            if pending.receipt is not None or pending.deferred_receipt is not None:
+                raise RuntimeError("subprocess cleanup receipt already exists")
+            pending.deferred_receipt = receipt
+
+    def retry_pending_cleanup(
+        self,
+    ) -> tuple[bool, PrivateAnalysisSubprocessExecutionReceipt | None]:
+        """Perform one bounded retry using the retained direct-child handle.
+
+        ``False`` means the same live handle remains owned.  ``True`` means no
+        process or helper cleanup authority remains; the optional receipt is
+        the result that was deliberately withheld while the child was live.
+        """
+
+        with self._cleanup_owner.lock:
+            pending = self._cleanup_owner.pending
+        if pending is None:
+            return True, None
+        if not pending.retry_lock.acquire(blocking=False):
+            return False, None
+        try:
+            try:
+                pending.cleanup()
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except BaseException:  # noqa: BLE001, S110 - inspect authority below.
+                pass
+            if pending.authority_required():
+                return False, None
+            receipt = pending.receipt
+            if receipt is None and pending.deferred_receipt is not None:
+                receipt = pending.deferred_receipt.seal()
+                pending.receipt = receipt
+                pending.deferred_receipt = None
+            return (
+                True,
+                None if receipt is None else receipt._with_cleanup_attested(),
+            )
+        finally:
+            pending.retry_lock.release()
+
+    def acknowledge_pending_cleanup(self) -> None:
+        """Release a reaped child journal after coordinator terminal handoff."""
+
+        with self._cleanup_owner.lock:
+            pending = self._cleanup_owner.pending
+        if pending is None:
+            return
+        if not pending.retry_lock.acquire(blocking=False):
+            raise RuntimeError("subprocess cleanup handoff is already active")
+        try:
+            if pending.authority_required():
+                raise RuntimeError("subprocess cleanup authority is still required")
+            with self._cleanup_owner.lock:
+                if self._cleanup_owner.pending is not pending:
+                    raise RuntimeError("subprocess cleanup ownership changed")
+                self._cleanup_owner.pending = None
+        finally:
+            pending.retry_lock.release()
 
     def execute(
         self,
-        tool_service: PrivateAnalysisToolService,
+        tool_service: PrivateAnalysisToolService | PrivateAnalysisRemoteToolService,
         *,
         accounting_observer: PrivateAnalysisAccountingObserver | None = None,
         cancellation_probe: PrivateAnalysisCancellationProbe | None = None,
+        absolute_deadline_ns: int | None = None,
     ) -> PrivateAnalysisSubprocessExecutionReceipt:
-        if type(tool_service) is not PrivateAnalysisToolService:
-            raise TypeError("tool_service must be PrivateAnalysisToolService")
+        if self.cleanup_pending:
+            raise PrivateAnalysisSubprocessCleanupPending(
+                "private-analysis subprocess cleanup is pending"
+            )
+        if type(tool_service) not in {
+            PrivateAnalysisToolService,
+            PrivateAnalysisRemoteToolService,
+        }:
+            raise TypeError("tool_service must be a core private-analysis service")
         if accounting_observer is not None and not callable(accounting_observer):
             raise TypeError("accounting_observer must be callable or None")
         if cancellation_probe is not None and not callable(cancellation_probe):
             raise TypeError("cancellation_probe must be callable or None")
         cancellation = _CancellationState(cancellation_probe)
         request = tool_service.request
-        deadline_ns = monotonic_ns() + request.limits.deadline_ms * 1_000_000
+        now_ns = monotonic_ns()
+        if absolute_deadline_ns is not None and (
+            type(absolute_deadline_ns) is not int or absolute_deadline_ns < 0
+        ):
+            raise ValueError(
+                "absolute_deadline_ns must be a non-negative integer or None"
+            )
+        deadline_ns = (
+            now_ns + request.limits.deadline_ms * 1_000_000
+            if absolute_deadline_ns is None
+            else absolute_deadline_ns
+        )
         catalog = default_private_analysis_tool_catalog()
         run_digest = private_analysis_subprocess_run_digest(
             request,
@@ -1430,6 +2143,10 @@ class ConfiguredPrivateAnalysisSubprocessRunner(PrivateAnalysisRunnerExecutionOw
         stderr_bytes = 0
         stderr_failed = False
         cleanup_succeeded = True
+        cleanup_authority_required = False
+        cleanup_process_control = False
+        pending_cleanup: _PendingLocalChildCleanup | None = None
+        process: subprocess.Popen[bytes] | None = None
 
         try:
             cancellation_before_lease = cancellation.poll()
@@ -1506,7 +2223,7 @@ class ConfiguredPrivateAnalysisSubprocessRunner(PrivateAnalysisRunnerExecutionOw
         finalizer_failed = False
         try:
             try:
-                accounting.refresh(lease)
+                accounting.refresh(cast(PrivateAnalysisToolRunLease, lease))
                 budget_state = accounting.budget_state
                 outcome_error = (
                     _static_runner_error(
@@ -1521,26 +2238,48 @@ class ConfiguredPrivateAnalysisSubprocessRunner(PrivateAnalysisRunnerExecutionOw
                     )
                 )
                 if outcome_error is None:
-                    process: subprocess.Popen[bytes] | None = None
                     try:
+                        # This is deliberately the final operation before the
+                        # shell-free launch. Registration-time content identity
+                        # alone cannot authorize bytes replaced in the interim.
+                        self._launch_configuration.revalidate_executable_artifacts(
+                            continue_attestation=lambda: (
+                                not cancellation.poll()
+                                and not private_analysis_deadline_expired(deadline_ns)
+                            )
+                        )
                         process = _spawn_local_child(self._launch_configuration)
                         session = _LocalChildSession(
                             process,
                             self._launch_configuration,
                             cancellation,
                         )
+                        session.start()
                     except PROCESS_CONTROL_EXCEPTIONS:
-                        if process is not None:
+                        if process is not None and session is None:
+                            pending_cleanup = self._retain_pending_cleanup(
+                                process=process
+                            )
                             try:
                                 cleanup_succeeded = _reap_unmanaged_child(
                                     process,
                                     self._launch_configuration,
                                 )
-                            except BaseException:  # noqa: BLE001, S110
+                            except BaseException:  # noqa: BLE001, S110 - owner retained.
                                 pass
                         raise
-                    except OSError:
-                        if process is not None:
+                    except _PrivateAnalysisSubprocessAttestationInterrupted:
+                        outcome_error = _static_runner_error(
+                            request,
+                            PrivateAnalysisErrorCode.CANCELLED
+                            if cancellation.requested
+                            else PrivateAnalysisErrorCode.TIMEOUT,
+                        )
+                    except (
+                        OSError,
+                        _PrivateAnalysisSubprocessArtifactChanged,
+                    ):
+                        if process is not None and session is None:
                             try:
                                 cleanup_succeeded = _reap_unmanaged_child(
                                     process,
@@ -1550,12 +2289,16 @@ class ConfiguredPrivateAnalysisSubprocessRunner(PrivateAnalysisRunnerExecutionOw
                                 raise
                             except BaseException:  # noqa: BLE001
                                 cleanup_succeeded = False
+                            if not _process_exit_confirmed(process):
+                                pending_cleanup = self._retain_pending_cleanup(
+                                    process=process
+                                )
                         outcome_error = _static_runner_error(
                             request,
                             PrivateAnalysisErrorCode.RUNNER_UNAVAILABLE,
                         )
                     except BaseException:  # noqa: BLE001 - executable boundary.
-                        if process is not None:
+                        if process is not None and session is None:
                             try:
                                 cleanup_succeeded = _reap_unmanaged_child(
                                     process,
@@ -1565,6 +2308,10 @@ class ConfiguredPrivateAnalysisSubprocessRunner(PrivateAnalysisRunnerExecutionOw
                                 raise
                             except BaseException:  # noqa: BLE001
                                 cleanup_succeeded = False
+                            if not _process_exit_confirmed(process):
+                                pending_cleanup = self._retain_pending_cleanup(
+                                    process=process
+                                )
                         outcome_error = _static_runner_error(
                             request,
                             PrivateAnalysisErrorCode.RUNNER_FAILED,
@@ -1591,13 +2338,34 @@ class ConfiguredPrivateAnalysisSubprocessRunner(PrivateAnalysisRunnerExecutionOw
                     stderr_bytes = session.stderr_bytes
                     stderr_failed = session.stderr_failed
                 except PROCESS_CONTROL_EXCEPTIONS as error:
+                    cleanup_succeeded = False
+                    cleanup_process_control = True
                     if pending_process_control is None:
                         pending_process_control = error
                 except BaseException:  # noqa: BLE001 - finalizer boundary.
                     cleanup_succeeded = False
                     finalizer_failed = True
+                try:
+                    cleanup_authority_required = (
+                        session.cleanup_authority_required()
+                    )
+                except PROCESS_CONTROL_EXCEPTIONS as error:
+                    cleanup_authority_required = True
+                    cleanup_process_control = True
+                    if pending_process_control is None:
+                        pending_process_control = error
+                except BaseException:  # noqa: BLE001 - uncertainty remains live.
+                    cleanup_authority_required = True
+                    finalizer_failed = True
+                if (
+                    (cleanup_process_control or cleanup_authority_required)
+                    and pending_cleanup is None
+                ):
+                    pending_cleanup = self._retain_pending_cleanup(session=session)
+                if cleanup_authority_required:
+                    cleanup_succeeded = False
             try:
-                accounting.refresh(lease)
+                accounting.refresh(cast(PrivateAnalysisToolRunLease, lease))
             except PROCESS_CONTROL_EXCEPTIONS as error:
                 if pending_process_control is None:
                     pending_process_control = error
@@ -1611,18 +2379,25 @@ class ConfiguredPrivateAnalysisSubprocessRunner(PrivateAnalysisRunnerExecutionOw
             except BaseException:  # noqa: BLE001 - finalizer boundary.
                 finalizer_failed = True
 
-        if pending_process_control is not None:
-            raise pending_process_control.with_traceback(
-                pending_process_control.__traceback__
-            )
-        cancellation_attested = cleanup_succeeded
+        if session is None and process is not None:
+            try:
+                cleanup_authority_required = not _process_exit_confirmed(process)
+            except PROCESS_CONTROL_EXCEPTIONS as error:
+                cleanup_authority_required = True
+                if pending_process_control is None:
+                    pending_process_control = error
+            if cleanup_authority_required and pending_cleanup is None:
+                pending_cleanup = self._retain_pending_cleanup(process=process)
+
+        cancellation_attested = not cleanup_authority_required
         if pending_failure is not None or finalizer_failed:
             cleanup_succeeded = False
 
         try:
             cancellation.poll()
-        except PROCESS_CONTROL_EXCEPTIONS:
-            raise
+        except PROCESS_CONTROL_EXCEPTIONS as error:
+            if pending_process_control is None:
+                pending_process_control = error
         except BaseException:  # noqa: BLE001 - cancellation probe boundary.
             pending_failure = pending_failure or RuntimeError(
                 "private-analysis cancellation probe failed"
@@ -1636,6 +2411,7 @@ class ConfiguredPrivateAnalysisSubprocessRunner(PrivateAnalysisRunnerExecutionOw
             or stderr_failed
             or pending_failure is not None
             or finalizer_failed
+            or pending_process_control is not None
         ):
             outcome_error = _static_runner_error(
                 request,
@@ -1690,7 +2466,7 @@ class ConfiguredPrivateAnalysisSubprocessRunner(PrivateAnalysisRunnerExecutionOw
             )
 
         try:
-            return _deadline_checked_execution_receipt(
+            receipt = _deadline_checked_execution_receipt(
                 request=request,
                 catalog=catalog,
                 instruction_profile_digest=self._instruction_profile_digest,
@@ -1704,15 +2480,32 @@ class ConfiguredPrivateAnalysisSubprocessRunner(PrivateAnalysisRunnerExecutionOw
                 deadline_ns=deadline_ns,
                 cancellation_attested=cancellation_attested,
             )
-        except PROCESS_CONTROL_EXCEPTIONS:
-            raise
+        except PROCESS_CONTROL_EXCEPTIONS as error:
+            if session is not None:
+                if pending_cleanup is None:
+                    pending_cleanup = self._retain_pending_cleanup(session=session)
+                self._attach_deferred_receipt(
+                    pending_cleanup,
+                    _DeferredSubprocessReceipt(
+                        request=request,
+                        catalog=catalog,
+                        instruction_profile_digest=self._instruction_profile_digest,
+                        launch_configuration=self._launch_configuration,
+                        run_digest=run_digest,
+                        accumulator=transcript,
+                        stderr_bytes=stderr_bytes,
+                        references=references,
+                        budget_state=budget_state,
+                    ),
+                )
+            raise error.with_traceback(error.__traceback__)
         except BaseException:  # noqa: BLE001 - receipt integrity boundary.
             fallback_code = (
                 PrivateAnalysisErrorCode.TIMEOUT
                 if private_analysis_deadline_expired(deadline_ns)
                 else PrivateAnalysisErrorCode.RUNNER_PROTOCOL_ERROR
             )
-            return _deadline_checked_execution_receipt(
+            receipt = _deadline_checked_execution_receipt(
                 request=request,
                 catalog=catalog,
                 instruction_profile_digest=self._instruction_profile_digest,
@@ -1731,12 +2524,32 @@ class ConfiguredPrivateAnalysisSubprocessRunner(PrivateAnalysisRunnerExecutionOw
                 deadline_ns=deadline_ns,
                 cancellation_attested=cancellation_attested,
             )
+        if (
+            pending_cleanup is None
+            and pending_process_control is not None
+            and session is not None
+        ):
+            pending_cleanup = self._retain_pending_cleanup(session=session)
+        if pending_cleanup is not None:
+            self._attach_pending_receipt(pending_cleanup, receipt)
+            if pending_process_control is not None:
+                raise pending_process_control.with_traceback(
+                    pending_process_control.__traceback__
+                )
+            raise PrivateAnalysisSubprocessCleanupPending(
+                "private-analysis subprocess cleanup is pending"
+            )
+        if pending_process_control is not None:
+            raise pending_process_control.with_traceback(
+                pending_process_control.__traceback__
+            )
+        return receipt
 
     def _drive_protocol(
         self,
         *,
         session: _LocalChildSession,
-        lease: PrivateAnalysisToolRunLease,
+        lease: PrivateAnalysisToolRunLease | PrivateAnalysisRemoteToolRunLease,
         request: PrivateAnalysisRequest,
         catalog: PrivateAnalysisToolCatalog,
         run_digest: str,
@@ -1857,7 +2670,7 @@ class ConfiguredPrivateAnalysisSubprocessRunner(PrivateAnalysisRunnerExecutionOw
                     None,
                 )
             try:
-                accounting.refresh(lease)
+                accounting.refresh(cast(PrivateAnalysisToolRunLease, lease))
             except PROCESS_CONTROL_EXCEPTIONS:
                 raise
             except BaseException:  # noqa: BLE001 - accounting boundary.
@@ -2178,15 +2991,19 @@ def _deadline_checked_standalone_subprocess_receipt(
 __all__ = [
     "MAX_PRIVATE_ANALYSIS_SUBPROCESS_ARGV_ITEMS",
     "MAX_PRIVATE_ANALYSIS_SUBPROCESS_ARG_BYTES",
+    "MAX_PRIVATE_ANALYSIS_SUBPROCESS_ARTIFACT_BYTES",
+    "MAX_PRIVATE_ANALYSIS_SUBPROCESS_ARTIFACT_TOTAL_BYTES",
     "MAX_PRIVATE_ANALYSIS_SUBPROCESS_COMMAND_UTF16_UNITS",
     "MAX_PRIVATE_ANALYSIS_SUBPROCESS_ENVIRONMENT_BYTES",
     "MAX_PRIVATE_ANALYSIS_SUBPROCESS_ENVIRONMENT_ITEMS",
+    "MAX_PRIVATE_ANALYSIS_SUBPROCESS_HELPER_ARTIFACTS",
     "MAX_PRIVATE_ANALYSIS_SUBPROCESS_STDERR_BYTES",
     "MAX_PRIVATE_ANALYSIS_SUBPROCESS_TRANSCRIPT_BYTES",
     "PRIVATE_ANALYSIS_SUBPROCESS_CANCELLATION_POLL_MS",
     "PRIVATE_ANALYSIS_SUBPROCESS_LAUNCH_VERSION",
     "PRIVATE_ANALYSIS_SUBPROCESS_TRANSCRIPT_VERSION",
     "ConfiguredPrivateAnalysisSubprocessRunner",
+    "PrivateAnalysisSubprocessCleanupPending",
     "PrivateAnalysisSubprocessExecutionReceipt",
     "PrivateAnalysisSubprocessLaunchConfiguration",
     "PrivateAnalysisSubprocessTranscript",

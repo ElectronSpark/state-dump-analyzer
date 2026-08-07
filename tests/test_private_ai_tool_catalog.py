@@ -8,6 +8,7 @@ from dataclasses import FrozenInstanceError, replace
 from typing import Any, cast
 from unittest.mock import patch
 
+from router_dump_analyzer.plugin_api import Quality
 from router_dump_analyzer.private_analysis import (
     CoreEvidenceProducer,
     DisclosureDecision,
@@ -19,6 +20,7 @@ from router_dump_analyzer.private_analysis import (
     EvidenceReference,
     EvidenceRevisionBinding,
     EvidenceScope,
+    EvidenceTimeBasis,
     EvidenceTimeRange,
     PrivateAnalysisEvidenceClass,
     PrivateAnalysisTransport,
@@ -30,6 +32,8 @@ from router_dump_analyzer.private_analysis import (
 from router_dump_analyzer.private_analysis.tool_catalog import (
     MAX_PRIVATE_ANALYSIS_QUERY_FILTER_ITEMS,
     MAX_PRIVATE_ANALYSIS_QUERY_PAGE_SIZE,
+    PrivateAnalysisCapabilityArguments,
+    PrivateAnalysisCapabilityIntent,
     PrivateAnalysisQueryArguments,
     PrivateAnalysisReadArguments,
     PrivateAnalysisToolBinding,
@@ -44,6 +48,10 @@ from router_dump_analyzer.private_analysis.tool_catalog import (
     evidence_snapshot_digest,
     make_private_analysis_cursor,
     make_private_analysis_query_page,
+    private_analysis_capability_arguments_dict,
+    private_analysis_capability_arguments_from_dict,
+    private_analysis_capability_arguments_from_json,
+    private_analysis_capability_arguments_json,
     private_analysis_cursor_dict,
     private_analysis_cursor_from_dict,
     private_analysis_cursor_from_json,
@@ -147,6 +155,52 @@ def _envelope(ordinal: int = 1):
     return make_evidence_envelope(reference, decision, payload)
 
 
+def _derived_envelope():
+    payload = {
+        "intent": "route_trace",
+        "arguments_digest": _capability_arguments().arguments_digest,
+        "parent_reference_digests": [_reference(1).reference_digest],
+        "observations": [],
+    }
+    reference = EvidenceReference(
+        scope=_scope(),
+        revision=_revision(1),
+        producer=EvidenceProducer(
+            authority=EvidenceAuthority.PLUGIN_INFERRED,
+            producer_id="opaque.plugin@1",
+            plugin_instance_id="opaque.instance",
+            plugin_capability="evidence_analysis",
+        ),
+        kind=EvidenceKind.PLUGIN_CAPABILITY_RESULT,
+        subject_kind="evidence_analysis",
+        locator_digest=evidence_locator_digest(
+            "evidence_analysis",
+            {"arguments_digest": _capability_arguments().arguments_digest},
+        ),
+        evidence_class=PrivateAnalysisEvidenceClass.PROPRIETARY,
+        payload_schema="router_dump_analyzer.plugin.evidence_analysis.result.v1",
+        fact_provenance=EvidenceFactProvenance.PLUGIN_ANALYZED,
+        time_range=EvidenceTimeRange.unknown(),
+        content_digest=evidence_payload_digest(
+            "router_dump_analyzer.plugin.evidence_analysis.result.v1",
+            payload,
+        ),
+    )
+    decision = DisclosureDecision(
+        policy_digest="9" * 64,
+        scope_digest=disclosure_scope_digest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            workspace_id="workspace-a",
+        ),
+        transport=PrivateAnalysisTransport.IN_PROCESS,
+        evidence_class=PrivateAnalysisEvidenceClass.PROPRIETARY,
+        allowed=True,
+        reason=DisclosureDecisionReason.ALLOWED,
+    )
+    return make_evidence_envelope(reference, decision, payload)
+
+
 def _binding(
     name: PrivateAnalysisToolName,
     *,
@@ -196,6 +250,25 @@ def _read_call(ordinal: int = 1) -> PrivateAnalysisToolCall:
     )
 
 
+def _capability_arguments() -> PrivateAnalysisCapabilityArguments:
+    return PrivateAnalysisCapabilityArguments(
+        node_id="node-1",
+        revision_id="revision-1",
+        intent=PrivateAnalysisCapabilityIntent.ROUTE_TRACE,
+        parent_reference_digests=(_reference(1).reference_digest,),
+        parameters_json='{"vrf":"blue"}',
+        max_observations=4,
+    )
+
+
+def _capability_call() -> PrivateAnalysisToolCall:
+    return PrivateAnalysisToolCall(
+        call_id="call-capability-1",
+        binding=_binding(PrivateAnalysisToolName.ANALYZE_EVIDENCE),
+        arguments=_capability_arguments(),
+    )
+
+
 class PrivateAnalysisToolCatalogTests(unittest.TestCase):
     def test_catalog_is_closed_canonical_frozen_and_value_only(self) -> None:
         catalog = default_private_analysis_tool_catalog()
@@ -204,6 +277,7 @@ class PrivateAnalysisToolCatalogTests(unittest.TestCase):
             (
                 PrivateAnalysisToolName.QUERY_EVIDENCE,
                 PrivateAnalysisToolName.READ_EVIDENCE,
+                PrivateAnalysisToolName.ANALYZE_EVIDENCE,
             ),
         )
         self.assertTrue(catalog.catalog_digest.startswith("sha256:"))
@@ -242,6 +316,153 @@ class PrivateAnalysisToolCatalogTests(unittest.TestCase):
                 PrivateAnalysisToolCatalog(tools=tools)
         with self.assertRaises(TypeError):
             PrivateAnalysisToolCatalog(tools=list(catalog.tools))  # type: ignore[arg-type]
+
+    def test_capability_arguments_and_derived_result_round_trip(self) -> None:
+        arguments = _capability_arguments()
+        arguments_wire = private_analysis_capability_arguments_dict(arguments)
+        self.assertNotIn("plugin_instance_id", arguments_wire)
+        self.assertEqual(
+            private_analysis_capability_arguments_from_dict(
+                arguments_wire
+            ),
+            arguments,
+        )
+        with self.assertRaisesRegex(ValueError, "exactly"):
+            private_analysis_capability_arguments_from_dict(
+                {**arguments_wire, "plugin_instance_id": "model-choice"}
+            )
+        self.assertEqual(
+            private_analysis_capability_arguments_from_json(
+                private_analysis_capability_arguments_json(arguments)
+            ),
+            arguments,
+        )
+        call = _capability_call()
+        self.assertEqual(
+            private_analysis_tool_call_from_json(
+                private_analysis_tool_call_json(call)
+            ),
+            call,
+        )
+        result = PrivateAnalysisToolResult(
+            call=call,
+            kind=PrivateAnalysisToolResultKind.DERIVED_EVIDENCE_ENVELOPE,
+            envelope=_derived_envelope(),
+        )
+        self.assertEqual(
+            private_analysis_tool_result_from_json(
+                private_analysis_tool_result_json(result)
+            ),
+            result,
+        )
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            PrivateAnalysisToolResult(
+                call=replace(
+                    call,
+                    arguments=replace(arguments, node_id="node-other"),
+                    call_digest="",
+                ),
+                kind=PrivateAnalysisToolResultKind.DERIVED_EVIDENCE_ENVELOPE,
+                envelope=_derived_envelope(),
+            )
+
+    def test_derived_result_binds_payload_semantics_and_citation_scope(self) -> None:
+        call = _capability_call()
+        base = _derived_envelope()
+
+        def envelope_with(payload: dict[str, Any]):
+            reference = replace(
+                base.reference,
+                content_digest=evidence_payload_digest(
+                    base.reference.payload_schema,
+                    payload,
+                ),
+                reference_digest="",
+            )
+            return make_evidence_envelope(
+                reference,
+                base.disclosure_decision,
+                payload,
+            )
+
+        bad_digest = base.payload
+        bad_digest["arguments_digest"] = "sha256:" + "f" * 64
+        with self.assertRaisesRegex(ValueError, "arguments digest"):
+            PrivateAnalysisToolResult(
+                call=call,
+                kind=PrivateAnalysisToolResultKind.DERIVED_EVIDENCE_ENVELOPE,
+                envelope=envelope_with(bad_digest),
+            )
+
+        bad_citation = base.payload
+        bad_citation["observations"] = [
+            {
+                "observation_id": "observation-1",
+                "category": "route_resolution",
+                "summary": "A malformed out-of-scope observation.",
+                "cited_reference_digests": ["sha256:" + "f" * 64],
+                "quality": "exact",
+                "details": {},
+            }
+        ]
+        with self.assertRaisesRegex(ValueError, "outside its request"):
+            PrivateAnalysisToolResult(
+                call=call,
+                kind=PrivateAnalysisToolResultKind.DERIVED_EVIDENCE_ENVELOPE,
+                envelope=envelope_with(bad_citation),
+            )
+
+    def test_derived_result_quality_wire_vocabulary_matches_plugin_api(self) -> None:
+        call = _capability_call()
+        base = _derived_envelope()
+
+        def envelope_with_quality(quality: str):
+            payload = copy.deepcopy(base.payload)
+            payload["observations"] = [
+                {
+                    "observation_id": "observation-1",
+                    "category": "route_resolution",
+                    "summary": "One citation-scoped observation.",
+                    "cited_reference_digests": [
+                        _reference(1).reference_digest
+                    ],
+                    "quality": quality,
+                    "details": {},
+                }
+            ]
+            reference = replace(
+                base.reference,
+                content_digest=evidence_payload_digest(
+                    base.reference.payload_schema,
+                    payload,
+                ),
+                reference_digest="",
+            )
+            return make_evidence_envelope(
+                reference,
+                base.disclosure_decision,
+                payload,
+            )
+
+        self.assertEqual(
+            tuple(quality.value for quality in Quality),
+            ("exact", "best_effort", "ambiguous", "unknown"),
+        )
+        for quality in Quality:
+            with self.subTest(quality=quality.value):
+                PrivateAnalysisToolResult(
+                    call=call,
+                    kind=(
+                        PrivateAnalysisToolResultKind.DERIVED_EVIDENCE_ENVELOPE
+                    ),
+                    envelope=envelope_with_quality(quality.value),
+                )
+        with self.assertRaisesRegex(ValueError, "quality"):
+            PrivateAnalysisToolResult(
+                call=call,
+                kind=PrivateAnalysisToolResultKind.DERIVED_EVIDENCE_ENVELOPE,
+                envelope=envelope_with_quality("plugin_private_quality"),
+            )
 
     def test_catalog_and_message_values_round_trip_exact_canonical_json(self) -> None:
         catalog = default_private_analysis_tool_catalog()
@@ -433,6 +654,13 @@ class PrivateAnalysisToolCatalogTests(unittest.TestCase):
             replace(base, node_ids=("node-1",), query_digest=""),
             replace(base, producer_ids=(), query_digest=""),
             replace(base, subject_kinds=(), query_digest=""),
+            replace(
+                base,
+                time_basis=EvidenceTimeBasis.ABSOLUTE_UNIX_NS,
+                time_start_ns=9_007_199_254_740_993,
+                time_end_ns=9_007_199_254_740_999,
+                query_digest="",
+            ),
             replace(base, page_size=1, query_digest=""),
         )
         for changed in changes:
@@ -446,6 +674,24 @@ class PrivateAnalysisToolCatalogTests(unittest.TestCase):
         )
         continued = replace(base, cursor=cursor)
         self.assertEqual(continued.query_digest, base.query_digest)
+
+    def test_time_window_uses_canonical_decimal_strings_on_the_wire(self) -> None:
+        arguments = _query_arguments(
+            time_basis=EvidenceTimeBasis.ABSOLUTE_UNIX_NS,
+            time_start_ns=9_007_199_254_740_993,
+            time_end_ns=(1 << 63) - 1,
+        )
+        wire = private_analysis_query_arguments_dict(arguments)
+        self.assertEqual(wire["time_start_ns"], "9007199254740993")
+        self.assertEqual(wire["time_end_ns"], "9223372036854775807")
+        self.assertEqual(private_analysis_query_arguments_from_dict(wire), arguments)
+
+        for invalid in (9_007_199_254_740_993, "+1", "01", "9223372036854775808"):
+            with self.subTest(invalid=invalid):
+                changed = dict(wire)
+                changed["time_start_ns"] = invalid
+                with self.assertRaises((TypeError, ValueError)):
+                    private_analysis_query_arguments_from_dict(changed)
 
     def test_tool_call_rejects_cross_tool_arguments_and_cursor_replay(self) -> None:
         with self.assertRaises(TypeError):
@@ -646,9 +892,7 @@ class PrivateAnalysisToolCatalogTests(unittest.TestCase):
 
     def test_wire_parsers_bound_obvious_oversize_before_json_decode(self) -> None:
         with (
-            patch(
-                "router_dump_analyzer.private_analysis.tool_catalog.loads"
-            ) as loads,
+            patch("router_dump_analyzer.private_analysis.tool_catalog.loads") as loads,
             self.assertRaisesRegex(ValueError, "byte limit"),
         ):
             private_analysis_tool_catalog_from_json("{" + "x" * (8 * 1024 * 1024))

@@ -150,11 +150,14 @@ records all of:
 - Clock alignment configuration.
 
 The implemented local profile represents that claim with the immutable,
-versioned `PluginExecutionPlan`. It is an ordered tuple of producer pins rather
+versioned `PluginExecutionPlan`. New revisions use plan v2. It is an ordered
+tuple of producer pins rather
 than a synthetic composite plug-in, so each configured instance retains its
 own artifact, configuration, schema, capability, role, and optional decoder
 identity. The plan digest covers its node and source-revision basis and every
-pin field. Configuration values and secrets are deliberately absent. Catalog
+pin field plus the exact v2 `composition_policy_digest`. A policy change is a
+new interpretation identity even when the selected primary-to-auxiliary rule
+is unchanged. Configuration values and secrets are deliberately absent. Catalog
 rows persist the canonical plan and digest; normalized datasets and correlation
 revision vectors carry the same digest. Pre-contract rows remain readable with
 an explicit absent plan instead of receiving invented provenance.
@@ -162,9 +165,18 @@ an explicit absent plan instead of receiving invented provenance.
 The registry also freezes a broader registered-execution identity before
 selection. It covers artifact coordinates and digest, configuration digest,
 the complete manifest fingerprint (including probe selectors), API/schema/
-capability declarations, configured instance, and decoder binding. Probe
-candidates persist that identity, and ingestion refuses to run if a restart
-supplies a different registration. Installed loaders provide real
+capability declarations, configured instance, decoder binding, and the full
+non-recursive process bootstrap (loader kinds/targets, target executable
+identities, verification mode, frozen ingestion/artifact limits, and repeated
+reconstruction coordinates). Each external target identity covers exact static
+import provenance, bounded target/implementation module bytes, and
+relocation-stable Python code identity. Its bounded object graph follows exact
+bytecode globals/static paths across package boundaries and binds callable
+instance/class state; dynamic, sourceless, aliased, cyclic mutable, or opaque
+targets fail closed.
+Only the bootstrap's expected identity is excluded to avoid self-reference.
+Probe candidates persist that identity, and ingestion refuses to run if a
+restart supplies a different registration. Installed loaders provide real
 distribution coordinates; direct-module loading uses an explicit
 `direct-module` / `0` sentinel. A decoder pin appears in the revision plan only
 when that decoder was actually used.
@@ -177,11 +189,24 @@ instance IDs. The immutable plan—not a
 mutable node map—selects which instance belongs to a revision. Exactly one pin
 has `primary_parser`; additional pins carry core-assigned composition roles.
 The registry can retain several exact releases of one logical instance so old
-and new revisions are both replayable. Plan v1 has one decoder identity, owned
-by the primary pin. A primary registration may have a decoder while a non-CTF
-revision leaves that plan field empty; a non-primary decoder is unrepresentable
-and rejected. Changing configuration creates a new logical instance ID even
-across revisions.
+and new revisions are both replayable. Every v2 pin carries the exact
+`registered_execution_identity`, which covers the full frozen registration and
+must never use the reserved all-zero digest. Retained plan-v1 rows have no such
+wire member; decoding represents that absence internally with the reserved
+`sha256:` plus 64 zeroes so legacy provenance is explicit rather than invented.
+They also have no composition-policy digest or current timeline identity.
+Those rows remain available to passive catalog/history projections but cannot
+bind a provider, execute a capability, attach an auxiliary, or produce
+private-analysis evidence.
+An unfinished pre-contract queue row is different from published history. Its
+upgrade transaction clears obsolete candidates and selection while binding the
+composition policy explicitly active for the required re-probe. Staged and
+completed publications are excluded, so migration cannot reinterpret an
+already published revision.
+Plan v1 has one decoder identity, owned by the primary pin. A primary
+registration may have a decoder while a non-CTF revision leaves that plan field
+empty; a non-primary decoder is unrepresentable and rejected. Changing
+configuration creates a new logical instance ID even across revisions.
 
 Reprocessing after a plugin upgrade creates a new revision. Published rows are
 never reinterpreted in place. A small transaction changes the case's published
@@ -459,10 +484,11 @@ are live. Publisher calls receive a separate deadline and inherit process
 isolation by default. The budget includes spawn, provider work, result transfer,
 and exit; an uncooperative child is terminated, killed if necessary, and reaped.
 The built-in SQLite catalog reopens its durable database in the child and also
-applies the context to Python lock acquisition and SQLite busy waits.
-Custom production publishers must be spawn-picklable or reconstruct their
-transport on unpickle; only an explicit trusted `inline` mode remains
-cooperative-only.
+applies the context to Python lock acquisition and SQLite busy waits. Core
+never pickles a live custom publisher: it reconstructs one from an explicit
+module-level process target, or from an importable no-argument publisher class.
+Stateful/configured publishers must use the explicit target; only an explicit
+trusted `inline` mode remains cooperative-only.
 Ambiguous deadline outcomes retain their exact idempotent outbox and pre-call
 artifact pin, and health exposes them immediately. Configuration requires the
 stall threshold to cover the larger of the bounded plug-in and publisher
@@ -537,8 +563,23 @@ the canonical dataset to a unique parent-selected spool path; after renewing
 the fenced lease, the parent verifies its regular-file status, returned byte
 size, and SHA-256 before content-addressed installation. Registry-derived
 package identities are re-hashed in the child immediately before use. The
-plug-in/coordinator object graph must therefore be importable and
-spawn-picklable.
+parent sends no live plug-in/coordinator/decoder/registry/provider object. A
+core-owned scalar/tuple bootstrap tells the child which module-level targets or
+no-argument classes to reconstruct. The child re-registers the result and
+compares its exact frozen execution identity before executing it. A configured
+component must name an explicit module-level process target; default class
+construction is reserved for genuinely default-constructed state. A
+non-default plug-in `configuration_digest` disables an inferred class bootstrap
+until an explicit module-instance `plugin_process_module_target` is supplied;
+configured custom coordinator/decoder state requires the corresponding target.
+The process-mode pipeline materializes these descriptors at construction, so
+the queue cannot defer this mismatch until its first child execution. The
+complete non-recursive descriptor is itself registered-identity material;
+target-only or frozen-limit drift changes plan authority, and post-registration
+mutation is rejected before a descriptor can be exported to a child. Target
+executable bytes are revalidated immediately before spawn, re-attested by the
+child before invocation, and checked again during child-plan readmission and
+at final revision staging.
 
 Idempotency is scope-bound and request-sensitive. The queue, catalog, and
 review overlay are separate SQLite stores, not one cross-database transaction.
@@ -769,6 +810,17 @@ normative contract.
   link semantics. They do not read raw node artifacts or replace node-local
   state.
 
+Timestamp meaning follows the same boundary. Each node/device manifest declares
+`absolute_unix_ns`, `revision_start_relative_ns`, or `source_clock_ns`; only the
+last carries a plug-in-owned opaque clock-domain token. Core validates signed
+ranges and uncertainty-expanded bounds, freezes the declaration into executable
+identity and revision fingerprints, re-attests process-child output, and refuses
+cross-clock equivalence without alignment evidence. Revision-start-relative
+coordinates are already offsets and are preserved exactly; the declared
+timeline start is a bound, not a second origin. This keeps vendor clock semantics
+out of core while preventing a plug-in from silently changing an existing
+timeline's meaning.
+
 The core must not branch on plug-in kind, relation, source-type, source-group,
 or key-field names. The detailed audit and migration ledger is in
 `docs/core-plugin-boundary-audit-2026-07-22.md`.
@@ -927,10 +979,19 @@ A plugin bundle supplies:
 
 The module-level entry-point target is an instance. Every plug-in has the
 required `describe`, `probe`, and `locate_inputs` hooks; standard
-`PluginCapability` values activate optional hooks. `InputSpec.parser_kind`
+`PluginCapability` values activate optional hooks, including the advisory
+`EVIDENCE_ANALYSIS` hook for citation-scoped interpretation of already
+authorized private evidence. `InputSpec.parser_kind`
 selects status, CTF, or text-trace dispatch without interpreting the plug-in's
 opaque `role` or `parser_id`. `AnalyzerPluginBase` gives authors safe no-ops for
 undeclared capabilities and rejects declared behavior that was not implemented.
+The hook can live on a separately identified capability-only auxiliary. A
+deployment-owned composition rule attaches that exact instance to an exact
+primary parser identity. The auxiliary is registered only as a capability
+provider, so the primary parser registry cannot select it during probing. The
+immutable revision plan records both pins and their roles, which lets different
+device, firmware, and chip implementations coexist without making platform
+names or model arguments provider-selection authority.
 Parser hooks emit `SourceRecordEmission` before the core assigns stable
 `SourceRecord` identity. The generic `router-dump-plugin-validate` command
 checks this cold-start contract before product-specific conformance runs.
@@ -1000,6 +1061,49 @@ the selected instance/schema qualifiers, and forwarding steps must name the
 selected revision-set member. Every successful result retains a detached producer
 reference with catalog revision, member, node, source basis, plan digest, and
 full pin. Cross-provider aggregation remains an explicit federation concern.
+
+`PluginCompositionPolicy` is the deployment-owned admission rule that creates
+those multi-provider plans. The durable selector still chooses exactly one
+primary parser. A rule matches that parser's instance ID and content-addressed
+registered execution identity, then adds only its canonically ordered,
+explicit auxiliary identities and roles. The policy contains no plug-in
+objects, callbacks, configuration values, device heuristics, or name-based
+fallback. Its digest is written to the import row before work begins; every
+worker phase verifies the stored digest against its configured policy and
+fails closed on drift. Consequently mixed platform/firmware revisions can
+coexist in one session without making registration order semantic.
+The parent revalidates every auxiliary executable fingerprint and manifest
+immediately before freezing either an inline or child-safe process pin, so the
+process path does not rely on provider-registry admission as stale authority.
+After the process child returns, it repeats those checks around auxiliary
+identity/schema reads and over the complete set at the final plan-readmission
+edge. A provider that drifts during parsing therefore prevents revision
+staging even when the returned plan exactly matches the earlier frozen pins.
+
+`PluginCompositionDeployment` is the core-owned trusted descriptor around that
+policy. It binds an exact primary `PluginRegistry`, complete
+`CapabilityProviderRegistry`, and policy under one deterministic deployment
+digest. The loader accepts only `PACKAGE:ATTRIBUTE`, calls a factory once with
+a detached state-directory-only context, and exposes no device, firmware, or
+chip matching heuristic to core. Server, headless ingestion, embedded durable
+analysis, and private-analysis CLI roots select this descriptor explicitly and
+pass all three authorities together. The headless operation fingerprint also
+commits to its deployment digest.
+
+Standalone roots spell the selector `--plugin-deployment-module`. The
+interactive analyzer instead uses
+`--plugin-composition-deployment-module` for its embedded durable control plane
+and retains a separate required ordinary plug-in selector for the immediate
+startup input. This prevents either authority from being silently reused for
+the other lifecycle.
+
+Published plans become executable only through
+`ControlPlane.capability_router_for_revision()` and
+`capability_router_for_revision_set()`. Those methods first load the immutable
+catalog revision, then construct exact `PlanBoundCapabilityRouter` instances
+from the deployment provider directory. Session/snapshot member identities
+survive federation; a planless or stale member cannot fall back to current
+installation state.
 
 Plugins emit iterators/batches; they do not write the database. For production,
 use Arrow `RecordBatch` messages between the plugin worker and coordinator so
@@ -1407,10 +1511,12 @@ back without re-resolving a later watermark or accepting plug-in-supplied URLs.
 
 The browser route hierarchy mirrors that ownership. `/` is the primary
 multi-node topology entry point, `/topology` is a compatibility alias for that
-page, and core-generated topology actions open an assembly member in the
-individual-node workspace at `/node`. The node workspace carries its frozen
-context and exposes a return target to the primary topology page, so navigation
-does not silently reconstruct a different time or member selection.
+page, core-generated topology actions open an assembly member in the
+individual-node workspace at `/node`, and `/analysis` hosts the core-owned
+workspace-scoped private-analysis lifecycle and explicit human proposal-review
+workflow. The node workspace carries its
+frozen context and exposes a return target to the primary topology page, so
+navigation does not silently reconstruct a different time or member selection.
 
 The browser implementation itself is part of the core distribution. Core owns
 the generic pages, table/timeline/graph components, selection behavior,
@@ -2042,12 +2148,17 @@ is separate and workspace-scoped:
 GET,POST /v1/control-plane/projects
 GET,POST /v1/control-plane/projects/{project_id}/workspaces
 GET,PUT  /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/private-analysis-policy
+GET      /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/private-analysis-capabilities
 GET      /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runners
 GET,POST /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runs
 GET      .../private-analysis-runs/{run_id}
 POST     .../private-analysis-runs/{run_id}/execute
 POST     .../private-analysis-runs/{run_id}/cancel
 GET      .../private-analysis-runs/{run_id}/report
+POST     .../private-analysis-runs/{run_id}/proposals/{proposal_id}/decision
+GET      .../private-analysis-runs/{run_id}/proposal-decisions
+GET      .../private-analysis-runs/{run_id}/proposal-decisions/{decision_id}
+POST     .../private-analysis-runs/{run_id}/proposal-decisions/{decision_id}/recover
 GET      /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/fixtures
 GET      /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/revisions
 GET,POST /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/sessions
@@ -2203,9 +2314,15 @@ plug-in/core evidence.
 Local runner composition is deployment-owned. One explicit
 `PACKAGE:ATTRIBUTE` resolves to an exact frozen `PrivateAnalysisDeployment` or
 a factory invoked once with a frozen context containing only the canonical
-absolute state directory. The bounded descriptor holds exact runner/service
-registrations and optional copied execution limits and application ceilings;
-public runner ID/version pairs cannot be ambiguous. The loader contains
+absolute state directory. The bounded descriptor holds exact runner
+registrations and optional copied execution limits and application ceilings.
+Each runner registration has exactly one evidence mode: a deployment-owned
+spawned process factory, a trusted-inline compatibility factory, or a core
+revision-evidence policy whose transport must match the runner. The third mode
+asks the owning control plane to revalidate
+the exact workspace/policy/catalog/plan bindings and freeze an immutable,
+indexed corpus before runner entry. Public runner ID/version pairs cannot be
+ambiguous. The loader contains
 ordinary import, attribute, factory, and descriptor failures behind static
 messages while preserving process-control signals. This is a trusted Python
 composition root, not a sandbox, device plug-in capability, public-provider
@@ -2216,15 +2333,43 @@ The separate `router-dump-private-analysis` composition root opens the same
 durable catalog, policy, run store, and application service without ASGI or
 ingestion workers. It requires exact plug-in allowlisting and
 tenant/project/workspace scope, then offers `runners`, `create`, `get`, `list`,
-`execute`, `cancel`, `report`, and create-execute-report `run` operations. The
-proprietary query is accepted only inside a strict bounded JSON file using the
+`execute`, `cancel`, `report`, `decide-proposal`, `list-decisions`,
+`get-decision`, `recover-decision`, `recover-expired`, and create-execute-report
+`run` operations. The proprietary query is accepted only inside a strict
+bounded JSON file using the
 same caller-intent shape as HTTP, never as command-line text. It emits a closed
 bounded JSON result for CI/document workflows. It does not create workspace
-authority, retry, change runners/transports, or promote advisory proposals.
+authority, retry, change runners/transports, or automatically promote advisory
+proposals. An explicit promotion consumes a separate human-authored decision
+document and a pending saga resumes only through an explicit conditional
+recovery command.
+
+Expired-run recovery is an explicit actor-attributed, workspace-scoped batch.
+It may terminalize an expired unfenced attempt but never invokes the model a
+second time. A cleanup fence without a live process handle remains fail-closed
+across restart.
+
 Exit `0` is success, `2` is a terminal advisory error from `run`, and `1` is a
 bounded command/service failure. The actual bridge to a locally approved model
 remains deployment code, with no core network, key, endpoint, shell, ambient
 environment, or fallback path.
+
+The core corpus freezes revision metadata and plan pins plus retained source
+records, normalized events, state intervals, and relationship intervals at the
+request's independently resolved time for each revision. Half-open interval
+semantics exclude expired facts and future records. Indexes cover scope,
+revision, kind, node, producer, and subject so a narrow tool query does not
+scan a 100K-event member; the deployment ceiling is two million entries.
+Generic records cite the exact `primary_parser` role, while optional provider
+evidence cites an exact declared capability. Client-safe projections use the
+existing redaction policy. Full-fidelity plug-in-owned normalized fields and
+retained `copy_text` are available only when both the workspace and local
+runner policies opt in; `never_assistant` is never admitted.
+Active-resource ordering uses deterministic bounded chunk sorting plus merge,
+with cooperative cancellation during input collection, each chunk boundary,
+and merge. Selected-record normalization, payload hashing, reference
+construction, and immutable payload freezing are separately bracketed so one
+large record cannot defer observation until the next 256-row checkpoint.
 
 Disclosure is bound by a dedicated append-only workspace policy, not generic
 catalog metadata. Missing policy resolves to an explicit disabled version 0.
@@ -2301,40 +2446,76 @@ run, or promote a proposal. The durable run store is a separate orchestration
 stage and revalidates these values against current catalog identity.
 
 The adjacent tool layer is intentionally inert. A self-digested catalog fixes
-the complete vocabulary to `query_evidence` and `read_evidence`, with closed
-argument/result contract versions and no callable or resource authority.
-Request- and catalog-bound calls use distinct typed query/read arguments.
+the complete vocabulary to `query_evidence`, `read_evidence`, and
+`analyze_evidence`, with closed argument/result contract versions and no
+callable or resource authority. Request- and catalog-bound calls use distinct
+typed query/read/analyze arguments.
 Queries return only unique `EvidenceReference` values in digest order; reads
-return one matching disclosure-gated `EvidenceEnvelope`. Keyset cursors bind
+return one matching disclosure-gated `EvidenceEnvelope`; analysis returns one
+derived envelope whose node/revision, arguments, parent citations, and
+host-selected exact configured provider are bound by the trusted service.
+Keyset cursors bind
 the request, catalog, canonical query fingerprint, immutable eligible-set
 snapshot digest, and last reference digest. This makes filter, request,
 catalog, and snapshot replay detectable without giving the model an offset,
-database handle, filesystem path, shell, socket, dynamic loader, or plug-in
-callback. Closed payload-free errors keep storage and runner diagnostics out of
+database handle, filesystem path, shell, socket, dynamic loader, or live
+plug-in object. Closed payload-free errors keep storage and runner diagnostics out of
 the wire. The values themselves still do not authorize, retrieve, ledger, or
 execute.
+
+The v2 query fingerprint includes an optional evidence-time basis, clock
+domain, and inclusive overlap window. Signed-64 nanoseconds use canonical
+decimal strings on the wire. The immutable corpus indexes point times and
+uncertainty-expanded intervals, freezes matching digest membership once, and
+serves bounded keyset pages from a bounded snapshot cache. Thus revisions with
+more than 100,000 homogeneous events remain pageable without rebuilding or
+revalidating the full tuple on every cached continuation. Cache eviction
+expires that cursor: the provider fails it before rebuilding membership, and
+the tool boundary reports `cursor_invalid`, so interleaved query churn cannot
+turn cursor replay into an unbounded rescan. The same rejection applies when a
+cursorless rebuild of that query is already in flight; continuation admission
+never waits for or joins a replacement snapshot producer.
 
 A separate core-owned `PrivateAnalysisToolService` now interprets those inert
 calls for one exact request. It admits only the shipped catalog digest and a
 runner policy whose transport matches the request, then re-authorizes each
 request/call binding and resolves the current matching workspace policy both
-at call admission and immediately before release. Its six deployment-owned
+at call admission and immediately before release. Its deployment-owned
 adapters deliberately separate authorization, scope-bound policy-snapshot
-lookup, candidate
-reference query, exact reference lookup, trusted-catalog binding validation,
-and payload materialization. Provider values are detached and checked;
+lookup, candidate reference query, exact reference lookup, trusted-catalog
+binding validation, and payload materialization. Core composition explicitly
+selects page-query and batch-validation mode; callback arity is never inferred
+by retrying a failed call. The page-query adapter receives the request-bound
+cooperative cancellation/deadline probe as its fourth argument. Provider
+values are detached and checked; the default control-plane adapter also
+resolves the unique plan-bound `EVIDENCE_ANALYSIS` provider for one target
+revision. It accepts no provider selector from the runner, invokes the plug-in
+only with immutable facts derived from already-materialized envelopes, and
+retains the validated v3 result in a request-local overlay rather than mutating
+the immutable corpus;
 provider failures are contained behind static payload-free errors, except for
 process-control signals.
 
-Query acts on a complete bounded candidate snapshot. Foreign-scope and
-unrelated-revision references are omitted, while conflicting identity or
-binding data fails closed. Every continuation recomputes disclosure eligibility
-and the canonical keyset snapshot, making reference-set or policy-eligibility
-drift visible as an invalid cursor. Direct read conceals absent, foreign, and
-disclosure-denied references with one `evidence_not_found` result. Payload
+Core query acts on one bounded page from a disclosure-class-filtered immutable
+candidate snapshot. Foreign-scope, unrelated-revision, conflicting, ineligible,
+or invalid binding data fails closed. Page references are binding-validated in
+one batch, so durable fixture/revision lookup cost is per distinct revision,
+not per reference. Every continuation verifies the same canonical membership
+digest. Direct read conceals absent, foreign, and disclosure-denied references
+with one `evidence_not_found` result. Payload
 materialization occurs only after reference identity, membership, binding, and
 initial disclosure checks, followed by authorization and policy readmission
 before envelope release.
+
+The service probes immediately around each page-provider call. Corpus snapshot
+construction probes during indexed candidate materialization, filter scans,
+bounded-chunk sorting, membership hashing, and page copying. Singleflight
+followers wait with a bounded timeout and run probes outside the corpus lock.
+Cancellation of a follower leaves the producer intact; cancellation of the
+producer clears only its build ownership, wakes followers, and publishes no
+partial snapshot. Probe faults and non-boolean results become typed static
+failures that the tool boundary maps to retryable `evidence_unavailable`;
+process-control exceptions remain uncontained.
 
 The service has an in-memory, request-local unique-reference citation ledger;
 query results join it because their metadata can support a claim. One lock
@@ -2342,9 +2523,13 @@ protects call-ID admission and atomic ledger/byte commits. The tool-call budget
 is consumed before provider work, the item budget counts unique reference
 digests, and the cumulative byte budget counts canonical UTF-8 reference or
 envelope bytes for every successful transfer. A rejected commit cannot add a
-partial reference or byte charge. The service remains ephemeral and read-only:
-it owns no model runner, durable run or ledger store, HTTP API, database,
-filesystem, network, shell, plug-in call, mutation, or promotion authority.
+partial reference or byte charge. The service remains ephemeral and
+non-mutating: it owns no model runner, durable run or ledger store, HTTP API,
+database, filesystem, network, shell, annotation mutation, or promotion
+authority. It may invoke the one bounded deployment-supplied capability
+analyzer described above; that callback alone resolves and calls the exact
+plan-bound plug-in route. The catalog, runner arguments, and service never
+expose a plug-in object or dynamic provider selector.
 
 The core-owned `SqlitePrivateAnalysisRunStore` is a separate local persistence
 boundary. It admits an exact multi-revision request only after `ControlPlane`
@@ -2392,6 +2577,54 @@ administrators remain trusted; coherent rollback or replacement of both files
 requires an external WORM checkpoint to detect. No HTTP/CLI/model scheduler is
 added by this layer.
 
+Proposal review is a separate application and persistence boundary, not a
+runner capability. `PrivateAnalysisProposalReviewService` reopens one terminal
+report through `PrivateAnalysisService`, verifies the exact run version,
+result/proposal digests, proposal ID, and target revision set, and takes the
+actor only from the authenticated caller. It accepts either a rejection or a
+separately human-authored review-overlay target; proposal payload remains
+untrusted read-only data.
+
+`SqliteProposalReviewStore` owns
+`private-analysis-proposal-reviews.sqlite3`. A unique scoped run/proposal row
+and scope-bound request digest make the decision idempotent. Receipt replay
+also binds the stored request digest and decision ID to the deterministic
+candidate before materializing and authenticating that exact row. Separate
+domain-separated projections of that digest produce the decision ID and, for a
+promotion, target ID; the overlay key derives from the verified decision ID.
+Every materialized decision is authenticated before generated identities are
+trusted. Retention scans and authenticates the complete decision table before
+scope and lifecycle classification, so moving a row between scopes or changing
+an ID cannot hide protected work. A separately supplied 32-byte key
+authenticates an HMAC-SHA-256 reservation attestation over the scope, request digest,
+disposition, generated IDs, derived overlay key, and lifecycle
+state/version/timestamps. Completion updates lifecycle and attestation
+atomically; retention avoids predicates on unauthenticated scope and state. The
+core composition keeps that key in an exclusively created file outside SQLite
+and treats it and the database as one recovery unit. If any pre-existing
+database lacks the key, startup fails and requires an explicit legacy migration;
+current row contents can never authorize key replacement. Coherent rewriting
+of public projections cannot forge authority. Rejections complete without
+overlay mutation. Promotions first reserve a `pending` decision containing the
+validated human target and a deterministic target ID, then call the existing
+annotation/correlation writer with a decision-derived idempotency key, and
+finally transition to `completed`. The created overlay is authored by the human
+and tagged `assistant-promoted`. This small saga makes process interruption
+visible without permitting duplicate overlays. The service requires a
+cleanup-complete terminal report, resolves all human subjects before
+reservation, and holds the same cross-process review/catalog fence across
+validation, reservation, and overlay application. GET operations and repeated
+decision POSTs never execute the saga; an explicit version-conditional recovery
+POST reconstructs the target, proves its canonical bytes still match the
+original request digest, and re-resolves its subjects. A lost overlay receipt
+can be recovered only through an exact live version-1 target comparison, never
+by overwriting or accepting a modified target. Pending-decision scans are
+bounded and fail closed; their revision IDs join catalog retention protection
+and their decision-derived overlay keys block review-receipt retention. The
+same shared wire parser/projection serves HTTP and the headless CLI, preventing
+their accepted target vocabulary or lossless integer representation from
+drifting.
+
 The adjacent `PrivateAnalysisExecutionCoordinator` is the core-owned,
 synchronous execution composition. Its immutable registrations route by exact
 runner ID, version, transport, configuration digest, and instruction-profile
@@ -2401,6 +2634,56 @@ service, so one fence winner is the only process that creates a service or
 invokes the runner. A zero-accounting factory/binding failure, including a
 permanently consumed zero-tool service lifetime, is terminalized without
 inventing a transcript.
+
+Production custom evidence factories are inert module targets plus canonical
+configuration, executed by a fixed core-owned `spawn` target. The exact service
+stays in the killable child and a closed parent proxy validates bounded
+canonical IPC, one in-flight exchange, and complete monotonic accounting. Its
+effective identity binds the target and configuration digest without
+persisting configuration, and also binds the deployment semantic digest plus a
+content-addressed executable identity. Registration resolves only exact
+source-backed module callables and fingerprints their exact import provenance
+plus either one top-level module file or the complete package scope. The target
+digest also binds source-declared recursive bytecode, names, signatures,
+defaults, live class methods/bases, and safely verifiable global/static
+attribute dependencies. Exact referenced helpers and statically resolvable
+local imports continue recursively across package boundaries; fingerprinting
+does not execute imports, so referenced modules must already have exact loaded
+provenance. Local-import source is token-count preflighted against the remaining
+node budget before AST construction. Function-owned executable state participates under one 64-level,
+32,768-node, 2,048-code-object, 32-MiB
+runtime-state budget. Callable instances bind canonical `__dict__`/slot state,
+ordinary class attributes, callable members, and descriptors. Generated code,
+unsafe closures, custom builtins, unsupported mutable state, and
+mutable/dynamic global dereferences fail closed. Frozen dataclass and enum
+constants are instead bounded and bound by their canonical field/member values.
+All retained live class/member and mutable-object snapshots are rechecked after
+the traversal before the identity is returned.
+No live callable, raw path, or executable bytes enter the descriptor, durable
+record, IPC, or representation. Parent launch and child invocation each
+independently re-import and revalidate the fingerprint; attribute swaps,
+file-byte drift, sourceless code, and dynamic/unverifiable targets fail closed.
+Deadline/cancellation cleanup terminates, kills, joins, and closes the child
+before unstarted terminalization. A factory proxy or local model-adapter
+session remains cleanup-authoritative and retryable until child/helper cleanup
+is confirmed; an unreaped child or live helper produces a static infrastructure
+failure without sealing the attempt or releasing its receipt. Before either
+launch, a separate strict SQLite table fences the exact scoped run/execution with a
+domain-separated SHA-256 verifier and payload-free retry diagnostics. The
+random 256-bit release capability remains only beside the live process handle;
+neither it nor a PID is durable or exposed through diagnostics.
+Terminal store mutations and generic lease recovery reject or skip that fence.
+The originating coordinator retains the real process/session or bootstrap
+cleanup owner and retries one bounded terminate/kill/join operation per
+explicit cleanup pass; confirmed cleanup and the unpersisted capability must
+precede verifier-backed fence deletion. If row deletion is interrupted, that
+capability and idempotent owner remain retained for the next pass.
+After restart, absent live ownership leaves a durable nonterminal diagnostic
+instead of guessing from a reusable OS identifier or treating copied durable
+fields as authority. The table is additively created when an earlier run
+database opens.
+Child tracebacks are contained. The separately named trusted-inline compatibility factory is
+cooperative and unbounded and carries no thread-cancellation claim.
 
 One bounded monitor owns lease renewal and cross-process cancellation polling.
 Monitor, write-ahead accounting, and terminal completion serialize through one
@@ -2438,7 +2721,8 @@ identity is unique by `(runner_id, runner_version)` even though internal
 execution routing retains the complete transport/configuration selection.
 
 The control-plane router exposes that service through authenticated read/write
-routes for runner discovery and run create/list/get/execute/cancel/report.
+routes for closed capability discovery, runner discovery, and run
+create/list/get/execute/cancel/report.
 Create is idempotent, mutations are optimistic-versioned, detail/mutation/report
 responses have a matching ETag, and all responses are non-cacheable. Execute waits through
 `asyncio.to_thread` for the already durable synchronous coordinator; it is not
@@ -2448,6 +2732,18 @@ policy/instruction/catalog digest, callback, plug-in, execution-fence, or
 evidence-payload authority. The shipped registration set remains empty, so
 this lifecycle is inert until deployment composition supplies an approved
 local runner.
+
+Capability discovery is computed from core enums, application ceilings, and
+the current workspace policy. It advertises only closed task, limit,
+policy-approved transport, lifecycle-state, and action descriptors; it does
+not fold runner registration, provider configuration, or plug-in vocabulary
+into the endpoint. A terminal report independently resolves the exact set of
+outcome citation digests against the run's canonical stored disclosure ledger
+and emits only generic display-safe producer/optional plug-in, revision/node,
+classification, schema, provenance, and time metadata. Ledger count/digest,
+ordering/uniqueness, scope/revision, and citation mismatches fail closed; raw
+evidence, locators/paths, raw content digests, and uncited references never
+cross the application boundary.
 
 Runner composition claims a pristine service through a permanent single-run
 lease. Lease acquisition is atomic with direct-call execution, refuses an
@@ -2465,6 +2761,16 @@ trusted-local adapter, not a provider client. Its configuration must equal the
 request's runner ID/version/transport/configuration and trusted
 instruction-profile digest. Before it exposes the detached request and shipped
 catalog, it claims the exclusive service lease and requires current run access.
+Registration owns a detached runner clone and a bounded seal of the exact
+retained callback. Source-backed code, imports/globals, defaults, closures,
+function-owned executable state, and callable class/instance behavior are
+attested. Frozen configuration binds by value; native synchronization and
+similar external capabilities bind by exact same-process identity plus
+type/code provenance while their volatile state remains runtime data. Core
+recomputes the seal immediately before entry and repeats access, deadline, and
+cancellation checks afterward. Any callback-slot, closure, instance, class, or
+executable-state drift fails before invocation. Detached registrations retain
+the original execution gate, so cloning does not widen concurrency authority.
 The operator callback receives only those detached values and a narrow
 synchronous gateway. The gateway parses canonical closed-catalog call JSON,
 executes through the lease, and returns detached typed tool results/errors; the
@@ -2532,10 +2838,18 @@ promotion is introduced here.
 `ConfiguredPrivateAnalysisSubprocessRunner` consumes the same exclusive
 request-local tool-service lease but treats its operator-approved peer as
 untrusted protocol input. The runner selection must name `local_subprocess` and
-bind the exact launch-configuration digest. That launch value covers a bounded
+bind the exact v2 launch-configuration digest. That launch value covers a bounded
 argument vector, an absolute executable, an absolute working directory, the
-complete explicit bounded environment, adapter identity digest, stderr and
-terminate/kill limits, and the invariant `descendant_policy: forbidden`.
+complete explicit bounded environment, adapter identity digest, the
+content-addressed actual executable and ordered helper artifacts,
+runtime-data argument indices, stderr and terminate/kill limits, and the
+invariant `descendant_policy: forbidden`. Every argv file operand and every
+non-option operand must be an attested helper or explicitly classified runtime
+data; runtime data cannot identify/load code, and generic `-c`/`-m` forms are
+rejected. Canonical artifact paths, metadata, and bounded bytes participate in
+the seal but never enter durable/wire/representation output. Coverage and
+artifact content are revalidated with cancellation/deadline checkpoints
+immediately before child creation.
 Command-interpreter `.bat`/`.cmd` files are rejected. On Windows, executable
 and working-directory components ending in a period or space are rejected
 before that extension check so Win32 normalization cannot change the sealed
@@ -2589,10 +2903,13 @@ count reaches the transcript. A `finally` cleanup signals the pump, terminates
 the direct child, escalates to kill after a bounded grace, waits again, closes
 stdin/stdout, and preserves stderr until its helper drains buffered bytes to EOF after child
 exit. A still-live child has stderr closed to unblock the helper; both helpers
-are bounded-joined before sealing. A cleanup that cannot observe direct
-child exit and stopped helpers becomes static `runner_failed` (or a later
-`timeout`); this is fail-closed receipt acceptance, not an unconditional OS
-reaping guarantee. The runner also does not claim process-tree containment:
+are bounded-joined before sealing. A cleanup that cannot observe direct child
+exit and stopped helpers withholds the receipt behind the run's durable cleanup
+fence. The coordinator retains the exact live handle and unpersisted release
+capability for bounded retry; only confirmed cleanup reseals and releases the
+receipt, and no PID is persisted or reconstructed. This is fail-closed terminal
+acceptance, not an unconditional OS reaping guarantee. The runner also does not
+claim process-tree containment:
 adapter-created descendants are forbidden because this portable implementation
 does not establish a Windows Job Object or equivalent tree-reaping boundary.
 

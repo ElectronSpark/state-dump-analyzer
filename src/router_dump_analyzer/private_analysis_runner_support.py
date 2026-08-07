@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from json import JSONDecodeError, loads
 from threading import Lock
 from time import monotonic_ns
-from typing import Final
+from typing import Final, Protocol
 
 from .canonical import (
     strict_canonical_json,
@@ -51,7 +51,6 @@ from .private_analysis._wire import (
 )
 from .private_analysis_tool_service import (
     PrivateAnalysisToolBudgetState,
-    PrivateAnalysisToolRunLease,
     PrivateAnalysisToolServiceError,
 )
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
@@ -71,6 +70,16 @@ PrivateAnalysisAccountingObserver = Callable[
     None,
 ]
 PrivateAnalysisCancellationProbe = Callable[[], bool]
+
+
+class _PrivateAnalysisRunLeaseAccountingView(Protocol):
+    @property
+    def budget_state(self) -> PrivateAnalysisToolBudgetState: ...
+
+    @property
+    def disclosed_references(self) -> tuple[EvidenceReference, ...]: ...
+
+    def require_run_access(self) -> None: ...
 
 
 class PrivateAnalysisRunnerExecutionOwner:
@@ -142,7 +151,7 @@ class PrivateAnalysisRunAccountingSnapshot:
         if self.observer is not None and not callable(self.observer):
             raise TypeError("observer must be callable or None")
 
-    def refresh(self, lease: PrivateAnalysisToolRunLease) -> None:
+    def refresh(self, lease: _PrivateAnalysisRunLeaseAccountingView) -> None:
         """Atomically publish one complete detached snapshot from ``lease``."""
 
         references = lease.disclosed_references
@@ -821,7 +830,7 @@ def private_analysis_execution_receipt_values(
 
 
 def private_analysis_run_access_error(
-    lease: PrivateAnalysisToolRunLease,
+    lease: _PrivateAnalysisRunLeaseAccountingView,
     request: PrivateAnalysisRequest,
     deadline_ns: int,
     *,

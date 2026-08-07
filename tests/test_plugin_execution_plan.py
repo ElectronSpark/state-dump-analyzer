@@ -3,18 +3,27 @@ from __future__ import annotations
 import copy
 import unittest
 from dataclasses import FrozenInstanceError, replace
+from unittest.mock import patch
 
+import router_dump_analyzer
+from router_dump_analyzer.plugin_composition import (
+    DEFAULT_PLUGIN_COMPOSITION_POLICY_DIGEST,
+)
 from router_dump_analyzer.plugin_execution_plan import (
     PLUGIN_EXECUTION_PLAN_VERSION,
+    PLUGIN_EXECUTION_PLAN_VERSION_V1,
     DecoderIdentity,
     PluginArtifactIdentity,
     PluginExecutionPin,
     PluginExecutionPlan,
     RevisionExecutionPlanRef,
+    plugin_execution_pin_uses_legacy_identity,
     plugin_execution_plan_dict,
     plugin_execution_plan_digest,
     plugin_execution_plan_from_dict,
+    plugin_execution_plan_is_executable,
     primary_parser_execution_pin,
+    snapshot_plugin_execution_plan,
 )
 
 DIGEST_A = "sha256:" + "a" * 64
@@ -46,6 +55,7 @@ def _pin(instance_id: str = "forwarding.0") -> PluginExecutionPin:
         ),
         configuration_digest=DIGEST_A,
         schema_digest=DIGEST_B,
+        registered_execution_identity="sha256:" + "e" * 64,
         schema_versions=("resource.v3", "event.v2"),
         capabilities=("dump.parse", "route.resolve"),
         roles=("primary_parser", "forwarding_observer"),
@@ -70,8 +80,69 @@ class PluginExecutionPlanTests(unittest.TestCase):
         plan = _plan()
         document = plugin_execution_plan_dict(plan)
         self.assertEqual(document["contract_version"], PLUGIN_EXECUTION_PLAN_VERSION)
+        self.assertEqual(
+            document["composition_policy_digest"],
+            DEFAULT_PLUGIN_COMPOSITION_POLICY_DIGEST,
+        )
         self.assertEqual(plugin_execution_plan_from_dict(document), plan)
         self.assertEqual(plugin_execution_plan_dict(plan), document)
+
+    def test_retained_v1_round_trip_and_v2_identity_rules(self) -> None:
+        legacy_pin = replace(
+            _pin(),
+            registered_execution_identity="sha256:" + "0" * 64,
+        )
+        legacy = PluginExecutionPlan(
+            node_id="router-a",
+            basis_revision_id="upload-sha256-abc",
+            plugins=(legacy_pin,),
+            contract_version=PLUGIN_EXECUTION_PLAN_VERSION_V1,
+        )
+        document = plugin_execution_plan_dict(legacy)
+        self.assertNotIn("composition_policy_digest", document)
+        self.assertNotIn("registered_execution_identity", document["plugins"][0])
+        self.assertEqual(
+            legacy.plan_digest,
+            "sha256:ab2f4836be4ee1430c54d45d5dc36f71"
+            "aa75c9534ce89231c5ce24326fdec9ff",
+        )
+        parsed = plugin_execution_plan_from_dict(document)
+        self.assertEqual(parsed, legacy)
+        self.assertEqual(
+            parsed.plugins[0].registered_execution_identity,
+            "sha256:" + "0" * 64,
+        )
+        self.assertTrue(plugin_execution_pin_uses_legacy_identity(parsed.plugins[0]))
+        self.assertFalse(plugin_execution_plan_is_executable(parsed))
+        self.assertEqual(
+            parsed.composition_policy_digest,
+            "sha256:" + "0" * 64,
+        )
+        with self.assertRaisesRegex(ValueError, "v2.*require"):
+            replace(legacy, contract_version=PLUGIN_EXECUTION_PLAN_VERSION)
+        with self.assertRaisesRegex(ValueError, "v1.*cannot carry"):
+            PluginExecutionPlan(
+                node_id="router-a",
+                basis_revision_id="upload-sha256-abc",
+                plugins=(_pin(),),
+                contract_version=PLUGIN_EXECUTION_PLAN_VERSION_V1,
+            )
+        with self.assertRaisesRegex(ValueError, "v1.*composition policy"):
+            replace(legacy, composition_policy_digest=DIGEST_A)
+        with self.assertRaisesRegex(ValueError, "v2.*non-legacy"):
+            replace(
+                _plan(),
+                composition_policy_digest="sha256:" + "0" * 64,
+                plan_digest="",
+            )
+
+    def test_canonical_wire_size_is_bounded_at_construction(self) -> None:
+        with patch(
+            "router_dump_analyzer.plugin_execution_plan."
+            "MAX_PLUGIN_EXECUTION_PLAN_WIRE_BYTES",
+            1,
+        ), self.assertRaisesRegex(ValueError, "wire-size limit"):
+            _plan()
 
     def test_digest_covers_order_and_every_identity_dimension(self) -> None:
         first = _pin("forwarding.0")
@@ -80,6 +151,10 @@ class PluginExecutionPlanTests(unittest.TestCase):
         mutations = (
             replace(first, configuration_digest=DIGEST_B),
             replace(first, schema_digest=DIGEST_A),
+            replace(
+                first,
+                registered_execution_identity="sha256:" + "f" * 64,
+            ),
             replace(first, roles=("primary_parser", "secondary_parser")),
             replace(first, capabilities=("dump.parse",)),
         )
@@ -87,6 +162,35 @@ class PluginExecutionPlanTests(unittest.TestCase):
         for changed in mutations:
             with self.subTest(changed=changed):
                 self.assertNotEqual(_plan(changed).plan_digest, base_digest)
+        policy_changed = replace(
+            _plan(first),
+            composition_policy_digest=DIGEST_A,
+            plan_digest="",
+        )
+        self.assertNotEqual(policy_changed.plan_digest, base_digest)
+
+    def test_snapshot_and_root_exports_preserve_policy_identity(self) -> None:
+        plan = replace(
+            _plan(),
+            composition_policy_digest=DIGEST_A,
+            plan_digest="",
+        )
+        snapshot = snapshot_plugin_execution_plan(plan)
+        self.assertIsNot(snapshot, plan)
+        self.assertEqual(snapshot, plan)
+        self.assertEqual(snapshot.composition_policy_digest, DIGEST_A)
+        self.assertIs(
+            router_dump_analyzer.snapshot_plugin_execution_plan,
+            snapshot_plugin_execution_plan,
+        )
+        self.assertIs(
+            router_dump_analyzer.plugin_execution_plan_is_executable,
+            plugin_execution_plan_is_executable,
+        )
+        self.assertEqual(
+            router_dump_analyzer.PLUGIN_EXECUTION_PLAN_VERSION_V1,
+            PLUGIN_EXECUTION_PLAN_VERSION_V1,
+        )
 
     def test_tampering_and_unknown_fields_fail_closed(self) -> None:
         document = plugin_execution_plan_dict(_plan())
@@ -98,6 +202,26 @@ class PluginExecutionPlanTests(unittest.TestCase):
         unknown["network_endpoint"] = "https://example.invalid"
         with self.assertRaisesRegex(ValueError, "exactly"):
             plugin_execution_plan_from_dict(unknown)
+        missing_policy = copy.deepcopy(document)
+        del missing_policy["composition_policy_digest"]
+        with self.assertRaisesRegex(ValueError, "exactly"):
+            plugin_execution_plan_from_dict(missing_policy)
+        legacy_with_policy = plugin_execution_plan_dict(
+            PluginExecutionPlan(
+                node_id="router-a",
+                basis_revision_id="upload-sha256-abc",
+                plugins=(
+                    replace(
+                        _pin(),
+                        registered_execution_identity="sha256:" + "0" * 64,
+                    ),
+                ),
+                contract_version=PLUGIN_EXECUTION_PLAN_VERSION_V1,
+            )
+        )
+        legacy_with_policy["composition_policy_digest"] = DIGEST_A
+        with self.assertRaisesRegex(ValueError, "exactly"):
+            plugin_execution_plan_from_dict(legacy_with_policy)
         missing_digest = copy.deepcopy(document)
         missing_digest["plan_digest"] = ""
         with self.assertRaisesRegex(ValueError, "plan_digest"):

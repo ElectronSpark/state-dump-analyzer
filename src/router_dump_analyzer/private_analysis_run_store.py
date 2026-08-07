@@ -77,6 +77,10 @@ _MAX_AUDIT_ENTRIES_PER_RUN: Final = 10_000
 _MAX_LEASE_NS: Final = 24 * 60 * 60 * 1_000_000_000
 _MAX_SIGNED_64: Final = (1 << 63) - 1
 _IDENTITY_PATTERN: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}\Z")
+_CLEANUP_CAPABILITY_PREFIX: Final = "cleanup-capability-v1:"
+_CLEANUP_CAPABILITY_PATTERN: Final = re.compile(
+    re.escape(_CLEANUP_CAPABILITY_PREFIX) + r"[0-9a-f]{64}\Z"
+)
 
 
 class PrivateAnalysisRunStoreError(RuntimeError):
@@ -101,6 +105,10 @@ class PrivateAnalysisRunCorruptionError(PrivateAnalysisRunStoreError):
 
 class PrivateAnalysisRunRetentionDisabled(PrivateAnalysisRunStoreError):
     """Destructive run retention was not explicitly enabled."""
+
+
+class PrivateAnalysisRunCleanupPending(PrivateAnalysisRunConflict):
+    """A live child cleanup fence prevents terminal mutation or recovery."""
 
 
 class PrivateAnalysisRunState(StrEnum):
@@ -131,6 +139,26 @@ class PrivateAnalysisRunAuditReason(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class PrivateAnalysisRunCleanupFence:
+    """Payload-free durable ownership record for one unconfirmed child cleanup.
+
+    The fence deliberately stores no operating-system process identifier.  Only
+    the coordinator that retains the original process object and its unpersisted
+    cleanup capability can clear it after a confirmed reap.  This public
+    diagnostic projection exposes neither that capability nor its verifier; a
+    restarted coordinator can therefore diagnose the orphaned ownership without
+    gaining deletion authority or risking a reused PID.
+    """
+
+    scope: EvidenceScope
+    run_id: str
+    execution_id: str
+    created_at_ns: int
+    last_attempt_at_ns: int
+    attempt_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class PrivateAnalysisRunRecord:
     scope: EvidenceScope
     run_id: str
@@ -140,6 +168,7 @@ class PrivateAnalysisRunRecord:
     execution_id: str | None
     lease_expires_at_ns: int | None
     cancellation_requested_at_ns: int | None
+    cleanup_pending: bool
     disclosed_references: tuple[EvidenceReference, ...]
     evidence_ledger_digest: str
     budget_state: PrivateAnalysisToolBudgetState
@@ -264,6 +293,22 @@ def _identity(value: object, label: str) -> str:
     ):
         raise ValueError(f"{label} must contain 1 to 256 characters")
     return value
+
+
+def _cleanup_capability(value: object) -> str:
+    if (
+        type(value) is not str
+        or _CLEANUP_CAPABILITY_PATTERN.fullmatch(value) is None
+    ):
+        raise ValueError(
+            "cleanup_capability must be an exact versioned 256-bit capability"
+        )
+    return value
+
+
+def _cleanup_capability_verifier(value: object) -> str:
+    capability = _cleanup_capability(value)
+    return _digest("private_analysis_cleanup_capability_v1", capability)
 
 
 def _scope(value: object) -> EvidenceScope:
@@ -424,6 +469,18 @@ def _unstarted_failure_outcome(request_digest: str) -> PrivateAnalysisOutcome:
             request_digest=request_digest,
             stage=PrivateAnalysisErrorStage.RUNNER,
             code=PrivateAnalysisErrorCode.RUNNER_FAILED,
+            retryable=True,
+        ),
+    )
+
+
+def _unstarted_timeout_outcome(request_digest: str) -> PrivateAnalysisOutcome:
+    return PrivateAnalysisOutcome(
+        kind=PrivateAnalysisOutcomeKind.ERROR,
+        error=PrivateAnalysisError(
+            request_digest=request_digest,
+            stage=PrivateAnalysisErrorStage.RUNNER,
+            code=PrivateAnalysisErrorCode.TIMEOUT,
             retryable=True,
         ),
     )
@@ -722,6 +779,42 @@ class SqlitePrivateAnalysisRunStore:
                 PRIMARY KEY (tenant_id, project_id, workspace_id, run_id)
             ) STRICT;
 
+            -- Cleanup ownership is intentionally independent from the mutable
+            -- run head and carries no PID.  Generic lease recovery must remain
+            -- fenced even after a coordinator restart or a torn run-head
+            -- mutation; only an exact live owner token may remove this row.
+            CREATE TABLE IF NOT EXISTS private_analysis_run_cleanup_fences (
+                tenant_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                execution_id TEXT NOT NULL,
+                owner_verifier_digest TEXT NOT NULL,
+                created_at_ns INTEGER NOT NULL CHECK (created_at_ns >= 0),
+                last_attempt_at_ns INTEGER NOT NULL CHECK (last_attempt_at_ns >= 0),
+                attempt_count INTEGER NOT NULL CHECK (attempt_count >= 0),
+                PRIMARY KEY (tenant_id, project_id, workspace_id, run_id),
+                UNIQUE (owner_verifier_digest)
+            ) STRICT;
+
+            -- A consumed verifier is retained only as an exact idempotency
+            -- proof.  It cannot authorize another deletion and disappears
+            -- with the terminal run during normal retention.
+            CREATE TABLE IF NOT EXISTS private_analysis_run_cleanup_completions (
+                tenant_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                execution_id TEXT NOT NULL,
+                owner_verifier_digest TEXT NOT NULL,
+                PRIMARY KEY (tenant_id, project_id, workspace_id, run_id),
+                UNIQUE (owner_verifier_digest),
+                FOREIGN KEY (tenant_id, project_id, workspace_id, run_id)
+                    REFERENCES private_analysis_runs(
+                        tenant_id, project_id, workspace_id, run_id
+                    ) ON DELETE CASCADE
+            ) STRICT;
+
             CREATE TABLE IF NOT EXISTS private_analysis_run_tombstones (
                 tenant_id TEXT NOT NULL,
                 project_id TEXT NOT NULL,
@@ -779,6 +872,10 @@ class SqlitePrivateAnalysisRunStore:
             ON private_analysis_active_run_guards(
                 tenant_id, project_id, workspace_id, run_id
             );
+            CREATE INDEX IF NOT EXISTS private_analysis_cleanup_fences_attempt
+            ON private_analysis_run_cleanup_fences(
+                last_attempt_at_ns, tenant_id, project_id, workspace_id, run_id
+            );
 
             CREATE TABLE IF NOT EXISTS private_analysis_run_store_metadata (
                 metadata_key TEXT PRIMARY KEY,
@@ -786,6 +883,7 @@ class SqlitePrivateAnalysisRunStore:
             ) STRICT;
             """
         )
+        self._migrate_cleanup_fence_schema()
         metadata = self._connection.execute(
             """
             SELECT metadata_value FROM private_analysis_run_store_metadata
@@ -809,6 +907,104 @@ class SqlitePrivateAnalysisRunStore:
             )
         self._installation_id = installation_id
         self._connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+
+    def _migrate_cleanup_fence_schema(self) -> None:
+        """Replace the unreleased raw-token fence shape without weakening it.
+
+        Early development builds stored the cleanup token itself.  A one-time
+        in-place rewrite retains every fence using only a domain-separated
+        verifier, then securely drops the legacy table.  The original token is
+        never copied into the new durable shape.
+        """
+
+        columns = {
+            str(row[1])
+            for row in self._connection.execute(
+                "PRAGMA table_info(private_analysis_run_cleanup_fences)"
+            )
+        }
+        if "owner_verifier_digest" in columns:
+            return
+        if "fence_id" not in columns:
+            raise PrivateAnalysisRunStoreError(
+                "private-analysis cleanup fence schema is unsupported"
+            )
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            rows = self._connection.execute(
+                "SELECT * FROM private_analysis_run_cleanup_fences"
+            ).fetchall()
+            self._connection.execute(
+                "DROP INDEX IF EXISTS private_analysis_cleanup_fences_attempt"
+            )
+            self._connection.execute(
+                "ALTER TABLE private_analysis_run_cleanup_fences "
+                "RENAME TO private_analysis_run_cleanup_fences_legacy"
+            )
+            self._connection.execute(
+                """
+                CREATE TABLE private_analysis_run_cleanup_fences (
+                    tenant_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    execution_id TEXT NOT NULL,
+                    owner_verifier_digest TEXT NOT NULL,
+                    created_at_ns INTEGER NOT NULL CHECK (created_at_ns >= 0),
+                    last_attempt_at_ns INTEGER NOT NULL CHECK (last_attempt_at_ns >= 0),
+                    attempt_count INTEGER NOT NULL CHECK (attempt_count >= 0),
+                    PRIMARY KEY (tenant_id, project_id, workspace_id, run_id),
+                    UNIQUE (owner_verifier_digest)
+                ) STRICT
+                """
+            )
+            for row in rows:
+                capability = _identity(
+                    row["fence_id"], "stored legacy cleanup capability"
+                )
+                verifier = _digest(
+                    "private_analysis_cleanup_capability_v1", capability
+                )
+                self._connection.execute(
+                    """
+                    INSERT INTO private_analysis_run_cleanup_fences(
+                        tenant_id, project_id, workspace_id, run_id,
+                        execution_id, owner_verifier_digest, created_at_ns,
+                        last_attempt_at_ns, attempt_count
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["tenant_id"],
+                        row["project_id"],
+                        row["workspace_id"],
+                        row["run_id"],
+                        row["execution_id"],
+                        verifier,
+                        row["created_at_ns"],
+                        row["last_attempt_at_ns"],
+                        row["attempt_count"],
+                    ),
+                )
+            self._connection.execute(
+                "DROP TABLE private_analysis_run_cleanup_fences_legacy"
+            )
+            self._connection.execute(
+                """
+                CREATE INDEX private_analysis_cleanup_fences_attempt
+                ON private_analysis_run_cleanup_fences(
+                    last_attempt_at_ns, tenant_id, project_id, workspace_id, run_id
+                )
+                """
+            )
+            self._connection.execute("COMMIT")
+        except BaseException as error:
+            if self._connection.in_transaction:
+                self._connection.execute("ROLLBACK")
+            if isinstance(error, sqlite3.DatabaseError):
+                raise PrivateAnalysisRunStoreError(
+                    "private-analysis cleanup fence migration failed"
+                ) from error
+            raise
 
     @property
     def installation_id(self) -> str:
@@ -907,6 +1103,166 @@ class SqlitePrivateAnalysisRunStore:
     @staticmethod
     def _scope_values(scope: EvidenceScope) -> tuple[str, str, str]:
         return (scope.tenant_id, scope.project_id, scope.workspace_id)
+
+    @staticmethod
+    def _cleanup_fence_from_row(
+        scope: EvidenceScope,
+        row: sqlite3.Row,
+    ) -> PrivateAnalysisRunCleanupFence:
+        try:
+            validate_prefixed_lowercase_sha256(
+                row["owner_verifier_digest"],
+                "stored cleanup capability verifier",
+            )
+            return PrivateAnalysisRunCleanupFence(
+                scope=scope,
+                run_id=_identity(row["run_id"], "stored cleanup run_id"),
+                execution_id=_identity(
+                    row["execution_id"], "stored cleanup execution_id"
+                ),
+                created_at_ns=_bounded_integer(
+                    row["created_at_ns"],
+                    "stored cleanup creation timestamp",
+                    minimum=0,
+                    maximum=_MAX_SIGNED_64,
+                ),
+                last_attempt_at_ns=_bounded_integer(
+                    row["last_attempt_at_ns"],
+                    "stored cleanup attempt timestamp",
+                    minimum=0,
+                    maximum=_MAX_SIGNED_64,
+                ),
+                attempt_count=_bounded_integer(
+                    row["attempt_count"],
+                    "stored cleanup attempt count",
+                    minimum=0,
+                    maximum=_MAX_SIGNED_64,
+                ),
+            )
+        except (TypeError, ValueError, KeyError) as error:
+            raise PrivateAnalysisRunCorruptionError(
+                "private-analysis cleanup fence is invalid"
+            ) from error
+
+    @staticmethod
+    def _cleanup_fence_row(
+        cursor: sqlite3.Cursor,
+        scope: EvidenceScope,
+        run_id: str,
+    ) -> sqlite3.Row | None:
+        return cast(
+            sqlite3.Row | None,
+            cursor.execute(
+                """
+                SELECT * FROM private_analysis_run_cleanup_fences
+                WHERE tenant_id = ? AND project_id = ? AND workspace_id = ?
+                  AND run_id = ?
+                """,
+                (*SqlitePrivateAnalysisRunStore._scope_values(scope), run_id),
+            ).fetchone(),
+        )
+
+    @classmethod
+    def _require_no_cleanup_fence(
+        cls,
+        cursor: sqlite3.Cursor,
+        scope: EvidenceScope,
+        run_id: str,
+    ) -> None:
+        if cls._cleanup_fence_row(cursor, scope, run_id) is not None:
+            raise PrivateAnalysisRunCleanupPending(
+                "private-analysis child cleanup is not confirmed"
+            )
+
+    @classmethod
+    def _consume_cleanup_fence(
+        cls,
+        cursor: sqlite3.Cursor,
+        scope: EvidenceScope,
+        run_id: str,
+        *,
+        execution_id: str,
+        verifier: str,
+    ) -> None:
+        """Verify and remove one exact cleanup authority in this transaction."""
+
+        row = cls._cleanup_fence_row(cursor, scope, run_id)
+        if row is None:
+            raise PrivateAnalysisRunConflict(
+                "private-analysis cleanup fence was not found"
+            )
+        fence = cls._cleanup_fence_from_row(scope, row)
+        stored_verifier = validate_prefixed_lowercase_sha256(
+            row["owner_verifier_digest"],
+            "stored cleanup capability verifier",
+        )
+        if fence.execution_id != execution_id or stored_verifier != verifier:
+            raise PrivateAnalysisRunConflict(
+                "private-analysis cleanup ownership does not match"
+            )
+        cursor.execute(
+            """
+            INSERT INTO private_analysis_run_cleanup_completions(
+                tenant_id, project_id, workspace_id, run_id,
+                execution_id, owner_verifier_digest
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                *cls._scope_values(scope),
+                run_id,
+                execution_id,
+                verifier,
+            ),
+        )
+        removed = cursor.execute(
+            """
+            DELETE FROM private_analysis_run_cleanup_fences
+            WHERE tenant_id = ? AND project_id = ? AND workspace_id = ?
+              AND run_id = ? AND execution_id = ?
+              AND owner_verifier_digest = ?
+            """,
+            (
+                *cls._scope_values(scope),
+                run_id,
+                execution_id,
+                verifier,
+            ),
+        )
+        if removed.rowcount != 1:
+            raise PrivateAnalysisRunConflict(
+                "private-analysis cleanup ownership changed concurrently"
+            )
+
+    @classmethod
+    def _cleanup_completion_matches(
+        cls,
+        cursor: sqlite3.Cursor,
+        scope: EvidenceScope,
+        run_id: str,
+        *,
+        execution_id: str,
+        verifier: str,
+    ) -> bool:
+        row = cursor.execute(
+            """
+            SELECT execution_id, owner_verifier_digest
+            FROM private_analysis_run_cleanup_completions
+            WHERE tenant_id = ? AND project_id = ? AND workspace_id = ?
+              AND run_id = ?
+            """,
+            (*cls._scope_values(scope), run_id),
+        ).fetchone()
+        if row is None:
+            return False
+        stored_execution = _identity(
+            row["execution_id"],
+            "stored cleanup completion execution_id",
+        )
+        stored_verifier = validate_prefixed_lowercase_sha256(
+            row["owner_verifier_digest"],
+            "stored cleanup completion verifier",
+        )
+        return stored_execution == execution_id and stored_verifier == verifier
 
     @staticmethod
     def _require_run_row(
@@ -1207,6 +1563,12 @@ class SqlitePrivateAnalysisRunStore:
                 if row["cancellation_requested_at_ns"] is not None
                 else None
             )
+            cleanup_row = self._cleanup_fence_row(cursor, scope, run_id)
+            cleanup_pending = cleanup_row is not None
+            if cleanup_row is not None:
+                cleanup = self._cleanup_fence_from_row(scope, cleanup_row)
+                if execution_id is None or cleanup.execution_id != execution_id:
+                    raise ValueError("stored cleanup fence binding conflicts")
             created_at_ns = _bounded_integer(
                 row["created_at_ns"],
                 "stored creation timestamp",
@@ -1260,6 +1622,7 @@ class SqlitePrivateAnalysisRunStore:
             execution_id=execution_id,
             lease_expires_at_ns=lease_expires_at_ns,
             cancellation_requested_at_ns=cancellation_requested_at_ns,
+            cleanup_pending=cleanup_pending,
             disclosed_references=references,
             evidence_ledger_digest=ledger_digest,
             budget_state=budget,
@@ -1327,6 +1690,10 @@ class SqlitePrivateAnalysisRunStore:
         ):
             raise PrivateAnalysisRunCorruptionError(
                 "private-analysis run execution fence is inconsistent"
+            )
+        if record.cleanup_pending and not active:
+            raise PrivateAnalysisRunCorruptionError(
+                "private-analysis cleanup fence requires an active run"
             )
         if record.state is PrivateAnalysisRunState.CANCEL_REQUESTED:
             if record.cancellation_requested_at_ns is None:
@@ -1668,6 +2035,7 @@ class SqlitePrivateAnalysisRunStore:
             execution_id=None,
             lease_expires_at_ns=None,
             cancellation_requested_at_ns=None,
+            cleanup_pending=False,
             disclosed_references=references,
             evidence_ledger_digest=ledger_digest,
             budget_state=budget,
@@ -1887,6 +2255,249 @@ class SqlitePrivateAnalysisRunStore:
                 self._require_run_row(cursor, selected_scope, selected_run_id),
             )
 
+    def get_cleanup_fence(
+        self,
+        scope: EvidenceScope,
+        run_id: str,
+    ) -> PrivateAnalysisRunCleanupFence | None:
+        """Return payload-free cleanup diagnostics for one scoped run."""
+
+        selected_scope = _scope(scope)
+        selected_run_id = _identity(run_id, "run_id")
+        with self._read_cursor() as cursor:
+            row = self._cleanup_fence_row(cursor, selected_scope, selected_run_id)
+            if row is None:
+                return None
+            # A fence without its exact active execution is corruption, not a
+            # signal to guess whether an operating-system process still lives.
+            run = self._record_from_row(
+                cursor,
+                self._require_run_row(cursor, selected_scope, selected_run_id),
+            )
+            fence = self._cleanup_fence_from_row(selected_scope, row)
+            if (
+                run.state.is_terminal
+                or run.execution_id is None
+                or run.execution_id != fence.execution_id
+            ):
+                raise PrivateAnalysisRunCorruptionError(
+                    "private-analysis cleanup fence conflicts with run state"
+                )
+            return fence
+
+    def cleanup_fence_matches(
+        self,
+        scope: EvidenceScope,
+        run_id: str,
+        *,
+        execution_id: str,
+        cleanup_capability: str,
+    ) -> bool | None:
+        """Reconcile one in-memory cleanup capability with durable state.
+
+        ``None`` means the row is durably absent, ``True`` means the exact
+        execution and one-way capability verifier still match, and ``False``
+        means another cleanup identity occupies the row.  The three-way result
+        is intentionally internal-authority shaped: callers can resolve commit
+        ambiguity without exposing the verifier through diagnostic records.
+        """
+
+        selected_scope = _scope(scope)
+        selected_run_id = _identity(run_id, "run_id")
+        attempt = _identity(execution_id, "execution_id")
+        verifier = _cleanup_capability_verifier(cleanup_capability)
+        with self._read_cursor() as cursor:
+            row = self._cleanup_fence_row(cursor, selected_scope, selected_run_id)
+            if row is None:
+                return None
+            fence = self._cleanup_fence_from_row(selected_scope, row)
+            stored_verifier = validate_prefixed_lowercase_sha256(
+                row["owner_verifier_digest"],
+                "stored cleanup capability verifier",
+            )
+            return fence.execution_id == attempt and stored_verifier == verifier
+
+    def list_cleanup_fences(
+        self,
+        scope: EvidenceScope,
+        *,
+        limit: int = 100,
+    ) -> tuple[PrivateAnalysisRunCleanupFence, ...]:
+        """List bounded, scoped cleanup diagnostics without process identifiers."""
+
+        selected_scope = _scope(scope)
+        selected_limit = _bounded_integer(
+            limit, "limit", minimum=1, maximum=_MAX_LIST_LIMIT
+        )
+        with self._read_cursor() as cursor:
+            rows = cursor.execute(
+                """
+                SELECT * FROM private_analysis_run_cleanup_fences
+                WHERE tenant_id = ? AND project_id = ? AND workspace_id = ?
+                ORDER BY last_attempt_at_ns, run_id
+                LIMIT ?
+                """,
+                (*self._scope_values(selected_scope), selected_limit),
+            ).fetchall()
+            result = tuple(
+                self._cleanup_fence_from_row(selected_scope, row) for row in rows
+            )
+            for fence in result:
+                run = self._record_from_row(
+                    cursor,
+                    self._require_run_row(cursor, selected_scope, fence.run_id),
+                )
+                if (
+                    run.state.is_terminal
+                    or run.execution_id != fence.execution_id
+                ):
+                    raise PrivateAnalysisRunCorruptionError(
+                        "private-analysis cleanup fence conflicts with run state"
+                    )
+            return result
+
+    def begin_cleanup_fence(
+        self,
+        scope: EvidenceScope,
+        run_id: str,
+        *,
+        execution_id: str,
+        cleanup_capability: str,
+        now_ns: int | None = None,
+    ) -> PrivateAnalysisRunCleanupFence:
+        """Fence recovery using a capability retained only beside a live handle."""
+
+        selected_scope = _scope(scope)
+        selected_run_id = _identity(run_id, "run_id")
+        attempt = _identity(execution_id, "execution_id")
+        verifier = _cleanup_capability_verifier(cleanup_capability)
+        now = _bounded_integer(
+            time.time_ns() if now_ns is None else now_ns,
+            "now_ns",
+            minimum=0,
+            maximum=_MAX_SIGNED_64,
+        )
+        with self._transaction() as cursor:
+            run = self._record_from_row(
+                cursor,
+                self._require_run_row(cursor, selected_scope, selected_run_id),
+            )
+            if run.state not in {
+                PrivateAnalysisRunState.RUNNING,
+                PrivateAnalysisRunState.CANCEL_REQUESTED,
+            } or run.execution_id != attempt:
+                raise PrivateAnalysisRunConflict(
+                    "cleanup fence requires the exact active execution"
+                )
+            existing_row = self._cleanup_fence_row(
+                cursor, selected_scope, selected_run_id
+            )
+            if existing_row is not None:
+                existing = self._cleanup_fence_from_row(
+                    selected_scope, existing_row
+                )
+                existing_verifier = validate_prefixed_lowercase_sha256(
+                    existing_row["owner_verifier_digest"],
+                    "stored cleanup capability verifier",
+                )
+                if (
+                    existing.execution_id == attempt
+                    and existing_verifier == verifier
+                ):
+                    return existing
+                raise PrivateAnalysisRunCleanupPending(
+                    "private-analysis cleanup already has an owner"
+                )
+            cursor.execute(
+                """
+                INSERT INTO private_analysis_run_cleanup_fences(
+                    tenant_id, project_id, workspace_id, run_id,
+                    execution_id, owner_verifier_digest, created_at_ns,
+                    last_attempt_at_ns, attempt_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (
+                    *self._scope_values(selected_scope),
+                    selected_run_id,
+                    attempt,
+                    verifier,
+                    now,
+                    now,
+                ),
+            )
+            return PrivateAnalysisRunCleanupFence(
+                scope=selected_scope,
+                run_id=selected_run_id,
+                execution_id=attempt,
+                created_at_ns=now,
+                last_attempt_at_ns=now,
+                attempt_count=0,
+            )
+
+    def note_cleanup_attempt(
+        self,
+        scope: EvidenceScope,
+        run_id: str,
+        *,
+        execution_id: str,
+        cleanup_capability: str,
+        now_ns: int | None = None,
+    ) -> PrivateAnalysisRunCleanupFence:
+        """Record one bounded cleanup attempt without weakening its fence."""
+
+        selected_scope = _scope(scope)
+        selected_run_id = _identity(run_id, "run_id")
+        attempt = _identity(execution_id, "execution_id")
+        verifier = _cleanup_capability_verifier(cleanup_capability)
+        now = _bounded_integer(
+            time.time_ns() if now_ns is None else now_ns,
+            "now_ns",
+            minimum=0,
+            maximum=_MAX_SIGNED_64,
+        )
+        with self._transaction() as cursor:
+            row = self._cleanup_fence_row(cursor, selected_scope, selected_run_id)
+            if row is None:
+                raise PrivateAnalysisRunConflict(
+                    "private-analysis cleanup fence was not found"
+                )
+            fence = self._cleanup_fence_from_row(selected_scope, row)
+            stored_verifier = validate_prefixed_lowercase_sha256(
+                row["owner_verifier_digest"],
+                "stored cleanup capability verifier",
+            )
+            if fence.execution_id != attempt or stored_verifier != verifier:
+                raise PrivateAnalysisRunConflict(
+                    "private-analysis cleanup ownership does not match"
+                )
+            if now < fence.last_attempt_at_ns:
+                raise ValueError("cleanup attempt timestamp cannot move backwards")
+            if fence.attempt_count >= _MAX_SIGNED_64:
+                raise PrivateAnalysisRunConflict(
+                    "private-analysis cleanup attempt bound reached"
+                )
+            cursor.execute(
+                """
+                UPDATE private_analysis_run_cleanup_fences
+                SET last_attempt_at_ns = ?, attempt_count = attempt_count + 1
+                WHERE tenant_id = ? AND project_id = ? AND workspace_id = ?
+                  AND run_id = ? AND execution_id = ?
+                  AND owner_verifier_digest = ?
+                """,
+                (
+                    now,
+                    *self._scope_values(selected_scope),
+                    selected_run_id,
+                    attempt,
+                    verifier,
+                ),
+            )
+            return replace(
+                fence,
+                last_attempt_at_ns=now,
+                attempt_count=fence.attempt_count + 1,
+            )
+
     def list_runs(
         self,
         scope: EvidenceScope,
@@ -2005,6 +2616,9 @@ class SqlitePrivateAnalysisRunStore:
                     raise PrivateAnalysisRunConflict(
                         "only a queued private-analysis run can be claimed"
                     )
+                self._require_no_cleanup_fence(
+                    cursor, selected_scope, selected_run_id
+                )
                 desired = replace(
                     prior,
                     state=PrivateAnalysisRunState.RUNNING,
@@ -2224,6 +2838,8 @@ class SqlitePrivateAnalysisRunStore:
         expected_version: int,
         execution_id: str,
         actor_id: str,
+        cleanup_capability: str | None = None,
+        timed_out: bool = False,
         now_ns: int | None = None,
     ) -> PrivateAnalysisRunRecord:
         """Seal a claimed attempt that failed before a runner could start.
@@ -2239,6 +2855,13 @@ class SqlitePrivateAnalysisRunStore:
         selected_run_id = _identity(run_id, "run_id")
         attempt = _identity(execution_id, "execution_id")
         actor = _identity(actor_id, "actor_id")
+        cleanup_verifier = (
+            None
+            if cleanup_capability is None
+            else _cleanup_capability_verifier(cleanup_capability)
+        )
+        if type(timed_out) is not bool:
+            raise TypeError("timed_out must be a boolean")
         now = _bounded_integer(
             time.time_ns() if now_ns is None else now_ns,
             "now_ns",
@@ -2250,6 +2873,58 @@ class SqlitePrivateAnalysisRunStore:
                 cursor,
                 self._require_run_row(cursor, selected_scope, selected_run_id),
             )
+            if prior.state.is_terminal:
+                if cleanup_verifier is not None and not (
+                    self._cleanup_completion_matches(
+                        cursor,
+                        selected_scope,
+                        selected_run_id,
+                        execution_id=attempt,
+                        verifier=cleanup_verifier,
+                    )
+                ):
+                    raise PrivateAnalysisRunConflict(
+                        "terminal cleanup capability conflicts"
+                    )
+                selected_version = _bounded_integer(
+                    expected_version,
+                    "expected_version",
+                    minimum=1,
+                    maximum=_MAX_SIGNED_64,
+                )
+                expected_outcome = (
+                    _cancelled_outcome(prior.request_digest)
+                    if prior.state is PrivateAnalysisRunState.CANCELLED
+                    else (
+                        _unstarted_timeout_outcome(prior.request_digest)
+                        if timed_out
+                        else _unstarted_failure_outcome(prior.request_digest)
+                    )
+                )
+                expected_reason = (
+                    PrivateAnalysisRunAuditReason.CANCELLED_BEFORE_RUNNER
+                    if prior.state is PrivateAnalysisRunState.CANCELLED
+                    else PrivateAnalysisRunAuditReason.FAILED_BEFORE_RUNNER
+                )
+                final_audit = self._audit_entries(
+                    cursor,
+                    prior.scope,
+                    prior.run_id,
+                    expected_root=prior.audit_root_digest,
+                    expected_tip_sequence=prior.audit_tip_sequence,
+                    expected_tip_digest=prior.audit_tip_digest,
+                )[-1]
+                if (
+                    selected_version in {prior.version, prior.version - 1}
+                    and final_audit.execution_id == attempt
+                    and final_audit.reason is expected_reason
+                    and prior.outcome == expected_outcome
+                    and prior.transcript_summary is None
+                ):
+                    return prior
+                raise PrivateAnalysisRunConflict(
+                    "terminal unstarted attempt conflicts"
+                )
             self._require_expected_version(prior, expected_version)
             if prior.state not in {
                 PrivateAnalysisRunState.RUNNING,
@@ -2260,8 +2935,17 @@ class SqlitePrivateAnalysisRunStore:
                 )
             if prior.execution_id != attempt:
                 raise PrivateAnalysisRunConflict("execution fence does not match")
-            if prior.lease_expires_at_ns is None or prior.lease_expires_at_ns < now:
-                raise PrivateAnalysisRunConflict("private-analysis lease has expired")
+            if cleanup_verifier is None:
+                self._require_no_cleanup_fence(
+                    cursor, selected_scope, selected_run_id
+                )
+                if (
+                    prior.lease_expires_at_ns is None
+                    or prior.lease_expires_at_ns < now
+                ):
+                    raise PrivateAnalysisRunConflict(
+                        "private-analysis lease has expired"
+                    )
             budget = prior.budget_state
             if prior.disclosed_references or any(
                 (
@@ -2277,7 +2961,11 @@ class SqlitePrivateAnalysisRunStore:
             outcome = (
                 _cancelled_outcome(prior.request_digest)
                 if cancelled
-                else _unstarted_failure_outcome(prior.request_digest)
+                else (
+                    _unstarted_timeout_outcome(prior.request_digest)
+                    if timed_out
+                    else _unstarted_failure_outcome(prior.request_digest)
+                )
             )
             desired = replace(
                 prior,
@@ -2291,9 +2979,18 @@ class SqlitePrivateAnalysisRunStore:
                 lease_expires_at_ns=None,
                 outcome=outcome,
                 transcript_summary=None,
+                cleanup_pending=False,
                 updated_at_ns=now,
                 completed_at_ns=now,
             )
+            if cleanup_verifier is not None:
+                self._consume_cleanup_fence(
+                    cursor,
+                    selected_scope,
+                    selected_run_id,
+                    execution_id=attempt,
+                    verifier=cleanup_verifier,
+                )
             return self._persist_transition(
                 cursor,
                 prior,
@@ -2318,6 +3015,7 @@ class SqlitePrivateAnalysisRunStore:
         references: tuple[EvidenceReference, ...],
         budget_state: PrivateAnalysisToolBudgetState,
         actor_id: str,
+        cleanup_capability: str | None = None,
         now_ns: int | None = None,
     ) -> PrivateAnalysisRunRecord:
         """Atomically seal one exact terminal receipt and its durable ledger."""
@@ -2326,6 +3024,11 @@ class SqlitePrivateAnalysisRunStore:
         selected_run_id = _identity(run_id, "run_id")
         attempt = _identity(execution_id, "execution_id")
         actor = _identity(actor_id, "actor_id")
+        cleanup_verifier = (
+            None
+            if cleanup_capability is None
+            else _cleanup_capability_verifier(cleanup_capability)
+        )
         if type(outcome) is not PrivateAnalysisOutcome:
             raise TypeError("outcome must be an exact PrivateAnalysisOutcome")
         detached_outcome = private_analysis_outcome_from_json(
@@ -2370,6 +3073,18 @@ class SqlitePrivateAnalysisRunStore:
                         "terminal result violates the private-analysis contract"
                     ) from error
             if prior.state.is_terminal:
+                if cleanup_verifier is not None and not (
+                    self._cleanup_completion_matches(
+                        cursor,
+                        selected_scope,
+                        selected_run_id,
+                        execution_id=attempt,
+                        verifier=cleanup_verifier,
+                    )
+                ):
+                    raise PrivateAnalysisRunConflict(
+                        "terminal cleanup capability conflicts"
+                    )
                 if expected_version not in {prior.version, prior.version - 1}:
                     raise PrivateAnalysisRunStaleVersion(
                         "private-analysis run version is stale"
@@ -2401,8 +3116,17 @@ class SqlitePrivateAnalysisRunStore:
                 )
             if prior.execution_id != attempt:
                 raise PrivateAnalysisRunConflict("execution fence does not match")
-            if prior.lease_expires_at_ns is None or prior.lease_expires_at_ns < now:
-                raise PrivateAnalysisRunConflict("private-analysis lease has expired")
+            if cleanup_verifier is None:
+                self._require_no_cleanup_fence(
+                    cursor, selected_scope, selected_run_id
+                )
+                if (
+                    prior.lease_expires_at_ns is None
+                    or prior.lease_expires_at_ns < now
+                ):
+                    raise PrivateAnalysisRunConflict(
+                        "private-analysis lease has expired"
+                    )
             outcome_request_digest: str | None
             if detached_outcome.kind is PrivateAnalysisOutcomeKind.RESULT:
                 assert detached_outcome.result is not None
@@ -2454,6 +3178,7 @@ class SqlitePrivateAnalysisRunStore:
                 lease_expires_at_ns=None,
                 outcome=detached_outcome,
                 transcript_summary=detached_transcript,
+                cleanup_pending=False,
                 updated_at_ns=now,
                 completed_at_ns=now,
             )
@@ -2462,6 +3187,14 @@ class SqlitePrivateAnalysisRunStore:
                 if state is PrivateAnalysisRunState.CANCELLED
                 else PrivateAnalysisRunAuditReason.COMPLETED
             )
+            if cleanup_verifier is not None:
+                self._consume_cleanup_fence(
+                    cursor,
+                    selected_scope,
+                    selected_run_id,
+                    execution_id=attempt,
+                    verifier=cleanup_verifier,
+                )
             return self._persist_transition(
                 cursor,
                 prior,
@@ -2476,10 +3209,12 @@ class SqlitePrivateAnalysisRunStore:
         actor_id: str,
         now_ns: int | None = None,
         limit: int = 100,
+        scope: EvidenceScope | None = None,
     ) -> tuple[PrivateAnalysisRunRecord, ...]:
-        """Terminalize expired fenced attempts without automatic retry."""
+        """Terminalize expired attempts, optionally within one exact scope."""
 
         actor = _identity(actor_id, "actor_id")
+        selected_scope = None if scope is None else _scope(scope)
         now = _bounded_integer(
             time.time_ns() if now_ns is None else now_ns,
             "now_ns",
@@ -2491,17 +3226,44 @@ class SqlitePrivateAnalysisRunStore:
         )
         recovered: list[PrivateAnalysisRunRecord] = []
         with self._transaction() as cursor:
-            rows = cursor.execute(
-                """
+            if selected_scope is None:
+                rows = cursor.execute(
+                    """
                 SELECT * FROM private_analysis_runs
                 WHERE state IN ('running', 'cancel_requested')
                   AND lease_expires_at_ns < ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM private_analysis_run_cleanup_fences AS cleanup
+                      WHERE cleanup.tenant_id = private_analysis_runs.tenant_id
+                        AND cleanup.project_id = private_analysis_runs.project_id
+                        AND cleanup.workspace_id = private_analysis_runs.workspace_id
+                        AND cleanup.run_id = private_analysis_runs.run_id
+                  )
                 ORDER BY lease_expires_at_ns, tenant_id, project_id,
                          workspace_id, run_id
                 LIMIT ?
                 """,
-                (now, selected_limit),
-            ).fetchall()
+                    (now, selected_limit),
+                ).fetchall()
+            else:
+                rows = cursor.execute(
+                    """
+                SELECT * FROM private_analysis_runs
+                WHERE tenant_id = ? AND project_id = ? AND workspace_id = ?
+                  AND state IN ('running', 'cancel_requested')
+                  AND lease_expires_at_ns < ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM private_analysis_run_cleanup_fences AS cleanup
+                      WHERE cleanup.tenant_id = private_analysis_runs.tenant_id
+                        AND cleanup.project_id = private_analysis_runs.project_id
+                        AND cleanup.workspace_id = private_analysis_runs.workspace_id
+                        AND cleanup.run_id = private_analysis_runs.run_id
+                  )
+                ORDER BY lease_expires_at_ns, run_id
+                LIMIT ?
+                """,
+                    (*self._scope_values(selected_scope), now, selected_limit),
+                ).fetchall()
             for row in rows:
                 prior = self._record_from_row(cursor, row)
                 cancelled = prior.state is PrivateAnalysisRunState.CANCEL_REQUESTED
@@ -3304,6 +4066,8 @@ __all__ = [
     "PrivateAnalysisRunAdmissionValidator",
     "PrivateAnalysisRunAuditEntry",
     "PrivateAnalysisRunAuditReason",
+    "PrivateAnalysisRunCleanupFence",
+    "PrivateAnalysisRunCleanupPending",
     "PrivateAnalysisRunConflict",
     "PrivateAnalysisRunCorruptionError",
     "PrivateAnalysisRunNotFound",

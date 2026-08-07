@@ -16,6 +16,7 @@ from unittest.mock import patch
 from rsl_demo_plugin import (
     GENERATED_ASSEMBLY_FORMAT_VERSION,
     GENERATED_COVERAGE_FORMAT_VERSION,
+    GENERATED_COVERAGE_REGISTRY_ID,
     GENERATED_PROJECTION_POLICY,
 )
 from rsl_demo_plugin.assembly_store import (
@@ -106,11 +107,38 @@ def _node_archive_bytes(
     return output.getvalue()
 
 
+def _valid_coverage_case() -> dict[str, object]:
+    return {
+        "case_id": "basic.ip",
+        "required_capabilities": ["evidence_analysis"],
+        "private_analysis_intents": ["evidence_interpretation"],
+        "involved_nodes": ["node-a"],
+        "candidate_paths": [],
+        "evidence_refs": [
+            {
+                "evidence_kind": "temporal_event",
+                "node_id": "node-a",
+                "revision_id": "revision:node-a",
+                "resource_id": "node-a/resource/1",
+                "event_uid": "node-a/event/1",
+                "event_name": "test_state_change",
+                "phase": "test",
+                "timestamp_ns": "1",
+                "resource_kind": "TEST_RESOURCE",
+                "action": "modify",
+                "outcome": "success",
+                "state_changed": True,
+            }
+        ],
+    }
+
+
 def _write_assembly(
     path: Path,
     *,
     plugin_descriptor: dict[str, object] | None = None,
     assembly_format_version: int = GENERATED_ASSEMBLY_FORMAT_VERSION,
+    coverage_format_version: int = GENERATED_COVERAGE_FORMAT_VERSION,
     coverage_case: dict[str, object] | None = None,
     forwarding_rows_by_node: dict[
         str, list[dict[str, object]]
@@ -159,32 +187,10 @@ def _write_assembly(
         "coverage": {"path": "coverage.json", "cases": 1},
     }
     coverage = {
-        "format_version": GENERATED_COVERAGE_FORMAT_VERSION,
-        "registry_id": "router-state-lab-demo-coverage-v2",
+        "format_version": coverage_format_version,
+        "registry_id": GENERATED_COVERAGE_REGISTRY_ID,
         "cases": [
-            coverage_case
-            or {
-                "case_id": "basic.ip",
-                "required_capabilities": [],
-                "involved_nodes": ["node-a"],
-                "candidate_paths": [],
-                "evidence_refs": [
-                    {
-                        "evidence_kind": "temporal_event",
-                        "node_id": "node-a",
-                        "revision_id": "revision:node-a",
-                        "resource_id": "node-a/resource/1",
-                        "event_uid": "node-a/event/1",
-                        "event_name": "test_state_change",
-                        "phase": "test",
-                        "timestamp_ns": "1",
-                        "resource_kind": "TEST_RESOURCE",
-                        "action": "modify",
-                        "outcome": "success",
-                        "state_changed": True,
-                    }
-                ],
-            }
+            coverage_case or _valid_coverage_case()
         ],
     }
     members = {
@@ -334,6 +340,56 @@ class DemoAssemblyStoreTests(unittest.TestCase):
             ):
                 DemoAssemblyStore(archive)
 
+    def test_runtime_rejects_stale_coverage_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "stale-coverage-version.tgz"
+            _write_assembly(
+                archive,
+                coverage_format_version=(GENERATED_COVERAGE_FORMAT_VERSION - 1),
+            )
+            with self.assertRaisesRegex(
+                DemoAssemblyError,
+                "coverage format version",
+            ):
+                DemoAssemblyStore(archive)
+
+    def test_runtime_rejects_missing_unknown_or_duplicate_analysis_intents(
+        self,
+    ) -> None:
+        malformed = {
+            "missing": None,
+            "unknown": ["vendor_private_intent"],
+            "duplicate": ["route_trace", "route_trace"],
+        }
+        for label, intents in malformed.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                case = _valid_coverage_case()
+                if intents is None:
+                    case.pop("private_analysis_intents")
+                else:
+                    case["private_analysis_intents"] = intents
+                archive = Path(directory) / f"{label}-analysis-intents.tgz"
+                _write_assembly(archive, coverage_case=case)
+                with self.assertRaisesRegex(
+                    DemoAssemblyError,
+                    "private_analysis_intents",
+                ):
+                    DemoAssemblyStore(archive)
+
+    def test_runtime_requires_analysis_capability_for_declared_intents(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            case = _valid_coverage_case()
+            case["required_capabilities"] = []
+            archive = Path(directory) / "missing-analysis-capability.tgz"
+            _write_assembly(archive, coverage_case=case)
+            with self.assertRaisesRegex(
+                DemoAssemblyError,
+                "lacks evidence_analysis capability",
+            ):
+                DemoAssemblyStore(archive)
+
     def test_runtime_rejects_coverage_without_candidate_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory) / "stale-coverage.tgz"
@@ -341,7 +397,8 @@ class DemoAssemblyStoreTests(unittest.TestCase):
                 archive,
                 coverage_case={
                     "case_id": "basic.ip",
-                    "required_capabilities": [],
+                    "required_capabilities": ["evidence_analysis"],
+                    "private_analysis_intents": ["evidence_interpretation"],
                     "involved_nodes": ["node-a"],
                     "evidence_refs": [
                         {
@@ -376,7 +433,11 @@ class DemoAssemblyStoreTests(unittest.TestCase):
                 archive,
                 coverage_case={
                     "case_id": "topology.shared",
-                    "required_capabilities": ["topology_projection"],
+                    "required_capabilities": [
+                        "topology_projection",
+                        "evidence_analysis",
+                    ],
+                    "private_analysis_intents": ["evidence_correlation"],
                     "involved_nodes": ["node-a"],
                     "candidate_paths": [],
                     "evidence_refs": [

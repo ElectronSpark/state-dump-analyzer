@@ -21,6 +21,10 @@ from typing import Any, Final, Never, TextIO
 from .cli import _add_repeatable_plugin_allowlist_arguments
 from .control_plane import ControlPlane
 from .ingestion_pipeline import PluginRegistry
+from .plugin_composition_deployment import (
+    PluginCompositionDeploymentContext,
+    load_plugin_composition_deployment,
+)
 from .plugin_loading import (
     LoadedPlugin,
     load_plugin_entry_point,
@@ -41,6 +45,15 @@ from .private_analysis_application_wire import (
 from .private_analysis_deployment import (
     PrivateAnalysisDeploymentContext,
     load_private_analysis_deployment,
+)
+from .private_analysis_promotion import (
+    ProposalReviewError,
+    ProposalReviewNotFoundError,
+)
+from .private_analysis_promotion_wire import (
+    ProposalReviewWireError,
+    parse_proposal_review_request,
+    proposal_review_decision_to_wire,
 )
 from .private_analysis_service import PrivateAnalysisServiceError
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
@@ -66,8 +79,13 @@ class PrivateAnalysisCliOperation(StrEnum):
     LIST = "list"
     EXECUTE = "execute"
     CANCEL = "cancel"
+    RECOVER_EXPIRED = "recover-expired"
     REPORT = "report"
     RUN = "run"
+    DECIDE_PROPOSAL = "decide-proposal"
+    LIST_DECISIONS = "list-decisions"
+    GET_DECISION = "get-decision"
+    RECOVER_DECISION = "recover-decision"
 
 
 class PrivateAnalysisCliInputError(ValueError):
@@ -99,12 +117,16 @@ class PrivateAnalysisCliConfiguration:
     idempotency_key: str | None = None
     run_id: str | None = None
     execution_id: str | None = None
+    proposal_id: str | None = None
+    decision_id: str | None = None
     expected_version: int | None = None
     limit: int = 100
+    offset: int = 0
     after_created_at_ns: int | None = None
     after_run_id: str | None = None
     output_path: Path | None = None
     pretty: bool = False
+    plugin_deployment_module: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.state_dir, Path):
@@ -116,11 +138,27 @@ class PrivateAnalysisCliConfiguration:
             or type(self.plugin_modules) is not tuple
         ):
             raise TypeError("plug-in allowlists must be tuples")
-        if bool(self.plugin_names) == bool(self.plugin_modules):
-            raise ValueError("configure exactly one plug-in allowlist mode")
+        if (
+            sum(
+                (
+                    bool(self.plugin_names),
+                    bool(self.plugin_modules),
+                    self.plugin_deployment_module is not None,
+                )
+            )
+            != 1
+        ):
+            raise ValueError(
+                "configure exactly one plug-in allowlist or composition deployment"
+            )
         for values in (self.plugin_names, self.plugin_modules):
             for plugin_selector in values:
                 _bounded_cli_text(plugin_selector, "plug-in selector")
+        if self.plugin_deployment_module is not None:
+            _bounded_cli_text(
+                self.plugin_deployment_module,
+                "plug-in deployment module",
+            )
         _bounded_cli_text(self.tenant_id, "tenant")
         _bounded_cli_text(self.project_id, "project")
         _bounded_cli_text(self.workspace_id, "workspace")
@@ -134,6 +172,8 @@ class PrivateAnalysisCliConfiguration:
             (self.idempotency_key, "idempotency_key"),
             (self.run_id, "run_id"),
             (self.execution_id, "execution_id"),
+            (self.proposal_id, "proposal_id"),
+            (self.decision_id, "decision_id"),
             (self.after_run_id, "after_run_id"),
         ):
             if optional_value is not None:
@@ -144,6 +184,8 @@ class PrivateAnalysisCliConfiguration:
             MAX_PRIVATE_ANALYSIS_CLI_LIST_LIMIT
         ):
             raise ValueError("limit is outside its bounded domain")
+        if type(self.offset) is not int or not 0 <= self.offset <= _MAX_SIGNED_64:
+            raise ValueError("offset is outside its bounded domain")
         if self.after_created_at_ns is not None and (
             type(self.after_created_at_ns) is not int
             or not 0 <= self.after_created_at_ns <= _MAX_SIGNED_64
@@ -175,6 +217,10 @@ class PrivateAnalysisCliConfiguration:
                 PrivateAnalysisCliOperation.EXECUTE,
                 PrivateAnalysisCliOperation.CANCEL,
                 PrivateAnalysisCliOperation.REPORT,
+                PrivateAnalysisCliOperation.DECIDE_PROPOSAL,
+                PrivateAnalysisCliOperation.LIST_DECISIONS,
+                PrivateAnalysisCliOperation.GET_DECISION,
+                PrivateAnalysisCliOperation.RECOVER_DECISION,
             }
             and self.run_id is None
         ):
@@ -186,6 +232,33 @@ class PrivateAnalysisCliConfiguration:
             raise ValueError(
                 "the selected mutation requires actor and expected_version"
             )
+        if (
+            self.operation is PrivateAnalysisCliOperation.RECOVER_EXPIRED
+            and self.actor_id is None
+        ):
+            raise ValueError("expired-run recovery requires actor")
+        if self.operation is PrivateAnalysisCliOperation.DECIDE_PROPOSAL and (
+            self.proposal_id is None
+            or self.actor_id is None
+            or self.expected_version is None
+            or self.idempotency_key is None
+            or self.request_path is None
+        ):
+            raise ValueError("proposal decision configuration is incomplete")
+        if (
+            self.operation
+            in {
+                PrivateAnalysisCliOperation.GET_DECISION,
+                PrivateAnalysisCliOperation.RECOVER_DECISION,
+            }
+            and self.decision_id is None
+        ):
+            raise ValueError("decision lookup requires decision_id")
+        if (
+            self.operation is PrivateAnalysisCliOperation.RECOVER_DECISION
+            and self.expected_version is None
+        ):
+            raise ValueError("decision recovery requires expected_version")
 
 
 def _canonical_integer(
@@ -228,6 +301,15 @@ def _nonnegative_time(value: str) -> int:
     return _canonical_integer(
         value,
         label="after_created_at_ns",
+        minimum=0,
+        maximum=_MAX_SIGNED_64,
+    )
+
+
+def _nonnegative_offset(value: str) -> int:
+    return _canonical_integer(
+        value,
+        label="offset",
         minimum=0,
         maximum=_MAX_SIGNED_64,
     )
@@ -320,8 +402,61 @@ def build_parser() -> argparse.ArgumentParser:
     _add_mutation_identity(cancel)
     cancel.add_argument("--expected-version", required=True, type=_positive_version)
 
+    recover_expired = commands.add_parser(
+        "recover-expired",
+        help=(
+            "terminalize expired attempts in this workspace without retrying "
+            "the model"
+        ),
+    )
+    _add_mutation_identity(recover_expired)
+    recover_expired.add_argument("--limit", type=_list_limit, default=100)
+
     report = commands.add_parser("report", help="read one terminal report")
     _add_run_identity(report)
+
+    decide = commands.add_parser(
+        "decide-proposal",
+        help="durably reject or explicitly promote one exact proposal",
+    )
+    _add_run_identity(decide)
+    decide.add_argument("--proposal-id", required=True)
+    _add_mutation_identity(decide)
+    decide.add_argument("--expected-version", required=True, type=_positive_version)
+    decide.add_argument("--idempotency-key", required=True)
+    decide.add_argument(
+        "--request",
+        required=True,
+        type=Path,
+        dest="request_path",
+        help=(
+            "bounded UTF-8 JSON containing the human decision and, for a "
+            "promotion, a separately authored annotation or correlation target"
+        ),
+    )
+
+    decisions = commands.add_parser(
+        "list-decisions",
+        help="page durable human decisions for one run",
+    )
+    _add_run_identity(decisions)
+    decisions.add_argument("--limit", type=_list_limit, default=100)
+    decisions.add_argument("--offset", type=_nonnegative_offset, default=0)
+
+    decision = commands.add_parser(
+        "get-decision",
+        help="read one exact durable proposal decision",
+    )
+    _add_run_identity(decision)
+    decision.add_argument("--decision-id", required=True)
+
+    recover = commands.add_parser(
+        "recover-decision",
+        help="explicitly resume one pending human-authored promotion",
+    )
+    _add_run_identity(recover)
+    recover.add_argument("--decision-id", required=True)
+    recover.add_argument("--expected-version", required=True, type=_positive_version)
 
     run = commands.add_parser(
         "run",
@@ -368,6 +503,16 @@ def parse_args(
             if getattr(namespace, "execution_id", None) is None
             else _bounded_cli_text(namespace.execution_id, "execution_id")
         )
+        proposal_id = (
+            None
+            if getattr(namespace, "proposal_id", None) is None
+            else _bounded_cli_text(namespace.proposal_id, "proposal_id")
+        )
+        decision_id = (
+            None
+            if getattr(namespace, "decision_id", None) is None
+            else _bounded_cli_text(namespace.decision_id, "decision_id")
+        )
         after_run_id = (
             None if after_id is None else _bounded_cli_text(after_id, "after_run_id")
         )
@@ -387,12 +532,16 @@ def parse_args(
         idempotency_key=idempotency_key,
         run_id=run_id,
         execution_id=execution_id,
+        proposal_id=proposal_id,
+        decision_id=decision_id,
         expected_version=getattr(namespace, "expected_version", None),
         limit=getattr(namespace, "limit", 100),
+        offset=getattr(namespace, "offset", 0),
         after_created_at_ns=after_time,
         after_run_id=after_run_id,
         output_path=namespace.output_path,
         pretty=namespace.pretty,
+        plugin_deployment_module=namespace.plugin_deployment_module,
     )
 
 
@@ -514,21 +663,36 @@ def run(
     entry_point_loader: Callable[[str], Any] = load_plugin_entry_point,
     module_loader: Callable[[str], Any] = load_plugin_module,
     deployment_loader: Callable[..., Any] = load_private_analysis_deployment,
+    plugin_deployment_loader: Callable[..., Any] = (
+        load_plugin_composition_deployment
+    ),
     registry_factory: Callable[..., Any] = PluginRegistry,
     control_plane_factory: Callable[..., Any] = ControlPlane,
     stdout: TextIO = sys.stdout,
 ) -> int:
     """Execute one local lifecycle operation and emit a bounded JSON document."""
 
-    loaded_plugins = _load_plugins(
-        configuration,
-        entry_point_loader=entry_point_loader,
-        module_loader=module_loader,
-    )
-    registry = registry_factory(require_executable_identity=True)
-    for loaded_plugin in loaded_plugins:
-        loaded_plugin.register(registry)
     state_root = configuration.state_dir.expanduser().resolve()
+    composition_options: dict[str, Any] = {}
+    if configuration.plugin_deployment_module is not None:
+        composition = plugin_deployment_loader(
+            configuration.plugin_deployment_module,
+            context=PluginCompositionDeploymentContext(state_dir=state_root),
+        )
+        registry = composition.primary_registry
+        composition_options = {
+            "plugin_composition_policy": composition.policy,
+            "capability_providers": composition.capability_providers,
+        }
+    else:
+        loaded_plugins = _load_plugins(
+            configuration,
+            entry_point_loader=entry_point_loader,
+            module_loader=module_loader,
+        )
+        registry = registry_factory(require_executable_identity=True)
+        for loaded_plugin in loaded_plugins:
+            loaded_plugin.register(registry)
     deployment = deployment_loader(
         configuration.deployment_module,
         context=PrivateAnalysisDeploymentContext(state_dir=state_root),
@@ -539,6 +703,7 @@ def run(
         private_analysis_runners=deployment.registrations,
         private_analysis_execution_limits=deployment.execution_limits,
         private_analysis_ceilings=deployment.ceilings,
+        **composition_options,
     )
     exit_code = EXIT_SUCCESS
     document = _base_document(configuration)
@@ -623,11 +788,102 @@ def run(
                     actor_id=configuration.actor_id,
                 )
             )
+        elif operation is PrivateAnalysisCliOperation.RECOVER_EXPIRED:
+            if configuration.actor_id is None:
+                raise PrivateAnalysisCliInputError(
+                    "expired-run recovery configuration is incomplete"
+                )
+            document["runs"] = [
+                private_analysis_run_to_wire(item)
+                for item in service.recover_expired(
+                    scope,
+                    actor_id=configuration.actor_id,
+                    limit=configuration.limit,
+                )
+            ]
         elif operation is PrivateAnalysisCliOperation.REPORT:
             if configuration.run_id is None:
                 raise PrivateAnalysisCliInputError("report configuration is incomplete")
             document["report"] = private_analysis_report_to_wire(
                 service.get_report(scope, configuration.run_id)
+            )
+        elif operation is PrivateAnalysisCliOperation.DECIDE_PROPOSAL:
+            if (
+                configuration.run_id is None
+                or configuration.proposal_id is None
+                or configuration.actor_id is None
+                or configuration.expected_version is None
+                or configuration.idempotency_key is None
+                or configuration.request_path is None
+            ):
+                raise PrivateAnalysisCliInputError(
+                    "proposal decision configuration is incomplete"
+                )
+            review = parse_proposal_review_request(
+                _read_request_document(configuration.request_path)
+            )
+            document["decision"] = proposal_review_decision_to_wire(
+                control_plane.private_analysis_reviews.decide(
+                    scope,
+                    run_id=configuration.run_id,
+                    proposal_id=configuration.proposal_id,
+                    proposal_digest=review.proposal_digest,
+                    result_digest=review.result_digest,
+                    expected_run_version=configuration.expected_version,
+                    disposition=review.disposition,
+                    actor=configuration.actor_id,
+                    rationale=review.rationale,
+                    idempotency_key=configuration.idempotency_key,
+                    target=review.target,
+                )
+            )
+        elif operation is PrivateAnalysisCliOperation.LIST_DECISIONS:
+            if configuration.run_id is None:
+                raise PrivateAnalysisCliInputError(
+                    "decision list configuration is incomplete"
+                )
+            document["decisions"] = [
+                proposal_review_decision_to_wire(item)
+                for item in control_plane.private_analysis_reviews.list(
+                    scope,
+                    run_id=configuration.run_id,
+                    limit=configuration.limit,
+                    offset=configuration.offset,
+                )
+            ]
+        elif operation is PrivateAnalysisCliOperation.GET_DECISION:
+            if configuration.run_id is None or configuration.decision_id is None:
+                raise PrivateAnalysisCliInputError(
+                    "decision lookup configuration is incomplete"
+                )
+            decision = control_plane.private_analysis_reviews.get(
+                scope,
+                configuration.decision_id,
+            )
+            if decision.run_id != configuration.run_id:
+                raise ProposalReviewNotFoundError(configuration.decision_id)
+            document["decision"] = proposal_review_decision_to_wire(decision)
+        elif operation is PrivateAnalysisCliOperation.RECOVER_DECISION:
+            if (
+                configuration.run_id is None
+                or configuration.decision_id is None
+                or configuration.expected_version is None
+            ):
+                raise PrivateAnalysisCliInputError(
+                    "decision recovery configuration is incomplete"
+                )
+            current = control_plane.private_analysis_reviews.get(
+                scope,
+                configuration.decision_id,
+            )
+            if current.run_id != configuration.run_id:
+                raise ProposalReviewNotFoundError(configuration.decision_id)
+            document["decision"] = proposal_review_decision_to_wire(
+                control_plane.private_analysis_reviews.recover(
+                    scope,
+                    configuration.decision_id,
+                    expected_decision_version=configuration.expected_version,
+                )
             )
         else:
             if operation is not PrivateAnalysisCliOperation.RUN:
@@ -703,10 +959,24 @@ def main(argv: Sequence[str] | None = None) -> None:
             file=sys.stderr,
         )
         raise SystemExit(EXIT_FAILURE) from None
+    except ProposalReviewError:
+        print(
+            _encode_document(
+                _error_document(
+                    operation,
+                    code="proposal_review_failed",
+                    message="Private-analysis proposal review failed.",
+                ),
+                pretty=False,
+            ),
+            file=sys.stderr,
+        )
+        raise SystemExit(EXIT_FAILURE) from None
     except (
         PrivateAnalysisApplicationWireLimitError,
         PrivateAnalysisApplicationWireRequestError,
         PrivateAnalysisCliInputError,
+        ProposalReviewWireError,
         LookupError,
         OSError,
         RuntimeError,

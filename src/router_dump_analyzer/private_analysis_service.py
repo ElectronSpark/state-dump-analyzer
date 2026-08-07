@@ -9,7 +9,7 @@ network integration.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import InitVar, dataclass, field, replace
 from enum import StrEnum
 from typing import Final, cast
 
@@ -18,20 +18,34 @@ from .private_analysis import (
     MAX_PRIVATE_ANALYSIS_QUERY_BYTES,
     MAX_PRIVATE_ANALYSIS_QUERY_CHARACTERS,
     MAX_PRIVATE_ANALYSIS_REVISIONS,
+    EvidenceFactProvenance,
+    EvidenceKind,
+    EvidenceProducer,
+    EvidenceReference,
     EvidenceRevisionBinding,
     EvidenceScope,
+    EvidenceTimeRange,
     PrivateAnalysisClockMode,
     PrivateAnalysisDisclosureMode,
+    PrivateAnalysisEvidenceClass,
     PrivateAnalysisLimits,
     PrivateAnalysisOutcome,
     PrivateAnalysisRequest,
     PrivateAnalysisRunnerSelection,
     PrivateAnalysisTaskKind,
+    PrivateAnalysisTransport,
     default_private_analysis_tool_catalog,
+    evidence_reference_dict,
+    evidence_reference_from_dict,
+    evidence_snapshot_digest,
     private_analysis_outcome_from_json,
     private_analysis_outcome_json,
 )
-from .private_analysis.evidence import validate_evidence_identifier
+from .private_analysis.evidence import (
+    MAX_EVIDENCE_SUBJECT_KIND_CHARACTERS,
+    validate_evidence_identifier,
+    validate_evidence_token,
+)
 from .private_analysis_binding import (
     PrivateAnalysisEvidenceBindingError,
     bind_private_analysis_revision,
@@ -59,6 +73,24 @@ from .session_store import SessionStoreError, SqliteSessionStore
 
 _MAX_LIST_RUNS: Final = 1_000
 _MAX_SIGNED_64: Final = (1 << 63) - 1
+
+
+class PrivateAnalysisLifecycleAction(StrEnum):
+    """Closed browser-visible operations implemented by the core API."""
+
+    CREATE = "create"
+    LIST = "list"
+    GET = "get"
+    EXECUTE = "execute"
+    CANCEL = "cancel"
+    REPORT = "report"
+
+
+_PRIVATE_ANALYSIS_TASK_KINDS: Final = tuple(
+    sorted(PrivateAnalysisTaskKind, key=lambda item: item.value)
+)
+_PRIVATE_ANALYSIS_RUN_STATES: Final = tuple(PrivateAnalysisRunState)
+_PRIVATE_ANALYSIS_LIFECYCLE_ACTIONS: Final = tuple(PrivateAnalysisLifecycleAction)
 
 
 class PrivateAnalysisServiceErrorCode(StrEnum):
@@ -263,6 +295,57 @@ class PrivateAnalysisDeploymentCeilings:
 
 
 @dataclass(frozen=True, slots=True)
+class PrivateAnalysisCapabilities:
+    """Scoped, core-owned browser workflow vocabulary and deployment ceilings."""
+
+    scope: EvidenceScope
+    enabled: bool
+    task_kinds: tuple[PrivateAnalysisTaskKind, ...]
+    request_limit_ceilings: PrivateAnalysisLimits
+    max_revisions: int
+    max_list_runs: int
+    transports: tuple[PrivateAnalysisTransport, ...]
+    states: tuple[PrivateAnalysisRunState, ...]
+    actions: tuple[PrivateAnalysisLifecycleAction, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "scope", _detached_scope(self.scope))
+        if type(self.enabled) is not bool:
+            raise TypeError("enabled must be a boolean")
+        if self.task_kinds != _PRIVATE_ANALYSIS_TASK_KINDS:
+            raise ValueError("private-analysis task inventory is not canonical")
+        limits = _detached_limits(self.request_limit_ceilings)
+        object.__setattr__(self, "request_limit_ceilings", limits)
+        _bounded_integer(
+            self.max_revisions,
+            "max_revisions",
+            minimum=1,
+            maximum=MAX_PRIVATE_ANALYSIS_REVISIONS,
+        )
+        _bounded_integer(
+            self.max_list_runs,
+            "max_list_runs",
+            minimum=1,
+            maximum=_MAX_LIST_RUNS,
+        )
+        if type(self.transports) is not tuple or any(
+            type(item) is not PrivateAnalysisTransport for item in self.transports
+        ):
+            raise TypeError("transports must contain PrivateAnalysisTransport values")
+        canonical_transports = tuple(
+            sorted(set(self.transports), key=lambda item: item.value)
+        )
+        if self.transports != canonical_transports:
+            raise ValueError("private-analysis transport inventory is not canonical")
+        if self.enabled is (not self.transports):
+            raise ValueError("private-analysis availability and transports disagree")
+        if self.states != _PRIVATE_ANALYSIS_RUN_STATES:
+            raise ValueError("private-analysis state inventory is not canonical")
+        if self.actions != _PRIVATE_ANALYSIS_LIFECYCLE_ACTIONS:
+            raise ValueError("private-analysis action inventory is not canonical")
+
+
+@dataclass(frozen=True, slots=True)
 class PrivateAnalysisRunView:
     """Payload-free lifecycle and request identity safe for API projection."""
 
@@ -278,6 +361,7 @@ class PrivateAnalysisRunView:
     workspace_policy_digest: str
     instruction_profile_digest: str
     tool_catalog_digest: str
+    evidence_service_digest: str
     clock_mode: PrivateAnalysisClockMode
     selected_time_ns: int | None
     limits: PrivateAnalysisLimits
@@ -288,12 +372,17 @@ class PrivateAnalysisRunView:
     created_at_ns: int
     updated_at_ns: int
     completed_at_ns: int | None
+    cleanup_pending: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "scope", _detached_scope(self.scope))
         validate_evidence_identifier(self.run_id, "run_id")
         if type(self.state) is not PrivateAnalysisRunState:
             raise TypeError("state must be PrivateAnalysisRunState")
+        if type(self.cleanup_pending) is not bool:
+            raise TypeError("cleanup_pending must be a boolean")
+        if self.cleanup_pending and self.state.is_terminal:
+            raise ValueError("terminal run view cannot have pending cleanup")
         _bounded_integer(self.version, "version", minimum=1, maximum=_MAX_SIGNED_64)
         validate_prefixed_lowercase_sha256(self.request_digest, "request_digest")
         if type(self.task_kind) is not PrivateAnalysisTaskKind:
@@ -337,6 +426,10 @@ class PrivateAnalysisRunView:
         validate_prefixed_lowercase_sha256(
             self.tool_catalog_digest,
             "tool_catalog_digest",
+        )
+        validate_prefixed_lowercase_sha256(
+            self.evidence_service_digest,
+            "evidence_service_digest",
         )
         if type(self.clock_mode) is not PrivateAnalysisClockMode:
             raise TypeError("clock_mode must be PrivateAnalysisClockMode")
@@ -424,6 +517,7 @@ def _detached_run_view(value: object) -> PrivateAnalysisRunView:
         workspace_policy_digest=value.workspace_policy_digest,
         instruction_profile_digest=value.instruction_profile_digest,
         tool_catalog_digest=value.tool_catalog_digest,
+        evidence_service_digest=value.evidence_service_digest,
         clock_mode=value.clock_mode,
         selected_time_ns=value.selected_time_ns,
         limits=value.limits,
@@ -434,7 +528,149 @@ def _detached_run_view(value: object) -> PrivateAnalysisRunView:
         created_at_ns=value.created_at_ns,
         updated_at_ns=value.updated_at_ns,
         completed_at_ns=value.completed_at_ns,
+        cleanup_pending=value.cleanup_pending,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class PrivateAnalysisCitedEvidenceReference:
+    """Display-safe metadata for one exact cited disclosed reference."""
+
+    reference_digest: str
+    revision_id: str
+    node_id: str
+    producer: EvidenceProducer
+    kind: EvidenceKind
+    subject_kind: str
+    evidence_class: PrivateAnalysisEvidenceClass
+    payload_schema: str
+    fact_provenance: EvidenceFactProvenance
+    time_range: EvidenceTimeRange
+
+    def __post_init__(self) -> None:
+        validate_prefixed_lowercase_sha256(
+            self.reference_digest,
+            "reference_digest",
+        )
+        validate_evidence_identifier(self.revision_id, "revision_id")
+        validate_evidence_identifier(self.node_id, "node_id")
+        if type(self.producer) is not EvidenceProducer:
+            raise TypeError("producer must be EvidenceProducer")
+        producer = EvidenceProducer(
+            authority=self.producer.authority,
+            producer_id=self.producer.producer_id,
+            plugin_instance_id=self.producer.plugin_instance_id,
+            plugin_capability=self.producer.plugin_capability,
+            plugin_role=self.producer.plugin_role,
+        )
+        object.__setattr__(self, "producer", producer)
+        if type(self.kind) is not EvidenceKind:
+            raise TypeError("kind must be EvidenceKind")
+        validate_evidence_token(
+            self.subject_kind,
+            "subject_kind",
+            maximum=MAX_EVIDENCE_SUBJECT_KIND_CHARACTERS,
+        )
+        if type(self.evidence_class) is not PrivateAnalysisEvidenceClass:
+            raise TypeError("evidence_class must be PrivateAnalysisEvidenceClass")
+        validate_evidence_token(self.payload_schema, "payload_schema")
+        if type(self.fact_provenance) is not EvidenceFactProvenance:
+            raise TypeError("fact_provenance must be EvidenceFactProvenance")
+        if type(self.time_range) is not EvidenceTimeRange:
+            raise TypeError("time_range must be EvidenceTimeRange")
+        object.__setattr__(
+            self,
+            "time_range",
+            EvidenceTimeRange(
+                basis=self.time_range.basis,
+                start_ns=self.time_range.start_ns,
+                end_ns=self.time_range.end_ns,
+                uncertainty_ns=self.time_range.uncertainty_ns,
+                clock_domain=self.time_range.clock_domain,
+            ),
+        )
+
+
+def _outcome_citation_digests(
+    outcome: PrivateAnalysisOutcome,
+) -> tuple[str, ...]:
+    result = outcome.result
+    if result is None:
+        return ()
+    digests = {
+        citation.evidence_reference_digest
+        for citation in result.summary.citations
+    }
+    digests.update(
+        citation.evidence_reference_digest
+        for claim in result.claims
+        for citation in claim.citations
+    )
+    digests.update(
+        citation.evidence_reference_digest
+        for proposal in result.proposals
+        for citation in proposal.citations
+    )
+    return tuple(sorted(digests))
+
+
+def _cited_evidence_references(
+    run: PrivateAnalysisRunView,
+    outcome: PrivateAnalysisOutcome,
+    disclosed_references: object,
+) -> tuple[PrivateAnalysisCitedEvidenceReference, ...]:
+    if type(disclosed_references) is not tuple:
+        raise TypeError("disclosed_references must be a tuple")
+    references = tuple(
+        evidence_reference_from_dict(evidence_reference_dict(item))
+        for item in disclosed_references
+    )
+    if len(references) > run.limits.max_evidence_items:
+        raise ValueError("report evidence exceeds the run limit")
+    reference_digests = tuple(item.reference_digest for item in references)
+    if reference_digests != tuple(sorted(reference_digests)) or len(
+        reference_digests
+    ) != len(set(reference_digests)):
+        raise ValueError("report evidence ledger must be unique and canonical")
+    if (
+        len(references) != run.disclosed_reference_count
+        or evidence_snapshot_digest(references) != run.evidence_ledger_digest
+    ):
+        raise ValueError("report evidence ledger does not match its run view")
+    revision_pairs = set(zip(run.node_ids, run.revision_ids, strict=True))
+    for reference in references:
+        if (
+            reference.scope != run.scope
+            or (reference.revision.node_id, reference.revision.revision_id)
+            not in revision_pairs
+        ):
+            raise ValueError("report evidence does not match the run scope")
+    reference_by_digest = {
+        reference.reference_digest: reference for reference in references
+    }
+    cited_digests = _outcome_citation_digests(outcome)
+    try:
+        selected = tuple(reference_by_digest[digest] for digest in cited_digests)
+    except KeyError as error:
+        raise ValueError("report outcome cites undisclosed evidence") from error
+    projected = tuple(
+        PrivateAnalysisCitedEvidenceReference(
+            reference_digest=reference.reference_digest,
+            revision_id=reference.revision.revision_id,
+            node_id=reference.revision.node_id,
+            producer=reference.producer,
+            kind=reference.kind,
+            subject_kind=reference.subject_kind,
+            evidence_class=reference.evidence_class,
+            payload_schema=reference.payload_schema,
+            fact_provenance=reference.fact_provenance,
+            time_range=reference.time_range,
+        )
+        for reference in selected
+    )
+    if tuple(item.reference_digest for item in projected) != cited_digests:
+        raise ValueError("report evidence does not match outcome citations")
+    return projected
 
 
 @dataclass(frozen=True, slots=True)
@@ -444,8 +680,15 @@ class PrivateAnalysisRunReport:
     run: PrivateAnalysisRunView
     query: str
     outcome: PrivateAnalysisOutcome
+    disclosed_references: InitVar[tuple[EvidenceReference, ...]] = ()
+    evidence_references: tuple[PrivateAnalysisCitedEvidenceReference, ...] = field(
+        init=False
+    )
 
-    def __post_init__(self) -> None:
+    def __post_init__(
+        self,
+        disclosed_references: tuple[EvidenceReference, ...],
+    ) -> None:
         run = _detached_run_view(self.run)
         query = _bounded_query(self.query)
         if not run.state.is_terminal or run.outcome_digest is None:
@@ -469,6 +712,15 @@ class PrivateAnalysisRunReport:
         object.__setattr__(self, "run", run)
         object.__setattr__(self, "query", query)
         object.__setattr__(self, "outcome", outcome)
+        object.__setattr__(
+            self,
+            "evidence_references",
+            _cited_evidence_references(
+                run,
+                outcome,
+                disclosed_references,
+            ),
+        )
 
 
 class PrivateAnalysisService:
@@ -509,6 +761,38 @@ class PrivateAnalysisService:
         self._tool_catalog_digest = (
             default_private_analysis_tool_catalog().catalog_digest
         )
+
+    def capabilities(self, scope: EvidenceScope) -> PrivateAnalysisCapabilities:
+        """Return only core vocabulary intersected with current workspace policy."""
+
+        try:
+            selected_scope = self._resolve_scope(scope)
+            policy = self._sessions.get_workspace_disclosure_policy(
+                selected_scope.tenant_id,
+                selected_scope.workspace_id,
+            ).policy
+            enabled = policy.mode is not PrivateAnalysisDisclosureMode.DISABLED
+            return PrivateAnalysisCapabilities(
+                scope=selected_scope,
+                enabled=enabled,
+                task_kinds=_PRIVATE_ANALYSIS_TASK_KINDS,
+                request_limit_ceilings=self._ceilings.request_limits,
+                max_revisions=self._ceilings.max_revisions,
+                max_list_runs=self._ceilings.max_list_runs,
+                transports=policy.transports if enabled else (),
+                states=_PRIVATE_ANALYSIS_RUN_STATES,
+                actions=_PRIVATE_ANALYSIS_LIFECYCLE_ACTIONS,
+            )
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except PrivateAnalysisServiceError:
+            raise
+        except KeyError:
+            raise PrivateAnalysisServiceNotFound() from None
+        except (TypeError, ValueError):
+            raise PrivateAnalysisServiceInvalidRequest() from None
+        except SessionStoreError:
+            raise PrivateAnalysisServiceUnavailable() from None
 
     def list_runners(
         self,
@@ -572,6 +856,7 @@ class PrivateAnalysisService:
                 workspace_policy_digest=policy_record.policy_digest,
                 instruction_profile_digest=runner.instruction_profile_digest,
                 tool_catalog_digest=self._tool_catalog_digest,
+                evidence_service_digest=runner.evidence_service_digest,
                 task_kind=spec.task_kind,
                 query=spec.query,
                 clock_mode=spec.clock_mode,
@@ -745,6 +1030,42 @@ class PrivateAnalysisService:
         ):
             raise PrivateAnalysisServiceUnavailable() from None
 
+    def recover_expired(
+        self,
+        scope: EvidenceScope,
+        *,
+        actor_id: str,
+        limit: int = 100,
+    ) -> tuple[PrivateAnalysisRunView, ...]:
+        """Terminalize expired attempts in one scope without retrying a model."""
+
+        try:
+            selected_scope = self._resolve_scope(scope)
+            if type(limit) is not int or not 1 <= limit <= self._ceilings.max_list_runs:
+                raise PrivateAnalysisServiceInvalidRequest()
+            return tuple(
+                self._view(record)
+                for record in self._execution.recover_expired_runs(
+                    scope=selected_scope,
+                    actor_id=actor_id,
+                    limit=limit,
+                )
+            )
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except PrivateAnalysisServiceError:
+            raise
+        except KeyError:
+            raise PrivateAnalysisServiceNotFound() from None
+        except (TypeError, ValueError):
+            raise PrivateAnalysisServiceInvalidRequest() from None
+        except (
+            SessionStoreError,
+            PrivateAnalysisRunStoreError,
+            PrivateAnalysisExecutionError,
+        ):
+            raise PrivateAnalysisServiceUnavailable() from None
+
     def get_report(
         self,
         scope: EvidenceScope,
@@ -771,6 +1092,7 @@ class PrivateAnalysisService:
                 run=self._view(record),
                 query=record.request.query,
                 outcome=record.outcome,
+                disclosed_references=record.disclosed_references,
             )
         except PROCESS_CONTROL_EXCEPTIONS:
             raise
@@ -803,6 +1125,7 @@ class PrivateAnalysisService:
                 workspace_policy_digest=request.workspace_policy_digest,
                 instruction_profile_digest=request.instruction_profile_digest,
                 tool_catalog_digest=request.tool_catalog_digest,
+                evidence_service_digest=request.evidence_service_digest,
                 clock_mode=request.clock_mode,
                 selected_time_ns=request.selected_time_ns,
                 limits=_detached_limits(request.limits),
@@ -817,6 +1140,7 @@ class PrivateAnalysisService:
                 created_at_ns=record.created_at_ns,
                 updated_at_ns=record.updated_at_ns,
                 completed_at_ns=record.completed_at_ns,
+                cleanup_pending=record.cleanup_pending,
             )
         except PROCESS_CONTROL_EXCEPTIONS:
             raise
@@ -908,7 +1232,10 @@ class PrivateAnalysisService:
 
 
 __all__ = [
+    "PrivateAnalysisCapabilities",
+    "PrivateAnalysisCitedEvidenceReference",
     "PrivateAnalysisDeploymentCeilings",
+    "PrivateAnalysisLifecycleAction",
     "PrivateAnalysisRequestSpec",
     "PrivateAnalysisRunReport",
     "PrivateAnalysisRunView",

@@ -85,15 +85,18 @@ For a browser-runtime-independent production HTTP process, use the core-owned
 API-only entry point and a deployment-owned resolver:
 
 ```powershell
-router-dump-server --plugin your_plugin `
+router-dump-server --plugin-deployment-module deployment.plugins:build `
   --state-dir .\.runtime\control-plane `
   --identity-resolver-module deployment.identity:resolve_control_plane_identity `
   --host 0.0.0.0 --port 8765
 ```
 
-`router-dump-server` requires an explicit state directory, exactly one
-repeatable plug-in selector family (`--plugin` or the development-only
-`--plugin-module PACKAGE[:ATTRIBUTE]`), and exactly one identity choice. The
+`router-dump-server` requires an explicit state directory, exactly one plug-in
+selector family (repeatable `--plugin`, repeatable development-only
+`--plugin-module PACKAGE[:ATTRIBUTE]`, or one trusted
+`--plugin-deployment-module PACKAGE:ATTRIBUTE`), and exactly one identity
+choice. The deployment descriptor freezes the primary parser registry, the
+complete exact capability-provider directory, and its composition policy. The
 module target for `--identity-resolver-module` is a synchronous module-level
 callable that verifies credentials and returns `ControlPlaneIdentity`. The
 alternative `--trust-control-plane-headers` is accepted only on a loopback
@@ -133,7 +136,7 @@ entry point:
 
 ```powershell
 $env:PYTHONUTF8 = "1"
-router-dump-ingest --plugin demo_router `
+router-dump-ingest --plugin-deployment-module rsl_demo_plugin.deployment:build_plugin_deployment `
   --state-dir .\.runtime\control-plane `
   --tenant example-tenant `
   --project lab-project `
@@ -156,16 +159,29 @@ The single backslash before each JSON quote is required by Windows PowerShell
 In a POSIX shell, write the same argument as
 `--metadata-json '{"platform":"demo-router-os","software_version":"1"}'`.
 
-Repeat `--input` to create several fixtures in the same invocation. Repeat
-either `--plugin` or `--plugin-module` to build a multi-plug-in allowlist; the
-two selector forms are mutually exclusive in one command. The command creates
+Repeat `--input` to create several fixtures in the same invocation. Choose one
+plug-in source: repeat either `--plugin` or `--plugin-module` for a plain
+allowlist, or use one mutually exclusive `--plugin-deployment-module` for exact
+primary and auxiliary configured instances. The command creates
 the named project and workspace when absent, derives deterministic
 idempotency keys from the scope, file digest, effective media type, selection
 options, optional `--node-hint`, bounded `--metadata-json` object, and complete
-registry fingerprint, waits for each import, and emits
+registry or deployment fingerprint, waits for each import, and emits
 `router_dump_analyzer.headless_result.v1`. The node hint and caller-supplied
 metadata are passed unchanged to plug-in inventory/probe and parsing. Core
 tenant/project/workspace, fixture, import, and principal coordinates are not.
+The result includes `plugin_execution_environment_fingerprint`; headless
+idempotency binds the same value, so a provider or composition-policy change
+cannot replay an import admitted under an older deployment.
+
+The interactive analyzer mounts this durable queue only after
+`--control-plane-dir PATH`. Its immediate startup input still requires one
+ordinary `--plugin` or `--plugin-module` selector. Configure the embedded queue
+independently with
+`--plugin-composition-deployment-module PACKAGE:ATTRIBUTE`; unlike the
+standalone roots, the analyzer does not accept
+`--plugin-deployment-module` as a replacement for its immediate runtime
+selector.
 
 Headless exit codes are:
 
@@ -260,6 +276,23 @@ non-terminal states may become failed or cancelled
 failed may be explicitly resumed while attempts remain
 ```
 
+The public import descriptor carries the immutable
+`plugin_composition_policy_digest` (`sha256:<64 lowercase hex characters>`)
+chosen at admission. The queue persists that value and verifies it before
+every claimed stage, including catalog admission and publication replay. A
+different worker policy therefore produces a bounded terminal drift failure
+instead of changing the plug-in set or execution plan after restart.
+
+In-process topology, route, and private-analysis coordinators obtain retained
+capability authority through
+`ControlPlane.capability_router_for_revision(scope, revision_id)` or
+`ControlPlane.capability_router_for_revision_set(scope, revision_ids=... |
+session_id=... | snapshot_id=...)`. Exactly one revision-set selector is
+required. Session and snapshot member IDs are preserved; explicit vectors use
+revision IDs as member IDs. Every member passes catalog and plan-integrity
+checks before routing. Missing, ambiguous, plan-v1, or stale providers fail
+closed, and a current installation is never substituted for a retained pin.
+
 An HTTP upload is the raw request body. Supply `original_name` as a query
 parameter and the media type in `Content-Type`; multipart parsing is not used.
 The endpoint spools at most 8 MiB in memory before using a temporary file, then
@@ -279,8 +312,10 @@ The queue:
 - auto-selects only when the configured policy produces one unambiguous
   choice;
 - requires an explicit selection to echo `probe_set_hash`, plug-in ID,
-  plug-in version, and exact returned package identity, preventing a stale UI
-  from selecting a changed registered identity;
+  plug-in version, exact returned package identity, and the candidate's paired
+  `instance_id` plus `registered_execution_identity`; the pair may be omitted
+  only for a legacy candidate that remains unambiguous, preventing a stale UI
+  from selecting a changed configured execution;
 - stores each explicit selection's request digest and response under its
   scope-bound `Idempotency-Key`, so an exact retry remains valid after the
   import has progressed while key reuse for another choice conflicts;
@@ -331,9 +366,15 @@ or ingestion use. A loader-supplied immutable executable identity remains a
 trusted loader assertion.
 
 This is killable fault isolation, not an untrusted-code sandbox. A plug-in and
-its coordinator must be importable and spawn-picklable, and the child inherits
-the host user's filesystem, network, environment, and operating-system
-privileges. `DurableIngestionPipeline`, durable `ControlPlane`, and the
+its coordinator must be importable, and the child inherits the host user's
+filesystem, network, environment, and operating-system privileges. The parent
+never pickles a live plug-in, registry, coordinator, decoder, provider, or
+bound method. It sends a core-owned inert bootstrap of exact scalar/tuple
+coordinates; the child imports module-level targets or invokes declared
+no-argument class constructors, re-registers the components, and verifies the
+same frozen execution identity before use. Stateful/configured components
+must use their explicit process module targets rather than relying on default
+construction. `DurableIngestionPipeline`, durable `ControlPlane`, and the
 headless command default to `process`. An embedding may explicitly select
 `inline` only for trusted local/test code. Inline probe and ingestion run
 synchronously and do not claim a timeout or bounded shutdown: Python cannot
@@ -389,11 +430,13 @@ transfer, and clean exit. At expiry the parent terminates, escalates to kill,
 and reaps the child, so a provider that ignores the context cannot hold a queue
 worker indefinitely. The built-in SQLite publisher serializes only its durable
 database locator, reopens the catalog in the child, bounds Python/SQLite waits,
-and checks again before commit. A custom production publisher must be
-spawn-picklable or reconstruct its client during unpickling and should still
-apply the context to RPC connect/read/commit deadlines. Trusted local/test
-embeddings may explicitly select `inline`; that synchronous mode is cooperative
-only and makes no bounded-cancellation claim. Because expiry after a remote
+and checks again before commit. Core never pickles a custom publisher object:
+it resolves an explicit module-level `publisher_module_target`, or imports and
+no-argument-constructs the publisher class. Configured/stateful publishers
+must use the explicit target and should still apply the context to RPC
+connect/read/commit deadlines. Trusted local/test embeddings may explicitly
+select `inline`; that synchronous mode is cooperative only and makes no
+bounded-cancellation claim. Because expiry after a remote
 commit is ambiguous, the exact outbox stays retryable and its blob or dataset
 is pinned before the call. Health exposes such unresolved failures immediately
 as `catalog_attention_imports`; child startup/protocol/provider failures use
@@ -805,20 +848,109 @@ Reads require `control-plane:read`; create, execute, and cancel require
 require the current strong numeric `If-Match`; their resulting single-run
 projections return the next ETag. Run views contain detached lifecycle identity,
 digests, and payload-free accounting, but no query, evidence payload,
-transcript, execution/lease ID, callback, or audit internals. The terminal
-report adds the original query and a display-safe advisory-outcome projection;
-it is not canonical digest input and cannot mutate annotations or promote a
-proposal. There is no automatic retry or runner/transport fallback.
+transcript, execution/lease ID, callback, or audit internals. The boolean
+`cleanup_pending` diagnostic reports that terminal recovery is durably fenced
+without disclosing its verifier, release capability, or process details. The
+terminal report adds the original query, a display-safe advisory-outcome
+projection, and the canonically ordered display-safe metadata for exactly the
+outcome's cited reference digests. Those references are resolved only from the
+run's stored disclosed ledger; raw payloads, locators/paths, raw content
+digests, fixture/plan identity, and uncited references are never returned. It
+is not canonical digest input and cannot mutate annotations or promote a
+proposal by itself. The adjacent proposal-review service accepts a separate,
+authenticated human decision and never grants the runner mutation authority.
+There is no automatic retry or runner/transport fallback.
 Execute re-reads the current policy before claiming a nonterminal run, and the
 request-bound tool service performs the final race-safe policy check before
 disclosure. Even a terminal execute replay rejects a stale ETag.
 
+`GET .../private-analysis-capabilities` uses the same concealed workspace
+scope and read role. Its contract-versioned response contains only core-owned task,
+limit, transport, lifecycle-state, and action descriptors. Deployment limits
+are maxima, transports are filtered by the current workspace policy, and the
+response is `Cache-Control: no-store` without an ETag. It carries no runner
+configuration, model/provider endpoint or key, or plug-in-specific capability
+surface; configured runner identities remain available only through
+`.../private-analysis-runners`.
+
+### Human proposal decisions
+
+A cleanup-complete terminal proposal can be rejected or explicitly promoted
+only through the proposal-review surface. The mutation requires
+`control-plane:write`, the current run ETag in `If-Match`, and an
+`Idempotency-Key`; the authenticated principal becomes the actor. Its closed
+request pins the result/proposal digests and carries either no target for
+rejection or a separately human-authored annotation/manual-correlation target
+for promotion. Model proposal payload is never copied into the overlay.
+
+The dedicated proposal-review SQLite store permits one decision per scoped
+run/proposal. Rejections complete without an overlay. A promotion reserves a
+pending saga, retains the exact validated human target, creates one
+deterministic idempotent annotation or correlation tagged
+`assistant-promoted`, and completes the decision. List/detail reads are
+non-mutating, and replaying the original decision request never resumes a
+pending saga. Replay verifies that the idempotency receipt still points to the
+same deterministic authenticated decision; a redirect to another valid
+decision fails closed. Admission requires a cleanup-complete terminal run and resolves
+every subject under the same single-host fence used by review/catalog
+retention, before reservation. Only the explicit
+`.../proposal-decisions/{decision_id}/recover` POST with the current decision
+ETag may resume a pending saga after process restart. Recovery verifies the
+retained request digest and accepts an already-created overlay only when its
+complete live version-1 content still equals the human intent. Pending
+decisions protect their overlay receipts and target revisions from retention.
+The canonical request digest includes tenant/project/workspace scope. Distinct
+domain-separated projections produce the durable decision and overlay-target
+IDs, and every materialized decision is authenticated before deriving the
+overlay key. Retention authenticates every stored decision before applying
+scope and pending-state classification, so scope or generated-ID corruption
+cannot hide protected work.
+The reservation row also has a keyed HMAC attestation covering that complete
+authority plus lifecycle state/version/timestamps. Completion replaces its
+lifecycle fields and MAC atomically. `ControlPlane` creates the 32-byte key outside SQLite at
+`.private-analysis-proposal-review.authority.key`, under a cross-process lock,
+and fails closed if any pre-existing decision database has lost its key, even
+when its decision table is empty. Legacy adoption requires an explicit
+migration. Operators must back up and restore the key and database together. Direct store composition
+must supply the key explicitly; the store never generates or persists it.
+Decision receipts use
+`router_dump_analyzer.private_analysis.proposal_review.v1`, decimal-string
+versions/times, strong ETags on individual decisions, and `Cache-Control:
+no-store`.
+
+The core `/analysis` page keeps this authority separate from model output. It
+renders the proposal read-only, requires reviewer acknowledgement, leaves the
+target empty until authored by the human, pins digests from the validated
+terminal report, coalesces concurrent clicks, and binds every decision receipt
+back to that frozen report. After an ambiguous decision response it may refresh
+durable state for display, but it disables review and requires reload rather
+than treating a same-proposal receipt as proof of the attempted human intent.
+Pending recovery is a separate explicit action.
+After an ambiguous recovery response, an exact read-only reconciliation may
+restore that action when the same frozen report and pending decision are still
+authoritative; it never replays recovery without another click.
+The normative body and response shapes are in
+[API payload contract](api-contract.md).
+
 The shipped `router-dump-server` registration tuple is empty. Runner discovery
 therefore returns no item, and execution is unavailable, until deployment
 composition explicitly supplies an approved in-process or local-subprocess
-runner plus its request-bound tool-service factory. The exact bodies, response
+runner. Every registration selects exactly one request-bound evidence mode:
+its own spawned process factory, a trusted-inline compatibility factory, or a
+`core_revision_evidence_policy` which tells this control plane to freeze the
+request's exact revision set into the core immutable evidence corpus. The exact bodies, response
 shapes, bounds, status mapping, and privacy contract are normative in
 [API payload contract](api-contract.md).
+
+Corpus construction has two independent deployment limits: entry count and
+canonical payload bytes. The shipped payload budget is 512 MiB and the hard
+configurable ceiling is 2 GiB; it is not a throughput target, and operators
+must size it below the memory available for parsed revision trees and indexes.
+Cooperative deadline/cancellation checks run while datasets are read, arrays
+and evidence are projected, and large indexes are sorted in bounded chunks.
+Standard-library UTF-8 decoding and `json.loads` are bounded by the dataset
+byte limit and checked immediately before and after, but are not preemptible
+mid-call.
 
 ### Local runner deployment and headless operation
 
@@ -840,24 +972,87 @@ local model adapter and any OS/container egress boundary remain deployment
 responsibilities. This loader is not device plug-in discovery and does not
 sandbox the trusted factory.
 
+For custom request-bound evidence, production registrations use
+`PrivateAnalysisToolServiceProcessFactory`: an inert module-level target plus
+bounded canonical JSON configuration. A fixed core-owned spawned child resolves
+the target and retains its exact service behind bounded canonical IPC. The
+target/configuration/semantic digest and its content-addressed executable
+identity are part of request identity. Registration resolves the target only
+inside the shared process-control-first boundary, requires exact source-backed
+module provenance, and hashes a top-level module file or complete import-package
+scope as appropriate. It stores no live callable, source path, or executable
+bytes. The parent revalidates the detached identity immediately before spawn;
+the child re-imports and verifies it again before invocation. Attribute swaps,
+file-byte drift, sourceless modules, and unverifiable dynamic callables fail
+closed behind static diagnostics. Preparation observes the absolute deadline
+and durable cancellation, and the coordinator
+terminates, kills when needed, joins, and closes the child before sealing a
+static outcome. No live callable or pickle payload crosses this boundary and
+child diagnostics are suppressed. `trusted_inline_tool_service_factory`
+remains an explicitly cooperative, unbounded compatibility mode; use the
+process factory or core evidence mode when hard preparation bounds are
+required.
+
+The coordinator records a durable cleanup fence before starting an evidence
+factory or local model-adapter child. It contains the scoped run/execution identity, a domain-separated
+SHA-256 verifier, attempt timestamps, and a bounded count—never a PID or the
+release capability. The random 256-bit capability exists only beside the live
+process object in the originating coordinator and is hidden from
+representations and store diagnostics. A failed reap retains that exact live
+owner and withholds any model-adapter receipt for one bounded retry per recovery
+or shutdown pass. Store-level expiry
+recovery skips fenced runs, and both transcript-free and receipt-bearing
+completion reject them. If the coordinator restarts, copied durable fields
+cannot release the fence; it remains a static diagnostic and cannot be cleared
+by probing or killing a potentially reused PID. Operator remediation must
+first establish child death outside this API.
+
+The core evidence mode rechecks the workspace policy, fixture and revision
+identities, dataset digests, execution plans, and requested temporal selectors
+immediately before runner entry. It resolves time independently per member,
+uses half-open intervals, excludes future records, and indexes the frozen
+metadata, plan pins, source records, events, resource states, and relationships
+for bounded queries over 100K-event revisions. Evidence is always qualified by
+the exact producing plan pin: generic normalized records use the primary-parser
+role and optional projections use a declared capability. Client-safe mode uses
+existing redaction projections. Proprietary normalized fields and retained
+`copy_text` require both full-fidelity workspace policy and an explicit local
+runner opt-in; `never_assistant` remains denied.
+
+The ingestion pipeline receives a separate immutable
+`PluginCompositionPolicy`. Probe/selection owns the primary parser; the policy
+can attach exact, content-addressed auxiliary provider identities and roles to
+that exact primary. Its digest is persisted on the import before execution and
+workers reject policy drift. No registration-order, platform-name, or
+firmware-name fallback is permitted.
+
 `router-dump-private-analysis` is the no-server/no-ingestion adapter for CI and
 operator scripts. Its global options select the state directory, exact
 tenant/project/workspace, one plug-in allowlist family, deployment target, and
 optional output formatting. It supports `runners`, `create`, `get`, `list`,
-`execute`, `cancel`, `report`, and `run`. `run` is the convenience sequence
-create -> execute -> terminal report; it does not retry or fall back.
+`execute`, `cancel`, `report`, `decide-proposal`, `list-decisions`,
+`get-decision`, `recover-decision`, `recover-expired`, and `run`. `run` is the
+convenience sequence create -> execute -> terminal report; it does not retry
+or fall back.
 
 Create/run read the HTTP caller-intent JSON from `--request PATH`; the 1-MiB
 strict UTF-8 object rejects duplicate keys/non-finite constants and is the
 only CLI location for the proprietary query. Actor and idempotency key remain
 separate command metadata. Execute/cancel require an exact run version, and
-list continuation uses the paired creation-time/run-ID cursor. The command
-opens only existing project/workspace/revision/policy state, starts neither
-ASGI nor workers, and never promotes a proposal into annotations or manual
-correlations. It writes the bounded
+list continuation uses the paired creation-time/run-ID cursor. A proposal
+decision reads its separate bounded JSON request from `--request`; recovery
+requires the exact decision version. The command opens only existing
+project/workspace/revision/policy state, starts neither ASGI nor workers, and
+never automatically promotes a proposal. Promotion requires the explicit
+human-authored `decide-proposal` operation, and pending recovery requires the
+explicit `recover-decision` operation. It writes the bounded
 `router_dump_analyzer.private_analysis_cli_result.v1` document to stdout and
 optionally `--output`; exit `0` means success, `2` means `run` produced a
 terminal advisory error, and `1` means bounded command/service failure.
+`recover-expired --actor ACTOR [--limit N]` is separately bounded to the
+selected workspace. It terminalizes lease-expired attempts without running a
+model again; an unowned durable cleanup fence remains pending rather than
+pretending an earlier child was reaped.
 
 ## 6. HTTP route summary
 
@@ -869,7 +1064,7 @@ All routes have the prefix `/v1/control-plane`.
 | Diagnostics | `GET /diagnostics/operational-events` (`control-plane:instance-operator`) |
 | Projects | `GET, POST /projects` |
 | Workspaces | `GET, POST /projects/{project_id}/workspaces` |
-| Private analysis | `GET, PUT .../private-analysis-policy` (`PUT` requires `control-plane:admin` and `If-Match`); `GET .../private-analysis-runners`; `GET, POST .../private-analysis-runs`; `GET .../private-analysis-runs/{run_id}`; `POST .../private-analysis-runs/{run_id}/execute`; `POST .../private-analysis-runs/{run_id}/cancel`; `GET .../private-analysis-runs/{run_id}/report` |
+| Private analysis | `GET, PUT .../private-analysis-policy` (`PUT` requires `control-plane:admin` and `If-Match`); `GET .../private-analysis-capabilities`; `GET .../private-analysis-runners`; `GET, POST .../private-analysis-runs`; `GET .../private-analysis-runs/{run_id}`; `POST .../private-analysis-runs/{run_id}/execute`; `POST .../private-analysis-runs/{run_id}/cancel`; `GET .../private-analysis-runs/{run_id}/report`; `POST .../private-analysis-runs/{run_id}/proposals/{proposal_id}/decision`; `GET .../private-analysis-runs/{run_id}/proposal-decisions`; `GET .../private-analysis-runs/{run_id}/proposal-decisions/{decision_id}`; `POST .../private-analysis-runs/{run_id}/proposal-decisions/{decision_id}/recover` |
 | Catalog | `GET /projects/{project_id}/workspaces/{workspace_id}/fixtures`; `GET .../revisions?node_id=...` |
 | Sessions | `GET, POST .../sessions`; `GET, PATCH, DELETE .../sessions/{session_id}`; `PUT, DELETE .../sessions/{session_id}/members/{member_id}`; `POST .../sessions/{session_id}/snapshots`; `GET .../snapshots`; `GET .../snapshots/{snapshot_id}` |
 | Imports | `GET, POST .../imports`; `GET .../imports/{import_id}`; `GET .../candidates`; `GET .../events`; `GET .../events/stream`; `POST .../selection`; `POST .../resume`; `POST .../cancel` |

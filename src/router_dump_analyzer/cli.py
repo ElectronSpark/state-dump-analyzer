@@ -11,6 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .plugin_composition_deployment import (
+    PluginCompositionDeploymentContext,
+    load_plugin_composition_deployment,
+)
 from .plugin_loading import (
     LoadedPlugin,
     load_plugin_entry_point,
@@ -87,6 +91,14 @@ def _add_repeatable_plugin_allowlist_arguments(
         help=(
             "allowlisted direct plug-in module; ATTRIBUTE defaults to plugin; "
             "repeat to allow multiple candidates"
+        ),
+    )
+    selection.add_argument(
+        "--plugin-deployment-module",
+        metavar="PACKAGE:ATTRIBUTE",
+        help=(
+            "process-trusted plug-in composition descriptor or factory; "
+            "selects exact primary and auxiliary configured instances"
         ),
     )
 
@@ -175,6 +187,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--plugin-composition-deployment-module",
+        metavar="PACKAGE:ATTRIBUTE",
+        help=(
+            "process-trusted plug-in composition descriptor or factory for "
+            "the embedded durable control plane; requires --control-plane-dir"
+        ),
+    )
+    parser.add_argument(
         "--expose-api-docs",
         action="store_true",
         help=(
@@ -201,6 +221,7 @@ class LaunchConfiguration:
     control_plane_retention_policy: Path | None = None
     expose_api_docs: bool = False
     private_analysis_deployment_module: str | None = None
+    plugin_composition_deployment_module: str | None = None
 
 
 def parse_args(argv: Sequence[str] | None = None) -> LaunchConfiguration:
@@ -230,6 +251,13 @@ def parse_args(argv: Sequence[str] | None = None) -> LaunchConfiguration:
         build_parser().error(
             "--private-analysis-deployment-module requires --control-plane-dir"
         )
+    if (
+        namespace.plugin_composition_deployment_module is not None
+        and namespace.control_plane_dir is None
+    ):
+        build_parser().error(
+            "--plugin-composition-deployment-module requires --control-plane-dir"
+        )
     return LaunchConfiguration(
         plugin_name=namespace.plugin,
         plugin_module=namespace.plugin_module,
@@ -246,6 +274,9 @@ def parse_args(argv: Sequence[str] | None = None) -> LaunchConfiguration:
         expose_api_docs=namespace.expose_api_docs,
         private_analysis_deployment_module=(
             namespace.private_analysis_deployment_module
+        ),
+        plugin_composition_deployment_module=(
+            namespace.plugin_composition_deployment_module
         ),
     )
 
@@ -367,6 +398,9 @@ def run(
     private_analysis_deployment_loader: Callable[..., Any] = (
         load_private_analysis_deployment
     ),
+    plugin_composition_deployment_loader: Callable[..., Any] = (
+        load_plugin_composition_deployment
+    ),
 ) -> None:
     if configuration.expose_api_docs and not _is_loopback_host(configuration.host):
         raise ValueError("API documentation may be exposed only on a loopback host")
@@ -390,6 +424,13 @@ def run(
     ):
         raise ValueError(
             "private-analysis deployment requires the durable control plane"
+        )
+    if (
+        configuration.plugin_composition_deployment_module is not None
+        and configuration.control_plane_dir is None
+    ):
+        raise ValueError(
+            "plug-in composition deployment requires the durable control plane"
         )
     input_path = configuration.input_path.expanduser().resolve()
     if not input_path.exists():
@@ -426,18 +467,30 @@ def run(
             if configuration.control_plane_retention_policy is not None
             else None
         )
-        registry = PluginRegistry(require_executable_identity=True)
-        register = getattr(registry, "register", None)
-        if callable(register):
-            loaded_plugin.register(registry)
-        else:
-            # Preserve lightweight dependency-injected registry doubles that
-            # predate coordinate-aware composition.
-            registry = PluginRegistry(
-                (plugin,),
-                require_executable_identity=True,
-            )
         state_root = configuration.control_plane_dir.expanduser().resolve()
+        composition_options: dict[str, Any] = {}
+        if configuration.plugin_composition_deployment_module is not None:
+            composition = plugin_composition_deployment_loader(
+                configuration.plugin_composition_deployment_module,
+                context=PluginCompositionDeploymentContext(state_dir=state_root),
+            )
+            registry = composition.primary_registry
+            composition_options = {
+                "plugin_composition_policy": composition.policy,
+                "capability_providers": composition.capability_providers,
+            }
+        else:
+            registry = PluginRegistry(require_executable_identity=True)
+            register = getattr(registry, "register", None)
+            if callable(register):
+                loaded_plugin.register(registry)
+            else:
+                # Preserve lightweight dependency-injected registry doubles that
+                # predate coordinate-aware composition.
+                registry = PluginRegistry(
+                    (plugin,),
+                    require_executable_identity=True,
+                )
         private_analysis_options: dict[str, Any] = {}
         if configuration.private_analysis_deployment_module is not None:
             deployment = private_analysis_deployment_loader(
@@ -453,6 +506,7 @@ def run(
             state_root,
             registry=registry,
             retention_policy=retention_policy,
+            **composition_options,
             **private_analysis_options,
         )
         authority = _listener_authority(
@@ -535,6 +589,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.error(
             "--private-analysis-deployment-module requires --control-plane-dir"
         )
+    if (
+        namespace.plugin_composition_deployment_module is not None
+        and namespace.control_plane_dir is None
+    ):
+        parser.error(
+            "--plugin-composition-deployment-module requires --control-plane-dir"
+        )
     configuration = LaunchConfiguration(
         plugin_name=namespace.plugin,
         plugin_module=namespace.plugin_module,
@@ -551,6 +612,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         expose_api_docs=namespace.expose_api_docs,
         private_analysis_deployment_module=(
             namespace.private_analysis_deployment_module
+        ),
+        plugin_composition_deployment_module=(
+            namespace.plugin_composition_deployment_module
         ),
     )
     try:

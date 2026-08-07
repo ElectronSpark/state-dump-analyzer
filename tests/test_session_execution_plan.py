@@ -55,6 +55,9 @@ def _pin(
         ),
         configuration_digest=_qualified_digest(f"config:{instance_id}"),
         schema_digest=_qualified_digest(f"schema:{plugin_id}"),
+        registered_execution_identity=_qualified_digest(
+            f"execution:{plugin_id}:{instance_id}"
+        ),
         capabilities=("dump.parse",),
         roles=("primary_parser",),
     )

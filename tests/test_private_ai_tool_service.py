@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import unittest
+from bisect import bisect_right
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -19,11 +20,15 @@ from router_dump_analyzer.private_analysis import (
     EvidenceRevisionBinding,
     EvidenceScope,
     EvidenceTimeRange,
+    PrivateAnalysisCapabilityArguments,
+    PrivateAnalysisCapabilityIntent,
     PrivateAnalysisClockMode,
     PrivateAnalysisDisclosureMode,
     PrivateAnalysisErrorCode,
     PrivateAnalysisErrorStage,
     PrivateAnalysisEvidenceClass,
+    PrivateAnalysisEvidenceCursorInvalidError,
+    PrivateAnalysisEvidenceQueryPage,
     PrivateAnalysisLimits,
     PrivateAnalysisPolicy,
     PrivateAnalysisQueryArguments,
@@ -251,6 +256,26 @@ def _read_call(
     )
 
 
+def _analyze_call(
+    request: PrivateAnalysisRequest,
+    parent: EvidenceReference,
+    *,
+    call_id: str = "analyze-1",
+) -> PrivateAnalysisToolCall:
+    return PrivateAnalysisToolCall(
+        call_id=call_id,
+        binding=_binding(request, PrivateAnalysisToolName.ANALYZE_EVIDENCE),
+        arguments=PrivateAnalysisCapabilityArguments(
+            node_id=parent.revision.node_id,
+            revision_id=parent.revision.revision_id,
+            intent=PrivateAnalysisCapabilityIntent.TRACE_CORRELATION,
+            parent_reference_digests=(parent.reference_digest,),
+            parameters_json='{"vrf":"blue"}',
+            max_observations=2,
+        ),
+    )
+
+
 class _Harness:
     def __init__(
         self,
@@ -352,19 +377,31 @@ class _Harness:
         authorize: Callable[..., Any] | None = None,
         resolve_policy: Callable[..., Any] | None = None,
         query_references: Callable[..., Any] | None = None,
+        query_reference_pages: Callable[..., Any] | None = None,
         resolve_reference: Callable[..., Any] | None = None,
         validate_reference: Callable[..., Any] | None = None,
+        validate_references: Callable[..., Any] | None = None,
         materialize_payload: Callable[..., Any] | None = None,
+        analyze_evidence: Callable[..., Any] | None = None,
+        cancellation_probe: Callable[[], bool] | None = None,
     ) -> PrivateAnalysisToolService:
         return PrivateAnalysisToolService(
             self.original_request,
             runner_policy=runner_policy or _runner_policy(),
             authorize=authorize or self.authorize,
             resolve_policy=resolve_policy or self.resolve_policy,
-            query_references=query_references or self.query_references,
+            query_references=(
+                None
+                if query_reference_pages is not None
+                else query_references or self.query_references
+            ),
+            query_reference_pages=query_reference_pages,
             resolve_reference=resolve_reference or self.resolve_reference,
             validate_reference=validate_reference or self.validate_reference,
+            validate_references=validate_references,
             materialize_payload=materialize_payload or self.materialize_payload,
+            analyze_evidence=analyze_evidence,
+            cancellation_probe=cancellation_probe,
         )
 
 
@@ -407,6 +444,133 @@ def _service_with_callback_override(
 
 
 class PrivateAnalysisToolServiceTests(unittest.TestCase):
+    def test_analysis_requires_materialized_parents_and_retains_derived_overlay(
+        self,
+    ) -> None:
+        parent = _reference()
+        request = _request()
+        harness = _Harness(request, (parent,))
+
+        unavailable = harness.service().execute(_analyze_call(request, parent))
+        _assert_tool_error(
+            self,
+            unavailable,
+            PrivateAnalysisToolErrorCode.CAPABILITY_UNAVAILABLE,
+        )
+
+        callback_calls: list[tuple[Any, ...]] = []
+
+        def analyze(
+            callback_request: PrivateAnalysisRequest,
+            arguments: PrivateAnalysisCapabilityArguments,
+            parents: tuple[Any, ...],
+            cancellation_probe: Callable[[], bool] | None,
+        ) -> tuple[EvidenceReference, dict[str, Any]]:
+            callback_calls.append(
+                (callback_request, arguments, parents, cancellation_probe)
+            )
+            payload = {
+                "arguments_digest": arguments.arguments_digest,
+                "intent": arguments.intent.value,
+                "parent_reference_digests": list(
+                    arguments.parent_reference_digests
+                ),
+                "observations": [
+                    {
+                        "observation_id": "observation-1",
+                        "category": "route_resolution",
+                        "summary": "The retained event belongs to this route step.",
+                        "cited_reference_digests": list(
+                            arguments.parent_reference_digests
+                        ),
+                        "quality": "exact",
+                        "details": {"vrf": "blue"},
+                    }
+                ],
+            }
+            revision = parents[0].reference.revision
+            reference = EvidenceReference(
+                scope=callback_request.scope,
+                revision=revision,
+                producer=EvidenceProducer(
+                    authority=EvidenceAuthority.PLUGIN_INFERRED,
+                    producer_id="vendor.private-analysis@1",
+                    plugin_instance_id="deployment.analysis-instance",
+                    plugin_capability="evidence_analysis",
+                ),
+                kind=EvidenceKind.PLUGIN_CAPABILITY_RESULT,
+                subject_kind="evidence_analysis",
+                locator_digest=evidence_locator_digest(
+                    "evidence_analysis",
+                    {"arguments_digest": arguments.arguments_digest},
+                ),
+                evidence_class=parents[0].reference.evidence_class,
+                payload_schema=(
+                    "router_dump_analyzer.plugin.evidence_analysis.result.v1"
+                ),
+                fact_provenance=EvidenceFactProvenance.PLUGIN_ANALYZED,
+                time_range=EvidenceTimeRange.unknown(),
+                content_digest=evidence_payload_digest(
+                    "router_dump_analyzer.plugin.evidence_analysis.result.v1",
+                    payload,
+                ),
+            )
+            return reference, payload
+
+        missing = harness.service(analyze_evidence=analyze).execute(
+            _analyze_call(request, parent)
+        )
+        _assert_tool_error(
+            self,
+            missing,
+            PrivateAnalysisToolErrorCode.EVIDENCE_NOT_FOUND,
+        )
+        self.assertEqual(callback_calls, [])
+
+        service = harness.service(analyze_evidence=analyze)
+        read = service.execute(_read_call(request, parent))
+        self.assertIs(type(read), PrivateAnalysisToolResult)
+        derived = service.execute(_analyze_call(request, parent))
+        self.assertIs(type(derived), PrivateAnalysisToolResult, derived)
+        assert type(derived) is PrivateAnalysisToolResult
+        self.assertIs(
+            derived.kind,
+            PrivateAnalysisToolResultKind.DERIVED_EVIDENCE_ENVELOPE,
+        )
+        assert derived.envelope is not None
+        self.assertEqual(len(callback_calls), 1)
+        self.assertFalse(hasattr(callback_calls[0][1], "plugin_instance_id"))
+        self.assertEqual(
+            tuple(
+                reference.reference_digest
+                for reference in service.disclosed_references
+            ),
+            tuple(
+                sorted(
+                    (
+                        parent.reference_digest,
+                        derived.envelope.reference.reference_digest,
+                    )
+                )
+            ),
+        )
+
+        resolved_before = harness.resolve_calls
+        materialized_before = harness.materialize_calls
+        reread = service.execute(
+            _read_call(
+                request,
+                derived.envelope.reference,
+                call_id="read-derived",
+            )
+        )
+        self.assertIs(type(reread), PrivateAnalysisToolResult)
+        assert type(reread) is PrivateAnalysisToolResult
+        assert reread.envelope is not None
+        self.assertEqual(reread.envelope, derived.envelope)
+        self.assertEqual(harness.resolve_calls, resolved_before)
+        self.assertEqual(harness.materialize_calls, materialized_before)
+
     def test_query_filters_orders_pages_and_read_returns_bound_envelope(self) -> None:
         references = (_reference(2), _reference(1))
         request = _request(revisions=(_revision(1), _revision(2)))
@@ -1205,6 +1369,299 @@ class PrivateAnalysisToolServiceTests(unittest.TestCase):
             service.budget_state.evidence_bytes_disclosed,
             transferred * 2,
         )
+
+    def test_paged_query_batch_validates_only_each_returned_page(self) -> None:
+        revision = _revision(1)
+        references = tuple(
+            sorted(
+                (_reference(ordinal, revision=revision) for ordinal in range(1, 7)),
+                key=lambda item: item.reference_digest,
+            )
+        )
+        request = _request(limits=_limits(max_evidence_items=16))
+        harness = _Harness(request, references)
+        snapshot_digest = "sha256:" + "d" * 64
+        batch_sizes: list[int] = []
+
+        def query_page(
+            _request: PrivateAnalysisRequest,
+            arguments: PrivateAnalysisQueryArguments,
+            evidence_classes: tuple[PrivateAnalysisEvidenceClass, ...],
+            _cancellation_probe: Callable[[], bool] | None,
+        ) -> PrivateAnalysisEvidenceQueryPage:
+            self.assertIn(PrivateAnalysisEvidenceClass.PROPRIETARY, evidence_classes)
+            start = (
+                0
+                if arguments.cursor is None
+                else bisect_right(
+                    tuple(item.reference_digest for item in references),
+                    arguments.cursor.after_reference_digest,
+                )
+            )
+            stop = min(start + arguments.page_size, len(references))
+            return PrivateAnalysisEvidenceQueryPage(
+                snapshot_digest=snapshot_digest,
+                references=references[start:stop],
+                has_more=stop < len(references),
+            )
+
+        def validate_batch(items: tuple[EvidenceReference, ...]) -> bool:
+            batch_sizes.append(len(items))
+            return True
+
+        service = harness.service(
+            query_reference_pages=query_page,
+            validate_references=validate_batch,
+        )
+        first = service.execute(_query_call(request, page_size=3))
+        self.assertIs(type(first), PrivateAnalysisToolResult)
+        assert type(first) is PrivateAnalysisToolResult
+        self.assertIsNotNone(first.next_cursor)
+        second = service.execute(
+            _query_call(
+                request,
+                call_id="query-page-2",
+                page_size=3,
+                cursor=first.next_cursor,
+            )
+        )
+        self.assertIs(type(second), PrivateAnalysisToolResult)
+        self.assertEqual(batch_sizes, [3, 3])
+        self.assertEqual(harness.validate_calls, 0)
+
+    def test_page_query_wrong_tuple_result_never_enters_legacy_path(self) -> None:
+        reference = _reference()
+        request = _request()
+        harness = _Harness(request, (reference,))
+
+        def wrong_page(*_args: object) -> tuple[EvidenceReference, ...]:
+            return (reference,)
+
+        result = harness.service(query_reference_pages=wrong_page).execute(
+            _query_call(request)
+        )
+        _assert_tool_error(
+            self,
+            result,
+            PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
+        )
+        self.assertEqual(harness.validate_calls, 0)
+        with self.assertRaises(PrivateAnalysisToolServiceError) as raised:
+            harness.service(query_reference_pages=42)  # type: ignore[arg-type]
+        self.assertIs(
+            raised.exception.error.code,
+            PrivateAnalysisErrorCode.INVALID_REQUEST,
+        )
+
+    def test_page_query_contains_malformed_exact_pages_and_reconstruction(self) -> None:
+        request = _request()
+        harness = _Harness(request, ())
+        malformed = object.__new__(PrivateAnalysisEvidenceQueryPage)
+        invalid_digest = object.__new__(PrivateAnalysisEvidenceQueryPage)
+        object.__setattr__(invalid_digest, "snapshot_digest", "not-a-digest")
+        object.__setattr__(invalid_digest, "references", ())
+        object.__setattr__(invalid_digest, "has_more", False)
+
+        for label, page in (
+            ("missing-slots", malformed),
+            ("reconstruction", invalid_digest),
+        ):
+            with self.subTest(label=label):
+                result = harness.service(
+                    query_reference_pages=lambda *_args, selected=page: selected
+                ).execute(_query_call(request))
+                error = _assert_tool_error(
+                    self,
+                    result,
+                    PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
+                )
+                self.assertTrue(error.retryable)
+
+    def test_page_query_first_page_cursor_exception_is_unavailable(self) -> None:
+        request = _request()
+        harness = _Harness(request, ())
+
+        def query_page(*_args: object) -> PrivateAnalysisEvidenceQueryPage:
+            raise PrivateAnalysisEvidenceCursorInvalidError(
+                "provider mislabeled a first-page failure"
+            )
+
+        result = harness.service(query_reference_pages=query_page).execute(
+            _query_call(request)
+        )
+        error = _assert_tool_error(
+            self,
+            result,
+            PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
+        )
+        self.assertTrue(error.retryable)
+
+    def test_page_query_evicted_cursor_maps_to_cursor_invalid(self) -> None:
+        reference = _reference()
+        request = _request()
+        harness = _Harness(request, (reference,))
+        snapshot_digest = "sha256:" + "e" * 64
+
+        def query_page(
+            _request: PrivateAnalysisRequest,
+            arguments: PrivateAnalysisQueryArguments,
+            _evidence_classes: tuple[PrivateAnalysisEvidenceClass, ...],
+            _cancellation_probe: Callable[[], bool] | None,
+        ) -> PrivateAnalysisEvidenceQueryPage:
+            if arguments.cursor is not None:
+                raise PrivateAnalysisEvidenceCursorInvalidError(
+                    "cursor evidence snapshot is no longer available"
+                )
+            return PrivateAnalysisEvidenceQueryPage(
+                snapshot_digest=snapshot_digest,
+                references=(reference,),
+                has_more=True,
+            )
+
+        service = harness.service(query_reference_pages=query_page)
+        first = service.execute(_query_call(request, page_size=1))
+        self.assertIs(type(first), PrivateAnalysisToolResult)
+        assert type(first) is PrivateAnalysisToolResult
+        self.assertIsNotNone(first.next_cursor)
+        second = service.execute(
+            _query_call(
+                request,
+                call_id="query-after-eviction",
+                page_size=1,
+                cursor=first.next_cursor,
+            )
+        )
+        _assert_tool_error(
+            self,
+            second,
+            PrivateAnalysisToolErrorCode.CURSOR_INVALID,
+        )
+
+    def test_valid_cursor_provider_failure_remains_retryable_unavailable(self) -> None:
+        reference = _reference()
+        request = _request()
+        harness = _Harness(request, (reference,))
+        snapshot_digest = "sha256:" + "f" * 64
+
+        def query_page(
+            _request: PrivateAnalysisRequest,
+            arguments: PrivateAnalysisQueryArguments,
+            _evidence_classes: tuple[PrivateAnalysisEvidenceClass, ...],
+            _cancellation_probe: Callable[[], bool] | None,
+        ) -> PrivateAnalysisEvidenceQueryPage:
+            if arguments.cursor is not None:
+                raise TimeoutError("private provider timed out")
+            return PrivateAnalysisEvidenceQueryPage(
+                snapshot_digest=snapshot_digest,
+                references=(reference,),
+                has_more=True,
+            )
+
+        service = harness.service(query_reference_pages=query_page)
+        first = service.execute(_query_call(request, page_size=1))
+        self.assertIs(type(first), PrivateAnalysisToolResult)
+        assert type(first) is PrivateAnalysisToolResult
+        self.assertIsNotNone(first.next_cursor)
+        second = service.execute(
+            _query_call(
+                request,
+                call_id="query-provider-timeout",
+                page_size=1,
+                cursor=first.next_cursor,
+            )
+        )
+        _assert_tool_error(
+            self,
+            second,
+            PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
+        )
+        assert type(second) is PrivateAnalysisToolError
+        self.assertTrue(second.retryable)
+
+    def test_page_query_receives_cooperative_cancellation_probe(self) -> None:
+        request = _request()
+        harness = _Harness(request, ())
+        probe = lambda: False
+        received: list[Callable[[], bool] | None] = []
+
+        def query_page(
+            _request: PrivateAnalysisRequest,
+            _arguments: PrivateAnalysisQueryArguments,
+            _evidence_classes: tuple[PrivateAnalysisEvidenceClass, ...],
+            cancellation_probe: Callable[[], bool] | None,
+        ) -> PrivateAnalysisEvidenceQueryPage:
+            received.append(cancellation_probe)
+            return PrivateAnalysisEvidenceQueryPage(
+                snapshot_digest="sha256:" + "a" * 64,
+                references=(),
+                has_more=False,
+            )
+
+        result = harness.service(
+            query_reference_pages=query_page,
+            cancellation_probe=probe,
+        ).execute(_query_call(request))
+
+        self.assertIs(type(result), PrivateAnalysisToolResult)
+        self.assertEqual(received, [probe])
+
+    def test_page_query_cancellation_and_probe_failures_map_fail_closed(self) -> None:
+        request = _request()
+        harness = _Harness(request, ())
+        callback_calls = 0
+
+        def query_page(*_args: object) -> PrivateAnalysisEvidenceQueryPage:
+            nonlocal callback_calls
+            callback_calls += 1
+            return PrivateAnalysisEvidenceQueryPage(
+                snapshot_digest="sha256:" + "a" * 64,
+                references=(),
+                has_more=False,
+            )
+
+        for label, probe in (
+            ("cancelled", lambda: True),
+            ("unavailable", lambda: (_ for _ in ()).throw(RuntimeError("secret"))),
+            ("invalid", lambda: 1),
+        ):
+            with self.subTest(label=label):
+                service = harness.service(
+                    query_reference_pages=query_page,
+                    cancellation_probe=probe,  # type: ignore[arg-type]
+                )
+                error = _assert_tool_error(
+                    self,
+                    service.execute(_query_call(request, call_id=f"query-{label}")),
+                    PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
+                )
+                self.assertTrue(error.retryable)
+                self.assertEqual(service.budget_state.tool_calls_consumed, 1)
+        self.assertEqual(callback_calls, 0)
+
+        def interrupted() -> bool:
+            raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            harness.service(
+                query_reference_pages=query_page,
+                cancellation_probe=interrupted,
+            ).execute(_query_call(request, call_id="query-interrupted"))
+
+    def test_service_rejects_non_callable_query_cancellation_probe(self) -> None:
+        request = _request()
+        harness = _Harness(request, ())
+
+        with self.assertRaises(PrivateAnalysisToolServiceError) as caught:
+            harness.service(
+                query_reference_pages=lambda *_args: PrivateAnalysisEvidenceQueryPage(
+                    snapshot_digest="sha256:" + "a" * 64,
+                    references=(),
+                    has_more=False,
+                ),
+                cancellation_probe=object(),  # type: ignore[arg-type]
+            )
+
+        self.assertIs(caught.exception.error.code, PrivateAnalysisErrorCode.INVALID_REQUEST)
 
 
 if __name__ == "__main__":

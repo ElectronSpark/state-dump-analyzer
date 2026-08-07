@@ -25,6 +25,10 @@ from .control_plane_server import (
     create_control_plane_application,
 )
 from .ingestion_pipeline import PluginRegistry
+from .plugin_composition_deployment import (
+    PluginCompositionDeploymentContext,
+    load_plugin_composition_deployment,
+)
 from .plugin_loading import (
     LoadedPlugin,
     load_plugin_entry_point,
@@ -57,6 +61,7 @@ class ServerConfiguration:
     retention_policy_path: Path | None = None
     expose_api_docs: bool = False
     private_analysis_deployment_module: str | None = None
+    plugin_deployment_module: str | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -148,6 +153,7 @@ def parse_args(argv: Sequence[str] | None = None) -> ServerConfiguration:
         private_analysis_deployment_module=(
             namespace.private_analysis_deployment_module
         ),
+        plugin_deployment_module=namespace.plugin_deployment_module,
     )
 
 
@@ -234,6 +240,9 @@ def run(
     private_analysis_deployment_loader: Callable[..., Any] = (
         load_private_analysis_deployment
     ),
+    plugin_deployment_loader: Callable[..., Any] = (
+        load_plugin_composition_deployment
+    ),
     application_factory: ControlPlaneApplicationFactory = (
         create_control_plane_application
     ),
@@ -272,22 +281,46 @@ def run(
         if not callable(identity_resolver):
             raise TypeError("identity resolver target must be callable")
 
-    loaded_plugins = _plugins(
-        configuration,
-        entry_point_loader=entry_point_loader,
-        module_loader=module_loader,
-    )
-    if registry_factory is PluginRegistry:
-        registry = registry_factory(require_executable_identity=True)
-        for loaded_plugin in loaded_plugins:
-            loaded_plugin.register(registry)
-    else:
-        # Keep custom composition factories source-compatible. Production uses
-        # the core registry branch above, which records loader coordinates.
-        registry = registry_factory(
-            tuple(loaded.plugin for loaded in loaded_plugins),
-            require_executable_identity=True,
+    selector_count = sum(
+        (
+            bool(configuration.plugin_names),
+            bool(configuration.plugin_modules),
+            configuration.plugin_deployment_module is not None,
         )
+    )
+    if selector_count != 1:
+        raise ValueError(
+            "configure exactly one plug-in allowlist or composition deployment"
+        )
+    state_root = configuration.state_dir.expanduser().resolve()
+    composition_options: dict[str, Any] = {}
+    if configuration.plugin_deployment_module is not None:
+        composition = plugin_deployment_loader(
+            configuration.plugin_deployment_module,
+            context=PluginCompositionDeploymentContext(state_dir=state_root),
+        )
+        registry = composition.primary_registry
+        composition_options = {
+            "plugin_composition_policy": composition.policy,
+            "capability_providers": composition.capability_providers,
+        }
+    else:
+        loaded_plugins = _plugins(
+            configuration,
+            entry_point_loader=entry_point_loader,
+            module_loader=module_loader,
+        )
+        if registry_factory is PluginRegistry:
+            registry = registry_factory(require_executable_identity=True)
+            for loaded_plugin in loaded_plugins:
+                loaded_plugin.register(registry)
+        else:
+            # Keep custom composition factories source-compatible. Production uses
+            # the core registry branch above, which records loader coordinates.
+            registry = registry_factory(
+                tuple(loaded.plugin for loaded in loaded_plugins),
+                require_executable_identity=True,
+            )
     retention_policy = None
     if configuration.retention_policy_path is not None:
         from .maintenance_cli import load_policy
@@ -295,7 +328,6 @@ def run(
         retention_policy = load_policy(
             configuration.retention_policy_path.expanduser().resolve()
         ).ingestion
-    state_root = configuration.state_dir.expanduser().resolve()
     private_analysis_options: dict[str, Any] = {}
     if configuration.private_analysis_deployment_module is not None:
         deployment = private_analysis_deployment_loader(
@@ -311,6 +343,7 @@ def run(
         state_root,
         registry=registry,
         retention_policy=retention_policy,
+        **composition_options,
         **private_analysis_options,
     )
     try:

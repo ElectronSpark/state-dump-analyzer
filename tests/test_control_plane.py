@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -18,8 +19,10 @@ from router_dump_analyzer.annotation_store import (
     ReviewSubject,
     ReviewSubjectKind,
 )
+from router_dump_analyzer.capability_router import RevisionSetCapabilityKey
 from router_dump_analyzer.control_plane import (
     ControlPlane,
+    ControlPlaneError,
     ControlPlaneLimits,
     ControlPlaneScopeError,
     DatasetIntegrityError,
@@ -50,6 +53,9 @@ from router_dump_analyzer.plugin_api import (
     SourceRecordEmission,
     SourceRecordRef,
     derive_event_uid,
+)
+from router_dump_analyzer.private_analysis_promotion import (
+    ProposalReviewRetentionReferences,
 )
 from router_dump_analyzer.session_store import (
     CatalogRetentionPolicy,
@@ -199,6 +205,96 @@ class ControlPlaneTests(unittest.TestCase):
                     "timestamp_uncertainty_ns": "1",
                 }
             )
+
+    def test_composition_root_refuses_to_replace_a_missing_review_authority_key(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            control = self._control_plane(root)
+            control.close()
+            connection = sqlite3.connect(
+                root / "private-analysis-proposal-reviews.sqlite3"
+            )
+            try:
+                connection.execute(
+                    "INSERT INTO proposal_review_decision ("
+                    "tenant_id, project_id, workspace_id, decision_id, run_id, "
+                    "proposal_id, proposal_digest, result_digest, run_version, "
+                    "disposition, state, actor, rationale, request_digest, "
+                    "authority_attestation, target_kind, target_id, "
+                    "target_document_json, created_at_ns, updated_at_ns, version"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                    "?, ?, ?, ?, ?)",
+                    (
+                        "tenant-a",
+                        "project-a",
+                        "workspace-a",
+                        "decision-a",
+                        "run-a",
+                        "proposal-a",
+                        "sha256:" + ("1" * 64),
+                        "sha256:" + ("2" * 64),
+                        1,
+                        "reject",
+                        "completed",
+                        "reviewer-a",
+                        "",
+                        "sha256:" + ("3" * 64),
+                        "hmac-sha256:" + ("4" * 64),
+                        None,
+                        None,
+                        None,
+                        1,
+                        1,
+                        1,
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            key_path = root / ".private-analysis-proposal-review.authority.key"
+            self.assertEqual(len(key_path.read_bytes()), 32)
+            key_path.unlink()
+            with self.assertRaisesRegex(
+                ControlPlaneError,
+                "proposal-review authority key is missing",
+            ):
+                ControlPlane(
+                    root,
+                    registry=PluginRegistry((_EventPlugin(),)),
+                    pipeline_limits=self._pipeline_limits(),
+                )
+
+    def test_composition_root_refuses_a_missing_key_for_an_empty_existing_store(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            control = self._control_plane(root)
+            control.close()
+            database_path = root / "private-analysis-proposal-reviews.sqlite3"
+            self.assertGreater(database_path.stat().st_size, 0)
+            connection = sqlite3.connect(database_path)
+            try:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM proposal_review_decision"
+                    ).fetchone(),
+                    (0,),
+                )
+            finally:
+                connection.close()
+            (root / ".private-analysis-proposal-review.authority.key").unlink()
+            with self.assertRaisesRegex(
+                ControlPlaneError,
+                "proposal-review authority key is missing",
+            ):
+                ControlPlane(
+                    root,
+                    registry=PluginRegistry((_EventPlugin(),)),
+                    pipeline_limits=self._pipeline_limits(),
+                )
 
     @staticmethod
     def _pipeline_limits() -> PipelineLimits:
@@ -363,6 +459,66 @@ class ControlPlaneTests(unittest.TestCase):
         )
         self.assertEqual(len(reloaded["events"]), 2)
 
+    def test_published_revision_and_session_build_exact_capability_routers(
+        self,
+    ) -> None:
+        control = self._control_plane(self._root())
+        completed = self._ingest(control)
+        scope = control.scope("tenant-a", "project-a", "workspace-a")
+        revision = control.sessions.get_revision(
+            "tenant-a",
+            completed.revision_id,
+        )
+
+        single = control.capability_router_for_revision(
+            scope,
+            revision.revision_id,
+        )
+        self.assertEqual(single.catalog_revision_id, revision.revision_id)
+        self.assertEqual(single.member_id, revision.revision_id)
+        self.assertEqual(single.plan, revision.execution_plan)
+
+        session = control.sessions.create_session(
+            "tenant-a",
+            "workspace-a",
+            "Capability routing",
+            session_id="capability-session",
+        )
+        session = control.sessions.put_member(
+            "tenant-a",
+            session.session_id,
+            "router-a/current",
+            fixture_id=revision.fixture_id,
+            revision_id=revision.revision_id,
+            expected_version=session.version,
+        )
+        revision_set = control.capability_router_for_revision_set(
+            scope,
+            session_id=session.session_id,
+        )
+        self.assertEqual(
+            revision_set.keys,
+            (
+                RevisionSetCapabilityKey(
+                    revision.revision_id,
+                    "router-a/current",
+                ),
+            ),
+        )
+
+        snapshot = control.sessions.snapshot_session(
+            "tenant-a",
+            session.session_id,
+            expected_version=session.version,
+        )
+        snapshot_set = control.capability_router_for_revision_set(
+            scope,
+            snapshot_id=snapshot.snapshot_id,
+        )
+        self.assertEqual(snapshot_set.keys, revision_set.keys)
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            control.capability_router_for_revision_set(scope)
+
     def test_dataset_loading_binds_catalog_dataset_and_full_execution_plan(self) -> None:
         control = self._control_plane(self._root())
         completed = self._ingest(control)
@@ -465,6 +621,40 @@ class ControlPlaneTests(unittest.TestCase):
             control._index_dataset(mutated_revision, dataset)
         with self.assertRaisesRegex(DatasetIntegrityError, "planless"):
             control._index_dataset(planless_revision, dataset)
+
+    def test_dataset_indexing_cancels_during_mapping_list_validation(self) -> None:
+        class IndexConstructionCancelled(Exception):
+            pass
+
+        control = self._control_plane(self._root())
+        completed = self._ingest(control)
+        scope = control.scope("tenant-a", "project-a", "workspace-a")
+        revision = control.resolve_catalog_revision(
+            scope,
+            fixture_id=completed.fixture_id,
+        )
+        dataset = control.load_revision_dataset(scope, revision.revision_id)
+        template = dataset["events"][0]
+        assert isinstance(template, dict)
+        late_invalid_events: list[object] = [dict(template) for _ in range(512)]
+        late_invalid_events.append(object())
+        dataset_with_late_invalid = dict(dataset)
+        dataset_with_late_invalid["events"] = late_invalid_events
+        checkpoints = 0
+
+        def checkpoint() -> None:
+            nonlocal checkpoints
+            checkpoints += 1
+            if checkpoints == 3:
+                raise IndexConstructionCancelled
+
+        with self.assertRaises(IndexConstructionCancelled):
+            control._index_dataset(
+                revision,
+                dataset_with_late_invalid,
+                construction_checkpoint=checkpoint,
+            )
+        self.assertEqual(checkpoints, 3)
 
     def test_session_catalog_publisher_runs_in_bounded_process(self) -> None:
         control = ControlPlane(
@@ -806,6 +996,28 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertIs(
             result.ingestion.host_storage_orphan_inventory,
             RetentionHostInventoryCoverage.NOT_OBSERVED,
+        )
+
+    def test_catalog_retention_protects_pending_promotion_revisions(self) -> None:
+        control = self._control_plane(self._root())
+        scope = control.scope("tenant-a", "project-a", "workspace-a")
+        pending = ProposalReviewRetentionReferences(
+            revision_ids=("pending-promotion-revision",),
+            overlay_idempotency_keys=("private-analysis-proposal:pending-decision",),
+        )
+        with patch.object(
+            control.proposal_review_store,
+            "pending_retention_references",
+            return_value=pending,
+        ):
+            effective = control._catalog_retention_policy(
+                scope,
+                CatalogRetentionPolicy(),
+            )
+        self.assertTrue(effective.external_references_checked)
+        self.assertIn(
+            "pending-promotion-revision",
+            effective.protected_revision_ids,
         )
 
     def test_retention_replays_and_acknowledges_a_release_after_crash_gap(

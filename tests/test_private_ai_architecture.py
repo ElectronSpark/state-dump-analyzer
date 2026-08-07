@@ -28,6 +28,9 @@ CORE_SOURCE = ROOT / "src" / "router_dump_analyzer"
 PRIVATE_ANALYSIS_SOURCE = CORE_SOURCE / "private_analysis"
 PRIVATE_ANALYSIS_TOOL_SERVICE_SOURCE = CORE_SOURCE / "private_analysis_tool_service.py"
 PRIVATE_ANALYSIS_EXECUTION_SOURCE = CORE_SOURCE / "private_analysis_execution.py"
+PRIVATE_ANALYSIS_FACTORY_PROCESS_SOURCE = (
+    CORE_SOURCE / "private_analysis_factory_process.py"
+)
 PRIVATE_ANALYSIS_SERVICE_SOURCE = CORE_SOURCE / "private_analysis_service.py"
 PRIVATE_ANALYSIS_IN_PROCESS_RUNNER_SOURCE = (
     CORE_SOURCE / "private_analysis_in_process_runner.py"
@@ -248,17 +251,26 @@ APPROVED_EXTERNAL_IMPORT_ROOTS = frozenset({"fastapi", "starlette", "uvicorn"})
 PRIVATE_ANALYSIS_ALLOWED_IMPORT_PREFIXES = (
     "__future__",
     ".policy",
+    "bisect",
+    "collections",
     "collections.abc",
     "dataclasses",
     "enum",
+    "functools",
+    "hashlib",
+    "heapq",
     "json",
+    "threading",
+    "types",
     "typing",
 )
 PRIVATE_ANALYSIS_ALLOWED_PARENT_IMPORTS = frozenset(
     {
+        "..cancellation",
         "..canonical",
         "..contract_validation",
         "..public_text",
+        "..process_control",
         "..value_core",
     }
 )
@@ -652,6 +664,7 @@ def _private_analysis_import_violations(source_root: Path) -> tuple[str, ...]:
         }
     )
     allowed_external_members = {
+        "..cancellation": frozenset({"cooperatively_sorted"}),
         "..canonical": frozenset(
             {
                 "strict_canonical_json",
@@ -667,14 +680,22 @@ def _private_analysis_import_violations(source_root: Path) -> tuple[str, ...]:
                 "has_visible_identity_anchor",
             }
         ),
+        "..process_control": frozenset({"PROCESS_CONTROL_EXCEPTIONS"}),
         "..value_core": frozenset(
             {"MAX_JSON_SAFE_INTEGER", "parse_canonical_decimal_integer"}
         ),
         "__future__": frozenset({"annotations"}),
+        "bisect": frozenset({"bisect_left", "bisect_right"}),
+        "collections": frozenset({"OrderedDict"}),
         "collections.abc": frozenset({"Callable"}),
-        "dataclasses": frozenset({"dataclass"}),
+        "dataclasses": frozenset({"dataclass", "field"}),
         "enum": frozenset({"StrEnum"}),
+        "functools": frozenset({"lru_cache"}),
+        "hashlib": frozenset({"sha256"}),
+        "heapq": frozenset({"merge"}),
         "json": frozenset({"JSONDecodeError", "loads"}),
+        "threading": frozenset({"Condition", "Lock"}),
+        "types": frozenset({"MappingProxyType"}),
         "typing": frozenset({"Any", "Final"}),
     }
     for path in _python_files(source_root):
@@ -997,8 +1018,16 @@ def _core_dynamic_import_violations(source_root: Path) -> tuple[str, ...]:
     allowed_import_module_sites = {
         ("plugin_loading.py", "load_plugin_module"),
         (
+            "plugin_composition_deployment.py",
+            "load_plugin_composition_deployment",
+        ),
+        (
             "private_analysis_deployment.py",
             "load_private_analysis_deployment",
+        ),
+        (
+            "private_analysis_factory_process.py",
+            "_load_factory_target",
         ),
         ("server_cli.py", "_load_identity_resolver"),
     }
@@ -1629,16 +1658,27 @@ class PrivateAiArchitectureTests(unittest.TestCase):
                 "evaluate_workspace_disclosure",
             },
             ".private_analysis.evidence": {
+                "EvidenceEnvelope",
                 "EvidenceReference",
                 "EvidenceScope",
+                "EvidenceTimeBasis",
                 "evidence_envelope_json",
+                "evidence_envelope_from_json",
                 "evidence_reference_dict",
                 "evidence_reference_from_dict",
                 "make_evidence_envelope",
             },
             ".private_analysis.policy": {"PrivateAnalysisPolicy"},
+            ".private_analysis.query_cancellation": {
+                "PrivateAnalysisEvidenceQueryCancellationProbeError",
+                "PrivateAnalysisEvidenceQueryCancelledError",
+                "check_private_analysis_evidence_query_cancellation",
+            },
             ".private_analysis.tool_catalog": {
                 "MAX_PRIVATE_ANALYSIS_SNAPSHOT_REFERENCES",
+                "PrivateAnalysisCapabilityArguments",
+                "PrivateAnalysisEvidenceCursorInvalidError",
+                "PrivateAnalysisEvidenceQueryPage",
                 "PrivateAnalysisQueryArguments",
                 "PrivateAnalysisReadArguments",
                 "PrivateAnalysisToolCall",
@@ -1649,6 +1689,7 @@ class PrivateAiArchitectureTests(unittest.TestCase):
                 "PrivateAnalysisToolResultKind",
                 "default_private_analysis_tool_catalog",
                 "make_private_analysis_query_page",
+                "make_private_analysis_query_page_from_snapshot",
                 "private_analysis_tool_call_dict",
                 "private_analysis_tool_call_from_dict",
             },
@@ -1714,7 +1755,9 @@ class PrivateAiArchitectureTests(unittest.TestCase):
             {
                 PRIVATE_ANALYSIS_IN_PROCESS_RUNNER_SOURCE.name,
                 PRIVATE_ANALYSIS_EXECUTION_SOURCE.name,
+                PRIVATE_ANALYSIS_FACTORY_PROCESS_SOURCE.name,
                 PRIVATE_ANALYSIS_RUNNER_SUPPORT_SOURCE.name,
+                "control_plane.py",
                 "private_analysis_run_store.py",
                 "private_analysis_service.py",
                 PRIVATE_ANALYSIS_SUBPROCESS_RUNNER_SOURCE.name,
@@ -1796,7 +1839,9 @@ class PrivateAiArchitectureTests(unittest.TestCase):
                 "time",
                 "typing",
                 ".canonical",
+                ".plugin_identity",
                 ".private_analysis",
+                ".private_analysis_factory_process",
                 ".private_analysis_runner_support",
                 ".private_analysis_tool_service",
                 ".process_control",
@@ -1831,6 +1876,19 @@ class PrivateAiArchitectureTests(unittest.TestCase):
         self.assertEqual(
             subprocess_importers,
             {PRIVATE_ANALYSIS_SUBPROCESS_RUNNER_SOURCE.name},
+        )
+        private_analysis_multiprocessing_importers = {
+            path.relative_to(CORE_SOURCE).as_posix()
+            for path in _python_files(CORE_SOURCE)
+            if path.name.startswith("private_analysis")
+            and any(
+                imported == "multiprocessing"
+                for _line, imported in _literal_imports(path)
+            )
+        }
+        self.assertEqual(
+            private_analysis_multiprocessing_importers,
+            {PRIVATE_ANALYSIS_FACTORY_PROCESS_SOURCE.name},
         )
         source = PRIVATE_ANALYSIS_SUBPROCESS_RUNNER_SOURCE.read_text(encoding="utf-8")
         self.assertIn("shell=False", source)
@@ -1892,7 +1950,14 @@ class PrivateAiArchitectureTests(unittest.TestCase):
                     node.func.id,
                     {"compile", "eval", "exec", "open", "__import__"},
                 )
-        self.assertEqual(imported_modules, {"math", "threading", "time"})
+        # ``secrets`` is the sole additional authority: it creates the
+        # unpersisted cleanup capability that stays beside a live child
+        # handle.  No process identifier or deletion credential is read back
+        # from durable state.
+        self.assertEqual(
+            imported_modules,
+            {"math", "secrets", "threading", "time"},
+        )
         for forbidden in (
             "annotation_store",
             "asyncio",

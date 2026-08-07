@@ -5,6 +5,7 @@ import sys
 import typing
 import unittest
 from dataclasses import fields as dataclass_fields
+from dataclasses import replace
 from pathlib import Path
 from uuid import UUID
 
@@ -42,6 +43,10 @@ from router_dump_analyzer.plugin_api import (
     DiagnosticStage,
     DomainEvent,
     Evidence,
+    EvidenceAnalysisFact,
+    EvidenceAnalysisKind,
+    EvidenceAnalysisObservation,
+    EvidenceAnalysisRequest,
     FederatedConnectorClaim,
     FederationLinkerPlugin,
     FederationLinkRequest,
@@ -111,6 +116,7 @@ from router_dump_analyzer.plugin_api import (
     StatusPerspectiveRef,
     StatusPerspectiveRole,
     StatusSourceCombinationPolicy,
+    TimelineTimeBasis,
     TopologyDomainRole,
     TopologyEndpointRecord,
     TopologyEndpointReference,
@@ -327,6 +333,39 @@ class PluginApiTests(unittest.TestCase):
                 reconstruction_default=ReconstructionSupport.UNSUPPORTED,
             )
 
+    def test_manifest_declares_one_strict_timeline_clock_basis(self) -> None:
+        relative = PluginManifest(
+            plugin_id="example.relative",
+            plugin_version="1",
+            core_api_version="1.0",
+            supported_platforms=("example-os",),
+            supported_software_versions=">=1",
+            capabilities=frozenset(),
+            reconstruction_default=ReconstructionSupport.UNSUPPORTED,
+        )
+        self.assertIs(
+            relative.timeline_time_basis,
+            TimelineTimeBasis.REVISION_START_RELATIVE_NS,
+        )
+        self.assertIsNone(relative.timeline_clock_domain)
+
+        source = replace(
+            relative,
+            plugin_id="example.source-clock",
+            timeline_time_basis=TimelineTimeBasis.SOURCE_CLOCK_NS,
+            timeline_clock_domain="vendor.clock.asic-0",
+        )
+        self.assertEqual(source.timeline_clock_domain, "vendor.clock.asic-0")
+        for invalid in ("", "../clock", "clock\\domain", " clock", "clock domain"):
+            with self.subTest(invalid=invalid), self.assertRaises(
+                (TypeError, ValueError)
+            ):
+                replace(source, timeline_clock_domain=invalid)
+        with self.assertRaisesRegex(ValueError, "require timeline_clock_domain"):
+            replace(source, timeline_clock_domain=None)
+        with self.assertRaisesRegex(ValueError, "valid only"):
+            replace(relative, timeline_clock_domain="vendor.clock")
+
     def test_capability_and_parser_dispatch_matrices_are_complete(self) -> None:
         self.assertEqual(set(PLUGIN_CAPABILITY_HOOKS), set(PluginCapability))
         self.assertEqual(
@@ -341,12 +380,80 @@ class PluginApiTests(unittest.TestCase):
             tuple(inspect.signature(AnalyzerPlugin.resolve_forwarding_step).parameters),
             ("self", "request", "world"),
         )
+        self.assertEqual(
+            PLUGIN_CAPABILITY_HOOKS[PluginCapability.EVIDENCE_ANALYSIS],
+            ("analyze_evidence",),
+        )
+        self.assertEqual(
+            tuple(inspect.signature(AnalyzerPlugin.analyze_evidence).parameters),
+            ("self", "request"),
+        )
         self.assertEqual(set(INPUT_PARSER_HOOKS), set(InputParserKind))
         self.assertEqual(INPUT_PARSER_HOOKS[InputParserKind.CTF], "parse_ctf")
         self.assertEqual(
             INPUT_PARSER_CAPABILITIES[InputParserKind.CTF],
             PluginCapability.CTF_PARSE,
         )
+
+    def test_evidence_analysis_values_are_bounded_and_deeply_detached(self) -> None:
+        digest = "sha256:" + "a" * 64
+        payload = {"nested": {"values": [1, 2]}}
+        fact = EvidenceAnalysisFact(
+            reference_digest=digest,
+            evidence_kind="source_record",
+            subject_kind="normalized_source_record",
+            node_id="node-a",
+            revision_id="revision-a",
+            payload_schema="example.source.v1",
+            fact_provenance="log_derived",
+            time_basis="source_clock_ns",
+            time_start_ns=10,
+            time_end_ns=12,
+            time_clock_domain="trace.clock",
+            payload=payload,
+        )
+        payload["nested"]["values"].append(3)
+        self.assertEqual(tuple(fact.payload["nested"]["values"]), (1, 2))
+        parameters = {"route": {"vrf": "blue"}}
+        request = EvidenceAnalysisRequest(
+            invocation_id="invocation-a",
+            analysis_kind=EvidenceAnalysisKind.TRACE_CORRELATION,
+            facts=(fact,),
+            parameters=parameters,
+            max_observations=4,
+        )
+        self.assertIsNot(request.facts[0], fact)
+        object.__setattr__(fact, "subject_kind", "mutated-after-request")
+        self.assertEqual(
+            request.facts[0].subject_kind,
+            "normalized_source_record",
+        )
+        parameters["route"]["vrf"] = "red"
+        self.assertEqual(request.parameters["route"]["vrf"], "blue")
+        details = {"tracepoints": ["fib.lookup", "nh.resolve"]}
+        observation = EvidenceAnalysisObservation(
+            observation_id="observation-a",
+            category="route_resolution",
+            summary="The lookup resolves through the retained next hop.",
+            cited_reference_digests=(digest,),
+            quality=Quality.BEST_EFFORT,
+            details=details,
+        )
+        details["tracepoints"].append("late.mutation")
+        self.assertEqual(
+            tuple(observation.details["tracepoints"]),
+            ("fib.lookup", "nh.resolve"),
+        )
+        with self.assertRaisesRegex(ValueError, "reversed"):
+            replace(fact, time_start_ns=13)
+        self.assertEqual(replace(fact), fact)
+
+        cycle: dict[str, object] = {}
+        cycle["self"] = cycle
+        with self.assertRaisesRegex(ValueError, "reference cycle"):
+            replace(fact, payload=cycle)
+        with self.assertRaises((TypeError, ValueError)):
+            replace(fact, payload={"not_json": (1, 2)})
 
     def test_input_spec_dispatch_is_explicit_but_legacy_specs_still_load(self) -> None:
         artifact_id = UUID(int=1)

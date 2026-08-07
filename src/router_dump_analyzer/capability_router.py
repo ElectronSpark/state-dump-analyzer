@@ -11,16 +11,21 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from enum import Enum
 
 from .capability_executor import (
     ConsistencyExecutionResult,
     CorrelationExecutionResult,
+    EvidenceAnalysisExecutionResult,
     ForwardingProjectionExecutionResult,
     ForwardingStepExecutionResult,
     PluginCapabilityBindingError,
     PluginCapabilityExecutionError,
     PluginCapabilityExecutor,
+    PluginCapabilityInputError,
     PluginCapabilityLimits,
+    PluginCapabilityOutputError,
+    PluginCapabilityUnavailableError,
     TopologyExecutionResult,
 )
 from .ingestion_pipeline import (
@@ -33,6 +38,7 @@ from .plugin_api import (
     CorrelationReader,
     CorrelationWindow,
     DomainEvent,
+    EvidenceAnalysisRequest,
     ForwardingProjectionRequest,
     ForwardingStepRequest,
     PluginCapability,
@@ -42,14 +48,17 @@ from .plugin_api import (
 from .plugin_execution_plan import (
     PluginExecutionPin,
     PluginExecutionPlan,
+    plugin_execution_plan_is_executable,
     primary_parser_execution_pin,
     snapshot_plugin_execution_pin,
     snapshot_plugin_execution_plan,
 )
+from .plugin_schema_identity import plugin_schema_digest
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .public_text import contains_unsafe_identifier_text, has_visible_identity_anchor
 
 _MAX_PROVIDERS = 100_000
+_MAX_REVISION_SET_ROUTERS = 128
 _SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ROUTABLE_CAPABILITIES = frozenset(
     {
@@ -60,6 +69,7 @@ _ROUTABLE_CAPABILITIES = frozenset(
         PluginCapability.TOPOLOGY_PROJECTION,
         PluginCapability.FORWARDING_PROJECTION,
         PluginCapability.FORWARDING_TRACE,
+        PluginCapability.EVIDENCE_ANALYSIS,
     }
 )
 
@@ -82,6 +92,16 @@ class CapabilityRouteAmbiguousError(CapabilityRoutingError):
 
 class CapabilityRouteStaleError(CapabilityRoutingError):
     """A configured provider no longer matches its immutable plan pin."""
+
+
+class RevisionSetCapabilityFailureCode(str, Enum):
+    """Closed, payload-free reason for one member's failed fan-out call."""
+
+    INPUT_REJECTED = "input_rejected"
+    CAPABILITY_UNAVAILABLE = "capability_unavailable"
+    OUTPUT_REJECTED = "output_rejected"
+    EXECUTION_FAILED = "execution_failed"
+    ROUTING_FAILED = "routing_failed"
 
 
 def _opaque(value: object, label: str) -> str:
@@ -110,6 +130,7 @@ class CapabilityProviderRegistry:
 
     def __init__(self, providers: Iterable[RegisteredPlugin] = ()) -> None:
         self._providers: dict[str, list[RegisteredPlugin]] = {}
+        self._schema_digests: dict[tuple[str, str], str] = {}
         self._provider_count = 0
         for provider in providers:
             self.add_registered(provider)
@@ -121,7 +142,16 @@ class CapabilityProviderRegistry:
     ) -> CapabilityProviderRegistry:
         if type(registry) is not PluginRegistry:
             raise TypeError("registry must be an exact PluginRegistry")
-        return cls(registry.records())
+        # Compatibility-only manifest identities remain valid primary parser
+        # registrations for legacy/embedded ingestion, but they are not
+        # eligible capability providers.  Omitting them here keeps a default
+        # no-composition pipeline backward compatible while any policy that
+        # tries to select one still fails closed as a missing exact provider.
+        return cls(
+            provider
+            for provider in registry.records()
+            if provider.verify_package_bytes
+        )
 
     def add_registered(self, provider: RegisteredPlugin) -> str:
         if type(provider) is not RegisteredPlugin:
@@ -137,10 +167,16 @@ class CapabilityProviderRegistry:
             raise ValueError(f"at most {_MAX_PROVIDERS} providers may be registered")
         try:
             PluginRegistry.revalidate_registered_identity(provider)
+            declared_schema_digest = plugin_schema_digest(
+                provider.execution_plugin.describe()
+            )
+            PluginRegistry.revalidate_registered_identity(provider)
         except PROCESS_CONTROL_EXCEPTIONS:
             raise
         except BaseException as error:
-            raise ValueError("capability provider identity is not valid") from error
+            raise ValueError(
+                "capability provider identity or declared schema is not valid"
+            ) from error
         bucket = self._providers.setdefault(instance_id, [])
         execution_identity = provider.registered_execution_identity
         if any(item.plugin_id != provider.plugin_id for item in bucket):
@@ -156,19 +192,117 @@ class CapabilityProviderRegistry:
                 "instance_id"
             )
         if any(
-            item.registered_execution_identity == execution_identity
-            for item in bucket
+            item.registered_execution_identity == execution_identity for item in bucket
         ):
             raise ValueError(
                 "duplicate capability provider execution identity for "
                 f"instance {instance_id!r}"
             )
         bucket.append(provider)
+        self._schema_digests[(instance_id, execution_identity)] = (
+            declared_schema_digest
+        )
         self._provider_count += 1
         return instance_id
 
     def instance_ids(self) -> tuple[str, ...]:
         return tuple(sorted(self._providers))
+
+    def records(self) -> tuple[RegisteredPlugin, ...]:
+        """Return every admitted provider in canonical execution order."""
+
+        return tuple(
+            provider
+            for instance_id in sorted(self._providers)
+            for provider in sorted(
+                self._providers[instance_id],
+                key=lambda item: item._registered_execution_identity_snapshot or "",
+            )
+        )
+
+    def get_by_execution_identity(
+        self,
+        instance_id: str,
+        registered_execution_identity: str,
+    ) -> RegisteredPlugin:
+        """Resolve one exact configured provider without fallback behavior."""
+
+        selected_instance = _opaque(instance_id, "provider instance_id")
+        if (
+            type(registered_execution_identity) is not str
+            or _SHA256_PATTERN.fullmatch(registered_execution_identity) is None
+        ):
+            raise ValueError(
+                "registered_execution_identity must be a lowercase SHA-256 digest"
+            )
+        matches = tuple(
+            provider
+            for provider in self._resolve(selected_instance)
+            if provider.registered_execution_identity
+            == registered_execution_identity
+        )
+        if len(matches) != 1:
+            raise CapabilityRouteStaleError(
+                "execution-plan provider identity is not installed"
+            )
+        return matches[0]
+
+    def schema_digest_by_execution_identity(
+        self,
+        instance_id: str,
+        registered_execution_identity: str,
+    ) -> str:
+        """Return the schema digest frozen when an exact provider was admitted."""
+
+        provider = self.get_by_execution_identity(
+            instance_id,
+            registered_execution_identity,
+        )
+        return self._schema_digests[
+            (provider.instance_id, provider.registered_execution_identity)
+        ]
+
+    def snapshot_exact(
+        self,
+        coordinates: tuple[tuple[str, str], ...],
+    ) -> CapabilityProviderRegistry:
+        """Freeze a bounded child-safe subset without re-invoking providers.
+
+        Process ingestion needs only the auxiliaries selected by one primary
+        policy rule.  Passing the deployment-wide directory through Windows
+        spawn would pickle every configured platform instance, so this method
+        copies only exact already-admitted records and their frozen schema
+        digests.
+        """
+
+        if type(coordinates) is not tuple or len(coordinates) > 127:
+            raise ValueError("provider snapshot supports at most 127 coordinates")
+        if len(coordinates) != len(set(coordinates)):
+            raise ValueError("provider snapshot coordinates must be unique")
+        snapshot = CapabilityProviderRegistry()
+        for coordinate in coordinates:
+            if (
+                type(coordinate) is not tuple
+                or len(coordinate) != 2
+                or any(type(value) is not str for value in coordinate)
+            ):
+                raise TypeError(
+                    "provider snapshot coordinates must be exact string pairs"
+                )
+            instance_id, execution_identity = coordinate
+            provider = self.get_by_execution_identity(
+                instance_id,
+                execution_identity,
+            )
+            snapshot._providers.setdefault(provider.instance_id, []).append(provider)
+            snapshot._schema_digests[
+                (provider.instance_id, provider.registered_execution_identity)
+            ] = self.schema_digest_by_execution_identity(
+                provider.instance_id,
+                provider.registered_execution_identity,
+            )
+            snapshot._provider_count += 1
+        return snapshot
 
     def _resolve(self, instance_id: str) -> tuple[RegisteredPlugin, ...]:
         try:
@@ -235,6 +369,119 @@ class CapabilityInvocation[ResultT]:
     result: ResultT
 
 
+@dataclass(frozen=True, slots=True, order=True)
+class RevisionSetCapabilityKey:
+    """Exact identity of one revision/member capability router."""
+
+    catalog_revision_id: str
+    member_id: str
+
+    def __post_init__(self) -> None:
+        _opaque(self.catalog_revision_id, "catalog_revision_id")
+        _opaque(self.member_id, "member_id")
+
+
+@dataclass(frozen=True, slots=True)
+class RevisionSetCapabilityResolution:
+    """Canonical routes and members that do not declare the capability."""
+
+    routes: tuple[PlanBoundCapabilityRoute, ...]
+    missing: tuple[RevisionSetCapabilityKey, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.routes) is not tuple or type(self.missing) is not tuple:
+            raise TypeError("revision-set resolution fields must be exact tuples")
+        route_keys: list[RevisionSetCapabilityKey] = []
+        for route in self.routes:
+            if type(route) is not PlanBoundCapabilityRoute:
+                raise TypeError("routes must contain exact plan-bound routes")
+            route_keys.append(_provider_revision_key(route.provider))
+        if any(type(key) is not RevisionSetCapabilityKey for key in self.missing):
+            raise TypeError("missing must contain exact revision/member keys")
+        _validate_revision_result_keys(route_keys, self.missing)
+
+
+@dataclass(frozen=True, slots=True)
+class RevisionSetCapabilityFailure:
+    """One producer-qualified, bounded fan-out failure."""
+
+    key: RevisionSetCapabilityKey
+    provider: CapabilityProviderRef
+    code: RevisionSetCapabilityFailureCode
+
+    def __post_init__(self) -> None:
+        if type(self.key) is not RevisionSetCapabilityKey:
+            raise TypeError("key must be an exact RevisionSetCapabilityKey")
+        if type(self.provider) is not CapabilityProviderRef:
+            raise TypeError("provider must be an exact CapabilityProviderRef")
+        if type(self.code) is not RevisionSetCapabilityFailureCode:
+            raise TypeError("code must be an exact RevisionSetCapabilityFailureCode")
+        if (
+            self.provider.catalog_revision_id != self.key.catalog_revision_id
+            or self.provider.member_id != self.key.member_id
+        ):
+            raise ValueError("failure provider does not match its revision/member key")
+
+
+@dataclass(frozen=True, slots=True)
+class RevisionSetCapabilityFanout[ResultT]:
+    """Canonical successes, explicit absences, and bounded failures."""
+
+    invocations: tuple[CapabilityInvocation[ResultT], ...]
+    missing: tuple[RevisionSetCapabilityKey, ...]
+    failures: tuple[RevisionSetCapabilityFailure, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.invocations) is not tuple
+            or type(self.missing) is not tuple
+            or type(self.failures) is not tuple
+        ):
+            raise TypeError("revision-set fan-out fields must be exact tuples")
+        invocation_keys: list[RevisionSetCapabilityKey] = []
+        for invocation in self.invocations:
+            if type(invocation) is not CapabilityInvocation:
+                raise TypeError("invocations must contain exact capability invocations")
+            invocation_keys.append(_provider_revision_key(invocation.provider))
+        if any(type(key) is not RevisionSetCapabilityKey for key in self.missing):
+            raise TypeError("missing must contain exact revision/member keys")
+        if any(
+            type(failure) is not RevisionSetCapabilityFailure
+            for failure in self.failures
+        ):
+            raise TypeError("failures must contain exact revision-set failures")
+        _validate_revision_result_keys(
+            invocation_keys,
+            self.missing,
+            tuple(failure.key for failure in self.failures),
+        )
+
+
+def _provider_revision_key(
+    provider: CapabilityProviderRef,
+) -> RevisionSetCapabilityKey:
+    return RevisionSetCapabilityKey(
+        catalog_revision_id=provider.catalog_revision_id,
+        member_id=provider.member_id,
+    )
+
+
+def _validate_revision_result_keys(
+    *groups: Iterable[RevisionSetCapabilityKey],
+) -> None:
+    materialized = tuple(tuple(group) for group in groups)
+    flattened = tuple(key for group in materialized for key in group)
+    if not 1 <= len(flattened) <= _MAX_REVISION_SET_ROUTERS:
+        raise ValueError(
+            "revision-set results must account for 1 to "
+            f"{_MAX_REVISION_SET_ROUTERS} members"
+        )
+    if len(flattened) != len(set(flattened)):
+        raise ValueError("revision-set result keys must be unique")
+    if any(group != tuple(sorted(group)) for group in materialized):
+        raise ValueError("each revision-set result group must use canonical key order")
+
+
 @dataclass(frozen=True, slots=True)
 class _BoundProvider:
     pin: PluginExecutionPin
@@ -261,8 +508,15 @@ class PlanBoundCapabilityRouter:
             )
         try:
             detached_plan = snapshot_plugin_execution_plan(plan)
+            if not plugin_execution_plan_is_executable(detached_plan):
+                raise CapabilityPlanUnavailableError(
+                    "retained v1 plug-in execution plans are passive catalog "
+                    "records and cannot bind capability providers"
+                )
             primary_pin = primary_parser_execution_pin(detached_plan)
         except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except CapabilityPlanUnavailableError:
             raise
         except (TypeError, ValueError) as error:
             raise CapabilityPlanUnavailableError(
@@ -375,8 +629,7 @@ class PlanBoundCapabilityRouter:
             if capability in pin.capabilities
             and (selector.role is None or selector.role in pin.roles)
             and (
-                selector.instance_id is None
-                or selector.instance_id == pin.instance_id
+                selector.instance_id is None or selector.instance_id == pin.instance_id
             )
         )
         if not matches:
@@ -580,6 +833,193 @@ class PlanBoundCapabilityRoute:
             lambda executor: executor.resolve_forwarding_step(request, world),
         )
 
+    def analyze_evidence(
+        self,
+        request: EvidenceAnalysisRequest,
+    ) -> CapabilityInvocation[EvidenceAnalysisExecutionResult]:
+        capability = PluginCapability.EVIDENCE_ANALYSIS
+        self._require(capability)
+        return self._router._invoke(
+            capability,
+            self._pin,
+            lambda executor: executor.analyze_evidence(request),
+        )
+
+
+class RevisionSetCapabilityRouter:
+    """Deterministically route capabilities across an immutable revision set.
+
+    Each member retains its own execution plan and provider provenance.  Bulk
+    resolution never selects a first match: it reports every matching route
+    and every member where the capability is absent.  Ambiguous or stale
+    member bindings remain fatal.
+    """
+
+    def __init__(
+        self,
+        routers: Iterable[PlanBoundCapabilityRouter],
+    ) -> None:
+        indexed: dict[RevisionSetCapabilityKey, PlanBoundCapabilityRouter] = {}
+        for router in routers:
+            if len(indexed) >= _MAX_REVISION_SET_ROUTERS:
+                raise ValueError(
+                    "a revision-set capability router supports at most "
+                    f"{_MAX_REVISION_SET_ROUTERS} members"
+                )
+            if type(router) is not PlanBoundCapabilityRouter:
+                raise TypeError(
+                    "routers must contain exact PlanBoundCapabilityRouter objects"
+                )
+            key = RevisionSetCapabilityKey(
+                catalog_revision_id=router.catalog_revision_id,
+                member_id=router.member_id,
+            )
+            if key in indexed:
+                raise ValueError("revision-set capability router keys must be unique")
+            indexed[key] = router
+        if not indexed:
+            raise ValueError(
+                "a revision-set capability router needs at least one member"
+            )
+        self._routers = indexed
+        self._keys = tuple(sorted(indexed))
+
+    @property
+    def keys(self) -> tuple[RevisionSetCapabilityKey, ...]:
+        """Return the canonical, input-order-independent member keys."""
+
+        return self._keys
+
+    def _router_for(
+        self,
+        key: RevisionSetCapabilityKey,
+    ) -> PlanBoundCapabilityRouter:
+        if type(key) is not RevisionSetCapabilityKey:
+            raise TypeError("key must be an exact RevisionSetCapabilityKey")
+        try:
+            router = self._routers[key]
+        except KeyError as error:
+            raise CapabilityRouteMissingError(
+                "revision-set member is not bound"
+            ) from error
+        if (
+            router.catalog_revision_id != key.catalog_revision_id
+            or router.member_id != key.member_id
+        ):
+            raise CapabilityRouteStaleError(
+                "revision-set member identity changed after binding"
+            )
+        return router
+
+    def resolve(
+        self,
+        key: RevisionSetCapabilityKey,
+        selector: CapabilityRouteSelector,
+    ) -> PlanBoundCapabilityRoute:
+        """Resolve one exact revision/member without cross-member fallback."""
+
+        return self._router_for(key).resolve(selector)
+
+    def resolve_all(
+        self,
+        selector: CapabilityRouteSelector,
+    ) -> RevisionSetCapabilityResolution:
+        """Resolve every member, retaining explicit capability absences."""
+
+        if type(selector) is not CapabilityRouteSelector:
+            raise TypeError("selector must be an exact CapabilityRouteSelector")
+        routes: list[PlanBoundCapabilityRoute] = []
+        missing: list[RevisionSetCapabilityKey] = []
+        for key in self._keys:
+            try:
+                routes.append(self._router_for(key).resolve(selector))
+            except CapabilityRouteMissingError:
+                missing.append(key)
+        return RevisionSetCapabilityResolution(tuple(routes), tuple(missing))
+
+    def fanout[ResultT](
+        self,
+        selector: CapabilityRouteSelector,
+        operation: Callable[
+            [PlanBoundCapabilityRoute],
+            CapabilityInvocation[ResultT],
+        ],
+    ) -> RevisionSetCapabilityFanout[ResultT]:
+        """Invoke all matching routes and retain bounded per-provider outcomes."""
+
+        if not callable(operation):
+            raise TypeError("operation must be callable")
+        resolution = self.resolve_all(selector)
+        invocations: list[CapabilityInvocation[ResultT]] = []
+        failures: list[RevisionSetCapabilityFailure] = []
+        for route in resolution.routes:
+            key = _provider_revision_key(route.provider)
+            try:
+                invocation = operation(route)
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except CapabilityRouteStaleError:
+                raise
+            except PluginCapabilityInputError:
+                failures.append(
+                    RevisionSetCapabilityFailure(
+                        key,
+                        route.provider,
+                        RevisionSetCapabilityFailureCode.INPUT_REJECTED,
+                    )
+                )
+                continue
+            except PluginCapabilityUnavailableError:
+                failures.append(
+                    RevisionSetCapabilityFailure(
+                        key,
+                        route.provider,
+                        RevisionSetCapabilityFailureCode.CAPABILITY_UNAVAILABLE,
+                    )
+                )
+                continue
+            except PluginCapabilityOutputError:
+                failures.append(
+                    RevisionSetCapabilityFailure(
+                        key,
+                        route.provider,
+                        RevisionSetCapabilityFailureCode.OUTPUT_REJECTED,
+                    )
+                )
+                continue
+            except PluginCapabilityExecutionError:
+                failures.append(
+                    RevisionSetCapabilityFailure(
+                        key,
+                        route.provider,
+                        RevisionSetCapabilityFailureCode.EXECUTION_FAILED,
+                    )
+                )
+                continue
+            except CapabilityRoutingError:
+                failures.append(
+                    RevisionSetCapabilityFailure(
+                        key,
+                        route.provider,
+                        RevisionSetCapabilityFailureCode.ROUTING_FAILED,
+                    )
+                )
+                continue
+            if type(invocation) is not CapabilityInvocation:
+                raise TypeError(
+                    "fanout operation must return an exact CapabilityInvocation"
+                )
+            if invocation.provider != route.provider:
+                raise CapabilityRoutingError(
+                    "fanout operation returned an invocation for a different provider"
+                )
+            invocations.append(invocation)
+        return RevisionSetCapabilityFanout(
+            tuple(invocations),
+            resolution.missing,
+            tuple(failures),
+        )
+
 
 __all__ = [
     "CapabilityInvocation",
@@ -593,4 +1033,10 @@ __all__ = [
     "CapabilityRoutingError",
     "PlanBoundCapabilityRoute",
     "PlanBoundCapabilityRouter",
+    "RevisionSetCapabilityFailure",
+    "RevisionSetCapabilityFailureCode",
+    "RevisionSetCapabilityFanout",
+    "RevisionSetCapabilityKey",
+    "RevisionSetCapabilityResolution",
+    "RevisionSetCapabilityRouter",
 ]

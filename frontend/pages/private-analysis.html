@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#071019" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E" />
+    <title>Private analysis · Router State Lab</title>
+    <meta name="description" content="Run evidence-bound private analysis against selected durable revisions." />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260806-private-analysis-v1" />
+    <link rel="stylesheet" href="/assets/private_analysis.css?v=20260806-private-analysis-v1" />
+  </head>
+  <body class="pa-body">
+    <div class="app-shell">
+      <header class="topbar pa-topbar">
+        <a class="brand" href="/" aria-label="Open the topology workspace">
+          <span class="brand-mark" aria-hidden="true">RSL</span>
+          <span><strong>Router State Lab</strong><small>private evidence analysis</small></span>
+        </a>
+        <nav class="topnav" aria-label="Core workspaces">
+          <a href="/">Fabric</a>
+          <a href="/node">Node</a>
+          <a href="/analysis" aria-current="page">Private analysis</a>
+        </nav>
+      </header>
+
+      <div class="disclosure pa-disclosure" role="note">
+        <span class="pulse-dot" aria-hidden="true"></span>
+        <strong>Ephemeral browser setup.</strong>
+        <span>Scope, principal, and an unsent query stay only in this page's memory and controls. A submitted run, its query, and its outcome are durable server-side records.</span>
+      </div>
+
+      <main class="pa-main">
+        <section class="section-wrap pa-hero" aria-labelledby="pa-title">
+          <div>
+            <p class="eyebrow">EVIDENCE-BOUND REVIEW</p>
+            <h1 id="pa-title">Ask a private runner about exact revisions.</h1>
+            <p>Select only durable revisions with execution plans. Core applies the workspace disclosure policy, freezes evidence identity, and validates every returned citation.</p>
+          </div>
+          <div class="pa-contract-note">
+            <strong>Advisory only</strong>
+            <span>Claims are labeled by support. A proposal changes nothing until a human records an explicit rejection or separately authored review target.</span>
+          </div>
+        </section>
+
+        <section class="section-wrap panel pa-scope-panel" aria-labelledby="pa-scope-title">
+          <div class="section-heading compact">
+            <div><p class="eyebrow">AUTHORIZED SCOPE</p><h2 id="pa-scope-title">Connect this page</h2></div>
+          </div>
+          <form id="pa-scope-form" class="pa-grid-form" autocomplete="off">
+            <label>Tenant<input id="pa-tenant" maxlength="256" autocomplete="off" required /></label>
+            <label>Project<input id="pa-project" maxlength="256" autocomplete="off" required /></label>
+            <label>Workspace<input id="pa-workspace" maxlength="256" autocomplete="off" required /></label>
+            <label>Principal<input id="pa-principal" maxlength="256" autocomplete="off" required /></label>
+            <button class="primary-action" type="submit">Discover workspace</button>
+            <button id="pa-disconnect" class="secondary-action" type="button">Clear from memory</button>
+          </form>
+        </section>
+
+        <p id="pa-status" class="section-wrap pa-status" role="status" aria-live="polite" tabindex="-1">Enter an authorized workspace scope.</p>
+
+        <section id="pa-compose" class="section-wrap pa-compose" hidden>
+          <section class="panel pa-revision-panel" aria-labelledby="pa-revision-title">
+            <div class="pa-panel-heading">
+              <div><p class="eyebrow">IMMUTABLE INPUT</p><h2 id="pa-revision-title">Revisions with execution plans</h2></div>
+              <output id="pa-revision-count">0 selected</output>
+            </div>
+            <div id="pa-revisions" class="pa-revision-list" role="group" aria-describedby="pa-revision-help"></div>
+            <p id="pa-revision-help" class="pa-help">Select between 1 and 128 unique revisions. Planless legacy revisions are not eligible.</p>
+          </section>
+
+          <section class="panel pa-request-panel" aria-labelledby="pa-request-title">
+            <div class="pa-panel-heading"><div><p class="eyebrow">PRIVATE REQUEST</p><h2 id="pa-request-title">Run configuration</h2></div></div>
+            <form id="pa-run-form" class="pa-run-form" autocomplete="off">
+              <label>Task<select id="pa-task" required></select></label>
+              <label>Approved runner<select id="pa-runner" required></select></label>
+              <label>Clock<select id="pa-clock"><option value="latest_per_revision">Latest per revision</option><option value="absolute_unix_ns">Absolute Unix nanoseconds</option><option value="revision_end_relative_ns">Relative to each revision end</option></select></label>
+              <label id="pa-time-field" hidden>Selected time (nanoseconds)<input id="pa-time" inputmode="numeric" autocomplete="off" /></label>
+              <label class="pa-query-field">Question<textarea id="pa-query" rows="8" maxlength="32000" autocomplete="off" required placeholder="Ask a bounded question about the selected evidence…"></textarea></label>
+              <p class="pa-durable-warning">Submitting creates a durable server-side run containing this query. Create, execute, and cancel mutations are never automatically replayed.</p>
+              <button id="pa-submit" class="primary-action" type="submit" disabled>Create and execute once</button>
+            </form>
+          </section>
+        </section>
+
+        <section class="section-wrap panel pa-reload-panel" aria-labelledby="pa-reload-title">
+          <div><p class="eyebrow">IN-MEMORY LOOKUP</p><h2 id="pa-reload-title">Reload an opaque run ID</h2><p>Run IDs are not added to the URL or browser storage.</p></div>
+          <form id="pa-reload-form" autocomplete="off">
+            <label>Run ID<input id="pa-run-id" maxlength="512" autocomplete="off" required /></label>
+            <button class="secondary-action" type="submit">Load run</button>
+            <button id="pa-cancel" type="button" disabled>Cancel once</button>
+          </form>
+        </section>
+
+        <section id="pa-run-summary" class="section-wrap panel pa-run-summary" aria-labelledby="pa-run-summary-title" hidden>
+          <div class="pa-panel-heading"><div><p class="eyebrow">DURABLE STATE</p><h2 id="pa-run-summary-title" tabindex="-1">Current run</h2></div><span id="pa-run-state"></span></div>
+          <dl id="pa-run-facts" class="pa-facts"></dl>
+        </section>
+
+        <section id="pa-results" class="section-wrap pa-results" aria-labelledby="pa-results-title" hidden>
+          <div class="pa-results-heading"><p class="eyebrow">VALIDATED OUTCOME</p><h2 id="pa-results-title" tabindex="-1">Evidence report</h2><p id="pa-result-kind"></p><p id="pa-report-query" class="pa-report-query"></p></div>
+          <section class="panel pa-result-group" aria-labelledby="pa-supported-title"><h3 id="pa-supported-title">Evidence-supported claims</h3><div id="pa-supported"></div></section>
+          <section class="panel pa-result-group pa-hypotheses" aria-labelledby="pa-hypotheses-title"><h3 id="pa-hypotheses-title">Unsupported hypotheses</h3><p>These statements carry no evidence citations.</p><div id="pa-hypotheses"></div></section>
+          <section class="panel pa-result-group pa-proposals" aria-labelledby="pa-proposals-title"><h3 id="pa-proposals-title">Proposals · not applied</h3><p>Review is final and durable. Reject a suggestion, or promote only a target you authored independently from the model payload. Every decision pins this run version and both result digests.</p><div id="pa-proposals"></div></section>
+          <section class="panel pa-result-group" aria-labelledby="pa-citations-title"><h3 id="pa-citations-title">Exact safe citation references</h3><div id="pa-citations"></div></section>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/assets/private_analysis.js?v=20260806-private-analysis-v1"></script>
+  </body>
+</html>

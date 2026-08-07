@@ -214,6 +214,7 @@ def _request(
     instruction_profile_digest: str = _INSTRUCTION_PROFILE_DIGEST,
     limits: PrivateAnalysisLimits | None = None,
     query: str = "Explain the observed route withdrawal.",
+    evidence_service_digest: str = "sha256:" + "f" * 64,
 ) -> PrivateAnalysisRequest:
     selected_policy = policy or _policy()
     return PrivateAnalysisRequest(
@@ -223,6 +224,7 @@ def _request(
         workspace_policy_digest=selected_policy.digest,
         instruction_profile_digest=instruction_profile_digest,
         tool_catalog_digest=default_private_analysis_tool_catalog().catalog_digest,
+        evidence_service_digest=evidence_service_digest,
         task_kind=PrivateAnalysisTaskKind.LTTNG_ANALYSIS,
         query=query,
         clock_mode=PrivateAnalysisClockMode.LATEST_PER_REVISION,
@@ -983,8 +985,10 @@ class PrivateAnalysisInProcessRunnerTests(unittest.TestCase):
         receipt = _runner(callback).execute(harness.service())
         self.assertIs(receipt.outcome.kind, PrivateAnalysisOutcomeKind.RESULT)
         self.assertEqual(callback_count, 1)
-        self.assertEqual(harness.authorization_calls, 2)
-        self.assertEqual(harness.policy_calls, 2)
+        # Access is checked before identity attestation, immediately after it,
+        # and again after callback completion.
+        self.assertEqual(harness.authorization_calls, 3)
+        self.assertEqual(harness.policy_calls, 3)
         self.assertEqual(harness.query_calls, 0)
         self.assertEqual(harness.resolve_calls, 0)
         self.assertEqual(harness.materialize_calls, 0)
@@ -1040,8 +1044,8 @@ class PrivateAnalysisInProcessRunnerTests(unittest.TestCase):
             PrivateAnalysisErrorStage.DISCLOSURE,
         )
         self.assertEqual(final_callback_count, 1)
-        self.assertEqual(final.authorization_calls, 2)
-        self.assertEqual(final.policy_calls, 2)
+        self.assertEqual(final.authorization_calls, 3)
+        self.assertEqual(final.policy_calls, 3)
         self.assertEqual(revoked.transcript.exchange_count, 0)
 
     def test_runner_configuration_profile_and_service_binding_are_exact(self) -> None:
@@ -1761,6 +1765,62 @@ class PrivateAnalysisInProcessRunnerTests(unittest.TestCase):
         _assert_receipt_error(
             self,
             late_validation,
+            PrivateAnalysisErrorCode.TIMEOUT,
+            PrivateAnalysisErrorStage.RUNNER,
+        )
+
+    def test_expired_absolute_deadline_precedes_binding_and_lease_errors(self) -> None:
+        request = _request()
+        callback = lambda context, _gateway: private_analysis_result_json(
+            _unsupported_result(context.request)
+        )
+        with patch(
+            "router_dump_analyzer.private_analysis_in_process_runner.monotonic_ns",
+            return_value=10,
+        ):
+            binding = _runner(
+                callback,
+                instruction_profile_digest="sha256:" + "d" * 64,
+            ).execute(
+                _Harness(request).service(),
+                absolute_deadline_ns=5,
+            )
+        _assert_receipt_error(
+            self,
+            binding,
+            PrivateAnalysisErrorCode.TIMEOUT,
+            PrivateAnalysisErrorStage.RUNNER,
+        )
+
+        now = {"value": 0}
+        service = _Harness(request).service()
+        held_lease = service.acquire_run_lease()
+
+        def late_binding(*_args: object) -> None:
+            now["value"] = 10
+
+        try:
+            with (
+                patch(
+                    "router_dump_analyzer.private_analysis_in_process_runner."
+                    "monotonic_ns",
+                    side_effect=lambda: now["value"],
+                ),
+                patch.object(
+                    ConfiguredPrivateAnalysisInProcessRunner,
+                    "_binding_error",
+                    side_effect=late_binding,
+                ),
+            ):
+                lease_error = _runner(callback).execute(
+                    service,
+                    absolute_deadline_ns=5,
+                )
+        finally:
+            held_lease.close()
+        _assert_receipt_error(
+            self,
+            lease_error,
             PrivateAnalysisErrorCode.TIMEOUT,
             PrivateAnalysisErrorStage.RUNNER,
         )

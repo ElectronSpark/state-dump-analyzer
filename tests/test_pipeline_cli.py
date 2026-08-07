@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from contextlib import closing, redirect_stderr
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Self
 from unittest.mock import patch
 
 from router_dump_analyzer.control_plane import ControlPlane
@@ -101,6 +103,97 @@ class PipelineCliTests(unittest.TestCase):
         self.assertTrue(parsed.pretty)
         self.assertEqual(parsed.retention_policy_path, Path("retention.json"))
 
+    def test_parser_accepts_exact_plugin_composition_deployment(self) -> None:
+        parsed = parse_args(
+            [
+                "--plugin-deployment-module",
+                "deployment.plugins:build",
+                "--state-dir",
+                "state",
+                "--tenant",
+                "tenant-a",
+                "--project",
+                "project-a",
+                "--workspace",
+                "workspace-a",
+                "--input",
+                "fixture.tgz",
+            ]
+        )
+        self.assertEqual(parsed.plugin_names, ())
+        self.assertEqual(parsed.plugin_modules, ())
+        self.assertEqual(
+            parsed.plugin_deployment_module,
+            "deployment.plugins:build",
+        )
+
+    def test_plugin_composition_deployment_reaches_headless_control_plane(
+        self,
+    ) -> None:
+        registry = object()
+        providers = object()
+        policy = object()
+        deployment = SimpleNamespace(
+            primary_registry=registry,
+            capability_providers=providers,
+            policy=policy,
+            deployment_digest="sha256:" + "a" * 64,
+        )
+        captured: dict[str, object] = {}
+
+        class EmptyControlPlane:
+            def __init__(self, root: Path, **values: object) -> None:
+                captured["root"] = root
+                captured.update(values)
+
+            def __enter__(self) -> Self:
+                return self
+
+            def __exit__(self, *_values: object) -> None:
+                return None
+
+            def import_scope(self, *_values: str) -> object:
+                return object()
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state"
+            configuration = HeadlessIngestionConfiguration(
+                state_dir=state,
+                tenant_id="tenant-a",
+                project_id="project-a",
+                workspace_id="workspace-a",
+                project_label="Project A",
+                workspace_label="Workspace A",
+                plugin_names=(),
+                plugin_modules=(),
+                input_paths=(),
+                timeout_seconds=10,
+                auto_select=True,
+                preferred_plugin_id=None,
+                content_type=None,
+                node_hint=None,
+                metadata={},
+                output_path=None,
+                pretty=False,
+                plugin_deployment_module="deployment.plugins:build",
+            )
+            with patch("router_dump_analyzer.pipeline_cli._ensure_scope"):
+                result = run(
+                    configuration,
+                    entry_point_loader=lambda _name: self.fail(),
+                    module_loader=lambda _target: self.fail(),
+                    plugin_deployment_loader=lambda _target, **_values: deployment,
+                    stdout=io.StringIO(),
+                    pipeline_limits=self._limits(),
+                    control_plane_factory=EmptyControlPlane,
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(captured["root"], state.resolve())
+        self.assertIs(captured["registry"], registry)
+        self.assertIs(captured["capability_providers"], providers)
+        self.assertIs(captured["plugin_composition_policy"], policy)
+
     def test_pre_import_failure_does_not_print_raw_exception_text(self) -> None:
         stderr = io.StringIO()
         with (
@@ -179,21 +272,21 @@ class PipelineCliTests(unittest.TestCase):
                 path,
                 "a" * 64,
                 effective_content_type=effective_content_type,
-                registry_fingerprint="sha256:" + ("1" * 64),
+                execution_environment_fingerprint="sha256:" + ("1" * 64),
             )
             changed_mime = _idempotency_key(
                 configuration,
                 path,
                 "a" * 64,
                 effective_content_type="application/octet-stream",
-                registry_fingerprint="sha256:" + ("1" * 64),
+                execution_environment_fingerprint="sha256:" + ("1" * 64),
             )
             changed_registry = _idempotency_key(
                 configuration,
                 path,
                 "a" * 64,
                 effective_content_type=effective_content_type,
-                registry_fingerprint="sha256:" + ("2" * 64),
+                execution_environment_fingerprint="sha256:" + ("2" * 64),
             )
 
             self.assertEqual(effective_content_type, "application/json")

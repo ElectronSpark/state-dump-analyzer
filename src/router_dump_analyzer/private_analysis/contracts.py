@@ -42,9 +42,13 @@ from .evidence import (
 )
 from .policy import PrivateAnalysisContributionKind, PrivateAnalysisTransport
 
-PRIVATE_ANALYSIS_REQUEST_VERSION: Final = (
+PRIVATE_ANALYSIS_REQUEST_VERSION_V2: Final = (
     "router_dump_analyzer.private_analysis.request.v2"
 )
+PRIVATE_ANALYSIS_REQUEST_VERSION: Final = (
+    "router_dump_analyzer.private_analysis.request.v3"
+)
+LEGACY_PRIVATE_ANALYSIS_EVIDENCE_SERVICE_DIGEST: Final = "sha256:" + "0" * 64
 PRIVATE_ANALYSIS_CITATION_VERSION: Final = (
     "router_dump_analyzer.private_analysis.citation.v1"
 )
@@ -614,15 +618,18 @@ class PrivateAnalysisRequest(SealedContractValue):
     clock_mode: PrivateAnalysisClockMode
     selected_time_ns: int | None
     limits: PrivateAnalysisLimits
+    evidence_service_digest: str = LEGACY_PRIVATE_ANALYSIS_EVIDENCE_SERVICE_DIGEST
     contract_version: str = PRIVATE_ANALYSIS_REQUEST_VERSION
     request_digest: str = ""
 
     def __post_init__(self) -> None:
-        _contract_version(
-            self.contract_version,
+        if type(self.contract_version) is not str:
+            raise ValueError("contract_version must be an exact string")
+        if self.contract_version not in (
+            PRIVATE_ANALYSIS_REQUEST_VERSION_V2,
             PRIVATE_ANALYSIS_REQUEST_VERSION,
-            "private-analysis request",
-        )
+        ):
+            raise ValueError("unsupported private-analysis request contract version")
         if type(self.scope) is not EvidenceScope:
             raise TypeError("scope must be EvidenceScope")
         if type(self.revisions) is not tuple:
@@ -648,6 +655,18 @@ class PrivateAnalysisRequest(SealedContractValue):
             "instruction_profile_digest",
         )
         _prefixed_sha256(self.tool_catalog_digest, "tool_catalog_digest")
+        _prefixed_sha256(
+            self.evidence_service_digest,
+            "evidence_service_digest",
+        )
+        if (
+            self.contract_version == PRIVATE_ANALYSIS_REQUEST_VERSION_V2
+            and self.evidence_service_digest
+            != LEGACY_PRIVATE_ANALYSIS_EVIDENCE_SERVICE_DIGEST
+        ):
+            raise ValueError(
+                "v2 private-analysis requests cannot carry an evidence-service digest"
+            )
         if type(self.task_kind) is not PrivateAnalysisTaskKind:
             raise TypeError("task_kind must be PrivateAnalysisTaskKind")
         _bounded_text(
@@ -1256,6 +1275,7 @@ def _detached_request(value: object) -> PrivateAnalysisRequest:
         workspace_policy_digest=value.workspace_policy_digest,
         instruction_profile_digest=value.instruction_profile_digest,
         tool_catalog_digest=value.tool_catalog_digest,
+        evidence_service_digest=value.evidence_service_digest,
         task_kind=value.task_kind,
         query=value.query,
         clock_mode=value.clock_mode,
@@ -1305,7 +1325,7 @@ def _limits_dict(value: PrivateAnalysisLimits) -> dict[str, object]:
 def _private_analysis_request_payload(
     value: PrivateAnalysisRequest,
 ) -> dict[str, object]:
-    return {
+    result = {
         "contract_version": value.contract_version,
         "scope": evidence_scope_dict(value.scope),
         "revisions": [evidence_revision_binding_dict(item) for item in value.revisions],
@@ -1321,6 +1341,9 @@ def _private_analysis_request_payload(
         ),
         "limits": _limits_dict(value.limits),
     }
+    if value.contract_version != PRIVATE_ANALYSIS_REQUEST_VERSION_V2:
+        result["evidence_service_digest"] = value.evidence_service_digest
+    return result
 
 
 def private_analysis_request_dict(
@@ -1572,24 +1595,35 @@ def _selected_time_from_wire(
 
 
 def private_analysis_request_from_dict(value: object) -> PrivateAnalysisRequest:
+    if type(value) is not dict:
+        raise ValueError("private-analysis request must be a JSON object")
+    contract_version = value.get("contract_version")
+    if type(contract_version) is not str or contract_version not in (
+        PRIVATE_ANALYSIS_REQUEST_VERSION_V2,
+        PRIVATE_ANALYSIS_REQUEST_VERSION,
+    ):
+        raise ValueError("unsupported private-analysis request contract version")
+    keys = {
+        "contract_version",
+        "scope",
+        "revisions",
+        "runner",
+        "workspace_policy_digest",
+        "instruction_profile_digest",
+        "tool_catalog_digest",
+        "task_kind",
+        "query",
+        "clock_mode",
+        "selected_time_ns",
+        "limits",
+        "request_digest",
+    }
+    if contract_version == PRIVATE_ANALYSIS_REQUEST_VERSION:
+        keys.add("evidence_service_digest")
     item = _exact_dict(
         value,
         "private-analysis request",
-        {
-            "contract_version",
-            "scope",
-            "revisions",
-            "runner",
-            "workspace_policy_digest",
-            "instruction_profile_digest",
-            "tool_catalog_digest",
-            "task_kind",
-            "query",
-            "clock_mode",
-            "selected_time_ns",
-            "limits",
-            "request_digest",
-        },
+        keys,
     )
     raw_revisions = _bounded_wire_list(
         item["revisions"],
@@ -1612,6 +1646,11 @@ def private_analysis_request_from_dict(value: object) -> PrivateAnalysisRequest:
         workspace_policy_digest=item["workspace_policy_digest"],
         instruction_profile_digest=item["instruction_profile_digest"],
         tool_catalog_digest=item["tool_catalog_digest"],
+        evidence_service_digest=(
+            item["evidence_service_digest"]
+            if contract_version == PRIVATE_ANALYSIS_REQUEST_VERSION
+            else LEGACY_PRIVATE_ANALYSIS_EVIDENCE_SERVICE_DIGEST
+        ),
         task_kind=_enum(
             PrivateAnalysisTaskKind,
             item["task_kind"],
@@ -2100,6 +2139,7 @@ __all__ = [
     "PRIVATE_ANALYSIS_OUTCOME_VERSION",
     "PRIVATE_ANALYSIS_PROPOSAL_VERSION",
     "PRIVATE_ANALYSIS_REQUEST_VERSION",
+    "PRIVATE_ANALYSIS_REQUEST_VERSION_V2",
     "PRIVATE_ANALYSIS_RESULT_VERSION",
     "PrivateAnalysisCitation",
     "PrivateAnalysisClaim",

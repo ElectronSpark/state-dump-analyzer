@@ -9,14 +9,16 @@ from __future__ import annotations
 
 from typing import Any
 
-
 SOURCE_RECORD_GROUP_DESCRIPTORS: list[dict[str, Any]] = [
     {
         "group_id": "ctf",
-        "label": "CTF records",
-        "description": "Decoded trace records retained before normalization.",
+        "label": "Synthetic CTF projections",
+        "description": (
+            "Precomputed demo projections synthesized from normalized events; "
+            "these are not TraceDecoder output."
+        ),
         "default_included": False,
-        "copy_action_label": "Copy CTF text",
+        "copy_action_label": "Copy synthetic CTF text",
         "plugin_defined": True,
     },
     {
@@ -32,8 +34,11 @@ SOURCE_RECORD_GROUP_DESCRIPTORS: list[dict[str, Any]] = [
 SOURCE_RECORD_DESCRIPTORS: list[dict[str, Any]] = [
     {
         "source_type": "ctf",
-        "label": "CTF records",
-        "description": "Decoded CTF messages retained before normalization.",
+        "label": "Synthetic CTF projections",
+        "description": (
+            "CTF-style presentation records synthesized from normalized demo "
+            "events; no CTF decoder produced them."
+        ),
         "color": "#66b8ff",
         "stream_group": "ctf",
         "plugin_defined": True,
@@ -185,6 +190,11 @@ def lazy_demo_ctf_source_record(event: dict[str, Any]) -> dict[str, Any]:
         ),
         "message": "CTF text is available through the explicit copy action.",
         "copy_text": demo_ctf_copy_text(event),
+        "projection_origin": "synthetic_precomputed_normalized_event",
+        "attributes": {
+            "synthetic_projection": True,
+            "source_basis": "normalized_event",
+        },
         "matched_event_uid": event_uid,
         "matched_event_uids": [event_uid],
         "plugin_defined": True,
@@ -194,11 +204,11 @@ def lazy_demo_ctf_source_record(event: dict[str, Any]) -> dict[str, Any]:
 def build_demo_source_records(
     events: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Create representative retained records around the normalized stream.
+    """Synthesize representative presentation records from normalized events.
 
-    The packed fixture's nested CTF traces carry the full event population.  A
-    bounded retained-record projection is enough for interaction review and
-    avoids duplicating every 125K event in browser memory.
+    This helper does not decode the fixture's synthetic CTF container. A
+    bounded, explicitly precomputed projection is enough for interaction
+    review and avoids duplicating every 125K event in browser memory.
     """
 
     records: list[dict[str, Any]] = []
@@ -206,7 +216,10 @@ def build_demo_source_records(
         ("vendor_trace_unknown", "unknown vendor trace opcode=0x31 payload=opaque"),
         ("ctf_clock_pulse", "clock correlation pulse has no domain mapping"),
         ("evpn_es_telemetry", "EVPN ESI ethernet segment sample has no normalizer rule"),
-        ("ctf_packet_notice", "decoder packet boundary metadata was retained"),
+        (
+            "ctf_packet_notice",
+            "synthetic packet-boundary marker was retained in the projection",
+        ),
     )
     unmatched_external = (
         ("syslog", "daemon_warning", "EVPN ES peer timeout; retry scheduled"),
@@ -256,7 +269,13 @@ def build_demo_source_records(
                     event,
                     sequence=event_index,
                 ),
-                "attributes": {"sequence": event_index, "resource": resource},
+                "projection_origin": "synthetic_precomputed_normalized_event",
+                "attributes": {
+                    "sequence": event_index,
+                    "resource": resource,
+                    "synthetic_projection": True,
+                    "source_basis": "normalized_event",
+                },
                 "matched_event_uid": event_uid,
                 "matched_event_uids": [event_uid],
                 "matched": True,
@@ -278,7 +297,12 @@ def build_demo_source_records(
                     f"[{timestamp_ns + 200_000} ns] {ctf_name}: "
                     f"{{ stream_ordinal = {event_index}, matched = false }}"
                 ),
-                "attributes": {"stream_ordinal": event_index},
+                "projection_origin": "synthetic_precomputed_normalized_event",
+                "attributes": {
+                    "stream_ordinal": event_index,
+                    "synthetic_projection": True,
+                    "source_basis": "normalized_event",
+                },
                 "matched_event_uid": None,
                 "matched": False,
                 "plugin_defined": True,

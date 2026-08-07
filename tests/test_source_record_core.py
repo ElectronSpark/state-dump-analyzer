@@ -68,10 +68,16 @@ class SourceRecordCoreTests(unittest.TestCase):
             descriptor["source_type"]: descriptor["stream_group"]
             for descriptor in SOURCE_RECORD_DESCRIPTORS
         }
-        self.assertEqual(descriptors["ctf"]["label"], "CTF records")
+        self.assertEqual(
+            descriptors["ctf"]["label"],
+            "Synthetic CTF projections",
+        )
         self.assertEqual(descriptors["external"]["label"], "Non-CTF records")
         self.assertFalse(descriptors["ctf"]["default_included"])
-        self.assertEqual(descriptors["ctf"]["copy_action_label"], "Copy CTF text")
+        self.assertEqual(
+            descriptors["ctf"]["copy_action_label"],
+            "Copy synthetic CTF text",
+        )
         self.assertEqual(groups["ctf"], "ctf")
         self.assertEqual(groups["syslog"], "external")
         self.assertEqual(groups["agent-event"], "external")

@@ -3,11 +3,15 @@ from __future__ import annotations
 import unittest
 
 from router_dump_analyzer.normalized_data import (
+    NormalizedDataCancellationProbeError,
+    NormalizedDataCancellationProbeResultError,
+    NormalizedDataCancellationRequested,
+    event_redaction_policy,
+    redact_event_for_client,
     redact_resource_for_client,
     redact_resource_view,
-    resource_search_text,
-    redact_event_for_client,
     resource_id,
+    resource_search_text,
 )
 
 
@@ -182,6 +186,46 @@ class ResourcePropertyPolicyTests(unittest.TestCase):
         self.assertNotIn("auth_secret", redacted["result"])
         self.assertNotIn("auth_secret", redacted["effects"][0]["after"])
         self.assertEqual("up", redacted["effects"][0]["after"]["oper_state"])
+
+    def test_event_policy_cancellation_probe_is_strict_and_static(self) -> None:
+        dataset = {
+            "kind_descriptors": [self.descriptor],
+            "resources": [self.record],
+        }
+
+        with self.assertRaisesRegex(TypeError, "callable or None"):
+            event_redaction_policy(
+                dataset,
+                cancellation_probe=False,  # type: ignore[arg-type]
+            )
+        with self.assertRaisesRegex(
+            NormalizedDataCancellationProbeResultError,
+            "returned an invalid value",
+        ):
+            event_redaction_policy(
+                dataset,
+                cancellation_probe=lambda: 1,  # type: ignore[return-value]
+            )
+
+        def failed_probe() -> bool:
+            raise RuntimeError("C:\\private\\operator\\secret")
+
+        with self.assertRaisesRegex(
+            NormalizedDataCancellationProbeError,
+            "cancellation state is unavailable",
+        ) as raised:
+            event_redaction_policy(dataset, cancellation_probe=failed_probe)
+        self.assertNotIn("operator", str(raised.exception))
+
+        with self.assertRaises(NormalizedDataCancellationRequested):
+            event_redaction_policy(dataset, cancellation_probe=lambda: True)
+        with self.assertRaises(KeyboardInterrupt):
+            event_redaction_policy(
+                dataset,
+                cancellation_probe=lambda: (_ for _ in ()).throw(
+                    KeyboardInterrupt
+                ),
+            )
 
 
 if __name__ == "__main__":

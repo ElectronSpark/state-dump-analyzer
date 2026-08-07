@@ -28,6 +28,9 @@ from router_dump_analyzer.plugin_api import (
     DiagnosticStage,
     DumpInventory,
     Evidence,
+    EvidenceAnalysisKind,
+    EvidenceAnalysisObservation,
+    EvidenceAnalysisRequest,
     InputParserKind,
     InputSpec,
     PluginCapability,
@@ -42,19 +45,21 @@ from router_dump_analyzer.plugin_api import (
     Provenance,
     Quality,
     ReconstructionSupport,
-    ResourceKindDescriptor,
     ResourceKey,
+    ResourceKindDescriptor,
     SnapshotObservation,
     SourceRecordEmission,
     SourceRecordGroupDescriptor,
     SourceRecordTypeDescriptor,
     StatusParseOutput,
+    TimelineTimeBasis,
 )
-
 
 PLUGIN_ENTRY_POINT_NAME = "demo_router"
 PLUGIN_ID = "demo.example-router"
 PLUGIN_VERSION = "0.1.0"
+EVIDENCE_PLUGIN_ID = "demo.example-router-evidence-analysis"
+EVIDENCE_PLUGIN_VERSION = "0.1.0"
 STATUS_FILENAME = "minimal-status.jsonl"
 PARSER_ID = "demo.interface-status.v1"
 PLATFORM_ID = "demo-router-os"
@@ -64,8 +69,8 @@ GENERATED_PROJECTION_POLICY_ID = (
     "demo.example-router.generated-fixture-policy.v1"
 )
 GENERATED_ASSEMBLY_FORMAT_VERSION = 2
-GENERATED_COVERAGE_FORMAT_VERSION = 2
-GENERATED_COVERAGE_REGISTRY_ID = "router-state-lab-demo-coverage-v2"
+GENERATED_COVERAGE_FORMAT_VERSION = 3
+GENERATED_COVERAGE_REGISTRY_ID = "router-state-lab-demo-coverage-v3"
 GENERATED_PROJECTION_FORMAT_VERSION = 2
 GENERATED_PROJECTION_ROOT = "plugin-projection"
 GENERATED_PROJECTION_CAPABILITY_ID = (
@@ -629,6 +634,28 @@ class ExampleRouterGeneratedProjectionPolicy:
         ):
             raise ValueError(
                 f"coverage case {case_id} has invalid required_capabilities"
+            )
+        if "evidence_analysis" not in capabilities:
+            raise ValueError(
+                f"coverage case {case_id} lacks evidence_analysis capability"
+            )
+        analysis_intents = case.get("private_analysis_intents")
+        allowed_analysis_intents = {
+            item.value for item in EvidenceAnalysisKind
+        }
+        if (
+            not isinstance(analysis_intents, list)
+            or not analysis_intents
+            or analysis_intents != sorted(set(analysis_intents))
+            or any(
+                not isinstance(item, str)
+                or item not in allowed_analysis_intents
+                for item in analysis_intents
+            )
+        ):
+            raise ValueError(
+                f"coverage case {case_id} has invalid "
+                "private_analysis_intents"
             )
         involved_nodes = case.get("involved_nodes")
         if not isinstance(involved_nodes, list) or any(
@@ -1387,6 +1414,7 @@ def _interface_schema() -> PluginSchema:
 
 
 SCHEMA = _interface_schema()
+EVIDENCE_SCHEMA = PluginSchema(resource_kinds=(), relationship_types=())
 
 
 class ExampleRouterPlugin(AnalyzerPluginBase):
@@ -1396,11 +1424,9 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
 
     @property
     def runtime(self) -> Any:
-        """Load the optional fixture adapter only when the core requests it."""
+        """Return the exact runtime object bound during plug-in import."""
 
-        from .session import runtime
-
-        return runtime
+        return _session.runtime
 
     manifest = PluginManifest(
         plugin_id=PLUGIN_ID,
@@ -1408,8 +1434,16 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
         core_api_version=CORE_PLUGIN_API_VERSION,
         supported_platforms=(PLATFORM_ID,),
         supported_software_versions=">=1,<2",
-        capabilities=frozenset({PluginCapability.STATUS_PARSE}),
+        capabilities=frozenset(
+            {
+                PluginCapability.STATUS_PARSE,
+            }
+        ),
         reconstruction_default=ReconstructionSupport.EXACT,
+        # This fixture emits Unix nanoseconds. A relative plug-in would emit
+        # revision-start offsets directly; core never rebases them against the
+        # declared timeline lower bound.
+        timeline_time_basis=TimelineTimeBasis.ABSOLUTE_UNIX_NS,
     )
 
     def describe(self) -> PluginSchema:
@@ -1737,15 +1771,88 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
         return ConditionClass.UNKNOWN
 
 
+class ExampleEvidenceAnalysisPlugin(AnalyzerPluginBase):
+    """Auxiliary private-analysis semantics composed beside the parser."""
+
+    manifest = PluginManifest(
+        plugin_id=EVIDENCE_PLUGIN_ID,
+        plugin_version=EVIDENCE_PLUGIN_VERSION,
+        core_api_version=CORE_PLUGIN_API_VERSION,
+        supported_platforms=(PLATFORM_ID,),
+        supported_software_versions=">=1,<2",
+        capabilities=frozenset({PluginCapability.EVIDENCE_ANALYSIS}),
+        reconstruction_default=ReconstructionSupport.EXACT,
+        timeline_time_basis=TimelineTimeBasis.ABSOLUTE_UNIX_NS,
+    )
+
+    def describe(self) -> PluginSchema:
+        return EVIDENCE_SCHEMA
+
+    def analyze_evidence(
+        self,
+        request: EvidenceAnalysisRequest,
+    ) -> Iterable[EvidenceAnalysisObservation | PluginDiagnostic]:
+        """Provide deterministic demo semantics over disclosed evidence only."""
+
+        if request.analysis_kind is EvidenceAnalysisKind.ROUTE_TRACE:
+            category = "route_resolution"
+            summary = (
+                "The selected demo router evidence participates in one "
+                "route-resolution hypothesis."
+            )
+        elif request.analysis_kind is EvidenceAnalysisKind.TRACE_CORRELATION:
+            category = "trace_event_correlation"
+            summary = (
+                "The selected demo trace records form one bounded temporal "
+                "correlation candidate."
+            )
+        elif request.analysis_kind is EvidenceAnalysisKind.EVIDENCE_CORRELATION:
+            category = "cross_evidence_correlation"
+            summary = (
+                "The selected demo evidence supports one bounded cross-source "
+                "correlation candidate."
+            )
+        else:
+            category = "evidence_interpretation"
+            summary = (
+                "The selected demo evidence is compatible with one "
+                "plug-in-owned interpretation."
+            )
+        yield EvidenceAnalysisObservation(
+            observation_id=(
+                "demo-analysis-" + request.analysis_kind.value.replace("_", "-")
+            ),
+            category=category,
+            summary=summary,
+            cited_reference_digests=tuple(
+                sorted(fact.reference_digest for fact in request.facts)
+            ),
+            quality=Quality.BEST_EFFORT,
+            details={
+                "analysis_kind": request.analysis_kind.value,
+                "fact_count": len(request.facts),
+                "platform_family": "private-demo-family",
+                "software_generation": "private-demo-generation",
+            },
+        )
+
+
+# Strict executable identity never executes imports merely to discover a
+# dependency. Bind the demo's optional runtime once, while the installed entry
+# point is imported, so ordinary strict registration can attest it directly.
+_session = __import__(f"{__name__}.session", fromlist=("runtime",))
+
+
 plugin: AnalyzerPlugin = ExampleRouterPlugin()
+evidence_plugin: AnalyzerPlugin = ExampleEvidenceAnalysisPlugin()
 
 
 __all__ = [
     "CONFORMANCE_STATUS_RECORDS",
     "DEVICE_CLOCK",
-    "ExampleRouterPlugin",
-    "ExampleRouterGeneratedProjectionPolicy",
-    "GeneratedProjectionMemberSpec",
+    "EVIDENCE_PLUGIN_ID",
+    "EVIDENCE_PLUGIN_VERSION",
+    "EVIDENCE_SCHEMA",
     "GENERATED_ASSEMBLY_FORMAT_VERSION",
     "GENERATED_COVERAGE_FORMAT_VERSION",
     "GENERATED_COVERAGE_REGISTRY_ID",
@@ -1769,7 +1876,12 @@ __all__ = [
     "SCHEMA",
     "SOFTWARE_VERSION",
     "STATUS_FILENAME",
+    "ExampleEvidenceAnalysisPlugin",
+    "ExampleRouterGeneratedProjectionPolicy",
+    "ExampleRouterPlugin",
+    "GeneratedProjectionMemberSpec",
     "TopologyProfileSpec",
+    "evidence_plugin",
     "plugin",
     "render_conformance_status_fixture",
 ]

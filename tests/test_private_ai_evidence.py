@@ -9,6 +9,8 @@ from typing import Any
 from router_dump_analyzer.private_analysis import (
     EVIDENCE_ENVELOPE_VERSION,
     EVIDENCE_REFERENCE_VERSION,
+    EVIDENCE_REFERENCE_VERSION_V1,
+    EVIDENCE_REFERENCE_VERSION_V2,
     MAX_EVIDENCE_PAYLOAD_BYTES,
     CoreEvidenceProducer,
     DisclosureDecision,
@@ -130,6 +132,17 @@ def _reference(
 
 
 class PrivateAnalysisEvidenceTests(unittest.TestCase):
+    def test_reference_contract_version_requires_an_exact_string(self) -> None:
+        class StringSubclass(str):
+            pass
+
+        with self.assertRaisesRegex(TypeError, "exact string"):
+            replace(
+                _reference(),
+                contract_version=StringSubclass(EVIDENCE_REFERENCE_VERSION),
+                reference_digest="",
+            )
+
     def test_reference_detaches_nested_contract_values(self) -> None:
         scope = _scope()
         revision = _revision()
@@ -152,9 +165,7 @@ class PrivateAnalysisEvidenceTests(unittest.TestCase):
             payload_schema="vendor.route-event.v1",
             fact_provenance=EvidenceFactProvenance.CORE_CORROBORATED,
             time_range=time_range,
-            content_digest=evidence_payload_digest(
-                "vendor.route-event.v1", payload
-            ),
+            content_digest=evidence_payload_digest("vendor.route-event.v1", payload),
         )
         self.assertIsNot(reference.scope, scope)
         self.assertIsNot(reference.revision, revision)
@@ -184,7 +195,15 @@ class PrivateAnalysisEvidenceTests(unittest.TestCase):
         )
         encoded = evidence_envelope_json(envelope)
         self.assertEqual(evidence_envelope_from_json(encoded), envelope)
-        self.assertEqual(encoded, json.dumps(json.loads(encoded), ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        self.assertEqual(
+            encoded,
+            json.dumps(
+                json.loads(encoded),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
         self.assertIn("恢復", encoded)
         self.assertIn("\\u0000", encoded)
 
@@ -219,21 +238,39 @@ class PrivateAnalysisEvidenceTests(unittest.TestCase):
     def test_reference_digest_binds_every_identity_and_semantic_tier(self) -> None:
         base = _reference()
         changes = (
-            replace(base, scope=replace(base.scope, tenant_id="tenant-b"), reference_digest=""),
-            replace(base, scope=replace(base.scope, project_id="project-b"), reference_digest=""),
-            replace(base, scope=replace(base.scope, workspace_id="workspace-b"), reference_digest=""),
+            replace(
+                base,
+                scope=replace(base.scope, tenant_id="tenant-b"),
+                reference_digest="",
+            ),
+            replace(
+                base,
+                scope=replace(base.scope, project_id="project-b"),
+                reference_digest="",
+            ),
+            replace(
+                base,
+                scope=replace(base.scope, workspace_id="workspace-b"),
+                reference_digest="",
+            ),
             replace(base, revision=_revision("f"), reference_digest=""),
             replace(base, kind=EvidenceKind.EVENT, reference_digest=""),
             replace(base, subject_kind="source_record", reference_digest=""),
             replace(base, locator_digest="sha256:" + "3" * 64, reference_digest=""),
-            replace(base, evidence_class=PrivateAnalysisEvidenceClass.CLIENT_SAFE, reference_digest=""),
+            replace(
+                base,
+                evidence_class=PrivateAnalysisEvidenceClass.CLIENT_SAFE,
+                reference_digest="",
+            ),
             replace(base, payload_schema="vendor.lttng.event.v4", reference_digest=""),
             replace(
                 base,
                 fact_provenance=EvidenceFactProvenance.LOG_DERIVED,
                 reference_digest="",
             ),
-            replace(base, time_range=EvidenceTimeRange.not_applicable(), reference_digest=""),
+            replace(
+                base, time_range=EvidenceTimeRange.not_applicable(), reference_digest=""
+            ),
             replace(base, content_digest="sha256:" + "4" * 64, reference_digest=""),
         )
         for changed in changes:
@@ -381,18 +418,30 @@ class PrivateAnalysisEvidenceTests(unittest.TestCase):
         decision = wire["disclosure_decision"]
         assert isinstance(decision, dict)
         decision["allowed"] = False
-        decision["reason"] = (
-            DisclosureDecisionReason.EVIDENCE_CLASS_NOT_APPROVED.value
-        )
+        decision["reason"] = DisclosureDecisionReason.EVIDENCE_CLASS_NOT_APPROVED.value
         wire["payload"] = invalid_payload
         with self.assertRaisesRegex(ValueError, "allowed decision"):
             evidence_envelope_from_dict(wire)
 
     def test_plugin_producer_is_exact_and_plan_bound(self) -> None:
-        with self.assertRaisesRegex(ValueError, "capability and instance"):
+        with self.assertRaisesRegex(ValueError, "exact plug-in instance"):
             EvidenceProducer(
                 authority=EvidenceAuthority.PLUGIN_INFERRED,
                 producer_id="vendor.plugin",
+            )
+        with self.assertRaisesRegex(ValueError, "exactly one capability or role"):
+            EvidenceProducer(
+                authority=EvidenceAuthority.PLUGIN_INFERRED,
+                producer_id="vendor.plugin",
+                plugin_instance_id="instance",
+            )
+        with self.assertRaisesRegex(ValueError, "exactly one capability or role"):
+            EvidenceProducer(
+                authority=EvidenceAuthority.PLUGIN_INFERRED,
+                producer_id="vendor.plugin",
+                plugin_instance_id="instance",
+                plugin_capability="event_parser",
+                plugin_role="primary_parser",
             )
         with self.assertRaisesRegex(ValueError, "only plugin-inferred"):
             EvidenceProducer(
@@ -424,6 +473,105 @@ class PrivateAnalysisEvidenceTests(unittest.TestCase):
                     reference_digest="",
                 )
 
+    def test_role_qualified_producer_is_digest_bound_and_round_trips(self) -> None:
+        base = _reference()
+        role_producer = EvidenceProducer(
+            authority=EvidenceAuthority.PLUGIN_INFERRED,
+            producer_id="vendor.event-parser",
+            plugin_instance_id="parser-1",
+            plugin_role="primary_parser",
+        )
+        role_reference = replace(
+            base,
+            producer=role_producer,
+            reference_digest="",
+        )
+        self.assertNotEqual(role_reference.reference_digest, base.reference_digest)
+        wire = evidence_reference_dict(role_reference)
+        self.assertEqual(wire["contract_version"], EVIDENCE_REFERENCE_VERSION)
+        producer_wire = wire["producer"]
+        assert isinstance(producer_wire, dict)
+        self.assertEqual(producer_wire["plugin_role"], "primary_parser")
+        self.assertIsNone(producer_wire["plugin_capability"])
+        self.assertEqual(evidence_reference_from_dict(wire), role_reference)
+
+    def test_v1_capability_reference_remains_wire_compatible(self) -> None:
+        legacy = replace(
+            _reference(),
+            contract_version=EVIDENCE_REFERENCE_VERSION_V1,
+            reference_digest="",
+        )
+        wire = evidence_reference_dict(legacy)
+        producer_wire = wire["producer"]
+        assert isinstance(producer_wire, dict)
+        self.assertNotIn("plugin_role", producer_wire)
+        self.assertEqual(evidence_reference_from_dict(wire), legacy)
+        with self.assertRaisesRegex(ValueError, "cannot carry a plug-in role"):
+            replace(
+                legacy,
+                producer=EvidenceProducer(
+                    authority=EvidenceAuthority.PLUGIN_INFERRED,
+                    producer_id="vendor.event-parser",
+                    plugin_instance_id="parser-1",
+                    plugin_role="primary_parser",
+                ),
+                reference_digest="",
+            )
+        with self.assertRaisesRegex(ValueError, "cannot carry unknown time"):
+            replace(
+                legacy,
+                time_range=EvidenceTimeRange.unknown(),
+                reference_digest="",
+            )
+        unknown_wire = evidence_reference_dict(legacy)
+        time_range = unknown_wire["time_range"]
+        assert isinstance(time_range, dict)
+        time_range.update(
+            {
+                "basis": "unknown",
+                "start_ns": None,
+                "end_ns": None,
+                "uncertainty_ns": None,
+                "clock_domain": None,
+            }
+        )
+        unknown_wire["reference_digest"] = "sha256:" + "0" * 64
+        with self.assertRaisesRegex(ValueError, "cannot carry unknown time"):
+            evidence_reference_from_dict(unknown_wire)
+
+    def test_v2_role_qualified_reference_remains_wire_compatible(self) -> None:
+        legacy = replace(
+            _reference(),
+            contract_version=EVIDENCE_REFERENCE_VERSION_V2,
+            producer=EvidenceProducer(
+                authority=EvidenceAuthority.PLUGIN_INFERRED,
+                producer_id="vendor.event-parser",
+                plugin_instance_id="parser-1",
+                plugin_role="primary_parser",
+            ),
+            reference_digest="",
+        )
+        wire = evidence_reference_dict(legacy)
+        producer_wire = wire["producer"]
+        assert isinstance(producer_wire, dict)
+        self.assertEqual(producer_wire["plugin_role"], "primary_parser")
+        self.assertEqual(evidence_reference_from_dict(wire), legacy)
+        for contract_version in (
+            EVIDENCE_REFERENCE_VERSION_V1,
+            EVIDENCE_REFERENCE_VERSION_V2,
+        ):
+            with (
+                self.subTest(contract_version=contract_version),
+                self.assertRaisesRegex(ValueError, "plug-in analysis semantics"),
+            ):
+                replace(
+                    _reference(),
+                    contract_version=contract_version,
+                    kind=EvidenceKind.PLUGIN_CAPABILITY_RESULT,
+                    fact_provenance=EvidenceFactProvenance.PLUGIN_ANALYZED,
+                    reference_digest="",
+                )
+
     def test_multi_node_claims_compose_distinct_atomic_references(self) -> None:
         left = _reference()
         right = replace(
@@ -436,6 +584,16 @@ class PrivateAnalysisEvidenceTests(unittest.TestCase):
         self.assertEqual(len({left.reference_digest, right.reference_digest}), 2)
 
     def test_time_coordinate_semantics_are_explicit_and_signed(self) -> None:
+        unknown = EvidenceTimeRange.unknown()
+        self.assertIs(unknown.basis, EvidenceTimeBasis.UNKNOWN)
+        self.assertEqual(
+            evidence_reference_from_dict(
+                evidence_reference_dict(
+                    replace(_reference(), time_range=unknown, reference_digest="")
+                )
+            ).time_range,
+            unknown,
+        )
         relative = EvidenceTimeRange(
             EvidenceTimeBasis.REVISION_END_RELATIVE_NS,
             start_ns=-(1 << 63),
@@ -476,6 +634,8 @@ class PrivateAnalysisEvidenceTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "must not carry"):
             EvidenceTimeRange(EvidenceTimeBasis.NOT_APPLICABLE, start_ns=0)
+        with self.assertRaisesRegex(ValueError, "must not carry"):
+            EvidenceTimeRange(EvidenceTimeBasis.UNKNOWN, uncertainty_ns=1)
 
     def test_wire_coordinates_are_canonical_decimal_strings(self) -> None:
         wire = evidence_reference_dict(_reference())
@@ -500,7 +660,7 @@ class PrivateAnalysisEvidenceTests(unittest.TestCase):
                 self.subTest(index=index),
                 self.assertRaises((TypeError, ValueError)),
             ):
-                    evidence_payload_digest("schema.v1", payload)  # type: ignore[arg-type]
+                evidence_payload_digest("schema.v1", payload)  # type: ignore[arg-type]
 
         cyclic: dict[str, object] = {}
         cyclic["self"] = cyclic
@@ -513,7 +673,11 @@ class PrivateAnalysisEvidenceTests(unittest.TestCase):
             )
 
     def test_exact_fields_versions_and_canonical_json_fail_closed(self) -> None:
-        envelope = make_evidence_envelope(_reference(), _decision(), {"message": "full-fidelity event", "timestamp_ns": "17"})
+        envelope = make_evidence_envelope(
+            _reference(),
+            _decision(),
+            {"message": "full-fidelity event", "timestamp_ns": "17"},
+        )
         wire = evidence_envelope_dict(envelope)
         wire["unknown"] = True
         with self.assertRaisesRegex(ValueError, "exactly"):
@@ -564,7 +728,9 @@ class PrivateAnalysisEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "strict JSON|JSON object"):
             evidence_envelope_from_json(pathological)
 
-    def test_reference_wire_contains_no_raw_locator_or_runtime_handle_field(self) -> None:
+    def test_reference_wire_contains_no_raw_locator_or_runtime_handle_field(
+        self,
+    ) -> None:
         wire = evidence_reference_dict(_reference())
 
         def keys(value: object) -> set[str]:

@@ -43,6 +43,21 @@ factory. The loaded object implements `AnalyzerPlugin` and exposes a
 it supplies safe empty behavior for undeclared optional capabilities and fails
 loudly when a declared capability's hook was not overridden.
 
+The manifest MUST declare normalized timestamp semantics with
+`timeline_time_basis`. `ABSOLUTE_UNIX_NS` means non-negative Unix nanoseconds;
+`REVISION_START_RELATIVE_NS` means signed offsets from revision start; and
+`SOURCE_CLOCK_NS` means coordinates in one producer clock and MUST carry a
+path-safe opaque `timeline_clock_domain`. A domain MUST NOT be supplied for the
+other bases. Plug-ins own that interpretation; core owns range validation,
+uncertainty-expanded bounds, time selection, and cross-revision alignment. A
+plug-in MUST NOT re-label a device-local or monotonic coordinate as Unix time.
+For `REVISION_START_RELATIVE_NS`, every emitted timestamp is already the final
+signed offset coordinate. `timeline_start_ns` is the lower timeline bound, not
+an origin to subtract from events, intervals, cutoffs, or evidence queries.
+The declaration is part of registered execution identity and revision
+fingerprinting, and the parent re-attests child output against the frozen
+manifest before publication.
+
 Install a candidate distribution in the analyzer environment, run
 `router-dump-plugin-validate` against a representative plug-in-owned synthetic
 artifact, and run that distribution's golden tests. The exact known-good
@@ -72,8 +87,11 @@ distribution name/version, entry-point and module target, exact executable
 package/module digest, configuration digest, normalized schema digest and
 declared schema versions, capabilities, and core-assigned role. An optional
 decoder pin records its ID, version, and executable digest. The plan binds the
-node and source revision basis and carries a deterministic content digest. It
-contains configuration digests only—never configuration values or secrets.
+node and source revision basis, the exact deployment-owned composition-policy
+digest, and a deterministic content digest. It contains configuration digests
+only—never configuration values or secrets. The v2 canonical wire member is
+`composition_policy_digest`; changing any policy rule changes the plan even
+when the rule selected for this primary parser is unchanged.
 
 Exactly one pin MUST carry the core role `primary_parser`; additional pins are
 configured capability providers. `plugin_ids` remains only a deduplicated
@@ -81,7 +99,53 @@ summary and MUST NOT be used for dispatch because it loses configured-instance
 identity. The singular catalog `plugin_id` / `plugin_version` compatibility
 fields identify that unique primary parser. A plan-level decoder belongs to
 the primary parser; a non-primary pin with its own decoder is not representable
-in plan v1 and MUST fail closed.
+in any plan and MUST fail closed.
+
+New publications use execution-plan v2, whose pins also carry the
+content-addressed `registered_execution_identity` frozen at registration.
+Retained v1 plans remain readable/displayable and preserve their original wire
+shape and digest; they cannot carry either v2 field. Decoding records both
+missing identities with reserved all-zero SHA-256 sentinels internally. A v2
+plan MUST carry a non-reserved registered execution identity for every pin and
+a non-reserved composition-policy digest. A retained v1 plan MUST NOT authorize
+capability execution, provider binding, auxiliary composition, or
+private-analysis evidence production. Canonical plan wire payloads are bounded
+before persistence.
+
+The current registered-execution identity material is v4. In addition to the
+artifact, configuration, manifest, schema/capability, timeline, instance, and
+decoder coordinates above, it MUST cover the complete non-recursive PROCESS
+bootstrap projection: schema version, all plug-in/coordinator/decoder loader
+kinds and targets, each external target's executable identity,
+package-verification mode, frozen ingestion and artifact limit tuples, and
+repeated artifact/configuration/decoder coordinates. A target executable
+identity MUST bind exact static import provenance, bounded target and
+implementation module/package bytes, and relocation-stable Python code
+identity. Dynamic aliases, sourceless/native-only targets, unverifiable
+re-exports, runtime-generated or unsafe closure callables, noncanonical builtins,
+unsafe mutable global dereferences, dynamic or unloaded imports, and other
+unverifiable runtime code state MUST fail closed. Every exact
+bytecode-referenced function global, static attribute path, statically
+resolvable local import, and function-owned executable value MUST be traversed
+recursively even when its helper belongs to a different top-level package. The
+aggregate traversal MUST fail closed beyond
+64 value levels, 32,768 value nodes, 2,048 code objects, or 32 MiB of runtime
+value bytes, and MUST use deterministic cycle handling. Live class/instance
+targets MUST bind source-declared methods, bases, metaclass,
+signatures/defaults, canonical `__dict__`/slot state, ordinary behavior-bearing
+class attributes, and recursively verifiable callable/descriptor dependencies.
+Fingerprinting MUST NOT execute an import to discover authority; any local
+import referenced by executable bytecode MUST already be loaded by
+deterministic package initialization. Source used for local-import analysis
+MUST be lexically bounded against the remaining traversal budget before AST
+construction. Every retained live class/member and
+mutable-object snapshot MUST be rechecked after complete traversal and before
+the fingerprint is returned.
+Opaque or unsupported mutable state MUST fail closed. Frozen dataclass and enum
+constants MAY participate only through bounded canonical field/member-value identity. The
+bootstrap's expected registered identity is the sole excluded field because
+including it would be recursive. A target-only or limit-only change MUST
+produce a different registered identity and therefore a different plan digest.
 
 The durable registry rejects manifest-only executable identity. The installed
 entry-point loaders record the owning distribution name/version, selected
@@ -98,9 +162,13 @@ catalog row may expose `execution_plan: null`; core must not fabricate a plan
 for history that was published before this contract existed.
 
 On upgrade, unfinished pre-contract imports that have not staged publication
-are probed again under the current registered-execution identity. Already
-staged `publishing` rows retain their exact legacy, planless publication
-payload so crash recovery never re-runs a plug-in or invents provenance.
+discard their legacy candidates and selection before they are probed again
+under the current registered-execution identity. The same migration
+transaction binds the explicitly active composition-policy digest; it never
+carries an old selected plug-in silently into the new policy. Already staged
+`publishing` and completed rows retain their exact historical policy and
+legacy, planless publication payload, so crash recovery never re-runs a
+plug-in, rewrites published history, or invents provenance.
 Probe candidates bind a digest of every manifest field, including supported
 platform/software selectors and reconstruction support. Explicit empty or
 invalid registration coordinates are rejected; only omitted (`None`) values
@@ -249,9 +317,11 @@ For each admitted artifact, core:
    deterministic `probe()`;
 4. records the sorted candidate set and its `probe_set_hash`;
 5. either applies the configured exact selection policy or waits for a client
-   to echo the probe-set hash and exact plug-in ID/version/package identity,
-   then stores that selection's scope-bound idempotent request/response
-   receipt;
+   to echo the probe-set hash, plug-in ID/version/package identity, and the
+   candidate's paired `instance_id` plus
+   `registered_execution_identity`, then stores that selection's scope-bound
+   idempotent request/response receipt; both configured-instance fields may be
+   omitted only when the legacy coordinates identify one candidate;
 6. runs ordinary input discovery and parser dispatch under a leased queue
    claim; and
 7. durably stages the validated canonical dataset plus an exact publication
@@ -270,11 +340,14 @@ metadata, or queue attempt number to change semantics.
 Admission and publication catalog calls have a separate core deadline after
 plug-in output is staged. Production mode enforces it in a disposable spawned
 process; the built-in catalog reopens its durable database there and also
-bounds lock/database waits through commit. An external deployment publisher
-must be spawn-picklable or reconstruct its client during unpickling and should
-apply the supplied remaining budget to RPC work. An ambiguous expiry preserves
-the exact outbox and artifact pin. It MUST NOT cause the parser to run again
-during publication-only recovery and does not add any plug-in timeout hook.
+bounds lock/database waits through commit. Core MUST NOT pickle a live catalog
+publisher. It reconstructs a custom publisher in the child from an explicit
+module-level `publisher_module_target`, or from an importable no-argument
+publisher class when no target is supplied. Stateful/configured publishers
+MUST use the explicit target. The reconstructed publisher should apply the
+supplied remaining budget to RPC work. An ambiguous expiry preserves the exact
+outbox and artifact pin. It MUST NOT cause the parser to run again during
+publication-only recovery and does not add any plug-in timeout hook.
 
 Plug-ins do not receive tenant, project, workspace, session, principal,
 idempotency key, lease, annotation, or HTTP response objects. They do not open
@@ -352,8 +425,9 @@ Plug-ins may import the complete reusable construction/result vocabulary from
 The implemented local store/queue is transactional and restart-recoverable.
 Its durable `ControlPlane`, API-only server, and headless command execute
 plug-in probe and ingestion in deadline-bounded, killable spawned children.
-`router-dump-server` fixes its repeatable installed-entry-point or direct-module
-allowlist at construction, requires a host-owned identity resolver (or the
+`router-dump-server` fixes either a repeatable installed-entry-point/direct-module
+allowlist or one trusted `PluginCompositionDeployment` at construction,
+requires a host-owned identity resolver (or the
 loopback trusted-header development adapter), and mounts no plug-in-owned
 routes, analysis runtime, frontend, or assets. This is fault
 isolation, not a plug-in sandbox, distributed queue, authentication layer,
@@ -376,6 +450,7 @@ plug-in.
 | Correlate | Query a bounded indexed reader and emit cross-layer edges, event causal links, and clock anchors. | Clamp windows/budgets, persist evidence/quality, and reject invalid references. |
 | Check | Return PASS/FAIL/UNKNOWN findings. | Execute rules at selected time/revision and aggregate dashboard results. |
 | Forwarding | Project bootstrap or bounded `ChangeSet` deltas into a negotiated typed forwarding IR. | Validate/version/store deltas; own LPM, recursive resolution, cycle/limit handling, and explanation API. |
+| Evidence analysis | Interpret already-authorized route/LTTng/correlation evidence and return citation-scoped advisory observations. | Select the exact plan-bound provider, disclose bounded immutable facts, validate/cap outputs, and retain derived evidence with complete provenance. |
 | Topology/status projection | Declare independently selectable status perspectives and named topology projections; materialize plugin-defined topology resources, relationships, and usability state. | Resolve temporal bases, validate projection/perspective combinations, query stored intervals, preserve unknowns, and expose bounded state/topology APIs. |
 | Cross-node federation | Match bounded normalized claims, preserve candidates, and emit matched, ambiguous, unresolved, or conflicting inter-node semantics. | Freeze each member basis, invoke the selected linker with budgets, validate/store its output, and never guess a non-exact match. |
 
@@ -397,6 +472,7 @@ Every node/device plug-in implements `describe()`, `probe()`, and
 | `TOPOLOGY_PROJECTION` | `project_topology()` |
 | `FORWARDING_PROJECTION` | `project_forwarding()` |
 | `FORWARDING_TRACE` | `resolve_forwarding_step()` |
+| `EVIDENCE_ANALYSIS` | `analyze_evidence()` |
 
 `PLUGIN_CAPABILITY_HOOKS` is the executable mapping used by validation. New
 plug-ins use the enum values rather than copying arbitrary capability strings.
@@ -420,6 +496,7 @@ directly. The constructor takes the plug-in, an optional already-validated
 | `project_topology(request, world)` | `TopologyExecutionResult` |
 | `project_forwarding(request, world)` | `ForwardingProjectionExecutionResult` |
 | `resolve_forwarding_step(request, world)` | `ForwardingStepExecutionResult` |
+| `analyze_evidence(request)` | `EvidenceAnalysisExecutionResult` |
 
 Before invocation, the executor requires the corresponding standard capability
 from a one-time snapshot of the manifest's declared capability set and a
@@ -437,7 +514,9 @@ IR versions, references, evidence, and diagnostic envelopes are validated
 against the immutable schema and manifest. The default executor ceilings are
 50,000 world reads, 50,000 change items, 50,000 correlation outputs, 10,000
 consistency outputs, 100,000 topology outputs, 100,000 forwarding outputs,
-1,000 diagnostics, 64 evidence items per output, and 4,096 resource references.
+1,000 evidence-analysis outputs, 1 MiB each of aggregate evidence-analysis
+input and output, 1,000 diagnostics, 64 evidence items per output, and 4,096
+resource references.
 A request's smaller limit still applies; a plug-in cannot enlarge these
 core-owned ceilings.
 
@@ -448,6 +527,35 @@ the diagnostics attached. An undeclared capability raises
 `PluginCapabilityInputError`; a malformed, invalid, or over-limit result raises
 `PluginCapabilityOutputError`. Plug-in exceptions are wrapped in this
 execution-error boundary rather than escaping as a partially valid result.
+
+`EVIDENCE_ANALYSIS` is the standard private-analysis interpretation boundary.
+The plug-in receives no `ReadOnlyWorld`, artifact reader, database/session
+handle, model adapter, network client, or annotation writer. Its exact
+`EvidenceAnalysisRequest` contains a closed `EvidenceAnalysisKind`, immutable
+facts already admitted by core disclosure policy, bounded detached JSON
+parameters, and a maximum observation count. Each fact binds its evidence
+reference digest, node and revision, evidence/subject/schema/provenance
+vocabulary, explicit time metadata, and disclosed payload. Each returned
+`EvidenceAnalysisObservation` has a canonical unique ID, bounded category and
+summary/details, exact quality, and a non-empty canonical citation subset of
+the request facts. Output is advisory derived evidence; it never mutates the
+normalized revision or authorizes a model action.
+
+Provider choice is not part of this hook. A trusted coordinator resolves an
+exact `instance_id` from the requested node/revision's retained executable
+plan, invokes it through `PlanBoundCapabilityRouter`, and records the complete
+provider pin. A model-supplied package name, platform, firmware string,
+registration order, or generic plug-in ID cannot select a provider.
+
+The provider MAY be a separately identified auxiliary rather than the primary
+parser. In that case deployment MUST bind it to the primary's exact registered
+execution identity through `PluginCompositionPolicy`, MUST give it a declared
+role, and MUST register it in the capability-provider registry rather than the
+primary parser registry. The published revision plan MUST contain both exact
+pins. Core MUST later use that retained plan and MUST NOT reselect a currently
+installed provider. This is the supported way for device-, firmware-, and
+chip-specific interpreters to coexist without exposing proprietary selectors
+to the model.
 
 Caller validation MUST finish before the optional hook is resolved or invoked.
 The three error domains are caller input, hook execution, and plug-in output;
@@ -480,7 +588,9 @@ role/instance match the selector, and rejects zero or multiple matches. Plan
 order and registration order MUST NOT break a tie. Before and after every typed
 call it revalidates all artifact coordinates, executable digest, manifest/API,
 configuration digest, schema digest/versions, declared capabilities, and the
-v1 decoder rule. The plan-level decoder belongs only to the primary pin. A
+current plan's decoder rule. Retained plan v1 is rejected before provider
+matching because it recorded neither registered execution identity nor the
+current time/composition semantics. The plan-level decoder belongs only to the primary pin. A
 decoder-capable primary remains usable when a non-CTF revision pins no decoder;
 a non-primary decoder registration is unrepresentable and rejected. A
 successful `CapabilityInvocation` retains a detached
@@ -488,6 +598,83 @@ successful `CapabilityInvocation` retains a detached
 source basis, plan digest, capability, and full producer pin. Callers MUST NOT
 merge results from different pins without an explicit federation/linker
 operation.
+
+Ordinary probe/selection always chooses one primary parser. A deployment MAY
+provide an immutable `PluginCompositionPolicy` which matches that parser's
+exact instance ID and content-addressed registered execution identity and adds
+canonically ordered auxiliary provider pins with explicit roles. Core stores
+the policy digest with the import and in every new v2 execution plan, and MUST
+refuse to execute queued work or re-admit a child plan under a different
+policy. A plug-in MUST NOT select peers by platform/firmware
+strings, depend on registry order, or publish a synthetic composite plug-in.
+Immediately before freezing each auxiliary pin, both inline and process paths
+MUST revalidate its executable fingerprint and immutable manifest identity;
+provider-registry admission alone is not sufficient. On process return, the
+parent MUST repeat live revalidation before and after auxiliary pin/schema
+identity reads and once more for the complete selected set at the plan
+acceptance edge. Drift during child parsing MUST reject the child metadata and
+MUST NOT stage or publish its revision; exact child-plan comparison remains
+independently required.
+
+The public deployment boundary is
+`PluginCompositionDeployment(primary_registry, capability_providers, policy)`.
+All three fields MUST be exact core container types. Every primary record MUST
+also be the same object in the provider directory; every policy primary and
+auxiliary coordinate MUST resolve exactly. A descriptor or one-argument
+factory is loaded from `PACKAGE:ATTRIBUTE`; the factory is called once with a
+detached `PluginCompositionDeploymentContext` containing only the canonical
+state directory. The resulting `deployment_digest` commits to the exact
+configured execution identities and policy digest, not plug-in objects,
+configuration values, or proprietary platform labels. Extra provider releases
+MAY remain registered for historical plans, but no plan may use an unpinned
+fallback.
+
+`LoadedPlugin.register()` MAY receive explicit `instance_id` and
+`configuration_digest` coordinates from that trusted deployment. A deployment
+MUST compute the digest from its real bounded configuration and MUST use a new
+logical instance ID whenever a changed configuration would otherwise make one
+perspective ambiguous. Multiple exact primary configurations of one
+plug-in/version remain distinct by registered execution identity; manual
+selection MUST echo that candidate identity rather than selecting only by a
+display plug-in ID.
+
+The shipped server, headless ingester, embedded durable control plane, and
+private-analysis CLI accept this descriptor through an explicit deployment
+selector. They pass its registry, provider directory, and policy together to
+`ControlPlane`; a root MUST NOT load only the primary registry and silently
+discard provider/policy authority. Headless idempotency MUST include the
+deployment digest.
+
+The standalone roots name that selector
+`--plugin-deployment-module PACKAGE:ATTRIBUTE`. The interactive analyzer names
+the embedded-control-plane selector
+`--plugin-composition-deployment-module PACKAGE:ATTRIBUTE`, requires
+`--control-plane-dir`, and still requires exactly one ordinary `--plugin` or
+`--plugin-module` selector plus `--input` for its immediate analysis runtime.
+These are deliberately separate authorities; neither selector supplies or
+overrides the other.
+
+Production consumers MUST obtain routers from
+`ControlPlane.capability_router_for_revision()` or
+`ControlPlane.capability_router_for_revision_set()`. The latter accepts exactly
+one explicit revision vector, session, or snapshot selector and preserves the
+member identities recorded by the catalog. Both methods MUST load and verify
+the retained plan and MUST NOT reselect a provider from current registry state.
+
+The immutable execution plan, not a live plug-in object, qualifies every
+private-analysis evidence producer. Generic parsed records name the exact
+`primary_parser` role; an optional projection names one declared capability.
+`plugin_id` alone is never sufficient. Plug-ins do not authorize or invoke the
+private model. Core revalidates catalog and plan identity, resolves requested
+time independently for every revision, freezes an indexed read-only corpus,
+enforces disclosure policy, and owns citation accounting. In explicit
+full-fidelity local mode the corpus MAY retain plug-in-owned normalized fields
+and bounded `copy_text`; `never_assistant` evidence is unconditionally denied.
+The stable `plugin_schema.v1` evidence payload includes the exact v2
+`registered_execution_identity`. Retained plan-v1 pins never recorded that
+identity or the current timeline semantics and are ineligible for evidence
+production; the internal all-zero sentinel MUST NOT be promoted into an
+evidence payload or treated as executable authority.
 
 `PluginCapabilityExecutor.for_execution_pin()` is the bound executor factory.
 It rejects a live manifest or normalized schema that differs from the pin,
@@ -1562,10 +1749,31 @@ package identities are re-hashed inside the child immediately before probe or
 ingestion. Loader-supplied immutable identities remain trusted loader
 assertions.
 
-The plug-in and custom coordinator object graph MUST be importable and
-spawn-picklable. A child process is a killable fault boundary, not a security
-sandbox: it inherits the host user's filesystem, network, environment, and OS
-privileges. The executable boundary currently also provides:
+The core MUST NOT serialize the live plug-in, registry, coordinator, decoder,
+provider, publisher, or bound method into a child. The spawn payload contains
+only core-owned exact scalar/tuple bootstrap coordinates. Installed and direct
+module plug-ins are reloaded from their module-level target. A programmatic
+default-constructed plug-in, coordinator, decoder, or publisher MAY use an
+importable no-argument class target. Stateful/configured implementations MUST
+register an explicit module-level process target. In particular, a non-default
+`configuration_digest` makes a programmatic PROCESS registration unavailable
+unless it names an explicit module-level `plugin_process_module_target`; a
+class-constructor target cannot satisfy that configured-state assertion.
+Configured custom coordinators and decoders in the same registration likewise
+require their explicit coordinator/decoder module targets. Installed and
+direct-module loaders already supply the plug-in target. Inline-only trusted
+embeddings do not acquire a process claim merely by registering the live
+object. The complete non-recursive scalar/tuple bootstrap is immutable
+registered-execution identity material; access rechecks the registration
+snapshot and returns a detached descriptor. The child reconstructs the
+components, re-registers them, and rejects any resulting
+`registered_execution_identity` or target-executable drift before invoking
+plug-in code. The parent revalidates those target identities immediately
+before spawn, on child-plan readmission, and again at the final revision-staging
+edge. A child
+process is a killable fault boundary, not a security sandbox: it inherits the
+host user's filesystem, network, environment, and OS privileges. The
+executable boundary currently also provides:
 
 - Read-only selected artifact handles.
 - Session-private scratch copies bounded by the artifact quotas.

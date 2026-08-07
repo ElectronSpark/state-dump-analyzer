@@ -23,11 +23,47 @@ With the normal server on port 8765:
 | `http://127.0.0.1:8765/` | Canonical multi-node topology, route trace, and route-table workspace |
 | `http://127.0.0.1:8765/topology` | Compatibility alias for the topology home |
 | `http://127.0.0.1:8765/node` | Individual-node timeline, resources, correlations, and dashboards |
-| `http://127.0.0.1:8765/docs` | Interactive core API documentation |
+| `http://127.0.0.1:8765/analysis` | Workspace-scoped private-analysis run, evidence report, and explicit human proposal-review workflow |
+| `http://127.0.0.1:8765/docs` | Interactive core API documentation, available only when the loopback server is started with `--expose-api-docs` |
 
 The topology page links to the corresponding individual-node workspace. The
 node page links back to the fabric while preserving the available
 reconstruction context.
+
+The static pages do not advertise `/docs` because API documentation is closed
+by default. Operators who deliberately enable `--expose-api-docs` can open the
+URL above directly; enabling it is a server policy decision, not a browser
+control.
+
+The private-analysis page deliberately does not accept scope, identity, run,
+or query values in its URL. Tenant, project, workspace, principal, opaque run
+ID, and an unsent query exist only in the live page and JavaScript state. The
+page does not use browser storage, caches, service workers, or navigation
+state. After submission, the run, query, and validated outcome are durable
+server-side records. Create is sent once with one stable idempotency key;
+execute and cancel are sent once with the latest strong ETag, and uncertain
+outcomes are reconciled only with read-only polling. A cancellation attempt is
+locked to one workspace generation and opaque run ID before its version
+refresh, so parallel calls, later versions, and caller retries cannot replay
+the POST. A report is exposed only when its run ID and lossless version exactly
+match the current cleanup-complete terminal run.
+
+Proposal review is deliberately separate from report rendering. Proposal text
+is read-only; the page requires an acknowledgement and never pre-fills a
+promotion target from model output. A reviewer either rejects the exact
+digest-pinned proposal or authors independent annotation/manual-correlation
+JSON. The controller takes run, result, and proposal authority only from its
+validated frozen report, sends one conditional/idempotent decision mutation,
+and accepts decision receipts only when both digests match that same report.
+After an ambiguous decision response it refreshes durable state read-only for
+display but disables review until reload; a same-proposal receipt is not proof
+of the attempted rationale, disposition, or target. A durably pending promotion
+exposes a separate **Resume pending promotion** button. List/detail reads and
+repeated decision requests never resume work, concurrent clicks share one
+attempt, and another mutation always requires another explicit click. An
+ambiguous recovery performs one read-only reconciliation and re-enables the
+button only when the same frozen report and durable decision remain exact; the
+refresh itself never sends another recovery POST.
 
 ### Select a reconstructed topology moment
 
@@ -90,6 +126,15 @@ only; production behavior is exercised through imported functions.
 effect-status, and mark classifiers used by `app.js`; those timeline decisions
 therefore have direct behavioral tests instead of depending on source-text
 inspection of the page entry point.
+`private_analysis_controller.test.mjs` exercises private-analysis request
+shapes, lossless ETag/version checks, stale response and scope-generation
+rejection, one-shot mutations, read-only ambiguity reconciliation, bounded
+single-flight polling, run-bound cancellation, strict report-envelope
+acceptance, cleanup-aware terminal behavior, digest-pinned human decision
+requests, one-shot review mutation, ambiguity reconciliation without replay,
+and explicit pending-saga recovery. `private_analysis_contract.test.mjs`
+checks the browser's closed discovery, run/report, and proposal-decision wire
+contracts against the hosted page and manifest.
 The same executable suite captures the actual `fetch()` initialization to
 verify `Idempotency-Key` and `If-Match` propagation, and exercises current,
 stale, and failed-refresh `409` reconciliation paths. Durable POST creation,

@@ -177,9 +177,7 @@ def _exact_positive_int(value: Any, label: str) -> int:
 
 def _exact_json_safe_non_negative_int(value: Any, label: str) -> int:
     if type(value) is not int or not 0 <= value <= MAX_JSON_SAFE_INTEGER:
-        raise ReviewValidationError(
-            f"{label} must be a non-negative JSON-safe integer"
-        )
+        raise ReviewValidationError(f"{label} must be a non-negative JSON-safe integer")
     return value
 
 
@@ -710,6 +708,27 @@ def _review_retention_policy_document(
         "audit_before_sequence": policy.audit_before_sequence,
         "maximum_candidates": policy.maximum_candidates,
     }
+
+
+def _protected_retention_idempotency_keys(
+    values: Iterable[str],
+) -> frozenset[str]:
+    if isinstance(values, (str, bytes)) or not isinstance(values, Iterable):
+        raise ReviewValidationError("protected_idempotency_keys must be an iterable")
+    materialized = tuple(values)
+    if len(materialized) > MAX_RETENTION_CANDIDATES:
+        raise ReviewValidationError(
+            "protected_idempotency_keys exceed the retention safety bound"
+        )
+    normalized = frozenset(
+        _bounded_text(value, "protected idempotency key", MAX_IDEMPOTENCY_KEY_LENGTH)
+        for value in materialized
+    )
+    if len(normalized) != len(materialized):
+        raise ReviewValidationError(
+            "protected_idempotency_keys must not contain duplicates"
+        )
+    return normalized
 
 
 def _review_retention_candidate_document(
@@ -2565,11 +2584,29 @@ class ReviewOverlayStore:
         connection: sqlite3.Connection,
         scope: ReviewScope,
         policy: ReviewRetentionPolicy,
+        protected_idempotency_keys: frozenset[str] = frozenset(),
     ) -> ReviewRetentionInventory:
         scope_values = _scope_values(scope)
         maximum = policy.maximum_candidates
         candidates: list[ReviewRetentionCandidate] = []
         total = 0
+        protected_entities: set[tuple[str, str]] = set()
+        ordered_protected_keys = tuple(sorted(protected_idempotency_keys))
+        for start in range(0, len(ordered_protected_keys), 800):
+            chunk = ordered_protected_keys[start : start + 800]
+            placeholders = ",".join("?" for _value in chunk)
+            rows = connection.execute(
+                f"""
+                SELECT entity_kind, entity_id
+                FROM review_overlay_idempotency
+                WHERE tenant_id = ? AND project_id = ? AND workspace_id = ?
+                  AND idempotency_key IN ({placeholders})
+                """,
+                (*scope_values, *chunk),
+            ).fetchall()
+            protected_entities.update(
+                (str(row["entity_kind"]), str(row["entity_id"])) for row in rows
+            )
 
         def remaining() -> int:
             return maximum - len(candidates)
@@ -2603,6 +2640,11 @@ class ReviewOverlayStore:
                         category="review_idempotency",
                         identifier=row["idempotency_key"],
                         retention_value=int(row["created_at_ns"]),
+                        blockers=(
+                            ("pending_proposal_decision",)
+                            if row["idempotency_key"] in protected_idempotency_keys
+                            else ()
+                        ),
                     )
                     for row in rows
                 )
@@ -2668,10 +2710,20 @@ class ReviewOverlayStore:
                     category=category,
                     identifier=row["identifier"],
                     retention_value=int(row["deleted_at_ns"]),
-                    blockers=(
-                        ("unexpired_idempotency_receipt",)
-                        if row["has_live_receipt"]
-                        else ()
+                    blockers=tuple(
+                        blocker
+                        for blocker, present in (
+                            (
+                                "unexpired_idempotency_receipt",
+                                bool(row["has_live_receipt"]),
+                            ),
+                            (
+                                "pending_proposal_decision",
+                                (entity_kind, str(row["identifier"]))
+                                in protected_entities,
+                            ),
+                        )
+                        if present
                     ),
                 )
                 for row in rows
@@ -2735,6 +2787,8 @@ class ReviewOverlayStore:
         self,
         scope: ReviewScope,
         policy: ReviewRetentionPolicy | None = None,
+        *,
+        protected_idempotency_keys: Iterable[str] = (),
     ) -> ReviewRetentionInventory:
         """Return a bounded dry-run inventory without deleting anything."""
 
@@ -2743,11 +2797,13 @@ class ReviewOverlayStore:
             policy = ReviewRetentionPolicy()
         if type(policy) is not ReviewRetentionPolicy:
             raise ReviewValidationError("policy must be an exact ReviewRetentionPolicy")
+        protected = _protected_retention_idempotency_keys(protected_idempotency_keys)
         with self._transaction(begin="BEGIN") as connection:
             return self._retention_inventory_from_connection(
                 connection,
                 scope,
                 policy,
+                protected,
             )
 
     def purge_retention(
@@ -2757,6 +2813,7 @@ class ReviewOverlayStore:
         *,
         actor: str = "system",
         operation_id: str | None = None,
+        protected_idempotency_keys: Iterable[str] = (),
     ) -> ReviewRetentionResult:
         """Physically purge only the bounded, explicitly enabled inventory."""
 
@@ -2774,7 +2831,16 @@ class ReviewOverlayStore:
             MAX_IDENTIFIER_LENGTH,
         )
         scope_values = _scope_values(scope)
+        protected = _protected_retention_idempotency_keys(protected_idempotency_keys)
         policy_document = _review_retention_policy_document(policy)
+        if protected:
+            policy_document = {
+                **policy_document,
+                "protected_idempotency_key_count": len(protected),
+                "protected_idempotency_keys_sha256": strict_canonical_json_sha256(
+                    sorted(protected)
+                ),
+            }
         policy_json = _canonical_json(policy_document)
         with self._transaction() as connection:
             existing_operation = connection.execute(
@@ -2822,6 +2888,7 @@ class ReviewOverlayStore:
                 connection,
                 scope,
                 policy,
+                protected,
             )
             purged: list[ReviewRetentionCandidate] = []
             for candidate in inventory.candidates:

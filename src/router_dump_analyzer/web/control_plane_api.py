@@ -118,9 +118,26 @@ from router_dump_analyzer.private_analysis_application_wire import (
     PrivateAnalysisApplicationWireLimitError,
     PrivateAnalysisApplicationWireRequestError,
     parse_private_analysis_request_spec,
+    private_analysis_capabilities_to_wire,
     private_analysis_report_to_wire,
     private_analysis_run_to_wire,
     private_analysis_runner_to_wire,
+)
+from router_dump_analyzer.private_analysis_promotion import (
+    MAX_PROMOTION_LIST_LIMIT,
+    PrivateAnalysisProposalReviewService,
+    ProposalReviewConflictError,
+    ProposalReviewDecision,
+    ProposalReviewError,
+    ProposalReviewNotFoundError,
+    ProposalReviewUnavailableError,
+    ProposalReviewValidationError,
+)
+from router_dump_analyzer.private_analysis_promotion_wire import (
+    ProposalReviewRequest,
+    ProposalReviewWireError,
+    parse_proposal_review_request,
+    proposal_review_decision_to_wire,
 )
 from router_dump_analyzer.private_analysis_service import (
     PrivateAnalysisRequestSpec,
@@ -1723,7 +1740,13 @@ def _validate_control_plane_path_parameters(
             _catalog_identifier(value, field)
         elif field == "import_id":
             _import_identifier(value, field)
-        elif field in {"annotation_id", "correlation_id"}:
+        elif field in {
+            "annotation_id",
+            "correlation_id",
+            "decision_id",
+            "proposal_id",
+            "run_id",
+        }:
             _review_identifier(value, field)
 
 
@@ -2349,6 +2372,27 @@ _API_ERROR_POLICY_BY_CLASS: Mapping[type[Exception], _ApiErrorPolicy] = (
             PrivateAnalysisServiceError: _ApiErrorPolicy(
                 500,
                 "private-analysis operation failed",
+            ),
+            ProposalReviewValidationError: _ApiErrorPolicy(
+                422,
+                "proposal review request was rejected",
+                expose_message=True,
+            ),
+            ProposalReviewConflictError: _ApiErrorPolicy(
+                409,
+                "proposal review conflicts with durable state",
+            ),
+            ProposalReviewNotFoundError: _ApiErrorPolicy(
+                404,
+                "resource not found",
+            ),
+            ProposalReviewUnavailableError: _ApiErrorPolicy(
+                503,
+                "proposal review service is unavailable",
+            ),
+            ProposalReviewError: _ApiErrorPolicy(
+                500,
+                "proposal review operation failed",
             ),
             ImportConflictError: _ApiErrorPolicy(
                 409,
@@ -3042,6 +3086,65 @@ def _private_analysis_scope_from_path(
     )
 
 
+def _proposal_review_service(
+    request: Request,
+) -> PrivateAnalysisProposalReviewService:
+    service = getattr(_control_plane(request), "private_analysis_reviews", None)
+    if type(service) is not PrivateAnalysisProposalReviewService:
+        raise _ControlPlaneHTTPResponse(
+            status_code=503,
+            detail="proposal review service is unavailable",
+        )
+    return service
+
+
+def _proposal_review_body(
+    payload: dict[str, Any],
+) -> ProposalReviewRequest:
+    try:
+        return parse_proposal_review_request(_body_object(payload))
+    except ProposalReviewWireError as error:
+        raise _ControlPlaneHTTPResponse(
+            status_code=422,
+            detail=str(error),
+        ) from error
+
+
+def _proposal_review_json(value: ProposalReviewDecision) -> dict[str, Any]:
+    try:
+        return proposal_review_decision_to_wire(value)
+    except (TypeError, ValueError) as error:
+        raise ProposalReviewUnavailableError(
+            "proposal review projection is invalid"
+        ) from error
+
+
+@control_plane_router.get(
+    "/projects/{project_id}/workspaces/{workspace_id}/private-analysis-capabilities"
+)
+def get_private_analysis_capabilities(
+    project_id: str,
+    workspace_id: str,
+    request: Request,
+    response: Response,
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
+) -> dict[str, Any]:
+    """Return the core-owned, policy-filtered private-analysis workflow."""
+
+    scope = _private_analysis_scope_from_path(
+        request,
+        x_tenant_id,
+        project_id,
+        workspace_id,
+    )
+    try:
+        value = _private_analysis_service(request).capabilities(scope)
+        response.headers["Cache-Control"] = "no-store"
+        return private_analysis_capabilities_to_wire(value)
+    except Exception as error:
+        _raise_api_error(error)
+
+
 @control_plane_router.get(
     "/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runners"
 )
@@ -3308,6 +3411,185 @@ def get_private_analysis_report(
         _etag(response, value.run.version)
         response.headers["Cache-Control"] = "no-store"
         return _private_analysis_report_json(value)
+    except Exception as error:
+        _raise_api_error(error)
+
+
+@control_plane_router.post(
+    "/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runs/"
+    "{run_id}/proposals/{proposal_id}/decision",
+    status_code=201,
+)
+async def decide_private_analysis_proposal(
+    project_id: str,
+    workspace_id: str,
+    run_id: str,
+    proposal_id: str,
+    request: Request,
+    response: Response,
+    payload: dict[str, Any],
+    if_match: str | None = Header(default=None, alias="If-Match"),
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+    ),
+) -> dict[str, Any]:
+    """Durably reject or explicitly promote one exact advisory proposal."""
+
+    expected_version = _parse_if_match(if_match)
+    operation_key = _review_idempotency_key(idempotency_key)
+    if operation_key is None:
+        raise _ControlPlaneHTTPResponse(
+            status_code=428,
+            detail="Idempotency-Key is required",
+        )
+    identity = _resolved_identity(request)
+    scope = _private_analysis_scope_from_path(
+        request,
+        x_tenant_id,
+        project_id,
+        workspace_id,
+    )
+    review = _proposal_review_body(payload)
+    try:
+        value = await asyncio.to_thread(
+            _proposal_review_service(request).decide,
+            scope,
+            run_id=run_id,
+            proposal_id=proposal_id,
+            proposal_digest=review.proposal_digest,
+            result_digest=review.result_digest,
+            expected_run_version=expected_version,
+            disposition=review.disposition,
+            actor=identity.principal_id,
+            rationale=review.rationale,
+            idempotency_key=operation_key,
+            target=review.target,
+        )
+        _etag(response, value.version)
+        response.headers["Cache-Control"] = "no-store"
+        return _proposal_review_json(value)
+    except Exception as error:
+        _raise_api_error(error)
+
+
+@control_plane_router.get(
+    "/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runs/"
+    "{run_id}/proposal-decisions"
+)
+async def list_private_analysis_proposal_decisions(
+    project_id: str,
+    workspace_id: str,
+    run_id: str,
+    request: Request,
+    response: Response,
+    limit: int = Query(
+        default=1_000,
+        ge=1,
+        le=MAX_PROMOTION_LIST_LIMIT,
+    ),
+    offset: int = Query(default=0, ge=0, le=MAX_JSON_SAFE_INTEGER),
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
+) -> dict[str, Any]:
+    """List durable human decisions for one exact private-analysis run."""
+
+    scope = _private_analysis_scope_from_path(
+        request,
+        x_tenant_id,
+        project_id,
+        workspace_id,
+    )
+    try:
+        values = await asyncio.to_thread(
+            _proposal_review_service(request).list,
+            scope,
+            run_id=run_id,
+            limit=limit,
+            offset=offset,
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return {"items": [_proposal_review_json(value) for value in values]}
+    except Exception as error:
+        _raise_api_error(error)
+
+
+@control_plane_router.get(
+    "/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runs/"
+    "{run_id}/proposal-decisions/{decision_id}"
+)
+async def get_private_analysis_proposal_decision(
+    project_id: str,
+    workspace_id: str,
+    run_id: str,
+    decision_id: str,
+    request: Request,
+    response: Response,
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
+) -> dict[str, Any]:
+    """Return one scoped proposal decision and its immutable provenance pins."""
+
+    scope = _private_analysis_scope_from_path(
+        request,
+        x_tenant_id,
+        project_id,
+        workspace_id,
+    )
+    try:
+        value = await asyncio.to_thread(
+            _proposal_review_service(request).get,
+            scope,
+            decision_id,
+        )
+        if value.run_id != run_id:
+            raise ProposalReviewNotFoundError(decision_id)
+        _etag(response, value.version)
+        response.headers["Cache-Control"] = "no-store"
+        return _proposal_review_json(value)
+    except Exception as error:
+        _raise_api_error(error)
+
+
+@control_plane_router.post(
+    "/projects/{project_id}/workspaces/{workspace_id}/private-analysis-runs/"
+    "{run_id}/proposal-decisions/{decision_id}/recover"
+)
+async def recover_private_analysis_proposal_decision(
+    project_id: str,
+    workspace_id: str,
+    run_id: str,
+    decision_id: str,
+    request: Request,
+    response: Response,
+    if_match: str | None = Header(default=None, alias="If-Match"),
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
+) -> dict[str, Any]:
+    """Explicitly resume one pending promotion from its retained human target."""
+
+    expected_version = _parse_if_match(if_match)
+    scope = _private_analysis_scope_from_path(
+        request,
+        x_tenant_id,
+        project_id,
+        workspace_id,
+    )
+    try:
+        current = await asyncio.to_thread(
+            _proposal_review_service(request).get,
+            scope,
+            decision_id,
+        )
+        if current.run_id != run_id:
+            raise ProposalReviewNotFoundError(decision_id)
+        value = await asyncio.to_thread(
+            _proposal_review_service(request).recover,
+            scope,
+            decision_id,
+            expected_decision_version=expected_version,
+        )
+        _etag(response, value.version)
+        response.headers["Cache-Control"] = "no-store"
+        return _proposal_review_json(value)
     except Exception as error:
         _raise_api_error(error)
 
@@ -4358,6 +4640,42 @@ def select_import_plugin(
         "package_hash",
         maximum=256,
     )
+    raw_instance_id = body.get("instance_id")
+    raw_execution_identity = body.get("registered_execution_identity")
+    if (raw_instance_id is None) != (raw_execution_identity is None):
+        _request_validation_failure(
+            "instance_id and registered_execution_identity must be provided together"
+        )
+    instance_id = (
+        _request_bounded_text(
+            raw_instance_id,
+            "instance_id",
+            maximum=256,
+            reject_whitespace=True,
+            reject_controls=True,
+        )
+        if raw_instance_id is not None
+        else None
+    )
+    registered_execution_identity = (
+        _request_bounded_text(
+            raw_execution_identity,
+            "registered_execution_identity",
+            maximum=71,
+            reject_whitespace=True,
+            reject_controls=True,
+        )
+        if raw_execution_identity is not None
+        else None
+    )
+    if registered_execution_identity is not None and (
+        not registered_execution_identity.startswith("sha256:")
+        or any(
+            character not in "0123456789abcdef"
+            for character in registered_execution_identity[7:]
+        )
+    ):
+        _request_validation_failure("registered_execution_identity is invalid")
     _, scope = _selected_import(
         request,
         _tenant(x_tenant_id),
@@ -4374,6 +4692,8 @@ def select_import_plugin(
             plugin_version=plugin_version,
             package_hash=package_hash,
             idempotency_key=selected_idempotency_key,
+            instance_id=instance_id,
+            registered_execution_identity=registered_execution_identity,
         )
         return result.as_dict()
     except Exception as error:

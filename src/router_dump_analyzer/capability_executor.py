@@ -16,6 +16,7 @@ from math import isfinite
 from typing import Any, cast
 from uuid import UUID
 
+from .canonical import strict_canonical_json
 from .plugin_api import (
     MAX_TIMESTAMP_NS,
     MIN_TIMESTAMP_NS,
@@ -33,6 +34,10 @@ from .plugin_api import (
     DiagnosticSeverity,
     DomainEvent,
     Evidence,
+    EvidenceAnalysisFact,
+    EvidenceAnalysisKind,
+    EvidenceAnalysisObservation,
+    EvidenceAnalysisRequest,
     FailoverGroup,
     FibEntry,
     FindingResult,
@@ -80,7 +85,10 @@ from .plugin_api import (
     WorldBasisKind,
     validate_plugin_diagnostic,
 )
-from .plugin_execution_plan import PluginExecutionPin
+from .plugin_execution_plan import (
+    PluginExecutionPin,
+    plugin_execution_pin_uses_legacy_identity,
+)
 from .plugin_schema_identity import plugin_schema_digest
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 
@@ -126,6 +134,9 @@ class PluginCapabilityLimits:
     max_consistency_outputs: int = 10_000
     max_topology_outputs: int = 100_000
     max_forwarding_outputs: int = 100_000
+    max_evidence_analysis_outputs: int = 1_000
+    max_evidence_analysis_input_bytes: int = 1_000_000
+    max_evidence_analysis_output_bytes: int = 1_000_000
     max_diagnostics: int = 1_000
     max_evidence_per_output: int = 64
     max_resource_references: int = 4_096
@@ -138,6 +149,18 @@ class PluginCapabilityLimits:
             ("max_consistency_outputs", self.max_consistency_outputs),
             ("max_topology_outputs", self.max_topology_outputs),
             ("max_forwarding_outputs", self.max_forwarding_outputs),
+            (
+                "max_evidence_analysis_outputs",
+                self.max_evidence_analysis_outputs,
+            ),
+            (
+                "max_evidence_analysis_input_bytes",
+                self.max_evidence_analysis_input_bytes,
+            ),
+            (
+                "max_evidence_analysis_output_bytes",
+                self.max_evidence_analysis_output_bytes,
+            ),
             ("max_diagnostics", self.max_diagnostics),
             ("max_evidence_per_output", self.max_evidence_per_output),
             ("max_resource_references", self.max_resource_references),
@@ -175,6 +198,12 @@ class ForwardingProjectionExecutionResult:
 @dataclass(frozen=True, slots=True)
 class ForwardingStepExecutionResult:
     result: ForwardingStepResult | None
+    diagnostics: tuple[PluginDiagnostic, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceAnalysisExecutionResult:
+    observations: tuple[EvidenceAnalysisObservation, ...]
     diagnostics: tuple[PluginDiagnostic, ...]
 
 
@@ -352,6 +381,24 @@ class _ValueBudget:
         self.active: set[int] = set()
 
 
+def _evidence_analysis_json_projection(value: Any) -> Any:
+    """Return plain JSON containers for an already-validated analysis DTO.
+
+    The public evidence-analysis DTOs deeply freeze dictionaries and lists as
+    mapping proxies and tuples.  Canonical byte accounting must therefore thaw
+    every container level, not only the top-level mapping.
+    """
+
+    if isinstance(value, Mapping):
+        return {
+            key: _evidence_analysis_json_projection(item)
+            for key, item in value.items()
+        }
+    if type(value) is tuple:
+        return [_evidence_analysis_json_projection(item) for item in value]
+    return value
+
+
 def _validate_value(
     value: Any,
     label: str,
@@ -526,6 +573,10 @@ class PluginCapabilityExecutor:
 
         if type(pin) is not PluginExecutionPin:
             raise TypeError("pin must be an exact PluginExecutionPin")
+        if plugin_execution_pin_uses_legacy_identity(pin):
+            raise PluginCapabilityBindingError(
+                "retained v1 execution pins cannot authorize capability execution"
+            )
         if type(member_id) is not str or not member_id or len(member_id) > 256:
             raise ValueError("member_id must contain 1 to 256 characters")
         executor = cls(plugin, schema, limits=limits)
@@ -1241,6 +1292,7 @@ class PluginCapabilityExecutor:
         maximum: int,
         allowed: tuple[type[Any], ...],
         validator: Callable[[Any, str], None],
+        detacher: Callable[[Any], Any] | None = None,
     ) -> tuple[tuple[Any, ...], tuple[PluginDiagnostic, ...]]:
         values: list[Any] = []
         diagnostics: list[PluginDiagnostic] = []
@@ -1290,13 +1342,21 @@ class PluginCapabilityExecutor:
                     )
                 try:
                     validator(output, f"{capability.value}[{index}]")
+                    detached_output = (
+                        output if detacher is None else detacher(output)
+                    )
+                    if detacher is not None:
+                        validator(
+                            detached_output,
+                            f"{capability.value}[{index}]",
+                        )
                 except (TypeError, ValueError) as error:
                     raise self._error(
                         capability,
                         str(error),
                         diagnostics=tuple(diagnostics),
                     ) from error
-                values.append(output)
+                values.append(detached_output)
         finally:
             close = getattr(iterator, "close", None)
             if callable(close):
@@ -1382,6 +1442,292 @@ class PluginCapabilityExecutor:
             self._relationship_mutation(value, label)
         else:
             self._clock_anchor(value, label)
+
+    def _validate_evidence_analysis_observation(
+        self,
+        request: EvidenceAnalysisRequest,
+        value: Any,
+        label: str,
+    ) -> None:
+        if type(value) is not EvidenceAnalysisObservation:
+            raise ValueError(
+                f"{label} must be an exact EvidenceAnalysisObservation"
+            )
+        if (
+            type(value.observation_id) is not str
+            or not value.observation_id
+            or len(value.observation_id) > 256
+        ):
+            raise ValueError(f"{label}.observation_id must contain 1 to 256 characters")
+        if (
+            type(value.category) is not str
+            or not value.category
+            or len(value.category) > 256
+        ):
+            raise ValueError(f"{label}.category must contain 1 to 256 characters")
+        if (
+            type(value.summary) is not str
+            or not 1 <= len(value.summary) <= 8_192
+        ):
+            raise ValueError(f"{label}.summary must contain 1 to 8192 characters")
+        if type(value.cited_reference_digests) is not tuple:
+            raise TypeError(f"{label}.cited_reference_digests must be a tuple")
+        if (
+            not value.cited_reference_digests
+            or len(value.cited_reference_digests) > 256
+            or tuple(sorted(value.cited_reference_digests))
+            != value.cited_reference_digests
+            or len(set(value.cited_reference_digests))
+            != len(value.cited_reference_digests)
+        ):
+            raise ValueError(
+                f"{label}.cited_reference_digests must be 1 to 256 unique "
+                "canonically ordered values"
+            )
+        admitted = {fact.reference_digest for fact in request.facts}
+        if any(
+            digest not in admitted for digest in value.cited_reference_digests
+        ):
+            raise ValueError(f"{label} cites evidence outside its request")
+        self._enum(value.quality, Quality, f"{label}.quality")
+        _validate_value(value.details, f"{label}.details")
+
+    def analyze_evidence(
+        self,
+        request: EvidenceAnalysisRequest,
+    ) -> EvidenceAnalysisExecutionResult:
+        capability = PluginCapability.EVIDENCE_ANALYSIS
+        if type(request) is not EvidenceAnalysisRequest:
+            raise self._input_error(
+                capability,
+                "request must be an exact EvidenceAnalysisRequest",
+            )
+        try:
+            request = EvidenceAnalysisRequest(
+                invocation_id=request.invocation_id,
+                analysis_kind=request.analysis_kind,
+                facts=request.facts,
+                parameters=_evidence_analysis_json_projection(request.parameters),
+                max_observations=request.max_observations,
+            )
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except (TypeError, ValueError) as error:
+            raise self._input_error(capability, str(error)) from error
+        except BaseException as error:
+            raise self._input_error(
+                capability,
+                "evidence analysis request could not be detached",
+            ) from error
+
+        def validate_request() -> None:
+            if (
+                type(request.invocation_id) is not str
+                or not request.invocation_id
+                or len(request.invocation_id) > 256
+            ):
+                raise ValueError(
+                    "request.invocation_id must contain 1 to 256 characters"
+                )
+            self._enum(
+                request.analysis_kind,
+                EvidenceAnalysisKind,
+                "request.analysis_kind",
+            )
+            if (
+                type(request.facts) is not tuple
+                or not request.facts
+                or len(request.facts) > 256
+            ):
+                raise ValueError("request.facts must contain 1 to 256 facts")
+            digests: set[str] = set()
+            for index, fact in enumerate(request.facts):
+                if type(fact) is not EvidenceAnalysisFact:
+                    raise TypeError(
+                        f"request.facts[{index}] must be an exact "
+                        "EvidenceAnalysisFact"
+                    )
+                if fact.reference_digest in digests:
+                    raise ValueError("request.facts must have unique references")
+                digests.add(fact.reference_digest)
+                for field_name in (
+                    "evidence_kind",
+                    "subject_kind",
+                    "node_id",
+                    "revision_id",
+                    "payload_schema",
+                    "fact_provenance",
+                    "time_basis",
+                ):
+                    field_value = getattr(fact, field_name)
+                    if (
+                        type(field_value) is not str
+                        or not field_value
+                        or len(field_value) > 256
+                    ):
+                        raise ValueError(
+                            f"request.facts[{index}].{field_name} is invalid"
+                        )
+                self._optional_time(
+                    fact.time_start_ns,
+                    f"request.facts[{index}].time_start_ns",
+                )
+                self._optional_time(
+                    fact.time_end_ns,
+                    f"request.facts[{index}].time_end_ns",
+                )
+                if (fact.time_start_ns is None) != (fact.time_end_ns is None):
+                    raise ValueError(
+                        f"request.facts[{index}] time bounds disagree"
+                    )
+                if (
+                    fact.time_start_ns is not None
+                    and fact.time_start_ns > fact.time_end_ns
+                ):
+                    raise ValueError(
+                        f"request.facts[{index}] time bounds are reversed"
+                    )
+                if fact.time_clock_domain is not None and (
+                    type(fact.time_clock_domain) is not str
+                    or not fact.time_clock_domain
+                    or len(fact.time_clock_domain) > 256
+                ):
+                    raise ValueError(
+                        f"request.facts[{index}].time_clock_domain is invalid"
+                    )
+                _validate_value(fact.payload, f"request.facts[{index}].payload")
+            _validate_value(request.parameters, "request.parameters")
+            input_bytes = len(
+                strict_canonical_json(
+                    {
+                        "facts": [
+                            {
+                                "reference_digest": fact.reference_digest,
+                                "evidence_kind": fact.evidence_kind,
+                                "subject_kind": fact.subject_kind,
+                                "node_id": fact.node_id,
+                                "revision_id": fact.revision_id,
+                                "payload_schema": fact.payload_schema,
+                                "fact_provenance": fact.fact_provenance,
+                                "time_basis": fact.time_basis,
+                                "time_start_ns": fact.time_start_ns,
+                                "time_end_ns": fact.time_end_ns,
+                                "time_clock_domain": fact.time_clock_domain,
+                                "payload": _evidence_analysis_json_projection(
+                                    fact.payload
+                                ),
+                            }
+                            for fact in request.facts
+                        ],
+                        "parameters": _evidence_analysis_json_projection(
+                            request.parameters
+                        ),
+                    }
+                ).encode("utf-8")
+            )
+            if input_bytes > self.limits.max_evidence_analysis_input_bytes:
+                raise ValueError("evidence analysis input exceeds its byte limit")
+            if (
+                type(request.max_observations) is not int
+                or not 1
+                <= request.max_observations
+                <= self.limits.max_evidence_analysis_outputs
+            ):
+                raise ValueError("request.max_observations is outside core bounds")
+
+        self._validate_caller_input(
+            capability,
+            validate_request,
+            unreadable_message="evidence analysis request could not be validated",
+        )
+        hook = self._require(capability, "analyze_evidence")
+        maximum = min(
+            request.max_observations,
+            self.limits.max_evidence_analysis_outputs,
+        )
+        hook_request = EvidenceAnalysisRequest(
+            invocation_id=request.invocation_id,
+            analysis_kind=request.analysis_kind,
+            facts=request.facts,
+            parameters=_evidence_analysis_json_projection(request.parameters),
+            max_observations=request.max_observations,
+        )
+
+        def detach_observation(value: Any) -> EvidenceAnalysisObservation:
+            return EvidenceAnalysisObservation(
+                observation_id=value.observation_id,
+                category=value.category,
+                summary=value.summary,
+                cited_reference_digests=value.cited_reference_digests,
+                quality=value.quality,
+                details=_evidence_analysis_json_projection(value.details),
+            )
+
+        try:
+            outputs = hook(hook_request)
+            values, diagnostics = self._consume(
+                capability,
+                outputs,
+                maximum=maximum,
+                allowed=(EvidenceAnalysisObservation,),
+                validator=lambda value, label: (
+                    self._validate_evidence_analysis_observation(
+                        request,
+                        value,
+                        label,
+                    )
+                ),
+                detacher=detach_observation,
+            )
+            observation_ids = tuple(value.observation_id for value in values)
+            if (
+                tuple(sorted(observation_ids)) != observation_ids
+                or len(set(observation_ids)) != len(observation_ids)
+            ):
+                raise self._error(
+                    capability,
+                    "evidence analysis observation IDs must be unique and "
+                    "canonically ordered",
+                    diagnostics=diagnostics,
+                )
+            output_bytes = len(
+                strict_canonical_json(
+                    [
+                        {
+                            "observation_id": value.observation_id,
+                            "category": value.category,
+                            "summary": value.summary,
+                            "cited_reference_digests": list(
+                                value.cited_reference_digests
+                            ),
+                            "quality": value.quality.value,
+                            "details": _evidence_analysis_json_projection(
+                                value.details
+                            ),
+                        }
+                        for value in values
+                    ]
+                ).encode("utf-8")
+            )
+            if output_bytes > self.limits.max_evidence_analysis_output_bytes:
+                raise self._error(
+                    capability,
+                    "evidence analysis output exceeds its byte limit",
+                    diagnostics=diagnostics,
+                )
+        except PluginCapabilityExecutionError:
+            raise
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise self._error(
+                capability,
+                "analyze_evidence() failed inside plug-in",
+            ) from error
+        return EvidenceAnalysisExecutionResult(
+            observations=cast(tuple[EvidenceAnalysisObservation, ...], values),
+            diagnostics=diagnostics,
+        )
 
     def _world_basis(self, value: Any, label: str) -> WorldBasis:
         if type(value) is not WorldBasis:
@@ -2013,6 +2359,7 @@ class PluginCapabilityExecutor:
 __all__ = [
     "ConsistencyExecutionResult",
     "CorrelationExecutionResult",
+    "EvidenceAnalysisExecutionResult",
     "ForwardingProjectionExecutionResult",
     "ForwardingStepExecutionResult",
     "PluginCapabilityBindingError",

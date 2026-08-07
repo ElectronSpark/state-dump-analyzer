@@ -21,6 +21,7 @@ from rsl_demo_plugin.scenario_registry import (
     ROUTE_PROTOCOL_BY_TYPE,
     SCENARIO_BY_ID,
 )
+
 from .scenario_source import (
     LinkSpec,
     NodeSpec,
@@ -93,9 +94,31 @@ class CoverageCaseSpec:
     involved_nodes: tuple[str, ...]
     expected_outcome: str
     required_capabilities: tuple[str, ...]
+    private_analysis_intents: tuple[str, ...]
     packet_profile_id: str | None = None
     topology_evidence: tuple[TopologyEvidenceSelector, ...] = ()
     temporal_evidence: tuple[TemporalEvidenceSelector, ...] = ()
+
+    def __post_init__(self) -> None:
+        allowed = {
+            "route_trace",
+            "trace_correlation",
+            "evidence_correlation",
+            "evidence_interpretation",
+        }
+        if (
+            not self.private_analysis_intents
+            or self.private_analysis_intents
+            != tuple(sorted(set(self.private_analysis_intents)))
+            or any(item not in allowed for item in self.private_analysis_intents)
+        ):
+            raise ValueError(
+                "private-analysis intents must be a non-empty canonical subset"
+            )
+        if "evidence_analysis" not in self.required_capabilities:
+            raise ValueError(
+                "private-analysis coverage requires evidence_analysis"
+            )
 
 
 PACKET_PROFILES = GENERATED_PROJECTION_POLICY.packet_profiles
@@ -123,6 +146,7 @@ def _case(
         "route_resolution",
         "topology_projection",
     ),
+    private_analysis_intents: tuple[str, ...] | None = None,
     packet_profile_id: str | None = None,
     topology_evidence: tuple[TopologyEvidenceSelector, ...] = (),
     temporal_evidence: tuple[TemporalEvidenceSelector, ...] = (),
@@ -154,6 +178,21 @@ def _case(
         route_family = route_family or "ipv4_unicast"
         address_family = address_family or "ipv4"
         vrf = vrf or "blue"
+    if private_analysis_intents is None:
+        if category == "route":
+            private_analysis_intents = (
+                "evidence_interpretation",
+                "route_trace",
+            )
+        elif category == "temporal":
+            private_analysis_intents = (
+                "evidence_correlation",
+                "trace_correlation",
+            )
+        else:
+            private_analysis_intents = ("evidence_correlation",)
+    if "evidence_analysis" not in required_capabilities:
+        required_capabilities = (*required_capabilities, "evidence_analysis")
     return CoverageCaseSpec(
         case_id=case_id,
         category=category,
@@ -167,6 +206,7 @@ def _case(
         involved_nodes=involved_nodes,
         expected_outcome=expected_outcome,
         required_capabilities=required_capabilities,
+        private_analysis_intents=private_analysis_intents,
         packet_profile_id=packet_profile_id,
         topology_evidence=topology_evidence,
         temporal_evidence=temporal_evidence,

@@ -112,10 +112,7 @@ class PrivateAnalysisDeployment:
                 raise TypeError(
                     "registrations must contain PrivateAnalysisRunnerRegistration"
                 )
-            copy = PrivateAnalysisRunnerRegistration(
-                runner=registration.runner,
-                tool_service_factory=registration.tool_service_factory,
-            )
+            copy = registration.detached()
             selection = copy.runner.selection
             exact_key = (
                 selection.runner_id,

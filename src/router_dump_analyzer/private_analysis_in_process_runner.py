@@ -16,6 +16,10 @@ from time import monotonic_ns
 from typing import Final
 
 from .canonical import strict_canonical_json, strict_canonical_json_sha256
+from .plugin_identity import (
+    PluginExecutableIdentityError,
+    executable_callable_fingerprint,
+)
 from .private_analysis import (
     EvidenceReference,
     PrivateAnalysisError,
@@ -44,6 +48,10 @@ from .private_analysis import (
     private_analysis_tool_error_json,
     private_analysis_tool_result_from_json,
     private_analysis_tool_result_json,
+)
+from .private_analysis_factory_process import (
+    PrivateAnalysisRemoteToolRunLease,
+    PrivateAnalysisRemoteToolService,
 )
 from .private_analysis_runner_support import (
     MAX_PRIVATE_ANALYSIS_IN_PROCESS_TRANSCRIPT_BYTES,
@@ -485,7 +493,7 @@ class PrivateAnalysisInProcessToolGateway:
 
     def __init__(
         self,
-        lease: PrivateAnalysisToolRunLease,
+        lease: PrivateAnalysisToolRunLease | PrivateAnalysisRemoteToolRunLease,
         *,
         accounting: _RunAccountingSnapshot,
         instruction_profile_digest: str,
@@ -493,8 +501,11 @@ class PrivateAnalysisInProcessToolGateway:
         deadline_ns: int,
         cancellation_probe: PrivateAnalysisCancellationProbe | None = None,
     ) -> None:
-        if type(lease) is not PrivateAnalysisToolRunLease:
-            raise TypeError("lease must be PrivateAnalysisToolRunLease")
+        if type(lease) not in {
+            PrivateAnalysisToolRunLease,
+            PrivateAnalysisRemoteToolRunLease,
+        }:
+            raise TypeError("lease must be a core private-analysis tool lease")
         if type(accounting) is not _RunAccountingSnapshot:
             raise TypeError("accounting must be PrivateAnalysisRunAccountingSnapshot")
         if cancellation_probe is not None and not callable(cancellation_probe):
@@ -857,10 +868,87 @@ class PrivateAnalysisInProcessToolGateway:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _DeferredInProcessReceipt:
+    """Receipt-capable state retained when process control interrupts sealing."""
+
+    request: PrivateAnalysisRequest
+    catalog: PrivateAnalysisToolCatalog
+    instruction_profile_digest: str
+    runner_configuration_digest: str
+    gateway_state: _PrivateAnalysisInProcessGatewayState
+    references: tuple[EvidenceReference, ...]
+    budget_state: PrivateAnalysisToolBudgetState
+
+    def seal(self) -> PrivateAnalysisInProcessExecutionReceipt:
+        outcome = _error_outcome(
+            _analysis_error(
+                self.request.request_digest,
+                PrivateAnalysisErrorStage.RUNNER,
+                PrivateAnalysisErrorCode.RUNNER_FAILED,
+            )
+        )
+        try:
+            return _execution_receipt(
+                request=self.request,
+                catalog=self.catalog,
+                instruction_profile_digest=self.instruction_profile_digest,
+                runner_configuration_digest=self.runner_configuration_digest,
+                gateway_state=self.gateway_state,
+                references=self.references,
+                budget_state=self.budget_state,
+                outcome=outcome,
+            )
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException:  # noqa: BLE001 - corrupted runner-only metadata.
+            safe_gateway_state = _PrivateAnalysisInProcessGatewayState(
+                terminal_error=None,
+                exchange_count=0,
+                exchange_metadata_bytes=0,
+                chain_digest=_transcript_seed(
+                    request_digest=self.request.request_digest,
+                    catalog_digest=self.catalog.catalog_digest,
+                    instruction_profile_digest=self.instruction_profile_digest,
+                    runner_configuration_digest=self.runner_configuration_digest,
+                ),
+            )
+            return _execution_receipt(
+                request=self.request,
+                catalog=self.catalog,
+                instruction_profile_digest=self.instruction_profile_digest,
+                runner_configuration_digest=self.runner_configuration_digest,
+                gateway_state=safe_gateway_state,
+                references=self.references,
+                budget_state=self.budget_state,
+                outcome=outcome,
+            )
+
+
+@dataclass(slots=True)
+class _PendingInProcessReceipt:
+    deferred: _DeferredInProcessReceipt
+    receipt: PrivateAnalysisInProcessExecutionReceipt | None = None
+
+
+class _InProcessReceiptOwner:
+    """Receipt state shared by every detached view of one configured runner."""
+
+    __slots__ = ("lock", "pending")
+
+    def __init__(self) -> None:
+        self.lock = Lock()
+        self.pending: _PendingInProcessReceipt | None = None
+
+
 class ConfiguredPrivateAnalysisInProcessRunner(PrivateAnalysisRunnerExecutionOwner):
     """Execute one request with a process-trusted local callback."""
 
-    __slots__ = ("_callback",)
+    __slots__ = (
+        "_callback",
+        "_callback_attestation_digest",
+        "_receipt_owner",
+    )
 
     def __init__(
         self,
@@ -878,13 +966,92 @@ class ConfiguredPrivateAnalysisInProcessRunner(PrivateAnalysisRunnerExecutionOwn
         if not callable(model_callback):
             raise TypeError("model_callback must be callable")
         self._callback = model_callback
+        self._callback_attestation_digest: str | None = None
+        self._receipt_owner = _InProcessReceiptOwner()
+
+    def detached(self) -> ConfiguredPrivateAnalysisInProcessRunner:
+        """Return a registration-owned runner sealed to this exact callback."""
+
+        try:
+            current = executable_callable_fingerprint(self._callback)
+        except PluginExecutableIdentityError as error:
+            raise ValueError(
+                "model_callback has no bounded executable identity"
+            ) from error
+        expected = self._callback_attestation_digest
+        if expected is not None and current != expected:
+            raise ValueError("model_callback executable identity changed")
+        detached = ConfiguredPrivateAnalysisInProcessRunner(
+            self.selection,
+            instruction_profile_digest=self.instruction_profile_digest,
+            model_callback=self._callback,
+        )
+        detached._callback_attestation_digest = current
+        # Ownership is detached, but every clone of one admitted runner must
+        # retain the same execution gate. Otherwise two coordinators can turn
+        # registration detachment into parallel access to a runner that was
+        # deliberately configured as a single execution authority.
+        detached._private_analysis_execution_lock = self.execution_lock
+        detached._receipt_owner = self._receipt_owner
+        return detached
+
+    @property
+    def receipt_pending(self) -> bool:
+        """Return whether a started execution still needs receipt handoff."""
+
+        with self._receipt_owner.lock:
+            return self._receipt_owner.pending is not None
+
+    def _retain_pending_receipt(self, receipt: _DeferredInProcessReceipt) -> None:
+        pending = _PendingInProcessReceipt(deferred=receipt)
+        with self._receipt_owner.lock:
+            if self._receipt_owner.pending is not None:
+                raise RuntimeError("in-process receipt ownership already exists")
+            self._receipt_owner.pending = pending
+
+    def retry_pending_receipt(
+        self,
+    ) -> PrivateAnalysisInProcessExecutionReceipt | None:
+        """Seal or return the exact receipt withheld by process control."""
+
+        with self._receipt_owner.lock:
+            pending = self._receipt_owner.pending
+            if pending is None:
+                return None
+            if pending.receipt is None:
+                pending.receipt = pending.deferred.seal()
+            return pending.receipt
+
+    def acknowledge_pending_receipt(self) -> None:
+        """Release retained state only after durable terminal handoff."""
+
+        with self._receipt_owner.lock:
+            pending = self._receipt_owner.pending
+            if pending is None:
+                return
+            if pending.receipt is None:
+                raise RuntimeError("in-process receipt has not been sealed")
+            self._receipt_owner.pending = None
+
+    def _callback_identity_is_current(self) -> bool:
+        expected = self._callback_attestation_digest
+        if expected is None:
+            # Standalone, explicitly trusted use remains source compatible;
+            # core registrations always replace the runner with detached().
+            return True
+        try:
+            current = executable_callable_fingerprint(self._callback)
+        except PluginExecutableIdentityError:
+            return False
+        return current == expected
 
     def execute(
         self,
-        tool_service: PrivateAnalysisToolService,
+        tool_service: PrivateAnalysisToolService | PrivateAnalysisRemoteToolService,
         *,
         accounting_observer: PrivateAnalysisAccountingObserver | None = None,
         cancellation_probe: PrivateAnalysisCancellationProbe | None = None,
+        absolute_deadline_ns: int | None = None,
     ) -> PrivateAnalysisInProcessExecutionReceipt:
         """Execute once with cooperative cancellation at trusted boundaries.
 
@@ -893,57 +1060,79 @@ class ConfiguredPrivateAnalysisInProcessRunner(PrivateAnalysisRunnerExecutionOwn
         not observe cancellation until it next reaches one of those points.
         """
 
-        if type(tool_service) is not PrivateAnalysisToolService:
-            raise TypeError("tool_service must be PrivateAnalysisToolService")
+        if self.receipt_pending:
+            raise RuntimeError("in-process receipt handoff is pending")
+        if type(tool_service) not in {
+            PrivateAnalysisToolService,
+            PrivateAnalysisRemoteToolService,
+        }:
+            raise TypeError("tool_service must be a core private-analysis service")
         if accounting_observer is not None and not callable(accounting_observer):
             raise TypeError("accounting_observer must be callable or None")
         if cancellation_probe is not None and not callable(cancellation_probe):
             raise TypeError("cancellation_probe must be callable or None")
         request = tool_service.request
         start_ns = monotonic_ns()
-        deadline_ns = start_ns + request.limits.deadline_ms * 1_000_000
+        if absolute_deadline_ns is not None and (
+            type(absolute_deadline_ns) is not int or absolute_deadline_ns < 0
+        ):
+            raise ValueError(
+                "absolute_deadline_ns must be a non-negative integer or None"
+            )
+        deadline_ns = (
+            start_ns + request.limits.deadline_ms * 1_000_000
+            if absolute_deadline_ns is None
+            else absolute_deadline_ns
+        )
         catalog = default_private_analysis_tool_catalog()
-        binding_error = self._binding_error(request, catalog)
-        if binding_error is not None:
+
+        def early_receipt(
+            error: PrivateAnalysisError,
+        ) -> PrivateAnalysisInProcessExecutionReceipt:
+            # The coordinator propagates one absolute deadline that includes
+            # evidence preparation. An already-expired deadline must retain
+            # timeout precedence over binding or lease-acquisition failures.
+            if _deadline_expired(deadline_ns):
+                error = _analysis_error(
+                    request.request_digest,
+                    PrivateAnalysisErrorStage.RUNNER,
+                    PrivateAnalysisErrorCode.TIMEOUT,
+                )
             return _standalone_receipt(
                 request=request,
                 instruction_profile_digest=self._instruction_profile_digest,
                 runner_configuration_digest=self._selection.configuration_digest,
                 catalog=catalog,
-                outcome=_error_outcome(binding_error),
+                outcome=_error_outcome(error),
                 references=(),
                 budget_state=_empty_budget_state(request),
             )
+
+        if _deadline_expired(deadline_ns):
+            return early_receipt(
+                _analysis_error(
+                    request.request_digest,
+                    PrivateAnalysisErrorStage.RUNNER,
+                    PrivateAnalysisErrorCode.TIMEOUT,
+                )
+            )
+        binding_error = self._binding_error(request, catalog)
+        if binding_error is not None:
+            return early_receipt(binding_error)
 
         cancellation_error = _cancellation_error(
             request.request_digest,
             cancellation_probe,
         )
         if cancellation_error is not None:
-            return _standalone_receipt(
-                request=request,
-                instruction_profile_digest=self._instruction_profile_digest,
-                runner_configuration_digest=self._selection.configuration_digest,
-                catalog=catalog,
-                outcome=_error_outcome(cancellation_error),
-                references=(),
-                budget_state=_empty_budget_state(request),
-            )
+            return early_receipt(cancellation_error)
 
         try:
             lease = tool_service.acquire_run_lease()
         except PROCESS_CONTROL_EXCEPTIONS:
             raise
         except PrivateAnalysisToolServiceError as error:
-            return _standalone_receipt(
-                request=request,
-                instruction_profile_digest=self._instruction_profile_digest,
-                runner_configuration_digest=self._selection.configuration_digest,
-                catalog=catalog,
-                outcome=_error_outcome(error.error),
-                references=(),
-                budget_state=_empty_budget_state(request),
-            )
+            return early_receipt(error.error)
 
         budget_state = _empty_budget_state(request)
         accounting = _RunAccountingSnapshot(
@@ -1004,16 +1193,37 @@ class ConfiguredPrivateAnalysisInProcessRunner(PrivateAnalysisRunnerExecutionOwn
                             request=request,
                             catalog=catalog,
                         )
-                        try:
-                            raw_result = self._callback(context, gateway)
-                        except PROCESS_CONTROL_EXCEPTIONS:
-                            raise
-                        except BaseException:  # noqa: BLE001 - runner boundary.
+                        if not self._callback_identity_is_current():
                             outcome_error = _analysis_error(
                                 request.request_digest,
                                 PrivateAnalysisErrorStage.RUNNER,
-                                PrivateAnalysisErrorCode.RUNNER_FAILED,
+                                PrivateAnalysisErrorCode.RUNNER_UNAVAILABLE,
                             )
+                        else:
+                            # Fingerprinting is bounded but may still consume
+                            # the remainder of a near-expired deadline. Recheck
+                            # cancellation and access after attestation so no
+                            # callback begins on authority that expired while
+                            # its executable identity was being verified.
+                            outcome_error = _cancellation_error(
+                                request.request_digest,
+                                cancellation_probe,
+                            ) or _access_or_deadline_error(
+                                lease,
+                                request,
+                                deadline_ns,
+                            )
+                            if outcome_error is None:
+                                try:
+                                    raw_result = self._callback(context, gateway)
+                                except PROCESS_CONTROL_EXCEPTIONS:
+                                    raise
+                                except BaseException:  # noqa: BLE001 - runner boundary.
+                                    outcome_error = _analysis_error(
+                                        request.request_digest,
+                                        PrivateAnalysisErrorStage.RUNNER,
+                                        PrivateAnalysisErrorCode.RUNNER_FAILED,
+                                    )
                         cancellation_error = _cancellation_error(
                             request.request_digest,
                             cancellation_probe,
@@ -1153,6 +1363,15 @@ class ConfiguredPrivateAnalysisInProcessRunner(PrivateAnalysisRunnerExecutionOwn
         if final_cancellation_error is not None:
             outcome = _error_outcome(final_cancellation_error)
 
+        deferred_receipt = _DeferredInProcessReceipt(
+            request=request,
+            catalog=catalog,
+            instruction_profile_digest=self._instruction_profile_digest,
+            runner_configuration_digest=self._selection.configuration_digest,
+            gateway_state=gateway_state,
+            references=references,
+            budget_state=budget_state,
+        )
         try:
             return _deadline_checked_execution_receipt(
                 request=request,
@@ -1166,6 +1385,7 @@ class ConfiguredPrivateAnalysisInProcessRunner(PrivateAnalysisRunnerExecutionOwn
                 deadline_ns=deadline_ns,
             )
         except PROCESS_CONTROL_EXCEPTIONS:
+            self._retain_pending_receipt(deferred_receipt)
             raise
         except BaseException:  # noqa: BLE001 - trusted callback integrity boundary.
             fallback_outcome = _error_outcome(
@@ -1188,6 +1408,7 @@ class ConfiguredPrivateAnalysisInProcessRunner(PrivateAnalysisRunnerExecutionOwn
                     deadline_ns=deadline_ns,
                 )
             except PROCESS_CONTROL_EXCEPTIONS:
+                self._retain_pending_receipt(deferred_receipt)
                 raise
             except BaseException:  # noqa: BLE001 - corrupted private state.
                 safe_gateway_state = _PrivateAnalysisInProcessGatewayState(
@@ -1203,17 +1424,23 @@ class ConfiguredPrivateAnalysisInProcessRunner(PrivateAnalysisRunnerExecutionOwn
                         ),
                     ),
                 )
-                return _deadline_checked_execution_receipt(
-                    request=request,
-                    instruction_profile_digest=self._instruction_profile_digest,
-                    runner_configuration_digest=(self._selection.configuration_digest),
-                    catalog=catalog,
-                    gateway_state=safe_gateway_state,
-                    outcome=fallback_outcome,
-                    references=references,
-                    budget_state=budget_state,
-                    deadline_ns=deadline_ns,
-                )
+                try:
+                    return _deadline_checked_execution_receipt(
+                        request=request,
+                        instruction_profile_digest=self._instruction_profile_digest,
+                        runner_configuration_digest=(
+                            self._selection.configuration_digest
+                        ),
+                        catalog=catalog,
+                        gateway_state=safe_gateway_state,
+                        outcome=fallback_outcome,
+                        references=references,
+                        budget_state=budget_state,
+                        deadline_ns=deadline_ns,
+                    )
+                except PROCESS_CONTROL_EXCEPTIONS:
+                    self._retain_pending_receipt(deferred_receipt)
+                    raise
 
     def _binding_error(
         self,
@@ -1248,7 +1475,7 @@ class ConfiguredPrivateAnalysisInProcessRunner(PrivateAnalysisRunnerExecutionOwn
 
 
 def _access_or_deadline_error(
-    lease: PrivateAnalysisToolRunLease,
+    lease: PrivateAnalysisToolRunLease | PrivateAnalysisRemoteToolRunLease,
     request: PrivateAnalysisRequest,
     deadline_ns: int,
 ) -> PrivateAnalysisError | None:
@@ -1345,6 +1572,51 @@ def _deadline_checked_execution_receipt(
     budget_state: PrivateAnalysisToolBudgetState,
     deadline_ns: int,
 ) -> PrivateAnalysisInProcessExecutionReceipt:
+    receipt = _execution_receipt(
+        request=request,
+        catalog=catalog,
+        instruction_profile_digest=instruction_profile_digest,
+        runner_configuration_digest=runner_configuration_digest,
+        gateway_state=gateway_state,
+        outcome=outcome,
+        references=references,
+        budget_state=budget_state,
+    )
+    if (
+        outcome.error is not None
+        and outcome.error.code is PrivateAnalysisErrorCode.TIMEOUT
+    ) or not _deadline_expired(deadline_ns):
+        return receipt
+    timeout_outcome = _error_outcome(
+        _analysis_error(
+            request.request_digest,
+            PrivateAnalysisErrorStage.RUNNER,
+            PrivateAnalysisErrorCode.TIMEOUT,
+        )
+    )
+    return _execution_receipt(
+        request=request,
+        catalog=catalog,
+        instruction_profile_digest=instruction_profile_digest,
+        runner_configuration_digest=runner_configuration_digest,
+        gateway_state=gateway_state,
+        outcome=timeout_outcome,
+        references=references,
+        budget_state=budget_state,
+    )
+
+
+def _execution_receipt(
+    *,
+    request: PrivateAnalysisRequest,
+    instruction_profile_digest: str,
+    runner_configuration_digest: str,
+    catalog: PrivateAnalysisToolCatalog,
+    gateway_state: _PrivateAnalysisInProcessGatewayState,
+    outcome: PrivateAnalysisOutcome,
+    references: tuple[EvidenceReference, ...],
+    budget_state: PrivateAnalysisToolBudgetState,
+) -> PrivateAnalysisInProcessExecutionReceipt:
     transcript = _sealed_transcript(
         request=request,
         catalog=catalog,
@@ -1363,36 +1635,7 @@ def _deadline_checked_execution_receipt(
         disclosed_references=references,
         budget_state=budget_state,
     )
-    if (
-        outcome.error is not None
-        and outcome.error.code is PrivateAnalysisErrorCode.TIMEOUT
-    ) or not _deadline_expired(deadline_ns):
-        return receipt
-    timeout_outcome = _error_outcome(
-        _analysis_error(
-            request.request_digest,
-            PrivateAnalysisErrorStage.RUNNER,
-            PrivateAnalysisErrorCode.TIMEOUT,
-        )
-    )
-    timeout_transcript = _sealed_transcript(
-        request=request,
-        catalog=catalog,
-        instruction_profile_digest=instruction_profile_digest,
-        runner_configuration_digest=runner_configuration_digest,
-        exchange_count=gateway_state.exchange_count,
-        exchange_metadata_bytes=gateway_state.exchange_metadata_bytes,
-        exchange_chain_digest=gateway_state.chain_digest,
-        references=references,
-        budget_state=budget_state,
-        outcome=timeout_outcome,
-    )
-    return PrivateAnalysisInProcessExecutionReceipt(
-        outcome=timeout_outcome,
-        transcript=timeout_transcript,
-        disclosed_references=references,
-        budget_state=budget_state,
-    )
+    return receipt
 
 
 def _sealed_transcript(

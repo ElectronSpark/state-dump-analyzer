@@ -4,7 +4,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -52,6 +52,7 @@ from router_dump_analyzer.private_analysis_binding import (
     bind_private_analysis_revision,
 )
 from router_dump_analyzer.private_analysis_run_store import (
+    PrivateAnalysisRunCleanupPending,
     PrivateAnalysisRunConflict,
     PrivateAnalysisRunCorruptionError,
     PrivateAnalysisRunNotFound,
@@ -78,6 +79,7 @@ _SHA_C = "sha256:" + "c" * 64
 _SHA_D = "sha256:" + "d" * 64
 _SHA_E = "sha256:" + "e" * 64
 _POLICY = "f" * 64
+_CLEANUP_CAPABILITY = "cleanup-capability-v1:" + "1" * 64
 
 
 def _scope(suffix: str = "a") -> EvidenceScope:
@@ -115,6 +117,7 @@ def _execution_plan(node_id: str, suffix: str) -> PluginExecutionPlan:
         ),
         configuration_digest="sha256:" + "c" * 64,
         schema_digest="sha256:" + "d" * 64,
+        registered_execution_identity="sha256:" + suffix * 64,
         capabilities=("source_record_parser",),
         roles=("primary_parser",),
     )
@@ -578,6 +581,557 @@ class PrivateAnalysisRunStoreTests(unittest.TestCase):
             if failed[0].outcome and failed[0].outcome.error
             else None,
             PrivateAnalysisErrorCode.RUNNER_FAILED,
+        )
+
+    def test_expired_recovery_can_be_scoped_without_touching_another_tenant(
+        self,
+    ) -> None:
+        requests = (_request(scope=_scope("a")), _request(scope=_scope("b")))
+        for request in requests:
+            queued = self.store.create_run(
+                request,
+                actor_id="operator",
+                idempotency_key=f"scoped-{request.scope.tenant_id}",
+                run_id=f"run-{request.scope.tenant_id}",
+                now_ns=10,
+            )
+            self.store.claim_run(
+                request.scope,
+                queued.run_id,
+                expected_version=queued.version,
+                actor_id="worker",
+                execution_id=f"attempt-{request.scope.tenant_id}",
+                lease_duration_ns=1,
+                now_ns=11,
+            )
+
+        recovered = self.store.recover_expired_runs(
+            scope=requests[0].scope,
+            actor_id="recovery",
+            now_ns=13,
+        )
+
+        self.assertEqual(
+            tuple(item.scope for item in recovered),
+            (requests[0].scope,),
+        )
+        self.assertIs(
+            self.store.get_run(
+                requests[0].scope,
+                f"run-{requests[0].scope.tenant_id}",
+            ).state,
+            PrivateAnalysisRunState.COMPLETED,
+        )
+        self.assertIs(
+            self.store.get_run(
+                requests[1].scope,
+                f"run-{requests[1].scope.tenant_id}",
+            ).state,
+            PrivateAnalysisRunState.RUNNING,
+        )
+
+        fenced_request = _request(scope=_scope("c"))
+        fenced = self.store.create_run(
+            fenced_request,
+            actor_id="operator",
+            idempotency_key="scoped-fenced",
+            run_id="run-fenced",
+            now_ns=10,
+        )
+        fenced = self.store.claim_run(
+            fenced_request.scope,
+            fenced.run_id,
+            expected_version=fenced.version,
+            actor_id="worker",
+            execution_id="attempt-fenced",
+            lease_duration_ns=1,
+            now_ns=11,
+        )
+        self.store.begin_cleanup_fence(
+            fenced_request.scope,
+            fenced.run_id,
+            execution_id="attempt-fenced",
+            cleanup_capability=_CLEANUP_CAPABILITY,
+            now_ns=12,
+        )
+        self.assertEqual(
+            self.store.recover_expired_runs(
+                scope=fenced_request.scope,
+                actor_id="recovery",
+                now_ns=13,
+            ),
+            (),
+        )
+        still_fenced = self.store.get_run(
+            fenced_request.scope,
+            fenced.run_id,
+        )
+        self.assertIs(still_fenced.state, PrivateAnalysisRunState.RUNNING)
+        self.assertTrue(still_fenced.cleanup_pending)
+
+    def test_cleanup_fence_survives_restart_and_blocks_expiry_recovery(self) -> None:
+        request = _request()
+        queued = self.store.create_run(
+            request,
+            actor_id="operator",
+            idempotency_key="cleanup-restart",
+            run_id="cleanup-restart",
+            now_ns=10,
+        )
+        running = self.store.claim_run(
+            request.scope,
+            queued.run_id,
+            expected_version=queued.version,
+            actor_id="worker",
+            execution_id="cleanup-execution",
+            lease_duration_ns=10,
+            now_ns=11,
+        )
+        fence = self.store.begin_cleanup_fence(
+            request.scope,
+            running.run_id,
+            execution_id="cleanup-execution",
+            cleanup_capability=_CLEANUP_CAPABILITY,
+            now_ns=12,
+        )
+        self.store.note_cleanup_attempt(
+            request.scope,
+            running.run_id,
+            execution_id="cleanup-execution",
+            cleanup_capability=_CLEANUP_CAPABILITY,
+            now_ns=13,
+        )
+        with self.assertRaises(PrivateAnalysisRunCleanupPending):
+            self.store.finalize_unstarted_attempt(
+                request.scope,
+                running.run_id,
+                expected_version=running.version,
+                execution_id="cleanup-execution",
+                actor_id="worker",
+                now_ns=14,
+            )
+        self.store.close()
+
+        reopened = SqlitePrivateAnalysisRunStore(
+            self.database,
+            admission_validator=self.validator,
+        )
+        self.store = reopened
+        self.assertEqual(
+            reopened.recover_expired_runs(actor_id="recovery", now_ns=22),
+            (),
+        )
+        restored = reopened.get_cleanup_fence(request.scope, running.run_id)
+        self.assertIsNotNone(restored)
+        assert restored is not None
+        self.assertEqual(restored.created_at_ns, fence.created_at_ns)
+        self.assertEqual(restored.attempt_count, 1)
+        public_fields = tuple(item.name for item in fields(restored))
+        self.assertFalse(
+            any(
+                "capability" in field_name or "verifier" in field_name
+                for field_name in public_fields
+            )
+        )
+        self.assertEqual(
+            reopened.list_cleanup_fences(request.scope),
+            (restored,),
+        )
+        inspection = sqlite3.connect(self.database)
+        try:
+            stored_verifier = inspection.execute(
+                "SELECT owner_verifier_digest "
+                "FROM private_analysis_run_cleanup_fences"
+            ).fetchone()[0]
+            raw_row = inspection.execute(
+                "SELECT * FROM private_analysis_run_cleanup_fences"
+            ).fetchone()
+        finally:
+            inspection.close()
+        self.assertNotIn(_CLEANUP_CAPABILITY, tuple(raw_row))
+        self.assertIn(stored_verifier, tuple(raw_row))
+        self.assertFalse(hasattr(reopened, "clear_cleanup_fence"))
+        for copied_scalar in tuple(raw_row):
+            with (
+                self.subTest(copied_scalar=copied_scalar),
+                self.assertRaises((ValueError, PrivateAnalysisRunConflict)),
+            ):
+                reopened.finalize_unstarted_attempt(
+                    request.scope,
+                    running.run_id,
+                    expected_version=running.version,
+                    execution_id="cleanup-execution",
+                    actor_id="worker",
+                    cleanup_capability=copied_scalar,
+                    now_ns=14,
+                )
+        with self.assertRaises(PrivateAnalysisRunConflict):
+            reopened.finalize_unstarted_attempt(
+                request.scope,
+                running.run_id,
+                expected_version=running.version,
+                execution_id="cleanup-execution",
+                actor_id="worker",
+                cleanup_capability="cleanup-capability-v1:" + "2" * 64,
+                now_ns=14,
+            )
+        fenced_run = reopened.get_run(request.scope, running.run_id)
+        self.assertEqual(fenced_run.state, PrivateAnalysisRunState.RUNNING)
+        self.assertTrue(fenced_run.cleanup_pending)
+        self.assertEqual(
+            reopened.recover_expired_runs(actor_id="recovery", now_ns=22),
+            (),
+        )
+
+    def test_cleanup_terminal_commit_is_atomic_exact_and_lease_independent(
+        self,
+    ) -> None:
+        request = _request()
+        queued = self.store.create_run(
+            request,
+            actor_id="operator",
+            idempotency_key="atomic-cleanup-receipt",
+            run_id="atomic-cleanup-receipt",
+            now_ns=10,
+        )
+        running = self.store.claim_run(
+            request.scope,
+            queued.run_id,
+            expected_version=queued.version,
+            actor_id="worker",
+            execution_id="atomic-execution",
+            lease_duration_ns=10,
+            now_ns=11,
+        )
+        self.store.begin_cleanup_fence(
+            request.scope,
+            running.run_id,
+            execution_id="atomic-execution",
+            cleanup_capability=_CLEANUP_CAPABILITY,
+            now_ns=12,
+        )
+        self.assertEqual(
+            self.store.recover_expired_runs(actor_id="recovery", now_ns=22),
+            (),
+        )
+        outcome = _outcome(request)
+        summary = _summary(
+            request,
+            outcome,
+            running.budget_state,
+            running.evidence_ledger_digest,
+        )
+        with (
+            patch.object(
+                SqlitePrivateAnalysisRunStore,
+                "_persist_transition",
+                side_effect=RuntimeError("synthetic transition failure"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "transition failure"),
+        ):
+            self.store.complete_run(
+                request.scope,
+                running.run_id,
+                expected_version=running.version,
+                execution_id="atomic-execution",
+                outcome=outcome,
+                transcript_summary=summary,
+                references=(),
+                budget_state=running.budget_state,
+                actor_id="worker",
+                cleanup_capability=_CLEANUP_CAPABILITY,
+                now_ns=22,
+            )
+        self.assertTrue(
+            self.store.get_run(request.scope, running.run_id).cleanup_pending
+        )
+        with self.assertRaisesRegex(
+            PrivateAnalysisRunConflict,
+            "cleanup ownership",
+        ):
+            self.store.complete_run(
+                request.scope,
+                running.run_id,
+                expected_version=running.version,
+                execution_id="atomic-execution",
+                outcome=outcome,
+                transcript_summary=summary,
+                references=(),
+                budget_state=running.budget_state,
+                actor_id="worker",
+                cleanup_capability="cleanup-capability-v1:" + "2" * 64,
+                now_ns=22,
+            )
+        self.assertTrue(
+            self.store.get_run(request.scope, running.run_id).cleanup_pending
+        )
+        completed = self.store.complete_run(
+            request.scope,
+            running.run_id,
+            expected_version=running.version,
+            execution_id="atomic-execution",
+            outcome=outcome,
+            transcript_summary=summary,
+            references=(),
+            budget_state=running.budget_state,
+            actor_id="worker",
+            cleanup_capability=_CLEANUP_CAPABILITY,
+            now_ns=22,
+        )
+        self.assertIs(completed.state, PrivateAnalysisRunState.COMPLETED)
+        self.assertFalse(completed.cleanup_pending)
+        self.assertIsNone(
+            self.store.get_cleanup_fence(request.scope, running.run_id)
+        )
+        with self.assertRaisesRegex(
+            PrivateAnalysisRunConflict,
+            "terminal cleanup capability",
+        ):
+            self.store.complete_run(
+                request.scope,
+                running.run_id,
+                expected_version=running.version,
+                execution_id="atomic-execution",
+                outcome=outcome,
+                transcript_summary=summary,
+                references=(),
+                budget_state=running.budget_state,
+                actor_id="worker",
+                cleanup_capability="cleanup-capability-v1:" + "2" * 64,
+                now_ns=23,
+            )
+        self.assertEqual(
+            self.store.complete_run(
+                request.scope,
+                running.run_id,
+                expected_version=running.version,
+                execution_id="atomic-execution",
+                outcome=outcome,
+                transcript_summary=summary,
+                references=(),
+                budget_state=running.budget_state,
+                actor_id="worker",
+                cleanup_capability=_CLEANUP_CAPABILITY,
+                now_ns=23,
+            ),
+            completed,
+        )
+        self.store.close()
+        self.store = SqlitePrivateAnalysisRunStore(
+            self.database,
+            admission_validator=self.validator,
+        )
+        self.assertEqual(
+            self.store.complete_run(
+                request.scope,
+                running.run_id,
+                expected_version=running.version,
+                execution_id="atomic-execution",
+                outcome=outcome,
+                transcript_summary=summary,
+                references=(),
+                budget_state=running.budget_state,
+                actor_id="worker",
+                cleanup_capability=_CLEANUP_CAPABILITY,
+                now_ns=24,
+            ),
+            completed,
+        )
+
+        queued_unstarted = self.store.create_run(
+            request,
+            actor_id="operator",
+            idempotency_key="atomic-cleanup-unstarted",
+            run_id="atomic-cleanup-unstarted",
+            now_ns=30,
+        )
+        running_unstarted = self.store.claim_run(
+            request.scope,
+            queued_unstarted.run_id,
+            expected_version=queued_unstarted.version,
+            actor_id="worker",
+            execution_id="atomic-unstarted-execution",
+            lease_duration_ns=10,
+            now_ns=31,
+        )
+        unstarted_capability = "cleanup-capability-v1:" + "3" * 64
+        self.store.begin_cleanup_fence(
+            request.scope,
+            running_unstarted.run_id,
+            execution_id="atomic-unstarted-execution",
+            cleanup_capability=unstarted_capability,
+            now_ns=32,
+        )
+        terminal_unstarted = self.store.finalize_unstarted_attempt(
+            request.scope,
+            running_unstarted.run_id,
+            expected_version=running_unstarted.version,
+            execution_id="atomic-unstarted-execution",
+            actor_id="worker",
+            cleanup_capability=unstarted_capability,
+            now_ns=42,
+        )
+        self.assertIs(terminal_unstarted.state, PrivateAnalysisRunState.COMPLETED)
+        self.assertIsNone(terminal_unstarted.transcript_summary)
+        self.assertIsNone(
+            self.store.get_cleanup_fence(request.scope, running_unstarted.run_id)
+        )
+
+    def test_cleanup_fence_table_is_added_to_an_existing_store(self) -> None:
+        self.store.close()
+        connection = sqlite3.connect(self.database)
+        try:
+            connection.execute("DROP TABLE private_analysis_run_cleanup_fences")
+            connection.execute("PRAGMA user_version = 1")
+            connection.commit()
+        finally:
+            connection.close()
+        reopened = SqlitePrivateAnalysisRunStore(
+            self.database,
+            admission_validator=self.validator,
+        )
+        self.store = reopened
+        request = _request()
+        queued = reopened.create_run(
+            request,
+            actor_id="operator",
+            idempotency_key="cleanup-migration",
+            run_id="cleanup-migration",
+            now_ns=10,
+        )
+        running = reopened.claim_run(
+            request.scope,
+            queued.run_id,
+            expected_version=queued.version,
+            actor_id="worker",
+            execution_id="cleanup-execution",
+            lease_duration_ns=10,
+            now_ns=11,
+        )
+        fence = reopened.begin_cleanup_fence(
+            request.scope,
+            running.run_id,
+            execution_id="cleanup-execution",
+            cleanup_capability=_CLEANUP_CAPABILITY,
+            now_ns=12,
+        )
+        self.assertEqual(fence.attempt_count, 0)
+        inspection = sqlite3.connect(self.database)
+        try:
+            columns = {
+                row[1]
+                for row in inspection.execute(
+                    "PRAGMA table_info(private_analysis_run_cleanup_fences)"
+                )
+            }
+        finally:
+            inspection.close()
+        self.assertFalse(any("pid" in column or "process" in column for column in columns))
+        self.assertNotIn("fence_id", columns)
+        self.assertIn("owner_verifier_digest", columns)
+
+    def test_legacy_cleanup_token_is_rewritten_to_one_way_verifier(self) -> None:
+        request = _request()
+        queued = self.store.create_run(
+            request,
+            actor_id="operator",
+            idempotency_key="cleanup-legacy",
+            run_id="cleanup-legacy",
+            now_ns=10,
+        )
+        running = self.store.claim_run(
+            request.scope,
+            queued.run_id,
+            expected_version=queued.version,
+            actor_id="worker",
+            execution_id="cleanup-execution",
+            lease_duration_ns=10,
+            now_ns=11,
+        )
+        self.store.close()
+        connection = sqlite3.connect(self.database)
+        try:
+            connection.execute("DROP TABLE private_analysis_run_cleanup_fences")
+            connection.execute(
+                """
+                CREATE TABLE private_analysis_run_cleanup_fences (
+                    tenant_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    execution_id TEXT NOT NULL,
+                    fence_id TEXT NOT NULL,
+                    created_at_ns INTEGER NOT NULL,
+                    last_attempt_at_ns INTEGER NOT NULL,
+                    attempt_count INTEGER NOT NULL,
+                    PRIMARY KEY (tenant_id, project_id, workspace_id, run_id),
+                    UNIQUE (fence_id)
+                ) STRICT
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO private_analysis_run_cleanup_fences(
+                    tenant_id, project_id, workspace_id, run_id,
+                    execution_id, fence_id, created_at_ns,
+                    last_attempt_at_ns, attempt_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request.scope.tenant_id,
+                    request.scope.project_id,
+                    request.scope.workspace_id,
+                    running.run_id,
+                    "cleanup-execution",
+                    "legacy-cleanup-token",
+                    12,
+                    13,
+                    1,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        reopened = SqlitePrivateAnalysisRunStore(
+            self.database,
+            admission_validator=self.validator,
+        )
+        self.store = reopened
+        inspection = sqlite3.connect(self.database)
+        try:
+            columns = tuple(
+                row[1]
+                for row in inspection.execute(
+                    "PRAGMA table_info(private_analysis_run_cleanup_fences)"
+                )
+            )
+            row = inspection.execute(
+                "SELECT * FROM private_analysis_run_cleanup_fences"
+            ).fetchone()
+            verifier = inspection.execute(
+                "SELECT owner_verifier_digest "
+                "FROM private_analysis_run_cleanup_fences"
+            ).fetchone()[0]
+        finally:
+            inspection.close()
+        self.assertNotIn("fence_id", columns)
+        self.assertIn("owner_verifier_digest", columns)
+        self.assertNotIn("legacy-cleanup-token", tuple(row))
+        self.assertFalse(hasattr(reopened, "clear_cleanup_fence"))
+        with self.assertRaises(ValueError):
+            reopened.finalize_unstarted_attempt(
+                request.scope,
+                running.run_id,
+                expected_version=running.version,
+                execution_id="cleanup-execution",
+                actor_id="worker",
+                cleanup_capability=verifier,
+                now_ns=14,
+            )
+        self.assertEqual(
+            reopened.recover_expired_runs(actor_id="recovery", now_ns=22),
+            (),
         )
 
     def test_concurrent_claim_uses_one_execution_fence(self) -> None:
@@ -1329,6 +1883,14 @@ class PrivateAnalysisRunStoreTests(unittest.TestCase):
             ),
         )
         control.private_analysis_runs = cast(object, RunReferences())
+        control.proposal_review_store = cast(
+            object,
+            SimpleNamespace(
+                pending_retention_references=lambda _scope: SimpleNamespace(
+                    revision_ids=()
+                )
+            ),
+        )
         effective = control._catalog_retention_policy(
             review_scope,
             CatalogRetentionPolicy(

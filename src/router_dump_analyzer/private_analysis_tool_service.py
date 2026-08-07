@@ -38,16 +38,27 @@ from .private_analysis.disclosure import (
     evaluate_workspace_disclosure,
 )
 from .private_analysis.evidence import (
+    EvidenceEnvelope,
     EvidenceReference,
     EvidenceScope,
+    EvidenceTimeBasis,
+    evidence_envelope_from_json,
     evidence_envelope_json,
     evidence_reference_dict,
     evidence_reference_from_dict,
     make_evidence_envelope,
 )
 from .private_analysis.policy import PrivateAnalysisPolicy
+from .private_analysis.query_cancellation import (
+    PrivateAnalysisEvidenceQueryCancellationProbeError,
+    PrivateAnalysisEvidenceQueryCancelledError,
+    check_private_analysis_evidence_query_cancellation,
+)
 from .private_analysis.tool_catalog import (
     MAX_PRIVATE_ANALYSIS_SNAPSHOT_REFERENCES,
+    PrivateAnalysisCapabilityArguments,
+    PrivateAnalysisEvidenceCursorInvalidError,
+    PrivateAnalysisEvidenceQueryPage,
     PrivateAnalysisQueryArguments,
     PrivateAnalysisReadArguments,
     PrivateAnalysisToolCall,
@@ -58,6 +69,7 @@ from .private_analysis.tool_catalog import (
     PrivateAnalysisToolResultKind,
     default_private_analysis_tool_catalog,
     make_private_analysis_query_page,
+    make_private_analysis_query_page_from_snapshot,
     private_analysis_tool_call_dict,
     private_analysis_tool_call_from_dict,
 )
@@ -227,36 +239,60 @@ PrivateAnalysisReferenceQuery = Callable[
     [PrivateAnalysisRequest, PrivateAnalysisQueryArguments],
     tuple[EvidenceReference, ...],
 ]
+PrivateAnalysisReferencePageQuery = Callable[
+    [
+        PrivateAnalysisRequest,
+        PrivateAnalysisQueryArguments,
+        tuple[PrivateAnalysisEvidenceClass, ...],
+        Callable[[], bool] | None,
+    ],
+    PrivateAnalysisEvidenceQueryPage,
+]
 PrivateAnalysisReferenceResolver = Callable[
     [PrivateAnalysisRequest, str],
     EvidenceReference | None,
 ]
 PrivateAnalysisPayloadMaterializer = Callable[[EvidenceReference], dict[str, Any]]
 PrivateAnalysisReferenceValidator = Callable[[EvidenceReference], bool]
+PrivateAnalysisReferenceBatchValidator = Callable[[tuple[EvidenceReference, ...]], bool]
+PrivateAnalysisCapabilityAnalyzer = Callable[
+    [
+        PrivateAnalysisRequest,
+        PrivateAnalysisCapabilityArguments,
+        tuple[EvidenceEnvelope, ...],
+        Callable[[], bool] | None,
+    ],
+    tuple[EvidenceReference, dict[str, Any]],
+]
 
 
-_CALLBACK_COUNT: Final = 6
+_CALLBACK_COUNT: Final = 5
 
 
 class PrivateAnalysisToolService:
     """Execute the closed evidence tools for one exact private-analysis request.
 
-    The six callbacks are trusted deployment adapters with intentionally
-    narrow authority.  They are never serialized or exposed to a runner.  A
-    query callback must return the complete bounded candidate snapshot for the
-    supplied query; continuation calls deliberately query it again so the
-    cursor detects membership drift without retaining a 100K-reference cache.
+    The trusted deployment adapters have intentionally narrow authority and
+    are never serialized or exposed to a runner. Deployments select exactly
+    one legacy complete-snapshot query or bounded page-query mode; page mode
+    may also supply batch binding validation. The cursor binds the immutable
+    candidate snapshot, so continuation never requires reconstructing or
+    revalidating the complete candidate set.
     """
 
     __slots__ = (
         "_active_executions",
+        "_analyze_evidence",
         "_authorize",
         "_call_ids",
+        "_cancellation_probe",
         "_direct_use_claimed",
         "_evidence_bytes_disclosed",
         "_ledger",
         "_lock",
         "_materialize_payload",
+        "_materialized_envelopes",
+        "_query_reference_pages",
         "_query_references",
         "_request_json",
         "_resolve_policy",
@@ -268,6 +304,7 @@ class PrivateAnalysisToolService:
         "_runner_transport",
         "_tool_calls_consumed",
         "_validate_reference",
+        "_validate_references",
     )
 
     def __init__(
@@ -277,10 +314,14 @@ class PrivateAnalysisToolService:
         runner_policy: PrivateAnalysisPolicy,
         authorize: PrivateAnalysisAuthorizer,
         resolve_policy: PrivateAnalysisPolicyResolver,
-        query_references: PrivateAnalysisReferenceQuery,
+        query_references: PrivateAnalysisReferenceQuery | None,
         resolve_reference: PrivateAnalysisReferenceResolver,
         validate_reference: PrivateAnalysisReferenceValidator,
         materialize_payload: PrivateAnalysisPayloadMaterializer,
+        query_reference_pages: PrivateAnalysisReferencePageQuery | None = None,
+        validate_references: PrivateAnalysisReferenceBatchValidator | None = None,
+        analyze_evidence: PrivateAnalysisCapabilityAnalyzer | None = None,
+        cancellation_probe: Callable[[], bool] | None = None,
     ) -> None:
         detached_request: PrivateAnalysisRequest | None = None
         detached_runner_policy: PrivateAnalysisPolicy | None = None
@@ -316,7 +357,6 @@ class PrivateAnalysisToolService:
         callbacks = (
             authorize,
             resolve_policy,
-            query_references,
             resolve_reference,
             validate_reference,
             materialize_payload,
@@ -329,19 +369,59 @@ class PrivateAnalysisToolService:
                 PrivateAnalysisErrorStage.REQUEST_VALIDATION,
                 PrivateAnalysisErrorCode.INVALID_REQUEST,
             )
+        if (query_references is None) == (query_reference_pages is None):
+            raise _service_error(
+                detached_request,
+                PrivateAnalysisErrorStage.REQUEST_VALIDATION,
+                PrivateAnalysisErrorCode.INVALID_REQUEST,
+            )
+        selected_query = (
+            query_reference_pages
+            if query_reference_pages is not None
+            else query_references
+        )
+        if not callable(selected_query):
+            raise _service_error(
+                detached_request,
+                PrivateAnalysisErrorStage.REQUEST_VALIDATION,
+                PrivateAnalysisErrorCode.INVALID_REQUEST,
+            )
+        if validate_references is not None and not callable(validate_references):
+            raise _service_error(
+                detached_request,
+                PrivateAnalysisErrorStage.REQUEST_VALIDATION,
+                PrivateAnalysisErrorCode.INVALID_REQUEST,
+            )
+        if analyze_evidence is not None and not callable(analyze_evidence):
+            raise _service_error(
+                detached_request,
+                PrivateAnalysisErrorStage.REQUEST_VALIDATION,
+                PrivateAnalysisErrorCode.INVALID_REQUEST,
+            )
+        if cancellation_probe is not None and not callable(cancellation_probe):
+            raise _service_error(
+                detached_request,
+                PrivateAnalysisErrorStage.REQUEST_VALIDATION,
+                PrivateAnalysisErrorCode.INVALID_REQUEST,
+            )
         self._request_json = private_analysis_request_json(detached_request)
         self._runner_transport = detached_runner_policy.transport
         self._runner_full_fidelity = detached_runner_policy.full_fidelity_workspace_data
         self._authorize = authorize
         self._resolve_policy = resolve_policy
         self._query_references = query_references
+        self._query_reference_pages = query_reference_pages
         self._resolve_reference = resolve_reference
         self._validate_reference = validate_reference
+        self._validate_references = validate_references
+        self._analyze_evidence = analyze_evidence
+        self._cancellation_probe = cancellation_probe
         self._materialize_payload = materialize_payload
         self._lock = Lock()
         self._tool_calls_consumed = 0
         self._evidence_bytes_disclosed = 0
         self._ledger: dict[str, EvidenceReference] = {}
+        self._materialized_envelopes: dict[str, EvidenceEnvelope] = {}
         self._call_ids: set[str] = set()
         self._active_executions = 0
         self._direct_use_claimed = False
@@ -437,6 +517,7 @@ class PrivateAnalysisToolService:
             and self._evidence_bytes_disclosed == 0
             and not self._call_ids
             and not self._ledger
+            and not self._materialized_envelopes
         )
 
     def _execute_for_lease(
@@ -490,7 +571,9 @@ class PrivateAnalysisToolService:
             )
         if detached_call.binding.name is PrivateAnalysisToolName.QUERY_EVIDENCE:
             return self._execute_query(request, detached_call, policy)
-        return self._execute_read(request, detached_call, policy)
+        if detached_call.binding.name is PrivateAnalysisToolName.READ_EVIDENCE:
+            return self._execute_read(request, detached_call, policy)
+        return self._execute_analyze(request, detached_call, policy)
 
     def _require_run_access_for_lease(self, lease_token: object) -> None:
         """Re-authorize one leased run without charging evidence budgets."""
@@ -723,45 +806,98 @@ class PrivateAnalysisToolService:
             ).arguments
             if type(callback_arguments) is not PrivateAnalysisQueryArguments:
                 raise TypeError("detached query call has invalid arguments")
-            raw = self._query_references(
-                _detached_request(request),
-                callback_arguments,
-            )
-        except PROCESS_CONTROL_EXCEPTIONS:
-            raise
-        except BaseException:
-            return _tool_error(
-                call,
-                PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
-            )
-        references = self._validated_query_references(request, raw)
-        if references is None:
-            return _tool_error(
-                call,
-                PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
-            )
-        eligible: list[EvidenceReference] = []
-        try:
-            for reference in references:
-                if not _reference_matches_query(reference, arguments):
-                    continue
-                decision = self._disclosure_decision(
+            evidence_classes = tuple(
+                evidence_class
+                for evidence_class in PrivateAnalysisEvidenceClass
+                if self._disclosure_decision(
                     request,
                     policy,
-                    reference.evidence_class,
+                    evidence_class,
+                ).allowed
+            )
+            if self._query_reference_pages is not None:
+                check_private_analysis_evidence_query_cancellation(
+                    self._cancellation_probe
                 )
-                if decision.allowed:
-                    eligible.append(reference)
-            result = make_private_analysis_query_page(call, tuple(eligible))
+                raw = self._query_reference_pages(
+                    _detached_request(request),
+                    callback_arguments,
+                    evidence_classes,
+                    self._cancellation_probe,
+                )
+                check_private_analysis_evidence_query_cancellation(
+                    self._cancellation_probe
+                )
+                query_page = self._validated_query_page(request, arguments, raw)
+            else:
+                assert self._query_references is not None
+                raw = self._query_references(
+                    _detached_request(request),
+                    callback_arguments,
+                )
         except PROCESS_CONTROL_EXCEPTIONS:
             raise
-        except BaseException:
+        except PrivateAnalysisEvidenceCursorInvalidError:
             code = (
                 PrivateAnalysisToolErrorCode.CURSOR_INVALID
                 if arguments.cursor is not None
                 else PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE
             )
             return _tool_error(call, code)
+        except (
+            PrivateAnalysisEvidenceQueryCancelledError,
+            PrivateAnalysisEvidenceQueryCancellationProbeError,
+        ):
+            return _tool_error(
+                call,
+                PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
+            )
+        except BaseException:
+            return _tool_error(
+                call,
+                PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
+            )
+        if self._query_reference_pages is None:
+            if type(raw) is not tuple:
+                return _tool_error(
+                    call,
+                    PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
+                )
+            return self._execute_legacy_query_snapshot(
+                request,
+                call,
+                policy,
+                raw,
+            )
+        if query_page is None:
+            return _tool_error(
+                call,
+                PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
+            )
+        try:
+            for reference in query_page.references:
+                if not _reference_matches_query(reference, arguments):
+                    raise ValueError("query callback returned an out-of-filter item")
+                decision = self._disclosure_decision(
+                    request,
+                    policy,
+                    reference.evidence_class,
+                )
+                if not decision.allowed:
+                    raise ValueError("query callback returned ineligible evidence")
+            result = make_private_analysis_query_page_from_snapshot(
+                call,
+                query_page.references,
+                snapshot_digest=query_page.snapshot_digest,
+                has_more=query_page.has_more,
+            )
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException:
+            return _tool_error(
+                call,
+                PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
+            )
         if not self._readmit_before_release(request, result.references):
             return _tool_error(
                 call,
@@ -794,6 +930,56 @@ class PrivateAnalysisToolService:
             )
         return result
 
+    def _execute_legacy_query_snapshot(
+        self,
+        request: PrivateAnalysisRequest,
+        call: PrivateAnalysisToolCall,
+        policy: WorkspaceDisclosurePolicy,
+        raw: tuple[EvidenceReference, ...],
+    ) -> PrivateAnalysisToolResult | PrivateAnalysisToolError:
+        """Contain legacy complete-snapshot adapters during the v2 transition."""
+
+        references = self._validated_legacy_query_references(request, raw)
+        if references is None:
+            return _tool_error(call, PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE)
+        try:
+            eligible = tuple(
+                reference
+                for reference in references
+                if _reference_matches_query(reference, call.arguments)
+                and self._disclosure_decision(
+                    request, policy, reference.evidence_class
+                ).allowed
+            )
+            result = make_private_analysis_query_page(call, eligible)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException:
+            code = (
+                PrivateAnalysisToolErrorCode.CURSOR_INVALID
+                if call.arguments.cursor is not None
+                else PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE
+            )
+            return _tool_error(call, code)
+        if not self._readmit_before_release(request, result.references):
+            return _tool_error(call, PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE)
+        try:
+            transferred_bytes = sum(
+                len(
+                    strict_canonical_json(evidence_reference_dict(reference)).encode(
+                        "utf-8"
+                    )
+                )
+                for reference in result.references
+            )
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException:
+            return _tool_error(call, PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE)
+        if not self._commit_disclosure(request, result.references, transferred_bytes):
+            return _tool_error(call, PrivateAnalysisToolErrorCode.BUDGET_EXCEEDED)
+        return result
+
     def _execute_read(
         self,
         request: PrivateAnalysisRequest,
@@ -807,32 +993,48 @@ class PrivateAnalysisToolService:
                 PrivateAnalysisErrorStage.RUNNER,
                 PrivateAnalysisErrorCode.RUNNER_PROTOCOL_ERROR,
             )
-        try:
-            raw_reference = self._resolve_reference(
-                _detached_request(request),
-                arguments.evidence_reference_digest,
+        with self._lock:
+            overlay_envelope = self._materialized_envelopes.get(
+                arguments.evidence_reference_digest
             )
-        except PROCESS_CONTROL_EXCEPTIONS:
-            raise
-        except BaseException:
-            return _tool_error(
-                call,
-                PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
-            )
-        if raw_reference is None:
-            return _tool_error(
-                call,
-                PrivateAnalysisToolErrorCode.EVIDENCE_NOT_FOUND,
-            )
-        try:
-            reference = _detached_reference(raw_reference)
-        except PROCESS_CONTROL_EXCEPTIONS:
-            raise
-        except BaseException:
-            return _tool_error(
-                call,
-                PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
-            )
+        if overlay_envelope is None:
+            try:
+                raw_reference = self._resolve_reference(
+                    _detached_request(request),
+                    arguments.evidence_reference_digest,
+                )
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except BaseException:
+                return _tool_error(
+                    call,
+                    PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
+                )
+            if raw_reference is None:
+                return _tool_error(
+                    call,
+                    PrivateAnalysisToolErrorCode.EVIDENCE_NOT_FOUND,
+                )
+            try:
+                reference = _detached_reference(raw_reference)
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except BaseException:
+                return _tool_error(
+                    call,
+                    PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
+                )
+        else:
+            try:
+                overlay_envelope = _detached_envelope(overlay_envelope)
+                reference = overlay_envelope.reference
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except BaseException:
+                return _tool_error(
+                    call,
+                    PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
+                )
         if reference.reference_digest != arguments.evidence_reference_digest:
             return _tool_error(
                 call,
@@ -878,7 +1080,11 @@ class PrivateAnalysisToolService:
                 PrivateAnalysisToolErrorCode.BUDGET_EXCEEDED,
             )
         try:
-            payload = self._materialize_payload(_detached_reference(reference))
+            payload = (
+                overlay_envelope.payload
+                if overlay_envelope is not None
+                else self._materialize_payload(_detached_reference(reference))
+            )
             if type(payload) is not dict:
                 raise TypeError("payload materializer returned an invalid payload")
         except PROCESS_CONTROL_EXCEPTIONS:
@@ -923,6 +1129,7 @@ class PrivateAnalysisToolService:
             request,
             (reference,),
             transferred_bytes,
+            envelopes=(envelope,),
         ):
             return _tool_error(
                 call,
@@ -930,15 +1137,203 @@ class PrivateAnalysisToolService:
             )
         return result
 
-    def _validated_query_references(
+    def _execute_analyze(
         self,
         request: PrivateAnalysisRequest,
-        value: object,
-    ) -> tuple[EvidenceReference, ...] | None:
+        call: PrivateAnalysisToolCall,
+        policy: WorkspaceDisclosurePolicy,
+    ) -> PrivateAnalysisToolResult | PrivateAnalysisToolError:
+        arguments = call.arguments
+        if type(arguments) is not PrivateAnalysisCapabilityArguments:
+            raise _service_error(
+                request,
+                PrivateAnalysisErrorStage.RUNNER,
+                PrivateAnalysisErrorCode.RUNNER_PROTOCOL_ERROR,
+            )
+        if self._analyze_evidence is None:
+            return _tool_error(
+                call,
+                PrivateAnalysisToolErrorCode.CAPABILITY_UNAVAILABLE,
+            )
+        targets = tuple(
+            revision
+            for revision in request.revisions
+            if revision.node_id == arguments.node_id
+            and revision.revision_id == arguments.revision_id
+        )
+        if len(targets) != 1:
+            return _tool_error(
+                call,
+                PrivateAnalysisToolErrorCode.CAPABILITY_UNAVAILABLE,
+            )
+        with self._lock:
+            raw_parents = tuple(
+                self._materialized_envelopes.get(digest)
+                for digest in arguments.parent_reference_digests
+            )
+        if any(parent is None for parent in raw_parents):
+            return _tool_error(
+                call,
+                PrivateAnalysisToolErrorCode.EVIDENCE_NOT_FOUND,
+            )
+        try:
+            parents = tuple(
+                _detached_envelope(parent)
+                for parent in raw_parents
+                if parent is not None
+            )
+            parent_references = tuple(parent.reference for parent in parents)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException:
+            return _tool_error(
+                call,
+                PrivateAnalysisToolErrorCode.CAPABILITY_UNAVAILABLE,
+            )
+        if not self._readmit_before_release(request, parent_references):
+            return _tool_error(
+                call,
+                PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
+            )
+        try:
+            callback_arguments = private_analysis_tool_call_from_dict(
+                private_analysis_tool_call_dict(call)
+            ).arguments
+            if type(callback_arguments) is not PrivateAnalysisCapabilityArguments:
+                raise TypeError("detached analysis call has invalid arguments")
+            check_private_analysis_evidence_query_cancellation(
+                self._cancellation_probe
+            )
+            raw = self._analyze_evidence(
+                _detached_request(request),
+                callback_arguments,
+                parents,
+                self._cancellation_probe,
+            )
+            check_private_analysis_evidence_query_cancellation(
+                self._cancellation_probe
+            )
+            if type(raw) is not tuple or len(raw) != 2:
+                raise TypeError("analysis callback returned an invalid result")
+            reference = _detached_reference(raw[0])
+            payload = raw[1]
+            if type(payload) is not dict:
+                raise TypeError("analysis callback returned an invalid payload")
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException:
+            return _tool_error(
+                call,
+                PrivateAnalysisToolErrorCode.CAPABILITY_UNAVAILABLE,
+            )
         if (
-            type(value) is not tuple
-            or len(value) > MAX_PRIVATE_ANALYSIS_SNAPSHOT_REFERENCES
+            _reference_membership(reference, request) != "member"
+            or reference.revision != targets[0]
+            or not self._reference_binding_is_valid(reference)
         ):
+            return _tool_error(
+                call,
+                PrivateAnalysisToolErrorCode.CAPABILITY_UNAVAILABLE,
+            )
+        evidence_rank = {
+            PrivateAnalysisEvidenceClass.PUBLIC_METADATA: 0,
+            PrivateAnalysisEvidenceClass.CLIENT_SAFE: 1,
+            PrivateAnalysisEvidenceClass.PROPRIETARY: 2,
+            PrivateAnalysisEvidenceClass.NEVER_ASSISTANT: 3,
+        }
+        strongest_parent = max(
+            (parent.reference.evidence_class for parent in parents),
+            key=evidence_rank.__getitem__,
+        )
+        if reference.evidence_class is not strongest_parent:
+            return _tool_error(
+                call,
+                PrivateAnalysisToolErrorCode.CAPABILITY_UNAVAILABLE,
+            )
+        final_policy = self._readmit_policy_before_release(request)
+        if final_policy is None:
+            return _tool_error(
+                call,
+                PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
+            )
+        try:
+            decision = self._disclosure_decision(
+                request,
+                final_policy,
+                reference.evidence_class,
+            )
+            if not decision.allowed:
+                return _tool_error(
+                    call,
+                    PrivateAnalysisToolErrorCode.EVIDENCE_UNAVAILABLE,
+                )
+            envelope = make_evidence_envelope(reference, decision, payload)
+            result = PrivateAnalysisToolResult(
+                call=call,
+                kind=PrivateAnalysisToolResultKind.DERIVED_EVIDENCE_ENVELOPE,
+                envelope=envelope,
+            )
+            transferred_bytes = len(evidence_envelope_json(envelope).encode("utf-8"))
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException:
+            return _tool_error(
+                call,
+                PrivateAnalysisToolErrorCode.CAPABILITY_UNAVAILABLE,
+            )
+        if not self._commit_disclosure(
+            request,
+            (reference,),
+            transferred_bytes,
+            envelopes=(envelope,),
+        ):
+            return _tool_error(
+                call,
+                PrivateAnalysisToolErrorCode.BUDGET_EXCEEDED,
+            )
+        return result
+
+    def _validated_query_page(
+        self,
+        request: PrivateAnalysisRequest,
+        arguments: PrivateAnalysisQueryArguments,
+        value: object,
+    ) -> PrivateAnalysisEvidenceQueryPage | None:
+        try:
+            if type(value) is not PrivateAnalysisEvidenceQueryPage:
+                return None
+            if len(value.references) > arguments.page_size:
+                return None
+            detached: list[EvidenceReference] = []
+            digests: set[str] = set()
+            for item in value.references:
+                reference = _detached_reference(item)
+                if reference.reference_digest in digests:
+                    return None
+                digests.add(reference.reference_digest)
+                membership = _reference_membership(reference, request)
+                if membership != "member":
+                    return None
+                detached.append(reference)
+            references = tuple(detached)
+            if not self._reference_bindings_are_valid(references):
+                return None
+            return PrivateAnalysisEvidenceQueryPage(
+                snapshot_digest=value.snapshot_digest,
+                references=references,
+                has_more=value.has_more,
+            )
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException:
+            return None
+
+    def _validated_legacy_query_references(
+        self,
+        request: PrivateAnalysisRequest,
+        value: tuple[EvidenceReference, ...],
+    ) -> tuple[EvidenceReference, ...] | None:
+        if len(value) > MAX_PRIVATE_ANALYSIS_SNAPSHOT_REFERENCES:
             return None
         detached: list[EvidenceReference] = []
         digests: set[str] = set()
@@ -953,22 +1348,40 @@ class PrivateAnalysisToolService:
                     continue
                 if membership == "conflict":
                     return None
-                if not self._reference_binding_is_valid(reference):
-                    return None
                 detached.append(reference)
+            references = tuple(detached)
+            if not self._reference_bindings_are_valid(references):
+                return None
+            return references
         except PROCESS_CONTROL_EXCEPTIONS:
             raise
         except BaseException:
             return None
-        return tuple(detached)
 
-    def _reference_binding_is_valid(self, reference: EvidenceReference) -> bool:
+    def _reference_bindings_are_valid(
+        self,
+        references: tuple[EvidenceReference, ...],
+    ) -> bool:
+        detached = tuple(_detached_reference(item) for item in references)
+        if self._validate_references is None:
+            try:
+                return all(
+                    self._validate_reference(reference) is True
+                    for reference in detached
+                )
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except BaseException:
+                return False
         try:
-            return self._validate_reference(_detached_reference(reference)) is True
+            return self._validate_references(detached) is True
         except PROCESS_CONTROL_EXCEPTIONS:
             raise
         except BaseException:
             return False
+
+    def _reference_binding_is_valid(self, reference: EvidenceReference) -> bool:
+        return self._reference_bindings_are_valid((reference,))
 
     def _readmit_before_release(
         self,
@@ -1016,10 +1429,21 @@ class PrivateAnalysisToolService:
         request: PrivateAnalysisRequest,
         references: tuple[EvidenceReference, ...],
         transferred_bytes: int,
+        *,
+        envelopes: tuple[EvidenceEnvelope, ...] = (),
     ) -> bool:
         if type(transferred_bytes) is not int or transferred_bytes < 0:
             return False
         detached = tuple(_detached_reference(reference) for reference in references)
+        detached_envelopes = tuple(
+            _detached_envelope(envelope) for envelope in envelopes
+        )
+        reference_digests = {reference.reference_digest for reference in detached}
+        if any(
+            envelope.reference.reference_digest not in reference_digests
+            for envelope in detached_envelopes
+        ):
+            return False
         with self._lock:
             additions = {
                 reference.reference_digest: reference
@@ -1033,25 +1457,23 @@ class PrivateAnalysisToolService:
             ):
                 return False
             self._ledger.update(additions)
+            self._materialized_envelopes.update(
+                {
+                    envelope.reference.reference_digest: envelope
+                    for envelope in detached_envelopes
+                }
+            )
             self._evidence_bytes_disclosed += transferred_bytes
             return True
 
 
-class PrivateAnalysisToolRunLease:
-    """Exclusive, single-use authority over one pristine tool service.
+class _PrivateAnalysisToolRunLeaseFacade:
+    """Common lease lifecycle; concrete services retain their own authority."""
 
-    The lease is a core-composition object, not a runner wire value.  A model
-    callback never receives it; the in-process gateway exposes only the closed
-    tool-call contract.
-    """
+    __slots__ = ("_closed", "_service")
 
-    __slots__ = ("_closed", "_service", "_token")
-
-    def __init__(self, service: PrivateAnalysisToolService, token: object) -> None:
-        if type(service) is not PrivateAnalysisToolService:
-            raise TypeError("service must be PrivateAnalysisToolService")
+    def __init__(self, service: Any) -> None:
         self._service = service
-        self._token = token
         self._closed = False
 
     @property
@@ -1071,28 +1493,77 @@ class PrivateAnalysisToolRunLease:
 
     def require_run_access(self) -> None:
         self._require_open()
-        self._service._require_run_access_for_lease(self._token)
+        self._require_service_access()
 
     def execute(
         self,
         call: PrivateAnalysisToolCall,
     ) -> PrivateAnalysisToolResult | PrivateAnalysisToolError:
         self._require_open()
-        return self._service._execute_for_lease(self._token, call)
+        return self._execute_service_call(call)
 
     def close(self) -> None:
         if self._closed:
             return
-        self._service._release_run_lease(self._token)
+        self._release_service_access()
         self._closed = True
 
     def _require_open(self) -> None:
         if self._closed:
-            raise _service_error(
-                self._service.request,
-                PrivateAnalysisErrorStage.RUNNER,
-                PrivateAnalysisErrorCode.RUNNER_PROTOCOL_ERROR,
-            )
+            raise self._closed_lease_error()
+
+    def _require_service_access(self) -> None:
+        raise NotImplementedError
+
+    def _execute_service_call(
+        self,
+        call: PrivateAnalysisToolCall,
+    ) -> PrivateAnalysisToolResult | PrivateAnalysisToolError:
+        raise NotImplementedError
+
+    def _release_service_access(self) -> None:
+        raise NotImplementedError
+
+    def _closed_lease_error(self) -> PrivateAnalysisToolServiceError:
+        raise NotImplementedError
+
+
+class PrivateAnalysisToolRunLease(
+    _PrivateAnalysisToolRunLeaseFacade
+):
+    """Exclusive, single-use authority over one pristine tool service.
+
+    The lease is a core-composition object, not a runner wire value.  A model
+    callback never receives it; the in-process gateway exposes only the closed
+    tool-call contract.
+    """
+
+    __slots__ = ("_token",)
+
+    def __init__(self, service: PrivateAnalysisToolService, token: object) -> None:
+        if type(service) is not PrivateAnalysisToolService:
+            raise TypeError("service must be PrivateAnalysisToolService")
+        super().__init__(service)
+        self._token = token
+
+    def _require_service_access(self) -> None:
+        self._service._require_run_access_for_lease(self._token)
+
+    def _execute_service_call(
+        self,
+        call: PrivateAnalysisToolCall,
+    ) -> PrivateAnalysisToolResult | PrivateAnalysisToolError:
+        return self._service._execute_for_lease(self._token, call)
+
+    def _release_service_access(self) -> None:
+        self._service._release_run_lease(self._token)
+
+    def _closed_lease_error(self) -> PrivateAnalysisToolServiceError:
+        return _service_error(
+            self._service.request,
+            PrivateAnalysisErrorStage.RUNNER,
+            PrivateAnalysisErrorCode.RUNNER_PROTOCOL_ERROR,
+        )
 
 
 def _bounded_counter(maximum: object, consumed: object, label: str) -> None:
@@ -1165,6 +1636,12 @@ def _detached_reference(value: object) -> EvidenceReference:
     return evidence_reference_from_dict(evidence_reference_dict(value))
 
 
+def _detached_envelope(value: object) -> EvidenceEnvelope:
+    if type(value) is not EvidenceEnvelope:
+        raise TypeError("envelope must be EvidenceEnvelope")
+    return evidence_envelope_from_json(evidence_envelope_json(value))
+
+
 def _detached_analysis_error(value: PrivateAnalysisError) -> PrivateAnalysisError:
     return PrivateAnalysisError(
         request_digest=value.request_digest,
@@ -1229,15 +1706,36 @@ def _reference_matches_query(
         (arguments.producer_ids, reference.producer.producer_id),
         (arguments.subject_kinds, reference.subject_kind),
     )
-    return all(not accepted or actual in accepted for accepted, actual in filters)
+    if not all(not accepted or actual in accepted for accepted, actual in filters):
+        return False
+    if arguments.time_basis is None:
+        return True
+    time_range = reference.time_range
+    if not (
+        time_range.basis is arguments.time_basis
+        and time_range.clock_domain == arguments.time_clock_domain
+        and time_range.start_ns is not None
+        and time_range.end_ns is not None
+    ):
+        return False
+    uncertainty = time_range.uncertainty_ns or 0
+    minimum = (
+        0 if time_range.basis is EvidenceTimeBasis.ABSOLUTE_UNIX_NS else -(1 << 63)
+    )
+    start = max(minimum, time_range.start_ns - uncertainty)
+    end = min((1 << 63) - 1, time_range.end_ns + uncertainty)
+    return start <= arguments.time_end_ns and end >= arguments.time_start_ns
 
 
 __all__ = [
     "PrivateAnalysisAuthorizationDecision",
     "PrivateAnalysisAuthorizationReason",
     "PrivateAnalysisAuthorizer",
+    "PrivateAnalysisCapabilityAnalyzer",
     "PrivateAnalysisPayloadMaterializer",
     "PrivateAnalysisPolicyResolver",
+    "PrivateAnalysisReferenceBatchValidator",
+    "PrivateAnalysisReferencePageQuery",
     "PrivateAnalysisReferenceQuery",
     "PrivateAnalysisReferenceResolver",
     "PrivateAnalysisReferenceValidator",

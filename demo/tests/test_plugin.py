@@ -28,6 +28,7 @@ from rsl_demo_plugin import (  # noqa: E402
     PARSER_ID,
     PLATFORM_ID,
     STATUS_FILENAME,
+    evidence_plugin,
     plugin,
     render_conformance_status_fixture,
 )
@@ -36,10 +37,16 @@ from rsl_demo_plugin.archive import (  # noqa: E402
     CTF_STREAM_MEMBER,
 )
 
+from router_dump_analyzer.capability_executor import (  # noqa: E402
+    PluginCapabilityExecutor,
+)
 from router_dump_analyzer.plugin_api import (  # noqa: E402
     ArtifactInfo,
     DiagnosticSeverity,
     DumpInventory,
+    EvidenceAnalysisFact,
+    EvidenceAnalysisKind,
+    EvidenceAnalysisRequest,
     InputParserKind,
     PluginCapability,
     PluginDiagnostic,
@@ -102,6 +109,12 @@ class DemoPluginTests(unittest.TestCase):
             plugin.manifest.capabilities,
             frozenset({PluginCapability.STATUS_PARSE}),
         )
+        self.assertEqual(
+            evidence_plugin.manifest.capabilities,
+            frozenset({PluginCapability.EVIDENCE_ANALYSIS}),
+        )
+        self.assertEqual(evidence_plugin.describe().resource_kinds, ())
+        self.assertEqual(evidence_plugin.describe().relationship_types, ())
         schema = plugin.describe()
         self.assertEqual([item.kind for item in schema.resource_kinds], ["INTERFACE"])
         self.assertEqual(schema.resource_kinds[0].key_fields, ("ifindex",))
@@ -125,6 +138,56 @@ class DemoPluginTests(unittest.TestCase):
         result = validate_plugin(plugin, inventory=inventory)
         self.assertTrue(result.ok, result.errors)
         self.assertEqual(result.warnings, ())
+
+    def test_evidence_analysis_hook_runs_through_the_core_executor(self) -> None:
+        digest = "sha256:" + "a" * 64
+        fact = EvidenceAnalysisFact(
+            reference_digest=digest,
+            evidence_kind="event",
+            subject_kind="route_event",
+            node_id="router-1",
+            revision_id="revision-1",
+            payload_schema="demo.route-event.v1",
+            fact_provenance="log_derived",
+            time_basis="absolute_unix_ns",
+            time_start_ns=1,
+            time_end_ns=1,
+            time_clock_domain=None,
+            payload={"destination": "203.0.113.0/24"},
+        )
+        expected_categories = {
+            EvidenceAnalysisKind.ROUTE_TRACE: "route_resolution",
+            EvidenceAnalysisKind.TRACE_CORRELATION: "trace_event_correlation",
+            EvidenceAnalysisKind.EVIDENCE_CORRELATION: (
+                "cross_evidence_correlation"
+            ),
+            EvidenceAnalysisKind.EVIDENCE_INTERPRETATION: (
+                "evidence_interpretation"
+            ),
+        }
+        executor = PluginCapabilityExecutor(evidence_plugin)
+        for analysis_kind, category in expected_categories.items():
+            with self.subTest(analysis_kind=analysis_kind.value):
+                result = executor.analyze_evidence(
+                    EvidenceAnalysisRequest(
+                        invocation_id=f"demo-{analysis_kind.value}",
+                        analysis_kind=analysis_kind,
+                        facts=(fact,),
+                        parameters={"vrf": "blue"},
+                        max_observations=2,
+                    )
+                )
+                self.assertEqual(len(result.observations), 1)
+                observation = result.observations[0]
+                self.assertEqual(observation.category, category)
+                self.assertEqual(
+                    observation.observation_id,
+                    "demo-analysis-" + analysis_kind.value.replace("_", "-"),
+                )
+                self.assertEqual(
+                    observation.cited_reference_digests,
+                    (digest,),
+                )
 
     def test_fixture_parses_to_retained_records_and_complete_state(self) -> None:
         inventory = fixture_inventory()

@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import DEFAULT, patch
 
@@ -52,6 +53,70 @@ class _ControlPlane:
 
 
 class ServerCliTests(unittest.TestCase):
+    def test_parser_accepts_exact_plugin_composition_deployment(self) -> None:
+        parsed = parse_args(
+            [
+                "--plugin-deployment-module",
+                "deployment.plugins:build",
+                "--state-dir",
+                "state",
+                "--identity-resolver-module",
+                "deployment.identity:resolver",
+            ]
+        )
+        self.assertEqual(parsed.plugin_names, ())
+        self.assertEqual(parsed.plugin_modules, ())
+        self.assertEqual(
+            parsed.plugin_deployment_module,
+            "deployment.plugins:build",
+        )
+
+    def test_plugin_composition_deployment_reaches_control_plane(self) -> None:
+        registry = object()
+        providers = object()
+        policy = object()
+        deployment = SimpleNamespace(
+            primary_registry=registry,
+            capability_providers=providers,
+            policy=policy,
+        )
+        captured: list[_ControlPlane] = []
+        contexts: list[Any] = []
+
+        def control_plane_factory(root: Path, **values: Any) -> _ControlPlane:
+            result = _ControlPlane(root, **values)
+            captured.append(result)
+            return result
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state"
+            run(
+                ServerConfiguration(
+                    state_dir=state,
+                    plugin_names=(),
+                    plugin_modules=(),
+                    host="127.0.0.1",
+                    port=8765,
+                    identity_resolver_module="deployment.identity:resolver",
+                    trust_control_plane_headers=False,
+                    plugin_deployment_module="deployment.plugins:build",
+                ),
+                entry_point_loader=lambda _name: self.fail(),
+                module_loader=lambda _target: self.fail(),
+                plugin_deployment_loader=lambda _target, **values: (
+                    contexts.append(values["context"]) or deployment
+                ),
+                identity_resolver_loader=lambda _target: lambda _request: object(),
+                control_plane_factory=control_plane_factory,
+                application_factory=lambda _request: object(),
+                server_runner=lambda _app, **_values: None,
+            )
+
+        self.assertEqual(contexts[0].state_dir, state.resolve())
+        self.assertIs(captured[0].values["registry"], registry)
+        self.assertIs(captured[0].values["capability_providers"], providers)
+        self.assertIs(captured[0].values["plugin_composition_policy"], policy)
+
     def test_installed_plugin_coordinates_reach_production_registry(self) -> None:
         loaded = LoadedPlugin(
             plugin=ParseOnlyPlugin(),
@@ -61,6 +126,8 @@ class ServerCliTests(unittest.TestCase):
                 entry_point_name="vendor_router",
                 module_target="vendor_router_plugin:plugin",
             ),
+            process_module_target="tests.test_ingestion:ParseOnlyPlugin",
+            process_construct_class=True,
         )
         control_planes: list[_ControlPlane] = []
 

@@ -6,6 +6,7 @@ import io
 import json
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -51,6 +52,7 @@ from router_dump_analyzer.private_analysis_runner_support import (
 )
 from router_dump_analyzer.private_analysis_subprocess_runner import (
     ConfiguredPrivateAnalysisSubprocessRunner,
+    PrivateAnalysisSubprocessCleanupPending,
     PrivateAnalysisSubprocessExecutionReceipt,
     PrivateAnalysisSubprocessLaunchConfiguration,
     PrivateAnalysisSubprocessTranscript,
@@ -121,6 +123,7 @@ def _build_case(
     *,
     environment: tuple[tuple[str, str], ...] = (),
     executable: str | None = None,
+    helper_artifact: Path = _FIXTURE,
     instruction_profile_digest: str = _INSTRUCTION_PROFILE_DIGEST,
     limits: PrivateAnalysisLimits | None = None,
     stderr_limit_bytes: int = 256 * 1024,
@@ -133,12 +136,14 @@ def _build_case(
             executable or str(Path(sys.executable).resolve()),
             "-I",
             "-u",
-            str(_FIXTURE),
+            str(helper_artifact),
             str(control_path),
         ),
         working_directory=str(directory.resolve()),
         environment=environment,
         adapter_identity_digest=_ADAPTER_IDENTITY_DIGEST,
+        helper_artifacts=(str(helper_artifact.resolve()),),
+        runtime_data_argument_indices=(4,),
         stderr_limit_bytes=stderr_limit_bytes,
         terminate_grace_ms=terminate_grace_ms,
         kill_grace_ms=kill_grace_ms,
@@ -419,6 +424,338 @@ class PrivateAnalysisSubprocessLaunchTests(unittest.TestCase):
                     adapter_identity_digest=_ADAPTER_IDENTITY_DIGEST,
                 )
 
+    def test_launch_requires_complete_argument_artifact_classification(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary).resolve()
+            helper = directory / "runner.py"
+            helper.write_text("print('runner')\n", encoding="utf-8")
+            base = {
+                "working_directory": str(directory),
+                "environment": (),
+                "adapter_identity_digest": _ADAPTER_IDENTITY_DIGEST,
+            }
+            with self.assertRaisesRegex(ValueError, "attested helper artifact"):
+                PrivateAnalysisSubprocessLaunchConfiguration(
+                    argv=(str(Path(sys.executable).resolve()), str(helper)),
+                    **base,
+                )
+            with self.assertRaisesRegex(ValueError, "argv file"):
+                PrivateAnalysisSubprocessLaunchConfiguration(
+                    argv=(
+                        str(Path(sys.executable).resolve()),
+                        f"--adapter={helper}",
+                    ),
+                    **base,
+                )
+            with self.assertRaisesRegex(ValueError, "inline or module"):
+                PrivateAnalysisSubprocessLaunchConfiguration(
+                    argv=(str(Path(sys.executable).resolve()), "-m", "private_runner"),
+                    runtime_data_argument_indices=(2,),
+                    **base,
+                )
+            renamed_interpreter = directory / "proprietary-runner-host.exe"
+            shutil.copy2(Path(sys.executable).resolve(), renamed_interpreter)
+            with self.assertRaisesRegex(ValueError, "inline or module"):
+                PrivateAnalysisSubprocessLaunchConfiguration(
+                    argv=(str(renamed_interpreter), "-c", "run_dynamic_code()"),
+                    runtime_data_argument_indices=(2,),
+                    **base,
+                )
+            with self.assertRaisesRegex(ValueError, "unique argv indices"):
+                PrivateAnalysisSubprocessLaunchConfiguration(
+                    argv=(str(Path(sys.executable).resolve()), "runtime-data"),
+                    runtime_data_argument_indices=(1, 1),
+                    **base,
+                )
+            future = directory / "created-after-registration.py"
+            future_launch = PrivateAnalysisSubprocessLaunchConfiguration(
+                argv=(
+                    str(Path(sys.executable).resolve()),
+                    f"--adapter={future}",
+                ),
+                **base,
+            )
+            future.write_text("print('late code')\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "coverage changed"):
+                future_launch.revalidate_executable_artifacts()
+
+            data = directory / "runtime-input.json"
+            data_launch = PrivateAnalysisSubprocessLaunchConfiguration(
+                argv=(str(Path(sys.executable).resolve()), f"--input={data}"),
+                runtime_data_argument_indices=(1,),
+                **base,
+            )
+            data.write_text("{}", encoding="utf-8")
+            data_launch.revalidate_executable_artifacts()
+
+    def test_launch_rejects_attached_and_clustered_execution_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary).resolve()
+            renamed_interpreter = directory / "proprietary-runner-host.exe"
+            shutil.copy2(Path(sys.executable).resolve(), renamed_interpreter)
+            base = {
+                "working_directory": str(directory),
+                "environment": (),
+                "adapter_identity_digest": _ADAPTER_IDENTITY_DIGEST,
+            }
+            dynamic_forms = (
+                (("-c", "pass"), (2,)),
+                (("-cpass",), ()),
+                (("-c=pass",), ()),
+                (("-m", "private_runner"), (2,)),
+                (("-mprivate_runner",), ()),
+                (("-Bcpython_payload",), ()),
+                (("-Bmprivate_runner",), ()),
+            )
+            with patch(
+                "router_dump_analyzer.private_analysis_subprocess_runner."
+                "subprocess.Popen"
+            ) as spawn:
+                for arguments, runtime_indices in dynamic_forms:
+                    with (
+                        self.subTest(arguments=arguments),
+                        self.assertRaisesRegex(ValueError, "inline or module"),
+                    ):
+                        PrivateAnalysisSubprocessLaunchConfiguration(
+                            argv=(str(renamed_interpreter), *arguments),
+                            runtime_data_argument_indices=runtime_indices,
+                            **base,
+                        )
+            spawn.assert_not_called()
+
+    def test_option_values_cannot_disguise_a_helper_before_dynamic_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary).resolve()
+            helper = directory / "private-analysis-peer.py"
+            helper.write_text("print('runner')\n", encoding="utf-8")
+            renamed_interpreter = directory / "proprietary-runner-host.exe"
+            shutil.copy2(Path(sys.executable).resolve(), renamed_interpreter)
+            base = {
+                "working_directory": str(directory),
+                "environment": (),
+                "adapter_identity_digest": _ADAPTER_IDENTITY_DIGEST,
+                "helper_artifacts": (str(helper),),
+            }
+            bypass_forms = (
+                (("-W", str(helper), "-cpass"), ()),
+                (("-W", str(helper), "-mprivate_runner"), ()),
+                (("-X", str(helper), "-c", "pass"), (4,)),
+                (("-BX", str(helper), "-m", "private_runner"), (4,)),
+                (("--check-hash-based-pycs", str(helper), "-cpass"), ()),
+                ((f"--adapter={helper}", "-mprivate_runner"), ()),
+            )
+
+            for arguments, runtime_indices in bypass_forms:
+                with (
+                    self.subTest(arguments=arguments),
+                    self.assertRaisesRegex(ValueError, "inline or module"),
+                ):
+                    PrivateAnalysisSubprocessLaunchConfiguration(
+                        argv=(str(renamed_interpreter), *arguments),
+                        runtime_data_argument_indices=runtime_indices,
+                        **base,
+                    )
+
+    def test_safe_common_launcher_options_reach_an_exact_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary).resolve()
+            helper = directory / "private-analysis-peer.py"
+            helper.write_text("print('runner')\n", encoding="utf-8")
+            base = {
+                "working_directory": str(directory),
+                "environment": (),
+                "adapter_identity_digest": _ADAPTER_IDENTITY_DIGEST,
+                "helper_artifacts": (str(helper),),
+            }
+            safe_forms = (
+                (("-Wmodule", str(helper), "-c", "-mprivate_runner"), ()),
+                (("-BWmodule", str(helper)), ()),
+                (("-Xdev", str(helper)), ()),
+                (("-IBu", str(helper)), ()),
+                (("--check-hash-based-pycs=always", str(helper)), ()),
+                (("-W", "ignore", str(helper)), (2,)),
+                (("-X", "dev", str(helper)), (2,)),
+                (
+                    ("--check-hash-based-pycs", "always", str(helper)),
+                    (2,),
+                ),
+            )
+
+            for arguments, runtime_indices in safe_forms:
+                with self.subTest(arguments=arguments):
+                    launch = PrivateAnalysisSubprocessLaunchConfiguration(
+                        argv=(str(Path(sys.executable).resolve()), *arguments),
+                        runtime_data_argument_indices=runtime_indices,
+                        **base,
+                    )
+                    self.assertEqual(launch.argv[1:], arguments)
+
+    def test_launcher_control_prefix_rejects_ambiguous_shapes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary).resolve()
+            helper = directory / "private-analysis-peer.py"
+            helper.write_text("print('runner')\n", encoding="utf-8")
+            base = {
+                "working_directory": str(directory),
+                "environment": (),
+                "adapter_identity_digest": _ADAPTER_IDENTITY_DIGEST,
+                "helper_artifacts": (str(helper),),
+            }
+            ambiguous_forms = (
+                (("-Z", str(helper)), ()),
+                (("--unknown", str(helper)), ()),
+                (("-",), ()),
+                (("-W",), ()),
+                (("runtime-data", str(helper)), (1,)),
+            )
+
+            for arguments, runtime_indices in ambiguous_forms:
+                with (
+                    self.subTest(arguments=arguments),
+                    self.assertRaisesRegex(ValueError, "launcher-control prefix"),
+                ):
+                    PrivateAnalysisSubprocessLaunchConfiguration(
+                        argv=(str(Path(sys.executable).resolve()), *arguments),
+                        runtime_data_argument_indices=runtime_indices,
+                        **base,
+                    )
+
+    def test_execution_mode_words_are_allowed_after_control_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary).resolve()
+            helper = directory / "private-analysis-peer.py"
+            helper.write_text("print('runner')\n", encoding="utf-8")
+            base = {
+                "working_directory": str(directory),
+                "environment": (),
+                "adapter_identity_digest": _ADAPTER_IDENTITY_DIGEST,
+            }
+
+            helper_launch = PrivateAnalysisSubprocessLaunchConfiguration(
+                argv=(
+                    str(Path(sys.executable).resolve()),
+                    str(helper),
+                    "-c",
+                    "-mprivate_runner",
+                ),
+                helper_artifacts=(str(helper),),
+                **base,
+            )
+            delimiter_launch = PrivateAnalysisSubprocessLaunchConfiguration(
+                argv=(
+                    str(Path(sys.executable).resolve()),
+                    "--",
+                    "-cpass",
+                    "-mprivate_runner",
+                ),
+                **base,
+            )
+            option_value_launch = PrivateAnalysisSubprocessLaunchConfiguration(
+                argv=(
+                    str(Path(sys.executable).resolve()),
+                    "--command=-cpass",
+                    "--module=-mprivate_runner",
+                ),
+                **base,
+            )
+
+            self.assertEqual(helper_launch.argv[2:], ("-c", "-mprivate_runner"))
+            self.assertEqual(delimiter_launch.argv[1], "--")
+            self.assertEqual(option_value_launch.argv[1], "--command=-cpass")
+
+    def test_runner_revalidation_rejects_attached_execution_before_popen(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            case = _build_case(Path(temporary))
+            object.__setattr__(
+                case.runner._launch_configuration,
+                "argv",
+                (case.launch.argv[0], "-cpass"),
+            )
+            service, _harness = _service(case)
+            with patch(
+                "router_dump_analyzer.private_analysis_subprocess_runner."
+                "subprocess.Popen"
+            ) as spawn:
+                receipt = case.runner.execute(service)
+            spawn.assert_not_called()
+            _assert_error(
+                self,
+                receipt,
+                PrivateAnalysisErrorCode.RUNNER_UNAVAILABLE,
+                PrivateAnalysisErrorStage.RUNNER,
+            )
+
+    def test_runner_revalidation_rejects_value_option_helper_bypass(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            bypass_forms = (
+                (("-W", str(_FIXTURE.resolve()), "-cpass"), ()),
+                (("-W", str(_FIXTURE.resolve()), "-mprivate_runner"), ()),
+                (("-X", str(_FIXTURE.resolve()), "-c", "pass"), (4,)),
+                (("-BX", str(_FIXTURE.resolve()), "-m", "private_runner"), (4,)),
+            )
+            with patch(
+                "router_dump_analyzer.private_analysis_subprocess_runner."
+                "subprocess.Popen"
+            ) as spawn:
+                for arguments, runtime_indices in bypass_forms:
+                    with self.subTest(arguments=arguments):
+                        case = _build_case(directory)
+                        object.__setattr__(
+                            case.runner._launch_configuration,
+                            "argv",
+                            (case.launch.argv[0], *arguments),
+                        )
+                        object.__setattr__(
+                            case.runner._launch_configuration,
+                            "runtime_data_argument_indices",
+                            runtime_indices,
+                        )
+                        service, _harness = _service(case)
+                        receipt = case.runner.execute(service)
+                        _assert_error(
+                            self,
+                            receipt,
+                            PrivateAnalysisErrorCode.RUNNER_UNAVAILABLE,
+                            PrivateAnalysisErrorStage.RUNNER,
+                        )
+            spawn.assert_not_called()
+
+    def test_helper_identity_binds_ordered_canonical_path_not_only_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary).resolve()
+            left = directory / "left-runner.py"
+            right = directory / "right-runner.py"
+            content = b"print('same bytes')\n"
+            left.write_bytes(content)
+            right.write_bytes(content)
+            base = {
+                "working_directory": str(directory),
+                "environment": (),
+                "adapter_identity_digest": _ADAPTER_IDENTITY_DIGEST,
+            }
+            left_launch = PrivateAnalysisSubprocessLaunchConfiguration(
+                argv=(str(Path(sys.executable).resolve()), str(left)),
+                helper_artifacts=(str(left),),
+                **base,
+            )
+            right_launch = PrivateAnalysisSubprocessLaunchConfiguration(
+                argv=(str(Path(sys.executable).resolve()), str(right)),
+                helper_artifacts=(str(right),),
+                **base,
+            )
+
+            self.assertNotEqual(
+                left_launch.executable_artifact_digest,
+                right_launch.executable_artifact_digest,
+            )
+            self.assertNotEqual(
+                left_launch.configuration_digest,
+                right_launch.configuration_digest,
+            )
+            self.assertNotIn(str(left), repr(left_launch))
+            self.assertNotIn(str(right), repr(right_launch))
+
     def test_constructor_requires_local_selection_bound_to_launch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             case = _build_case(Path(temporary))
@@ -449,6 +786,10 @@ class PrivateAnalysisSubprocessLaunchTests(unittest.TestCase):
                 working_directory=case.launch.working_directory,
                 environment=case.launch.environment,
                 adapter_identity_digest=case.launch.adapter_identity_digest,
+                helper_artifacts=case.launch.helper_artifacts,
+                runtime_data_argument_indices=(
+                    case.launch.runtime_data_argument_indices
+                ),
             )
             object.__setattr__(tampered, "argv", ("relative-python",))
             with self.assertRaises(ValueError):
@@ -466,6 +807,50 @@ class PrivateAnalysisSubprocessLaunchTests(unittest.TestCase):
             service, _harness = _service(case)
             receipt = case.runner.execute(service)
             self.assertIs(receipt.outcome.kind, PrivateAnalysisOutcomeKind.RESULT)
+
+    def test_runner_refuses_helper_bytes_changed_after_registration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary).resolve()
+            helper = directory / "private-analysis-peer.py"
+            shutil.copy2(_FIXTURE, helper)
+            case = _build_case(directory, helper_artifact=helper)
+            helper.write_bytes(
+                helper.read_bytes() + b"\n# replaced after registration\n"
+            )
+            service, _harness = _service(case)
+            with patch(
+                "router_dump_analyzer.private_analysis_subprocess_runner."
+                "subprocess.Popen"
+            ) as spawn:
+                receipt = case.runner.execute(service)
+            spawn.assert_not_called()
+            _assert_error(
+                self,
+                receipt,
+                PrivateAnalysisErrorCode.RUNNER_UNAVAILABLE,
+                PrivateAnalysisErrorStage.RUNNER,
+            )
+
+    def test_runner_refuses_executable_bytes_changed_after_registration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary).resolve()
+            executable = directory / Path(sys.executable).name
+            shutil.copy2(Path(sys.executable).resolve(), executable)
+            case = _build_case(directory, executable=str(executable))
+            executable.write_bytes(executable.read_bytes() + b"changed")
+            service, _harness = _service(case)
+            with patch(
+                "router_dump_analyzer.private_analysis_subprocess_runner."
+                "subprocess.Popen"
+            ) as spawn:
+                receipt = case.runner.execute(service)
+            spawn.assert_not_called()
+            _assert_error(
+                self,
+                receipt,
+                PrivateAnalysisErrorCode.RUNNER_UNAVAILABLE,
+                PrivateAnalysisErrorStage.RUNNER,
+            )
 
     def test_auto_seal_sentinels_require_exact_strings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -722,6 +1107,66 @@ class PrivateAnalysisSubprocessExecutionTests(unittest.TestCase):
                 PrivateAnalysisErrorStage.RUNNER,
             )
 
+    def test_live_child_cleanup_failure_withholds_receipt_until_bounded_retry(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            case = _build_case(Path(temporary))
+            service, _harness = _service(case)
+            processes: list[subprocess.Popen[bytes]] = []
+            real_popen = subprocess.Popen
+
+            def capture_spawn(*args: object, **kwargs: object) -> Any:
+                process = real_popen(*args, **kwargs)
+                processes.append(process)
+                return process
+
+            runner_failure = subprocess_runner_module._static_runner_error(
+                case.request,
+                PrivateAnalysisErrorCode.RUNNER_FAILED,
+            )
+            with (
+                patch(
+                    "router_dump_analyzer.private_analysis_subprocess_runner."
+                    "subprocess.Popen",
+                    new=capture_spawn,
+                ),
+                patch.object(
+                    ConfiguredPrivateAnalysisSubprocessRunner,
+                    "_drive_protocol",
+                    return_value=(runner_failure, None),
+                ),
+                patch.object(
+                    subprocess_runner_module._LocalChildSession,
+                    "cleanup",
+                    return_value=False,
+                ),
+                self.assertRaises(PrivateAnalysisSubprocessCleanupPending),
+            ):
+                case.runner.execute(service)
+
+            self.assertEqual(len(processes), 1)
+            self.assertIsNone(processes[0].poll())
+            self.assertTrue(case.runner.cleanup_pending)
+
+            detached = case.runner.detached()
+            self.assertTrue(detached.cleanup_pending)
+            cleaned, receipt = detached.retry_pending_cleanup()
+            self.assertTrue(cleaned)
+            self.assertTrue(case.runner.cleanup_pending)
+            self.assertIsNotNone(receipt)
+            assert receipt is not None
+            self.assertTrue(receipt.cancellation_attested)
+            _assert_error(
+                self,
+                receipt,
+                PrivateAnalysisErrorCode.RUNNER_FAILED,
+                PrivateAnalysisErrorStage.RUNNER,
+            )
+            self.assertIsNotNone(processes[0].poll())
+            detached.acknowledge_pending_cleanup()
+            self.assertFalse(case.runner.cleanup_pending)
+
     def test_partial_helper_start_failure_reaps_child_without_thread_leak(
         self,
     ) -> None:
@@ -766,6 +1211,209 @@ class PrivateAnalysisSubprocessExecutionTests(unittest.TestCase):
                 if thread.name.startswith("private-analysis-")
             ]
             self.assertEqual(leaked, [])
+
+    def test_partial_helper_start_retains_session_until_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            case = _build_case(Path(temporary))
+            service, _harness = _service(case)
+            processes: list[subprocess.Popen[bytes]] = []
+            real_popen = subprocess.Popen
+            real_start = threading.Thread.start
+            real_cleanup = subprocess_runner_module._LocalChildSession.cleanup
+            cleanup_calls = 0
+
+            def capture_spawn(*args: object, **kwargs: object) -> Any:
+                process = real_popen(*args, **kwargs)
+                processes.append(process)
+                return process
+
+            def fail_stderr_start(thread: threading.Thread) -> None:
+                if thread.name == "private-analysis-stderr-drain":
+                    raise RuntimeError("synthetic second helper start failure")
+                real_start(thread)
+
+            def defer_first_cleanup(session: Any) -> bool:
+                nonlocal cleanup_calls
+                cleanup_calls += 1
+                if cleanup_calls == 1:
+                    return False
+                return real_cleanup(session)
+
+            with (
+                patch(
+                    "router_dump_analyzer.private_analysis_subprocess_runner."
+                    "subprocess.Popen",
+                    new=capture_spawn,
+                ),
+                patch.object(threading.Thread, "start", new=fail_stderr_start),
+                patch.object(
+                    subprocess_runner_module._LocalChildSession,
+                    "cleanup",
+                    new=defer_first_cleanup,
+                ),
+                self.assertRaises(PrivateAnalysisSubprocessCleanupPending),
+            ):
+                case.runner.execute(service)
+
+            self.assertTrue(case.runner.cleanup_pending)
+            self.assertEqual(len(processes), 1)
+            cleaned, receipt = case.runner.retry_pending_cleanup()
+            self.assertTrue(cleaned)
+            self.assertIsNotNone(receipt)
+            self.assertTrue(case.runner.cleanup_pending)
+            self.assertIsNotNone(processes[0].poll())
+            case.runner.acknowledge_pending_cleanup()
+            self.assertFalse(case.runner.cleanup_pending)
+
+    def test_receipt_sealing_control_retains_protocol_transcript_for_retry(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            case = _build_case(Path(temporary))
+            _write_control(
+                case.control_path,
+                _zero_tool_actions(case, _unsupported_result(case.request)),
+            )
+            service, _harness = _service(case)
+            real_receipt = subprocess_runner_module._deadline_checked_execution_receipt
+            receipt_calls = 0
+
+            def interrupt_first_receipt(*args: Any, **kwargs: Any) -> Any:
+                nonlocal receipt_calls
+                receipt_calls += 1
+                if receipt_calls == 1:
+                    raise KeyboardInterrupt("synthetic receipt sealing control")
+                return real_receipt(*args, **kwargs)
+
+            with (
+                patch.object(
+                    subprocess_runner_module,
+                    "_deadline_checked_execution_receipt",
+                    new=interrupt_first_receipt,
+                ),
+                self.assertRaisesRegex(
+                    KeyboardInterrupt,
+                    "synthetic receipt sealing control",
+                ),
+            ):
+                case.runner.execute(service)
+
+            self.assertTrue(case.runner.cleanup_pending)
+            cleaned, receipt = case.runner.retry_pending_cleanup()
+            self.assertTrue(cleaned)
+            self.assertIsNotNone(receipt)
+            assert receipt is not None
+            _assert_error(
+                self,
+                receipt,
+                PrivateAnalysisErrorCode.RUNNER_FAILED,
+                PrivateAnalysisErrorStage.RUNNER,
+            )
+            self.assertGreater(receipt.transcript.message_count, 0)
+            self.assertTrue(receipt.cancellation_attested)
+            case.runner.acknowledge_pending_cleanup()
+            self.assertFalse(case.runner.cleanup_pending)
+
+    def test_cleanup_process_control_retains_exact_session_until_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            case = _build_case(Path(temporary))
+            service, _harness = _service(case)
+            processes: list[subprocess.Popen[bytes]] = []
+            real_popen = subprocess.Popen
+
+            def capture_spawn(*args: object, **kwargs: object) -> Any:
+                process = real_popen(*args, **kwargs)
+                processes.append(process)
+                return process
+
+            with (
+                patch(
+                    "router_dump_analyzer.private_analysis_subprocess_runner."
+                    "subprocess.Popen",
+                    new=capture_spawn,
+                ),
+                patch.object(
+                    subprocess_runner_module._LocalChildSession,
+                    "cleanup",
+                    side_effect=KeyboardInterrupt("synthetic cleanup control"),
+                ),
+                self.assertRaisesRegex(
+                    KeyboardInterrupt,
+                    "synthetic cleanup control",
+                ),
+            ):
+                case.runner.execute(service)
+
+            self.assertTrue(case.runner.cleanup_pending)
+            self.assertEqual(len(processes), 1)
+            cleaned, receipt = case.runner.retry_pending_cleanup()
+            self.assertTrue(cleaned)
+            self.assertIsNotNone(receipt)
+            assert receipt is not None
+            _assert_error(
+                self,
+                receipt,
+                PrivateAnalysisErrorCode.RUNNER_FAILED,
+                PrivateAnalysisErrorStage.RUNNER,
+            )
+            self.assertTrue(case.runner.cleanup_pending)
+            self.assertIsNotNone(processes[0].poll())
+            case.runner.acknowledge_pending_cleanup()
+            self.assertFalse(case.runner.cleanup_pending)
+
+    def test_cleanup_success_cannot_release_live_session_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            case = _build_case(Path(temporary))
+            service, _harness = _service(case)
+            processes: list[subprocess.Popen[bytes]] = []
+            real_popen = subprocess.Popen
+
+            def capture_spawn(*args: object, **kwargs: object) -> Any:
+                process = real_popen(*args, **kwargs)
+                processes.append(process)
+                return process
+
+            runner_failure = subprocess_runner_module._static_runner_error(
+                case.request,
+                PrivateAnalysisErrorCode.RUNNER_FAILED,
+            )
+            with (
+                patch(
+                    "router_dump_analyzer.private_analysis_subprocess_runner."
+                    "subprocess.Popen",
+                    new=capture_spawn,
+                ),
+                patch.object(
+                    ConfiguredPrivateAnalysisSubprocessRunner,
+                    "_drive_protocol",
+                    return_value=(runner_failure, None),
+                ),
+                patch.object(
+                    subprocess_runner_module._LocalChildSession,
+                    "cleanup",
+                    return_value=True,
+                ),
+                self.assertRaises(PrivateAnalysisSubprocessCleanupPending),
+            ):
+                case.runner.execute(service)
+
+            self.assertTrue(case.runner.cleanup_pending)
+            with patch.object(
+                subprocess_runner_module._LocalChildSession,
+                "cleanup",
+                return_value=True,
+            ):
+                cleaned, receipt = case.runner.retry_pending_cleanup()
+            self.assertFalse(cleaned)
+            self.assertIsNone(receipt)
+            self.assertTrue(case.runner.cleanup_pending)
+            cleaned, receipt = case.runner.retry_pending_cleanup()
+            self.assertTrue(cleaned)
+            self.assertIsNotNone(receipt)
+            self.assertTrue(case.runner.cleanup_pending)
+            self.assertIsNotNone(processes[0].poll())
+            case.runner.acknowledge_pending_cleanup()
+            self.assertFalse(case.runner.cleanup_pending)
 
     def test_partial_start_cleanup_failure_preserves_process_control(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1813,16 +2461,8 @@ class PrivateAnalysisSubprocessExecutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             missing = str((directory / "missing-private-adapter.exe").resolve())
-            case = _build_case(directory, executable=missing)
-            service, _harness = _service(case)
-            receipt = case.runner.execute(service)
-            _assert_error(
-                self,
-                receipt,
-                PrivateAnalysisErrorCode.RUNNER_UNAVAILABLE,
-                PrivateAnalysisErrorStage.RUNNER,
-            )
-            self.assertEqual(receipt.transcript.message_count, 0)
+            with self.assertRaisesRegex(RuntimeError, "cannot be attested"):
+                _build_case(directory, executable=missing)
 
     def test_deadline_terminates_and_reaps_the_direct_child(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

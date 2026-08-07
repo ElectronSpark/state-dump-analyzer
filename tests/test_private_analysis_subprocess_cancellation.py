@@ -71,6 +71,30 @@ def _assert_cancelled(
 
 
 class PrivateAnalysisSubprocessCancellationTests(unittest.TestCase):
+    def test_liveness_probe_propagates_control_and_treats_uncertainty_as_live(
+        self,
+    ) -> None:
+        class ControlProcess:
+            @staticmethod
+            def poll() -> None:
+                raise KeyboardInterrupt("synthetic liveness control")
+
+        class UncertainProcess:
+            @staticmethod
+            def poll() -> None:
+                raise RuntimeError("synthetic liveness uncertainty")
+
+        with self.assertRaisesRegex(
+            KeyboardInterrupt,
+            "liveness control",
+        ):
+            runner_module._process_exit_confirmed(ControlProcess())  # type: ignore[arg-type]
+        self.assertFalse(
+            runner_module._process_exit_confirmed(  # type: ignore[arg-type]
+                UncertainProcess()
+            )
+        )
+
     def test_cancellation_before_spawn_returns_attested_cancelled_receipt(
         self,
     ) -> None:
@@ -106,14 +130,11 @@ class PrivateAnalysisSubprocessCancellationTests(unittest.TestCase):
             )
             _write_control(case.control_path, [{"kind": "block"}])
             service, _harness = _service(case)
-            probe_calls = 0
             processes: list[subprocess.Popen[bytes]] = []
             real_spawn = runner_module._spawn_local_child
 
             def cancel_after_child_wait() -> bool:
-                nonlocal probe_calls
-                probe_calls += 1
-                return probe_calls >= 4
+                return bool(processes)
 
             def capture_spawn(
                 configuration: runner_module.PrivateAnalysisSubprocessLaunchConfiguration,
@@ -219,7 +240,9 @@ class PrivateAnalysisSubprocessCancellationTests(unittest.TestCase):
                 runner_module.evidence_snapshot_digest((reference,)),
             )
 
-    def test_cleanup_failure_cannot_be_relabelled_cancelled(self) -> None:
+    def test_non_authority_cleanup_failure_preserves_cancellation_attestation(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             case = _build_case(
                 Path(temporary),
@@ -228,13 +251,19 @@ class PrivateAnalysisSubprocessCancellationTests(unittest.TestCase):
             )
             _write_control(case.control_path, [{"kind": "block"}])
             service, _harness = _service(case)
-            probe_calls = 0
+            processes: list[subprocess.Popen[bytes]] = []
+            real_spawn = runner_module._spawn_local_child
             real_cleanup = runner_module._LocalChildSession.cleanup
 
             def cancel_after_child_wait() -> bool:
-                nonlocal probe_calls
-                probe_calls += 1
-                return probe_calls >= 4
+                return bool(processes)
+
+            def capture_spawn(
+                configuration: runner_module.PrivateAnalysisSubprocessLaunchConfiguration,
+            ) -> subprocess.Popen[bytes]:
+                process = real_spawn(configuration)
+                processes.append(process)
+                return process
 
             def cleanup_but_withhold_attestation(
                 session: runner_module._LocalChildSession,
@@ -242,10 +271,17 @@ class PrivateAnalysisSubprocessCancellationTests(unittest.TestCase):
                 self.assertTrue(real_cleanup(session))
                 return False
 
-            with patch.object(
-                runner_module._LocalChildSession,
-                "cleanup",
-                new=cleanup_but_withhold_attestation,
+            with (
+                patch.object(
+                    runner_module,
+                    "_spawn_local_child",
+                    new=capture_spawn,
+                ),
+                patch.object(
+                    runner_module._LocalChildSession,
+                    "cleanup",
+                    new=cleanup_but_withhold_attestation,
+                ),
             ):
                 receipt = case.runner.execute(
                     service,
@@ -256,9 +292,13 @@ class PrivateAnalysisSubprocessCancellationTests(unittest.TestCase):
             self.assertIs(outcome.kind, PrivateAnalysisOutcomeKind.ERROR)
             assert outcome.error is not None
             self.assertIs(outcome.error.code, PrivateAnalysisErrorCode.RUNNER_FAILED)
-            self.assertFalse(receipt.cancellation_attested)
-            with self.assertRaisesRegex(RuntimeError, "cleanup attestation"):
-                receipt.as_cancelled()
+            self.assertTrue(receipt.cancellation_attested)
+            cancelled = receipt.as_cancelled()
+            assert cancelled.outcome.error is not None
+            self.assertIs(
+                cancelled.outcome.error.code,
+                PrivateAnalysisErrorCode.CANCELLED,
+            )
 
     def test_process_control_from_probe_propagates_after_child_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -269,14 +309,11 @@ class PrivateAnalysisSubprocessCancellationTests(unittest.TestCase):
             )
             _write_control(case.control_path, [{"kind": "block"}])
             service, _harness = _service(case)
-            probe_calls = 0
             processes: list[subprocess.Popen[bytes]] = []
             real_spawn = runner_module._spawn_local_child
 
             def interrupt_after_spawn() -> bool:
-                nonlocal probe_calls
-                probe_calls += 1
-                if probe_calls >= 4:
+                if processes:
                     raise KeyboardInterrupt("synthetic process control")
                 return False
 
@@ -304,6 +341,20 @@ class PrivateAnalysisSubprocessCancellationTests(unittest.TestCase):
             self.assertIsNotNone(
                 processes[0].poll(), "interrupted child was not reaped"
             )
+            self.assertTrue(case.runner.cleanup_pending)
+            cleaned, receipt = case.runner.retry_pending_cleanup()
+            self.assertTrue(cleaned)
+            self.assertIsNotNone(receipt)
+            assert receipt is not None
+            self.assertIs(receipt.outcome.kind, PrivateAnalysisOutcomeKind.ERROR)
+            assert receipt.outcome.error is not None
+            self.assertIs(
+                receipt.outcome.error.code,
+                PrivateAnalysisErrorCode.RUNNER_FAILED,
+            )
+            self.assertTrue(receipt.cancellation_attested)
+            case.runner.acknowledge_pending_cleanup()
+            self.assertFalse(case.runner.cleanup_pending)
 
     def test_as_cancelled_preserves_disclosure_ledger_and_budget(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -24,10 +24,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import stat
 import threading
 from collections import OrderedDict
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
@@ -52,6 +53,12 @@ from .annotation_store import (
     build_correlation_report,
 )
 from .canonical import canonical_json
+from .capability_router import (
+    CapabilityProviderRegistry,
+    CapabilityRouteSelector,
+    PlanBoundCapabilityRouter,
+    RevisionSetCapabilityRouter,
+)
 from .corroboration import (
     CorroborationFact,
     EventIdentity,
@@ -63,6 +70,7 @@ from .corroboration import (
 from .filesystem_lock import exclusive_file_lock
 from .ingestion_pipeline import (
     CatalogExecutionTimeoutError,
+    CatalogPublisherProcessBootstrap,
     DurableIngestionPipeline,
     ImportScope,
     PipelineLimits,
@@ -80,27 +88,75 @@ from .normalized_data import (
     redact_event_for_client,
     resource_id,
 )
-from .plugin_api import MAX_TIMESTAMP_NS, MIN_TIMESTAMP_NS
+from .plugin_api import (
+    MAX_TIMESTAMP_NS,
+    MIN_TIMESTAMP_NS,
+    EvidenceAnalysisFact,
+    EvidenceAnalysisKind,
+    EvidenceAnalysisRequest,
+    PluginCapability,
+)
+from .plugin_composition import PluginCompositionPolicy
 from .plugin_execution_plan import (
     PluginExecutionPlan,
     plugin_execution_plan_plugin_ids,
     primary_parser_execution_pin,
     snapshot_plugin_execution_plan,
 )
-from .private_analysis import EvidenceScope, PrivateAnalysisRequest
+from .private_analysis import (
+    DEFAULT_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_PAYLOAD_BYTES,
+    MAX_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_ENTRIES,
+    MAX_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_PAYLOAD_BYTES,
+    PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_PAYLOAD_SCHEMA,
+    PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_SUBJECT_KIND,
+    EvidenceEnvelope,
+    EvidenceFactProvenance,
+    EvidenceKind,
+    EvidenceReference,
+    EvidenceRevisionBinding,
+    EvidenceScope,
+    EvidenceTimeRange,
+    PrivateAnalysisCapabilityArguments,
+    PrivateAnalysisCapabilityIntent,
+    PrivateAnalysisDisclosureMode,
+    PrivateAnalysisEvidenceClass,
+    PrivateAnalysisPolicy,
+    PrivateAnalysisRequest,
+    evidence_locator_digest,
+    evidence_payload_digest,
+)
 from .private_analysis_binding import (
     PrivateAnalysisEvidenceBindingError,
+    bind_private_analysis_plugin_producer,
     bind_private_analysis_revision,
+    verify_private_analysis_evidence_binding,
 )
 from .private_analysis_execution import (
     PrivateAnalysisExecutionCoordinator,
     PrivateAnalysisExecutionLimits,
     PrivateAnalysisRunnerRegistration,
 )
+from .private_analysis_promotion import (
+    PROPOSAL_REVIEW_AUTHORITY_KEY_BYTES,
+    PrivateAnalysisProposalReviewService,
+    SqliteProposalReviewStore,
+)
+from .private_analysis_revision_evidence import (
+    PrivateAnalysisRevisionEvidenceCancelled,
+    PrivateAnalysisRevisionEvidenceError,
+    TrustedPrivateAnalysisRevision,
+    build_private_analysis_revision_evidence_corpus,
+    validate_private_analysis_timeline_metadata,
+)
 from .private_analysis_run_store import SqlitePrivateAnalysisRunStore
 from .private_analysis_service import (
     PrivateAnalysisDeploymentCeilings,
     PrivateAnalysisService,
+)
+from .private_analysis_tool_service import (
+    PrivateAnalysisAuthorizationDecision,
+    PrivateAnalysisToolService,
+    PrivateAnalysisWorkspacePolicySnapshot,
 )
 from .session_store import (
     AnalysisRevisionDescriptor,
@@ -110,6 +166,7 @@ from .session_store import (
     CatalogRetentionInventory,
     CatalogRetentionPolicy,
     CatalogRetentionResult,
+    FixtureDescriptor,
     IdempotencyConflict,
     RetentionSagaDescriptor,
     SessionStoreDeadlineExceeded,
@@ -128,6 +185,10 @@ _MAX_REPORT_OBSERVATIONS = 10_000
 _DEFAULT_MAX_REPORT_REVISIONS = 128
 _DEFAULT_MAX_REPORT_DATASET_BYTES = 8 * 1024 * 1024 * 1024
 _DEFAULT_MAX_REPORT_CORRELATION_EDGES = 20_000
+_DEFAULT_MAX_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_ENTRIES = 2_000_000
+_DEFAULT_MAX_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_PAYLOAD_BYTES = (
+    DEFAULT_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_PAYLOAD_BYTES
+)
 _DATASET_FORMAT = "router_dump_analyzer.canonical-json.v1"
 _MAX_RETENTION_RELEASE_ACTIONS = 10_000
 _MAX_RETENTION_ACTOR_LENGTH = 256
@@ -137,9 +198,39 @@ _RETENTION_PHASE_SCHEMA = "router_dump_analyzer.retention_phase.v1"
 _PRIVATE_RUN_STORE_BINDING_SCHEMA = (
     "router_dump_analyzer.private_analysis.store_binding.v1"
 )
+
+_PRIVATE_ANALYSIS_KIND_BY_INTENT = {
+    PrivateAnalysisCapabilityIntent.ROUTE_TRACE: EvidenceAnalysisKind.ROUTE_TRACE,
+    PrivateAnalysisCapabilityIntent.TRACE_CORRELATION: (
+        EvidenceAnalysisKind.TRACE_CORRELATION
+    ),
+    PrivateAnalysisCapabilityIntent.EVIDENCE_CORRELATION: (
+        EvidenceAnalysisKind.EVIDENCE_CORRELATION
+    ),
+    PrivateAnalysisCapabilityIntent.EVIDENCE_INTERPRETATION: (
+        EvidenceAnalysisKind.EVIDENCE_INTERPRETATION
+    ),
+}
+
+
+def _private_analysis_plain_json(value: object) -> object:
+    """Project an executor-validated frozen JSON value to plain containers."""
+
+    if isinstance(value, Mapping):
+        return {
+            key: _private_analysis_plain_json(item)
+            for key, item in value.items()
+        }
+    if type(value) in {tuple, list}:
+        return [_private_analysis_plain_json(item) for item in value]
+    return value
 _PRIVATE_RUN_STORE_BINDING_NAME = ".private-analysis-run-store.binding.json"
 _PRIVATE_RUN_STORE_BINDING_LOCK_NAME = ".private-analysis-run-store.binding.lock"
 _MAX_PRIVATE_RUN_STORE_BINDING_BYTES = 1_024
+_PROPOSAL_REVIEW_AUTHORITY_KEY_NAME = ".private-analysis-proposal-review.authority.key"
+_PROPOSAL_REVIEW_AUTHORITY_KEY_LOCK_NAME = (
+    ".private-analysis-proposal-review.authority.lock"
+)
 
 
 class ControlPlaneError(RuntimeError):
@@ -192,6 +283,57 @@ def _write_private_run_store_binding(path: Path, installation_id: str) -> None:
         ) from error
 
 
+def _proposal_review_authority_key(path: Path) -> bytes | None:
+    """Read one external proposal-review MAC key without creating state."""
+
+    try:
+        try:
+            path_status = path.lstat()
+        except FileNotFoundError:
+            return None
+        if (
+            not stat.S_ISREG(path_status.st_mode)
+            or path_status.st_size != PROPOSAL_REVIEW_AUTHORITY_KEY_BYTES
+        ):
+            raise ControlPlaneError(
+                "private-analysis proposal-review authority key is invalid"
+            )
+        value = path.read_bytes()
+    except OSError as error:
+        raise ControlPlaneError(
+            "private-analysis proposal-review authority key is invalid"
+        ) from error
+    if len(value) != PROPOSAL_REVIEW_AUTHORITY_KEY_BYTES:
+        raise ControlPlaneError(
+            "private-analysis proposal-review authority key is invalid"
+        )
+    return value
+
+
+def _write_proposal_review_authority_key(path: Path, value: bytes) -> None:
+    if type(value) is not bytes or len(value) != PROPOSAL_REVIEW_AUTHORITY_KEY_BYTES:
+        raise ControlPlaneError(
+            "private-analysis proposal-review authority key is invalid"
+        )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    binary_flag = getattr(os, "O_BINARY", 0)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, flags | binary_flag, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = None
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(path, 0o600)
+    except OSError as error:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise ControlPlaneError(
+            "private-analysis proposal-review authority key could not be persisted"
+        ) from error
+
+
 class ControlPlaneScopeError(ValueError, ControlPlaneError):
     """A project/workspace scope is not a valid catalog boundary."""
 
@@ -225,6 +367,12 @@ class ControlPlaneLimits:
     max_report_revisions: int = _DEFAULT_MAX_REPORT_REVISIONS
     max_report_dataset_bytes: int = _DEFAULT_MAX_REPORT_DATASET_BYTES
     max_report_correlation_edges: int = _DEFAULT_MAX_REPORT_CORRELATION_EDGES
+    max_private_analysis_evidence_corpus_entries: int = (
+        _DEFAULT_MAX_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_ENTRIES
+    )
+    max_private_analysis_evidence_corpus_payload_bytes: int = (
+        _DEFAULT_MAX_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_PAYLOAD_BYTES
+    )
 
     def __post_init__(self) -> None:
         if type(self.max_dataset_bytes) is not int or self.max_dataset_bytes < 1:
@@ -255,6 +403,27 @@ class ControlPlaneLimits:
         ):
             raise ValueError(
                 "max_report_correlation_edges must be between 1 and 100000"
+            )
+        if (
+            type(self.max_private_analysis_evidence_corpus_entries) is not int
+            or not 1
+            <= self.max_private_analysis_evidence_corpus_entries
+            <= MAX_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_ENTRIES
+        ):
+            raise ValueError(
+                "max_private_analysis_evidence_corpus_entries must be between "
+                f"1 and {MAX_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_ENTRIES}"
+            )
+        if (
+            type(self.max_private_analysis_evidence_corpus_payload_bytes) is not int
+            or not 1
+            <= self.max_private_analysis_evidence_corpus_payload_bytes
+            <= MAX_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_PAYLOAD_BYTES
+        ):
+            raise ValueError(
+                "max_private_analysis_evidence_corpus_payload_bytes must be "
+                "between 1 and "
+                f"{MAX_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_PAYLOAD_BYTES}"
             )
 
 
@@ -877,6 +1046,14 @@ class SessionCatalogPublisher(RevisionCatalogPublisher):
             raise TypeError("catalog publisher process state is invalid")
         self.sessions = SqliteSessionStore(database_path)
 
+    def process_bootstrap(self) -> CatalogPublisherProcessBootstrap:
+        """Freeze only the durable SQLite locator for process reconstruction."""
+
+        return CatalogPublisherProcessBootstrap(
+            loader_kind="core_sqlite_session",
+            constructor_args=(self.sessions._process_reopen_path(),),
+        )
+
     @staticmethod
     def _deadline(call_context: PublisherCallContext, operation_id: str) -> int:
         if call_context.operation_id != operation_id:
@@ -1083,6 +1260,8 @@ class ControlPlane:
         registry: PluginRegistry,
         pipeline_limits: PipelineLimits | None = None,
         retention_policy: RetentionPolicy | None = None,
+        plugin_composition_policy: PluginCompositionPolicy | None = None,
+        capability_providers: CapabilityProviderRegistry | None = None,
         limits: ControlPlaneLimits | None = None,
         private_analysis_runners: tuple[PrivateAnalysisRunnerRegistration, ...] = (),
         private_analysis_execution_limits: PrivateAnalysisExecutionLimits | None = None,
@@ -1109,10 +1288,17 @@ class ControlPlane:
         self._private_run_store_binding_lock_path = (
             self.root / _PRIVATE_RUN_STORE_BINDING_LOCK_NAME
         )
+        self._proposal_review_authority_key_path = (
+            self.root / _PROPOSAL_REVIEW_AUTHORITY_KEY_NAME
+        )
+        self._proposal_review_authority_key_lock_path = (
+            self.root / _PROPOSAL_REVIEW_AUTHORITY_KEY_LOCK_NAME
+        )
         self.sessions = SqliteSessionStore(self.root / "sessions.sqlite3")
         annotations: ReviewOverlayStore | None = None
         private_analysis_runs: SqlitePrivateAnalysisRunStore | None = None
         private_analysis_execution: PrivateAnalysisExecutionCoordinator | None = None
+        proposal_reviews: SqliteProposalReviewStore | None = None
         try:
             annotations = ReviewOverlayStore(self.root / "annotations.sqlite3")
             self.annotations = annotations
@@ -1162,6 +1348,7 @@ class ControlPlane:
                 private_analysis_runs,
                 registrations=private_analysis_runners,
                 limits=private_analysis_execution_limits,
+                core_tool_service_factory=(self._core_private_analysis_tool_service),
             )
             self.private_analysis_execution = private_analysis_execution
             self.private_analysis = PrivateAnalysisService(
@@ -1170,6 +1357,57 @@ class ControlPlane:
                 private_analysis_execution,
                 ceilings=private_analysis_ceilings,
             )
+            proposal_review_database = (
+                self.root / "private-analysis-proposal-reviews.sqlite3"
+            )
+            with exclusive_file_lock(self._proposal_review_authority_key_lock_path):
+                try:
+                    try:
+                        proposal_review_database_status = (
+                            proposal_review_database.lstat()
+                        )
+                    except FileNotFoundError:
+                        proposal_review_database_status = None
+                except OSError as error:
+                    raise ControlPlaneError(
+                        "private-analysis proposal-review store could not be inspected"
+                    ) from error
+                if proposal_review_database_status is not None and not stat.S_ISREG(
+                    proposal_review_database_status.st_mode
+                ):
+                    raise ControlPlaneError(
+                        "private-analysis proposal-review store is invalid"
+                    )
+                proposal_review_authority_key = _proposal_review_authority_key(
+                    self._proposal_review_authority_key_path
+                )
+                if proposal_review_authority_key is None:
+                    # Key creation is valid only for a brand-new store. Any
+                    # pre-existing database may have lost rows independently
+                    # of its key, so current contents cannot prove that
+                    # minting replacement authority is safe.
+                    if proposal_review_database_status is not None:
+                        raise ControlPlaneError(
+                            "private-analysis proposal-review authority key is missing"
+                        )
+                    proposal_review_authority_key = secrets.token_bytes(
+                        PROPOSAL_REVIEW_AUTHORITY_KEY_BYTES
+                    )
+                    _write_proposal_review_authority_key(
+                        self._proposal_review_authority_key_path,
+                        proposal_review_authority_key,
+                    )
+                proposal_reviews = SqliteProposalReviewStore(
+                    proposal_review_database,
+                    authority_key=proposal_review_authority_key,
+                )
+            self.proposal_review_store = proposal_reviews
+            self.private_analysis_reviews = PrivateAnalysisProposalReviewService(
+                self.private_analysis,
+                proposal_reviews,
+                self,
+                admission_fence=self._coordinated_review_catalog,
+            )
             self.publisher = SessionCatalogPublisher(self.sessions)
             self.ingestion = DurableIngestionPipeline(
                 self.root,
@@ -1177,8 +1415,16 @@ class ControlPlane:
                 publisher=self.publisher,
                 limits=effective_pipeline_limits,
                 retention_policy=retention_policy,
+                composition_policy=plugin_composition_policy,
+                capability_providers=capability_providers,
             )
+            # Published execution plans and their exact provider directory
+            # remain available to topology, route, and private-analysis
+            # coordinators without exposing plug-in objects to callers.
+            self.capability_providers = self.ingestion.capability_providers
         except BaseException:
+            if proposal_reviews is not None:
+                proposal_reviews.close()
             if private_analysis_execution is not None:
                 private_analysis_execution.close(timeout=0)
             if private_analysis_runs is not None:
@@ -1211,12 +1457,15 @@ class ControlPlane:
             if self._closed:
                 return
             try:
-                self.private_analysis_runs.close()
+                self.proposal_review_store.close()
             finally:
                 try:
-                    self.annotations.close()
+                    self.private_analysis_runs.close()
                 finally:
-                    self.sessions.close()
+                    try:
+                        self.annotations.close()
+                    finally:
+                        self.sessions.close()
             self._closed = True
             self._cache.clear()
             self._started = False
@@ -1276,6 +1525,396 @@ class ControlPlane:
                 raise PrivateAnalysisEvidenceBindingError(
                     "private-analysis request revision binding has drifted"
                 )
+
+    def _core_private_analysis_tool_service(
+        self,
+        request: PrivateAnalysisRequest,
+        runner_policy: PrivateAnalysisPolicy,
+        cancellation_probe: Callable[[], bool],
+    ) -> PrivateAnalysisToolService:
+        """Freeze verified revision evidence before a local runner executes.
+
+        The model receives only the closed query/read/analyze tool surface.
+        Catalog, dataset, plug-in, filesystem, and mutation authority stay in
+        this deployment-owned adapter, and each later read or analysis call
+        revalidates its durable revision binding before releasing a payload.
+        """
+
+        self._validate_private_analysis_request(request)
+        scope = request.scope
+        workspace = self.validate_scope(
+            scope.tenant_id,
+            scope.project_id,
+            scope.workspace_id,
+        )
+        admitted_policy = self.sessions.get_workspace_disclosure_policy(
+            workspace.tenant_id,
+            workspace.workspace_id,
+        )
+        if admitted_policy.policy_digest != request.workspace_policy_digest:
+            raise PrivateAnalysisEvidenceBindingError(
+                "private-analysis workspace policy changed before evidence freezing"
+            )
+        plugin_evidence_class = (
+            PrivateAnalysisEvidenceClass.PROPRIETARY
+            if (
+                admitted_policy.policy.mode
+                is PrivateAnalysisDisclosureMode.FULL_FIDELITY
+                and runner_policy.full_fidelity_workspace_data
+            )
+            else PrivateAnalysisEvidenceClass.CLIENT_SAFE
+        )
+        review_scope = ReviewScope(
+            scope.tenant_id,
+            scope.project_id,
+            scope.workspace_id,
+        )
+        trusted: list[TrustedPrivateAnalysisRevision] = []
+        trusted_by_binding: dict[
+            EvidenceRevisionBinding,
+            TrustedPrivateAnalysisRevision,
+        ] = {}
+        for binding in request.revisions:
+            if cancellation_probe():
+                raise PrivateAnalysisRevisionEvidenceCancelled(
+                    "private-analysis revision loading was cancelled"
+                )
+            fixture = self.sessions.get_fixture(
+                scope.tenant_id,
+                binding.fixture_id,
+            )
+            loaded = self._load_revision(
+                review_scope,
+                binding.revision_id,
+                cancellation_probe=cancellation_probe,
+            )
+            expected_scope, expected_binding = bind_private_analysis_revision(
+                workspace,
+                fixture,
+                loaded.descriptor,
+            )
+            if expected_scope != scope or expected_binding != binding:
+                raise PrivateAnalysisEvidenceBindingError(
+                    "private-analysis request revision binding has drifted"
+                )
+            supplied = TrustedPrivateAnalysisRevision(
+                workspace=workspace,
+                fixture=fixture,
+                revision=loaded.descriptor,
+                dataset=loaded.dataset,
+            )
+            trusted.append(supplied)
+            trusted_by_binding[expected_binding] = supplied
+        if cancellation_probe():
+            raise PrivateAnalysisRevisionEvidenceCancelled(
+                "private-analysis evidence freezing was cancelled"
+            )
+        corpus = build_private_analysis_revision_evidence_corpus(
+            request,
+            tuple(trusted),
+            maximum_entries=(self.limits.max_private_analysis_evidence_corpus_entries),
+            maximum_payload_bytes=(
+                self.limits.max_private_analysis_evidence_corpus_payload_bytes
+            ),
+            plugin_evidence_class=plugin_evidence_class,
+            cancellation_probe=cancellation_probe,
+        )
+        derived_references: dict[str, EvidenceReference] = {}
+        derived_results: dict[
+            str,
+            tuple[EvidenceReference, dict[str, Any]],
+        ] = {}
+        derived_references_lock = threading.RLock()
+
+        def authorize(
+            selected: PrivateAnalysisRequest,
+        ) -> PrivateAnalysisAuthorizationDecision:
+            if selected != request:
+                raise PrivateAnalysisEvidenceBindingError(
+                    "private-analysis request changed after evidence freezing"
+                )
+            self._validate_private_analysis_request(selected)
+            return PrivateAnalysisAuthorizationDecision.allow(selected)
+
+        def resolve_policy(
+            selected_scope: EvidenceScope,
+        ) -> PrivateAnalysisWorkspacePolicySnapshot:
+            if selected_scope != scope:
+                raise ControlPlaneScopeError(
+                    "private-analysis policy scope changed after admission"
+                )
+            current_workspace = self.validate_scope(
+                selected_scope.tenant_id,
+                selected_scope.project_id,
+                selected_scope.workspace_id,
+            )
+            policy = self.sessions.get_workspace_disclosure_policy(
+                current_workspace.tenant_id,
+                current_workspace.workspace_id,
+            )
+            return PrivateAnalysisWorkspacePolicySnapshot(
+                scope=selected_scope,
+                policy_version=policy.version,
+                policy=policy.policy,
+                policy_digest=policy.policy_digest,
+            )
+
+        def analyze_evidence(
+            selected: PrivateAnalysisRequest,
+            arguments: PrivateAnalysisCapabilityArguments,
+            parents: tuple[EvidenceEnvelope, ...],
+            selected_cancellation_probe: Callable[[], bool] | None,
+        ) -> tuple[EvidenceReference, dict[str, Any]]:
+            """Invoke one exact plan-owned provider over disclosed evidence."""
+
+            if selected != request:
+                raise PrivateAnalysisEvidenceBindingError(
+                    "private-analysis request changed before capability routing"
+                )
+            if type(arguments) is not PrivateAnalysisCapabilityArguments:
+                raise TypeError(
+                    "arguments must be an exact PrivateAnalysisCapabilityArguments"
+                )
+            if type(parents) is not tuple or not parents:
+                raise TypeError("evidence analysis requires materialized parents")
+            parent_digests = tuple(
+                parent.reference.reference_digest for parent in parents
+            )
+            if parent_digests != arguments.parent_reference_digests:
+                raise PrivateAnalysisEvidenceBindingError(
+                    "evidence analysis parents do not match the admitted arguments"
+                )
+
+            def checkpoint() -> None:
+                if selected_cancellation_probe is None:
+                    return
+                cancelled = selected_cancellation_probe()
+                if type(cancelled) is not bool:
+                    raise PrivateAnalysisRevisionEvidenceCancelled(
+                        "private-analysis cancellation state is invalid"
+                    )
+                if cancelled:
+                    raise PrivateAnalysisRevisionEvidenceCancelled(
+                        "private-analysis evidence analysis was cancelled"
+                    )
+
+            checkpoint()
+            with derived_references_lock:
+                cached = derived_results.get(arguments.arguments_digest)
+                if cached is not None:
+                    return cached[0], deepcopy(cached[1])
+
+            targets = tuple(
+                binding
+                for binding in selected.revisions
+                if binding.node_id == arguments.node_id
+                and binding.revision_id == arguments.revision_id
+            )
+            if len(targets) != 1:
+                raise PrivateAnalysisEvidenceBindingError(
+                    "evidence analysis target is not one exact request revision"
+                )
+            target = targets[0]
+            supplied = trusted_by_binding.get(target)
+            if supplied is None:
+                raise PrivateAnalysisEvidenceBindingError(
+                    "evidence analysis target is not a trusted revision"
+                )
+            analysis_kind = _PRIVATE_ANALYSIS_KIND_BY_INTENT.get(arguments.intent)
+            if analysis_kind is None:
+                raise PrivateAnalysisEvidenceBindingError(
+                    "evidence analysis intent is unsupported"
+                )
+            facts = tuple(
+                EvidenceAnalysisFact(
+                    reference_digest=parent.reference.reference_digest,
+                    evidence_kind=parent.reference.kind.value,
+                    subject_kind=parent.reference.subject_kind,
+                    node_id=parent.reference.revision.node_id,
+                    revision_id=parent.reference.revision.revision_id,
+                    payload_schema=parent.reference.payload_schema,
+                    fact_provenance=parent.reference.fact_provenance.value,
+                    time_basis=parent.reference.time_range.basis.value,
+                    time_start_ns=parent.reference.time_range.start_ns,
+                    time_end_ns=parent.reference.time_range.end_ns,
+                    time_clock_domain=parent.reference.time_range.clock_domain,
+                    payload=parent.payload,
+                )
+                for parent in parents
+            )
+            capability_request = EvidenceAnalysisRequest(
+                invocation_id=arguments.arguments_digest,
+                analysis_kind=analysis_kind,
+                facts=facts,
+                parameters=arguments.parameters,
+                max_observations=arguments.max_observations,
+            )
+            route = self._capability_router_for_descriptor(
+                supplied.revision,
+                member_id=target.revision_id,
+            ).resolve(
+                CapabilityRouteSelector(
+                    capability=PluginCapability.EVIDENCE_ANALYSIS,
+                )
+            )
+            provider = route.provider
+            execution_plan = supplied.revision.execution_plan
+            if execution_plan is None:
+                raise PrivateAnalysisEvidenceBindingError(
+                    "evidence analysis target has no executable plan"
+                )
+            if (
+                provider.catalog_revision_id != target.revision_id
+                or provider.node_id != target.node_id
+                or provider.basis_revision_id != execution_plan.basis_revision_id
+                or provider.plan_digest != target.execution_plan_digest
+                or provider.capability is not PluginCapability.EVIDENCE_ANALYSIS
+            ):
+                raise PrivateAnalysisEvidenceBindingError(
+                    "evidence analysis provider does not match the target revision"
+                )
+            invocation = route.analyze_evidence(capability_request)
+            if invocation.provider != provider:
+                raise PrivateAnalysisEvidenceBindingError(
+                    "evidence analysis provider changed during invocation"
+                )
+            checkpoint()
+
+            observations = [
+                {
+                    "observation_id": observation.observation_id,
+                    "category": observation.category,
+                    "summary": observation.summary,
+                    "cited_reference_digests": list(
+                        observation.cited_reference_digests
+                    ),
+                    "quality": observation.quality.value,
+                    "details": _private_analysis_plain_json(observation.details),
+                }
+                for observation in invocation.result.observations
+            ]
+            payload: dict[str, Any] = {
+                "arguments_digest": arguments.arguments_digest,
+                "intent": arguments.intent.value,
+                "parent_reference_digests": list(
+                    arguments.parent_reference_digests
+                ),
+                "observations": observations,
+            }
+            evidence_rank = {
+                PrivateAnalysisEvidenceClass.PUBLIC_METADATA: 0,
+                PrivateAnalysisEvidenceClass.CLIENT_SAFE: 1,
+                PrivateAnalysisEvidenceClass.PROPRIETARY: 2,
+                PrivateAnalysisEvidenceClass.NEVER_ASSISTANT: 3,
+            }
+            evidence_class = max(
+                (parent.reference.evidence_class for parent in parents),
+                key=evidence_rank.__getitem__,
+            )
+            producer = bind_private_analysis_plugin_producer(
+                supplied.revision,
+                plugin_instance_id=provider.pin.instance_id,
+                capability=PluginCapability.EVIDENCE_ANALYSIS.value,
+            )
+            reference = EvidenceReference(
+                scope=scope,
+                revision=target,
+                producer=producer,
+                kind=EvidenceKind.PLUGIN_CAPABILITY_RESULT,
+                subject_kind=(
+                    PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_SUBJECT_KIND
+                ),
+                locator_digest=evidence_locator_digest(
+                    PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_SUBJECT_KIND,
+                    {"arguments_digest": arguments.arguments_digest},
+                ),
+                evidence_class=evidence_class,
+                payload_schema=(
+                    PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_PAYLOAD_SCHEMA
+                ),
+                fact_provenance=EvidenceFactProvenance.PLUGIN_ANALYZED,
+                time_range=EvidenceTimeRange.unknown(),
+                content_digest=evidence_payload_digest(
+                    PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_PAYLOAD_SCHEMA,
+                    payload,
+                ),
+            )
+            with derived_references_lock:
+                existing = derived_results.get(arguments.arguments_digest)
+                if existing is not None:
+                    if existing != (reference, payload):
+                        raise PrivateAnalysisEvidenceBindingError(
+                            "evidence analysis provider returned a non-deterministic "
+                            "result"
+                        )
+                    return existing[0], deepcopy(existing[1])
+                derived_references[reference.reference_digest] = reference
+                derived_results[arguments.arguments_digest] = (
+                    reference,
+                    deepcopy(payload),
+                )
+            return reference, deepcopy(payload)
+
+        def validate_references(
+            references: tuple[EvidenceReference, ...],
+        ) -> bool:
+            with derived_references_lock:
+                for reference in references:
+                    derived = derived_references.get(reference.reference_digest)
+                    if derived is None:
+                        if not corpus.validate_reference(reference):
+                            return False
+                    elif derived != reference:
+                        return False
+            current_workspace = self.validate_scope(
+                scope.tenant_id,
+                scope.project_id,
+                scope.workspace_id,
+            )
+            catalog: dict[
+                EvidenceRevisionBinding,
+                tuple[FixtureDescriptor, AnalysisRevisionDescriptor],
+            ] = {}
+            for reference in references:
+                descriptors = catalog.get(reference.revision)
+                if descriptors is None:
+                    descriptors = (
+                        self.sessions.get_fixture(
+                            scope.tenant_id,
+                            reference.revision.fixture_id,
+                        ),
+                        self.sessions.get_revision(
+                            scope.tenant_id,
+                            reference.revision.revision_id,
+                        ),
+                    )
+                    catalog[reference.revision] = descriptors
+                fixture, revision = descriptors
+                verify_private_analysis_evidence_binding(
+                    reference,
+                    current_workspace,
+                    fixture,
+                    revision,
+                )
+            return True
+
+        def validate_reference(reference: EvidenceReference) -> bool:
+            return validate_references((reference,))
+
+        return PrivateAnalysisToolService(
+            request,
+            runner_policy=runner_policy,
+            authorize=authorize,
+            resolve_policy=resolve_policy,
+            query_references=None,
+            query_reference_pages=corpus.query_references,
+            resolve_reference=corpus.resolve_reference,
+            validate_reference=validate_reference,
+            materialize_payload=corpus.materialize_payload,
+            validate_references=validate_references,
+            analyze_evidence=analyze_evidence,
+            cancellation_probe=cancellation_probe,
+        )
 
     def scope(
         self,
@@ -1386,12 +2025,16 @@ class ControlPlane:
                 workspace_id=scope.workspace_id,
             )
         )
+        retained_proposal_revisions = (
+            self.proposal_review_store.pending_retention_references(scope).revision_ids
+        )
         protected = tuple(
             sorted(
                 {
                     *policy.protected_revision_ids,
                     *retained_review_revisions,
                     *retained_run_revisions,
+                    *retained_proposal_revisions,
                 }
             )
         )
@@ -1428,9 +2071,13 @@ class ControlPlane:
             raise TypeError("catalog_policy must be an exact CatalogRetentionPolicy")
         if type(selected_review_policy) is not ReviewRetentionPolicy:
             raise TypeError("review_policy must be an exact ReviewRetentionPolicy")
+        proposal_references = self.proposal_review_store.pending_retention_references(
+            scope
+        )
         review = self.annotations.inventory_retention(
             scope,
             selected_review_policy,
+            protected_idempotency_keys=(proposal_references.overlay_idempotency_keys),
         )
         effective_catalog = self._catalog_retention_policy(
             scope,
@@ -1551,17 +2198,26 @@ class ControlPlane:
 
             review: ReviewRetentionInventory | ReviewRetentionResult
             if saga.review_result is None:
+                proposal_references = (
+                    self.proposal_review_store.pending_retention_references(scope)
+                )
                 if review_policy.enabled:
                     review = self.annotations.purge_retention(
                         scope,
                         review_policy,
                         actor=actor,
                         operation_id=f"{operation_id}:review",
+                        protected_idempotency_keys=(
+                            proposal_references.overlay_idempotency_keys
+                        ),
                     )
                 else:
                     review = self.annotations.inventory_retention(
                         scope,
                         review_policy,
+                        protected_idempotency_keys=(
+                            proposal_references.overlay_idempotency_keys
+                        ),
                     )
                 saga = self.sessions.record_retention_saga_phase(
                     scope.tenant_id,
@@ -1711,12 +2367,19 @@ class ControlPlane:
     def _mapping_list(
         dataset: Mapping[str, Any],
         field: str,
+        *,
+        construction_checkpoint: Callable[[], None] | None = None,
     ) -> list[Mapping[str, Any]]:
         value = dataset.get(field, [])
-        if not isinstance(value, list) or any(
-            not isinstance(item, Mapping) for item in value
-        ):
+        if not isinstance(value, list):
             raise DatasetIntegrityError(f"dataset {field} must be an array of objects")
+        for ordinal, item in enumerate(value):
+            if ordinal % 256 == 0 and construction_checkpoint is not None:
+                construction_checkpoint()
+            if not isinstance(item, Mapping):
+                raise DatasetIntegrityError(
+                    f"dataset {field} must be an array of objects"
+                )
         return value
 
     @classmethod
@@ -1724,7 +2387,11 @@ class ControlPlane:
         cls,
         descriptor: AnalysisRevisionDescriptor,
         dataset: Mapping[str, Any],
+        *,
+        construction_checkpoint: Callable[[], None] | None = None,
     ) -> _DatasetIndex:
+        if construction_checkpoint is not None:
+            construction_checkpoint()
         ingestion = dataset.get("_ingestion")
         if not isinstance(ingestion, Mapping):
             raise DatasetIntegrityError("dataset lacks the core ingestion envelope")
@@ -1787,19 +2454,38 @@ class ControlPlane:
                 raise DatasetIntegrityError(
                     "catalog plug-in metadata does not match its full execution plan"
                 )
-        timeline_start = _non_negative_ns(
-            ingestion.get("timeline_start_ns", 0),
-            label="timeline_start_ns",
-        )
-        timeline_end = _non_negative_ns(
-            ingestion.get("timeline_end_ns", timeline_start),
-            label="timeline_end_ns",
-        )
-        if timeline_end < timeline_start:
-            raise DatasetIntegrityError("dataset timeline end precedes start")
+        if execution_plan is None:
+            # Legacy planless publications predate an explicit clock basis.
+            timeline_start = _non_negative_ns(
+                ingestion.get("timeline_start_ns", 0),
+                label="timeline_start_ns",
+            )
+            timeline_end = _non_negative_ns(
+                ingestion.get("timeline_end_ns", timeline_start),
+                label="timeline_end_ns",
+            )
+            if timeline_end < timeline_start:
+                raise DatasetIntegrityError("dataset timeline end precedes start")
+        else:
+            try:
+                timeline_start, timeline_end, _basis, _clock_domain = (
+                    validate_private_analysis_timeline_metadata(dataset)
+                )
+            except PrivateAnalysisRevisionEvidenceError as error:
+                raise DatasetIntegrityError(
+                    "dataset timeline metadata is invalid"
+                ) from error
 
         events: dict[str, Mapping[str, Any]] = {}
-        for event in cls._mapping_list(dataset, "events"):
+        for ordinal, event in enumerate(
+            cls._mapping_list(
+                dataset,
+                "events",
+                construction_checkpoint=construction_checkpoint,
+            )
+        ):
+            if ordinal % 256 == 0 and construction_checkpoint is not None:
+                construction_checkpoint()
             identifier = _exact_identifier(
                 event.get("event_uid", event.get("event_id")),
                 label="event identifier",
@@ -1811,7 +2497,15 @@ class ControlPlane:
             events[identifier] = event
 
         source_records: dict[str, Mapping[str, Any]] = {}
-        for record in cls._mapping_list(dataset, "source_records"):
+        for ordinal, record in enumerate(
+            cls._mapping_list(
+                dataset,
+                "source_records",
+                construction_checkpoint=construction_checkpoint,
+            )
+        ):
+            if ordinal % 256 == 0 and construction_checkpoint is not None:
+                construction_checkpoint()
             identifier = _exact_identifier(
                 record.get("source_record_uid"),
                 label="source-record identifier",
@@ -1824,7 +2518,15 @@ class ControlPlane:
             source_records[identifier] = record
 
         resources: set[str] = set()
-        for record in cls._mapping_list(dataset, "resources"):
+        for ordinal, record in enumerate(
+            cls._mapping_list(
+                dataset,
+                "resources",
+                construction_checkpoint=construction_checkpoint,
+            )
+        ):
+            if ordinal % 256 == 0 and construction_checkpoint is not None:
+                construction_checkpoint()
             identifier = resource_id(record)
             if identifier in resources:
                 raise DatasetIntegrityError(
@@ -1845,8 +2547,18 @@ class ControlPlane:
 
         relationships: set[str] = set()
         for field in ("relationships", "relationship_intervals"):
-            for relationship in cls._mapping_list(dataset, field):
+            for ordinal, relationship in enumerate(
+                cls._mapping_list(
+                    dataset,
+                    field,
+                    construction_checkpoint=construction_checkpoint,
+                )
+            ):
+                if ordinal % 256 == 0 and construction_checkpoint is not None:
+                    construction_checkpoint()
                 relationships.add(relationship_subject_id(relationship))
+        if construction_checkpoint is not None:
+            construction_checkpoint()
         return _DatasetIndex(
             events=events,
             source_records=source_records,
@@ -1856,7 +2568,30 @@ class ControlPlane:
             timeline_end_ns=timeline_end,
         )
 
-    def _load_revision(self, scope: ReviewScope, revision_id: str) -> _LoadedRevision:
+    def _load_revision(
+        self,
+        scope: ReviewScope,
+        revision_id: str,
+        *,
+        cancellation_probe: Callable[[], bool] | None = None,
+    ) -> _LoadedRevision:
+        if cancellation_probe is not None and not callable(cancellation_probe):
+            raise TypeError("cancellation_probe must be callable or None")
+
+        def checkpoint() -> None:
+            if cancellation_probe is None:
+                return
+            cancelled = cancellation_probe()
+            if type(cancelled) is not bool:
+                raise ControlPlaneError(
+                    "private-analysis cancellation probe returned an invalid value"
+                )
+            if cancelled:
+                raise PrivateAnalysisRevisionEvidenceCancelled(
+                    "private-analysis revision loading was cancelled"
+                )
+
+        checkpoint()
         descriptor = self._revision(scope, revision_id)
         cache_key = f"{scope.tenant_id}\x1f{revision_id}"
         with self._lock:
@@ -1865,6 +2600,7 @@ class ControlPlane:
             cached = self._cache.get(cache_key)
             if cached is not None:
                 self._cache.move_to_end(cache_key)
+                checkpoint()
                 return cached
 
         metadata = descriptor.metadata
@@ -1891,15 +2627,21 @@ class ControlPlane:
                 "serialized dataset violates the configured byte limit"
             )
         try:
+            serialized_buffer = bytearray()
+            digest = hashlib.sha256()
             with path.open("rb") as stream:
-                serialized = stream.read(self.limits.max_dataset_bytes + 1)
+                while block := stream.read(1024 * 1024):
+                    checkpoint()
+                    serialized_buffer.extend(block)
+                    digest.update(block)
+                    if len(serialized_buffer) > self.limits.max_dataset_bytes:
+                        raise DatasetIntegrityError(
+                            "serialized dataset violates the configured byte limit"
+                        )
         except OSError as error:
             raise DatasetIntegrityError("serialized dataset cannot be read") from error
-        if len(serialized) > self.limits.max_dataset_bytes:
-            raise DatasetIntegrityError(
-                "serialized dataset violates the configured byte limit"
-            )
-        actual_digest = hashlib.sha256(serialized).hexdigest()
+        checkpoint()
+        actual_digest = digest.hexdigest()
         if actual_digest != expected_digest:
             raise DatasetIntegrityError(
                 "serialized dataset checksum does not match its publication"
@@ -1909,17 +2651,29 @@ class ControlPlane:
             raise ValueError(f"non-finite JSON constant {value}")
 
         try:
+            # ``bytearray.decode`` creates only the required text object.  Do
+            # not first copy a potentially multi-gigabyte dataset into an
+            # additional immutable bytes object.
+            decoded = serialized_buffer.decode("utf-8")
+            del serialized_buffer
+            checkpoint()
             parsed = json.loads(
-                serialized.decode("utf-8"),
+                decoded,
                 parse_constant=reject_constant,
             )
+            del decoded
         except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
             raise DatasetIntegrityError(
                 "serialized dataset is not strict UTF-8 JSON"
             ) from error
         if not isinstance(parsed, dict):
             raise DatasetIntegrityError("serialized dataset must be a JSON object")
-        index = self._index_dataset(descriptor, parsed)
+        checkpoint()
+        index = self._index_dataset(
+            descriptor,
+            parsed,
+            construction_checkpoint=checkpoint,
+        )
         loaded = _LoadedRevision(descriptor, parsed, index)
         with self._lock:
             if self.limits.dataset_cache_entries:
@@ -1937,6 +2691,108 @@ class ControlPlane:
         """Load and verify one catalog revision, returning a detached value."""
 
         return deepcopy(dict(self._load_revision(scope, revision_id).dataset))
+
+    def capability_router_for_revision(
+        self,
+        scope: ReviewScope,
+        revision_id: str,
+        *,
+        member_id: str | None = None,
+    ) -> PlanBoundCapabilityRouter:
+        """Bind one authorized immutable revision to its exact providers.
+
+        The verified catalog execution plan is the sole dispatch authority.
+        Planless/legacy plans and stale providers fail through the router's
+        closed errors; no currently installed provider is used as fallback.
+        """
+
+        loaded = self._load_revision(scope, revision_id)
+        return self._capability_router_for_descriptor(
+            loaded.descriptor,
+            member_id=(
+                loaded.descriptor.revision_id if member_id is None else member_id
+            ),
+        )
+
+    def _capability_router_for_descriptor(
+        self,
+        descriptor: AnalysisRevisionDescriptor,
+        *,
+        member_id: str,
+    ) -> PlanBoundCapabilityRouter:
+        """Bind a previously verified immutable descriptor without rereading it."""
+
+        if type(descriptor) is not AnalysisRevisionDescriptor:
+            raise TypeError("descriptor must be an AnalysisRevisionDescriptor")
+        return PlanBoundCapabilityRouter(
+            self.capability_providers,
+            descriptor.execution_plan,
+            catalog_revision_id=descriptor.revision_id,
+            member_id=member_id,
+        )
+
+    def capability_router_for_revision_set(
+        self,
+        scope: ReviewScope,
+        *,
+        revision_ids: Iterable[str] = (),
+        session_id: str | None = None,
+        snapshot_id: str | None = None,
+    ) -> RevisionSetCapabilityRouter:
+        """Bind an explicit revision vector, session, or snapshot canonically.
+
+        Session and snapshot member IDs remain part of routing identity. An
+        explicit revision vector uses each revision ID as its member ID. Exactly
+        one selector is required and at most 128 members are admitted.
+        """
+
+        supplied = tuple(revision_ids)
+        selector_count = sum(
+            (
+                bool(supplied),
+                session_id is not None,
+                snapshot_id is not None,
+            )
+        )
+        if selector_count != 1:
+            raise ValueError(
+                "exactly one non-empty revision_ids, session_id, or snapshot_id "
+                "selector is required"
+            )
+        self.validate_scope(
+            scope.tenant_id,
+            scope.project_id,
+            scope.workspace_id,
+        )
+        if supplied:
+            if len(supplied) != len(set(supplied)):
+                raise ValueError("revision_ids must not contain duplicates")
+            members = tuple((revision_id, revision_id) for revision_id in supplied)
+        elif session_id is not None:
+            session = self.sessions.get_session(scope.tenant_id, session_id)
+            if session.workspace_id != scope.workspace_id:
+                raise KeyError(session_id)
+            members = tuple(
+                (member.member_id, member.revision_id) for member in session.members
+            )
+        else:
+            assert snapshot_id is not None
+            snapshot = self.sessions.get_snapshot(scope.tenant_id, snapshot_id)
+            if snapshot.workspace_id != scope.workspace_id:
+                raise KeyError(snapshot_id)
+            members = tuple(
+                (member.member_id, member.revision_id) for member in snapshot.members
+            )
+        if not 1 <= len(members) <= 128:
+            raise ValueError("a capability revision set requires 1 to 128 members")
+        return RevisionSetCapabilityRouter(
+            self.capability_router_for_revision(
+                scope,
+                revision_id,
+                member_id=member_id,
+            )
+            for member_id, revision_id in members
+        )
 
     def resolve_catalog_revision(
         self,
@@ -2049,6 +2905,19 @@ class ControlPlane:
                 idempotency_key=idempotency_key,
             )
 
+    def get_annotation(
+        self,
+        scope: ReviewScope,
+        annotation_id: str,
+        *,
+        include_deleted: bool = False,
+    ) -> ReviewAnnotation:
+        return self.annotations.get_annotation(
+            scope,
+            annotation_id,
+            include_deleted=include_deleted,
+        )
+
     def update_annotation(
         self,
         scope: ReviewScope,
@@ -2123,6 +2992,19 @@ class ControlPlane:
                 correlation_id=correlation_id,
                 idempotency_key=idempotency_key,
             )
+
+    def get_correlation(
+        self,
+        scope: ReviewScope,
+        correlation_id: str,
+        *,
+        include_deleted: bool = False,
+    ) -> ManualEventCorrelation:
+        return self.annotations.get_correlation(
+            scope,
+            correlation_id,
+            include_deleted=include_deleted,
+        )
 
     def update_correlation(
         self,

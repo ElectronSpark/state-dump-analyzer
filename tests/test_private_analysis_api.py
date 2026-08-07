@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from router_dump_analyzer.annotation_store import ReviewScope
 from router_dump_analyzer.private_analysis import (
     EvidenceScope,
     PrivateAnalysisClockMode,
@@ -19,12 +20,21 @@ from router_dump_analyzer.private_analysis import (
     PrivateAnalysisRunnerSelection,
     PrivateAnalysisTaskKind,
     PrivateAnalysisTransport,
+    evidence_snapshot_digest,
 )
 from router_dump_analyzer.private_analysis_execution import (
     PrivateAnalysisRegisteredRunner,
 )
+from router_dump_analyzer.private_analysis_promotion import (
+    AnnotationPromotionTarget,
+    ProposalReviewDecision,
+    ProposalReviewDisposition,
+    ProposalReviewState,
+)
 from router_dump_analyzer.private_analysis_run_store import PrivateAnalysisRunState
 from router_dump_analyzer.private_analysis_service import (
+    PrivateAnalysisCapabilities,
+    PrivateAnalysisLifecycleAction,
     PrivateAnalysisRunReport,
     PrivateAnalysisRunView,
     PrivateAnalysisServiceConflict,
@@ -109,10 +119,11 @@ def _view(
         workspace_policy_digest="3" * 64,
         instruction_profile_digest="sha256:" + "4" * 64,
         tool_catalog_digest="sha256:" + "5" * 64,
+        evidence_service_digest="sha256:" + "7" * 64,
         clock_mode=PrivateAnalysisClockMode.LATEST_PER_REVISION,
         selected_time_ns=None,
         limits=limits,
-        evidence_ledger_digest="sha256:" + "6" * 64,
+        evidence_ledger_digest=evidence_snapshot_digest(()),
         disclosed_reference_count=0,
         budget_state=_budget(limits),
         outcome_digest=outcome_digest,
@@ -144,6 +155,44 @@ def _report() -> PrivateAnalysisRunReport:
     )
 
 
+def _capabilities() -> PrivateAnalysisCapabilities:
+    return PrivateAnalysisCapabilities(
+        scope=EvidenceScope("tenant-a", "project-a", "workspace-a"),
+        enabled=True,
+        task_kinds=tuple(
+            sorted(PrivateAnalysisTaskKind, key=lambda item: item.value)
+        ),
+        request_limit_ceilings=PrivateAnalysisLimits(),
+        max_revisions=128,
+        max_list_runs=1_000,
+        transports=(PrivateAnalysisTransport.IN_PROCESS,),
+        states=tuple(PrivateAnalysisRunState),
+        actions=tuple(PrivateAnalysisLifecycleAction),
+    )
+
+
+def _review_decision() -> ProposalReviewDecision:
+    return ProposalReviewDecision(
+        scope=ReviewScope("tenant-a", "project-a", "workspace-a"),
+        decision_id="decision-a",
+        run_id="run-a",
+        proposal_id="proposal-a",
+        proposal_digest="sha256:" + "8" * 64,
+        result_digest="sha256:" + "9" * 64,
+        run_version=2,
+        disposition=ProposalReviewDisposition.REJECT,
+        state=ProposalReviewState.COMPLETED,
+        actor="analyst",
+        rationale="Not supported by the cited evidence.",
+        request_digest="sha256:" + "a" * 64,
+        target_kind=None,
+        target_id=None,
+        created_at_ns=300,
+        updated_at_ns=300,
+        version=1,
+    )
+
+
 class PrivateAnalysisApiTests(unittest.TestCase):
     def setUp(self) -> None:
         application = FastAPI()
@@ -155,8 +204,10 @@ class PrivateAnalysisApiTests(unittest.TestCase):
             PrivateAnalysisRegisteredRunner(
                 selection=_selection(),
                 instruction_profile_digest="sha256:" + "4" * 64,
+                evidence_service_digest="sha256:" + "7" * 64,
             ),
         )
+        self.service.capabilities.return_value = _capabilities()
         self.service.create.return_value = _view()
         self.service.list.return_value = (_view(),)
         self.service.get.return_value = _view()
@@ -169,12 +220,24 @@ class PrivateAnalysisApiTests(unittest.TestCase):
             return_value=self.service,
         )
         self.service_patch.start()
+        self.review_service = Mock()
+        self.review_service.decide.return_value = _review_decision()
+        self.review_service.list.return_value = (_review_decision(),)
+        self.review_service.get.return_value = _review_decision()
+        self.review_service.recover.return_value = _review_decision()
+        self.review_service_patch = patch.object(
+            control_plane_api,
+            "_proposal_review_service",
+            return_value=self.review_service,
+        )
+        self.review_service_patch.start()
         self.client_context = TestClient(application)
         self.client = self.client_context.__enter__()
         self.base = "/v1/control-plane/projects/project-a/workspaces/workspace-a"
 
     def tearDown(self) -> None:
         self.client_context.__exit__(None, None, None)
+        self.review_service_patch.stop()
         self.service_patch.stop()
 
     @staticmethod
@@ -225,9 +288,55 @@ class PrivateAnalysisApiTests(unittest.TestCase):
                     "transport": "in_process",
                     "configuration_digest": "sha256:" + "1" * 64,
                     "instruction_profile_digest": "sha256:" + "4" * 64,
+                    "evidence_service_digest": "sha256:" + "7" * 64,
                 }
             ],
         )
+
+    def test_capabilities_are_read_scoped_no_store_and_provider_free(self) -> None:
+        response = self.client.get(
+            f"{self.base}/private-analysis-capabilities",
+            headers=self._read_headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertNotIn("etag", response.headers)
+        payload = response.json()
+        self.assertEqual(
+            payload["contract"],
+            "router_dump_analyzer.private_analysis.capabilities.v1",
+        )
+        self.assertEqual(payload["scope"]["workspace_id"], "workspace-a")
+        self.assertEqual(
+            self.service.capabilities.call_args.args,
+            (EvidenceScope("tenant-a", "project-a", "workspace-a"),),
+        )
+        serialized = response.text.lower()
+        for forbidden in (
+            '"provider"',
+            '"model"',
+            '"plugin"',
+            '"runner_id"',
+            '"configuration_digest"',
+        ):
+            self.assertNotIn(forbidden, serialized)
+
+        denied = self.client.get(
+            f"{self.base}/private-analysis-capabilities",
+            headers={
+                "X-Tenant-ID": "tenant-a",
+                "X-Test-Roles": CONTROL_PLANE_WRITE_ROLE,
+            },
+        )
+        self.assertEqual(denied.status_code, 403)
+
+        concealed = self.client.get(
+            "/v1/control-plane/projects/project-b/workspaces/workspace-a/"
+            "private-analysis-capabilities",
+            headers=self._read_headers(),
+        )
+        self.assertEqual(concealed.status_code, 404)
 
     def test_create_derives_scope_and_requires_idempotency_and_write_role(self) -> None:
         missing = self.client.post(
@@ -364,6 +473,155 @@ class PrivateAnalysisApiTests(unittest.TestCase):
             response.json()["query"],
             "Why did left\\u202eright change?",
         )
+
+        self.assertEqual(response.json()["evidence_references"], [])
+
+    def test_proposal_decision_requires_pins_idempotency_and_write_role(self) -> None:
+        path = (
+            f"{self.base}/private-analysis-runs/run-a/proposals/"
+            "proposal-a/decision"
+        )
+        body = {
+            "proposal_digest": "sha256:" + "8" * 64,
+            "result_digest": "sha256:" + "9" * 64,
+            "disposition": "reject",
+            "rationale": "Not supported by the cited evidence.",
+        }
+        missing_match = self.client.post(
+            path,
+            headers={**self._write_headers(idempotency=True)},
+            json=body,
+        )
+        self.assertEqual(missing_match.status_code, 428)
+        missing_key = self.client.post(
+            path,
+            headers={**self._write_headers(), "If-Match": '"2"'},
+            json=body,
+        )
+        self.assertEqual(missing_key.status_code, 428)
+        denied = self.client.post(
+            path,
+            headers={
+                "X-Tenant-ID": "tenant-a",
+                "X-Principal-ID": "analyst",
+                "X-Test-Roles": CONTROL_PLANE_READ_ROLE,
+                "If-Match": '"2"',
+                "Idempotency-Key": "decision-request-a",
+            },
+            json=body,
+        )
+        self.assertEqual(denied.status_code, 403)
+
+        response = self.client.post(
+            path,
+            headers={
+                **self._write_headers(),
+                "If-Match": '"2"',
+                "Idempotency-Key": "decision-request-a",
+            },
+            json=body,
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.headers["etag"], '"1"')
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual(response.json()["decision_id"], "decision-a")
+        call = self.review_service.decide.call_args
+        self.assertEqual(
+            call.args,
+            (EvidenceScope("tenant-a", "project-a", "workspace-a"),),
+        )
+        self.assertEqual(call.kwargs["run_id"], "run-a")
+        self.assertEqual(call.kwargs["proposal_id"], "proposal-a")
+        self.assertEqual(call.kwargs["expected_run_version"], 2)
+        self.assertEqual(call.kwargs["actor"], "analyst")
+        self.assertEqual(call.kwargs["idempotency_key"], "decision-request-a")
+        self.assertIsNone(call.kwargs["target"])
+
+    def test_proposal_promotion_target_is_human_authored_not_model_applied(self) -> None:
+        response = self.client.post(
+            f"{self.base}/private-analysis-runs/run-a/proposals/proposal-a/decision",
+            headers={
+                **self._write_headers(),
+                "If-Match": '"2"',
+                "Idempotency-Key": "decision-request-b",
+            },
+            json={
+                "proposal_digest": "sha256:" + "8" * 64,
+                "result_digest": "sha256:" + "9" * 64,
+                "disposition": "promote",
+                "rationale": "Reviewed against event 17.",
+                "target": {
+                    "kind": "annotation",
+                    "annotation_kind": "note",
+                    "subjects": [
+                        {
+                            "revision_id": "revision-a",
+                            "kind": "event",
+                            "subject_id": "event-17",
+                            "node_id": "node-a",
+                        }
+                    ],
+                    "title": "Verified failover",
+                    "body": "Human-authored conclusion.",
+                    "tags": ["reviewed"],
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 201)
+        target = self.review_service.decide.call_args.kwargs["target"]
+        self.assertIs(type(target), AnnotationPromotionTarget)
+        self.assertEqual(target.title, "Verified failover")
+        self.assertEqual(target.body, "Human-authored conclusion.")
+        self.assertEqual(target.subjects[0].subject_id, "event-17")
+        self.assertNotIn("payload", target.body)
+
+    def test_proposal_decisions_are_scoped_to_the_named_run(self) -> None:
+        listed = self.client.get(
+            f"{self.base}/private-analysis-runs/run-a/proposal-decisions",
+            headers=self._read_headers(),
+        )
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.headers["cache-control"], "no-store")
+        self.assertEqual(listed.json()["items"][0]["proposal_id"], "proposal-a")
+        self.assertEqual(
+            self.review_service.list.call_args.kwargs,
+            {"run_id": "run-a", "limit": 1000, "offset": 0},
+        )
+
+        detail = self.client.get(
+            f"{self.base}/private-analysis-runs/run-a/"
+            "proposal-decisions/decision-a",
+            headers=self._read_headers(),
+        )
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.headers["etag"], '"1"')
+        concealed = self.client.get(
+            f"{self.base}/private-analysis-runs/run-b/"
+            "proposal-decisions/decision-a",
+            headers=self._read_headers(),
+        )
+        self.assertEqual(concealed.status_code, 404)
+
+        recover_path = (
+            f"{self.base}/private-analysis-runs/run-a/"
+            "proposal-decisions/decision-a/recover"
+        )
+        missing_match = self.client.post(
+            recover_path,
+            headers=self._write_headers(),
+        )
+        self.assertEqual(missing_match.status_code, 428)
+        recovered = self.client.post(
+            recover_path,
+            headers={**self._write_headers(), "If-Match": '"1"'},
+        )
+        self.assertEqual(recovered.status_code, 200)
+        self.assertEqual(recovered.headers["etag"], '"1"')
+        self.assertEqual(
+            self.review_service.recover.call_args.kwargs,
+            {"expected_decision_version": 1},
+        )
+
     def test_service_conflicts_are_static_and_scope_denials_are_concealed(self) -> None:
         self.service.get.side_effect = PrivateAnalysisServiceConflict()
         response = self.client.get(

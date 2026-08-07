@@ -17,6 +17,15 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Mapping
 
 import rsl_demo_plugin as demo_plugin_package
+from rsl_demo_plugin import (
+    GENERATED_ASSEMBLY_FORMAT_VERSION,
+    GENERATED_COVERAGE_FORMAT_VERSION,
+    GENERATED_COVERAGE_REGISTRY_ID,
+    GENERATED_PROJECTION_POLICY,
+)
+from rsl_demo_plugin import (
+    plugin as example_router_plugin,
+)
 from rsl_demo_plugin.archive import (
     ASSEMBLY_COVERAGE_MEMBER,
     ASSEMBLY_GENERATOR,
@@ -32,26 +41,21 @@ from rsl_demo_plugin.archive import (
     NORMALIZED_SCALE_PREFIX,
     RELATIONSHIP_MUTATIONS_MEMBER_NAME,
 )
-from rsl_demo_plugin import (
-    GENERATED_ASSEMBLY_FORMAT_VERSION,
-    GENERATED_COVERAGE_FORMAT_VERSION,
-    GENERATED_COVERAGE_REGISTRY_ID,
-    GENERATED_PROJECTION_POLICY,
-    plugin as example_router_plugin,
-)
 from rsl_demo_plugin.scenario_registry import (
     ROUTE_PROTOCOL_BY_TYPE,
     ROUTE_RESOLUTION_LAYERS_BY_TYPE,
     scenario_semantics,
 )
+
 from . import _node_pack as packed_generator
 from . import _scale as scale_generator
 from ._archive import (
     json_bytes as _json_bytes,
+)
+from ._archive import (
     validate_archive_name,
     write_deterministic_tgz,
 )
-
 from .catalog import (
     COVERAGE_CASES,
     DEFAULT_SCENARIO_SOURCE,
@@ -72,7 +76,6 @@ from .scenario_source import (
     ScenarioSourceError,
     load_default_scenario_source,
 )
-
 
 ASSEMBLY_FORMAT_VERSION = GENERATED_ASSEMBLY_FORMAT_VERSION
 DEFAULT_ASSEMBLY_NAME = "router-state-lab-demo.tgz"
@@ -2469,6 +2472,7 @@ def _case_materialization(
         "involved_nodes": involved_nodes,
         "candidate_paths": list(candidate_paths),
         "required_capabilities": list(case.required_capabilities),
+        "private_analysis_intents": list(case.private_analysis_intents),
         "packet_profile_id": case.packet_profile_id,
         "expected_outcome": case.expected_outcome,
         "consistency_findings": consistency_findings,

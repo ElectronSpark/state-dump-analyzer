@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import lru_cache
 from json import JSONDecodeError, loads
 from typing import Any, Final
 
@@ -55,8 +56,21 @@ from .disclosure import (
     disclosure_scope_digest,
 )
 
-EVIDENCE_REFERENCE_VERSION: Final = (
+EVIDENCE_REFERENCE_VERSION_V1: Final = (
     "router_dump_analyzer.private_analysis.evidence_reference.v1"
+)
+EVIDENCE_REFERENCE_VERSION_V2: Final = (
+    "router_dump_analyzer.private_analysis.evidence_reference.v2"
+)
+EVIDENCE_REFERENCE_VERSION: Final = (
+    "router_dump_analyzer.private_analysis.evidence_reference.v3"
+)
+_EVIDENCE_REFERENCE_VERSIONS: Final = frozenset(
+    {
+        EVIDENCE_REFERENCE_VERSION_V1,
+        EVIDENCE_REFERENCE_VERSION_V2,
+        EVIDENCE_REFERENCE_VERSION,
+    }
 )
 EVIDENCE_ENVELOPE_VERSION: Final = (
     "router_dump_analyzer.private_analysis.evidence_envelope.v1"
@@ -94,12 +108,14 @@ class EvidenceKind(StrEnum):
     RESOURCE_STATE_INTERVAL = "resource_state_interval"
     RELATIONSHIP_INTERVAL = "relationship_interval"
     PLUGIN_SCHEMA = "plugin_schema"
+    PLUGIN_CAPABILITY_RESULT = "plugin_capability_result"
 
 
 class EvidenceTimeBasis(StrEnum):
     """Closed coordinate systems understood by the core."""
 
     NOT_APPLICABLE = "not_applicable"
+    UNKNOWN = "unknown"
     ABSOLUTE_UNIX_NS = "absolute_unix_ns"
     REVISION_START_RELATIVE_NS = "revision_start_relative_ns"
     REVISION_END_RELATIVE_NS = "revision_end_relative_ns"
@@ -124,6 +140,7 @@ class EvidenceFactProvenance(StrEnum):
     ROUTE_RESOLVED = "route_resolved"
     TOPOLOGY_INFERRED = "topology_inferred"
     CORE_CORROBORATED = "core_corroborated"
+    PLUGIN_ANALYZED = "plugin_analyzed"
     NOT_APPLICABLE = "not_applicable"
 
 
@@ -137,6 +154,24 @@ class CoreEvidenceProducer(StrEnum):
 _CORE_EVIDENCE_PRODUCER_IDS: Final = frozenset(
     producer.value for producer in CoreEvidenceProducer
 )
+@lru_cache(maxsize=8_192)
+def _valid_evidence_identifier(value: str, maximum: int) -> bool:
+    """Cache the expensive Unicode/path safety scan for repeated identities.
+
+    A large revision emits the same scope, revision, producer and subject
+    coordinates on every evidence reference.  Those checks are pure, so a
+    bounded cache avoids rescanning the same Unicode strings hundreds of
+    thousands of times without weakening the exact-type boundary below.
+    """
+
+    return bool(
+        value
+        and len(value) <= maximum
+        and value == value.strip()
+        and not contains_filesystem_identity_path(value)
+        and not contains_unsafe_identifier_text(value)
+        and has_visible_identity_anchor(value)
+    )
 
 
 def validate_evidence_identifier(
@@ -145,15 +180,7 @@ def validate_evidence_identifier(
     *,
     maximum: int = MAX_EVIDENCE_IDENTIFIER_CHARACTERS,
 ) -> str:
-    if (
-        type(value) is not str
-        or not value
-        or len(value) > maximum
-        or value != value.strip()
-        or contains_filesystem_identity_path(value)
-        or contains_unsafe_identifier_text(value)
-        or not has_visible_identity_anchor(value)
-    ):
+    if type(value) is not str or not _valid_evidence_identifier(value, maximum):
         raise ValueError(
             f"{label} must contain 1 to {maximum} visible characters "
             "without surrounding whitespace"
@@ -432,19 +459,34 @@ class EvidenceProducer(SealedContractValue):
     producer_id: str
     plugin_instance_id: str | None = None
     plugin_capability: str | None = None
+    plugin_role: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.authority) is not EvidenceAuthority:
             raise TypeError("authority must be EvidenceAuthority")
         validate_evidence_token(self.producer_id, "producer_id")
         if self.authority is EvidenceAuthority.PLUGIN_INFERRED:
-            if self.plugin_instance_id is None or self.plugin_capability is None:
+            if self.plugin_instance_id is None:
                 raise ValueError(
-                    "plugin-inferred evidence requires a capability and instance"
+                    "plugin-inferred evidence requires an exact plug-in instance"
                 )
             validate_evidence_token(self.plugin_instance_id, "plugin_instance_id")
-            validate_evidence_token(self.plugin_capability, "plugin_capability")
-        elif self.plugin_instance_id is not None or self.plugin_capability is not None:
+            if (self.plugin_capability is None) == (self.plugin_role is None):
+                raise ValueError(
+                    "plugin-inferred evidence requires exactly one capability or role"
+                )
+            if self.plugin_capability is not None:
+                validate_evidence_token(self.plugin_capability, "plugin_capability")
+            if self.plugin_role is not None:
+                validate_evidence_token(self.plugin_role, "plugin_role")
+        elif any(
+            value is not None
+            for value in (
+                self.plugin_instance_id,
+                self.plugin_capability,
+                self.plugin_role,
+            )
+        ):
             raise ValueError(
                 "only plugin-inferred evidence may carry a plug-in binding"
             )
@@ -465,7 +507,10 @@ class EvidenceTimeRange(SealedContractValue):
     def __post_init__(self) -> None:
         if type(self.basis) is not EvidenceTimeBasis:
             raise TypeError("time basis must be EvidenceTimeBasis")
-        if self.basis is EvidenceTimeBasis.NOT_APPLICABLE:
+        if self.basis in {
+            EvidenceTimeBasis.NOT_APPLICABLE,
+            EvidenceTimeBasis.UNKNOWN,
+        }:
             if any(
                 value is not None
                 for value in (
@@ -475,9 +520,8 @@ class EvidenceTimeRange(SealedContractValue):
                     self.clock_domain,
                 )
             ):
-                raise ValueError(
-                    "not-applicable evidence time must not carry coordinates"
-                )
+                label = self.basis.value.replace("_", "-")
+                raise ValueError(f"{label} evidence time must not carry coordinates")
             return
         minimum = (
             0 if self.basis is EvidenceTimeBasis.ABSOLUTE_UNIX_NS else _MIN_SIGNED_NS
@@ -514,6 +558,12 @@ class EvidenceTimeRange(SealedContractValue):
     def not_applicable(cls) -> EvidenceTimeRange:
         return cls(EvidenceTimeBasis.NOT_APPLICABLE)
 
+    @classmethod
+    def unknown(cls) -> EvidenceTimeRange:
+        """Represent a temporal fact whose producer supplied no timestamp."""
+
+        return cls(EvidenceTimeBasis.UNKNOWN)
+
 
 @dataclass(frozen=True, slots=True)
 class EvidenceReference(SealedContractValue):
@@ -534,11 +584,10 @@ class EvidenceReference(SealedContractValue):
     reference_digest: str = ""
 
     def __post_init__(self) -> None:
-        _contract_version(
-            self.contract_version,
-            EVIDENCE_REFERENCE_VERSION,
-            "evidence-reference",
-        )
+        if type(self.contract_version) is not str:
+            raise TypeError("contract_version must be an exact string")
+        if self.contract_version not in _EVIDENCE_REFERENCE_VERSIONS:
+            raise ValueError("evidence-reference contract version is unsupported")
         if type(self.scope) is not EvidenceScope:
             raise TypeError("scope must be EvidenceScope")
         if type(self.revision) is not EvidenceRevisionBinding:
@@ -579,7 +628,28 @@ class EvidenceReference(SealedContractValue):
             producer_id=self.producer.producer_id,
             plugin_instance_id=self.producer.plugin_instance_id,
             plugin_capability=self.producer.plugin_capability,
+            plugin_role=self.producer.plugin_role,
         )
+        if (
+            self.contract_version == EVIDENCE_REFERENCE_VERSION_V1
+            and producer.plugin_role is not None
+        ):
+            raise ValueError("v1 evidence references cannot carry a plug-in role")
+        if (
+            self.contract_version == EVIDENCE_REFERENCE_VERSION_V1
+            and self.time_range.basis is EvidenceTimeBasis.UNKNOWN
+        ):
+            raise ValueError("v1 evidence references cannot carry unknown time")
+        if self.contract_version in {
+            EVIDENCE_REFERENCE_VERSION_V1,
+            EVIDENCE_REFERENCE_VERSION_V2,
+        } and (
+            self.kind is EvidenceKind.PLUGIN_CAPABILITY_RESULT
+            or self.fact_provenance is EvidenceFactProvenance.PLUGIN_ANALYZED
+        ):
+            raise ValueError(
+                "legacy evidence references cannot carry plug-in analysis semantics"
+            )
         time_range = EvidenceTimeRange(
             basis=self.time_range.basis,
             start_ns=self.time_range.start_ns,
@@ -717,7 +787,11 @@ def evidence_scope_dict(value: EvidenceScope) -> dict[str, object]:
     return _scope_dict(value)
 
 
-def _producer_dict(value: EvidenceProducer) -> dict[str, object]:
+def _producer_dict(
+    value: EvidenceProducer,
+    *,
+    reference_version: str,
+) -> dict[str, object]:
     if type(value) is not EvidenceProducer:
         raise TypeError("producer must be EvidenceProducer")
     value = EvidenceProducer(
@@ -725,13 +799,22 @@ def _producer_dict(value: EvidenceProducer) -> dict[str, object]:
         producer_id=value.producer_id,
         plugin_instance_id=value.plugin_instance_id,
         plugin_capability=value.plugin_capability,
+        plugin_role=value.plugin_role,
     )
-    return {
+    result: dict[str, object] = {
         "authority": value.authority.value,
         "producer_id": value.producer_id,
         "plugin_instance_id": value.plugin_instance_id,
         "plugin_capability": value.plugin_capability,
     }
+    if reference_version in {
+        EVIDENCE_REFERENCE_VERSION_V2,
+        EVIDENCE_REFERENCE_VERSION,
+    }:
+        result["plugin_role"] = value.plugin_role
+    elif reference_version != EVIDENCE_REFERENCE_VERSION_V1:
+        raise ValueError("evidence-reference contract version is unsupported")
+    return result
 
 
 def _time_range_dict(value: EvidenceTimeRange) -> dict[str, object]:
@@ -758,7 +841,10 @@ def _evidence_reference_payload(value: EvidenceReference) -> dict[str, object]:
         "contract_version": value.contract_version,
         "scope": _scope_dict(value.scope),
         "revision": _revision_binding_dict(value.revision),
-        "producer": _producer_dict(value.producer),
+        "producer": _producer_dict(
+            value.producer,
+            reference_version=value.contract_version,
+        ),
         "kind": value.kind.value,
         "subject_kind": value.subject_kind,
         "locator_digest": value.locator_digest,
@@ -866,16 +952,28 @@ def evidence_scope_from_dict(value: object) -> EvidenceScope:
     return _scope_from_dict(value)
 
 
-def _producer_from_dict(value: object) -> EvidenceProducer:
+def _producer_from_dict(
+    value: object,
+    *,
+    reference_version: str,
+) -> EvidenceProducer:
+    expected = {
+        "authority",
+        "producer_id",
+        "plugin_instance_id",
+        "plugin_capability",
+    }
+    if reference_version in {
+        EVIDENCE_REFERENCE_VERSION_V2,
+        EVIDENCE_REFERENCE_VERSION,
+    }:
+        expected.add("plugin_role")
+    elif reference_version != EVIDENCE_REFERENCE_VERSION_V1:
+        raise ValueError("evidence-reference contract version is unsupported")
     item = _exact_dict(
         value,
         "evidence producer",
-        {
-            "authority",
-            "producer_id",
-            "plugin_instance_id",
-            "plugin_capability",
-        },
+        expected,
     )
     return EvidenceProducer(
         authority=_enum(
@@ -886,6 +984,12 @@ def _producer_from_dict(value: object) -> EvidenceProducer:
         producer_id=item["producer_id"],
         plugin_instance_id=item["plugin_instance_id"],
         plugin_capability=item["plugin_capability"],
+        plugin_role=(
+            item["plugin_role"]
+            if reference_version
+            in {EVIDENCE_REFERENCE_VERSION_V2, EVIDENCE_REFERENCE_VERSION}
+            else None
+        ),
     )
 
 
@@ -954,7 +1058,10 @@ def evidence_reference_from_dict(value: object) -> EvidenceReference:
         contract_version=item["contract_version"],
         scope=_scope_from_dict(item["scope"]),
         revision=_revision_binding_from_dict(item["revision"]),
-        producer=_producer_from_dict(item["producer"]),
+        producer=_producer_from_dict(
+            item["producer"],
+            reference_version=item["contract_version"],
+        ),
         kind=_enum(EvidenceKind, item["kind"], "evidence kind"),
         subject_kind=item["subject_kind"],
         locator_digest=item["locator_digest"],
@@ -988,14 +1095,32 @@ def _revalidated_evidence_reference(value: object) -> EvidenceReference:
         raise TypeError("evidence reference producer must be EvidenceProducer")
     if type(value.time_range) is not EvidenceTimeRange:
         raise TypeError("evidence reference time_range must be EvidenceTimeRange")
-    value.scope.__post_init__()
-    value.revision.__post_init__()
-    value.producer.__post_init__()
-    value.time_range.__post_init__()
-    value.__post_init__()
-    wire = _evidence_reference_payload(value)
-    wire["reference_digest"] = value.reference_digest
-    return evidence_reference_from_dict(wire)
+    # Reconstruct once through the canonical value constructor.  The previous
+    # implementation first re-ran every supplied object's ``__post_init__``
+    # and then parsed a second wire projection, producing two complete nested
+    # validation passes per snapshot.  This single constructor still snapshots
+    # every nested value and verifies the supplied reference digest.
+    return EvidenceReference(
+        contract_version=value.contract_version,
+        scope=value.scope,
+        revision=value.revision,
+        producer=value.producer,
+        kind=value.kind,
+        subject_kind=value.subject_kind,
+        locator_digest=value.locator_digest,
+        evidence_class=value.evidence_class,
+        payload_schema=value.payload_schema,
+        fact_provenance=value.fact_provenance,
+        time_range=value.time_range,
+        content_digest=value.content_digest,
+        reference_digest=value.reference_digest,
+    )
+
+
+def snapshot_evidence_reference(value: EvidenceReference) -> EvidenceReference:
+    """Return a detached reference with every cached invariant recomputed."""
+
+    return _revalidated_evidence_reference(value)
 
 
 def make_evidence_envelope(
@@ -1129,6 +1254,8 @@ __all__ = [
     "EVIDENCE_LOCATOR_VERSION",
     "EVIDENCE_PAYLOAD_VERSION",
     "EVIDENCE_REFERENCE_VERSION",
+    "EVIDENCE_REFERENCE_VERSION_V1",
+    "EVIDENCE_REFERENCE_VERSION_V2",
     "MAX_EVIDENCE_ENVELOPE_BYTES",
     "MAX_EVIDENCE_PAYLOAD_BYTES",
     "CoreEvidenceProducer",
@@ -1155,4 +1282,5 @@ __all__ = [
     "evidence_scope_dict",
     "evidence_scope_from_dict",
     "make_evidence_envelope",
+    "snapshot_evidence_reference",
 ]

@@ -11,13 +11,14 @@ from __future__ import annotations
 import json
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager
-from functools import lru_cache
+from functools import lru_cache, partial
 from hashlib import sha256
 from types import TracebackType
 from typing import Any, Protocol, runtime_checkable
 
+from .cancellation import check_cancellation_probe
 from .dashboard_core import (
     DashboardDescriptorValidationError,
     evaluate_dashboards,
@@ -1125,13 +1126,51 @@ type EventRedactionPolicy = tuple[
     dict[str, frozenset[str]],
     dict[str, str],
     frozenset[str],
+    dict[str, bool],
 ]
+
+
+class NormalizedDataCancellationError(RuntimeError):
+    """A bounded normalized-data operation could not continue safely."""
+
+
+class NormalizedDataCancellationRequested(NormalizedDataCancellationError):
+    """A normalized-data operation observed cooperative cancellation."""
+
+
+class NormalizedDataCancellationProbeError(NormalizedDataCancellationError):
+    """A normalized-data cancellation probe failed or broke its contract."""
+
+
+class NormalizedDataCancellationProbeResultError(
+    NormalizedDataCancellationProbeError
+):
+    """A normalized-data cancellation probe returned a non-boolean value."""
+
+
+_check_normalized_data_cancellation = partial(
+    check_cancellation_probe,
+    cancelled_error=lambda: NormalizedDataCancellationRequested(
+        "normalized-data operation was cancelled"
+    ),
+    unavailable_error=lambda: NormalizedDataCancellationProbeError(
+        "normalized-data cancellation state is unavailable"
+    ),
+    invalid_result_error=lambda: NormalizedDataCancellationProbeResultError(
+        "normalized-data cancellation probe returned an invalid value"
+    ),
+)
 
 
 def event_redaction_policy(
     dataset: Mapping[str, Any],
     runtime: IndexedHistory | None = None,
+    *,
+    cancellation_probe: Callable[[], bool] | None = None,
 ) -> EventRedactionPolicy:
+    if cancellation_probe is not None and not callable(cancellation_probe):
+        raise TypeError("cancellation_probe must be callable or None")
+    _check_normalized_data_cancellation(cancellation_probe)
     cached = (
         getattr(runtime, "event_redaction_policy", None)
         if runtime is not None
@@ -1140,8 +1179,11 @@ def event_redaction_policy(
     if cached is not None:
         return cached
     sensitive_by_kind: dict[str, frozenset[str]] = {}
+    sensitive_condition_by_kind: dict[str, bool] = {}
     all_sensitive: set[str] = set()
-    for descriptor in dataset.get("kind_descriptors", []):
+    for ordinal, descriptor in enumerate(dataset.get("kind_descriptors", [])):
+        if ordinal % 256 == 0:
+            _check_normalized_data_cancellation(cancellation_probe)
         if not isinstance(descriptor, Mapping) or not descriptor.get("kind"):
             continue
         sensitive = frozenset(
@@ -1150,22 +1192,29 @@ def event_redaction_policy(
             if bool(rule.get("sensitive"))
             or rule.get("client_visible", True) is False
         )
-        sensitive_by_kind[str(descriptor["kind"])] = sensitive
+        kind = str(descriptor["kind"])
+        sensitive_by_kind[kind] = sensitive
+        sensitive_condition_by_kind[kind] = descriptor_sensitive_condition(
+            descriptor
+        )
         all_sensitive.update(sensitive)
     records = (
         runtime.resource_by_id.values()
         if runtime is not None
         else dataset.get("resources", [])
     )
-    kind_by_id = {
-        resource_id(record): str(record.get("kind", "UNKNOWN"))
-        for record in records
-        if isinstance(record, Mapping)
-    }
+    kind_by_id: dict[str, str] = {}
+    for ordinal, record in enumerate(records):
+        if ordinal % 256 == 0:
+            _check_normalized_data_cancellation(cancellation_probe)
+        if isinstance(record, Mapping):
+            kind_by_id[resource_id(record)] = str(record.get("kind", "UNKNOWN"))
+    _check_normalized_data_cancellation(cancellation_probe)
     compiled = (
         sensitive_by_kind,
         kind_by_id,
         frozenset(all_sensitive),
+        sensitive_condition_by_kind,
     )
     if runtime is not None:
         runtime.event_redaction_policy = compiled
@@ -1262,7 +1311,12 @@ def redact_event_for_client(
     runtime: IndexedHistory | None = None,
     policy: EventRedactionPolicy | None = None,
 ) -> dict[str, Any]:
-    sensitive_by_kind, kind_by_id, all_sensitive = (
+    (
+        sensitive_by_kind,
+        kind_by_id,
+        all_sensitive,
+        sensitive_condition_by_kind,
+    ) = (
         policy or event_redaction_policy(dataset, runtime)
     )
     kinds, unresolved_identifiers = _event_resource_kinds(
@@ -1278,13 +1332,8 @@ def redact_event_for_client(
         or any(kind not in sensitive_by_kind for kind in kinds)
     ):
         sensitive.update(all_sensitive)
-    descriptors = {
-        str(item.get("kind")): item
-        for item in dataset.get("kind_descriptors", [])
-        if isinstance(item, Mapping) and item.get("kind")
-    }
     sensitive_condition = any(
-        descriptor_sensitive_condition(descriptors.get(kind))
+        sensitive_condition_by_kind.get(kind, False)
         for kind in kinds
     )
     result: dict[Any, Any] = {}
@@ -1701,11 +1750,14 @@ class NormalizedDataService:
     def event_redaction_policy(
         self,
         dataset: Mapping[str, Any] | None = None,
+        *,
+        cancellation_probe: Callable[[], bool] | None = None,
     ) -> EventRedactionPolicy:
         active = dataset or self.load_dataset()
         return event_redaction_policy(
             active,
             self.history_runtime(active),
+            cancellation_probe=cancellation_probe,
         )
 
     def redact_event_for_client(
@@ -1763,7 +1815,7 @@ class NormalizedDataService:
                 descriptors,
                 str(record.get("kind", "UNKNOWN")),
             )
-        _, _, all_sensitive = self.event_redaction_policy(dataset)
+        _, _, all_sensitive, _ = self.event_redaction_policy(dataset)
         projected_stream_fields = {
             "events",
             "resources",
@@ -3085,6 +3137,10 @@ __all__ = [
     "MAX_RESOURCE_TABLE_TRAVERSAL_NODES",
     "EventRedactionPolicy",
     "IndexedHistory",
+    "NormalizedDataCancellationError",
+    "NormalizedDataCancellationProbeError",
+    "NormalizedDataCancellationProbeResultError",
+    "NormalizedDataCancellationRequested",
     "NormalizedDataPolicy",
     "NormalizedDataService",
     "NormalizedDatasetSource",

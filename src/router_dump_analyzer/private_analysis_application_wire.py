@@ -23,6 +23,9 @@ from .private_analysis import (
 )
 from .private_analysis_execution import PrivateAnalysisRegisteredRunner
 from .private_analysis_service import (
+    PrivateAnalysisCapabilities,
+    PrivateAnalysisCitedEvidenceReference,
+    PrivateAnalysisLifecycleAction,
     PrivateAnalysisRequestSpec,
     PrivateAnalysisRunReport,
     PrivateAnalysisRunView,
@@ -37,6 +40,9 @@ from .value_core import (
 
 PRIVATE_ANALYSIS_DISPLAY_CONTRACT: Final = (
     "router_dump_analyzer.private_analysis.display.v1"
+)
+PRIVATE_ANALYSIS_CAPABILITIES_CONTRACT: Final = (
+    "router_dump_analyzer.private_analysis.capabilities.v1"
 )
 MAX_PRIVATE_ANALYSIS_DISPLAY_BYTES: Final = 64 * 1024 * 1024
 
@@ -58,6 +64,99 @@ _LIMIT_FIELDS: Final = frozenset(
         "deadline_ms",
     }
 )
+
+_TASK_KIND_DESCRIPTORS: Final = {
+    PrivateAnalysisTaskKind.CROSS_NODE_CORROBORATION: (
+        "Cross-node corroboration",
+        "Corroborate disclosed evidence across selected nodes and revisions.",
+    ),
+    PrivateAnalysisTaskKind.GENERAL_EVIDENCE_REVIEW: (
+        "General evidence review",
+        "Review the disclosed evidence selected for this private run.",
+    ),
+    PrivateAnalysisTaskKind.LTTNG_ANALYSIS: (
+        "LTTng analysis",
+        "Analyze disclosed LTTng events and their relationships.",
+    ),
+    PrivateAnalysisTaskKind.RESOURCE_CORRELATION: (
+        "Resource correlation",
+        "Correlate disclosed resources across selected revisions.",
+    ),
+    PrivateAnalysisTaskKind.ROUTE_TRACE_ANALYSIS: (
+        "Route trace analysis",
+        "Analyze disclosed route and trace evidence.",
+    ),
+}
+_TRANSPORT_DESCRIPTORS: Final = {
+    "in_process": (
+        "In-process",
+        "Use a deployment-configured private runner in the server process.",
+    ),
+    "local_subprocess": (
+        "Local subprocess",
+        "Use a deployment-configured private runner in a local child process.",
+    ),
+}
+_STATE_DESCRIPTORS: Final = {
+    "queued": ("Queued", "The admitted run is waiting to execute."),
+    "running": ("Running", "The private runner is executing the run."),
+    "cancel_requested": (
+        "Cancellation requested",
+        "Cancellation is requested for an active run.",
+    ),
+    "completed": ("Completed", "The run has a terminal report."),
+    "cancelled": ("Cancelled", "The run ended by cancellation."),
+}
+_ACTION_DESCRIPTORS: Final = {
+    PrivateAnalysisLifecycleAction.CREATE: (
+        "Create run",
+        "Admit a new workspace-scoped private-analysis run.",
+        "POST",
+        "runs",
+        False,
+        (),
+    ),
+    PrivateAnalysisLifecycleAction.LIST: (
+        "List runs",
+        "List durable private-analysis runs in this workspace.",
+        "GET",
+        "runs",
+        False,
+        (),
+    ),
+    PrivateAnalysisLifecycleAction.GET: (
+        "Get run",
+        "Read one payload-free durable run view.",
+        "GET",
+        "run",
+        False,
+        ("queued", "running", "cancel_requested", "completed", "cancelled"),
+    ),
+    PrivateAnalysisLifecycleAction.EXECUTE: (
+        "Execute run",
+        "Execute one admitted run with its current version precondition.",
+        "POST",
+        "run_execute",
+        True,
+        ("queued",),
+    ),
+    PrivateAnalysisLifecycleAction.CANCEL: (
+        "Cancel run",
+        "Request cancellation with the current version precondition.",
+        "POST",
+        "run_cancel",
+        True,
+        ("queued", "running", "cancel_requested", "cancelled"),
+    ),
+    PrivateAnalysisLifecycleAction.REPORT: (
+        "Get report",
+        "Read a terminal advisory report and its cited evidence metadata.",
+        "GET",
+        "run_report",
+        False,
+        ("completed", "cancelled"),
+    ),
+}
 
 
 class PrivateAnalysisApplicationWireRequestError(ValueError):
@@ -250,6 +349,123 @@ def parse_private_analysis_request_spec(
         ) from error
 
 
+def private_analysis_capabilities_to_wire(
+    value: PrivateAnalysisCapabilities,
+) -> dict[str, Any]:
+    """Project the closed, workspace-scoped browser workflow inventory."""
+
+    if type(value) is not PrivateAnalysisCapabilities:
+        raise TypeError("private-analysis capabilities projection is invalid")
+    limits = value.request_limit_ceilings
+    limit_values = {
+        "deadline_ms": (
+            "Deadline",
+            "milliseconds",
+            1,
+            limits.deadline_ms,
+        ),
+        "max_claims": ("Claims", "claims", 1, limits.max_claims),
+        "max_evidence_bytes": (
+            "Evidence bytes",
+            "bytes",
+            1,
+            limits.max_evidence_bytes,
+        ),
+        "max_evidence_items": (
+            "Evidence items",
+            "items",
+            1,
+            limits.max_evidence_items,
+        ),
+        "max_list_runs": (
+            "Listed runs",
+            "runs",
+            1,
+            value.max_list_runs,
+        ),
+        "max_output_bytes": (
+            "Output bytes",
+            "bytes",
+            1,
+            limits.max_output_bytes,
+        ),
+        "max_proposals": (
+            "Proposals",
+            "proposals",
+            0,
+            limits.max_proposals,
+        ),
+        "max_revisions": (
+            "Selected revisions",
+            "revisions",
+            1,
+            value.max_revisions,
+        ),
+        "max_tool_calls": (
+            "Tool calls",
+            "calls",
+            0,
+            limits.max_tool_calls,
+        ),
+    }
+    return {
+        "contract": PRIVATE_ANALYSIS_CAPABILITIES_CONTRACT,
+        "scope": {
+            "tenant_id": value.scope.tenant_id,
+            "project_id": value.scope.project_id,
+            "workspace_id": value.scope.workspace_id,
+        },
+        "enabled": value.enabled,
+        "capabilities": [
+            {
+                "id": item.value,
+                "label": _TASK_KIND_DESCRIPTORS[item][0],
+                "description": _TASK_KIND_DESCRIPTORS[item][1],
+            }
+            for item in value.task_kinds
+        ],
+        "limits": [
+            {
+                "id": identifier,
+                "label": descriptor[0],
+                "unit": descriptor[1],
+                "minimum": descriptor[2],
+                "maximum": descriptor[3],
+            }
+            for identifier, descriptor in sorted(limit_values.items())
+        ],
+        "transports": [
+            {
+                "id": item.value,
+                "label": _TRANSPORT_DESCRIPTORS[item.value][0],
+                "description": _TRANSPORT_DESCRIPTORS[item.value][1],
+            }
+            for item in value.transports
+        ],
+        "states": [
+            {
+                "id": item.value,
+                "label": _STATE_DESCRIPTORS[item.value][0],
+                "description": _STATE_DESCRIPTORS[item.value][1],
+                "terminal": item.is_terminal,
+            }
+            for item in value.states
+        ],
+        "actions": [
+            {
+                "id": item.value,
+                "label": _ACTION_DESCRIPTORS[item][0],
+                "description": _ACTION_DESCRIPTORS[item][1],
+                "method": _ACTION_DESCRIPTORS[item][2],
+                "resource": _ACTION_DESCRIPTORS[item][3],
+                "requires_etag": _ACTION_DESCRIPTORS[item][4],
+                "eligible_states": list(_ACTION_DESCRIPTORS[item][5]),
+            }
+            for item in value.actions
+        ],
+    }
+
+
 def private_analysis_runner_to_wire(
     value: PrivateAnalysisRegisteredRunner,
 ) -> dict[str, Any]:
@@ -264,6 +480,57 @@ def private_analysis_runner_to_wire(
         "transport": selection.transport.value,
         "configuration_digest": selection.configuration_digest,
         "instruction_profile_digest": value.instruction_profile_digest,
+        "evidence_service_digest": value.evidence_service_digest,
+    }
+
+
+def private_analysis_cited_evidence_to_wire(
+    value: PrivateAnalysisCitedEvidenceReference,
+) -> dict[str, Any]:
+    """Project only display-safe identity metadata for one cited reference."""
+
+    if type(value) is not PrivateAnalysisCitedEvidenceReference:
+        raise TypeError("private-analysis cited evidence projection is invalid")
+    producer = value.producer
+    plugin_binding = (
+        None
+        if producer.plugin_instance_id is None
+        else {
+            "instance_id": producer.plugin_instance_id,
+            "capability": producer.plugin_capability,
+            "role": producer.plugin_role,
+        }
+    )
+    time_range = value.time_range
+    return {
+        "reference_digest": value.reference_digest,
+        "revision": {
+            "revision_id": value.revision_id,
+            "node_id": value.node_id,
+        },
+        "producer": {
+            "authority": producer.authority.value,
+            "producer_id": producer.producer_id,
+            "plugin_binding": plugin_binding,
+        },
+        "kind": value.kind.value,
+        "subject_kind": value.subject_kind,
+        "evidence_class": value.evidence_class.value,
+        "payload_schema": value.payload_schema,
+        "fact_provenance": value.fact_provenance.value,
+        "time_range": {
+            "basis": time_range.basis.value,
+            "start_ns": (
+                None if time_range.start_ns is None else str(time_range.start_ns)
+            ),
+            "end_ns": None if time_range.end_ns is None else str(time_range.end_ns),
+            "uncertainty_ns": (
+                None
+                if time_range.uncertainty_ns is None
+                else str(time_range.uncertainty_ns)
+            ),
+            "clock_domain": time_range.clock_domain,
+        },
     }
 
 
@@ -281,6 +548,7 @@ def private_analysis_run_to_wire(value: PrivateAnalysisRunView) -> dict[str, Any
         "run_id": value.run_id,
         "state": value.state.value,
         "terminal": value.state.is_terminal,
+        "cleanup_pending": value.cleanup_pending,
         "version": str(value.version),
         "request_digest": value.request_digest,
         "task_kind": value.task_kind.value,
@@ -295,6 +563,7 @@ def private_analysis_run_to_wire(value: PrivateAnalysisRunView) -> dict[str, Any
         "workspace_policy_digest": value.workspace_policy_digest,
         "instruction_profile_digest": value.instruction_profile_digest,
         "tool_catalog_digest": value.tool_catalog_digest,
+        "evidence_service_digest": value.evidence_service_digest,
         "clock": {
             "mode": value.clock_mode.value,
             "selected_time_ns": (
@@ -361,6 +630,12 @@ def private_analysis_report_to_wire(
         "outcome": private_analysis_display_value(
             private_analysis_outcome_dict(value.outcome)
         ),
+        "evidence_references": private_analysis_display_value(
+            [
+                private_analysis_cited_evidence_to_wire(reference)
+                for reference in value.evidence_references
+            ]
+        ),
     }
     serialized = json.dumps(
         result,
@@ -375,10 +650,13 @@ def private_analysis_report_to_wire(
 
 __all__ = [
     "MAX_PRIVATE_ANALYSIS_DISPLAY_BYTES",
+    "PRIVATE_ANALYSIS_CAPABILITIES_CONTRACT",
     "PRIVATE_ANALYSIS_DISPLAY_CONTRACT",
     "PrivateAnalysisApplicationWireLimitError",
     "PrivateAnalysisApplicationWireRequestError",
     "parse_private_analysis_request_spec",
+    "private_analysis_capabilities_to_wire",
+    "private_analysis_cited_evidence_to_wire",
     "private_analysis_display_value",
     "private_analysis_report_to_wire",
     "private_analysis_run_to_wire",
