@@ -1,0 +1,6 @@
+from typing import Any
+
+__all__ = ['build_demo_plugin_contract', 'build_temporal_metadata']
+
+def build_demo_plugin_contract(dataset: dict[str, Any]) -> dict[str, Any]: ...
+def build_temporal_metadata(dataset: dict[str, Any]) -> dict[str, Any]: ...

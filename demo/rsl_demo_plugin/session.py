@@ -60,7 +60,7 @@ class DemoDatasetSource:
     """Load generated revisions and expose their optional generic index."""
 
     def __init__(self, revision_store: DemoAssemblyStore) -> None:
-        self.revision_store = revision_store
+        self.revision_store: DemoAssemblyStore = revision_store
 
     def _call(
         self,
@@ -338,7 +338,7 @@ class DemoRuntimeCapability:
             session.close()
 
 
-runtime = DemoRuntimeCapability()
+runtime: DemoRuntimeCapability = DemoRuntimeCapability()
 
 
 __all__ = [

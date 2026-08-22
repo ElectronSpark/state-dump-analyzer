@@ -522,13 +522,13 @@ class PlanBoundCapabilityRouter:
             raise CapabilityPlanUnavailableError(
                 "selected revision has an invalid plug-in execution plan"
             ) from error
-        self.catalog_revision_id = _opaque(
+        self.catalog_revision_id: str = _opaque(
             catalog_revision_id,
             "catalog_revision_id",
         )
-        self.member_id = _opaque(member_id, "member_id")
-        self.plan = detached_plan
-        self.limits = limits or PluginCapabilityLimits()
+        self.member_id: str = _opaque(member_id, "member_id")
+        self.plan: PluginExecutionPlan = detached_plan
+        self.limits: PluginCapabilityLimits = limits or PluginCapabilityLimits()
         self._providers = providers
         self._bound: dict[str, _BoundProvider] = {}
 

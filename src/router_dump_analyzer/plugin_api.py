@@ -235,7 +235,7 @@ class InputParserKind(StrEnum):
     TEXT_TRACE = "text_trace"
 
 
-REQUIRED_PLUGIN_HOOKS = (
+REQUIRED_PLUGIN_HOOKS: tuple[str, ...] = (
     "describe",
     "probe",
     "locate_inputs",

@@ -373,6 +373,19 @@ dumps.
 
 ## Development
 
+The installed `state_dump_generator` package includes a `py.typed` marker and
+one `.pyi` file per Python module, so IDEs and strict type checkers can consume
+its public model, compiler, replay, archive, and server interfaces without a
+separate stub package. Repository-wide stub regeneration and validation are
+owned by `../scripts/export_type_stubs.py`; the generated declarations remain
+a static projection of the executable implementation.
+
+From the repository root, check its strict installed-package consumer with:
+
+```text
+python -m mypy --python-version 3.12 --strict --no-incremental state-dump-generator/tests/typing/generator_public_api.py
+```
+
 Run the standalone tests from this directory:
 
 ```bash

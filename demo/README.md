@@ -260,6 +260,26 @@ shows exactly which plug-in, fixture, test, and entry-point pieces to copy into
 a new independently installable distribution. A production plug-in depends on
 `router-dump-analyzer-core`, not on this demo package.
 
+Both demo import roots, `rsl_demo_plugin` and `rsl_demo_generator`, ship
+module-for-module `.pyi` files and `py.typed`; the core and independent scenario
+generator distributions do the same. This lets the example serve as a typed
+consumer and as runnable behavior, without making the generated stubs a second
+runtime contract. From the repository root, check the maintained projection
+and its strict public consumer with:
+
+Constructor and inheritance parity checks prevent generated dataclass
+parameters or runtime-sealed contract values from being weakened in that
+projection; exported annotations may not degrade to `_typeshed.Incomplete`.
+
+```text
+python -m pip install -e ".[test,web]" -e demo -e state-dump-generator
+python scripts/export_type_stubs.py --check
+python -m mypy --python-version 3.12 --strict --no-incremental tests/typing/public_api.py state-dump-generator/tests/typing/generator_public_api.py
+```
+
+Run `python scripts/export_type_stubs.py` only when an exported Python signature
+changes intentionally, and review the resulting stub diff before committing it.
+
 ## What the example owns
 
 Each non-empty line in `fixtures/minimal-status.jsonl` is one complete

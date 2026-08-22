@@ -26,9 +26,9 @@ OPERATIONAL_LOG_SCHEMA: Final = "rda.operational.v1"
 OPERATIONAL_LOGGER_NAME: Final = "router_dump_analyzer.operations"
 MAX_OPERATIONAL_FIELDS: Final = 24
 MAX_OPERATIONAL_FIELD_TEXT: Final = 256
-MAX_OPERATIONAL_EVENT_BYTES: Final = 4 * 1024
+MAX_OPERATIONAL_EVENT_BYTES: Final[int] = 4 * 1024
 DEFAULT_OPERATIONAL_QUEUE_SIZE: Final = 1_024
-MAX_OPERATIONAL_COUNTER: Final = 2**63 - 1
+MAX_OPERATIONAL_COUNTER: Final[int] = 2**63 - 1
 RESOLVER_RESPONSE_HEADERS_REJECTED_EVENT: Final = (
     "control_plane.identity_resolver.response_headers_rejected"
 )

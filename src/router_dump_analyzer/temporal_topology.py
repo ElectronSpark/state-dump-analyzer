@@ -183,22 +183,22 @@ class TemporalTopologyService:
             raise TemporalTopologyRequestError(
                 "the temporal provider must supply a normalized contract"
             )
-        self.dataset = dataset
-        self.state_reader = state_reader
-        self.relationship_reader = relationship_reader
-        self.contract = contract
-        self.temporal_metadata = dict(temporal_metadata)
+        self.dataset: dict[str, Any] = dataset
+        self.state_reader: StateReader | None = state_reader
+        self.relationship_reader: RelationshipReader = relationship_reader
+        self.contract: dict[str, Any] = contract
+        self.temporal_metadata: dict[str, Any] = dict(temporal_metadata)
         try:
-            self.revision_id = str(temporal_metadata["revision_id"])
-            self.timeline_start_ns = temporal_integer(
+            self.revision_id: str = str(temporal_metadata["revision_id"])
+            self.timeline_start_ns: int = temporal_integer(
                 temporal_metadata["timeline_start_ns"],
                 "temporal_metadata.timeline_start_ns",
             )
-            self.timeline_end_ns = temporal_integer(
+            self.timeline_end_ns: int = temporal_integer(
                 temporal_metadata["timeline_end_ns"],
                 "temporal_metadata.timeline_end_ns",
             )
-            self.capture_ns = temporal_integer(
+            self.capture_ns: int = temporal_integer(
                 temporal_metadata["capture_ns"],
                 "temporal_metadata.capture_ns",
             )
@@ -212,14 +212,14 @@ class TemporalTopologyService:
             raise TemporalTopologyRequestError(
                 "temporal metadata must provide a non-empty default_node"
             )
-        self.default_node = default_node
-        self.resource_by_id = {
+        self.default_node: str = default_node
+        self.resource_by_id: dict[str, Any] = {
             str(item["resource_id"]): item for item in dataset.get("resources", [])
         }
         self._perspective_event_cache: dict[
             tuple[str, str], list[dict[str, Any]]
         ] = {}
-        self.runtime = dataset.get("_scale_runtime")
+        self.runtime: Any = dataset.get("_scale_runtime")
         if self.runtime is not None:
             self._events = self.runtime.events
             self._event_times = self.runtime.event_times

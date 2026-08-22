@@ -7,7 +7,9 @@ still performs topology reconstruction and route tracing.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from rsl_demo_plugin import (
     GENERATED_PROJECTION_POLICY,
@@ -23,6 +25,7 @@ from rsl_demo_plugin.scenario_registry import (
 )
 
 from .scenario_source import (
+    DemoScenarioSource,
     LinkSpec,
     NodeSpec,
     load_default_scenario_source,
@@ -121,10 +124,12 @@ class CoverageCaseSpec:
             )
 
 
-PACKET_PROFILES = GENERATED_PROJECTION_POLICY.packet_profiles
+PACKET_PROFILES: Mapping[str, Mapping[str, Any]] = (
+    GENERATED_PROJECTION_POLICY.packet_profiles
+)
 
 
-DEFAULT_SCENARIO_SOURCE = load_default_scenario_source()
+DEFAULT_SCENARIO_SOURCE: DemoScenarioSource = load_default_scenario_source()
 DEMO_NODES: tuple[NodeSpec, ...] = DEFAULT_SCENARIO_SOURCE.nodes
 DEMO_LINKS: tuple[LinkSpec, ...] = DEFAULT_SCENARIO_SOURCE.links
 

@@ -1,0 +1,3 @@
+__all__ = ['synthetic_router_ctf2_archive']
+
+def synthetic_router_ctf2_archive() -> bytes: ...

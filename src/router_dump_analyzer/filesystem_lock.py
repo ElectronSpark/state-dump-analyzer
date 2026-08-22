@@ -11,12 +11,13 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 
 class _ProcessLockEntry:
     def __init__(self) -> None:
-        self.lock = threading.Lock()
+        self.lock: Lock = threading.Lock()
         self.users = 0
 
 

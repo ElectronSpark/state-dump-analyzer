@@ -536,18 +536,18 @@ class MultiNodeTopologyService:
             raise MultiNodeTopologyRequestError(
                 "topology_metadata.revision_id must be a non-empty string"
             )
-        self.assembly_id = assembly_id
-        self.revision_id = revision_id
+        self.assembly_id: str = assembly_id
+        self.revision_id: str = revision_id
         try:
-            self.capture_ns = _integer_ns(
+            self.capture_ns: int = _integer_ns(
                 topology_metadata["capture_ns"],
                 "topology_metadata.capture_ns",
             )
-            self.start_ns = _integer_ns(
+            self.start_ns: int = _integer_ns(
                 topology_metadata["timeline_start_ns"],
                 "topology_metadata.timeline_start_ns",
             )
-            self.end_ns = _integer_ns(
+            self.end_ns: int = _integer_ns(
                 topology_metadata["timeline_end_ns"],
                 "topology_metadata.timeline_end_ns",
             )
@@ -556,13 +556,13 @@ class MultiNodeTopologyService:
                 "topology metadata must provide integer capture and "
                 "timeline bounds"
             ) from error
-        self.contract = contract
-        self.topology_profiles = [
+        self.contract: dict[str, Any] = contract
+        self.topology_profiles: list[dict[str, Any]] = [
             dict(item) for item in topology_profiles
         ]
-        self.topology_metadata = dict(topology_metadata)
-        self.topology_id = topology_id
-        self.nodes_by_id = {
+        self.topology_metadata: dict[str, Any] = dict(topology_metadata)
+        self.topology_id: str = topology_id
+        self.nodes_by_id: dict[str, Any] = {
             str(item["node_id"]): item for item in self.contract["nodes"]
         }
         self._node_order = {

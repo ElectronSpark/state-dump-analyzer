@@ -1,0 +1,9 @@
+from typing import Any
+
+SOURCE_RECORD_GROUP_DESCRIPTORS: list[dict[str, Any]]
+SOURCE_RECORD_DESCRIPTORS: list[dict[str, Any]]
+RECORD_LANE_PRESETS: list[dict[str, Any]]
+
+def demo_ctf_copy_text(event: dict[str, Any], *, sequence: int | None = None) -> str: ...
+def lazy_demo_ctf_source_record(event: dict[str, Any]) -> dict[str, Any]: ...
+def build_demo_source_records(events: list[dict[str, Any]]) -> list[dict[str, Any]]: ...

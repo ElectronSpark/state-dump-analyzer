@@ -20,7 +20,7 @@ from functools import lru_cache
 from operator import itemgetter
 from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Any, Final
 
 from pydantic_core import from_json
 from router_dump_analyzer.temporal_core import (
@@ -62,7 +62,7 @@ from router_dump_analyzer.history_search_core import HistorySearchCorpus
 
 PACK_ROOT = NODE_PACK_ROOT
 SCALE_PREFIX = NORMALIZED_SCALE_PREFIX
-MAX_SCALE_MEMBER_BYTES = 512 * 1024 * 1024
+MAX_SCALE_MEMBER_BYTES: Final[int] = 512 * 1024 * 1024
 HISTORY_SEARCH_PROJECTION_VERSION = b"redacted-sorted-json-casefold-fts5-v5"
 
 

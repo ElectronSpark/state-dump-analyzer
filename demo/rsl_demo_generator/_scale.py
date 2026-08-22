@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable
+from typing import Final, Iterable
 
 from rsl_demo_plugin.archive import (
     HIGH_FANOUT_RELATIONSHIPS_MEMBER_NAME,
@@ -19,7 +19,7 @@ from .scenario_source import load_default_scenario_source
 
 
 _DEFAULT_SCENARIO_SOURCE = load_default_scenario_source()
-BASE_TIME_NS = _DEFAULT_SCENARIO_SOURCE.base_time_ns
+BASE_TIME_NS: Final[int] = _DEFAULT_SCENARIO_SOURCE.base_time_ns
 EVENT_STEP_NS = 1_000_000
 PHASE_GAP_NS = 120_000_000_000
 SCENARIO_ID = _DEFAULT_SCENARIO_SOURCE.scenario_id

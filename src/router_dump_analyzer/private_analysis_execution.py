@@ -115,7 +115,7 @@ class _CleanupFenceEstablishedAfterError(RuntimeError):
 
     def __init__(self, original: BaseException) -> None:
         super().__init__("cleanup fence was committed before the store error")
-        self.original = original
+        self.original: BaseException = original
 
 
 def _bounded_integer(

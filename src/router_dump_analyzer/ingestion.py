@@ -2293,8 +2293,8 @@ class IngestionCoordinator:
         trace_decoder: TraceDecoder | None = None,
         limits: IngestionLimits | None = None,
     ) -> None:
-        self.trace_decoder = trace_decoder
-        self.limits = limits or IngestionLimits()
+        self.trace_decoder: TraceDecoder | None = trace_decoder
+        self.limits: IngestionLimits = limits or IngestionLimits()
 
     @staticmethod
     def _plugin(plugin: Any) -> AnalyzerPlugin:
@@ -2977,7 +2977,7 @@ class IngestedDatasetSource:
     """Normalized source for one immutable in-memory ingestion result."""
 
     def __init__(self, store: InMemoryRevisionStore) -> None:
-        self.store = store
+        self.store: InMemoryRevisionStore = store
 
     def revision_scope(self, revision_id: str) -> Any:
         self.store.revision(revision_id)
@@ -3109,9 +3109,12 @@ class CoreIngestionRuntime:
         *,
         coordinator: IngestionCoordinator | None = None,
     ) -> None:
-        self.coordinator = coordinator or IngestionCoordinator()
+        self.coordinator: IngestionCoordinator = coordinator or IngestionCoordinator()
         self._plugin_snapshot = self.coordinator._snapshot_plugin(plugin)
-        self.plugin = cast(AnalyzerPlugin, self._plugin_snapshot.original)
+        self.plugin: AnalyzerPlugin = cast(
+            AnalyzerPlugin,
+            self._plugin_snapshot.original,
+        )
 
     def open(
         self,

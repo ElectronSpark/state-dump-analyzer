@@ -160,8 +160,8 @@ class DemoAssemblyStore:
             raise DemoAssemblyError(
                 f"demo assembly is not a regular file: {candidate}"
             )
-        self.archive_path = candidate
-        self.cache_size = cache_size
+        self.archive_path: Path = candidate
+        self.cache_size: int = cache_size
         self._dataset_loader = dataset_loader or _default_dataset_loader
         self._temporary_directory = tempfile.TemporaryDirectory(
             prefix="router-dump-plugin-assembly-"

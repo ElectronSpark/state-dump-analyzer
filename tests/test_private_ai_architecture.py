@@ -50,7 +50,7 @@ APPROVED_PROJECT_REQUIREMENTS = {
         {
             "fastapi>=0.115,<1",
             "httpx>=0.27,<1",
-            "mypy>=1.15,<2",
+            "mypy==1.20.2",
             "pytest>=8.3,<9",
             "pytest-subtests>=0.14,<1",
             "ruff>=0.12,<1",
@@ -158,11 +158,6 @@ APPROVED_PACKAGING_MANIFESTS = {
                     "targets": {
                         "wheel": {
                             "packages": ["src/state_dump_generator"],
-                            "force-include": {
-                                "src/state_dump_generator/web": (
-                                    "state_dump_generator/web"
-                                )
-                            },
                         },
                         "sdist": {
                             "include": [
@@ -452,6 +447,7 @@ DEPLOYABLE_TEXT_SUFFIXES = frozenset(
         ".properties",
         ".ps1",
         ".py",
+        ".pyi",
         ".sh",
         ".toml",
         ".ts",
@@ -1552,7 +1548,7 @@ def _private_analysis_resource_violations(source_root: Path) -> tuple[str, ...]:
             for path in source_root.rglob("*")
             if path.is_file()
             and "__pycache__" not in path.parts
-            and path.suffix.casefold() != ".py"
+            and path.suffix.casefold() not in {".py", ".pyi"}
         )
     )
 

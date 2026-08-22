@@ -341,14 +341,14 @@ class _ControlPlaneAccessDenied(Exception):
         # Exception text is deliberately constant so an accidental private-log
         # path still cannot reveal a header, identity, scope, or URL.
         super().__init__("control-plane access was denied")
-        self.status_code = status_code
-        self.public_detail = public_detail
-        self.phase = phase
-        self.reason = reason
-        self.required_role = required_role
-        self.tenant_correlation = tenant_correlation
-        self.concealed = concealed
-        self.headers = headers
+        self.status_code: int = status_code
+        self.public_detail: str = public_detail
+        self.phase: ControlPlaneAccessPhase = phase
+        self.reason: ControlPlaneAccessReason = reason
+        self.required_role: str | None = required_role
+        self.tenant_correlation: str | None = tenant_correlation
+        self.concealed: bool = concealed
+        self.headers: object = headers
 
 
 @dataclass(slots=True)
@@ -1057,7 +1057,7 @@ class _BoundedControlPlaneRoute(APIRoute):
         return bounded
 
 
-control_plane_router = APIRouter(
+control_plane_router: APIRouter = APIRouter(
     prefix="/v1/control-plane",
     tags=["control-plane"],
     route_class=_BoundedControlPlaneRoute,

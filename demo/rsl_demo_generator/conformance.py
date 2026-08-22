@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from copy import deepcopy
-from typing import Any
+from typing import Any, Final
 
 from rsl_demo_plugin import (
     PLUGIN_ID,
@@ -30,14 +30,24 @@ CONFORMANCE_CORPUS_FORMAT_VERSION = 1
 CONFORMANCE_CORPUS_ROOT = "router-dump-ingestion-conformance-v1"
 CONFORMANCE_CORPUS_NAME = "runtime-v2-ingestion-conformance.tgz"
 
-STATUS_MEMBER = f"{CONFORMANCE_CORPUS_ROOT}/status/{STATUS_FILENAME}"
-LOG_MEMBER = f"{CONFORMANCE_CORPUS_ROOT}/logs/router.log"
-CTF_MEMBER = f"{CONFORMANCE_CORPUS_ROOT}/ctf/routertrace.tgz"
-MALFORMED_STATUS_MEMBER = f"{CONFORMANCE_CORPUS_ROOT}/malformed/truncated-status.jsonl"
-MALFORMED_CTF_MEMBER = f"{CONFORMANCE_CORPUS_ROOT}/malformed/truncated-ctf.tgz"
-UNSUPPORTED_MEMBER = f"{CONFORMANCE_CORPUS_ROOT}/unsupported/capture.pcap"
-EXPECTATIONS_MEMBER = f"{CONFORMANCE_CORPUS_ROOT}/expected/semantics.json"
-MANIFEST_MEMBER = f"{CONFORMANCE_CORPUS_ROOT}/manifest.json"
+STATUS_MEMBER: Final[str] = (
+    f"{CONFORMANCE_CORPUS_ROOT}/status/{STATUS_FILENAME}"
+)
+LOG_MEMBER: Final[str] = f"{CONFORMANCE_CORPUS_ROOT}/logs/router.log"
+CTF_MEMBER: Final[str] = f"{CONFORMANCE_CORPUS_ROOT}/ctf/routertrace.tgz"
+MALFORMED_STATUS_MEMBER: Final[str] = (
+    f"{CONFORMANCE_CORPUS_ROOT}/malformed/truncated-status.jsonl"
+)
+MALFORMED_CTF_MEMBER: Final[str] = (
+    f"{CONFORMANCE_CORPUS_ROOT}/malformed/truncated-ctf.tgz"
+)
+UNSUPPORTED_MEMBER: Final[str] = (
+    f"{CONFORMANCE_CORPUS_ROOT}/unsupported/capture.pcap"
+)
+EXPECTATIONS_MEMBER: Final[str] = (
+    f"{CONFORMANCE_CORPUS_ROOT}/expected/semantics.json"
+)
+MANIFEST_MEMBER: Final[str] = f"{CONFORMANCE_CORPUS_ROOT}/manifest.json"
 
 _GROUP_UUID = "123e4567-e89b-12d3-a456-426614174000"
 _OPAQUE_UUID_BYTES = "00112233445566778899aabbccddeeff"

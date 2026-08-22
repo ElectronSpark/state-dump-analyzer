@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "Router State Lab contributors" }]
+classifiers = ["Typing :: Typed"]
 dependencies = []
 
 [project.scripts]
@@ -17,9 +18,6 @@ state-dump-generator = "state_dump_generator.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/state_dump_generator"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/state_dump_generator/web" = "state_dump_generator/web"
 
 [tool.hatch.build.targets.sdist]
 include = [

@@ -247,7 +247,7 @@ def _rule_type_error() -> PluginCompositionRule:
     raise TypeError("rules must contain PluginCompositionRule")
 
 
-DEFAULT_PLUGIN_COMPOSITION_POLICY_DIGEST: Final = (
+DEFAULT_PLUGIN_COMPOSITION_POLICY_DIGEST: Final[str] = (
     PluginCompositionPolicy().policy_digest
 )
 

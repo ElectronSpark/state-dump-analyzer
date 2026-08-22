@@ -293,7 +293,7 @@ class CoreArtifactReader:
             if self._input_path.is_dir()
             else _opened_regular_identity(self._input_path)
         )
-        self.limits = limits or ArtifactLimits()
+        self.limits: ArtifactLimits = limits or ArtifactLimits()
         self._temporary = tempfile.TemporaryDirectory(
             prefix="router-dump-artifacts-"
         )
@@ -341,7 +341,7 @@ class CoreArtifactReader:
         }
         inventory_metadata = dict(metadata or {})
         inventory_metadata.setdefault("container_kind", self._kind)
-        self.inventory = DumpInventory(
+        self.inventory: DumpInventory = DumpInventory(
             node_hint=node_hint,
             artifacts=tuple(
                 ArtifactInfo(
@@ -1190,7 +1190,7 @@ class ScopedArtifactReader:
             artifact.artifact_id: artifact
             for artifact in parent.inventory.artifacts
         }
-        self.inventory = DumpInventory(
+        self.inventory: DumpInventory = DumpInventory(
             node_hint=parent.inventory.node_hint,
             artifacts=tuple(
                 artifacts_by_id[artifact_id]

@@ -113,27 +113,33 @@ class PrivateAnalysisServiceError(RuntimeError):
 
 
 class PrivateAnalysisServiceInvalidRequest(PrivateAnalysisServiceError):
-    code = PrivateAnalysisServiceErrorCode.INVALID_REQUEST
+    code: PrivateAnalysisServiceErrorCode = (
+        PrivateAnalysisServiceErrorCode.INVALID_REQUEST
+    )
     safe_message = "Private analysis request is invalid."
 
 
 class PrivateAnalysisServicePolicyDenied(PrivateAnalysisServiceError):
-    code = PrivateAnalysisServiceErrorCode.POLICY_DENIED
+    code: PrivateAnalysisServiceErrorCode = (
+        PrivateAnalysisServiceErrorCode.POLICY_DENIED
+    )
     safe_message = "Private analysis is not allowed."
 
 
 class PrivateAnalysisServiceRunnerUnavailable(PrivateAnalysisServiceError):
-    code = PrivateAnalysisServiceErrorCode.RUNNER_UNAVAILABLE
+    code: PrivateAnalysisServiceErrorCode = (
+        PrivateAnalysisServiceErrorCode.RUNNER_UNAVAILABLE
+    )
     safe_message = "Private analysis runner is unavailable."
 
 
 class PrivateAnalysisServiceNotFound(PrivateAnalysisServiceError):
-    code = PrivateAnalysisServiceErrorCode.NOT_FOUND
+    code: PrivateAnalysisServiceErrorCode = PrivateAnalysisServiceErrorCode.NOT_FOUND
     safe_message = "Private analysis run was not found."
 
 
 class PrivateAnalysisServiceConflict(PrivateAnalysisServiceError):
-    code = PrivateAnalysisServiceErrorCode.CONFLICT
+    code: PrivateAnalysisServiceErrorCode = PrivateAnalysisServiceErrorCode.CONFLICT
     safe_message = "Private analysis run conflicts with durable state."
 
 
@@ -142,7 +148,7 @@ class PrivateAnalysisServiceReportNotReady(PrivateAnalysisServiceConflict):
 
 
 class PrivateAnalysisServiceUnavailable(PrivateAnalysisServiceError):
-    code = PrivateAnalysisServiceErrorCode.UNAVAILABLE
+    code: PrivateAnalysisServiceErrorCode = PrivateAnalysisServiceErrorCode.UNAVAILABLE
     safe_message = "Private analysis service is unavailable."
 
 

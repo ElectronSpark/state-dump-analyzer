@@ -1,0 +1,3 @@
+from . import AssemblyConfig as AssemblyConfig, DEFAULT_ASSEMBLY_NAME as DEFAULT_ASSEMBLY_NAME, DEFAULT_EVENT_COUNT as DEFAULT_EVENT_COUNT, DEFAULT_RESOURCE_COUNT as DEFAULT_RESOURCE_COUNT, DEFAULT_SEED as DEFAULT_SEED, build_ingestion_conformance_corpus as build_ingestion_conformance_corpus, ensure_demo_fixture_for_launch as ensure_demo_fixture_for_launch, parse_node_selection as parse_node_selection, probe_demo_fixture_for_launch as probe_demo_fixture_for_launch, validate_demo_fixture as validate_demo_fixture
+
+def main(argv: list[str] | None = None) -> int: ...

@@ -8,6 +8,7 @@ example route/source evidence.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Mapping
@@ -41,7 +42,7 @@ def current_revision_store() -> DemoAssemblyStore:
 
 
 @contextmanager
-def revision_store_scope(store: DemoAssemblyStore):
+def revision_store_scope(store: DemoAssemblyStore) -> Iterator[None]:
     """Bind one runtime-owned fixture store to the current request/task."""
 
     token = _active_revision_store.set(store)
@@ -52,7 +53,7 @@ def revision_store_scope(store: DemoAssemblyStore):
 
 
 @contextmanager
-def demo_revision_scope(revision_id: str):
+def demo_revision_scope(revision_id: str) -> Iterator[None]:
     """Select one revision for helpers called inside a request/task context."""
 
     token = _active_revision_id.set(revision_id)
@@ -62,7 +63,7 @@ def demo_revision_scope(revision_id: str):
         _active_revision_id.reset(token)
 
 
-DEMO_GAPS = [
+DEMO_GAPS: list[dict[str, Any]] = [
     {
         "id": "ingestion",
         "area": "Ingestion",
@@ -155,7 +156,7 @@ DEMO_GAPS = [
 ]
 
 
-REVIEW_PROMPTS = [
+REVIEW_PROMPTS: list[str] = [
     "Do these directional Forwarding Group, ETG, ETE and DTE correlations "
     "match the product model?",
     "Which plugin-defined status fields should drive lane color for each kind?",

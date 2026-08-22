@@ -14,7 +14,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Final, Iterable, Mapping
 
 import rsl_demo_plugin as demo_plugin_package
 from rsl_demo_plugin import (
@@ -79,12 +79,14 @@ from .scenario_source import (
 
 ASSEMBLY_FORMAT_VERSION = GENERATED_ASSEMBLY_FORMAT_VERSION
 DEFAULT_ASSEMBLY_NAME = "router-state-lab-demo.tgz"
-DEFAULT_ASSEMBLY_ID = DEFAULT_SCENARIO_SOURCE.defaults.assembly_id
-DEFAULT_PLUGIN_ID = example_router_plugin.manifest.plugin_id
-DEFAULT_PLUGIN_VERSION = example_router_plugin.manifest.plugin_version
-DEFAULT_EVENT_COUNT = DEFAULT_SCENARIO_SOURCE.defaults.events_per_node
-DEFAULT_RESOURCE_COUNT = DEFAULT_SCENARIO_SOURCE.defaults.resources_per_node
-DEFAULT_SEED = DEFAULT_SCENARIO_SOURCE.defaults.seed
+DEFAULT_ASSEMBLY_ID: Final[str] = DEFAULT_SCENARIO_SOURCE.defaults.assembly_id
+DEFAULT_PLUGIN_ID: Final[str] = example_router_plugin.manifest.plugin_id
+DEFAULT_PLUGIN_VERSION: Final[str] = example_router_plugin.manifest.plugin_version
+DEFAULT_EVENT_COUNT: Final[int] = DEFAULT_SCENARIO_SOURCE.defaults.events_per_node
+DEFAULT_RESOURCE_COUNT: Final[int] = (
+    DEFAULT_SCENARIO_SOURCE.defaults.resources_per_node
+)
+DEFAULT_SEED: Final[int] = DEFAULT_SCENARIO_SOURCE.defaults.seed
 MIN_EVENT_COUNT = 100_000
 MIN_STATE_CHANGE_EVENT_COUNT = 100_000
 MIN_RESOURCE_COUNT = 5_000
@@ -100,7 +102,7 @@ SOURCE_MATERIALIZER_FINGERPRINT_ALGORITHM = (
 )
 _MAX_MATERIALIZER_SOURCE_BYTES = 4 * 1024 * 1024
 _REWRITE_BATCH_BYTES = 1024 * 1024
-PROJECTION_ROOT = GENERATED_PROJECTION_POLICY.projection_root
+PROJECTION_ROOT: Final[str] = GENERATED_PROJECTION_POLICY.projection_root
 _NODE_ID_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62})\Z")
 _TIMESTAMP_FIELDS = {
     "base_time_ns",
@@ -6410,11 +6412,15 @@ __all__ = [
     "DEFAULT_PLUGIN_VERSION",
     "DEFAULT_RESOURCE_COUNT",
     "DEFAULT_SEED",
+    "EnsureLaunchReport",
+    "LaunchPreflightReport",
     "PROJECTION_ROOT",
     "AssemblyConfig",
     "ValidationReport",
     "build_coverage",
     "build_demo_fixture",
+    "ensure_demo_fixture_for_launch",
     "parse_node_selection",
+    "probe_demo_fixture_for_launch",
     "validate_demo_fixture",
 ]

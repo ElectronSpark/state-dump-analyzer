@@ -266,8 +266,8 @@ class PluginExecutionProcessError(IngestionPipelineError):
         private_exception_message: str | None = None,
     ) -> None:
         super().__init__(message)
-        self.private_exception_type = private_exception_type
-        self.private_exception_message = private_exception_message
+        self.private_exception_type: str | None = private_exception_type
+        self.private_exception_message: str | None = private_exception_message
 
 
 class CatalogExecutionTimeoutError(IngestionPipelineError):
@@ -285,8 +285,8 @@ class CatalogExecutionProcessError(IngestionPipelineError):
         private_exception_message: str | None = None,
     ) -> None:
         super().__init__(message)
-        self.private_exception_type = private_exception_type
-        self.private_exception_message = private_exception_message
+        self.private_exception_type: str | None = private_exception_type
+        self.private_exception_message: str | None = private_exception_message
 
 
 class ImportNotFoundError(KeyError):
@@ -3969,16 +3969,16 @@ class DurableIngestionPipeline:
         capability_providers: CapabilityProviderRegistry | None = None,
         worker_id: str | None = None,
     ) -> None:
-        self.root = validate_ingestion_state_root(root)
-        self.database_path = self.root / "control-plane.sqlite3"
-        self.blob_root = self.root / "blobs"
-        self.dataset_root = self.root / "revisions"
-        self.fixture_root = self.root / "fixtures"
-        self.spool_root = self.root / "spool"
-        self.lock_root = self.root / "locks"
-        self.content_lock_root = self.lock_root / "content"
+        self.root: Path = validate_ingestion_state_root(root)
+        self.database_path: Path = self.root / "control-plane.sqlite3"
+        self.blob_root: Path = self.root / "blobs"
+        self.dataset_root: Path = self.root / "revisions"
+        self.fixture_root: Path = self.root / "fixtures"
+        self.spool_root: Path = self.root / "spool"
+        self.lock_root: Path = self.root / "locks"
+        self.content_lock_root: Path = self.lock_root / "content"
         self._spool_namespace_lock_path = self.lock_root / "spool-namespace.lock"
-        self.registry = registry
+        self.registry: PluginRegistry = registry
         # Import lazily: capability_router consumes RegisteredPlugin and the
         # registry primitives from this module.  Construction occurs only
         # after both modules are fully initialized.
@@ -3995,7 +3995,9 @@ class DurableIngestionPipeline:
             )
         else:
             selected_capability_providers = capability_providers
-        self.capability_providers = selected_capability_providers
+        self.capability_providers: CapabilityProviderRegistry = (
+            selected_capability_providers
+        )
         selected_composition_policy = (
             PluginCompositionPolicy()
             if composition_policy is None
@@ -4005,24 +4007,28 @@ class DurableIngestionPipeline:
             raise TypeError(
                 "composition_policy must be PluginCompositionPolicy or None"
             )
-        self.composition_policy = PluginCompositionPolicy(
+        self.composition_policy: PluginCompositionPolicy = PluginCompositionPolicy(
             rules=selected_composition_policy.rules,
             contract_version=selected_composition_policy.contract_version,
             policy_digest=selected_composition_policy.policy_digest,
         )
-        self.publisher = publisher or NullRevisionCatalogPublisher()
-        self.publisher_process_bootstrap = _catalog_publisher_process_bootstrap(
-            self.publisher,
-            module_target=publisher_module_target,
+        self.publisher: RevisionCatalogPublisher = (
+            publisher or NullRevisionCatalogPublisher()
         )
-        self.limits = limits or PipelineLimits()
+        self.publisher_process_bootstrap: CatalogPublisherProcessBootstrap = (
+            _catalog_publisher_process_bootstrap(
+                self.publisher,
+                module_target=publisher_module_target,
+            )
+        )
+        self.limits: PipelineLimits = limits or PipelineLimits()
         if self.limits.plugin_execution_mode is PluginExecutionMode.PROCESS:
             # Materialize the inert descriptors now so a configured object
             # cannot remain apparently registered until the first queued job
             # silently reconstructs a default instance in a child.
             self.registry.process_bootstraps()
-        self.retention_policy = retention_policy or RetentionPolicy()
-        self.worker_id = worker_id or f"worker-{uuid4().hex}"
+        self.retention_policy: RetentionPolicy = retention_policy or RetentionPolicy()
+        self.worker_id: str = worker_id or f"worker-{uuid4().hex}"
         _bounded_identifier(self.worker_id, "worker_id", 256)
         self._lock = threading.RLock()
         self._wake = threading.Event()
@@ -11399,12 +11405,15 @@ __all__ = [
     "PluginExecutionTimeoutError",
     "PluginRegistry",
     "PublisherCallContext",
+    "QueueHealthSnapshot",
     "RegisteredPlugin",
     "RetentionAuditRecord",
+    "RetentionHostInventoryCoverage",
     "RetentionPolicy",
     "RetentionReport",
     "RevisionCatalogPublisher",
     "WorkerHealthSnapshot",
+    "inspect_durable_queue",
     "validate_import_metadata",
     "validate_ingestion_state_root",
 ]

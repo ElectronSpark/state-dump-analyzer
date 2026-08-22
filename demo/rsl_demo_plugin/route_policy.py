@@ -176,7 +176,7 @@ _ROUTE_TYPE_PROFILES: dict[str, dict[str, Any]] = {
 }
 
 
-DEMO_ROUTE_POLICY = RouteServicePolicy(
+DEMO_ROUTE_POLICY: RouteServicePolicy = RouteServicePolicy(
     scenarios=SCENARIO_BY_ID,
     default_scenario_id="single-active-primary",
     steering_profiles=STEERING_PROFILES,

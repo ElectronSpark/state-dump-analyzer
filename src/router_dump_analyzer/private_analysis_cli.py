@@ -62,7 +62,7 @@ from .value_core import parse_canonical_decimal_integer
 PRIVATE_ANALYSIS_CLI_RESULT_VERSION: Final = (
     "router_dump_analyzer.private_analysis_cli_result.v1"
 )
-MAX_PRIVATE_ANALYSIS_REQUEST_DOCUMENT_BYTES: Final = 1 * 1024 * 1024
+MAX_PRIVATE_ANALYSIS_REQUEST_DOCUMENT_BYTES: Final[int] = 1 * 1024 * 1024
 MAX_PRIVATE_ANALYSIS_CLI_LIST_LIMIT: Final = 1_000
 MAX_PRIVATE_ANALYSIS_CLI_ID_CHARACTERS: Final = 256
 _MAX_SIGNED_64: Final = (1 << 63) - 1

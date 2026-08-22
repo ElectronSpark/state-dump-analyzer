@@ -74,6 +74,41 @@ illustrative provider ID `demo.example-router`; its current offline projection
 and evidence format is documented only in the
 [demo guide](../demo/README.md#generated-mock-dumps).
 
+### Static Python typing surface
+
+The core distribution ships a `py.typed` marker and one `.pyi` beside every
+`router_dump_analyzer` Python module. Those stubs export the complete static
+surface, including protocols, callable aliases, enums, dataclasses, constants,
+and functions; an author MUST NOT need a separately installed `types-*`
+distribution to implement this contract. The repository's demo import roots
+(`rsl_demo_plugin` and `rsl_demo_generator`) and independent
+`state_dump_generator` package follow the same rule.
+
+The stubs are a checked projection of executable modules, not a second semantic
+contract. Runtime validation, budgets, errors, and ownership rules remain
+defined by the implementation and this document. A repository change to an
+exported signature MUST regenerate the stubs with
+`python scripts/export_type_stubs.py`. Use the same strict gates locally:
+
+The projection also preserves generated dataclass constructor parameters even
+when a parameter uses an underscore-prefixed storage name, and marks contract
+values that reject runtime subclassing as `final`. Repository parity tests
+compare those structural facts with the executable source so stub generation
+cannot silently narrow a callable constructor or open a sealed value type.
+Exported annotations may not fall back to `_typeshed.Incomplete`, and a
+source-declared type alias must retain its right-hand-side definition in the
+stub projection.
+
+```text
+python scripts/export_type_stubs.py --check
+python -m mypy --python-version 3.12 --strict --no-incremental tests/typing/public_api.py state-dump-generator/tests/typing/generator_public_api.py
+```
+
+An independently distributed plug-in SHOULD ship its own `py.typed` marker (and
+inline annotations or corresponding `.pyi` files) so host-side integrations can
+type-check its additional public helpers. Static success does not replace the
+validator or section 8's behavioral conformance suite.
+
 The validator checks entry-point construction, manifest/core compatibility,
 schema determinism, required hooks, capability overrides, empty-inventory
 robustness, and the representative inventory's explicit parser dispatch. It

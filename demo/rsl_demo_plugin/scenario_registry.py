@@ -755,7 +755,7 @@ ROUTE_INVENTORY_CONTEXTS: tuple[dict[str, Any], ...] = (
     },
 )
 
-SCENARIO_BY_ID = {
+SCENARIO_BY_ID: dict[str, dict[str, Any]] = {
     str(item["scenario_id"]): item
     for item in ROUTE_TRACE_SCENARIOS
 }

@@ -12,7 +12,7 @@ from .health import (
     operational_event_channel_health,
 )
 
-service_router = APIRouter()
+service_router: APIRouter = APIRouter()
 
 
 class _FailedControlPlaneObservation:

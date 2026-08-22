@@ -280,12 +280,12 @@ class ArchiveTests(unittest.TestCase):
                 f"{sorted(imported & forbidden_roots)}",
             )
 
-        force_include = project["tool"]["hatch"]["build"]["targets"]["wheel"][
-            "force-include"
-        ]
-        self.assertEqual(
-            force_include["src/state_dump_generator/web"],
-            "state_dump_generator/web",
+        wheel = project["tool"]["hatch"]["build"]["targets"]["wheel"]
+        self.assertEqual(wheel["packages"], ["src/state_dump_generator"])
+        self.assertNotIn(
+            "force-include",
+            wheel,
+            "package-owned web assets must not be added to the wheel twice",
         )
         for asset in ("index.html", "app.js", "styles.css"):
             self.assertTrue((source_root / "web" / asset).is_file())

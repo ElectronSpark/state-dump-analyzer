@@ -104,7 +104,7 @@ _EMOJI_VARIATION_BASE_CODEPOINTS = (
 # Unicode 15.0 registers both text and emoji presentation for every base in
 # this data file.  The generator rejects a future asymmetric source instead
 # of silently broadening this exact-pair representation.
-EMOJI_VARIATION_SEQUENCE_PAIRS = frozenset(
+EMOJI_VARIATION_SEQUENCE_PAIRS: frozenset[tuple[int, int]] = frozenset(
     (base, selector)
     for base in _EMOJI_VARIATION_BASE_CODEPOINTS
     for selector in (0xFE0E, 0xFE0F)

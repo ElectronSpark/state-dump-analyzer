@@ -874,6 +874,23 @@ router-dump-analyzer-demo
     -X-> executable, FastAPI objects, routes, or frontend assets
 ```
 
+The core, demo, and independent scenario-generator distributions are PEP 561
+typed. Each shipped Python module has a sibling `.pyi`, and each package root
+has `py.typed`; this covers `router_dump_analyzer`, `rsl_demo_plugin`,
+`rsl_demo_generator`, and `state_dump_generator` without a parallel `types-*`
+distribution. The module-for-module layout preserves package ownership and
+allows protocols and callable aliases to be resolved without importing optional
+web dependencies. Stubs are generated projections rather than executable
+policy: `scripts/export_type_stubs.py --check` enforces source/stub parity, and
+`tests/typing/public_api.py` and
+`state-dump-generator/tests/typing/generator_public_api.py` are the strict
+consumer gates. The import-free exporter supplements its generator only for
+source-derived facts the generator cannot retain: underscore-prefixed fields
+that participate in a public dataclass constructor and direct
+`SealedContractValue` subclasses that are closed to further inheritance. The
+typing contract also rejects `Incomplete` exported annotations and a declared
+type alias whose generated projection loses its defining expression.
+
 `src/router_dump_analyzer/` is the core source root. It contains the core CLI,
 application factory, runtime-session protocols, complete HTTP API, generic
 services, and frontend host. The separately packaged `frontend/` tree is forced

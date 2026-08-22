@@ -9,7 +9,7 @@ from typing import Any
 # Largest integer that survives a JSON number -> JavaScript Number -> integer
 # round trip exactly.  Browser-visible counters and page coordinates use this
 # shared boundary unless their domain is deliberately smaller.
-MAX_JSON_SAFE_INTEGER = (1 << 53) - 1
+MAX_JSON_SAFE_INTEGER: int = (1 << 53) - 1
 
 
 class CanonicalIntegerErrorReason(str, Enum):
@@ -32,8 +32,8 @@ class CanonicalIntegerError(ValueError):
         reason: CanonicalIntegerErrorReason,
     ) -> None:
         super().__init__(message)
-        self.field = field
-        self.reason = reason
+        self.field: str = field
+        self.reason: CanonicalIntegerErrorReason = reason
 
 
 def parse_canonical_decimal_integer(

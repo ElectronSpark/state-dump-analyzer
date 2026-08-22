@@ -104,8 +104,8 @@ class PluginCapabilityExecutionError(RuntimeError):
         diagnostics: tuple[PluginDiagnostic, ...] = (),
     ) -> None:
         super().__init__(message)
-        self.capability = capability
-        self.diagnostics = diagnostics
+        self.capability: PluginCapability = capability
+        self.diagnostics: tuple[PluginDiagnostic, ...] = diagnostics
 
 
 class PluginCapabilityUnavailableError(PluginCapabilityExecutionError):
@@ -540,12 +540,12 @@ class PluginCapabilityExecutor:
             raise TypeError(
                 "capability executor requires a bounded plug-in schema"
             ) from error
-        self.plugin = plugin
-        self.manifest = manifest
+        self.plugin: AnalyzerPlugin = plugin
+        self.manifest: PluginManifest = manifest
         self._declared_capabilities = declared_capabilities
         self._forwarding_ir_versions = forwarding_ir_versions
-        self.schema = selected_schema
-        self.limits = limits or PluginCapabilityLimits()
+        self.schema: PluginSchema = selected_schema
+        self.limits: PluginCapabilityLimits = limits or PluginCapabilityLimits()
         try:
             self._schema = _SchemaIndex.build(selected_schema)
         except PROCESS_CONTROL_EXCEPTIONS:

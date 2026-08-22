@@ -46,6 +46,7 @@ cross-layer inconsistency.
 | Run the bundled demo | [Run the demo](#run-the-demo) |
 | Learn what to inspect | [What to try](#what-to-try) |
 | Build a device plug-in | [Plug-in author quickstart](docs/plugin-author-quickstart.md) |
+| Use the Python API from a typed client | [Typed Python API](#typed-python-api) |
 | Run durable uploads, sessions, or review | [Durable control plane](docs/control-plane.md) |
 | Integrate with the API | [API payload contract](docs/api-contract.md) |
 | Understand the design | [Architecture and library decisions](docs/architecture.md) |
@@ -1017,6 +1018,32 @@ security boundary, and core-versus-plug-in ownership.
 
 ## Developer workflows
 
+### Typed Python API
+
+All shipped Python import roots carry PEP 561 metadata and module-for-module
+stubs: the core `router_dump_analyzer` package, the demo's
+`rsl_demo_plugin` and `rsl_demo_generator` packages, and the independent
+`state_dump_generator` package. An IDE or type checker therefore sees the
+public classes, protocols, functions, constants, and aliases after an ordinary
+wheel or editable install; consumers do not need a separate `types-*` package.
+The `.pyi` files describe the Python surface, while the executable code and the
+normative contracts remain authoritative for runtime validation and behavior.
+
+The repository keeps one stub beside every Python module and a `py.typed`
+marker in every package root. Run both drift and consumer checks after changing
+an exported signature:
+
+```powershell
+python -m pip install -e ".[test,web]" -e .\demo -e .\state-dump-generator
+python scripts/export_type_stubs.py --check
+python -m mypy --python-version 3.12 --strict --no-incremental tests/typing/public_api.py state-dump-generator/tests/typing/generator_public_api.py
+```
+
+To refresh an intentional API change, run
+`python scripts/export_type_stubs.py`, review the generated signatures, then
+repeat the two checks above. Plug-in authors can type-check their own package
+against the installed core with the same Python 3.12 strict-mypy settings.
+
 ### Run the checks
 
 With `router-dump-analyzer-demo` activated:
@@ -1095,7 +1122,7 @@ the demo guide owns the current projection and evidence contract.
 | [`state-dump-generator/`](state-dump-generator) | Independent GNS2-style scenario editor and topology-free per-node dump generator |
 | [`demo/fixtures/`](demo/fixtures) | Small parser/runtime-v2 conformance fixtures; the full mock dumps remain generator-owned and runtime-v1 compatible |
 | [`samples/`](samples) | Public decoder inputs and fixture documentation |
-| [`scripts/`](scripts) | Environment setup, launchers, and the optional public CTF decoder-fixture fetcher |
+| [`scripts/`](scripts) | Environment setup, launchers, the public-type-stub exporter, and the optional public CTF decoder-fixture fetcher |
 | [`tests/`](tests) | Backend, API, fixture, scale, and frontend regression coverage |
 | [`docs/`](docs) | Architecture, contracts, authoring guidance, and audit records |
 

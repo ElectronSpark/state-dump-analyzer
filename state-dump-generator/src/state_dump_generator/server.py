@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Final
 from urllib.parse import unquote, urlsplit
 
 from .archive import (
@@ -30,8 +30,8 @@ from .path_safety import (
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8770
-MAX_REQUEST_BYTES = 16 * 1024 * 1024
-WEB_ROOT = Path(__file__).with_name("web")
+MAX_REQUEST_BYTES: Final[int] = 16 * 1024 * 1024
+WEB_ROOT: Final[Path] = Path(__file__).with_name("web")
 _SAFE_DOWNLOAD_NAME = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
@@ -364,8 +364,8 @@ class ScenarioEditorServer(ThreadingHTTPServer):
         except ValueError:
             address_version = 4
         if address_version == 6:
-            self.address_family = socket.AF_INET6
-        self.web_root = resolve_regular_directory(
+            self.address_family: int = socket.AF_INET6
+        self.web_root: Path = resolve_regular_directory(
             web_root,
             label="web asset root",
         )

@@ -1,0 +1,9 @@
+from .plugin_api import PluginSchema
+from typing import Any
+
+__all__ = ['PluginSchemaIdentityError', 'plugin_schema_dataset', 'plugin_schema_digest']
+
+class PluginSchemaIdentityError(ValueError): ...
+
+def plugin_schema_dataset(schema: PluginSchema) -> dict[str, Any]: ...
+def plugin_schema_digest(schema: PluginSchema) -> str: ...

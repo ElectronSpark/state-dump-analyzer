@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from threading import Lock, get_ident
 from time import monotonic_ns
-from typing import Final
+from typing import Final, TypeAlias
 
 from .canonical import strict_canonical_json, strict_canonical_json_sha256
 from .plugin_identity import (
@@ -461,7 +461,7 @@ class PrivateAnalysisInProcessExecutionReceipt:
         )
 
 
-PrivateAnalysisInProcessModelCallback = Callable[
+PrivateAnalysisInProcessModelCallback: TypeAlias = Callable[
     [PrivateAnalysisInProcessContext, "PrivateAnalysisInProcessToolGateway"],
     str,
 ]
@@ -937,7 +937,7 @@ class _InProcessReceiptOwner:
     __slots__ = ("lock", "pending")
 
     def __init__(self) -> None:
-        self.lock = Lock()
+        self.lock: Lock = Lock()
         self.pending: _PendingInProcessReceipt | None = None
 
 

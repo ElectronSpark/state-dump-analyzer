@@ -44,7 +44,7 @@ PRIVATE_ANALYSIS_DISPLAY_CONTRACT: Final = (
 PRIVATE_ANALYSIS_CAPABILITIES_CONTRACT: Final = (
     "router_dump_analyzer.private_analysis.capabilities.v1"
 )
-MAX_PRIVATE_ANALYSIS_DISPLAY_BYTES: Final = 64 * 1024 * 1024
+MAX_PRIVATE_ANALYSIS_DISPLAY_BYTES: Final[int] = 64 * 1024 * 1024
 
 _MAX_SIGNED_64: Final = (1 << 63) - 1
 _MIN_SIGNED_64: Final = -(1 << 63)
@@ -166,7 +166,7 @@ class PrivateAnalysisApplicationWireRequestError(ValueError):
         if type(detail) is not str or not detail:
             raise TypeError("private-analysis wire error detail must be text")
         super().__init__(detail)
-        self.detail = detail
+        self.detail: str = detail
 
 
 class PrivateAnalysisApplicationWireLimitError(RuntimeError):

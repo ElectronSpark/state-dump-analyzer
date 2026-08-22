@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Final, Mapping
 
 
 SCENARIO_SCHEMA_ID = "state-dump-generator-scenario/v1"
@@ -28,7 +28,7 @@ _PACKAGED_SCENARIO_PATH = (
         "router-state-lab-default.scenario.json"
     )
 )
-DEFAULT_SCENARIO_PATH = (
+DEFAULT_SCENARIO_PATH: Final[Path] = (
     _SOURCE_SCENARIO_PATH
     if _SOURCE_SCENARIO_PATH.is_file()
     else _PACKAGED_SCENARIO_PATH

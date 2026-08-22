@@ -106,8 +106,8 @@ class MultiNodeRouteService:
         projections: RouteProjectionSet,
         policy: RouteServicePolicy,
     ) -> None:
-        self.topology = topology
-        self.policy = policy
+        self.topology: MultiNodeTopologyService = topology
+        self.policy: RouteServicePolicy = policy
         try:
             packet_transition_builder = policy.packet_transition_builder
         except PROCESS_CONTROL_EXCEPTIONS:

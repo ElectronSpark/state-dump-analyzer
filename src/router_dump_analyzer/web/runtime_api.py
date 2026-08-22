@@ -466,7 +466,7 @@ async def _bind_request_revision_scope(
         yield
 
 
-api_router = APIRouter(
+api_router: APIRouter = APIRouter(
     dependencies=[Depends(_bind_request_revision_scope)],
     route_class=_BoundedRuntimeApiRoute,
 )

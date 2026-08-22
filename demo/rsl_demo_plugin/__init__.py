@@ -16,7 +16,7 @@ import json
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import PurePosixPath
-from typing import Any, Iterable, Mapping
+from typing import Any, Final, Iterable, Mapping
 
 from router_dump_analyzer.plugin_api import (
     CORE_PLUGIN_API_VERSION,
@@ -1095,7 +1095,7 @@ class ExampleRouterGeneratedProjectionPolicy:
         }
 
 
-GENERATED_TOPOLOGY_PROFILE = TopologyProfileSpec(
+GENERATED_TOPOLOGY_PROFILE: Final[TopologyProfileSpec] = TopologyProfileSpec(
     profile_id="fabric-underlay",
     label="Generated subnet and interface evidence",
     projection_role="underlay",
@@ -1233,7 +1233,9 @@ _GENERATED_PACKET_PROFILES: dict[str, dict[str, Any]] = {
     },
 }
 
-GENERATED_PROJECTION_MEMBERS = (
+GENERATED_PROJECTION_MEMBERS: Final[
+    tuple[GeneratedProjectionMemberSpec, ...]
+] = (
     GeneratedProjectionMemberSpec(
         member_id="topology",
         relative_path="topology.json",
@@ -1264,21 +1266,23 @@ GENERATED_PROJECTION_MEMBERS = (
     ),
 )
 
-GENERATED_PROJECTION_POLICY = ExampleRouterGeneratedProjectionPolicy(
-    policy_id=GENERATED_PROJECTION_POLICY_ID,
-    format_version=GENERATED_PROJECTION_FORMAT_VERSION,
-    topology_profile=GENERATED_TOPOLOGY_PROFILE,
-    topology_segment_matcher_id=GENERATED_TOPOLOGY_SEGMENT_MATCHER_ID,
-    topology_federation_plugin_id=(
-        GENERATED_TOPOLOGY_FEDERATION_PLUGIN_ID
-    ),
-    packet_profiles=_GENERATED_PACKET_PROFILES,
-    projection_root=GENERATED_PROJECTION_ROOT,
-    projection_capability_id=GENERATED_PROJECTION_CAPABILITY_ID,
-    projection_members=GENERATED_PROJECTION_MEMBERS,
-    schema_contract_id=GENERATED_SCHEMA_CONTRACT_ID,
-    schema_contract_version=GENERATED_SCHEMA_CONTRACT_VERSION,
-    schema_body_sha256=GENERATED_SCHEMA_BODY_SHA256,
+GENERATED_PROJECTION_POLICY: ExampleRouterGeneratedProjectionPolicy = (
+    ExampleRouterGeneratedProjectionPolicy(
+        policy_id=GENERATED_PROJECTION_POLICY_ID,
+        format_version=GENERATED_PROJECTION_FORMAT_VERSION,
+        topology_profile=GENERATED_TOPOLOGY_PROFILE,
+        topology_segment_matcher_id=GENERATED_TOPOLOGY_SEGMENT_MATCHER_ID,
+        topology_federation_plugin_id=(
+            GENERATED_TOPOLOGY_FEDERATION_PLUGIN_ID
+        ),
+        packet_profiles=_GENERATED_PACKET_PROFILES,
+        projection_root=GENERATED_PROJECTION_ROOT,
+        projection_capability_id=GENERATED_PROJECTION_CAPABILITY_ID,
+        projection_members=GENERATED_PROJECTION_MEMBERS,
+        schema_contract_id=GENERATED_SCHEMA_CONTRACT_ID,
+        schema_contract_version=GENERATED_SCHEMA_CONTRACT_VERSION,
+        schema_body_sha256=GENERATED_SCHEMA_BODY_SHA256,
+    )
 )
 
 CONFORMANCE_STATUS_RECORDS: tuple[dict[str, Any], ...] = (
@@ -1413,8 +1417,11 @@ def _interface_schema() -> PluginSchema:
     )
 
 
-SCHEMA = _interface_schema()
-EVIDENCE_SCHEMA = PluginSchema(resource_kinds=(), relationship_types=())
+SCHEMA: PluginSchema = _interface_schema()
+EVIDENCE_SCHEMA: PluginSchema = PluginSchema(
+    resource_kinds=(),
+    relationship_types=(),
+)
 
 
 class ExampleRouterPlugin(AnalyzerPluginBase):
@@ -1428,7 +1435,7 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
 
         return _session.runtime
 
-    manifest = PluginManifest(
+    manifest: PluginManifest = PluginManifest(
         plugin_id=PLUGIN_ID,
         plugin_version=PLUGIN_VERSION,
         core_api_version=CORE_PLUGIN_API_VERSION,
@@ -1774,7 +1781,7 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
 class ExampleEvidenceAnalysisPlugin(AnalyzerPluginBase):
     """Auxiliary private-analysis semantics composed beside the parser."""
 
-    manifest = PluginManifest(
+    manifest: PluginManifest = PluginManifest(
         plugin_id=EVIDENCE_PLUGIN_ID,
         plugin_version=EVIDENCE_PLUGIN_VERSION,
         core_api_version=CORE_PLUGIN_API_VERSION,

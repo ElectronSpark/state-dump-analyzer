@@ -8,8 +8,10 @@ from typing import Any
 from .canonical import CanonicalValueError, bounded_value_key
 from .value_core import parse_canonical_decimal_integer
 
-RESOURCE_CREATION_OPERATIONS = frozenset({"create", "add", "insert"})
-RESOURCE_DELETION_OPERATIONS = frozenset({"delete", "remove"})
+RESOURCE_CREATION_OPERATIONS: frozenset[str] = frozenset(
+    {"create", "add", "insert"}
+)
+RESOURCE_DELETION_OPERATIONS: frozenset[str] = frozenset({"delete", "remove"})
 
 # Ordering-dependent cursors and cluster handles must change version whenever
 # the canonical temporal order changes.
@@ -19,8 +21,8 @@ TEMPORAL_ORDER_VERSION = 2
 # plug-in contract and durable stores.  Keeping the invariant here prevents
 # topology, route, and history adapters from acquiring subtly different
 # integer ranges.
-MIN_TEMPORAL_NS = -(1 << 63)
-MAX_TEMPORAL_NS = (1 << 63) - 1
+MIN_TEMPORAL_NS: int = -(1 << 63)
+MAX_TEMPORAL_NS: int = (1 << 63) - 1
 
 _TEMPORAL_STATE_FIELDS = (
     "exists",

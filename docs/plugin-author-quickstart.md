@@ -50,8 +50,35 @@ python -X utf8 -m router_dump_analyzer.pipeline_cli --plugin demo_router --state
 The first command installs `router-dump-analyzer-core` with the optional web
 host needed by the workspace smoke test. The second installs the single demo
 distribution so its `demo_router` entry point is discoverable. Your own device
-plug-in depends only on the core distribution; it does not depend on the demo
-distribution.
+plug-in depends only on the core distribution; it does not depend on either
+repository example package.
+
+The installed core also exposes a complete PEP 561 typing surface. Every
+`router_dump_analyzer` Python module has a sibling `.pyi`, and the package ships
+`py.typed`, so editors and type checkers resolve `AnalyzerPlugin`,
+`AnalyzerPluginBase`, the descriptor models, and all optional capability
+protocols without a separate stub package. The demo's `rsl_demo_plugin` and
+`rsl_demo_generator` packages and the independent `state_dump_generator`
+package use the same module-for-module layout.
+Generated dataclass constructors retain every runtime parameter, including an
+underscore-prefixed storage parameter when it is intentionally callable, and
+runtime-sealed contract values are statically final. Exported annotations are
+fully declared rather than falling back to `_typeshed.Incomplete`.
+
+Repository contributors verify both stub drift and a strict consumer with:
+
+```text
+python -m pip install -e ".[test,web]" -e demo -e state-dump-generator
+python scripts/export_type_stubs.py --check
+python -m mypy --python-version 3.12 --strict --no-incremental tests/typing/public_api.py state-dump-generator/tests/typing/generator_public_api.py
+```
+
+For an intentional exported-signature change, run
+`python scripts/export_type_stubs.py`, review the changed `.pyi` files, and
+repeat both commands. In an independent plug-in repository, run strict mypy on
+the plug-in package after installing `router-dump-analyzer-core`; runtime
+validation still comes from `router-dump-plugin-validate` and the conformance
+tests below, not from the stubs.
 
 The validator must end with:
 
@@ -1408,6 +1435,8 @@ Common failures:
 A first plug-in is ready for review only when:
 
 - [ ] installation and entry-point discovery work in a clean environment;
+- [ ] the plug-in package type-checks against the installed core's PEP 561
+  surface;
 - [ ] the generic validator prints `OK`;
 - [ ] empty and missing input return a report/diagnostic rather than raising;
 - [ ] every selected input has explicit parser dispatch;

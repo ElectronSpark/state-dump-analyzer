@@ -12,7 +12,7 @@ from collections import Counter
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from rsl_demo_plugin.archive import (
     CTF_METADATA_MEMBER,
@@ -38,7 +38,7 @@ PACK_ROOT = NODE_PACK_ROOT
 EVENT_ID_PATTERN = re.compile(r"(?:etg|dte)-(\d{6})")
 _CTF_WRITE_BATCH_BYTES = 1024 * 1024
 
-SCALE_FILES = (
+SCALE_FILES: Final[tuple[str, ...]] = (
     "README.md",
     "events.jsonl",
     HIGH_FANOUT_RELATIONSHIPS_MEMBER_NAME,
@@ -59,7 +59,7 @@ class ContainerDefinition:
     tables: tuple[str, ...]
 
 
-CONTAINERS = (
+CONTAINERS: Final[tuple[ContainerDefinition, ...]] = (
     ContainerDefinition(
         "evpn-control",
         "EVPN and routing control",

@@ -36,11 +36,35 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             demo/pyproject.toml
+            state-dump-generator/pyproject.toml
 
-      - name: Install core, web/test extras, and demo
+      - name: Install core, web/test extras, demo, and generator
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[test,web]" -e "./demo"
+          python -m pip install -e ".[test,web]" -e "./demo" -e "./state-dump-generator"
+
+      - name: Verify checked-in Python API stubs
+        run: python scripts/export_type_stubs.py --check
+
+      - name: Type-check an external-style public API consumer
+        run: >-
+          python -m mypy
+          --python-version 3.12
+          --strict
+          --no-incremental
+          tests/typing/public_api.py
+          state-dump-generator/tests/typing/generator_public_api.py
+
+      - name: Type-check the complete exported stub surface
+        run: >-
+          python -m mypy
+          --python-version 3.12
+          --strict
+          --no-incremental
+          src/router_dump_analyzer
+          demo/rsl_demo_plugin
+          demo/rsl_demo_generator
+          state-dump-generator/src/state_dump_generator
 
       - name: Compile Python sources and tests
         run: >-
@@ -193,8 +217,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install build frontend
-        run: python -m pip install --upgrade "build>=1.2,<2"
+      - name: Install build and typing frontends
+        run: python -m pip install --upgrade "build>=1.2,<2" "mypy==1.20.2"
 
       - name: Build all distributions
         run: |
@@ -215,6 +239,8 @@ jobs:
           python -c "import router_dump_analyzer, rsl_demo_plugin, rsl_demo_generator, state_dump_generator"
           python -c "from importlib.metadata import entry_points; eps=entry_points(group='router_dump_analyzer.plugins'); assert any(ep.name == 'demo_router' and ep.value == 'rsl_demo_plugin:plugin' for ep in eps)"
           python -c "from importlib.resources import files; assert (files('router_dump_analyzer') / 'frontend' / 'frontend-manifest.json').is_file(); assert (files('rsl_demo_plugin') / 'fixtures' / 'minimal-status.jsonl').is_file(); assert (files('rsl_demo_generator') / 'router-state-lab-default.scenario.json').is_file()"
+          python "${{ github.workspace }}/scripts/check_installed_type_surface.py"
+          python -m mypy --python-version 3.12 --strict --no-incremental "${{ github.workspace }}/tests/typing/public_api.py" "${{ github.workspace }}/state-dump-generator/tests/typing/generator_public_api.py"
           router-dump-analyzer --help
           state-dump-generator --help
           python -m rsl_demo_generator --help

@@ -56,6 +56,20 @@ operational guide is
   cannot equal a current-order cluster. These strings remain opaque; the
   prefixes are documented only as stale-handle behavior, not client syntax.
 
+### Static Python API surface
+
+Python clients may consume the same models and provider interfaces through the
+PEP 561 metadata shipped by all three repository distributions. The core,
+demo, and independent scenario generator package roots contain `py.typed` and
+one `.pyi` per Python module, so type checkers can resolve the complete public
+surface after a normal installation. The stubs describe Python call signatures
+and types; this document remains authoritative for JSON encoding, field
+semantics, route availability, errors, and compatibility.
+
+Repository drift and the representative strict consumer are checked with
+`python scripts/export_type_stubs.py --check` and
+`python -m mypy --python-version 3.12 --strict --no-incremental tests/typing/public_api.py state-dump-generator/tests/typing/generator_public_api.py`.
+
 ### 1.1 Browser workspace bootstrap
 
 The generic core frontend obtains its runtime identity and scale behavior from

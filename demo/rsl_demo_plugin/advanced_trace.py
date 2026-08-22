@@ -8,6 +8,7 @@ only validates the generic packet-layer and before/after transition contracts.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Final
 
 from router_dump_analyzer.plugin_api import (
     ForwardingMtuConstraint,
@@ -28,7 +29,7 @@ from .scenario_registry import PACKET_TRACE_SCENARIOS
 
 
 ADVANCED_TRACE_SCENARIOS = PACKET_TRACE_SCENARIOS
-ADVANCED_TRACE_SCENARIO_IDS = frozenset(
+ADVANCED_TRACE_SCENARIO_IDS: Final[frozenset[str]] = frozenset(
     str(item["scenario_id"]) for item in ADVANCED_TRACE_SCENARIOS
 )
 

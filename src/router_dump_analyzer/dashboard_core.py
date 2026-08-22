@@ -48,8 +48,8 @@ class DashboardDescriptorValidationError(ValueError):
         dashboard_id: str | None = None,
     ) -> None:
         super().__init__(message)
-        self.path = path
-        self.dashboard_id = dashboard_id
+        self.path: str = path
+        self.dashboard_id: str | None = dashboard_id
 
     def as_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {

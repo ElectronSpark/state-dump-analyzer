@@ -173,6 +173,7 @@ class PackageBoundaryTests(unittest.TestCase):
             ".mjs",
             ".ps1",
             ".py",
+            ".pyi",
             ".sh",
             ".toml",
             ".yaml",

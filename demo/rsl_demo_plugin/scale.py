@@ -11,12 +11,12 @@ semantics.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any
+from typing import Any, Final
 
 from pydantic_core import from_json
 
 
-RESOURCE_TABLE_COLUMNS = (
+RESOURCE_TABLE_COLUMNS: Final[tuple[str, ...]] = (
     "KIND",
     "RESOURCE_ID",
     "LAYER",
@@ -37,7 +37,7 @@ RESOURCE_TABLE_COLUMNS = (
     "NEIGHBOR",
 )
 
-RESOURCE_TABLE_JSON_COLUMNS = (
+RESOURCE_TABLE_JSON_COLUMNS: Final[tuple[str, ...]] = (
     "KEY_JSON",
     "STATE_JSON",
 )

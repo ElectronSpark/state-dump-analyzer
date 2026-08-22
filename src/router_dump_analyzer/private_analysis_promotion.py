@@ -448,7 +448,7 @@ class SqliteProposalReviewStore:
             raise ProposalReviewValidationError(
                 "authority_key must be an exact 32-byte secret"
             )
-        self.path = Path(path)
+        self.path: Path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._clock_ns = clock_ns
         self._authority_key = authority_key

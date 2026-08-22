@@ -1033,7 +1033,7 @@ class SessionCatalogPublisher(RevisionCatalogPublisher):
     """Register pipeline publications in the durable session catalog."""
 
     def __init__(self, sessions: SqliteSessionStore) -> None:
-        self.sessions = sessions
+        self.sessions: SqliteSessionStore = sessions
 
     def __getstate__(self) -> dict[str, str]:
         """Serialize only the durable locator for a bounded child call."""
@@ -1271,9 +1271,9 @@ class ControlPlane:
         # Validate the longest core-owned ingestion pathname before creating
         # SQLite files or directories, so an unsupported Windows state root
         # fails atomically instead of surfacing later as a worker failure.
-        self.root = validate_ingestion_state_root(root)
+        self.root: Path = validate_ingestion_state_root(root)
         self.root.mkdir(parents=True, exist_ok=True)
-        self.limits = limits or ControlPlaneLimits()
+        self.limits: ControlPlaneLimits = limits or ControlPlaneLimits()
         effective_pipeline_limits = pipeline_limits or PipelineLimits(
             plugin_execution_mode=PluginExecutionMode.PROCESS,
         )
@@ -1294,14 +1294,16 @@ class ControlPlane:
         self._proposal_review_authority_key_lock_path = (
             self.root / _PROPOSAL_REVIEW_AUTHORITY_KEY_LOCK_NAME
         )
-        self.sessions = SqliteSessionStore(self.root / "sessions.sqlite3")
+        self.sessions: SqliteSessionStore = SqliteSessionStore(
+            self.root / "sessions.sqlite3"
+        )
         annotations: ReviewOverlayStore | None = None
         private_analysis_runs: SqlitePrivateAnalysisRunStore | None = None
         private_analysis_execution: PrivateAnalysisExecutionCoordinator | None = None
         proposal_reviews: SqliteProposalReviewStore | None = None
         try:
             annotations = ReviewOverlayStore(self.root / "annotations.sqlite3")
-            self.annotations = annotations
+            self.annotations: ReviewOverlayStore = annotations
             private_run_database = self.root / "private-analysis-runs.sqlite3"
             with exclusive_file_lock(self._private_run_store_binding_lock_path):
                 expected_installation = _private_run_store_binding(
@@ -1343,15 +1345,19 @@ class ControlPlane:
                     raise ControlPlaneError(
                         "private-analysis run store does not match its binding"
                     )
-            self.private_analysis_runs = private_analysis_runs
+            self.private_analysis_runs: SqlitePrivateAnalysisRunStore = (
+                private_analysis_runs
+            )
             private_analysis_execution = PrivateAnalysisExecutionCoordinator(
                 private_analysis_runs,
                 registrations=private_analysis_runners,
                 limits=private_analysis_execution_limits,
                 core_tool_service_factory=(self._core_private_analysis_tool_service),
             )
-            self.private_analysis_execution = private_analysis_execution
-            self.private_analysis = PrivateAnalysisService(
+            self.private_analysis_execution: PrivateAnalysisExecutionCoordinator = (
+                private_analysis_execution
+            )
+            self.private_analysis: PrivateAnalysisService = PrivateAnalysisService(
                 self.sessions,
                 private_analysis_runs,
                 private_analysis_execution,
@@ -1401,15 +1407,19 @@ class ControlPlane:
                     proposal_review_database,
                     authority_key=proposal_review_authority_key,
                 )
-            self.proposal_review_store = proposal_reviews
-            self.private_analysis_reviews = PrivateAnalysisProposalReviewService(
-                self.private_analysis,
-                proposal_reviews,
-                self,
-                admission_fence=self._coordinated_review_catalog,
+            self.proposal_review_store: SqliteProposalReviewStore = proposal_reviews
+            self.private_analysis_reviews: PrivateAnalysisProposalReviewService = (
+                PrivateAnalysisProposalReviewService(
+                    self.private_analysis,
+                    proposal_reviews,
+                    self,
+                    admission_fence=self._coordinated_review_catalog,
+                )
             )
-            self.publisher = SessionCatalogPublisher(self.sessions)
-            self.ingestion = DurableIngestionPipeline(
+            self.publisher: SessionCatalogPublisher = SessionCatalogPublisher(
+                self.sessions
+            )
+            self.ingestion: DurableIngestionPipeline = DurableIngestionPipeline(
                 self.root,
                 registry=registry,
                 publisher=self.publisher,
@@ -1421,7 +1431,9 @@ class ControlPlane:
             # Published execution plans and their exact provider directory
             # remain available to topology, route, and private-analysis
             # coordinators without exposing plug-in objects to callers.
-            self.capability_providers = self.ingestion.capability_providers
+            self.capability_providers: CapabilityProviderRegistry = (
+                self.ingestion.capability_providers
+            )
         except BaseException:
             if proposal_reviews is not None:
                 proposal_reviews.close()

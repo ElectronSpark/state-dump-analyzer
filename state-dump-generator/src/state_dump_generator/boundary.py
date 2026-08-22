@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from typing import Any
+from typing import Any, Final
 
-FORBIDDEN_AUTHORING_KEYS = frozenset(
+FORBIDDEN_AUTHORING_KEYS: Final[frozenset[str]] = frozenset(
     {
         "authoring",
         "authoring_state",
@@ -25,7 +25,7 @@ FORBIDDEN_AUTHORING_KEYS = frozenset(
     }
 )
 
-PRIVATE_IDENTITY_KEYS = frozenset(
+PRIVATE_IDENTITY_KEYS: Final[frozenset[str]] = frozenset(
     {
         "connectivity_domain_id",
         "domain_id",

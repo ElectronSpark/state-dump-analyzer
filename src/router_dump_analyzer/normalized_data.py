@@ -1602,8 +1602,8 @@ class NormalizedDataService:
             raise TypeError("normalized source does not implement its contract")
         if not isinstance(policy, NormalizedDataPolicy):
             raise TypeError("normalized policy does not implement its contract")
-        self.source = source
-        self.policy = policy
+        self.source: NormalizedDatasetSource = source
+        self.policy: NormalizedDataPolicy = policy
         self._source_revision_scope = _snapshot_provider_member(
             source,
             "revision_scope",
