@@ -144,6 +144,7 @@ def plugin_schema_dataset(schema: PluginSchema) -> dict[str, Any]:
     record_lane_presets = projected["record_lane_presets"]
     status_perspectives = projected["status_perspectives"]
     topology_projections = projected["topology_projections"]
+    connector_match_policies = projected["connector_match_policies"]
     return {
         "kind_descriptors": resource_kinds,
         "relationship_descriptors": relationship_types,
@@ -154,6 +155,7 @@ def plugin_schema_dataset(schema: PluginSchema) -> dict[str, Any]:
         "source_record_group_descriptors": source_record_groups,
         "source_record_descriptors": source_record_types,
         "record_lane_presets": record_lane_presets,
+        "connector_match_policy_descriptors": connector_match_policies,
         "schema": {
             "semantic_owner": "plugin",
             "core_interprets_domain_types": False,
@@ -167,6 +169,7 @@ def plugin_schema_dataset(schema: PluginSchema) -> dict[str, Any]:
             "record_lane_presets": record_lane_presets,
             "status_perspectives": status_perspectives,
             "topology_projections": topology_projections,
+            "connector_match_policies": connector_match_policies,
         },
     }
 

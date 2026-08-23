@@ -35,6 +35,76 @@ from tests.support.generated_demo import (
 )
 
 
+def _typed_boundary_resource_ref(
+    node_id: str,
+    local_resource_id: str,
+) -> dict[str, object]:
+    return {
+        "member_id": f"member:{node_id}",
+        "node_id": node_id,
+        "revision_id": f"revision:{node_id}",
+        "local_resource_id": local_resource_id,
+        "typed_resource_key": {
+            "namespace": "test",
+            "node": node_id,
+            "layer": "underlay",
+            "kind": "INTERFACE",
+            "parts": [
+                {
+                    "name": "name",
+                    "value": {"type": "string", "value": local_resource_id},
+                }
+            ],
+        },
+        "plugin_instance_id": f"member:{node_id}/topology",
+        "projection_id": "test.topology",
+        "status_perspective_id": "test.observed",
+    }
+
+
+def _typed_boundary_endpoint(reference: dict[str, object]) -> dict[str, object]:
+    return {
+        "member_id": reference["member_id"],
+        "node_id": reference["node_id"],
+        "revision_id": reference["revision_id"],
+        "resource_id": reference["local_resource_id"],
+        "plugin_instance_id": reference["plugin_instance_id"],
+        "projection_id": reference["projection_id"],
+        "status_perspective_id": reference["status_perspective_id"],
+        "claim_id": f"claim:{reference['node_id']}",
+        "resource_ref": copy.deepcopy(reference),
+    }
+
+
+def _typed_boundary_link(
+    source_reference: dict[str, object],
+    target_reference: dict[str, object],
+    *,
+    link_id: str = "typed-link",
+    directed: bool = True,
+    route_trace: str = "include",
+) -> dict[str, object]:
+    source = _typed_boundary_endpoint(source_reference)
+    target = _typed_boundary_endpoint(target_reference)
+    return {
+        "link_id": link_id,
+        "typed_federation": True,
+        "federation_complete": True,
+        "federation_truncated": False,
+        "resolution": "matched",
+        "directed": directed,
+        "presentation": {"route_trace": route_trace},
+        "endpoint_a": source,
+        "endpoint_b": target,
+        "source": copy.deepcopy(source),
+        "target": copy.deepcopy(target),
+        "link_type": "ethernet",
+        "operational_status": "usable",
+        "inference": {"owner": "core_exact_matcher"},
+        "plugin_provenance": [],
+    }
+
+
 class RouteTraceCoreCompletenessTests(unittest.TestCase):
     """Focused policy/cycle checks that do not require the demo fixture."""
 
@@ -149,6 +219,179 @@ class RouteTraceCoreCompletenessTests(unittest.TestCase):
                 {},
                 {},
             )
+
+    def test_typed_boundary_matching_preserves_direction_and_presentation(self) -> None:
+        source_ref = _typed_boundary_resource_ref("node-a", "interface/shared")
+        target_ref = _typed_boundary_resource_ref("node-b", "interface/shared")
+        included = _typed_boundary_link(source_ref, target_ref)
+        ordered_ids = ("interface/shared", "interface/shared")
+
+        self.assertIs(
+            MultiNodeRouteService._matching_link(
+                [included],
+                ordered_ids,
+                required_endpoint_refs=(source_ref, target_ref),
+            ),
+            included,
+        )
+        self.assertIsNone(
+            MultiNodeRouteService._matching_link(
+                [included],
+                ordered_ids,
+                required_endpoint_refs=(target_ref, source_ref),
+            )
+        )
+        wrong_revision = copy.deepcopy(source_ref)
+        wrong_revision["revision_id"] = "revision:node-a:other"
+        self.assertIsNone(
+            MultiNodeRouteService._matching_link(
+                [included],
+                ordered_ids,
+                required_endpoint_refs=(wrong_revision, target_ref),
+            )
+        )
+        undirected = _typed_boundary_link(
+            source_ref,
+            target_ref,
+            directed=False,
+        )
+        self.assertIs(
+            MultiNodeRouteService._matching_link(
+                [undirected],
+                ordered_ids,
+                required_endpoint_refs=(target_ref, source_ref),
+            ),
+            undirected,
+        )
+        overlay = _typed_boundary_link(
+            source_ref,
+            target_ref,
+            route_trace="overlay",
+        )
+        self.assertIsNone(
+            MultiNodeRouteService._matching_link(
+                [overlay],
+                ordered_ids,
+                required_endpoint_refs=(source_ref, target_ref),
+            )
+        )
+
+    def test_malformed_typed_boundary_candidates_fail_closed(self) -> None:
+        source_ref = _typed_boundary_resource_ref("node-a", "interface/a")
+        target_ref = _typed_boundary_resource_ref("node-b", "interface/b")
+        included = _typed_boundary_link(source_ref, target_ref)
+        malformed = (
+            included | {"presentation": {}},
+            included | {"presentation": {"route_trace": "conflict"}},
+            included | {"directed": "yes"},
+            included | {"typed_federation": False},
+            included | {"source": included["target"]},
+            included
+            | {
+                "endpoint_a": {
+                    key: value
+                    for key, value in included["endpoint_a"].items()
+                    if key != "resource_ref"
+                }
+            },
+        )
+
+        for candidate in malformed:
+            with self.subTest(candidate=candidate):
+                self.assertIsNone(
+                    MultiNodeRouteService._matching_link(
+                        [candidate],
+                        ("interface/a", "interface/b"),
+                        required_endpoint_refs=(source_ref, target_ref),
+                    )
+                )
+
+    def test_boundary_segment_uses_ordered_typed_endpoint_scope(self) -> None:
+        source_ref = _typed_boundary_resource_ref("node-a", "interface/a")
+        target_ref = _typed_boundary_resource_ref("node-b", "interface/b")
+        included = _typed_boundary_link(source_ref, target_ref)
+        resources = {
+            str(reference["local_resource_id"]): {
+                "resource_id": reference["local_resource_id"],
+                "node_id": reference["node_id"],
+                "member_id": reference["member_id"],
+                "resource_ref": reference,
+                "label": reference["local_resource_id"],
+                "status": "usable",
+                "status_class": "usable",
+                "plugin_provenance": {},
+            }
+            for reference in (source_ref, target_ref)
+        }
+        service = object.__new__(MultiNodeRouteService)
+        service.topology = type(
+            "TopologyFixture",
+            (),
+            {
+                "contract": {
+                    "federation_plugin": {
+                        "plugin_id": "test.linker",
+                        "plugin_run_id": "run-1",
+                        "plugin_version": "1.0",
+                    }
+                }
+            },
+        )()
+
+        forward = service._boundary_segment(
+            "segment:forward",
+            1,
+            ["interface/a", "interface/b"],
+            "typed-link",
+            "forward",
+            resources,
+            {"typed-link": [included]},
+            {},
+            True,
+            True,
+            "selected_primary",
+            [],
+        )
+        reverse = service._boundary_segment(
+            "segment:reverse",
+            1,
+            ["interface/b", "interface/a"],
+            "typed-link",
+            "reverse",
+            resources,
+            {"typed-link": [included]},
+            {},
+            True,
+            True,
+            "selected_primary",
+            [],
+        )
+        overlay = service._boundary_segment(
+            "segment:overlay",
+            1,
+            ["interface/a", "interface/b"],
+            "typed-link",
+            "overlay",
+            resources,
+            {
+                "typed-link": [
+                    _typed_boundary_link(
+                        source_ref,
+                        target_ref,
+                        route_trace="overlay",
+                    )
+                ]
+            },
+            {},
+            True,
+            True,
+            "selected_primary",
+            [],
+        )
+
+        self.assertEqual(forward["completeness"]["state"], "complete")
+        self.assertEqual(reverse["completeness"]["state"], "unresolved")
+        self.assertEqual(overlay["completeness"]["state"], "unresolved")
 
     def test_incomplete_ingress_scope_set_is_unknown_unless_exact_match_exists(
         self,
@@ -627,6 +870,7 @@ class MultiNodeRouteTests(unittest.TestCase):
         self,
     ) -> None:
         candidate = {
+            "resolution": "matched",
             "endpoint_a": {"resource_id": "interface/a"},
             "endpoint_b": {"resource_id": "interface/b"},
         }
@@ -643,6 +887,38 @@ class MultiNodeRouteTests(unittest.TestCase):
                 [candidate],
                 {"interface/c", "interface/d"},
             )
+        )
+        for unsafe in (
+            candidate | {"resolution": "ambiguous"},
+            candidate
+            | {
+                "typed_federation": True,
+                "federation_complete": False,
+                "federation_truncated": False,
+            },
+            candidate
+            | {
+                "typed_federation": True,
+                "federation_complete": True,
+                "federation_truncated": True,
+            },
+        ):
+            self.assertIsNone(
+                MultiNodeRouteService._matching_link(
+                    [unsafe],
+                    {"interface/a", "interface/b"},
+                )
+            )
+        source_ref = _typed_boundary_resource_ref("node-a", "interface/a")
+        target_ref = _typed_boundary_resource_ref("node-b", "interface/b")
+        authoritative_typed = _typed_boundary_link(source_ref, target_ref)
+        self.assertIs(
+            MultiNodeRouteService._matching_link(
+                [authoritative_typed],
+                ("interface/a", "interface/b"),
+                required_endpoint_refs=(source_ref, target_ref),
+            ),
+            authoritative_typed,
         )
 
     def test_route_terminal_result_uses_declared_disposition_not_reason_text(
@@ -2294,6 +2570,391 @@ class MultiNodeRouteTests(unittest.TestCase):
                 for segment in boundaries
             )
         )
+
+    def test_route_trace_uses_declared_exact_typed_boundaries_fail_closed(
+        self,
+    ) -> None:
+        original_topology_query = MultiNodeTopologyService.query
+        capabilities = self.client.get(
+            "/v1/topologies/routes/capabilities"
+        ).json()
+        source_id = next(
+            item["source_id"]
+            for item in capabilities["sources"]
+            if item["node_id"] == "transit-p-1"
+        )
+        destination_id = next(
+            item["destination_id"]
+            for item in capabilities["destinations"]
+            if item["node_id"] == "transit-p-2"
+        )
+
+        for variant in (
+            "complete",
+            "linker_owner",
+            "record_preview_partial",
+            "operational_unknown_strict",
+            "operational_unknown_best_effort",
+            "reversed_directed",
+            "overlay",
+            "incomplete",
+            "truncated",
+            "global_incomplete",
+            "global_truncated",
+            "link_page_truncated",
+            "link_page_flag_missing",
+        ):
+            with self.subTest(variant=variant):
+                def query_with_typed_boundaries(
+                    service: MultiNodeTopologyService,
+                    request: dict[str, object],
+                    _variant: str = variant,
+                ) -> dict[str, object]:
+                    payload = copy.deepcopy(
+                        original_topology_query(service, request)
+                    )
+                    matching_links = [
+                        link
+                        for link in payload["inter_node_links"]
+                        if link.get("typed_federation") is True
+                        and {
+                            link["endpoint_a"]["node_id"],
+                            link["endpoint_b"]["node_id"],
+                        }
+                        == {"transit-p-1", "transit-p-2"}
+                    ]
+                    if not matching_links:
+                        raise AssertionError(
+                            "validated demo projection did not produce the "
+                            "declared P1-P2 typed connector"
+                        )
+                    for link in matching_links:
+                        if _variant == "reversed_directed":
+                            endpoint_a = copy.deepcopy(link["endpoint_b"])
+                            endpoint_b = copy.deepcopy(link["endpoint_a"])
+                            link["endpoint_a"] = endpoint_a
+                            link["endpoint_b"] = endpoint_b
+                            link["source"] = copy.deepcopy(endpoint_a)
+                            link["target"] = copy.deepcopy(endpoint_b)
+                            link["directed"] = True
+                        elif _variant == "overlay":
+                            link["presentation"] = {
+                                "route_trace": "overlay"
+                            }
+                        elif _variant == "incomplete":
+                            link["federation_complete"] = False
+                        elif _variant == "truncated":
+                            link["federation_truncated"] = True
+                        elif _variant == "linker_owner":
+                            link["inference"] = {
+                                "owner": "federation_linker_plugin"
+                            }
+                        elif _variant.startswith("operational_unknown_"):
+                            link["operational_status"] = "unknown"
+                            link["status"] = "unknown"
+                            link["operational"] = {
+                                "usable": None,
+                                "status": "unknown",
+                                "reason": "projected_status_unknown",
+                            }
+                    if _variant == "global_incomplete":
+                        payload["completeness"][
+                            "typed_federation_complete"
+                        ] = False
+                    elif _variant == "global_truncated":
+                        payload["completeness"][
+                            "typed_federation_truncated"
+                        ] = True
+                    elif _variant == "link_page_truncated":
+                        payload["completeness"][
+                            "inter_node_links_truncated"
+                        ] = True
+                    elif _variant == "link_page_flag_missing":
+                        payload["completeness"].pop(
+                            "inter_node_links_truncated"
+                        )
+                    elif _variant == "record_preview_partial":
+                        payload["complete"] = False
+                        payload["completeness"]["complete"] = False
+                        for node in payload["nodes"]:
+                            node["complete"] = False
+                            node["completeness"] = {
+                                "complete": False,
+                                "status": "partial",
+                                "reasons": [
+                                    {
+                                        "reason_code": (
+                                            "projection_truncated"
+                                        )
+                                    }
+                                ],
+                            }
+                            node["counts"]["resource_page"][
+                                "truncated"
+                            ] = True
+                            for result in node["plugin_results"]:
+                                result["complete"] = False
+                                result["counts"]["resources"][
+                                    "truncated"
+                                ] = True
+                    if _variant in {
+                        "complete",
+                        "linker_owner",
+                        "record_preview_partial",
+                        "operational_unknown_strict",
+                        "operational_unknown_best_effort",
+                    }:
+                        payload["network_segments"] = []
+                        payload["segment_attachments"] = []
+                    return payload
+
+                with (
+                    patch.object(
+                        MultiNodeTopologyService,
+                        "query",
+                        query_with_typed_boundaries,
+                    ),
+                ):
+                    response = self.client.post(
+                        "/v1/topologies/routes/trace",
+                        json={
+                            "scenario_id": "router-to-router",
+                            "source_id": source_id,
+                            "destination_id": destination_id,
+                            "resolution_mode": (
+                                "strict"
+                                if variant == "operational_unknown_strict"
+                                else "best_effort"
+                            ),
+                        },
+                    )
+
+                self.assertEqual(response.status_code, 200, response.text)
+                payload = response.json()
+                generated_next_hop = next(
+                    decision["next_hop"]
+                    for row in payload["generated_projection"][
+                        "forwarding_decisions"
+                    ]
+                    if row["node_id"] == "transit-p-1"
+                    for decision in row["directional_decisions"][
+                        "forward"
+                    ]
+                    if decision["next_hop"] is not None
+                )
+                self.assertEqual(
+                    [
+                        reference["reference_kind"]
+                        for reference in generated_next_hop[
+                            "topology_references"
+                        ]
+                    ],
+                    [
+                        "connectivity_domain",
+                        "typed_inter_node_link",
+                    ],
+                )
+                self.assertNotIn(
+                    "link_id",
+                    generated_next_hop["topology_references"][1],
+                )
+                declared_typed_reference = generated_next_hop[
+                    "topology_references"
+                ][1]
+                self.assertEqual(
+                    declared_typed_reference["source_endpoint"][
+                        "typed_resource_key"
+                    ]["node"],
+                    "transit-p-1",
+                )
+                self.assertEqual(
+                    declared_typed_reference["target_endpoint"][
+                        "typed_resource_key"
+                    ]["node"],
+                    "transit-p-2",
+                )
+                boundaries = [
+                    segment
+                    for path in payload["paths"]
+                    for segment in path["segments"]
+                    if segment["segment_kind"]
+                    == "inter_node_boundary"
+                ]
+                self.assertEqual(len(boundaries), 1)
+                boundary = boundaries[0]
+                self.assertEqual(
+                    boundary["topology_reference"],
+                    declared_typed_reference,
+                )
+                if variant in {
+                    "complete",
+                    "linker_owner",
+                    "record_preview_partial",
+                }:
+                    self.assertEqual(
+                        boundary["generated_connectivity_binding"][
+                            "state"
+                        ],
+                        "resolved",
+                    )
+                    self.assertIsNone(boundary["network_segment_id"])
+                    self.assertIsNotNone(boundary["topology_link_id"])
+                    self.assertEqual(
+                        boundary["completeness"]["state"],
+                        "complete",
+                    )
+                    self.assertEqual(len(boundary["resource_refs"]), 2)
+                    self.assertTrue(
+                        all(
+                            reference.get("plugin_instance_id")
+                            and reference.get("typed_resource_key")
+                            and reference.get("projection_id")
+                            and reference.get("status_perspective_id")
+                            for reference in boundary["resource_refs"]
+                        )
+                    )
+                    expected_owner = (
+                        "federation_linker_plugin"
+                        if variant == "linker_owner"
+                        else "core_exact_matcher"
+                    )
+                    self.assertEqual(
+                        boundary["graph_presentation"]["semantic_owner"],
+                        expected_owner,
+                    )
+                    self.assertEqual(
+                        payload["semantic_ownership"][
+                            "boundary_resolution"
+                        ],
+                        expected_owner,
+                    )
+                    if variant == "record_preview_partial":
+                        self.assertFalse(
+                            payload["topology_snapshot"]["complete"]
+                        )
+                    if variant == "linker_owner":
+                        self.assertNotIn(
+                            "Core exact-joins",
+                            boundary["route_resolution_text"],
+                        )
+                        self.assertIn(
+                            "allowlisted federation linker",
+                            boundary["route_resolution_text"],
+                        )
+                        self.assertEqual(
+                            boundary["route_resolution"]["text_source"],
+                            "federation_linker_resolution_summary",
+                        )
+                        self.assertEqual(
+                            boundary["route_resolution"]["core_role"],
+                            (
+                                "validates_allowlisted_linker_typed_boundary"
+                            ),
+                        )
+                    else:
+                        self.assertIn(
+                            "Core exact-joins",
+                            boundary["route_resolution_text"],
+                        )
+                        self.assertEqual(
+                            boundary["route_resolution"]["text_source"],
+                            "core_exact_join_summary",
+                        )
+                elif variant in {
+                    "operational_unknown_strict",
+                    "operational_unknown_best_effort",
+                }:
+                    self.assertEqual(
+                        boundary["generated_connectivity_binding"]["state"],
+                        "resolved",
+                    )
+                    self.assertIsNotNone(boundary["topology_link_id"])
+                    self.assertEqual(
+                        boundary["state"]["operational"],
+                        "unknown",
+                    )
+                    self.assertEqual(
+                        boundary["state"]["reason_code"],
+                        "typed_boundary_operational_status_unknown",
+                    )
+                    containing_path = next(
+                        path
+                        for path in payload["paths"]
+                        if boundary in path["segments"]
+                    )
+                    if variant == "operational_unknown_strict":
+                        self.assertFalse(boundary["active"])
+                        self.assertEqual(
+                            boundary["completeness"],
+                            {
+                                "state": "unresolved",
+                                "end_to_end_resolved": False,
+                                "observed": False,
+                            },
+                        )
+                        self.assertEqual(
+                            containing_path["result"],
+                            "unresolved",
+                        )
+                        self.assertEqual(
+                            containing_path["completeness"]["state"],
+                            "incomplete",
+                        )
+                    else:
+                        self.assertEqual(
+                            boundary["completeness"],
+                            {
+                                "state": "best_effort_inferred",
+                                "end_to_end_resolved": True,
+                                "observed": False,
+                            },
+                        )
+                        self.assertEqual(
+                            containing_path["completeness"]["state"],
+                            "best_effort_resolved",
+                        )
+                        self.assertFalse(
+                            containing_path["completeness"][
+                                "observationally_complete"
+                            ]
+                        )
+                        self.assertEqual(
+                            boundary["inference"]["trigger_reason_code"],
+                            "typed_boundary_operational_status_unknown",
+                        )
+                else:
+                    self.assertEqual(
+                        boundary["generated_connectivity_binding"][
+                            "state"
+                        ],
+                        "unresolved",
+                    )
+                    self.assertIsNone(boundary["topology_link_id"])
+                    self.assertEqual(
+                        boundary["completeness"]["state"],
+                        "unresolved",
+                    )
+                    expected_reason = {
+                        "global_incomplete": (
+                            "typed_boundary_federation_incomplete"
+                        ),
+                        "global_truncated": (
+                            "typed_boundary_federation_truncated"
+                        ),
+                        "link_page_truncated": (
+                            "typed_boundary_inter_node_links_truncated"
+                        ),
+                        "link_page_flag_missing": (
+                            "typed_boundary_inter_node_links_truncated"
+                        ),
+                    }.get(variant)
+                    if expected_reason is not None:
+                        self.assertEqual(
+                            boundary["generated_connectivity_binding"][
+                                "reason_code"
+                            ],
+                            expected_reason,
+                        )
 
     def test_an_inactive_candidate_can_be_focused_without_activating_it(self) -> None:
         standby_id = "route-path:underlay:pe-a-alternate"

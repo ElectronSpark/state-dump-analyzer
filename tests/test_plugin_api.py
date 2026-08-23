@@ -125,6 +125,7 @@ from router_dump_analyzer.plugin_api import (
     TopologyMatchReference,
     TopologyPluginSemanticsDescriptor,
     TopologyProjectionDescriptor,
+    TopologyProjectionOutput,
     TopologyProjectionRecord,
     TopologyProjectionRequest,
     TopologyResourcePresentation,
@@ -140,6 +141,7 @@ from router_dump_analyzer.plugin_api import (
     validate_plugin_diagnostic,
     validate_probe_report,
 )
+from router_dump_analyzer.plugin_schema_identity import plugin_schema_dataset
 
 
 class PluginApiTests(unittest.TestCase):
@@ -1208,6 +1210,48 @@ class PluginApiTests(unittest.TestCase):
                 default_status_perspective_id="hardware-observed",
             )
 
+    def test_plugin_schema_declares_immutable_connector_match_policies(self) -> None:
+        exact = ConnectorMatchPolicyDescriptor(
+            policy_id="test.connector.exact.v1",
+            claim_contract_id="test.connector.v1",
+            kind=ConnectorMatchPolicyKind.EXACT_TOKEN,
+            argument_names=("token",),
+        )
+        schema = PluginSchema(
+            resource_kinds=(),
+            relationship_types=(),
+            connector_match_policies=(exact,),
+        )
+        self.assertEqual(schema.connector_match_policies, (exact,))
+        dataset = plugin_schema_dataset(schema)
+        self.assertEqual(
+            dataset["connector_match_policy_descriptors"][0]["policy_id"],
+            exact.policy_id,
+        )
+        self.assertEqual(
+            dataset["schema"]["connector_match_policies"],
+            dataset["connector_match_policy_descriptors"],
+        )
+
+        with self.assertRaisesRegex(ValueError, "identifiers must be unique"):
+            PluginSchema(
+                resource_kinds=(),
+                relationship_types=(),
+                connector_match_policies=(exact, exact),
+            )
+        with self.assertRaisesRegex(ValueError, "immutable tuple"):
+            PluginSchema(
+                resource_kinds=(),
+                relationship_types=(),
+                connector_match_policies=[exact],  # type: ignore[arg-type]
+            )
+
+        output_members = set(typing.get_args(TopologyProjectionOutput.__value__))
+        self.assertEqual(
+            output_members,
+            {TopologyProjectionRecord, ConnectorClaim, PluginDiagnostic},
+        )
+
     def test_absolute_and_relative_temporal_contracts_are_explicit(self) -> None:
         scope = WatermarkScope(
             node_id="node-a",
@@ -1451,6 +1495,12 @@ class PluginApiTests(unittest.TestCase):
                 status_perspective_id="hardware-observed",
                 max_world_reads=0,
             )
+        with self.assertRaisesRegex(ValueError, "max_claims"):
+            TopologyProjectionRequest(
+                projection_id="underlay-connectivity",
+                status_perspective_id="hardware-observed",
+                max_claims=0,
+            )
         with self.assertRaisesRegex(ValueError, "reversed"):
             TopologyProjectionRecord(
                 projection_id=request.projection_id,
@@ -1475,6 +1525,80 @@ class PluginApiTests(unittest.TestCase):
                 exists="maybe",  # type: ignore[arg-type]
             )
 
+    def test_topology_payload_strings_require_exact_immutable_text(self) -> None:
+        class TextSubclass(str):
+            pass
+
+        class MutableSizedText:
+            def __init__(self, text: str) -> None:
+                self.text = text
+
+            def __bool__(self) -> bool:
+                return bool(self.text)
+
+            def __len__(self) -> int:
+                return len(self.text)
+
+        resource = ResourceKey(
+            namespace="test",
+            node="node-a",
+            layer="underlay",
+            kind="PORT",
+            parts=(("id", "port-a"),),
+        )
+        endpoint = TopologyEndpointReference(resource=resource)
+        baseline = TopologyProjectionRecord(
+            projection_id="underlay-connectivity",
+            status_perspective_id="hardware-observed",
+            payload=TopologyResourceRecord(resource=resource),
+            usability=TopologyUsability.UNKNOWN,
+            source_resources=(resource,),
+            provenance=Provenance.OBSERVED,
+            quality=Quality.UNKNOWN,
+        )
+
+        for invalid in (
+            TextSubclass("apparently-valid"),
+            MutableSizedText("apparently-valid"),
+        ):
+            with self.subTest(value_type=type(invalid).__name__):
+                with self.assertRaises(ValueError):
+                    TopologyResourceRecord(
+                        resource=resource,
+                        role=invalid,  # type: ignore[arg-type]
+                    )
+                with self.assertRaises(ValueError):
+                    TopologyEndpointRecord(
+                        endpoint_id=invalid,  # type: ignore[arg-type]
+                        target=endpoint,
+                    )
+                with self.assertRaises(ValueError):
+                    TopologyEndpointRecord(
+                        endpoint_id="endpoint-a",
+                        target=endpoint,
+                        role=invalid,  # type: ignore[arg-type]
+                    )
+                with self.assertRaises(ValueError):
+                    TopologyLinkRecord(
+                        link_id=invalid,  # type: ignore[arg-type]
+                        source=endpoint,
+                        target=endpoint,
+                    )
+                with self.assertRaises(ValueError):
+                    TopologyMatchReference(
+                        matcher_id=invalid,  # type: ignore[arg-type]
+                        arguments={},
+                    )
+                with self.assertRaises(ValueError):
+                    replace(
+                        baseline,
+                        projection_id=invalid,  # type: ignore[arg-type]
+                    )
+                with self.assertRaises(ValueError):
+                    replace(
+                        baseline,
+                        status_perspective_id=invalid,  # type: ignore[arg-type]
+                    )
     def test_multi_access_media_reuses_resource_and_attachment_link_records(
         self,
     ) -> None:
@@ -2299,6 +2423,30 @@ class PluginApiTests(unittest.TestCase):
             "candidates",
             {item.name for item in dataclass_fields(ConnectorClaim)},
         )
+        self.assertEqual(local_claim.link_type, "connector")
+        self.assertIs(
+            local_claim.presentation.route_trace,
+            InterNodeRouteTraceRole.INCLUDE,
+        )
+        legacy_positional = ConnectorClaim(
+            local_claim.claim_id,
+            local_claim.endpoint,
+            local_claim.claim_contract_id,
+            local_claim.match_policy_id,
+            local_claim.arguments,
+            local_claim.provenance,
+            local_claim.quality,
+            local_claim.status_perspective,
+            local_claim.role,
+            local_claim.valid_from_ns,
+            local_claim.valid_to_ns,
+            local_claim.evidence,
+        )
+        self.assertEqual(legacy_positional.link_type, "connector")
+        self.assertIs(
+            legacy_positional.presentation.route_trace,
+            InterNodeRouteTraceRole.INCLUDE,
+        )
         local = FederatedConnectorClaim(
             endpoint=GlobalResourceRef(
                 member_id="member-a",
@@ -2356,6 +2504,16 @@ class PluginApiTests(unittest.TestCase):
                 candidates=(candidate,),
                 provenance=Provenance.CORRELATED,
                 quality=Quality.AMBIGUOUS,
+            )
+        with self.assertRaisesRegex(ValueError, "must not contain candidates"):
+            FederationLinkResult(
+                result_id="result-unresolved-a-17",
+                match_policy_id=linker_policy.policy_id,
+                source=local,
+                state=FederationMatchState.UNRESOLVED,
+                candidates=(candidate,),
+                provenance=Provenance.CORRELATED,
+                quality=Quality.UNKNOWN,
             )
         with self.assertRaisesRegex(ValueError, "at most 64 candidates"):
             FederationLinkResult(

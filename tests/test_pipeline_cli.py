@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from typing import Self
 from unittest.mock import patch
 
+from router_dump_analyzer.capability_router import CapabilityProviderRegistry
 from router_dump_analyzer.control_plane import ControlPlane
 from router_dump_analyzer.ingestion_pipeline import (
     ImportState,
@@ -29,6 +30,12 @@ from router_dump_analyzer.pipeline_cli import (
     parse_args,
     run,
 )
+from router_dump_analyzer.plugin_composition import (
+    PluginCompositionPolicy,
+    PluginCompositionRule,
+    PluginParticipationSelection,
+)
+from router_dump_analyzer.plugin_identity import PluginExecutableIdentityError
 from tests.test_ingestion import ParseOnlyPlugin
 
 PRIVATE_CLI_FAILURE_MARKER = "PRIVATE-CLI-FAILURE-b59f21"
@@ -556,6 +563,72 @@ class PipelineCliTests(unittest.TestCase):
                 "durable ingestion requires executable plug-in identities",
             ):
                 ControlPlane(state_dir, registry=registry)
+            self.assertFalse(state_dir.exists())
+
+    def test_durable_control_plane_rejects_inline_only_auxiliary_atomically(
+        self,
+    ) -> None:
+        primary_registry = PluginRegistry()
+        primary = primary_registry.register(
+            ParseOnlyPlugin(),
+            instance_id="primary",
+        )
+        package_identity = "package-sha256:" + "7" * 64
+        with (
+            patch(
+                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                return_value=package_identity,
+            ),
+            patch(
+                "router_dump_analyzer.ingestion_pipeline."
+                "executable_module_target_fingerprint",
+                side_effect=PluginExecutableIdentityError(
+                    "target attestation unavailable"
+                ),
+            ),
+        ):
+            auxiliary = PluginRegistry(allow_manifest_identity=True).register(
+                ParseOnlyPlugin(),
+                instance_id="inline-only-auxiliary",
+            )
+        with patch(
+            "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+            side_effect=lambda plugin: (
+                package_identity
+                if plugin is auxiliary.plugin
+                else primary.package_hash
+            ),
+        ):
+            providers = CapabilityProviderRegistry((primary, auxiliary))
+        policy = PluginCompositionPolicy(
+            (
+                PluginCompositionRule(
+                    primary_instance_id=primary.instance_id,
+                    primary_registered_execution_identity=(
+                        primary.registered_execution_identity
+                    ),
+                    auxiliaries=(
+                        PluginParticipationSelection(
+                            instance_id=auxiliary.instance_id,
+                            registered_execution_identity=(
+                                auxiliary.registered_execution_identity
+                            ),
+                            roles=("private_analysis_evidence",),
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            state_dir = Path(directory) / "state"
+            with self.assertRaisesRegex(ValueError, "INLINE-only"):
+                ControlPlane(
+                    state_dir,
+                    registry=primary_registry,
+                    capability_providers=providers,
+                    plugin_composition_policy=policy,
+                )
             self.assertFalse(state_dir.exists())
 
     def test_control_plane_defaults_to_process_isolated_plugins(self) -> None:

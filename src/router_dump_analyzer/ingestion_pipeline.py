@@ -142,6 +142,11 @@ _DEFAULT_PLUGIN_CONFIGURATION_DIGEST: Final = (
 _MANIFEST_PROCESS_BOOTSTRAP_ERROR: Final = (
     "manifest-only plug-in identity cannot authorize PROCESS execution"
 )
+_PROCESS_TARGET_PROCESS_BOOTSTRAP_ERROR: Final = (
+    "unattested plug-in process target is INLINE-only and cannot authorize "
+    "PROCESS execution"
+)
+_INLINE_ONLY_PROCESS_COMPATIBILITY: Final = "inline_only"
 
 # Core deliberately uses the legacy-compatible Windows pathname budget on every
 # Windows host rather than depending on registry, manifest, child-process, or
@@ -1607,7 +1612,7 @@ class RegisteredPlugin:
             self._process_bootstrap_error is None
             and type(process_bootstrap) is _PluginProcessBootstrap
         )
-        return {
+        material = {
             "schema_version": "router_dump_analyzer.registered_execution.v4",
             "instance_id": self.instance_id,
             "plugin_id": self.plugin_id,
@@ -1642,6 +1647,17 @@ class RegisteredPlugin:
                 else None
             ),
         }
+        if (
+            type(process_bootstrap) is not _PluginProcessBootstrap
+            and self._process_bootstrap_error == _PROCESS_TARGET_PROCESS_BOOTSTRAP_ERROR
+        ):
+            # Compatibility is an execution restriction, so it participates in
+            # the frozen identity. Keep the normal PROCESS-capable projection
+            # byte-for-byte stable by omitting the key outside this opt-out.
+            material["process_bootstrap_compatibility"] = (
+                _INLINE_ONLY_PROCESS_COMPATIBILITY
+            )
+        return material
 
     @property
     def registered_execution_identity(self) -> str:
@@ -1684,6 +1700,35 @@ class RegisteredPlugin:
         if self._process_bootstrap_error is not None:
             raise ValueError(self._process_bootstrap_error)
         return replace(bootstrap)
+
+
+def _require_no_inline_only_plugin_compatibility(
+    records: Iterable[RegisteredPlugin],
+    *,
+    boundary: str,
+) -> None:
+    """Reject compatibility records at a durable/process authority boundary."""
+
+    if type(boundary) is not str or not boundary:
+        raise ValueError("plug-in compatibility boundary must be a non-empty string")
+    selected = tuple(records)
+    if any(type(record) is not RegisteredPlugin for record in selected):
+        raise TypeError("plug-in compatibility checks require registered plug-ins")
+    inline_only = tuple(
+        f"{record.plugin_id}@{record.plugin_version}"
+        for record in selected
+        if record._process_bootstrap is None
+        and record._process_bootstrap_error
+        in {
+            _MANIFEST_PROCESS_BOOTSTRAP_ERROR,
+            _PROCESS_TARGET_PROCESS_BOOTSTRAP_ERROR,
+        }
+    )
+    if inline_only:
+        raise ValueError(
+            f"{boundary}; INLINE-only compatibility registrations: "
+            + ", ".join(inline_only)
+        )
 
 
 def registered_plugin_matches_execution_pin(
@@ -1904,10 +1949,18 @@ def _revalidate_process_target_executable_identities(
 ) -> None:
     bootstrap = record._process_bootstrap
     if type(bootstrap) is not _PluginProcessBootstrap:
-        if (
+        manifest_only_compatibility = (
             record.package_hash.startswith("manifest-sha256:")
+            and not record.verify_package_bytes
             and record._process_bootstrap_error == _MANIFEST_PROCESS_BOOTSTRAP_ERROR
-        ):
+        )
+        derived_package_compatibility = (
+            record.package_hash.startswith(("package-sha256:", "module-sha256:"))
+            and record.verify_package_bytes
+            and record._process_bootstrap_error
+            == _PROCESS_TARGET_PROCESS_BOOTSTRAP_ERROR
+        )
+        if manifest_only_compatibility or derived_package_compatibility:
             return
         if record._registered_execution_identity_snapshot is None:
             return
@@ -1939,9 +1992,11 @@ class PluginRegistry:
     A trusted loader may pass an immutable artifact digest to
     :meth:`register` as ``package_hash``.  Otherwise the registry fingerprints
     the defining importable package under strict resource bounds.  Registries
-    fail closed by default.  Compatibility-only embeddings must explicitly
-    opt into manifest identity with ``allow_manifest_identity=True``; durable
-    execution must never use that opt-out.
+    fail closed by default. Compatibility-only embeddings must explicitly opt
+    into inline-only identity fallback with ``allow_manifest_identity=True``;
+    this also covers a registry-derived package whose process target cannot be
+    attested. Durable execution and loader-supplied executable package hashes
+    never use that opt-out.
     """
 
     def __init__(
@@ -1966,6 +2021,8 @@ class PluginRegistry:
             )
         self._plugins: dict[tuple[str, str, str, str], RegisteredPlugin] = {}
         self._require_executable_identity = require_executable_identity
+        self._sealed = False
+        self._mutation_lock = threading.RLock()
         for plugin in plugins:
             self.register(plugin)
 
@@ -2045,6 +2102,8 @@ class PluginRegistry:
         decoder_module_target: str | None = None,
         _deferred_process_bootstrap: _PluginProcessBootstrap | None = None,
     ) -> RegisteredPlugin:
+        if self._sealed:
+            raise RuntimeError("plug-in registry is sealed")
         if (
             _deferred_process_bootstrap is not None
             and type(_deferred_process_bootstrap) is not _PluginProcessBootstrap
@@ -2300,6 +2359,12 @@ class PluginRegistry:
                 decoder_implementation,
                 "decoder",
             )
+        inline_only_process_compatibility = manifest_identity_compatibility
+        process_bootstrap_error: str | None = (
+            _MANIFEST_PROCESS_BOOTSTRAP_ERROR
+            if manifest_identity_compatibility
+            else None
+        )
         if manifest_identity_compatibility:
             plugin_target_executable_identity = None
             coordinator_target_executable_identity = None
@@ -2315,57 +2380,76 @@ class PluginRegistry:
                 _deferred_process_bootstrap.decoder_target_executable_identity
             )
         else:
-            declared_code_cache: dict[
-                tuple[str, Path, str], tuple[CodeType, ...]
-            ] = {}
-            plugin_target_executable_identity = _process_target_executable_identity(
-                plugin_process_target,
-                _process_target_identity_subject(
-                    plugin_loader_kind,
-                    plugin,
+            try:
+                declared_code_cache: dict[
+                    tuple[str, Path, str], tuple[CodeType, ...]
+                ] = {}
+                plugin_target_executable_identity = _process_target_executable_identity(
+                    plugin_process_target,
+                    _process_target_identity_subject(
+                        plugin_loader_kind,
+                        plugin,
+                        label="plug-in",
+                    ),
                     label="plug-in",
-                ),
-                label="plug-in",
-                declared_code_cache=declared_code_cache,
-            )
-            coordinator_target_executable_identity = (
-                None
-                if coordinator_process_target is None
-                else _process_target_executable_identity(
-                    coordinator_process_target,
-                    _process_target_identity_subject(
-                        coordinator_loader_kind,
-                        active_coordinator,
+                    declared_code_cache=declared_code_cache,
+                )
+                coordinator_target_executable_identity = (
+                    None
+                    if coordinator_process_target is None
+                    else _process_target_executable_identity(
+                        coordinator_process_target,
+                        _process_target_identity_subject(
+                            coordinator_loader_kind,
+                            active_coordinator,
+                            label="coordinator",
+                        ),
                         label="coordinator",
-                    ),
-                    label="coordinator",
-                    declared_code_cache=declared_code_cache,
+                        declared_code_cache=declared_code_cache,
+                    )
                 )
-            )
-            decoder_target_executable_identity = (
-                None
-                if decoder_process_target is None
-                else _process_target_executable_identity(
-                    decoder_process_target,
-                    _process_target_identity_subject(
-                        decoder_loader_kind,
-                        decoder_implementation,
+                decoder_target_executable_identity = (
+                    None
+                    if decoder_process_target is None
+                    else _process_target_executable_identity(
+                        decoder_process_target,
+                        _process_target_identity_subject(
+                            decoder_loader_kind,
+                            decoder_implementation,
+                            label="decoder",
+                        ),
                         label="decoder",
-                    ),
-                    label="decoder",
-                    declared_code_cache=declared_code_cache,
+                        declared_code_cache=declared_code_cache,
+                    )
                 )
-            )
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except IngestionPipelineError as error:
+                # A registry-derived package digest remains useful for trusted
+                # inline compatibility, but it cannot authorize a child target
+                # that was not separately attested. Explicit loader-supplied
+                # package hashes and non-identity evaluator faults retain their
+                # fail-closed behavior.
+                if (
+                    self._require_executable_identity
+                    or selected_package_hash is not None
+                    or not verify_package_bytes
+                    or not isinstance(
+                        error.__cause__,
+                        PluginExecutableIdentityError,
+                    )
+                ):
+                    raise
+                plugin_target_executable_identity = None
+                coordinator_target_executable_identity = None
+                decoder_target_executable_identity = None
+                inline_only_process_compatibility = True
+                process_bootstrap_error = _PROCESS_TARGET_PROCESS_BOOTSTRAP_ERROR
         ingestion_limit_values, artifact_limit_values = (
             _snapshot_ingestion_limit_bootstrap(active_coordinator)
         )
-        process_bootstrap_error: str | None = (
-            _MANIFEST_PROCESS_BOOTSTRAP_ERROR
-            if manifest_identity_compatibility
-            else None
-        )
         if (
-            not manifest_identity_compatibility
+            not inline_only_process_compatibility
             and resolved_configuration_digest != _DEFAULT_PLUGIN_CONFIGURATION_DIGEST
         ):
             missing_targets: list[str] = []
@@ -2448,7 +2532,7 @@ class PluginRegistry:
             entry_point_name=record.entry_point_name,
             module_target=record.module_target,
         )
-        if manifest_identity_compatibility:
+        if inline_only_process_compatibility:
             record = replace(
                 record,
                 _registered_execution_identity_snapshot=(
@@ -2527,18 +2611,21 @@ class PluginRegistry:
             record.instance_id,
             record.registered_execution_identity,
         )
-        if key in self._plugins:
-            raise ValueError(
-                "duplicate registered plug-in execution coordinate "
-                f"{record.plugin_id}@{record.plugin_version} "
-                f"instance {record.instance_id}"
-            )
-        self._plugins[key] = record
-        if len(self._plugins) > MAX_PLUGIN_CANDIDATES:
-            self._plugins.pop(key, None)
-            raise ValueError(
-                f"at most {MAX_PLUGIN_CANDIDATES} plug-ins may be registered"
-            )
+        with self._mutation_lock:
+            if self._sealed:
+                raise RuntimeError("plug-in registry is sealed")
+            if key in self._plugins:
+                raise ValueError(
+                    "duplicate registered plug-in execution coordinate "
+                    f"{record.plugin_id}@{record.plugin_version} "
+                    f"instance {record.instance_id}"
+                )
+            self._plugins[key] = record
+            if len(self._plugins) > MAX_PLUGIN_CANDIDATES:
+                self._plugins.pop(key, None)
+                raise ValueError(
+                    f"at most {MAX_PLUGIN_CANDIDATES} plug-ins may be registered"
+                )
         return record
 
     def get(
@@ -2580,7 +2667,19 @@ class PluginRegistry:
         return matches[0]
 
     def records(self) -> tuple[RegisteredPlugin, ...]:
-        return tuple(self._plugins[key] for key in sorted(self._plugins))
+        with self._mutation_lock:
+            return tuple(self._plugins[key] for key in sorted(self._plugins))
+
+    def _sealed_snapshot(self) -> PluginRegistry:
+        """Freeze the exact current allowlist for one authority owner."""
+
+        with self._mutation_lock:
+            snapshot = PluginRegistry(
+                require_executable_identity=self._require_executable_identity
+            )
+            snapshot._plugins = dict(self._plugins)
+            snapshot._sealed = True
+        return snapshot
 
     def process_bootstraps(self) -> tuple[_PluginProcessBootstrap, ...]:
         """Return the inert spawn descriptors for the complete allowlist."""
@@ -2724,7 +2823,7 @@ class PluginRegistry:
         _revalidate_process_target_executable_identities(record)
 
     def require_executable_identities(self) -> None:
-        """Reject records backed only by the non-executable manifest digest."""
+        """Reject compatibility records that cannot authorize durable execution."""
 
         manifest_only = tuple(
             f"{record.plugin_id}@{record.plugin_version}"
@@ -2736,6 +2835,10 @@ class PluginRegistry:
                 "durable ingestion requires executable plug-in identities; "
                 "manifest-only identities: " + ", ".join(manifest_only)
             )
+        _require_no_inline_only_plugin_compatibility(
+            self.records(),
+            boundary="durable ingestion requires executable plug-in identities",
+        )
 
     def fingerprint(self) -> str:
         """Return a deterministic identity for the complete allowlisted set."""
@@ -2853,6 +2956,10 @@ def _registered_execution_pin(
     schema_digest: str,
     roles: tuple[str, ...],
 ) -> PluginExecutionPin:
+    _require_no_inline_only_plugin_compatibility(
+        (registered,),
+        boundary="plug-in execution pins require PROCESS-capable plug-ins",
+    )
     return PluginExecutionPin(
         instance_id=registered.instance_id,
         plugin_id=registered.plugin_id,
@@ -2882,6 +2989,10 @@ def _auxiliary_execution_pin(
         registered = capability_providers.get_by_execution_identity(
             selection.instance_id,
             selection.registered_execution_identity,
+        )
+        _require_no_inline_only_plugin_compatibility(
+            (registered,),
+            boundary="durable ingestion requires PROCESS-capable auxiliary plug-ins",
         )
         PluginRegistry.revalidate_registered_identity(registered)
         if not registered.verify_package_bytes:
@@ -2932,6 +3043,12 @@ def _frozen_auxiliary_execution_pins(
             registered = capability_providers.get_by_execution_identity(
                 selection.instance_id,
                 selection.registered_execution_identity,
+            )
+            _require_no_inline_only_plugin_compatibility(
+                (registered,),
+                boundary=(
+                    "durable ingestion requires PROCESS-capable auxiliary plug-ins"
+                ),
             )
             PluginRegistry.revalidate_registered_identity(registered)
             if (
@@ -3123,6 +3240,12 @@ def _execution_plan_matches_composition(
     """
 
     try:
+        _require_no_inline_only_plugin_compatibility(
+            (registered,),
+            boundary=(
+                "durable ingestion requires PROCESS-capable primary plug-ins"
+            ),
+        )
         PluginRegistry.revalidate_registered_identity(registered)
     except PROCESS_CONTROL_EXCEPTIONS:
         raise
@@ -3150,6 +3273,12 @@ def _execution_plan_matches_composition(
             auxiliary = capability_providers.get_by_execution_identity(
                 selection.instance_id,
                 selection.registered_execution_identity,
+            )
+            _require_no_inline_only_plugin_compatibility(
+                (auxiliary,),
+                boundary=(
+                    "durable ingestion requires PROCESS-capable auxiliary plug-ins"
+                ),
             )
             PluginRegistry.revalidate_registered_identity(auxiliary)
             if (
@@ -3199,6 +3328,10 @@ def _ingest_registered_plugin(
 ) -> tuple[IngestionResult, bytes, PluginExecutionPlan]:
     """Execute and bind the identities revalidated for this exact run."""
 
+    _require_no_inline_only_plugin_compatibility(
+        (registered,),
+        boundary="durable ingestion requires PROCESS-capable primary plug-ins",
+    )
     token = _ACTIVE_DECODER_IDENTITY.set(None)
     try:
         PluginRegistry.revalidate_registered_identity(registered)
@@ -3969,6 +4102,10 @@ class DurableIngestionPipeline:
         capability_providers: CapabilityProviderRegistry | None = None,
         worker_id: str | None = None,
     ) -> None:
+        if type(registry) is not PluginRegistry:
+            raise TypeError("registry must be an exact PluginRegistry")
+        selected_registry = registry._sealed_snapshot()
+        selected_registry.require_executable_identities()
         self.root: Path = validate_ingestion_state_root(root)
         self.database_path: Path = self.root / "control-plane.sqlite3"
         self.blob_root: Path = self.root / "blobs"
@@ -3978,15 +4115,15 @@ class DurableIngestionPipeline:
         self.lock_root: Path = self.root / "locks"
         self.content_lock_root: Path = self.lock_root / "content"
         self._spool_namespace_lock_path = self.lock_root / "spool-namespace.lock"
-        self.registry: PluginRegistry = registry
+        self.registry: PluginRegistry = selected_registry
         # Import lazily: capability_router consumes RegisteredPlugin and the
         # registry primitives from this module.  Construction occurs only
         # after both modules are fully initialized.
         from .capability_router import CapabilityProviderRegistry as ProviderRegistry
 
         if capability_providers is None:
-            selected_capability_providers = ProviderRegistry.from_primary_registry(
-                registry
+            candidate_capability_providers = ProviderRegistry.from_primary_registry(
+                selected_registry
             )
         elif type(capability_providers) is not ProviderRegistry:
             raise TypeError(
@@ -3994,7 +4131,14 @@ class DurableIngestionPipeline:
                 "CapabilityProviderRegistry or None"
             )
         else:
-            selected_capability_providers = capability_providers
+            candidate_capability_providers = capability_providers
+        selected_capability_providers = (
+            candidate_capability_providers._sealed_snapshot()
+        )
+        _require_no_inline_only_plugin_compatibility(
+            selected_capability_providers.records(),
+            boundary="durable ingestion requires PROCESS-capable auxiliary plug-ins",
+        )
         self.capability_providers: CapabilityProviderRegistry = (
             selected_capability_providers
         )

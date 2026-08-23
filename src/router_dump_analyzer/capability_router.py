@@ -9,6 +9,7 @@ back to currently installed plug-ins, registration order, or a last writer.
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -31,6 +32,7 @@ from .capability_executor import (
 from .ingestion_pipeline import (
     PluginRegistry,
     RegisteredPlugin,
+    _require_no_inline_only_plugin_compatibility,
     registered_plugin_matches_execution_pin,
 )
 from .plugin_api import (
@@ -132,6 +134,8 @@ class CapabilityProviderRegistry:
         self._providers: dict[str, list[RegisteredPlugin]] = {}
         self._schema_digests: dict[tuple[str, str], str] = {}
         self._provider_count = 0
+        self._sealed = False
+        self._mutation_lock = threading.RLock()
         for provider in providers:
             self.add_registered(provider)
 
@@ -154,56 +158,62 @@ class CapabilityProviderRegistry:
         )
 
     def add_registered(self, provider: RegisteredPlugin) -> str:
-        if type(provider) is not RegisteredPlugin:
-            raise TypeError("provider must be an exact RegisteredPlugin")
-        if provider._registered_execution_identity_snapshot is None:
-            raise ValueError("provider must be created by PluginRegistry.register()")
-        if not provider.verify_package_bytes:
-            raise ValueError(
-                "capability providers require a revalidatable executable identity"
+        with self._mutation_lock:
+            if self._sealed:
+                raise RuntimeError("capability provider registry is sealed")
+            if type(provider) is not RegisteredPlugin:
+                raise TypeError("provider must be an exact RegisteredPlugin")
+            if provider._registered_execution_identity_snapshot is None:
+                raise ValueError("provider must be created by PluginRegistry.register()")
+            if not provider.verify_package_bytes:
+                raise ValueError(
+                    "capability providers require a revalidatable executable identity"
+                )
+            instance_id = _opaque(provider.instance_id, "provider instance_id")
+            if self._provider_count >= _MAX_PROVIDERS:
+                raise ValueError(
+                    f"at most {_MAX_PROVIDERS} providers may be registered"
+                )
+            try:
+                PluginRegistry.revalidate_registered_identity(provider)
+                declared_schema_digest = plugin_schema_digest(
+                    provider.execution_plugin.describe()
+                )
+                PluginRegistry.revalidate_registered_identity(provider)
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except BaseException as error:
+                raise ValueError(
+                    "capability provider identity or declared schema is not valid"
+                ) from error
+            bucket = self._providers.setdefault(instance_id, [])
+            execution_identity = provider.registered_execution_identity
+            if any(item.plugin_id != provider.plugin_id for item in bucket):
+                raise ValueError(
+                    "one capability provider instance_id cannot name different plug-ins"
+                )
+            if any(
+                item.configuration_digest != provider.configuration_digest
+                for item in bucket
+            ):
+                raise ValueError(
+                    "a different capability provider configuration requires a new "
+                    "instance_id"
+                )
+            if any(
+                item.registered_execution_identity == execution_identity
+                for item in bucket
+            ):
+                raise ValueError(
+                    "duplicate capability provider execution identity for "
+                    f"instance {instance_id!r}"
+                )
+            bucket.append(provider)
+            self._schema_digests[(instance_id, execution_identity)] = (
+                declared_schema_digest
             )
-        instance_id = _opaque(provider.instance_id, "provider instance_id")
-        if self._provider_count >= _MAX_PROVIDERS:
-            raise ValueError(f"at most {_MAX_PROVIDERS} providers may be registered")
-        try:
-            PluginRegistry.revalidate_registered_identity(provider)
-            declared_schema_digest = plugin_schema_digest(
-                provider.execution_plugin.describe()
-            )
-            PluginRegistry.revalidate_registered_identity(provider)
-        except PROCESS_CONTROL_EXCEPTIONS:
-            raise
-        except BaseException as error:
-            raise ValueError(
-                "capability provider identity or declared schema is not valid"
-            ) from error
-        bucket = self._providers.setdefault(instance_id, [])
-        execution_identity = provider.registered_execution_identity
-        if any(item.plugin_id != provider.plugin_id for item in bucket):
-            raise ValueError(
-                "one capability provider instance_id cannot name different plug-ins"
-            )
-        if any(
-            item.configuration_digest != provider.configuration_digest
-            for item in bucket
-        ):
-            raise ValueError(
-                "a different capability provider configuration requires a new "
-                "instance_id"
-            )
-        if any(
-            item.registered_execution_identity == execution_identity for item in bucket
-        ):
-            raise ValueError(
-                "duplicate capability provider execution identity for "
-                f"instance {instance_id!r}"
-            )
-        bucket.append(provider)
-        self._schema_digests[(instance_id, execution_identity)] = (
-            declared_schema_digest
-        )
-        self._provider_count += 1
-        return instance_id
+            self._provider_count += 1
+            return instance_id
 
     def instance_ids(self) -> tuple[str, ...]:
         return tuple(sorted(self._providers))
@@ -211,14 +221,29 @@ class CapabilityProviderRegistry:
     def records(self) -> tuple[RegisteredPlugin, ...]:
         """Return every admitted provider in canonical execution order."""
 
-        return tuple(
-            provider
-            for instance_id in sorted(self._providers)
-            for provider in sorted(
-                self._providers[instance_id],
-                key=lambda item: item._registered_execution_identity_snapshot or "",
+        with self._mutation_lock:
+            return tuple(
+                provider
+                for instance_id in sorted(self._providers)
+                for provider in sorted(
+                    self._providers[instance_id],
+                    key=lambda item: item._registered_execution_identity_snapshot or "",
+                )
             )
-        )
+
+    def _sealed_snapshot(self) -> CapabilityProviderRegistry:
+        """Freeze the exact current provider directory for one authority owner."""
+
+        with self._mutation_lock:
+            snapshot = CapabilityProviderRegistry()
+            snapshot._providers = {
+                instance_id: list(providers)
+                for instance_id, providers in self._providers.items()
+            }
+            snapshot._schema_digests = dict(self._schema_digests)
+            snapshot._provider_count = self._provider_count
+            snapshot._sealed = True
+        return snapshot
 
     def get_by_execution_identity(
         self,
@@ -294,6 +319,12 @@ class CapabilityProviderRegistry:
                 instance_id,
                 execution_identity,
             )
+            _require_no_inline_only_plugin_compatibility(
+                (provider,),
+                boundary=(
+                    "process provider snapshots require PROCESS-capable plug-ins"
+                ),
+            )
             snapshot._providers.setdefault(provider.instance_id, []).append(provider)
             snapshot._schema_digests[
                 (provider.instance_id, provider.registered_execution_identity)
@@ -302,6 +333,7 @@ class CapabilityProviderRegistry:
                 provider.registered_execution_identity,
             )
             snapshot._provider_count += 1
+        snapshot._sealed = True
         return snapshot
 
     def _resolve(self, instance_id: str) -> tuple[RegisteredPlugin, ...]:
@@ -579,6 +611,12 @@ class PlanBoundCapabilityRouter:
         registered: RegisteredPlugin,
     ) -> None:
         try:
+            _require_no_inline_only_plugin_compatibility(
+                (registered,),
+                boundary=(
+                    "plan-bound capability routing requires PROCESS-capable plug-ins"
+                ),
+            )
             PluginRegistry.revalidate_registered_identity(registered)
             matches = registered_plugin_matches_execution_pin(pin, registered)
         except PROCESS_CONTROL_EXCEPTIONS:

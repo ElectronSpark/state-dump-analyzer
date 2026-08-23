@@ -87,6 +87,7 @@ from router_dump_analyzer.plugin_execution_plan import (
     plugin_execution_plan_dict,
     plugin_execution_plan_from_dict,
 )
+from router_dump_analyzer.plugin_identity import PluginExecutableIdentityError
 from tests.test_ingestion import (
     DiagnosticPlugin,
     FixedNodePlugin,
@@ -3095,6 +3096,289 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                 ParseOnlyPlugin(),
                 package_hash="manifest-sha256:" + ("a" * 64),
             )
+
+    def test_non_strict_derived_identity_can_register_inline_without_target_attestation(
+        self,
+    ) -> None:
+        package_identity = "package-sha256:" + ("4" * 64)
+        changed_package_identity = "package-sha256:" + ("5" * 64)
+        with (
+            patch(
+                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                return_value=package_identity,
+            ) as package_attestation,
+            patch(
+                "router_dump_analyzer.ingestion_pipeline."
+                "executable_module_target_fingerprint",
+                side_effect=PluginExecutableIdentityError(
+                    "target attestation unavailable"
+                ),
+            ) as target_attestation,
+        ):
+            registry = PluginRegistry(allow_manifest_identity=True)
+            registered = registry.register(ParseOnlyPlugin())
+
+            self.assertEqual(registered.package_hash, package_identity)
+            self.assertTrue(registered.verify_package_bytes)
+            self.assertIsNone(registered._process_bootstrap)
+            identity_material = registered.execution_identity_material()
+            self.assertFalse(identity_material["process_bootstrap_available"])
+            self.assertIsNone(identity_material["process_bootstrap"])
+            self.assertEqual(
+                identity_material["process_bootstrap_compatibility"],
+                "inline_only",
+            )
+            registered_identity = registered.registered_execution_identity
+
+            PluginRegistry.revalidate_registered_identity(registered)
+            self.assertEqual(target_attestation.call_count, 1)
+            self.assertEqual(
+                registered.registered_execution_identity,
+                registered_identity,
+            )
+
+            package_attestation.return_value = changed_package_identity
+            with self.assertRaisesRegex(
+                IngestionPipelineError,
+                "executable bytes changed after registration",
+            ):
+                PluginRegistry.revalidate_registered_identity(registered)
+
+            package_attestation.return_value = package_identity
+            with tempfile.TemporaryDirectory() as directory:
+                input_path = Path(directory) / "status.jsonl"
+                input_path.write_bytes(_fixture_bytes())
+                candidates = registry.probe(input_path)
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0].package_hash, package_identity)
+            self.assertNotIn("process_compatibility", candidates[0].as_dict())
+            self.assertNotIn(
+                "process_bootstrap_compatibility",
+                candidates[0].as_dict(),
+            )
+            self.assertEqual(target_attestation.call_count, 1)
+
+            repeated = PluginRegistry(allow_manifest_identity=True).register(
+                ParseOnlyPlugin()
+            )
+            self.assertEqual(
+                repeated.registered_execution_identity,
+                registered_identity,
+            )
+            self.assertEqual(target_attestation.call_count, 2)
+
+    def test_target_attestation_failure_stays_strict_for_required_and_explicit_hashes(
+        self,
+    ) -> None:
+        package_identity = "package-sha256:" + ("6" * 64)
+        with (
+            patch(
+                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                return_value=package_identity,
+            ),
+            patch(
+                "router_dump_analyzer.ingestion_pipeline."
+                "executable_module_target_fingerprint",
+                side_effect=PluginExecutableIdentityError(
+                    "target attestation unavailable"
+                ),
+            ),
+            self.assertRaisesRegex(
+                IngestionPipelineError,
+                "process target executable identity is unavailable",
+            ),
+        ):
+            PluginRegistry(require_executable_identity=True).register(ParseOnlyPlugin())
+
+        with (
+            patch(
+                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                return_value=package_identity,
+            ),
+            patch(
+                "router_dump_analyzer.ingestion_pipeline."
+                "executable_module_target_fingerprint",
+                side_effect=RuntimeError("unexpected evaluator failure"),
+            ),
+            self.assertRaisesRegex(
+                IngestionPipelineError,
+                "process target executable identity is unavailable",
+            ),
+        ):
+            PluginRegistry(allow_manifest_identity=True).register(ParseOnlyPlugin())
+
+        with (
+            patch(
+                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint"
+            ) as package_attestation,
+            patch(
+                "router_dump_analyzer.ingestion_pipeline."
+                "executable_module_target_fingerprint",
+                side_effect=PluginExecutableIdentityError(
+                    "target attestation unavailable"
+                ),
+            ),
+            self.assertRaisesRegex(
+                IngestionPipelineError,
+                "process target executable identity is unavailable",
+            ),
+        ):
+            PluginRegistry(allow_manifest_identity=True).register(
+                ParseOnlyPlugin(),
+                package_hash="sha256:" + ("7" * 64),
+            )
+        package_attestation.assert_not_called()
+
+    def test_inline_only_target_compatibility_is_rejected_for_process_and_durable_use(
+        self,
+    ) -> None:
+        with (
+            patch(
+                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                return_value="package-sha256:" + ("8" * 64),
+            ),
+            patch(
+                "router_dump_analyzer.ingestion_pipeline."
+                "executable_module_target_fingerprint",
+                side_effect=PluginExecutableIdentityError(
+                    "target attestation unavailable"
+                ),
+            ),
+        ):
+            registry = PluginRegistry(allow_manifest_identity=True)
+            registry.register(ParseOnlyPlugin())
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "INLINE-only.*cannot authorize PROCESS execution",
+        ):
+            registry.process_bootstraps()
+        with self.assertRaisesRegex(
+            ValueError,
+            "durable ingestion requires executable plug-in identities",
+        ):
+            registry.require_executable_identities()
+
+        for mode in (PluginExecutionMode.INLINE, PluginExecutionMode.PROCESS):
+            limits = replace(
+                self._limits(),
+                plugin_execution_mode=mode,
+                publisher_execution_mode=PluginExecutionMode.INLINE,
+            )
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                state_dir = Path(directory) / "state"
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "durable ingestion requires executable plug-in identities",
+                ):
+                    DurableIngestionPipeline(
+                        state_dir,
+                        registry=registry,
+                        publisher=_Publisher(),
+                        limits=limits,
+                    )
+                self.assertFalse(state_dir.exists())
+
+    def test_durable_pipeline_seals_registry_against_late_inline_only_registration(
+        self,
+    ) -> None:
+        package_identity = "package-sha256:" + ("9" * 64)
+        registry = PluginRegistry(allow_manifest_identity=True)
+        publisher = _Publisher()
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline = DurableIngestionPipeline(
+                Path(directory),
+                registry=registry,
+                publisher=publisher,
+                limits=self._limits(),
+            )
+            self.assertIsNot(pipeline.registry, registry)
+            with (
+                patch(
+                    "router_dump_analyzer.ingestion_pipeline."
+                    "executable_plugin_fingerprint",
+                    return_value=package_identity,
+                ),
+                patch(
+                    "router_dump_analyzer.ingestion_pipeline."
+                    "executable_module_target_fingerprint",
+                    side_effect=PluginExecutableIdentityError(
+                        "target attestation unavailable"
+                    ),
+                ),
+            ):
+                late = registry.register(ParseOnlyPlugin(), instance_id="late-local")
+
+            self.assertEqual(registry.records(), (late,))
+            self.assertEqual(pipeline.registry.records(), ())
+            with self.assertRaisesRegex(RuntimeError, "sealed"):
+                pipeline.registry.register(ParseOnlyPlugin())
+
+            with pipeline:
+                admitted = pipeline.submit_bytes(
+                    self.scope,
+                    _fixture_bytes(),
+                    original_name="status.jsonl",
+                )
+                failed = pipeline.wait(
+                    self.scope,
+                    admitted.import_id,
+                    timeout=10,
+                )
+
+        self.assertEqual(failed.state, ImportState.FAILED)
+        self.assertIsNone(failed.revision_id)
+        self.assertEqual(publisher.revisions, [])
+
+    def test_inline_only_primary_cannot_be_frozen_into_execution_plan(self) -> None:
+        package_identity = "package-sha256:" + ("a" * 64)
+        plugin = ParseOnlyPlugin()
+        with (
+            patch(
+                "router_dump_analyzer.ingestion_pipeline."
+                "executable_plugin_fingerprint",
+                return_value=package_identity,
+            ),
+            patch(
+                "router_dump_analyzer.ingestion_pipeline."
+                "executable_module_target_fingerprint",
+                side_effect=PluginExecutableIdentityError(
+                    "target attestation unavailable"
+                ),
+            ),
+        ):
+            registered = PluginRegistry(allow_manifest_identity=True).register(
+                plugin
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "status.jsonl"
+            path.write_bytes(_fixture_bytes())
+            result = registered.coordinator.ingest(plugin, path)
+        with self.assertRaisesRegex(ValueError, "PROCESS-capable"):
+            _execution_plan_for_result(registered, result)
+
+    def test_non_strict_registry_keeps_normal_process_bootstrap_unchanged(
+        self,
+    ) -> None:
+        strict = PluginRegistry().register(ParseOnlyPlugin())
+        non_strict_registry = PluginRegistry(allow_manifest_identity=True)
+        non_strict = non_strict_registry.register(ParseOnlyPlugin())
+
+        self.assertEqual(
+            non_strict.registered_execution_identity,
+            strict.registered_execution_identity,
+        )
+        self.assertEqual(non_strict.process_bootstrap, strict.process_bootstrap)
+        self.assertNotIn(
+            "process_bootstrap_compatibility",
+            non_strict.execution_identity_material(),
+        )
+        self.assertEqual(
+            non_strict_registry.process_bootstraps(),
+            (non_strict.process_bootstrap,),
+        )
+        PluginRegistry.revalidate_registered_identity(non_strict)
 
     def test_derived_package_identity_is_revalidated_before_probe(self) -> None:
         registry = PluginRegistry((ParseOnlyPlugin(),))

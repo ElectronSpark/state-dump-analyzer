@@ -46,6 +46,7 @@ from router_dump_analyzer.plugin_execution_plan import (
     plugin_execution_plan_dict,
     plugin_execution_plan_plugin_ids,
 )
+from router_dump_analyzer.plugin_identity import PluginExecutableIdentityError
 from router_dump_analyzer.private_analysis_binding import (
     bind_private_analysis_revision,
 )
@@ -1114,6 +1115,122 @@ class PluginCompositionTests(unittest.TestCase):
                 ),
             ):
                 freeze()
+
+    def test_inline_only_auxiliary_is_local_route_only_and_cannot_be_frozen(
+        self,
+    ) -> None:
+        package_identity = "package-sha256:" + "9" * 64
+        with (
+            patch(
+                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                return_value=package_identity,
+            ),
+            patch(
+                "router_dump_analyzer.ingestion_pipeline."
+                "executable_module_target_fingerprint",
+                side_effect=PluginExecutableIdentityError(
+                    "target attestation unavailable"
+                ),
+            ),
+        ):
+            auxiliary = PluginRegistry(allow_manifest_identity=True).register(
+                _AuxiliaryPlugin(),
+                instance_id="inline-only-auxiliary",
+            )
+
+        with patch(
+            "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+            return_value=package_identity,
+        ):
+            providers = CapabilityProviderRegistry((auxiliary,))
+        self.assertEqual(providers.instance_ids(), (auxiliary.instance_id,))
+
+        selection = PluginParticipationSelection(
+            instance_id=auxiliary.instance_id,
+            registered_execution_identity=auxiliary.registered_execution_identity,
+            roles=("private_analysis_evidence",),
+        )
+        freezers = (
+            ("inline", lambda: _auxiliary_execution_pin(providers, selection)),
+            (
+                "process",
+                lambda: _frozen_auxiliary_execution_pins(providers, (selection,)),
+            ),
+        )
+        for mode, freeze in freezers:
+            with self.subTest(mode=mode), self.assertRaisesRegex(
+                IngestionPipelineError,
+                "identity or schema could not be frozen",
+            ):
+                freeze()
+
+        with tempfile.TemporaryDirectory() as directory:
+            state_dir = Path(directory) / "state"
+            with self.assertRaisesRegex(ValueError, "PROCESS-capable auxiliary"):
+                DurableIngestionPipeline(
+                    state_dir,
+                    registry=PluginRegistry((ParseOnlyPlugin(),)),
+                    capability_providers=providers,
+                    limits=PipelineLimits(
+                        plugin_execution_mode=PluginExecutionMode.INLINE,
+                    ),
+                )
+            self.assertFalse(state_dir.exists())
+
+    def test_durable_pipeline_seals_provider_snapshot_against_late_auxiliary(
+        self,
+    ) -> None:
+        primary_registry = PluginRegistry()
+        primary = primary_registry.register(
+            ParseOnlyPlugin(),
+            instance_id="primary",
+        )
+        providers = CapabilityProviderRegistry((primary,))
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline = DurableIngestionPipeline(
+                Path(directory),
+                registry=primary_registry,
+                capability_providers=providers,
+                limits=PipelineLimits(
+                    plugin_execution_mode=PluginExecutionMode.INLINE,
+                ),
+            )
+            self.assertIsNot(pipeline.capability_providers, providers)
+
+            package_identity = "package-sha256:" + "a" * 64
+            auxiliary_plugin = _AuxiliaryPlugin()
+            with (
+                patch(
+                    "router_dump_analyzer.ingestion_pipeline."
+                    "executable_plugin_fingerprint",
+                    return_value=package_identity,
+                ),
+                patch(
+                    "router_dump_analyzer.ingestion_pipeline."
+                    "executable_module_target_fingerprint",
+                    side_effect=PluginExecutableIdentityError(
+                        "target attestation unavailable"
+                    ),
+                ),
+            ):
+                auxiliary = PluginRegistry(
+                    allow_manifest_identity=True
+                ).register(
+                    auxiliary_plugin,
+                    instance_id="late-inline-only-auxiliary",
+                )
+            with patch(
+                "router_dump_analyzer.ingestion_pipeline."
+                "executable_plugin_fingerprint",
+                return_value=package_identity,
+            ):
+                providers.add_registered(auxiliary)
+
+            self.assertIn(auxiliary, providers.records())
+            self.assertNotIn(auxiliary, pipeline.capability_providers.records())
+            with self.assertRaisesRegex(RuntimeError, "sealed"):
+                pipeline.capability_providers.add_registered(auxiliary)
+            pipeline.close()
 
     def test_falsey_non_policy_is_not_treated_as_default(self) -> None:
         registry = PluginRegistry((ParseOnlyPlugin(),))

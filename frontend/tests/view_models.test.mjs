@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  authoritativeTopologyLink,
   controlPlaneCollectionPageDecision,
   dashboardComparable,
   dashboardDescriptorErrorMessage,
@@ -25,7 +26,36 @@ import {
   stateChipClassName,
   statusClassPresentation,
   statusSegmentClassName,
+  topologyResolutionLabel,
 } from "../assets/view_models.js";
+
+test("typed topology links require authoritative federation evidence", () => {
+  assert.equal(authoritativeTopologyLink({ link_id: "legacy" }), true);
+  assert.equal(authoritativeTopologyLink({
+    typed_federation: true,
+    resolution: "matched",
+    federation_complete: true,
+    federation_truncated: false,
+  }), true);
+  for (const candidate of [
+    { resolution: "ambiguous", federation_complete: true, federation_truncated: false },
+    { resolution: "conflict", federation_complete: true, federation_truncated: false },
+    { resolution: "matched", federation_complete: false, federation_truncated: false },
+    { resolution: "matched", federation_complete: true, federation_truncated: true },
+  ]) {
+    assert.equal(authoritativeTopologyLink({ typed_federation: true, ...candidate }), false);
+  }
+  assert.equal(authoritativeTopologyLink(null), false);
+});
+
+test("topology resolution audits have outcome-specific labels", () => {
+  assert.equal(topologyResolutionLabel("ambiguous"), "Multiple candidate remote endpoints");
+  assert.equal(topologyResolutionLabel("conflict"), "Conflicting remote endpoints");
+  assert.equal(topologyResolutionLabel("incomplete"), "Incomplete federation evidence");
+  assert.equal(topologyResolutionLabel("mixed"), "Mixed federation outcomes");
+  assert.equal(topologyResolutionLabel("unresolved"), "No compatible remote endpoint");
+  assert.equal(topologyResolutionLabel("future-value"), "Unresolved federation outcome");
+});
 
 const DASHBOARD_PARITY_FIXTURE = JSON.parse(readFileSync(
   new URL("../../tests/fixtures/dashboard-evaluator-parity.json", import.meta.url),

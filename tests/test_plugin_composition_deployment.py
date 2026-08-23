@@ -20,6 +20,7 @@ from router_dump_analyzer.plugin_composition_deployment import (
     PluginCompositionDeploymentLoadError,
     load_plugin_composition_deployment,
 )
+from router_dump_analyzer.plugin_identity import PluginExecutableIdentityError
 from router_dump_analyzer.plugin_loading import LoadedPlugin
 from tests.test_ingestion import ParseOnlyPlugin
 
@@ -78,6 +79,128 @@ def _deployment() -> PluginCompositionDeployment:
 
 
 class PluginCompositionDeploymentTests(unittest.TestCase):
+    def test_inline_only_auxiliary_is_rejected_at_deployment_boundary(self) -> None:
+        primary_registry = PluginRegistry()
+        primary = primary_registry.register(
+            ParseOnlyPlugin(),
+            instance_id="primary",
+        )
+        package_identity = "package-sha256:" + "8" * 64
+        with (
+            patch(
+                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                return_value=package_identity,
+            ),
+            patch(
+                "router_dump_analyzer.ingestion_pipeline."
+                "executable_module_target_fingerprint",
+                side_effect=PluginExecutableIdentityError(
+                    "target attestation unavailable"
+                ),
+            ),
+        ):
+            auxiliary = PluginRegistry(allow_manifest_identity=True).register(
+                ParseOnlyPlugin(),
+                instance_id="inline-only-auxiliary",
+            )
+        with patch(
+            "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+            side_effect=lambda plugin: (
+                package_identity
+                if plugin is auxiliary.plugin
+                else primary.package_hash
+            ),
+        ):
+            providers = CapabilityProviderRegistry((primary, auxiliary))
+        self.assertIn(auxiliary.instance_id, providers.instance_ids())
+        policy = PluginCompositionPolicy(
+            (
+                PluginCompositionRule(
+                    primary_instance_id=primary.instance_id,
+                    primary_registered_execution_identity=(
+                        primary.registered_execution_identity
+                    ),
+                    auxiliaries=(
+                        PluginParticipationSelection(
+                            instance_id=auxiliary.instance_id,
+                            registered_execution_identity=(
+                                auxiliary.registered_execution_identity
+                            ),
+                            roles=("private_analysis_evidence",),
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "INLINE-only"):
+            PluginCompositionDeployment(primary_registry, providers, policy)
+
+    def test_deployment_seals_exact_registry_snapshots_against_late_mutation(
+        self,
+    ) -> None:
+        primary_registry = PluginRegistry(allow_manifest_identity=True)
+        primary = primary_registry.register(
+            ParseOnlyPlugin(),
+            instance_id="primary",
+        )
+        providers = CapabilityProviderRegistry((primary,))
+        policy = PluginCompositionPolicy(
+            (
+                PluginCompositionRule(
+                    primary_instance_id=primary.instance_id,
+                    primary_registered_execution_identity=(
+                        primary.registered_execution_identity
+                    ),
+                    auxiliaries=(),
+                ),
+            )
+        )
+        deployment = PluginCompositionDeployment(
+            primary_registry,
+            providers,
+            policy,
+        )
+        deployment_digest = deployment.deployment_digest
+        self.assertIsNot(deployment.primary_registry, primary_registry)
+        self.assertIsNot(deployment.capability_providers, providers)
+
+        package_identity = "package-sha256:" + "9" * 64
+        late_plugin = ParseOnlyPlugin()
+        with (
+            patch(
+                "router_dump_analyzer.ingestion_pipeline."
+                "executable_plugin_fingerprint",
+                return_value=package_identity,
+            ),
+            patch(
+                "router_dump_analyzer.ingestion_pipeline."
+                "executable_module_target_fingerprint",
+                side_effect=PluginExecutableIdentityError(
+                    "target attestation unavailable"
+                ),
+            ),
+        ):
+            late = primary_registry.register(
+                late_plugin,
+                instance_id="late-inline-only",
+            )
+        with patch(
+            "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+            return_value=package_identity,
+        ):
+            providers.add_registered(late)
+
+        self.assertEqual(len(primary_registry.records()), 2)
+        self.assertEqual(len(providers.records()), 2)
+        self.assertEqual(deployment.primary_registry.records(), (primary,))
+        self.assertEqual(deployment.capability_providers.records(), (primary,))
+        self.assertEqual(deployment.deployment_digest, deployment_digest)
+        with self.assertRaisesRegex(RuntimeError, "sealed"):
+            deployment.primary_registry.register(ParseOnlyPlugin())
+        with self.assertRaisesRegex(RuntimeError, "sealed"):
+            deployment.capability_providers.add_registered(primary)
+
     def test_context_is_frozen_and_exposes_only_resolved_state_dir(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             context = PluginCompositionDeploymentContext(
@@ -231,8 +354,21 @@ class PluginCompositionDeploymentTests(unittest.TestCase):
         self.assertEqual(len(received), 1)
         self.assertIsNot(received[0], supplied)
         self.assertEqual(received[0], supplied)
-        self.assertIs(loaded.primary_registry, deployment.primary_registry)
-        self.assertIs(exact.capability_providers, deployment.capability_providers)
+        self.assertIsNot(loaded.primary_registry, deployment.primary_registry)
+        self.assertIsNot(
+            exact.capability_providers,
+            deployment.capability_providers,
+        )
+        self.assertEqual(
+            loaded.primary_registry.records(),
+            deployment.primary_registry.records(),
+        )
+        self.assertEqual(
+            exact.capability_providers.records(),
+            deployment.capability_providers.records(),
+        )
+        self.assertEqual(loaded.deployment_digest, deployment.deployment_digest)
+        self.assertEqual(exact.deployment_digest, deployment.deployment_digest)
 
     def test_loader_bounds_failures_and_preserves_process_control(self) -> None:
         secret = r"failed at C:\private\proprietary\deployment.py"

@@ -616,6 +616,11 @@ capability registry. A changed configuration
 MUST use a new instance ID even when two revisions never select both
 configurations together; otherwise perspective identity would be ambiguous.
 Providers may come from separate primary-parser registries.
+A registry-derived `inline_only` record MAY remain in a caller-owned mutable
+provider directory for trusted local, unbound capability execution. It MUST NOT
+bind an execution-plan pin: `PlanBoundCapabilityRouter`, revision-set routing,
+child-safe provider snapshots, and every durable composition edge reject it as
+stale authority.
 
 The router digest-verifies and detaches the selected revision plan, requires
 one primary parser, resolves only pins whose exact capability plus optional
@@ -663,6 +668,10 @@ configured execution identities and policy digest, not plug-in objects,
 configuration values, or proprietary platform labels. Extra provider releases
 MAY remain registered for historical plans, but no plan may use an unpinned
 fallback.
+Construction takes sealed exact snapshots of both registries before validation
+and digesting. Later registration in the caller-owned mutable containers cannot
+change deployment authority, and the registries exposed by the descriptor
+reject further registration.
 
 `LoadedPlugin.register()` MAY receive explicit `instance_id` and
 `configuration_digest` coordinates from that trusted deployment. A deployment
@@ -1114,10 +1123,13 @@ perspective, optional canonical seed resources, a hard `max_records` output
 bound, and a cumulative `max_world_reads` input bound. The world has already
 been resolved to the requested temporal basis and is wrapped by the executor to
 enforce the smaller of request and core limits. The plug-in output is a
-streaming iterable of `TopologyProjectionRecord` or diagnostics; the executor
-returns a validated `TopologyExecutionResult`. This callable boundary is
-implemented even though the current runtime-v2 session does not yet install a
-topology provider.
+streaming iterable of `TopologyProjectionRecord`, `ConnectorClaim`, or
+diagnostics; the executor returns a validated `TopologyExecutionResult`.
+A runtime-v2 host that configures these optional providers installs them
+through the immutable revision-set router, supplies reconstructed worlds per
+member, and publishes the resulting records and federated connector outcomes
+to topology and route consumers. The standard parser runtime does not invent
+or auto-install an undeclared topology provider.
 
 Each projection record repeats the selected IDs and contains exactly one typed
 payload:
@@ -1143,6 +1155,17 @@ record projection/perspective IDs match the request and declared schema, checks
 canonical references and limits, then materializes/serves the intervals. A
 plugin must use `unknown` rather than omit a projected object merely because the
 selected status perspective has no answer.
+
+In a multi-node composition, the host supplies each invocation's already
+reconstructed `ResourceStateView` mapping through the core-owned topology world
+state provider. The selected plug-in reads those facts only through
+`ReadOnlyWorld`; it must not freeze a dump, node ID, revision, or time-varying
+topology into constructor state. This keeps the module-level process target
+stateless and reproducible while member, revision, perspective, and temporal
+basis remain core-qualified coordinates. The provider hook is composition
+plumbing, not a second plug-in semantic API: it returns typed resource states,
+and the device plug-in still owns which of those states become topology records
+or connector claims.
 
 When a plug-in supplies a normalized topology resource in compact replay form,
 `initial_status` and `initial_state` establish its first known values and
@@ -1350,6 +1373,40 @@ qualifies the local endpoint with `GlobalResourceRef` and wraps the pair as a
 `FederatedConnectorClaim`; member, immutable revision, and plug-in-instance
 scope therefore cannot be lost during assembly matching.
 
+This is an implemented path, not a protocol-only declaration.
+`TopologyProjectionOutput` is the exact union of
+`TopologyProjectionRecord | ConnectorClaim | PluginDiagnostic`, so an
+advertised `TOPOLOGY_PROJECTION` returns local records and claims from the same
+`project_topology()` iterator. Every used policy must appear in
+`PluginSchema.connector_match_policies`. `PluginCapabilityExecutor` validates
+the declaration, complete ordered typed arguments, request perspective,
+validity, evidence, and endpoint membership before returning detached records,
+claims, policies, and independent completeness flags. The endpoint must be a
+resource emitted anywhere in the bounded projection stream or an exact state
+visible through that invocation's bounded world.
+
+Each executable `ConnectorClaim` carries a normalized `link_type` (default
+`"connector"`) and a typed `InterNodeLinkPresentation` (default route-trace
+role `include`). These values are part of the detached claim contract, not
+labels inferred by core from resource names, roles, or argument values.
+All topology payload identifiers and roles must be exact built-in `str`
+values; mutable string-like objects and `str` subclasses are rejected before
+the payload can cross into core-owned storage.
+
+```python
+ConnectorClaim(
+    # required identity, endpoint, policy, arguments, provenance, and quality
+    link_type="underlay.adjacency",
+    presentation=InterNodeLinkPresentation(
+        route_trace=InterNodeRouteTraceRole.INCLUDE,
+    ),
+)
+```
+
+Authors may omit these two fields only when the neutral `connector`/`include`
+defaults are semantically correct. `OVERLAY` is the other plug-in-declarable
+route-trace role; `CONFLICT` remains core-only.
+
 Cross-node matching beyond an explicitly declared exact-token contract belongs
 to a separate allowlisted federation/linker plug-in. It declares the claim
 contracts it accepts and emits validated inter-node link records with candidate
@@ -1371,6 +1428,143 @@ tuple, while `linker` names the allowlisted `FederationLinkerPlugin`. Only the
 latter receives a bounded `FederationLinkRequest`. It returns bounded
 `FederationLinkResult` records and `FederationMatchCandidate` values; it cannot
 read node worlds, raw artifacts, or mutate a node-local claim.
+
+`TopologyFederationCoordinator` resolves every device provider through the
+immutable `RevisionSetCapabilityRouter`, qualifies claims, rejects policy
+drift, filters claim validity at each selected member's resolved time, and
+groups only identical `(claim_contract_id, match_policy_id)` declarations.
+`FederationLinkExecutor` runs core exact-token matching or the frozen
+allowlisted linker and retains matched, ambiguous, unresolved, and conflicting
+results with execution provenance. The multi-node topology response retains
+all of those bounded audit outcomes in `connector_resolutions[]`; they do not
+all become graph edges. Only complete, non-truncated matched results with
+complete qualified endpoints become authoritative `inter_node_links[]` for
+topology consumers. Unresolved, ambiguous, conflicting, incomplete, and
+truncated results remain resolution audit material. Record-only topology
+plug-ins remain valid and produce an empty federation assembly.
+
+Every validity envelope is half-open, and connector claims are evaluated over
+the bound world's resolved uncertainty interval. The selection's
+`basis_time_ns` MUST equal the world's `requested_time_ns`. A bounded claim is
+authoritative only when `valid_from_ns <= resolved_at_min_ns` and
+`resolved_at_max_ns < valid_to_ns`, with either validity bound optional. A
+claim wholly before or after the interval is inactive. A validity boundary
+that crosses the interval, or a bounded claim with no resolved member basis,
+is excluded and reported as scoped incomplete coverage. The corresponding
+half-open gate applies independently to typed resource, endpoint, and link
+records.
+Inactive and duplicate claims still count against the input claim bound before
+temporal filtering, so an inactive flood cannot bypass the coordinator budget.
+Exact frozen route coordinates are non-empty strings; the coordinator neither
+coerces coordinate types nor substitutes a revision. Optional projection
+availability comes from resolving that exact immutable capability route, not
+from plug-in metadata.
+
+Coordinator result bounds never exceed the selected executor's own result
+limit. `total_count` is authoritative only for a complete provider stream;
+otherwise it is unknown, while `returned_count`, `truncated`, and `complete`
+describe the bounded page exactly. Failure of one optional member or linker
+group produces a scoped reason-coded incomplete result and does not discard
+successful members or groups. Same-member fanout and repeated exact tokens
+remain candidate ambiguity, invariant under input permutation. Typed rendering
+qualifies resource/status lookup by member, revision, projection, and
+perspective rather than applying a last-writer-wins merge.
+
+The normalized response includes typed endpoint records and preserves bounded
+claim/result/candidate properties, evidence, provenance, quality, and grouped
+ambiguity audits. Only a complete, non-truncated `matched` typed federation
+record whose `presentation.route_trace` is `include` is authoritative for a
+strict route boundary. `overlay` is presentation-only and MUST NOT become a
+forwarding hop. A directed record MUST match the route's ordered source and
+target by exact member, revision, plug-in instance, projection, perspective,
+and typed resource identity; the reverse order MUST remain unresolved. An
+undirected record MAY match either exact order. Missing, inconsistent, or
+partially qualified typed endpoint identity MUST fail closed. Ambiguous,
+conflicting, incomplete, truncated, and overlay evidence remains inspectable
+but unresolved for that decision.
+
+Identity resolution and operational reachability are separate decisions. A
+matched typed link whose normalized `operational_status` is `unknown` proves
+only the connector identity. In `strict` mode its route boundary MUST remain
+inactive and unresolved, with `observed: false` and reason
+`typed_boundary_operational_status_unknown`. In `best_effort` mode core MAY
+retain the plug-in-selected branch as provisional
+`best_effort_inferred` reachability, but it MUST remain `observed: false`, use
+reduced confidence, and carry that same reason plus explicit core-inference
+provenance. Neither mode may describe unknown operational state as complete
+observed evidence. `usable` may be active and observed; `unusable` is complete
+observed evidence of an inactive boundary.
+
+A generated next hop that selects this typed path MUST carry exactly one
+core-generic typed entry of this shape in `topology_references[]` (other
+reference kinds may coexist):
+
+```json
+{
+  "reference_kind": "typed_inter_node_link",
+  "source_endpoint": {
+    "node_id": "node-a",
+    "resource_id": "interface/a",
+    "typed_resource_key": {
+      "namespace": "example",
+      "node": "node-a",
+      "layer": "underlay",
+      "kind": "INTERFACE",
+      "parts": [
+        {"name": "name", "value": {"type": "string", "value": "a"}}
+      ]
+    }
+  },
+  "target_endpoint": {
+    "node_id": "node-b",
+    "resource_id": "interface/b",
+    "typed_resource_key": {
+      "namespace": "example",
+      "node": "node-b",
+      "layer": "underlay",
+      "kind": "INTERFACE",
+      "parts": [
+        {"name": "name", "value": {"type": "string", "value": "b"}}
+      ]
+    }
+  }
+}
+```
+
+Each endpoint MUST name the declared next-hop node and local resource and MUST
+carry the plug-in's exact typed `ResourceKey`. It MUST NOT predict a
+core-generated topology link ID or supply member, revision, plug-in-instance,
+projection, or perspective qualification. Core binds the two keys to frozen
+topology endpoint candidates, obtains their complete qualified resource
+references, and resolves exactly one link through `_matching_link` endpoint
+comparison. A declared typed reference is authoritative for that decision:
+malformed identity, no exact result, more than one exact result, reversed
+directed evidence, `overlay`, incomplete federation, or truncation MUST leave
+the boundary unresolved and MUST NOT fall back to a connectivity-domain
+reference in the same next-hop declaration. A next hop with no typed reference
+retains the legacy exact domain/attachment join; legacy non-typed route links
+retain unordered local-resource compatibility matching. The enclosing
+topology evidence MUST additionally report
+`typed_federation_complete: true` and `typed_federation_truncated: false`.
+`inter_node_links_truncated` MUST also be present and `false`. Global partial
+or truncated typed coverage, a truncated link page, or an unknown page flag
+MUST invalidate route use even when the selected link's local flags appear
+complete. Record-preview completeness is independent and MUST NOT invalidate
+route use when typed claim coverage and the authoritative link page remain
+complete. For a resolved boundary, `graph_presentation.semantic_owner` MUST
+equal the authoritative link's validated `inference.owner`:
+`core_exact_matcher` or `federation_linker_plugin`. Its resolution narrative,
+`text_source`, and `core_role` MUST distinguish core exact matching from a
+linker result. The response-level
+`semantic_ownership.boundary_resolution` MUST be a closed summary of owners
+actually used by complete rendered boundaries: one exact owner,
+`node_topology_plugin`, `mixed`, or `none`.
+
+Allowlisted linker registration and `link()` execute synchronously on the
+calling thread as trusted inline extension code. This boundary exposes no
+timeout field, exception, or call argument: Python threads cannot provide a
+killable deadline. A deployment that requires cancellation must place the
+linker behind a separately supervised process boundary.
 
 Multi-node watermark scope includes member ID, plug-in run, projection, and
 perspective. Relative assembly queries resolve those watermarks independently;
@@ -1623,6 +1817,16 @@ it must not return an apparently complete topology. Match arguments, candidate
 sets, source-resource references, property depth, and serialized bytes have
 independent core caps.
 
+`max_claims` is independent of `max_records`; core also applies
+`PluginCapabilityLimits.max_topology_claims`. `TopologyExecutionResult` reports
+`records_complete` and `claims_complete` separately. The bounded consumer may
+scan one extra output to distinguish exactly-full from truncated streams, and
+an aggregate scan ceiling prevents either output category from hiding an
+unbounded run of the other. Assembly-level limits then bound provider
+invocations, qualified claims, policy groups, results, candidates, diagnostics,
+evidence, and property values. Truncation propagates to federation and API
+completeness instead of looking like a complete no-match.
+
 If a plugin needs Polars/Lark/TextFSM, those libraries remain in its worker image;
 they are not forced on every plugin.
 
@@ -1718,6 +1922,18 @@ inspectable. A compatibility-only local/test embedding may explicitly pass
 `allow_manifest_identity=True`; the headless CLI and every durable
 `ControlPlane` reject that fallback before state is created.
 
+The opt-out applies consistently to both registration identity and process
+target compatibility. If package identity succeeds but a stateful target
+cannot be statically attested, a non-strict, registry-derived registration is
+marked `inline_only`; exact package bytes are still revalidated before trusted
+inline capability use. It has no subprocess bootstrap and is rejected by
+PROCESS execution and durable pipelines. A strict registry, an explicit
+loader-supplied package hash, or any durable use remains fail-closed and never
+downgrades to this compatibility form.
+Durable pipelines seal exact registry/provider snapshots at construction;
+later registration in either caller-owned container cannot enter probing,
+selection, execution-plan publication, or plan-bound capability routing.
+
 Explicit selection requires an idempotency header and the client must echo all
 four returned values. Core durably binds the scope, key, request digest, and
 selected import. Replaying the exact request returns the current descriptor
@@ -1796,7 +2012,40 @@ unless it names an explicit module-level `plugin_process_module_target`; a
 class-constructor target cannot satisfy that configured-state assertion.
 Configured custom coordinators and decoders in the same registration likewise
 require their explicit coordinator/decoder module targets. Installed and
-direct-module loaders already supply the plug-in target. Inline-only trusted
+direct-module loaders already supply the plug-in target. An installed or
+direct-module plug-in whose exported live instance carries parent-only runtime
+integration MAY instead declare this exact concrete-class attribute:
+
+```python
+from router_dump_analyzer.plugin_api import AnalyzerPluginBase
+from router_dump_analyzer.plugin_loading import (
+    PluginProcessBootstrapDescriptor,
+)
+
+class MyPlugin(AnalyzerPluginBase):
+    plugin_process_bootstrap: PluginProcessBootstrapDescriptor = (
+        PluginProcessBootstrapDescriptor(
+            module_target="my_plugin:MyPlugin",
+            construct_class=True,
+        )
+    )
+```
+
+Core reads `plugin_process_bootstrap` only from `type(plugin).__dict__`; an
+inherited value, property, other descriptor, descriptor subclass, or instance
+attribute is not authority. The value MUST be an exact immutable
+`PluginProcessBootstrapDescriptor`, its `module_target` MUST already be the
+normalized `package.module:attribute` form, and `construct_class` MUST be an
+exact boolean. Registration proves that a constructor target resolves to the
+live plug-in's exact concrete class and that the no-argument child instance
+reproduces the same manifest, schema, executable identity, and registration.
+The descriptor carries no configuration or live object. Hooks needed for
+probe and ingestion therefore MUST work on the no-argument instance without a
+runtime attribute. Parent-only application/session adapters MAY be attached to
+the exported live instance after construction; they remain outside the parser
+process target and do not weaken the existing configured-state rule above.
+
+Inline-only trusted
 embeddings do not acquire a process claim merely by registering the live
 object. The complete non-recursive scalar/tuple bootstrap is immutable
 registered-execution identity material; access rechecks the registration
@@ -1879,6 +2128,12 @@ follow the same backpressure and size rules as other outputs. Conformance
 compares a delta-maintained projection with a clean full projection, checks
 removal of stale objects, and rejects invalid references, perspectives, budget
 overruns, or IR versions.
+
+The capability executor snapshots the authority-bearing request fields before
+plug-in entry and passes a separate request object to the hook. Returned
+mutations are checked against the untouched core snapshot. Mutating the hook
+request therefore cannot rewrite the negotiated IR, qualified perspective, or
+budgets, and MUST NOT be used as a way to change caller intent.
 
 ### Coordinator-normalized node route choices
 
@@ -1986,6 +2241,13 @@ and packet-before state. When an exact steering rule wins, it also verifies
 forced-rule provenance and any declared candidate, packet-after, disposition,
 or action-contract override. The node plug-in remains the sole interpreter of
 its forwarding object and action contracts.
+
+The executor deep-snapshots the step/member, qualified perspective, forwarding
+and ingress keys, packet state, lookup context, and every steering rule twice:
+one snapshot remains core authority and a separate copy is passed to the
+plug-in. Result validation uses only the authority snapshot. A plug-in cannot
+add or rewrite a steering rule after entry and then claim a `USER_FORCED`
+transition; such a result MUST fail closed as unauthorized user intent.
 
 `ForwardingSteeringRule` is an explicit user override for one exact step. It
 may additionally require exact equality with `expected_before`; matching rules
@@ -2327,6 +2589,29 @@ emit no traceback and MUST NOT convert `KeyboardInterrupt`, `SystemExit`, or
 - Bounded world reads and output iterators stop at their configured limits and
   close the underlying iterators; recoverable diagnostics remain in their typed
   result envelope.
+
+For any topology plug-in that emits connector claims, the repository-level
+acceptance command is:
+
+```text
+python scripts/run_topology_federation_gate.py
+```
+
+It passes only when schema/claim validation, the maintained author-document
+checks, independent record and claim budgets, immutable heterogeneous member
+selection, type-preserving exact
+matching, temporal filtering, unmatched and ambiguous outcomes, policy-drift
+failure, allowlisted linker dispatch, generated browser-response integration,
+directed and presentation-safe route matching, inline-only identity
+compatibility, the demo's live-runtime/PROCESS-safe class-bootstrap split,
+generated `.pyi` drift and structural parity, strict public-API consumer
+typing, and executable frontend behavior all pass. Node.js 18 or
+newer and `npm` are therefore part of this gate. Each phase has a fresh
+bytecode cache and a 300-second deadline; the long generated typed-route HTTP
+integration has its own phase rather than sharing that deadline with the other
+browser-facing API checks. A timeout terminates that phase's
+process tree. A release still runs the complete repository suites after this
+focused gate.
 
 ### Reducers
 

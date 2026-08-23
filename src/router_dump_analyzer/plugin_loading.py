@@ -15,6 +15,9 @@ from .process_control import PROCESS_CONTROL_EXCEPTIONS
 DIRECT_MODULE_DISTRIBUTION_NAME: Final = "direct-module"
 DIRECT_MODULE_DISTRIBUTION_VERSION: Final = "0"
 DIRECT_MODULE_ENTRY_POINT_NAME: Final = "direct-module"
+PLUGIN_PROCESS_BOOTSTRAP_DESCRIPTOR_ATTRIBUTE: Final = (
+    "plugin_process_bootstrap"
+)
 
 
 def _coordinate_text(value: object, label: str, *, maximum: int = 512) -> str:
@@ -59,6 +62,70 @@ class PluginArtifactCoordinates:
             entry_point_name=DIRECT_MODULE_ENTRY_POINT_NAME,
             module_target=normalize_plugin_module_target(target),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class PluginProcessBootstrapDescriptor:
+    """Declare how a live plug-in is reconstructed in a spawned worker.
+
+    The descriptor carries no live object or configuration payload.  It may be
+    declared only as an exact class attribute on the loaded plug-in's concrete
+    implementation.  Registration still proves that this target resolves to
+    the live instance itself or, for ``construct_class=True``, to its exact
+    no-argument implementation class.
+    """
+
+    module_target: str
+    construct_class: bool = False
+
+    def __post_init__(self) -> None:
+        normalized_target = normalize_plugin_module_target(self.module_target)
+        if normalized_target != self.module_target:
+            raise ValueError(
+                "process bootstrap module_target must already be normalized"
+            )
+        if type(self.construct_class) is not bool:
+            raise TypeError("process bootstrap construct_class must be a boolean")
+
+
+def _declared_process_bootstrap(
+    plugin: Any,
+) -> PluginProcessBootstrapDescriptor | None:
+    """Snapshot one inert descriptor without invoking plug-in descriptors."""
+
+    implementation = type(plugin)
+    try:
+        namespace = type.__getattribute__(implementation, "__dict__")
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except BaseException as error:
+        raise RuntimeError(
+            "plug-in process bootstrap descriptor could not be resolved"
+        ) from error
+    if PLUGIN_PROCESS_BOOTSTRAP_DESCRIPTOR_ATTRIBUTE not in namespace:
+        return None
+    declared = namespace[PLUGIN_PROCESS_BOOTSTRAP_DESCRIPTOR_ATTRIBUTE]
+    if type(declared) is not PluginProcessBootstrapDescriptor:
+        raise TypeError(
+            "plug-in process bootstrap must be an exact "
+            "PluginProcessBootstrapDescriptor class attribute"
+        )
+    return PluginProcessBootstrapDescriptor(
+        module_target=declared.module_target,
+        construct_class=declared.construct_class,
+    )
+
+
+def _declared_process_target(
+    plugin: Any,
+    *,
+    default_target: str | None,
+    default_construct_class: bool,
+) -> tuple[str | None, bool]:
+    declared = _declared_process_bootstrap(plugin)
+    if declared is None:
+        return default_target, default_construct_class
+    return declared.module_target, declared.construct_class
 
 
 def _snapshot_artifact_coordinates(
@@ -370,6 +437,11 @@ def load_plugin_entry_point_with_coordinates(
         f"{module_name}:{attribute}"
     )
     plugin = _load_entry_point(entry_point, name=name)
+    process_module_target, process_construct_class = _declared_process_target(
+        plugin,
+        default_target=module_target,
+        default_construct_class=False,
+    )
     assert distribution_name is not None
     assert distribution_version is not None
     return LoadedPlugin(
@@ -380,7 +452,8 @@ def load_plugin_entry_point_with_coordinates(
             entry_point_name=entry_point_name,
             module_target=module_target,
         ),
-        process_module_target=module_target,
+        process_module_target=process_module_target,
+        process_construct_class=process_construct_class,
     )
 
 
@@ -462,10 +535,17 @@ def load_plugin_module_with_coordinates(target: str) -> LoadedPlugin:
     """Load a direct module and retain its explicit direct-module identity."""
 
     coordinates = PluginArtifactCoordinates.direct_module(target)
+    plugin = load_plugin_module(coordinates.module_target)
+    process_module_target, process_construct_class = _declared_process_target(
+        plugin,
+        default_target=coordinates.module_target,
+        default_construct_class=False,
+    )
     return LoadedPlugin(
-        plugin=load_plugin_module(coordinates.module_target),
+        plugin=plugin,
         coordinates=coordinates,
-        process_module_target=coordinates.module_target,
+        process_module_target=process_module_target,
+        process_construct_class=process_construct_class,
     )
 
 
@@ -483,7 +563,16 @@ def loaded_entry_point(
         return loaded
     # Existing dependency-injected loaders intentionally remain supported.
     # They may return ``LoadedPlugin`` when a test/deployment has coordinates.
-    return LoadedPlugin(plugin=loaded)
+    process_module_target, process_construct_class = _declared_process_target(
+        loaded,
+        default_target=None,
+        default_construct_class=False,
+    )
+    return LoadedPlugin(
+        plugin=loaded,
+        process_module_target=process_module_target,
+        process_construct_class=process_construct_class,
+    )
 
 
 def loaded_module(
@@ -502,8 +591,11 @@ def loaded_module(
         process_construct_class = loaded.process_construct_class
     else:
         plugin = loaded
-        process_module_target = _instance_class_target(plugin)
-        process_construct_class = True
+        process_module_target, process_construct_class = _declared_process_target(
+            plugin,
+            default_target=_instance_class_target(plugin),
+            default_construct_class=True,
+        )
     return LoadedPlugin(
         plugin=plugin,
         coordinates=PluginArtifactCoordinates.direct_module(target),
@@ -518,6 +610,8 @@ __all__ = [
     "DIRECT_MODULE_ENTRY_POINT_NAME",
     "LoadedPlugin",
     "PluginArtifactCoordinates",
+    "PLUGIN_PROCESS_BOOTSTRAP_DESCRIPTOR_ATTRIBUTE",
+    "PluginProcessBootstrapDescriptor",
     "installed_plugin_entry_points",
     "load_plugin_entry_point",
     "load_plugin_entry_point_with_coordinates",

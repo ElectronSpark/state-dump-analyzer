@@ -235,6 +235,18 @@ use that registry to publish durable revisions. A top-level regular plug-in
 package does not absorb an unrelated sibling distribution. A preceding
 namespace portion is necessarily conservative: every contributing search root
 enters its identity, including otherwise unrelated namespace siblings.
+
+If that non-strict registry can revalidate package bytes but cannot attest a
+stateful subprocess target, registration is retained only as `inline_only`.
+It may back trusted in-process capability routing with package revalidation,
+but it has no process bootstrap and is rejected by process execution and every
+durable pipeline. Strict mode and explicit artifact/package identities remain
+fail-closed.
+Durable owners take sealed exact snapshots of both primary and provider
+registries before creating queue authority. Later changes to a caller-owned
+local registry cannot enter probe selection or plan publication, and
+plan-bound routers reject `inline_only` records even when an unbound local
+provider directory retains them.
 Ordinary directories, including empty ones, enter the digest because they can
 change import and resource-existence semantics. File reads are bounded by the
 opened handle's declared size plus a growth sentinel and are accepted only when
@@ -572,6 +584,16 @@ construction is reserved for genuinely default-constructed state. A
 non-default plug-in `configuration_digest` disables an inferred class bootstrap
 until an explicit module-instance `plugin_process_module_target` is supplied;
 configured custom coordinator/decoder state requires the corresponding target.
+An installed/direct loader may select a distinct parser process target from an
+exact immutable `plugin_process_bootstrap` attribute on the live plug-in's
+concrete class. Core never invokes a descriptor or inherits that declaration;
+it snapshots the inert normalized target/boolean and later proves the target is
+the same live instance or its exact no-argument concrete class. This is the
+narrow bridge for a live application instance with a parent-only runtime
+adapter: the child reconstructs only the stateless parser class, while artifact
+identity continues to name the installed entry-point instance. No live runtime
+object, configuration payload, or weaker inline-only identity crosses the
+boundary.
 The process-mode pipeline materializes these descriptors at construction, so
 the queue cannot defer this mismatch until its first child execution. The
 complete non-recursive descriptor is itself registered-identity material;
@@ -1106,6 +1128,10 @@ chip matching heuristic to core. Server, headless ingestion, embedded durable
 analysis, and private-analysis CLI roots select this descriptor explicitly and
 pass all three authorities together. The headless operation fingerprint also
 commits to its deployment digest.
+The descriptor snapshots and seals both registries before validating that
+digest. Caller-owned registries remain independently mutable for local use, but
+later additions cannot change the descriptor's record set or deployment
+identity.
 
 Standalone roots spell the selector `--plugin-deployment-module`. The
 interactive analyzer instead uses
@@ -1447,11 +1473,83 @@ matching, corroboration, aliases, one-sided observations, ambiguity, and
 cross-vendor policy belong to an allowlisted federation/linker plug-in. The
 linker receives bounded normalized claims rather than artifacts or database
 access and emits matched, ambiguous, unresolved, or conflicting candidate sets.
+
+The executable bridge is deliberately layered. `project_topology()` emits the
+`TopologyProjectionOutput` union, including node-local `ConnectorClaim`
+values. `PluginCapabilityExecutor` independently bounds and validates records
+and claims. `RevisionSetCapabilityRouter` selects each exact immutable member
+provider. `TopologyFederationCoordinator` adds `GlobalResourceRef` identity,
+checks temporal validity and cross-provider policy agreement, and delegates one
+group at a time to `FederationLinkExecutor`. The executor owns type-preserving
+exact-token equality and invokes a plug-in only for an explicitly declared
+`linker` policy. The topology service then exposes those normalized outcomes as
+inter-node link and resolution records; the route service consumes the same
+topology response as route evidence. No device plug-in sees another member's
+world or artifact.
+
+The composition root supplies a core-typed topology world-state provider for
+this invocation path. For each immutable member provider it returns the
+reconstructed `ResourceStateView` mapping; core copies those states into the
+resolved `_TopologyProjectionWorld`, and `PluginCapabilityExecutor` enforces
+the request's cumulative world-read budget. This is data-plane plumbing, not a
+second semantic hook. The plug-in interprets only its own typed states through
+`ReadOnlyWorld`. A dump, revision, node ID, or time-varying claim list must not
+be hidden in a configured plug-in instance: the scalar process bootstrap binds
+a configuration digest but does not transport the configuration. Stateless
+module-level providers remain reproducible in spawned workers while
+heterogeneous member and version selection stays in the immutable execution
+plan.
+
+This flow coexists with the older generated segment/attachment projection so
+the demo can compare the two representations without making core depend on
+demo vocabulary. Connector resolutions retain every bounded federation audit
+outcome. They are not all graph edges: only complete, non-truncated matched
+results with complete qualified endpoints enter authoritative
+`inter_node_links[]`. Those graph links may be suppressed from the physical
+drawing when the equivalent shared-domain view is available. For route use,
+the link must additionally declare route-trace role `include`; `overlay`
+remains presentation only. Directed evidence is joined against the route's
+ordered source and target using the exact member, revision, provider,
+projection, perspective, and typed resource identity. Reversal or incomplete
+identity fails closed; undirected evidence may match either exact order. New
+providers should use the typed path; record-only providers remain backward
+compatible.
+
+Connector identity and operational reachability remain orthogonal after that
+join. A matched link with unknown normalized operational status is unresolved
+and inactive in strict tracing. Best-effort tracing may preserve the selected
+branch as provisional inferred reachability, but the segment remains
+unobserved, lower-confidence, reason-coded, and explicitly attributed to core
+inference. Only usable or unusable status is complete observed operational
+evidence, and unusable status cannot form an active hop.
+
 If otherwise paired claims disagree on normalized link type, the coordinator
 emits one deterministic conflict with unknown link type/operational state,
 sorted distinct claimed types, and reason `plugin_link_type_mismatch`; input
 order never selects a winner. A presentation-role disagreement is also
 fail-closed for route use.
+
+All typed validity envelopes are half-open and are evaluated against each
+member world's resolved `[resolved_at_min_ns, resolved_at_max_ns]` uncertainty
+interval. The selection's requested `basis_time_ns` must equal that world's
+`requested_time_ns`. A claim is authoritative only when its validity covers
+the whole resolved interval. A wholly disjoint claim is inactive; a validity
+boundary crossing or unknown basis for a bounded claim is incomplete rather
+than guessed current. Claim accounting and duplicate detection occur before
+temporal filtering, and coordinator output bounds are capped by the executor's
+own limits. One member/linker failure is contained as scoped incomplete
+coverage while other members and groups survive. Frozen route coordinates are
+exact non-empty strings and capability availability is established by the
+immutable route itself; neither coordinate coercion, revision fallback, nor a
+separate metadata gate participates.
+
+Rendering retains typed endpoints plus bounded claim/result/candidate
+properties, evidence, provenance, quality, and ambiguity audits. Resource and
+status rows remain qualified by projection and perspective, preventing
+last-writer-wins collapse. Same-member fanout is an order-invariant ambiguity.
+Only complete, non-truncated matched typed evidence may satisfy a strict route
+boundary; ambiguous, conflicting, incomplete, or truncated evidence remains
+inspectable but cannot close the boundary.
 
 Shared media use the same graph algebra. A plug-in projects a subnet or other
 connectivity domain as a `TopologyResourceRecord` vertex and projects every
@@ -1494,13 +1592,32 @@ type-preserving comparison; there is no lossy `str()` fallback.
 
 Generated route candidates keep the topology join declarative. Coverage owns
 all forward/reverse candidate sequences; the node plug-in projection owns the
-per-candidate, per-visit forwarding decision and names one exact
-connectivity-domain matcher/key with the source and target attachment resources.
-Core performs the reusable equality join against the frozen topology snapshot.
-It requires one usable domain and one current usable attachment per side and
-fails closed on missing, ambiguous, conflicting, truncated, or down evidence.
-It never parses prefixes, addresses, VLANs, labels, node names, or explanation
-text to reconstruct the relationship.
+per-candidate, per-visit forwarding decision. A legacy next hop names one exact
+connectivity-domain matcher/key with the source and target attachment
+resources. A typed next hop instead carries a `typed_inter_node_link`
+reference with the ordered endpoint nodes, local next-hop resource IDs, and
+plug-in-owned typed resource keys. The forwarding plug-in does not know a
+core-generated link hash or frozen member/provider qualification. Core binds
+the declared keys to the frozen topology's fully qualified endpoint
+references, then resolves that pair through `_matching_link`. A declared typed
+reference is authoritative for the decision and cannot downgrade to a
+coexisting domain reference: malformed identity, no unique exact match,
+reversed-directed, overlay, incomplete, or truncated evidence leaves the
+boundary unresolved. The route-side join also requires globally complete,
+non-truncated typed federation evidence and a complete inter-node-link page;
+a locally complete link cannot escape an incomplete assembly envelope or page
+slice. Resource-record preview completeness remains an independent budget and
+does not taint a complete typed claim/link result. A resolved boundary derives
+its presentation semantic owner, narrative, and narrative source from the
+link's validated inference owner, preserving the
+distinction between core exact matching and an allowlisted linker. The
+response-level boundary owner is a closed aggregation of the complete rendered
+boundary owners, not a hardcoded linker attribution. If there is no typed
+reference, the existing domain path still requires one usable domain and one
+current usable attachment per side and fails closed on missing, ambiguous,
+conflicting, truncated, or down evidence. Neither path parses prefixes,
+addresses, VLANs, labels, node names, or explanation text to reconstruct the
+relationship.
 
 Legacy pairwise inter-node links remain a route-trace compatibility projection,
 not the physical shared-medium rendering. When segment records are present, the
@@ -1592,6 +1709,11 @@ references, then opens/closes `forwarding_interval` rows. Conformance tests
 periodically compare incremental output with a clean full projection so stale
 derived objects cannot accumulate silently. A plug-in never performs LPM or
 returns a final route answer; those algorithms remain core-owned.
+
+Before plug-in entry, the executor snapshots the projection's authoritative
+IR, qualified perspective, and budgets and gives the hook a separate request
+object. Output validation refers only to the retained snapshot, preventing a
+hook from rewriting negotiated scope between validation and use.
 
 The node browser uses a smaller capability-gated adapter before asking for a
 route explanation. The coordinator advertises bounded node/revision-qualified
@@ -1686,6 +1808,10 @@ contracts:
    cycle evidence unknown rather than permitting a guessed transformation. A
    executor checks the request step, packet-before state, and any exact user
    steering/candidate coupling before the traversal accepts the result.
+   The authority request and plug-in request are separate deep snapshots of
+   the step/member, perspective, keys, packet, lookup context, and steering
+   rules. A rule injected or rewritten by the hook cannot authorize a
+   `user_forced` transition.
 5. A packet-size observation and MTU limit are compared only when both are
    complete and use the exact same opaque basis contract. Core performs integer
    arithmetic; the plug-in supplies the basis, overhead, effective limit, and
@@ -1818,9 +1944,11 @@ unknown. The node plug-in also owns normalized endpoint attachment declarations
 and the local decision that a forwarding action delivered to one of them. The
 core validates references and ordering, inserts orchestration envelopes,
 exact-matches the declared terminal to the requested endpoint, and never
-rewrites vendor meaning. The federation linker owns inter-node boundary and
-endpoint-attachment candidate matching with evidence; it does not choose a
-node's route or infer delivery from display text.
+rewrites vendor meaning. Core owns type-preserving equality only for a
+declared exact-token boundary; an allowlisted federation linker owns semantic
+inter-node boundary and endpoint-attachment candidate matching for a declared
+linker policy. Neither chooses a node's route or infers delivery from display
+text.
 
 For `single_active`, only the selected primary represents the forwarding path;
 standbys are reported for failover explanation and must not be rendered as

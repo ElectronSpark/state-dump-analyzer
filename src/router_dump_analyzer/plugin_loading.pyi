@@ -3,11 +3,12 @@ from dataclasses import dataclass
 from importlib import metadata
 from typing import Any, Final
 
-__all__ = ['DIRECT_MODULE_DISTRIBUTION_NAME', 'DIRECT_MODULE_DISTRIBUTION_VERSION', 'DIRECT_MODULE_ENTRY_POINT_NAME', 'PluginArtifactCoordinates', 'LoadedPlugin', 'installed_plugin_entry_points', 'normalize_plugin_module_target', 'load_plugin_entry_point', 'load_plugin_entry_point_with_coordinates', 'load_plugin_module', 'load_process_bootstrap_target', 'load_plugin_module_with_coordinates', 'loaded_entry_point', 'loaded_module']
+__all__ = ['DIRECT_MODULE_DISTRIBUTION_NAME', 'DIRECT_MODULE_DISTRIBUTION_VERSION', 'DIRECT_MODULE_ENTRY_POINT_NAME', 'PLUGIN_PROCESS_BOOTSTRAP_DESCRIPTOR_ATTRIBUTE', 'PluginArtifactCoordinates', 'PluginProcessBootstrapDescriptor', 'LoadedPlugin', 'installed_plugin_entry_points', 'normalize_plugin_module_target', 'load_plugin_entry_point', 'load_plugin_entry_point_with_coordinates', 'load_plugin_module', 'load_process_bootstrap_target', 'load_plugin_module_with_coordinates', 'loaded_entry_point', 'loaded_module']
 
 DIRECT_MODULE_DISTRIBUTION_NAME: Final[str]
 DIRECT_MODULE_DISTRIBUTION_VERSION: Final[str]
 DIRECT_MODULE_ENTRY_POINT_NAME: Final[str]
+PLUGIN_PROCESS_BOOTSTRAP_DESCRIPTOR_ATTRIBUTE: Final[str]
 
 @dataclass(frozen=True, slots=True)
 class PluginArtifactCoordinates:
@@ -18,6 +19,12 @@ class PluginArtifactCoordinates:
     def __post_init__(self) -> None: ...
     @classmethod
     def direct_module(cls, target: str) -> PluginArtifactCoordinates: ...
+
+@dataclass(frozen=True, slots=True)
+class PluginProcessBootstrapDescriptor:
+    module_target: str
+    construct_class: bool = ...
+    def __post_init__(self) -> None: ...
 
 @dataclass(frozen=True, slots=True)
 class LoadedPlugin:

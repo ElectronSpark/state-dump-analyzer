@@ -398,6 +398,16 @@ must explicitly construct `PluginRegistry(..., allow_manifest_identity=True)`;
 headless and server control planes reject that registry. Clients always echo
 the returned value.
 
+If only the stateful process target is unattestable while the package digest is
+valid, that non-strict local registry records `inline_only` compatibility and
+continues to revalidate package bytes for trusted inline calls. It supplies no
+worker bootstrap and is rejected by headless PROCESS execution and durable
+publication. Strict and explicit-digest registrations remain fail-closed.
+At construction, the durable control plane takes sealed exact snapshots of the
+primary and capability-provider registries. Registrations added later to the
+caller's local containers cannot enter probing or publication, and plan-bound
+capability routing rejects compatibility records retained for local use.
+
 Content-addressed publication uses verified same-directory temporary files
 and atomic replacement. A truncated final object left by an interrupted older
 writer is quarantined and self-healed after digest verification. SQLite commit

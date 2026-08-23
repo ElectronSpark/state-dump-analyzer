@@ -11,6 +11,7 @@ from router_dump_analyzer.plugin_loading import (
     DIRECT_MODULE_ENTRY_POINT_NAME,
     LoadedPlugin,
     PluginArtifactCoordinates,
+    PluginProcessBootstrapDescriptor,
     load_plugin_entry_point_with_coordinates,
     load_plugin_module,
     load_plugin_module_with_coordinates,
@@ -146,6 +147,66 @@ class PluginModuleLoadingTests(unittest.TestCase):
             loaded.coordinates.module_target,
             "tests.support.plugin_module_fixture:MODULE_PLUGIN",
         )
+
+    def test_exact_class_descriptor_selects_process_constructor(self) -> None:
+        loaded = load_plugin_module_with_coordinates(
+            "tests.support.plugin_module_fixture:DECLARED_PROCESS_PLUGIN"
+        )
+
+        self.assertEqual(
+            loaded.process_module_target,
+            "tests.support.plugin_module_fixture:DeclaredProcessPlugin",
+        )
+        self.assertTrue(loaded.process_construct_class)
+
+        entry_point = metadata.EntryPoint(
+            name="declared_process",
+            value=(
+                "tests.support.plugin_module_fixture:"
+                "DECLARED_PROCESS_PLUGIN"
+            ),
+            group=PLUGIN_ENTRY_POINT_GROUP,
+        )
+        vars(entry_point)["dist"] = _FixtureDistribution()
+        entry_loaded = load_plugin_entry_point_with_coordinates(
+            "declared_process",
+            candidates=(entry_point,),
+        )
+        self.assertEqual(
+            entry_loaded.process_module_target,
+            "tests.support.plugin_module_fixture:DeclaredProcessPlugin",
+        )
+        self.assertTrue(entry_loaded.process_construct_class)
+
+    def test_process_descriptor_is_exact_local_and_immutable(self) -> None:
+        descriptor = PluginProcessBootstrapDescriptor(
+            "tests.support.plugin_module_fixture:DeclaredProcessPlugin",
+            construct_class=True,
+        )
+        with self.assertRaises((AttributeError, TypeError)):
+            descriptor.module_target = "tests.hostile:plugin"  # type: ignore[misc]
+        with self.assertRaisesRegex(ValueError, "already be normalized"):
+            PluginProcessBootstrapDescriptor(
+                " tests.support.plugin_module_fixture:DeclaredProcessPlugin "
+            )
+        with self.assertRaisesRegex(TypeError, "construct_class"):
+            PluginProcessBootstrapDescriptor(
+                "tests.support.plugin_module_fixture:DeclaredProcessPlugin",
+                construct_class=1,  # type: ignore[arg-type]
+            )
+
+        inherited = load_plugin_module_with_coordinates(
+            "tests.support.plugin_module_fixture:INHERITED_PROCESS_PLUGIN"
+        )
+        self.assertEqual(
+            inherited.process_module_target,
+            "tests.support.plugin_module_fixture:INHERITED_PROCESS_PLUGIN",
+        )
+        self.assertFalse(inherited.process_construct_class)
+        with self.assertRaisesRegex(TypeError, "exact.*class attribute"):
+            load_plugin_module_with_coordinates(
+                "tests.support.plugin_module_fixture:INVALID_PROCESS_PLUGIN"
+            )
 
     def test_installed_coordinate_descriptors_are_contained(self) -> None:
         private = r"coordinate failed at C:\private\tenant\plugin.py"

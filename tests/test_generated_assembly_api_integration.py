@@ -431,7 +431,18 @@ class GeneratedAssemblyApiIntegrationTests(unittest.TestCase):
             {item["node_id"] for item in capabilities["nodes"]},
             set(self.descriptors),
         )
-        self.assertEqual(capabilities["inter_node_matchers"], [])
+        self.assertEqual(len(capabilities["inter_node_matchers"]), 1)
+        matcher = capabilities["inter_node_matchers"][0]
+        self.assertEqual(
+            matcher["matcher_id"],
+            "demo.topology.connector.exact.v1",
+        )
+        self.assertEqual(
+            matcher["claim_contract_id"],
+            "demo.topology.connector.v1",
+        )
+        self.assertEqual(matcher["match_semantics"], "exact_token")
+        self.assertEqual(matcher["owner"], "core_exact_matcher")
         self.assertEqual(
             {item["node_id"] for item in snapshot["nodes"]},
             set(self.descriptors),

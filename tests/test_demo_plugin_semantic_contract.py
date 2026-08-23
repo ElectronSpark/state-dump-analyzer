@@ -9,7 +9,6 @@ import tempfile
 import unittest
 from importlib.metadata import entry_points
 from pathlib import Path
-from types import FunctionType
 from unittest.mock import patch
 
 from rsl_demo_generator import (
@@ -24,16 +23,19 @@ from rsl_demo_plugin import (
     PLATFORM_ID,
     PLUGIN_ENTRY_POINT_NAME,
     SOFTWARE_VERSION,
+    STATUS_FILENAME,
     render_conformance_status_fixture,
 )
-from rsl_demo_plugin import scale_data as demo_scale_data
-from rsl_demo_plugin import session as demo_session
 from rsl_demo_plugin.assembly_store import DemoAssemblyStore
 
 from router_dump_analyzer import plugin_identity
 from router_dump_analyzer.ingestion_pipeline import (
+    PluginExecutionProcessError,
+    PluginExecutionTimeoutError,
     PluginRegistry,
     _execution_plan_for_result,
+    _ingest_plugin_child,
+    _run_isolated_child,
 )
 from router_dump_analyzer.plugin_api import TimelineTimeBasis
 from router_dump_analyzer.plugin_composition_deployment import (
@@ -125,10 +127,60 @@ class DemoPluginSemanticContractTests(unittest.TestCase):
         loaded = load_plugin_entry_point_with_coordinates(
             PLUGIN_ENTRY_POINT_NAME
         )
+        self.assertEqual(
+            loaded.process_module_target,
+            "rsl_demo_plugin:ExampleRouterPlugin",
+        )
+        self.assertTrue(loaded.process_construct_class)
+        self.assertIn("runtime", vars(loaded.plugin))
+        self.assertNotIn("runtime", vars(type(loaded.plugin)()))
         registered = loaded.register(
             PluginRegistry(require_executable_identity=True)
         )
         self.assertEqual(registered.plugin_id, "demo.example-router")
+        self.assertEqual(
+            registered.process_bootstrap.plugin_loader_kind,
+            "class_constructor",
+        )
+        self.assertEqual(
+            registered.process_bootstrap.plugin_target,
+            "rsl_demo_plugin:ExampleRouterPlugin",
+        )
+
+    def test_process_child_ingests_without_parent_runtime_attachment(self) -> None:
+        loaded = load_plugin_entry_point_with_coordinates(
+            PLUGIN_ENTRY_POINT_NAME
+        )
+        registry = PluginRegistry(require_executable_identity=True)
+        registered = loaded.register(registry)
+        fixture_path = Path(self.temporary.name) / STATUS_FILENAME
+        fixture_path.write_bytes(render_conformance_status_fixture())
+        staged_path = Path(self.temporary.name) / "process-result.json"
+
+        result = _run_isolated_child(
+            _ingest_plugin_child,
+            (
+                registered.process_bootstrap,
+                str(fixture_path),
+                "node-a",
+                {
+                    "platform": PLATFORM_ID,
+                    "software_version": SOFTWARE_VERSION,
+                },
+                str(staged_path),
+            ),
+            timeout_seconds=30,
+            stage="ingest",
+            expected_kind="ingest",
+            subject="demo plug-in",
+            process_name_prefix="demo-process-contract",
+            timeout_error=PluginExecutionTimeoutError,
+            process_error=PluginExecutionProcessError,
+        )
+
+        self.assertEqual(result["kind"], "ingest")
+        self.assertGreater(result["resource_count"], 0)
+        self.assertTrue(staged_path.is_file())
 
     def test_demo_exposes_runnable_core_composition_deployment(self) -> None:
         deployment = load_plugin_composition_deployment(
@@ -242,23 +294,66 @@ class DemoPluginSemanticContractTests(unittest.TestCase):
 
     def test_fresh_process_entry_point_registers_with_strict_identity(self) -> None:
         script = """\
+import sys
+from pathlib import Path
+
 from router_dump_analyzer.ingestion_pipeline import PluginRegistry
+from router_dump_analyzer.plugin_identity import PluginExecutableIdentityError, executable_module_target_fingerprint
 from router_dump_analyzer.plugin_loading import load_plugin_entry_point_with_coordinates
+from router_dump_analyzer.runtime import require_plugin_runtime
 
 loaded = load_plugin_entry_point_with_coordinates("demo_router")
+implementation = type(loaded.plugin)
+assert "runtime" in vars(loaded.plugin)
+assert "runtime" not in vars(implementation())
+before = executable_module_target_fingerprint(
+    "rsl_demo_plugin",
+    "ExampleRouterPlugin",
+    implementation,
+)
+runtime = require_plugin_runtime(loaded.plugin)
+assert runtime.capability_id == "router_dump_analyzer.runtime.v1"
+with runtime.open(Path(sys.argv[1])) as session:
+    assert session.topology_provider.get() is not None
+from rsl_demo_plugin.typed_topology import demo_topology_projection_plugin
+typed_identity = executable_module_target_fingerprint(
+    "rsl_demo_plugin.typed_topology",
+    "demo_topology_projection_plugin",
+    demo_topology_projection_plugin,
+)
+assert typed_identity.startswith("target-sha256:")
+after = executable_module_target_fingerprint(
+    "rsl_demo_plugin",
+    "ExampleRouterPlugin",
+    implementation,
+)
+assert after == before
+try:
+    executable_module_target_fingerprint(
+        "rsl_demo_plugin",
+        "plugin",
+        loaded.plugin,
+    )
+except PluginExecutableIdentityError:
+    pass
+else:
+    raise AssertionError("the runtime-bearing live target must remain rejected")
+assert loaded.process_module_target == "rsl_demo_plugin:ExampleRouterPlugin"
+assert loaded.process_construct_class is True
 registered = loaded.register(PluginRegistry(require_executable_identity=True))
 assert registered.plugin_id == "demo.example-router"
+assert registered.process_bootstrap.plugin_loader_kind == "class_constructor"
 """
         completed = subprocess.run(
-            [sys.executable, "-c", script],
+            [sys.executable, "-c", script, str(self.archive_path)],
             check=False,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=90,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_final_verification_rejects_root_class_and_instance_mutation(
+    def test_final_verification_rejects_process_class_mutation(
         self,
     ) -> None:
         loaded = load_plugin_entry_point_with_coordinates(
@@ -283,132 +378,22 @@ assert registered.plugin_id == "demo.example-router"
             ):
                 executable_module_target_fingerprint(
                     "rsl_demo_plugin",
-                    "plugin",
-                    loaded.plugin,
+                    "ExampleRouterPlugin",
+                    implementation,
                 )
         finally:
             implementation.describe = original_describe  # type: ignore[method-assign]
 
-        marker_name = "_identity_mutation_probe"
-
-        def mutate_instance(budget: object) -> None:
-            original_verify(budget)  # type: ignore[arg-type]
-            setattr(loaded.plugin, marker_name, object())
-
-        try:
-            with (
-                patch.object(
-                    plugin_identity,
-                    "_verify_derived_cache_slots",
-                    side_effect=mutate_instance,
-                ),
-                self.assertRaises(PluginExecutableIdentityError),
-            ):
-                executable_module_target_fingerprint(
-                    "rsl_demo_plugin",
-                    "plugin",
-                    loaded.plugin,
-                )
-        finally:
-            if hasattr(loaded.plugin, marker_name):
-                delattr(loaded.plugin, marker_name)
-
-    def test_runtime_singleton_alias_and_wrapper_mutation_fail_closed(self) -> None:
+    def test_runtime_bearing_live_target_remains_inline_only(self) -> None:
         loaded = load_plugin_entry_point_with_coordinates(
             PLUGIN_ENTRY_POINT_NAME
         )
         require_plugin_runtime(loaded.plugin)
-        original_runtime = demo_session.runtime
-        demo_session.runtime = object()
-        try:
-            with self.assertRaises(PluginExecutableIdentityError):
-                executable_module_target_fingerprint(
-                    "rsl_demo_plugin",
-                    "plugin",
-                    loaded.plugin,
-                )
-        finally:
-            demo_session.runtime = original_runtime
-
-        wrapper = vars(demo_session.DemoRuntimeCapability)["open"]
-        original_wrapped = wrapper.__wrapped__
-        wrapper.__wrapped__ = lambda *_args, **_kwargs: None
-        try:
-            with self.assertRaises(PluginExecutableIdentityError):
-                executable_module_target_fingerprint(
-                    "rsl_demo_plugin",
-                    "plugin",
-                    loaded.plugin,
-                )
-        finally:
-            wrapper.__wrapped__ = original_wrapped
-
-        forged_globals = dict(original_wrapped.__globals__)
-        forged_globals["DemoAssemblyStore"] = object
-        forged_wrapped = FunctionType(
-            original_wrapped.__code__,
-            forged_globals,
-            name=original_wrapped.__name__,
-            argdefs=original_wrapped.__defaults__,
-            closure=original_wrapped.__closure__,
-        )
-        forged_wrapped.__annotations__ = original_wrapped.__annotations__
-        forged_wrapped.__doc__ = original_wrapped.__doc__
-        forged_wrapped.__module__ = original_wrapped.__module__
-        forged_wrapped.__qualname__ = original_wrapped.__qualname__
-        closure_cell = wrapper.__closure__[0]
-        original_closure_value = closure_cell.cell_contents
-        wrapper.__wrapped__ = forged_wrapped
-        closure_cell.cell_contents = forged_wrapped
-        try:
-            with self.assertRaises(PluginExecutableIdentityError):
-                executable_module_target_fingerprint(
-                    "rsl_demo_plugin",
-                    "plugin",
-                    loaded.plugin,
-                )
-        finally:
-            wrapper.__wrapped__ = original_wrapped
-            closure_cell.cell_contents = original_closure_value
-
-        original_store = demo_session.DemoAssemblyStore
-        demo_session.DemoAssemblyStore = object  # type: ignore[misc]
-        try:
-            with self.assertRaises(PluginExecutableIdentityError):
-                executable_module_target_fingerprint(
-                    "rsl_demo_plugin",
-                    "plugin",
-                    loaded.plugin,
-                )
-        finally:
-            demo_session.DemoAssemblyStore = original_store  # type: ignore[misc]
-
-        original_store_init = original_store.__init__
-        original_store.__init__ = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
-        try:
-            with self.assertRaises(PluginExecutableIdentityError):
-                executable_module_target_fingerprint(
-                    "rsl_demo_plugin",
-                    "plugin",
-                    loaded.plugin,
-                )
-        finally:
-            original_store.__init__ = original_store_init  # type: ignore[method-assign]
-
-        original_cache_path = demo_scale_data._history_search_cache_path
-        demo_scale_data._history_search_cache_path = (  # type: ignore[assignment]
-            lambda archive_path, identity: archive_path / identity
-        )
-        try:
-            with self.assertRaises(PluginExecutableIdentityError):
-                executable_module_target_fingerprint(
-                    "rsl_demo_plugin",
-                    "plugin",
-                    loaded.plugin,
-                )
-        finally:
-            demo_scale_data._history_search_cache_path = (  # type: ignore[assignment]
-                original_cache_path
+        with self.assertRaises(PluginExecutableIdentityError):
+            executable_module_target_fingerprint(
+                "rsl_demo_plugin",
+                "plugin",
+                loaded.plugin,
             )
 
     def test_generator_schema_is_accepted_and_schema_drift_is_rejected(

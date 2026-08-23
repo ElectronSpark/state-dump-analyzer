@@ -302,11 +302,11 @@ class DemoRuntimeTests(unittest.TestCase):
         with (
             patch.object(source, "load_dataset", return_value=dataset) as load,
             patch(
-                "rsl_demo_plugin.temporal_contract.build_demo_plugin_contract",
+                "rsl_demo_plugin.session.build_demo_plugin_contract",
                 return_value={},
             ),
             patch(
-                "rsl_demo_plugin.temporal_contract.build_temporal_metadata",
+                "rsl_demo_plugin.session.build_temporal_metadata",
                 return_value=metadata,
             ),
         ):

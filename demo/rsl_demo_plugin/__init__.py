@@ -16,7 +16,7 @@ import json
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import PurePosixPath
-from typing import Any, Final, Iterable, Mapping
+from typing import Any, Final, Iterable, Mapping, Protocol, cast
 
 from router_dump_analyzer.plugin_api import (
     CORE_PLUGIN_API_VERSION,
@@ -53,6 +53,9 @@ from router_dump_analyzer.plugin_api import (
     SourceRecordTypeDescriptor,
     StatusParseOutput,
     TimelineTimeBasis,
+)
+from router_dump_analyzer.plugin_loading import (
+    PluginProcessBootstrapDescriptor,
 )
 
 PLUGIN_ENTRY_POINT_NAME = "demo_router"
@@ -1034,20 +1037,35 @@ class ExampleRouterGeneratedProjectionPolicy:
                 "topology selection ownership"
             )
         references = next_hop.get("topology_references")
-        if not isinstance(references, list) or len(references) != 1:
+        if not isinstance(references, list) or not references:
             raise ValueError(
                 f"{node_id} forwarding candidate {candidate_id} requires "
                 "exactly one topology reference"
             )
-        reference = references[0]
+        domain_references = [
+            reference
+            for reference in references
+            if isinstance(reference, Mapping)
+            and reference.get("reference_kind") == "connectivity_domain"
+        ]
+        typed_references = [
+            reference
+            for reference in references
+            if isinstance(reference, Mapping)
+            and reference.get("reference_kind")
+            == "typed_inter_node_link"
+        ]
         if (
-            not isinstance(reference, Mapping)
-            or reference.get("reference_kind") != "connectivity_domain"
+            len(domain_references) != 1
+            or len(typed_references) > 1
+            or len(domain_references) + len(typed_references)
+            != len(references)
         ):
             raise ValueError(
                 f"{node_id} forwarding candidate {candidate_id} has invalid "
                 "topology reference kind"
             )
+        reference = domain_references[0]
         match = reference.get("match")
         if (
             not isinstance(match, Mapping)
@@ -1075,6 +1093,47 @@ class ExampleRouterGeneratedProjectionPolicy:
                 f"{node_id} forwarding candidate {candidate_id} has invalid "
                 "connectivity-domain key"
             )
+        if typed_references:
+            typed_reference = typed_references[0]
+            source_endpoint = typed_reference.get("source_endpoint")
+            target_endpoint = typed_reference.get("target_endpoint")
+
+            def expected_endpoint(
+                endpoint_node_id: str,
+                endpoint_resource_id: str,
+            ) -> dict[str, object]:
+                return {
+                    "node_id": endpoint_node_id,
+                    "resource_id": endpoint_resource_id,
+                    "typed_resource_key": {
+                        "namespace": "demo.generated.topology",
+                        "node": endpoint_node_id,
+                        "layer": "underlay",
+                        "kind": "demo.topology.endpoint",
+                        "parts": [
+                            {
+                                "name": "resource_id",
+                                "value": {
+                                    "type": "string",
+                                    "value": endpoint_resource_id,
+                                },
+                            }
+                        ],
+                    },
+                }
+
+            if (
+                type(source_endpoint) is not dict
+                or type(target_endpoint) is not dict
+                or source_endpoint
+                != expected_endpoint(node_id, local_resource)
+                or target_endpoint
+                != expected_endpoint(next_node_id, remote_resource)
+            ):
+                raise ValueError(
+                    f"{node_id} forwarding candidate {candidate_id} has "
+                    "invalid typed inter-node endpoint reference"
+                )
 
     def runtime_load_descriptor(self) -> dict[str, Any]:
         """Explain why runtime parsing is intentionally not replayed."""
@@ -1428,13 +1487,12 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
     """Parse the conformance snapshot and own generated-fixture semantics."""
 
     generated_projection_policy = GENERATED_PROJECTION_POLICY
-
-    @property
-    def runtime(self) -> Any:
-        """Return the exact runtime object bound during plug-in import."""
-
-        return _session.runtime
-
+    plugin_process_bootstrap: PluginProcessBootstrapDescriptor = (
+        PluginProcessBootstrapDescriptor(
+            module_target="rsl_demo_plugin:ExampleRouterPlugin",
+            construct_class=True,
+        )
+    )
     manifest: PluginManifest = PluginManifest(
         plugin_id=PLUGIN_ID,
         plugin_version=PLUGIN_VERSION,
@@ -1844,13 +1902,24 @@ class ExampleEvidenceAnalysisPlugin(AnalyzerPluginBase):
         )
 
 
+class RuntimeAttachedExampleRouterPlugin(AnalyzerPlugin, Protocol):
+    """Public type of the installed live entry point with core runtime v2."""
+
+    runtime: Any
+
+
 # Strict executable identity never executes imports merely to discover a
 # dependency. Bind the demo's optional runtime once, while the installed entry
 # point is imported, so ordinary strict registration can attest it directly.
 _session = __import__(f"{__name__}.session", fromlist=("runtime",))
 
 
-plugin: AnalyzerPlugin = ExampleRouterPlugin()
+_entry_plugin = ExampleRouterPlugin()
+setattr(_entry_plugin, "runtime", _session.runtime)
+plugin: RuntimeAttachedExampleRouterPlugin = cast(
+    RuntimeAttachedExampleRouterPlugin,
+    _entry_plugin,
+)
 evidence_plugin: AnalyzerPlugin = ExampleEvidenceAnalysisPlugin()
 
 
@@ -1887,6 +1956,7 @@ __all__ = [
     "ExampleRouterGeneratedProjectionPolicy",
     "ExampleRouterPlugin",
     "GeneratedProjectionMemberSpec",
+    "RuntimeAttachedExampleRouterPlugin",
     "TopologyProfileSpec",
     "evidence_plugin",
     "plugin",

@@ -481,6 +481,80 @@ class MultiNodeRouteService:
             )
         return tuple(descriptors)
 
+    @classmethod
+    def _validated_generated_topology_references(
+        cls,
+        next_hop: Mapping[str, Any],
+        *,
+        source_node_id: str,
+        target_node_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None] | None:
+        """Validate the legacy domain plus an optional typed endpoint pair."""
+
+        topology_references = next_hop.get("topology_references")
+        if (
+            not isinstance(topology_references, list)
+            or not topology_references
+            or len(topology_references) > 2
+            or any(type(item) is not dict for item in topology_references)
+        ):
+            return None
+        domain_references = [
+            item
+            for item in topology_references
+            if item.get("reference_kind") == "connectivity_domain"
+        ]
+        typed_references = [
+            item
+            for item in topology_references
+            if item.get("reference_kind") == "typed_inter_node_link"
+        ]
+        if (
+            len(domain_references) != 1
+            or len(typed_references) > 1
+            or len(domain_references) + len(typed_references)
+            != len(topology_references)
+        ):
+            return None
+        typed_reference = (
+            typed_references[0] if typed_references else None
+        )
+        if typed_reference is not None:
+            source_endpoint = typed_reference.get("source_endpoint")
+            target_endpoint = typed_reference.get("target_endpoint")
+            if (
+                set(typed_reference)
+                != {
+                    "reference_kind",
+                    "source_endpoint",
+                    "target_endpoint",
+                }
+                or type(source_endpoint) is not dict
+                or type(target_endpoint) is not dict
+                or set(source_endpoint)
+                != {"node_id", "resource_id", "typed_resource_key"}
+                or set(target_endpoint)
+                != {"node_id", "resource_id", "typed_resource_key"}
+                or source_endpoint.get("node_id") != source_node_id
+                or target_endpoint.get("node_id") != target_node_id
+                or source_endpoint.get("resource_id")
+                != next_hop.get("interface_resource_id")
+                or target_endpoint.get("resource_id")
+                != next_hop.get("remote_interface_resource_id")
+                or cls._typed_resource_key_identity(
+                    source_endpoint.get("typed_resource_key"),
+                    source_node_id,
+                )
+                is None
+                or cls._typed_resource_key_identity(
+                    target_endpoint.get("typed_resource_key"),
+                    target_node_id,
+                )
+                is None
+            ):
+                return None
+        return domain_references[0], typed_reference
+
     def _generated_projection_for_scenario(
         self,
         scenario_id: str,
@@ -751,9 +825,6 @@ class MultiNodeRouteService:
                     "has invalid next_hops"
                 )
             for next_hop in next_hops:
-                topology_references = next_hop.get(
-                    "topology_references"
-                )
                 if (
                     not isinstance(
                         next_hop.get("interface_resource_id"),
@@ -765,16 +836,26 @@ class MultiNodeRouteService:
                         str,
                     )
                     or not next_hop["remote_interface_resource_id"]
-                    or not isinstance(topology_references, list)
-                    or len(topology_references) != 1
-                    or not isinstance(topology_references[0], dict)
                 ):
                     raise MultiNodeRouteRequestError(
                         f"generated forwarding row for "
                         f"{scenario_id}/{node_id} has incomplete "
                         "next-hop topology evidence"
                     )
-                reference = topology_references[0]
+                validated_references = (
+                    self._validated_generated_topology_references(
+                        next_hop,
+                        source_node_id=node_id,
+                        target_node_id=str(next_hop.get("node_id", "")),
+                    )
+                )
+                if validated_references is None:
+                    raise MultiNodeRouteRequestError(
+                        f"generated forwarding row for "
+                        f"{scenario_id}/{node_id} has an invalid "
+                        "exact topology reference"
+                    )
+                reference, _typed_reference = validated_references
                 match = reference.get("match")
                 arguments = (
                     match.get("arguments")
@@ -915,17 +996,16 @@ class MultiNodeRouteService:
                                 "topology hop for a local or terminal step"
                             )
                     else:
-                        topology_references = next_hop.get(
-                            "topology_references"
+                        validated_references = (
+                            self._validated_generated_topology_references(
+                                next_hop,
+                                source_node_id=node_id,
+                                target_node_id=next_node_id,
+                            )
                         )
                         reference = (
-                            topology_references[0]
-                            if isinstance(topology_references, list)
-                            and len(topology_references) == 1
-                            and isinstance(
-                                topology_references[0],
-                                dict,
-                            )
+                            validated_references[0]
+                            if validated_references is not None
                             else None
                         )
                         match = (
@@ -1770,7 +1850,215 @@ class MultiNodeRouteService:
                     boundary["state"]["operational"] = "unknown"
                     boundary["active"] = False
                     continue
-                reference = next_hop["topology_references"][0]
+                topology_references = next_hop.get("topology_references", [])
+                typed_references = [
+                    item
+                    for item in topology_references
+                    if isinstance(item, Mapping)
+                    and item.get("reference_kind")
+                    == "typed_inter_node_link"
+                ]
+                if typed_references:
+                    typed_reference = (
+                        dict(typed_references[0])
+                        if len(typed_references) == 1
+                        else {
+                            "reference_kind": "typed_inter_node_link",
+                            "invalid_reference_count": len(typed_references),
+                        }
+                    )
+                    typed_binding, typed_link, typed_endpoint_refs = (
+                        self._resolve_typed_boundary_reference(
+                            route_evidence,
+                            typed_reference,
+                            source_node_id=source_node_id,
+                            target_node_id=target_node_id,
+                            source_resource_id=str(
+                                next_hop["interface_resource_id"]
+                            ),
+                            target_resource_id=str(
+                                next_hop[
+                                    "remote_interface_resource_id"
+                                ]
+                            ),
+                        )
+                    )
+                    boundary["generated_connectivity_binding"] = (
+                        typed_binding
+                    )
+                    boundary["topology_reference"] = typed_reference
+                    boundary["network_segment_id"] = None
+                    boundary["network_segment_attachment_ids"] = []
+                    if typed_link is None or typed_endpoint_refs is None:
+                        boundary["resource_refs"] = []
+                        boundary["interaction_target_ids"] = []
+                        boundary["highlight_target_ids"] = []
+                        boundary["completeness"] = {
+                            "state": "unresolved",
+                            "end_to_end_resolved": False,
+                            "observed": False,
+                        }
+                        boundary["state"]["operational"] = "unknown"
+                        boundary["active"] = False
+                        continue
+
+                    source_reference, target_reference = (
+                        dict(typed_endpoint_refs[0]),
+                        dict(typed_endpoint_refs[1]),
+                    )
+                    link_target_id = self._link_target(
+                        typed_link,
+                        targets,
+                    )
+                    boundary["topology_link_id"] = str(
+                        typed_link["link_id"]
+                    )
+                    boundary["resource_refs"] = [
+                        source_reference,
+                        target_reference,
+                    ]
+                    boundary["node_id"] = None
+                    boundary["node_ids"] = [
+                        source_node_id,
+                        target_node_id,
+                    ]
+                    boundary["member_id"] = None
+                    boundary["member_ids"] = [
+                        str(source_reference["member_id"]),
+                        str(target_reference["member_id"]),
+                    ]
+                    boundary["interaction_target_ids"] = [link_target_id]
+                    boundary["highlight_target_ids"] = [link_target_id]
+                    boundary["plugin_provenance"] = (
+                        self._dedupe_provenance(
+                            [
+                                *boundary.get("plugin_provenance", []),
+                                *typed_link.get(
+                                    "plugin_provenance",
+                                    [],
+                                ),
+                            ]
+                        )
+                    )
+                    existing_state = boundary.get("state", {})
+                    explicitly_terminal = bool(
+                        existing_state.get("terminal")
+                    )
+                    operational = str(
+                        typed_link.get("operational_status", "unknown")
+                    )
+                    explicitly_unusable = operational == "unusable"
+                    if not explicitly_terminal:
+                        existing_state["operational"] = operational
+                    existing_state["selected_active_by_plugin"] = bool(
+                        path.get("selected_active_by_plugin")
+                    )
+                    if operational == "unknown":
+                        existing_state["reason_code"] = (
+                            "typed_boundary_operational_status_unknown"
+                        )
+                        if resolution_mode == "strict":
+                            boundary["completeness"] = {
+                                "state": "unresolved",
+                                "end_to_end_resolved": False,
+                                "observed": False,
+                            }
+                            boundary["active"] = False
+                            boundary["confidence"] = 0.35
+                        else:
+                            boundary["completeness"] = {
+                                "state": "best_effort_inferred",
+                                "end_to_end_resolved": True,
+                                "observed": False,
+                            }
+                            boundary["active"] = bool(
+                                path.get("selected_active_by_plugin")
+                                and not explicitly_terminal
+                            )
+                            boundary["confidence"] = 0.62
+                            boundary["inference"] = {
+                                "performed_by": "core",
+                                "method": (
+                                    "typed_connector_identity_with_unknown_"
+                                    "operational_status"
+                                ),
+                                "trigger_reason_code": (
+                                    "typed_boundary_operational_status_unknown"
+                                ),
+                            }
+                    else:
+                        boundary["completeness"] = {
+                            "state": "complete",
+                            "end_to_end_resolved": True,
+                            "observed": True,
+                        }
+                        boundary["active"] = bool(
+                            path.get("selected_active_by_plugin")
+                            and not explicitly_unusable
+                            and not explicitly_terminal
+                        )
+                        boundary["confidence"] = 0.95
+                    boundary["state"] = existing_state
+                    link_label = str(
+                        typed_link.get("link_type")
+                        or typed_link["link_id"]
+                    )
+                    inference_owner = typed_link["inference"]["owner"]
+                    if inference_owner == "core_exact_matcher":
+                        text = (
+                            "Core exact-joins the plug-in-declared typed "
+                            f"{link_label} boundary between {source_node_id} "
+                            f"and {target_node_id}."
+                        )
+                        text_source = "core_exact_join_summary"
+                        core_role = (
+                            "validates_exact_typed_boundary_reference"
+                        )
+                    else:
+                        text = (
+                            "The allowlisted federation linker resolves the "
+                            f"plug-in-declared typed {link_label} boundary "
+                            f"between {source_node_id} and {target_node_id}; "
+                            "core validates its exact qualified endpoints."
+                        )
+                        text_source = (
+                            "federation_linker_resolution_summary"
+                        )
+                        core_role = (
+                            "validates_allowlisted_linker_typed_boundary"
+                        )
+                    boundary["route_resolution_text"] = text
+                    boundary["route_resolution"].update(
+                        {
+                            "text": text,
+                            "text_source": text_source,
+                            "core_role": core_role,
+                            "interaction_target_ids": [link_target_id],
+                            "highlight_target_ids": [link_target_id],
+                        }
+                    )
+                    boundary["route_resolution"]["parts"] = [
+                        {
+                            "part_id": (
+                                f"{boundary['segment_id']}:"
+                                "part:typed-inter-node-link"
+                            ),
+                            "text": text,
+                            "interactive": True,
+                            "interaction_target_ids": [link_target_id],
+                            "highlight_target_ids": [link_target_id],
+                        }
+                    ]
+                    boundary["graph_presentation"] = {
+                        "role": "outer-boundary",
+                        "label": link_label,
+                        "detail": text,
+                        "semantic_owner": inference_owner,
+                        "core_presentation": "typed_link_traversal",
+                    }
+                    continue
+
+                reference = topology_references[0]
                 binding = resolve_connectivity_domain_reference(
                     route_evidence,
                     reference,
@@ -5599,6 +5887,41 @@ class MultiNodeRouteService:
         }
         return route_type, context, referenced_row
 
+    @staticmethod
+    def _boundary_resolution_owner(paths: list[dict[str, Any]]) -> str:
+        """Summarize the owners of complete rendered boundary decisions."""
+
+        owners: set[str] = set()
+        allowed = {
+            "core_exact_matcher",
+            "federation_linker_plugin",
+            "node_topology_plugin",
+        }
+        for path in paths:
+            for segment in path.get("segments", []):
+                completeness = segment.get("completeness")
+                if (
+                    segment.get("segment_kind") != "inter_node_boundary"
+                    or not isinstance(completeness, dict)
+                    or completeness.get("end_to_end_resolved") is not True
+                ):
+                    continue
+                presentation = segment.get("graph_presentation")
+                owner = (
+                    presentation.get("semantic_owner")
+                    if isinstance(presentation, dict)
+                    else None
+                )
+                if owner == "plugin":
+                    owner = "node_topology_plugin"
+                owners.add(owner if owner in allowed else "unknown")
+        if not owners:
+            return "none"
+        if len(owners) == 1:
+            owner = next(iter(owners))
+            return owner if owner in allowed else "mixed"
+        return "mixed"
+
     def trace(self, body: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(body, dict):
             raise MultiNodeRouteRequestError("request body must be an object")
@@ -6438,7 +6761,9 @@ class MultiNodeRouteService:
             "semantic_ownership": {
                 "route_resolution_text": "node_or_federation_plugin",
                 "local_resolution": "node_plugin",
-                "boundary_resolution": "federation_linker_plugin",
+                "boundary_resolution": self._boundary_resolution_owner(
+                    paths
+                ),
                 "route_presentation_roles_and_content": "node_or_federation_plugin",
                 "presentation_reference_validation_and_rendering": "core",
                 "route_table_rows_and_selection": "node_plugin",
@@ -9212,7 +9537,20 @@ class MultiNodeRouteService:
         issue_refs: list[str],
     ) -> dict[str, Any]:
         records = [resources[item] for item in resource_ids if item in resources]
-        link = self._matching_link(links.get(link_id, []), set(resource_ids))
+        ordered_resource_refs = tuple(
+            item["resource_ref"]
+            for item in records
+            if isinstance(item.get("resource_ref"), dict)
+        )
+        link = self._matching_link(
+            links.get(link_id, []),
+            tuple(resource_ids),
+            required_endpoint_refs=(
+                ordered_resource_refs
+                if len(ordered_resource_refs) == len(resource_ids)
+                else None
+            ),
+        )
         target_ids = [self._resource_target(item, targets) for item in records]
         link_target_id = None
         if link:
@@ -9241,7 +9579,7 @@ class MultiNodeRouteService:
             alternative_state,
             operational,
             "complete" if link else "unresolved",
-            0.82 if link and link.get("resolution") == "ambiguous" else 0.95 if link else 0.35,
+            0.95 if link else 0.35,
             issue_refs,
             topology_link_id=link_id,
             extra_provenance=(link.get("plugin_provenance", []) if link else []),
@@ -9581,20 +9919,431 @@ class MultiNodeRouteService:
 
     @staticmethod
     def _matching_link(
-        candidates: list[dict[str, Any]], required_resource_ids: set[str]
+        candidates: list[dict[str, Any]],
+        required_resource_ids: set[str] | tuple[str, ...] | list[str],
+        *,
+        required_endpoint_refs: tuple[dict[str, Any], ...] | None = None,
     ) -> dict[str, Any] | None:
+        ordered_resource_ids = tuple(required_resource_ids)
+        required_resource_id_set = set(ordered_resource_ids)
         for item in candidates:
+            if item.get("resolution") != "matched":
+                continue
+            has_typed_federation_marker = "typed_federation" in item
+            typed_federation = item.get("typed_federation")
+            if has_typed_federation_marker and typed_federation is not True:
+                continue
+            endpoint_a = item.get("endpoint_a")
+            endpoint_b = item.get("endpoint_b")
+            if not isinstance(endpoint_a, dict) or not isinstance(endpoint_b, dict):
+                continue
             endpoint_ids = {
-                item["endpoint_a"]["resource_id"],
-                item["endpoint_b"]["resource_id"],
+                endpoint_a.get("resource_id"),
+                endpoint_b.get("resource_id"),
             }
-            if endpoint_ids == required_resource_ids:
+            if endpoint_ids != required_resource_id_set:
+                continue
+            if not has_typed_federation_marker:
+                return item
+            if (
+                item.get("federation_complete") is not True
+                or item.get("federation_truncated") is not False
+                or type(item.get("directed")) is not bool
+                or not MultiNodeRouteService._typed_route_link_is_included(item)
+                or required_endpoint_refs is None
+                or len(required_endpoint_refs) != 2
+            ):
+                continue
+            endpoint_identities = (
+                MultiNodeRouteService._typed_endpoint_identity(endpoint_a),
+                MultiNodeRouteService._typed_endpoint_identity(endpoint_b),
+            )
+            required_identities = tuple(
+                MultiNodeRouteService._typed_resource_ref_identity(reference)
+                for reference in required_endpoint_refs
+            )
+            if None in endpoint_identities or None in required_identities:
+                continue
+            source = item.get("source")
+            target = item.get("target")
+            if source != endpoint_a or target != endpoint_b:
+                continue
+            if item["directed"]:
+                if endpoint_identities == required_identities:
+                    return item
+                continue
+            if endpoint_identities == required_identities or endpoint_identities == tuple(
+                reversed(required_identities)
+            ):
                 return item
         # A topology link identifier is not sufficient evidence when a
         # federation result contains several scoped candidates.  Choosing the
         # first candidate can silently attach a route segment to the wrong
         # endpoints; leave it unresolved unless the exact endpoint set matches.
         return None
+
+    @classmethod
+    def _resolve_typed_boundary_reference(
+        cls,
+        route_evidence: Mapping[str, Any],
+        reference: Mapping[str, Any],
+        *,
+        source_node_id: str,
+        target_node_id: str,
+        source_resource_id: str,
+        target_resource_id: str,
+    ) -> tuple[
+        dict[str, Any],
+        dict[str, Any] | None,
+        tuple[dict[str, Any], dict[str, Any]] | None,
+    ]:
+        """Bind a plug-in endpoint pair to one qualified typed boundary.
+
+        A declared typed reference is authoritative for this decision.  It is
+        therefore never downgraded to a connectivity-domain join when its
+        identity is malformed, absent, ambiguous, or backed only by
+        non-authoritative federation evidence.
+        """
+
+        unresolved = {
+            "state": "unresolved",
+            "reason_code": "typed_boundary_reference_invalid",
+            "binding_kind": "typed_inter_node_link",
+            "topology_link_id": None,
+            "network_segment_id": None,
+            "candidate_link_ids": [],
+        }
+        completeness = route_evidence.get("completeness")
+        if (
+            type(completeness) is not dict
+            or type(completeness.get("typed_federation_complete")) is not bool
+            or type(completeness.get("typed_federation_truncated")) is not bool
+        ):
+            return (
+                {
+                    **unresolved,
+                    "reason_code": (
+                        "typed_boundary_federation_completeness_invalid"
+                    ),
+                },
+                None,
+                None,
+            )
+        if completeness.get("inter_node_links_truncated") is not False:
+            return (
+                {
+                    **unresolved,
+                    "reason_code": (
+                        "typed_boundary_inter_node_links_truncated"
+                    ),
+                },
+                None,
+                None,
+            )
+        if completeness["typed_federation_truncated"]:
+            return (
+                {
+                    **unresolved,
+                    "reason_code": "typed_boundary_federation_truncated",
+                },
+                None,
+                None,
+            )
+        if not completeness["typed_federation_complete"]:
+            return (
+                {
+                    **unresolved,
+                    "reason_code": "typed_boundary_federation_incomplete",
+                },
+                None,
+                None,
+            )
+        source_endpoint = reference.get("source_endpoint")
+        target_endpoint = reference.get("target_endpoint")
+        source_typed_key = (
+            source_endpoint.get("typed_resource_key")
+            if isinstance(source_endpoint, dict)
+            else None
+        )
+        target_typed_key = (
+            target_endpoint.get("typed_resource_key")
+            if isinstance(target_endpoint, dict)
+            else None
+        )
+        source_typed_key_identity = cls._typed_resource_key_identity(
+            source_typed_key,
+            source_node_id,
+        )
+        target_typed_key_identity = cls._typed_resource_key_identity(
+            target_typed_key,
+            target_node_id,
+        )
+        if (
+            reference.get("reference_kind") != "typed_inter_node_link"
+            or set(reference)
+            != {
+                "reference_kind",
+                "source_endpoint",
+                "target_endpoint",
+            }
+            or type(source_endpoint) is not dict
+            or type(target_endpoint) is not dict
+            or set(source_endpoint)
+            != {"node_id", "resource_id", "typed_resource_key"}
+            or set(target_endpoint)
+            != {"node_id", "resource_id", "typed_resource_key"}
+            or source_endpoint.get("node_id") != source_node_id
+            or target_endpoint.get("node_id") != target_node_id
+            or source_endpoint.get("resource_id") != source_resource_id
+            or target_endpoint.get("resource_id") != target_resource_id
+            or source_typed_key_identity is None
+            or target_typed_key_identity is None
+        ):
+            return unresolved, None, None
+
+        candidates: list[
+            tuple[
+                dict[str, Any],
+                tuple[dict[str, Any], dict[str, Any]],
+            ]
+        ] = []
+        for item in route_evidence.get("inter_node_links", []):
+            if (
+                not isinstance(item, dict)
+                or item.get("typed_federation") is not True
+                or type(item.get("link_id")) is not str
+                or not item["link_id"]
+                or type(item.get("link_type")) is not str
+                or not item["link_type"]
+                or type(item.get("operational_status")) is not str
+                or item["operational_status"]
+                not in {"usable", "unusable", "unknown"}
+                or type(item.get("inference")) is not dict
+                or item["inference"].get("owner")
+                not in {
+                    "core_exact_matcher",
+                    "federation_linker_plugin",
+                }
+            ):
+                continue
+            endpoint_a = item.get("endpoint_a")
+            endpoint_b = item.get("endpoint_b")
+            if not isinstance(endpoint_a, dict) or not isinstance(
+                endpoint_b,
+                dict,
+            ):
+                continue
+            endpoint_a_reference = endpoint_a.get("resource_ref")
+            endpoint_b_reference = endpoint_b.get("resource_ref")
+            if not isinstance(endpoint_a_reference, dict) or not isinstance(
+                endpoint_b_reference,
+                dict,
+            ):
+                continue
+            endpoint_a_coordinate = (
+                endpoint_a.get("node_id"),
+                cls._typed_resource_key_identity(
+                    endpoint_a_reference.get("typed_resource_key"),
+                    endpoint_a.get("node_id"),
+                ),
+            )
+            endpoint_b_coordinate = (
+                endpoint_b.get("node_id"),
+                cls._typed_resource_key_identity(
+                    endpoint_b_reference.get("typed_resource_key"),
+                    endpoint_b.get("node_id"),
+                ),
+            )
+            expected_source_coordinate = (
+                source_node_id,
+                source_typed_key_identity,
+            )
+            expected_target_coordinate = (
+                target_node_id,
+                target_typed_key_identity,
+            )
+            if (
+                endpoint_a_coordinate == expected_source_coordinate
+                and endpoint_b_coordinate == expected_target_coordinate
+            ):
+                ordered_endpoints = (endpoint_a, endpoint_b)
+            elif (
+                endpoint_a_coordinate == expected_target_coordinate
+                and endpoint_b_coordinate == expected_source_coordinate
+            ):
+                ordered_endpoints = (endpoint_b, endpoint_a)
+            else:
+                continue
+            source_reference = ordered_endpoints[0].get("resource_ref")
+            target_reference = ordered_endpoints[1].get("resource_ref")
+            if not isinstance(source_reference, dict) or not isinstance(
+                target_reference,
+                dict,
+            ):
+                continue
+            candidates.append(
+                (item, (source_reference, target_reference))
+            )
+        candidate_link_ids = [
+            str(item["link_id"]) for item, _references in candidates
+        ]
+        matches = [
+            (item, endpoint_refs)
+            for item, endpoint_refs in candidates
+            if cls._matching_link(
+                [item],
+                (
+                    str(item["endpoint_a"]["resource_id"]),
+                    str(item["endpoint_b"]["resource_id"]),
+                ),
+                required_endpoint_refs=endpoint_refs,
+            )
+            is item
+        ]
+        if len(matches) != 1:
+            reason_code = (
+                "typed_boundary_link_ambiguous"
+                if len(matches) > 1
+                else "typed_boundary_link_not_authoritative"
+                if candidates
+                else "typed_boundary_link_not_found"
+            )
+            return (
+                {
+                    **unresolved,
+                    "reason_code": reason_code,
+                    "candidate_link_ids": candidate_link_ids,
+                },
+                None,
+                None,
+            )
+        link, endpoint_refs = matches[0]
+        return (
+            {
+                "state": "resolved",
+                "reason_code": "exact_typed_boundary_match",
+                "binding_kind": "typed_inter_node_link",
+                "topology_link_id": str(link["link_id"]),
+                "network_segment_id": None,
+                "candidate_link_ids": candidate_link_ids,
+            },
+            link,
+            endpoint_refs,
+        )
+
+    @staticmethod
+    def _typed_route_link_is_included(link: dict[str, Any]) -> bool:
+        presentation = link.get("presentation")
+        return (
+            isinstance(presentation, dict)
+            and presentation.get("route_trace") == "include"
+        )
+
+    @staticmethod
+    def _typed_endpoint_identity(endpoint: Any) -> tuple[Any, ...] | None:
+        if not isinstance(endpoint, dict):
+            return None
+        reference = endpoint.get("resource_ref")
+        identity = MultiNodeRouteService._typed_resource_ref_identity(reference)
+        if identity is None:
+            return None
+        if type(endpoint.get("claim_id")) is not str or not endpoint["claim_id"]:
+            return None
+        top_level_fields = {
+            "member_id": "member_id",
+            "node_id": "node_id",
+            "revision_id": "revision_id",
+            "plugin_instance_id": "plugin_instance_id",
+            "resource_id": "local_resource_id",
+            "projection_id": "projection_id",
+            "status_perspective_id": "status_perspective_id",
+        }
+        if any(
+            endpoint.get(endpoint_name) != reference.get(reference_name)
+            for endpoint_name, reference_name in top_level_fields.items()
+        ):
+            return None
+        return identity
+
+    @staticmethod
+    def _typed_resource_key_identity(
+        typed_resource_key: Any,
+        node_id: Any,
+    ) -> str | None:
+        if (
+            type(node_id) is not str
+            or not node_id
+            or not isinstance(typed_resource_key, dict)
+            or set(typed_resource_key)
+            != {"namespace", "node", "layer", "kind", "parts"}
+            or typed_resource_key.get("node") != node_id
+            or any(
+                type(typed_resource_key.get(field)) is not str
+                or not typed_resource_key[field]
+                for field in ("namespace", "node", "layer", "kind")
+            )
+        ):
+            return None
+        parts = typed_resource_key.get("parts")
+        if (
+            not isinstance(parts, list)
+            or not parts
+            or any(
+                not isinstance(part, dict)
+                or set(part) != {"name", "value"}
+                or type(part.get("name")) is not str
+                or not part["name"]
+                for part in parts
+            )
+        ):
+            return None
+        try:
+            return json.dumps(
+                typed_resource_key,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _typed_resource_ref_identity(reference: Any) -> tuple[Any, ...] | None:
+        if not isinstance(reference, dict):
+            return None
+        required_strings = (
+            "member_id",
+            "node_id",
+            "revision_id",
+            "local_resource_id",
+            "plugin_instance_id",
+        )
+        if any(
+            type(reference.get(field)) is not str or not reference[field]
+            for field in required_strings
+        ):
+            return None
+        typed_resource_key = reference.get("typed_resource_key")
+        typed_resource_identity = (
+            MultiNodeRouteService._typed_resource_key_identity(
+                typed_resource_key,
+                reference["node_id"],
+            )
+        )
+        if typed_resource_identity is None:
+            return None
+        scoped_values: list[str] = []
+        for field in ("projection_id", "status_perspective_id"):
+            value = reference.get(field)
+            if type(value) is not str or not value:
+                return None
+            scoped_values.append(value)
+        return (
+            *(reference[field] for field in required_strings),
+            typed_resource_identity,
+            *scoped_values,
+        )
 
     @staticmethod
     def _dedupe_provenance(values: list[dict[str, Any]]) -> list[dict[str, Any]]:

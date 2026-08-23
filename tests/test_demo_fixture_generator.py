@@ -1335,6 +1335,70 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
             {item.case_id for item in COVERAGE_CASES},
         )
 
+    def test_typed_next_hop_endpoint_pair_survives_plugin_validation(
+        self,
+    ) -> None:
+        config = AssemblyConfig(
+            nodes=DEMO_NODES,
+            events_per_node=120,
+            resources_per_node=120,
+            seed=12345,
+            allow_small=True,
+        )
+        node = next(
+            item for item in DEMO_NODES if item.node_id == "transit-p-1"
+        )
+        forwarding_rows = _projection_rows(node, config=config)[1]
+        row, next_hop = next(
+            (row, next_hop)
+            for row in forwarding_rows
+            if isinstance(row.get("continuation"), dict)
+            if (next_hop := row["continuation"].get("next_hop"))
+            is not None
+            and next_hop.get("node_id") == "transit-p-2"
+            and any(
+                reference.get("reference_kind")
+                == "typed_inter_node_link"
+                for reference in next_hop["topology_references"]
+            )
+        )
+
+        GENERATED_PROJECTION_POLICY.validate_forwarding_row(
+            row,
+            node_id=node.node_id,
+            revision_id=node.revision_id,
+        )
+
+        self.assertEqual(
+            [
+                reference["reference_kind"]
+                for reference in next_hop["topology_references"]
+            ],
+            ["connectivity_domain", "typed_inter_node_link"],
+        )
+        typed_reference = next_hop["topology_references"][1]
+        self.assertNotIn("link_id", typed_reference)
+        self.assertEqual(
+            typed_reference["source_endpoint"]["resource_id"],
+            next_hop["interface_resource_id"],
+        )
+        self.assertEqual(
+            typed_reference["target_endpoint"]["resource_id"],
+            next_hop["remote_interface_resource_id"],
+        )
+        self.assertEqual(
+            typed_reference["source_endpoint"]["typed_resource_key"][
+                "node"
+            ],
+            "transit-p-1",
+        )
+        self.assertEqual(
+            typed_reference["target_endpoint"]["typed_resource_key"][
+                "node"
+            ],
+            "transit-p-2",
+        )
+
     def test_every_route_case_has_complete_directional_candidate_evidence(
         self,
     ) -> None:
@@ -1498,9 +1562,30 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
                                     next_hop["node_id"],
                                     next_node_id,
                                 )
+                                reference_kinds = [
+                                    item["reference_kind"]
+                                    for item in next_hop[
+                                        "topology_references"
+                                    ]
+                                ]
                                 self.assertEqual(
-                                    len(next_hop["topology_references"]),
+                                    reference_kinds.count(
+                                        "connectivity_domain"
+                                    ),
                                     1,
+                                )
+                                self.assertLessEqual(
+                                    reference_kinds.count(
+                                        "typed_inter_node_link"
+                                    ),
+                                    1,
+                                )
+                                self.assertEqual(
+                                    len(reference_kinds),
+                                    1
+                                    + reference_kinds.count(
+                                        "typed_inter_node_link"
+                                    ),
                                 )
                             else:
                                 self.assertIsNone(next_hop)

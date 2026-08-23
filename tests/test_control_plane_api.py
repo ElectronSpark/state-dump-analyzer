@@ -138,9 +138,12 @@ class ControlPlaneApiTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
+        self._install_control_plane(PluginRegistry((_PluginNsEventPlugin(),)))
+
+    def _install_control_plane(self, registry: PluginRegistry) -> None:
         self.control_plane = ControlPlane(
             Path(self.temporary.name),
-            registry=PluginRegistry((_PluginNsEventPlugin(),)),
+            registry=registry,
             pipeline_limits=PipelineLimits(
                 max_upload_bytes=1024 * 1024,
                 max_workers=1,
@@ -165,6 +168,13 @@ class ControlPlaneApiTests(unittest.TestCase):
         )
         self.client_context = TestClient(application)
         self.client = self.client_context.__enter__()
+
+    def _replace_control_plane(self, registry: PluginRegistry) -> None:
+        """Install a pre-composed authority instead of mutating a live one."""
+
+        self.client_context.__exit__(None, None, None)
+        self.control_plane.close(timeout=5)
+        self._install_control_plane(registry)
 
     def tearDown(self) -> None:
         self.client_context.__exit__(None, None, None)
@@ -569,7 +579,7 @@ class ControlPlaneApiTests(unittest.TestCase):
     def test_manual_selection_forwards_exact_configured_instance_identity(
         self,
     ) -> None:
-        registry = self.control_plane.ingestion.registry
+        registry = PluginRegistry((_PluginNsEventPlugin(),))
         existing = registry.records()[0]
         configured = registry.register(
             _PluginNsEventPlugin(),
@@ -577,6 +587,7 @@ class ControlPlaneApiTests(unittest.TestCase):
             instance_id="tests.event-plugin.configured",
             configuration_digest="sha256:" + ("2" * 64),
         )
+        self._replace_control_plane(registry)
         self._provision_scope(self.tenant_a)
         admitted = self.client.post(
             f"{self.workspace_path}/imports",

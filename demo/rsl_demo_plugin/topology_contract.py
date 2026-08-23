@@ -17,6 +17,14 @@ from . import (
     GENERATED_TOPOLOGY_SEGMENT_MATCHER_ID,
 )
 from .assembly_store import DemoAssemblyStore
+from .typed_topology import (
+    DEMO_CONNECTOR_CLAIM_CONTRACT_ID,
+    DEMO_CONNECTOR_POLICY_ID,
+    DEMO_TOPOLOGY_PERSPECTIVE_ID,
+    DEMO_TOPOLOGY_PLUGIN_ID,
+    DEMO_TOPOLOGY_PLUGIN_VERSION,
+    DEMO_TOPOLOGY_PROJECTION_ID,
+)
 
 DEMO_TOPOLOGY_ID = "demo.fabric.multi-node"
 
@@ -75,6 +83,7 @@ def build_topology_contract(
                 "member_id": f"member:{descriptor.node_id}",
                 "label": descriptor.label,
                 "revision_id": descriptor.revision_id,
+                "catalog_revision_id": descriptor.revision_id,
                 "device_family": str(
                     metadata.get("device_family")
                     or f"generated-{role.replace('_', '-')}"
@@ -104,10 +113,20 @@ def build_topology_contract(
             "api_version": "1.0",
             "role": "inter_node_connector_resolution",
         },
-        # The generated example currently emits shared-segment attachment
-        # claims, not connector-pair claims.  Do not advertise the unrelated
-        # connector matchers from the hand-written algorithm fixture.
-        "inter_node_matchers": [],
+        "inter_node_matchers": [
+            {
+                "matcher_id": DEMO_CONNECTOR_POLICY_ID,
+                "claim_contract_id": DEMO_CONNECTOR_CLAIM_CONTRACT_ID,
+                "contract_version": "1.0",
+                "match_semantics": "exact_token",
+                "result_shape": "point_to_point_connector",
+                "owner": "core_exact_matcher",
+                "description": (
+                    "Complete ordered typed connector arguments are compared "
+                    "by the core after each node plug-in emits local claims."
+                ),
+            }
+        ],
         "network_segment_matchers": [
             {
                 "matcher_id": GENERATED_TOPOLOGY_SEGMENT_MATCHER_ID,
@@ -154,16 +173,8 @@ def _install_generated_node_projections(
     """Install bounded generated plug-in evidence on descriptor-built nodes."""
 
     matcher_id = GENERATED_TOPOLOGY_SEGMENT_MATCHER_ID
-    plugin_manifest = getattr(revision_store, "manifest", {})
-    plugin_metadata = (
-        plugin_manifest.get("plugin", {})
-        if isinstance(plugin_manifest, dict)
-        else {}
-    )
-    plugin_id = str(
-        plugin_metadata.get("plugin_id") or "demo.example-router"
-    )
-    plugin_version = str(plugin_metadata.get("version") or "0.1.0")
+    plugin_id = DEMO_TOPOLOGY_PLUGIN_ID
+    plugin_version = DEMO_TOPOLOGY_PLUGIN_VERSION
     for node in contract["nodes"]:
         if not node.get("available"):
             continue
@@ -387,8 +398,8 @@ def _install_generated_node_projections(
                 }
             )
         plugin_set_id = f"{node_id}.generated.v1"
-        projection_id = f"{node_id}.generated-topology"
-        perspective_id = f"{node_id}.generated-observed"
+        projection_id = DEMO_TOPOLOGY_PROJECTION_ID
+        perspective_id = DEMO_TOPOLOGY_PERSPECTIVE_ID
         node["active_plugin_set_id"] = plugin_set_id
         node["plugin_sets"] = [
             {

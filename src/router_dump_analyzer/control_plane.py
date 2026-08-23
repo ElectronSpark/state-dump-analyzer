@@ -81,6 +81,7 @@ from .ingestion_pipeline import (
     RetentionPolicy,
     RetentionReport,
     RevisionCatalogPublisher,
+    _require_no_inline_only_plugin_compatibility,
     validate_ingestion_state_root,
 )
 from .normalized_data import (
@@ -1267,7 +1268,26 @@ class ControlPlane:
         private_analysis_execution_limits: PrivateAnalysisExecutionLimits | None = None,
         private_analysis_ceilings: PrivateAnalysisDeploymentCeilings | None = None,
     ) -> None:
-        registry.require_executable_identities()
+        if type(registry) is not PluginRegistry:
+            raise TypeError("registry must be an exact PluginRegistry")
+        authority_registry = registry._sealed_snapshot()
+        authority_registry.require_executable_identities()
+        authority_capability_providers: CapabilityProviderRegistry | None = None
+        if capability_providers is not None:
+            if type(capability_providers) is not CapabilityProviderRegistry:
+                raise TypeError(
+                    "capability_providers must be an exact "
+                    "CapabilityProviderRegistry or None"
+                )
+            authority_capability_providers = (
+                capability_providers._sealed_snapshot()
+            )
+            _require_no_inline_only_plugin_compatibility(
+                authority_capability_providers.records(),
+                boundary=(
+                    "durable control plane requires PROCESS-capable plug-in providers"
+                ),
+            )
         # Validate the longest core-owned ingestion pathname before creating
         # SQLite files or directories, so an unsupported Windows state root
         # fails atomically instead of surfacing later as a worker failure.
@@ -1421,12 +1441,12 @@ class ControlPlane:
             )
             self.ingestion: DurableIngestionPipeline = DurableIngestionPipeline(
                 self.root,
-                registry=registry,
+                registry=authority_registry,
                 publisher=self.publisher,
                 limits=effective_pipeline_limits,
                 retention_policy=retention_policy,
                 composition_policy=plugin_composition_policy,
-                capability_providers=capability_providers,
+                capability_providers=authority_capability_providers,
             )
             # Published execution plans and their exact provider directory
             # remain available to topology, route, and private-analysis

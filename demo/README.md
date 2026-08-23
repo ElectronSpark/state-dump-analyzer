@@ -169,17 +169,22 @@ entry point `demo_router`, and target `rsl_demo_plugin:plugin`. Direct-module
 launch instead uses the explicit `direct-module` / `0` artifact sentinel.
 Probe and parsing run in fresh `spawn` child processes with the core's bounded
 deadline (300 seconds by default, capped by the command's `--timeout`). The
-demo exports a module-level plug-in target. Core sends only inert import
-coordinates, reloads that target in the child, re-registers it, and verifies
-the same frozen execution identity before use. That identity commits to the
-target, its source-backed executable bytes/code, bytecode-referenced helper
-globals and statically resolvable local imports across package boundaries,
-function-owned executable state, and the exported instance's bounded
-canonical state (including its frozen manifest), plus every other non-recursive
-bootstrap coordinate. Keep module-level process-target state immutable and
-source-verifiable. Parent and child revalidate that target before execution
-and the parent checks it again before staging; core never pickles the live demo
-plug-in or coordinator. A timeout/crash is killed and reaped and
+exported `plugin` instance carries the precomputed-fixture runtime only in the
+parent. Its exact concrete class declares a core
+`PluginProcessBootstrapDescriptor` naming
+`rsl_demo_plugin:ExampleRouterPlugin` with no-argument construction. Core sends
+only those inert import coordinates, constructs the stateless parser in the
+child, re-registers it, and verifies the same frozen execution identity before
+use. The class hooks do not depend on `plugin.runtime`; the runtime is attached
+only to the exported live entry-point instance. The process identity commits to
+the declared class target, its source-backed executable bytes/code,
+bytecode-referenced helper globals and statically resolvable local imports
+across package boundaries, function-owned executable state, and the class's
+bounded canonical state (including the frozen manifest), plus every other
+non-recursive bootstrap coordinate. Parent and child revalidate that target
+before execution and the parent checks it again before staging; core never
+pickles the live demo plug-in, runtime, or coordinator. A timeout/crash is
+killed and reaped and
 cannot publish a partial dataset; the child remains trusted host-user code
 rather than a security sandbox.
 The `.runtime\demo-headless` directory is disposable local state. Repeat
@@ -273,9 +278,15 @@ projection; exported annotations may not degrade to `_typeshed.Incomplete`.
 
 ```text
 python -m pip install -e ".[test,web]" -e demo -e state-dump-generator
+python scripts/run_topology_federation_gate.py
 python scripts/export_type_stubs.py --check
 python -m mypy --python-version 3.12 --strict --no-incremental tests/typing/public_api.py state-dump-generator/tests/typing/generator_public_api.py
 ```
+
+The focused federation gate executes backend, browser API, generated-stub,
+strict-typing, and JavaScript phases. It therefore requires Node.js 18 or newer
+and `npm`; every phase is capped at 300 seconds and timeout cleanup terminates
+its complete test-process tree.
 
 Run `python scripts/export_type_stubs.py` only when an exported Python signature
 changes intentionally, and review the resulting stub diff before committing it.
@@ -332,8 +343,41 @@ the generic core to classify a one-sided domain as external. Inter-node
 presentation claims may use `InterNodeRouteTraceRole.INCLUDE` or
 `InterNodeRouteTraceRole.OVERLAY`; `CONFLICT` is reserved for core aggregation
 output and must not be emitted by a plug-in. This generated fixture uses shared
-segment claims rather than pairwise connector claims; the inter-node role
-boundary is exercised by the core conformance tests.
+segment claims for multi-access media and typed `ConnectorClaim` values for
+safe two-participant connectors. `typed_topology.py` exposes one stateless,
+module-level, process-attested provider and registers a separately qualified
+instance in each immutable member plan. The demo composition reconstructs that
+member's generated observations as `ResourceStateView` values and supplies
+them through core's `ReadOnlyWorld`; no dump or claim list is hidden in plug-in
+constructor state. Core selects those qualified instances, qualifies their
+local endpoints, and performs the declared exact-token join. The old generated
+claim projection remains as a
+compatibility/presentation input, so this example proves typed federation
+without making core depend on demo vocabulary or removing the richer subnet
+view. The inter-node role boundary is exercised by the executable federation
+gate and the core conformance tests.
+The provider declares the demo connector's semantic `link_type` and
+`InterNodeLinkPresentation` explicitly. Its frozen catalog/member coordinates
+are exact non-empty strings, and core discovers it by resolving the immutable
+topology-projection route; no demo metadata flag enables typed federation.
+Validity is half-open for every typed record and claim. A claim is current only
+when it covers the selected world's entire resolved min/max uncertainty
+interval; a boundary crossing or unknown basis for a bounded claim fails
+closed as incomplete. The selected projection time must equal the world's
+requested time. Only complete, non-truncated matched typed evidence may become
+an authoritative graph link. The generated-route HTTP regression adds the
+plug-in-declarable ordered `typed_inter_node_link` endpoint pair to a real demo
+next-hop declaration. It carries the two typed resource keys, not a
+core-generated link hash or frozen provider coordinates. Core binds those keys
+to the qualified topology endpoints; with network segments removed the route
+then resolves through that exact typed link. Reversed-directed, overlay,
+link-local incomplete/truncated, and globally incomplete/truncated mutations
+remain unresolved even with the legacy domain declaration present. A truncated
+or unreported inter-node-link page also fails closed. The resolved boundary's
+presentation owner and narrative preserve whether the authoritative link was
+inferred by core exact matching or an allowlisted linker, and the response
+summarizes only owners actually used. A separate partial record-preview
+variant remains resolved when typed claim and link-page coverage is complete.
 The runtime gives core raw topology values only at the plug-in hook; generated
 projection JSON contains the core's already-normalized tagged form and is
 validated directly on reload. Dashboard examples rely on presence-aware fields:
@@ -355,9 +399,13 @@ no longer than 256 characters.
 
 The comprehensive generated assembly is different: it is a deliberately
 precomputed fixture whose stored projections are validated and loaded instead
-of replayed by the small teaching parser. The example therefore exposes
+of replayed by the small teaching parser. The example therefore types only its
+exported live `plugin` object as `RuntimeAttachedExampleRouterPlugin` and exposes
 `plugin.runtime` with
 `capability_id = "router_dump_analyzer.runtime.v1"` as a compatibility adapter.
+That attribute exists only on the live exported instance. The no-argument
+`ExampleRouterPlugin` reconstructed for PROCESS probe/ingestion has no runtime
+attribute and needs none.
 The full 125,000-event-per-node demo remains on this v1 path.
 
 Its `open(input_path)` method is a context manager that yields one non-web

@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 from math import isfinite
+from types import MappingProxyType
 from typing import Any, cast
 from uuid import UUID
 
@@ -27,11 +28,14 @@ from .plugin_api import (
     CausalLink,
     ChangeSet,
     ClockAnchor,
+    ConnectorClaim,
+    ConnectorMatchPolicyDescriptor,
     ConsistencyFinding,
     CorrelationReader,
     CorrelationWindow,
     DiagnosticOrigin,
     DiagnosticSeverity,
+    DiagnosticStage,
     DomainEvent,
     Evidence,
     EvidenceAnalysisFact,
@@ -43,11 +47,17 @@ from .plugin_api import (
     FindingResult,
     ForwardingMutation,
     ForwardingOperation,
+    ForwardingPacketLayer,
+    ForwardingPacketState,
     ForwardingProjectionRequest,
+    ForwardingSizeObservation,
+    ForwardingSteeringRule,
     ForwardingStepRequest,
     ForwardingStepResult,
     ForwardingTransitionOrigin,
     InterfaceForwardingState,
+    InterNodeLinkPresentation,
+    KeyAtom,
     MutationOperation,
     NextHop,
     NextHopGroup,
@@ -73,9 +83,12 @@ from .plugin_api import (
     TopologyEndpointRecord,
     TopologyEndpointReference,
     TopologyLinkRecord,
+    TopologyMatchReference,
     TopologyProjectionRecord,
     TopologyProjectionRequest,
+    TopologyResourcePresentation,
     TopologyResourceRecord,
+    TopologyTwoParticipantShape,
     TopologyUsability,
     TunnelAction,
     UnknownChange,
@@ -140,6 +153,7 @@ class PluginCapabilityLimits:
     max_diagnostics: int = 1_000
     max_evidence_per_output: int = 64
     max_resource_references: int = 4_096
+    max_topology_claims: int = 100_000
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -148,6 +162,7 @@ class PluginCapabilityLimits:
             ("max_correlation_outputs", self.max_correlation_outputs),
             ("max_consistency_outputs", self.max_consistency_outputs),
             ("max_topology_outputs", self.max_topology_outputs),
+            ("max_topology_claims", self.max_topology_claims),
             ("max_forwarding_outputs", self.max_forwarding_outputs),
             (
                 "max_evidence_analysis_outputs",
@@ -187,6 +202,10 @@ class ConsistencyExecutionResult:
 class TopologyExecutionResult:
     records: tuple[TopologyProjectionRecord, ...]
     diagnostics: tuple[PluginDiagnostic, ...]
+    claims: tuple[ConnectorClaim, ...] = ()
+    match_policies: tuple[ConnectorMatchPolicyDescriptor, ...] = ()
+    records_complete: bool = True
+    claims_complete: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +234,7 @@ class _SchemaIndex:
     causal_link_types: frozenset[str]
     perspectives: frozenset[str]
     topology_perspectives: Mapping[str, frozenset[str]]
+    connector_match_policies: Mapping[str, ConnectorMatchPolicyDescriptor]
 
     @classmethod
     def build(cls, schema: PluginSchema) -> _SchemaIndex:
@@ -226,6 +246,29 @@ class _SchemaIndex:
                 item.name.partition(".")[0]
                 for item in resource_kind.properties
             )
+        policies = schema.connector_match_policies
+        if type(policies) is not tuple or any(
+            type(policy) is not ConnectorMatchPolicyDescriptor
+            for policy in policies
+        ):
+            raise ValueError(
+                "connector match policies must be an exact descriptor tuple"
+            )
+        for policy in policies:
+            ConnectorMatchPolicyDescriptor.__post_init__(policy)
+        detached_policies = tuple(
+            ConnectorMatchPolicyDescriptor(
+                policy_id=policy.policy_id,
+                claim_contract_id=policy.claim_contract_id,
+                kind=policy.kind,
+                argument_names=tuple(policy.argument_names),
+                linker_plugin_id=policy.linker_plugin_id,
+            )
+            for policy in policies
+        )
+        policy_ids = [policy.policy_id for policy in detached_policies]
+        if len(policy_ids) != len(set(policy_ids)):
+            raise ValueError("connector match policy identifiers must be unique")
         return cls(
             key_fields_by_kind=key_fields,
             property_roots_by_kind=property_roots,
@@ -245,6 +288,10 @@ class _SchemaIndex:
                     descriptor.supported_status_perspective_ids
                 )
                 for descriptor in schema.topology_projections
+            },
+            connector_match_policies={
+                descriptor.policy_id: descriptor
+                for descriptor in detached_policies
             },
         )
 
@@ -471,6 +518,504 @@ def _validate_value(
     raise ValueError(f"{label} contains unsupported type {type(value).__name__}")
 
 
+def _snapshot_property_value(
+    value: Any,
+    label: str,
+    *,
+    budget: _ValueBudget | None = None,
+    depth: int = 0,
+) -> Any:
+    """Deeply detach one already-bounded plug-in value.
+
+    Validation alone is not an ownership transfer: a generator can mutate a
+    mapping after yielding it but before the core asks for the next item.  The
+    returned graph therefore uses only exact immutable atoms, tuples, and
+    read-only mapping proxies constructed by the core.  Custom containers are
+    read inside the surrounding plug-in boundary but are never retained.
+    """
+
+    current = budget or _ValueBudget()
+    current.units += 1
+    if current.units > 4_096:
+        raise ValueError(f"{label} exceeds 4096 value units")
+    if depth > 16:
+        raise ValueError(f"{label} exceeds 16 container levels")
+    value_type = type(value)
+    if value is None or value_type is bool:
+        return value
+    if value_type is int:
+        if value.bit_length() > 4_096:
+            raise ValueError(f"{label} contains an integer exceeding 4096 bits")
+        return value
+    if value_type is float:
+        if not isfinite(value):
+            raise ValueError(f"{label} contains a non-finite float")
+        return value
+    if value_type is str:
+        if len(value) > 65_536:
+            raise ValueError(f"{label} contains an atom exceeding 65536 units")
+        return value
+    if value_type is bytes:
+        if len(value) > 65_536:
+            raise ValueError(f"{label} contains an atom exceeding 65536 units")
+        return bytes(value)
+    if value_type is UUID:
+        return UUID(bytes=value.bytes)
+    if value_type is tuple:
+        if len(value) > 1_024:
+            raise ValueError(f"{label} contains a tuple exceeding 1024 items")
+        identity = id(value)
+        if identity in current.active:
+            raise ValueError(f"{label} contains a reference cycle")
+        current.active.add(identity)
+        try:
+            return tuple(
+                _snapshot_property_value(
+                    item,
+                    label,
+                    budget=current,
+                    depth=depth + 1,
+                )
+                for item in value
+            )
+        finally:
+            current.active.remove(identity)
+    if isinstance(value, Mapping):
+        identity = id(value)
+        if identity in current.active:
+            raise ValueError(f"{label} contains a reference cycle")
+        current.active.add(identity)
+        detached: dict[str, Any] = {}
+        try:
+            for index, (key, item) in enumerate(value.items()):
+                if index >= 1_024:
+                    raise ValueError(
+                        f"{label} contains a mapping exceeding 1024 items"
+                    )
+                if type(key) is not str or not key or len(key) > 256:
+                    raise ValueError(
+                        f"{label} mapping keys must contain 1 to 256 characters"
+                    )
+                detached[key] = _snapshot_property_value(
+                    item,
+                    label,
+                    budget=current,
+                    depth=depth + 1,
+                )
+        finally:
+            current.active.remove(identity)
+        return MappingProxyType(detached)
+    raise ValueError(f"{label} contains unsupported type {value_type.__name__}")
+
+
+def _snapshot_key_value(value: Any, label: str, *, depth: int = 0) -> Any:
+    if depth > 4:
+        raise ValueError(f"{label} exceeds four tuple levels")
+    value_type = type(value)
+    if value_type in {int, str}:
+        return value
+    if value_type is bytes:
+        return bytes(value)
+    if value_type is UUID:
+        return UUID(bytes=value.bytes)
+    if value_type is KeyAtom:
+        return KeyAtom(
+            type_tag=value.type_tag,
+            value=_snapshot_key_value(
+                value.value,
+                f"{label}.value",
+                depth=depth + 1,
+            ),
+        )
+    if value_type is tuple:
+        return tuple(
+            _snapshot_key_value(item, f"{label}[{index}]", depth=depth + 1)
+            for index, item in enumerate(value)
+        )
+    raise ValueError(f"{label} contains an unsupported key value")
+
+
+def _snapshot_resource_key(value: ResourceKey, label: str) -> ResourceKey:
+    if type(value) is not ResourceKey:
+        raise ValueError(f"{label} must be an exact ResourceKey")
+    return ResourceKey(
+        namespace=value.namespace,
+        node=value.node,
+        layer=value.layer,
+        kind=value.kind,
+        parts=tuple(
+            (
+                name,
+                _snapshot_key_value(part, f"{label}.parts[{index}][1]"),
+            )
+            for index, (name, part) in enumerate(value.parts)
+        ),
+    )
+
+
+def _snapshot_evidence(value: Evidence, label: str) -> Evidence:
+    if type(value) is not Evidence:
+        raise ValueError(f"{label} must be an exact Evidence")
+    return Evidence(
+        artifact_id=UUID(bytes=value.artifact_id.bytes),
+        locator=value.locator,
+        raw_timestamp_ns=value.raw_timestamp_ns,
+        clock_domain=value.clock_domain,
+        excerpt_sha256=value.excerpt_sha256,
+    )
+
+
+def _snapshot_evidence_items(
+    values: tuple[Evidence, ...],
+    label: str,
+) -> tuple[Evidence, ...]:
+    return tuple(
+        _snapshot_evidence(item, f"{label}[{index}]")
+        for index, item in enumerate(values)
+    )
+
+
+def _snapshot_status_perspective(
+    value: StatusPerspectiveRef | None,
+) -> StatusPerspectiveRef | None:
+    if value is None:
+        return None
+    if type(value) is not StatusPerspectiveRef:
+        raise ValueError(
+            "connector claim status_perspective must be an exact "
+            "StatusPerspectiveRef"
+        )
+    return StatusPerspectiveRef(
+        perspective_id=value.perspective_id,
+        plugin_instance_id=value.plugin_instance_id,
+        schema_digest=value.schema_digest,
+    )
+
+
+def _snapshot_topology_reference(
+    value: TopologyEndpointReference,
+    label: str,
+) -> TopologyEndpointReference:
+    if type(value) is not TopologyEndpointReference:
+        raise ValueError(f"{label} must be an exact TopologyEndpointReference")
+    if value.resource is not None:
+        return TopologyEndpointReference(
+            resource=_snapshot_resource_key(value.resource, f"{label}.resource")
+        )
+    assert value.match is not None
+    match = value.match
+    if type(match) is not TopologyMatchReference:
+        raise ValueError(f"{label}.match must be an exact TopologyMatchReference")
+    return TopologyEndpointReference(
+        match=TopologyMatchReference(
+            matcher_id=match.matcher_id,
+            arguments=_snapshot_property_value(
+                match.arguments,
+                f"{label}.match.arguments",
+            ),
+            resolved_candidates=tuple(
+                _snapshot_resource_key(
+                    candidate,
+                    f"{label}.match.resolved_candidates[{index}]",
+                )
+                for index, candidate in enumerate(match.resolved_candidates)
+            ),
+        )
+    )
+
+
+def _snapshot_topology_record(
+    value: TopologyProjectionRecord,
+    label: str,
+) -> TopologyProjectionRecord:
+    payload = value.payload
+    if type(payload) is TopologyResourceRecord:
+        presentation = payload.presentation
+        if type(presentation) is not TopologyResourcePresentation:
+            raise ValueError(
+                f"{label}.payload.presentation must be an exact "
+                "TopologyResourcePresentation"
+            )
+        detached_payload: Any = TopologyResourceRecord(
+            resource=_snapshot_resource_key(
+                payload.resource,
+                f"{label}.payload.resource",
+            ),
+            role=payload.role,
+            presentation=TopologyResourcePresentation(
+                two_participant_shape=TopologyTwoParticipantShape(
+                    presentation.two_participant_shape
+                )
+            ),
+        )
+    elif type(payload) is TopologyEndpointRecord:
+        detached_payload = TopologyEndpointRecord(
+            endpoint_id=payload.endpoint_id,
+            target=_snapshot_topology_reference(
+                payload.target,
+                f"{label}.payload.target",
+            ),
+            role=payload.role,
+        )
+    elif type(payload) is TopologyLinkRecord:
+        detached_payload = TopologyLinkRecord(
+            link_id=payload.link_id,
+            source=_snapshot_topology_reference(
+                payload.source,
+                f"{label}.payload.source",
+            ),
+            target=_snapshot_topology_reference(
+                payload.target,
+                f"{label}.payload.target",
+            ),
+            directed=payload.directed,
+        )
+    else:
+        raise ValueError(f"{label}.payload is unsupported")
+    return TopologyProjectionRecord(
+        projection_id=value.projection_id,
+        status_perspective_id=value.status_perspective_id,
+        payload=detached_payload,
+        usability=TopologyUsability(value.usability),
+        source_resources=tuple(
+            _snapshot_resource_key(
+                resource,
+                f"{label}.source_resources[{index}]",
+            )
+            for index, resource in enumerate(value.source_resources)
+        ),
+        provenance=Provenance(value.provenance),
+        quality=Quality(value.quality),
+        exists=value.exists,
+        properties=_snapshot_property_value(value.properties, f"{label}.properties"),
+        unknown_fields=tuple(
+            UnknownField(
+                name=item.name,
+                reason_code=item.reason_code,
+                message=item.message,
+                evidence=_snapshot_evidence_items(
+                    item.evidence,
+                    f"{label}.unknown_fields[{index}].evidence",
+                ),
+            )
+            for index, item in enumerate(value.unknown_fields)
+        ),
+        valid_from_ns=value.valid_from_ns,
+        valid_to_ns=value.valid_to_ns,
+        evidence=_snapshot_evidence_items(value.evidence, f"{label}.evidence"),
+    )
+
+
+def _snapshot_connector_claim(value: ConnectorClaim, label: str) -> ConnectorClaim:
+    presentation = value.presentation
+    if type(presentation) is not InterNodeLinkPresentation:
+        raise ValueError(
+            f"{label}.presentation must be an exact InterNodeLinkPresentation"
+        )
+    return ConnectorClaim(
+        claim_id=value.claim_id,
+        endpoint=_snapshot_resource_key(value.endpoint, f"{label}.endpoint"),
+        claim_contract_id=value.claim_contract_id,
+        match_policy_id=value.match_policy_id,
+        arguments=tuple(
+            (
+                name,
+                _snapshot_key_value(argument, f"{label}.arguments[{index}][1]"),
+            )
+            for index, (name, argument) in enumerate(value.arguments)
+        ),
+        provenance=Provenance(value.provenance),
+        quality=Quality(value.quality),
+        status_perspective=_snapshot_status_perspective(value.status_perspective),
+        role=value.role,
+        link_type=value.link_type,
+        presentation=InterNodeLinkPresentation(
+            route_trace=presentation.route_trace,
+        ),
+        valid_from_ns=value.valid_from_ns,
+        valid_to_ns=value.valid_to_ns,
+        evidence=_snapshot_evidence_items(value.evidence, f"{label}.evidence"),
+    )
+
+
+def _snapshot_topology_projection_request(
+    value: TopologyProjectionRequest,
+    label: str,
+) -> TopologyProjectionRequest:
+    """Detach plug-in-visible topology input from core-owned authority."""
+
+    if type(value) is not TopologyProjectionRequest:
+        raise ValueError(f"{label} must be an exact TopologyProjectionRequest")
+    return TopologyProjectionRequest(
+        projection_id=value.projection_id,
+        status_perspective_id=value.status_perspective_id,
+        max_records=value.max_records,
+        max_world_reads=value.max_world_reads,
+        seed_resources=tuple(
+            _snapshot_resource_key(
+                resource,
+                f"{label}.seed_resources[{index}]",
+            )
+            for index, resource in enumerate(value.seed_resources)
+        ),
+        max_claims=value.max_claims,
+    )
+
+
+def _snapshot_forwarding_packet_state(
+    value: ForwardingPacketState,
+    label: str,
+) -> ForwardingPacketState:
+    if type(value) is not ForwardingPacketState:
+        raise ValueError(f"{label} must be an exact ForwardingPacketState")
+    layers = tuple(
+        ForwardingPacketLayer(
+            layer_id=layer.layer_id,
+            contract_id=layer.contract_id,
+            label=layer.label,
+            fields=tuple(
+                (
+                    name,
+                    _snapshot_key_value(
+                        part,
+                        f"{label}.layers[{layer_index}].fields[{part_index}][1]",
+                    ),
+                )
+                for part_index, (name, part) in enumerate(layer.fields)
+            ),
+            size_bytes=layer.size_bytes,
+            complete=layer.complete,
+        )
+        for layer_index, layer in enumerate(value.layers)
+    )
+    size = value.size
+    return ForwardingPacketState(
+        layers=layers,
+        size=(
+            None
+            if size is None
+            else ForwardingSizeObservation(
+                basis_contract_id=size.basis_contract_id,
+                size_bytes=size.size_bytes,
+                complete=size.complete,
+            )
+        ),
+        complete=value.complete,
+    )
+
+
+def _snapshot_forwarding_steering_rule(
+    value: ForwardingSteeringRule,
+    label: str,
+) -> ForwardingSteeringRule:
+    if type(value) is not ForwardingSteeringRule:
+        raise ValueError(f"{label} must be an exact ForwardingSteeringRule")
+    return ForwardingSteeringRule(
+        rule_id=value.rule_id,
+        target_step_id=value.target_step_id,
+        action_contract_id=value.action_contract_id,
+        reason=value.reason,
+        priority=value.priority,
+        expected_before=(
+            None
+            if value.expected_before is None
+            else _snapshot_forwarding_packet_state(
+                value.expected_before,
+                f"{label}.expected_before",
+            )
+        ),
+        selected_candidate=(
+            None
+            if value.selected_candidate is None
+            else _snapshot_resource_key(
+                value.selected_candidate,
+                f"{label}.selected_candidate",
+            )
+        ),
+        packet_after=(
+            None
+            if value.packet_after is None
+            else _snapshot_forwarding_packet_state(
+                value.packet_after,
+                f"{label}.packet_after",
+            )
+        ),
+        disposition=value.disposition,
+    )
+
+
+def _snapshot_forwarding_step_request(
+    value: ForwardingStepRequest,
+    label: str,
+) -> ForwardingStepRequest:
+    if type(value) is not ForwardingStepRequest:
+        raise ValueError(f"{label} must be an exact ForwardingStepRequest")
+    return ForwardingStepRequest(
+        step_id=value.step_id,
+        member_id=value.member_id,
+        status_perspective=cast(
+            StatusPerspectiveRef,
+            _snapshot_status_perspective(value.status_perspective),
+        ),
+        forwarding_object=_snapshot_resource_key(
+            value.forwarding_object,
+            f"{label}.forwarding_object",
+        ),
+        packet_state=_snapshot_forwarding_packet_state(
+            value.packet_state,
+            f"{label}.packet_state",
+        ),
+        lookup_context=tuple(
+            (
+                name,
+                _snapshot_key_value(
+                    part,
+                    f"{label}.lookup_context[{index}][1]",
+                ),
+            )
+            for index, (name, part) in enumerate(value.lookup_context)
+        ),
+        ingress_resource=(
+            None
+            if value.ingress_resource is None
+            else _snapshot_resource_key(
+                value.ingress_resource,
+                f"{label}.ingress_resource",
+            )
+        ),
+        steering_rules=tuple(
+            _snapshot_forwarding_steering_rule(
+                rule,
+                f"{label}.steering_rules[{index}]",
+            )
+            for index, rule in enumerate(value.steering_rules)
+        ),
+        max_candidates=value.max_candidates,
+        ir_version=value.ir_version,
+    )
+
+
+def _snapshot_forwarding_projection_request(
+    value: ForwardingProjectionRequest,
+    label: str,
+) -> ForwardingProjectionRequest:
+    if type(value) is not ForwardingProjectionRequest:
+        raise ValueError(f"{label} must be an exact ForwardingProjectionRequest")
+    return ForwardingProjectionRequest(
+        ir_version=value.ir_version,
+        status_perspective=cast(
+            StatusPerspectiveRef,
+            _snapshot_status_perspective(value.status_perspective),
+        ),
+        # ChangeSet is validated before invocation and is not consulted to
+        # authorize plug-in output. The enclosing request is still detached so
+        # a hook cannot rewrite the authoritative IR, perspective, or bounds.
+        changes=value.changes,
+        max_records=value.max_records,
+        max_world_reads=value.max_world_reads,
+    )
+
+
 class PluginCapabilityExecutor:
     """Invoke optional analyzer hooks through one bounded validation boundary."""
 
@@ -659,6 +1204,26 @@ class PluginCapabilityExecutor:
         except BaseException as error:
             raise self._input_error(capability, unreadable_message) from error
 
+    def _snapshot_caller_input(
+        self,
+        capability: PluginCapability,
+        snapshotter: Callable[[], Any],
+        *,
+        unreadable_message: str,
+    ) -> Any:
+        """Return a detached authority snapshot or a caller-input error."""
+
+        try:
+            return snapshotter()
+        except PluginCapabilityInputError:
+            raise
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except (TypeError, ValueError) as error:
+            raise self._input_error(capability, str(error)) from error
+        except BaseException as error:
+            raise self._input_error(capability, unreadable_message) from error
+
     def _require(
         self,
         capability: PluginCapability,
@@ -751,7 +1316,22 @@ class PluginCapabilityExecutor:
             expected_origin=DiagnosticOrigin.PLUGIN,
             maximum_evidence_items=self.limits.max_evidence_per_output,
         )
-        return diagnostic
+        return PluginDiagnostic(
+            stage=DiagnosticStage(diagnostic.stage),
+            severity=DiagnosticSeverity(diagnostic.severity),
+            code=diagnostic.code,
+            message=diagnostic.message,
+            recoverable=diagnostic.recoverable,
+            evidence=_snapshot_evidence_items(
+                diagnostic.evidence,
+                f"{label}.evidence",
+            ),
+            details=_snapshot_property_value(
+                diagnostic.details,
+                f"{label}.details",
+            ),
+            origin=DiagnosticOrigin(diagnostic.origin),
+        )
 
     def _diagnostics(
         self,
@@ -1582,6 +2162,7 @@ class PluginCapabilityExecutor:
                     )
                 if (
                     fact.time_start_ns is not None
+                    and fact.time_end_ns is not None
                     and fact.time_start_ns > fact.time_end_ns
                 ):
                     raise ValueError(
@@ -1963,6 +2544,28 @@ class PluginCapabilityExecutor:
             value.unknown_fields
         ) > 1_024:
             raise ValueError(f"{label}.unknown_fields must be a bounded tuple")
+        for index, item in enumerate(value.unknown_fields):
+            if type(item) is not UnknownField:
+                raise ValueError(
+                    f"{label}.unknown_fields[{index}] must be an exact UnknownField"
+                )
+            for field_name, field_value, maximum, allow_empty in (
+                ("name", item.name, 1_024, False),
+                ("reason_code", item.reason_code, 256, False),
+                ("message", item.message, 8_192, True),
+            ):
+                if (
+                    type(field_value) is not str
+                    or len(field_value) > maximum
+                    or (not allow_empty and not field_value)
+                ):
+                    raise ValueError(
+                        f"{label}.unknown_fields[{index}].{field_name} is invalid"
+                    )
+            self._evidence_tuple(
+                item.evidence,
+                f"{label}.unknown_fields[{index}].evidence",
+            )
         self._optional_time(value.valid_from_ns, f"{label}.valid_from_ns")
         self._optional_time(value.valid_to_ns, f"{label}.valid_to_ns")
         if (
@@ -1972,6 +2575,229 @@ class PluginCapabilityExecutor:
         ):
             raise ValueError(f"{label} validity bounds are reversed")
         self._evidence_tuple(value.evidence, f"{label}.evidence")
+
+    def _connector_argument(
+        self,
+        value: Any,
+        label: str,
+        *,
+        depth: int = 0,
+    ) -> None:
+        if depth > 4:
+            raise ValueError(f"{label} exceeds four tuple levels")
+        if type(value) in (int, str, bytes) or isinstance(value, UUID):
+            return
+        if type(value) is KeyAtom:
+            KeyAtom.__post_init__(value)
+            return
+        if type(value) is tuple:
+            if len(value) > 32:
+                raise ValueError(f"{label} exceeds 32 tuple items")
+            for index, item in enumerate(value):
+                self._connector_argument(
+                    item,
+                    f"{label}[{index}]",
+                    depth=depth + 1,
+                )
+            return
+        raise ValueError(
+            f"{label} must use exact KeyValue scalars, KeyAtom, or tuples"
+        )
+
+    def _connector_claim(
+        self,
+        request: TopologyProjectionRequest,
+        world: ReadOnlyWorld,
+        value: Any,
+        label: str,
+    ) -> ConnectorMatchPolicyDescriptor:
+        if type(value) is not ConnectorClaim:
+            raise ValueError(f"{label} must be an exact ConnectorClaim")
+        ConnectorClaim.__post_init__(value)
+        ResourceKey.__post_init__(value.endpoint)
+        self._resource(value.endpoint, f"{label}.endpoint")
+        policy = self._schema.connector_match_policies.get(value.match_policy_id)
+        if policy is None:
+            raise ValueError(
+                f"{label}.match_policy_id references an undeclared connector "
+                "match policy"
+            )
+        ConnectorMatchPolicyDescriptor.__post_init__(policy)
+        if value.claim_contract_id != policy.claim_contract_id:
+            raise ValueError(
+                f"{label}.claim_contract_id does not match its declared policy"
+            )
+        argument_names = tuple(name for name, _argument in value.arguments)
+        if argument_names != policy.argument_names:
+            raise ValueError(
+                f"{label}.arguments do not match the declared policy order"
+            )
+        for index, (_name, argument) in enumerate(value.arguments):
+            self._connector_argument(argument, f"{label}.arguments[{index}][1]")
+        self._enum(value.provenance, Provenance, f"{label}.provenance")
+        self._enum(value.quality, Quality, f"{label}.quality")
+        if type(value.link_type) is not str:
+            raise ValueError(f"{label}.link_type must be an exact string")
+        if type(value.presentation) is not InterNodeLinkPresentation:
+            raise ValueError(
+                f"{label}.presentation must be an exact "
+                "InterNodeLinkPresentation"
+            )
+        InterNodeLinkPresentation.__post_init__(value.presentation)
+        perspective = value.status_perspective
+        if perspective is not None:
+            StatusPerspectiveRef.__post_init__(perspective)
+            self._perspective(
+                perspective,
+                f"{label}.status_perspective",
+                require_bound_qualifiers=True,
+            )
+            if perspective.perspective_id != request.status_perspective_id:
+                raise ValueError(
+                    f"{label}.status_perspective does not match the request"
+                )
+            if perspective != world.perspective_ref:
+                raise ValueError(
+                    f"{label}.status_perspective does not match the bounded world"
+                )
+        self._optional_time(value.valid_from_ns, f"{label}.valid_from_ns")
+        self._optional_time(value.valid_to_ns, f"{label}.valid_to_ns")
+        if (
+            value.valid_from_ns is not None
+            and value.valid_to_ns is not None
+            and value.valid_from_ns > value.valid_to_ns
+        ):
+            raise ValueError(f"{label} validity bounds are reversed")
+        self._evidence_tuple(value.evidence, f"{label}.evidence")
+        return policy
+
+    def _consume_topology(
+        self,
+        capability: PluginCapability,
+        outputs: Iterable[Any],
+        *,
+        request: TopologyProjectionRequest,
+        world: ReadOnlyWorld,
+        maximum_records: int,
+        maximum_claims: int,
+    ) -> tuple[
+        tuple[TopologyProjectionRecord, ...],
+        tuple[ConnectorClaim, ...],
+        tuple[ConnectorMatchPolicyDescriptor, ...],
+        tuple[PluginDiagnostic, ...],
+        frozenset[ResourceKey],
+        bool,
+        bool,
+    ]:
+        records: list[TopologyProjectionRecord] = []
+        claims: list[ConnectorClaim] = []
+        emitted_resources: set[ResourceKey] = set()
+        policies_by_id: dict[str, ConnectorMatchPolicyDescriptor] = {}
+        diagnostics: list[PluginDiagnostic] = []
+        records_complete = True
+        claims_complete = True
+        try:
+            iterator = iter(outputs)
+        except TypeError as error:
+            raise self._error(
+                capability,
+                "capability hook must return an iterable",
+            ) from error
+
+        # One extra typed output lets the executor distinguish an exactly full
+        # result from a truncated stream. The aggregate scan ceiling prevents a
+        # plug-in from hiding an unbounded run of one output category before the
+        # other category while still permitting independently bounded results.
+        maximum_scanned = (
+            maximum_records
+            + maximum_claims
+            + self.limits.max_diagnostics
+            + 1
+        )
+        exhausted = False
+        try:
+            for index, output in enumerate(iterator):
+                if index >= maximum_scanned:
+                    records_complete = False
+                    claims_complete = False
+                    break
+                label = f"{capability.value}[{index}]"
+                if type(output) is PluginDiagnostic:
+                    try:
+                        diagnostic = self._diagnostic(output, label)
+                    except (TypeError, ValueError) as error:
+                        raise self._error(capability, str(error)) from error
+                    diagnostics.append(diagnostic)
+                    if len(diagnostics) > self.limits.max_diagnostics:
+                        raise self._error(
+                            capability,
+                            "capability output exceeded the diagnostic limit",
+                            diagnostics=tuple(diagnostics),
+                        )
+                    if not diagnostic.recoverable:
+                        raise self._error(
+                            capability,
+                            f"{capability.value} failed: {diagnostic.code}: "
+                            f"{diagnostic.message}",
+                            diagnostics=tuple(diagnostics),
+                        )
+                    continue
+                try:
+                    if type(output) is TopologyProjectionRecord:
+                        self._topology_record(request, output, label)
+                        detached_record = _snapshot_topology_record(output, label)
+                        if type(detached_record.payload) is TopologyResourceRecord:
+                            emitted_resources.add(detached_record.payload.resource)
+                        if len(records) < maximum_records:
+                            records.append(detached_record)
+                        else:
+                            records_complete = False
+                    elif type(output) is ConnectorClaim:
+                        policy = self._connector_claim(request, world, output, label)
+                        detached_claim = _snapshot_connector_claim(output, label)
+                        if len(claims) < maximum_claims:
+                            claims.append(detached_claim)
+                            policies_by_id[policy.policy_id] = policy
+                        else:
+                            claims_complete = False
+                    else:
+                        raise ValueError(
+                            f"capability emitted unsupported {type(output).__name__}"
+                        )
+                except (TypeError, ValueError) as error:
+                    raise self._error(
+                        capability,
+                        str(error),
+                        diagnostics=tuple(diagnostics),
+                    ) from error
+            else:
+                exhausted = True
+        finally:
+            close = getattr(iterator, "close", None)
+            if callable(close):
+                close()
+        if not exhausted:
+            records_complete = False
+            claims_complete = False
+        claim_ids = [claim.claim_id for claim in claims]
+        if len(claim_ids) != len(set(claim_ids)):
+            raise self._error(
+                capability,
+                "topology connector claim identifiers must be unique",
+                diagnostics=tuple(diagnostics),
+            )
+        match_policies = tuple(
+            policies_by_id[policy_id] for policy_id in sorted(policies_by_id)
+        )
+        return (
+            tuple(records),
+            tuple(claims),
+            match_policies,
+            tuple(diagnostics),
+            frozenset(emitted_resources),
+            records_complete,
+            claims_complete,
+        )
 
     def project_topology(
         self,
@@ -1984,6 +2810,14 @@ class PluginCapabilityExecutor:
                 capability,
                 "request must be an exact TopologyProjectionRequest",
             )
+        request = cast(
+            TopologyProjectionRequest,
+            self._snapshot_caller_input(
+                capability,
+                lambda: _snapshot_topology_projection_request(request, "request"),
+                unreadable_message="topology request could not be snapshotted",
+            ),
+        )
         supported = self._schema.topology_perspectives.get(request.projection_id)
         if supported is None:
             raise self._input_error(
@@ -1997,6 +2831,25 @@ class PluginCapabilityExecutor:
             )
 
         def validate_request() -> None:
+            for field_name, value, maximum in (
+                ("max_records", request.max_records, 100_000),
+                ("max_claims", request.max_claims, 100_000),
+                ("max_world_reads", request.max_world_reads, 1_000_000),
+            ):
+                if type(value) is not int or not 1 <= value <= maximum:
+                    raise ValueError(
+                        f"request.{field_name} must be an integer between 1 and "
+                        f"{maximum}"
+                    )
+            if (
+                type(request.seed_resources) is not tuple
+                or len(request.seed_resources) > self.limits.max_resource_references
+            ):
+                raise ValueError(
+                    "request.seed_resources must be a bounded exact tuple"
+                )
+            if len(request.seed_resources) != len(set(request.seed_resources)):
+                raise ValueError("request.seed_resources must be unique")
             for index, resource in enumerate(request.seed_resources):
                 self._resource(resource, f"request.seed_resources[{index}]")
 
@@ -2012,20 +2865,57 @@ class PluginCapabilityExecutor:
             expected_perspective_id=request.status_perspective_id,
         )
         hook = self._require(capability, "project_topology")
-        maximum = min(request.max_records, self.limits.max_topology_outputs)
+        maximum_records = min(
+            request.max_records,
+            self.limits.max_topology_outputs,
+        )
+        maximum_claims = min(
+            request.max_claims,
+            self.limits.max_topology_claims,
+        )
+        hook_request = _snapshot_topology_projection_request(request, "request")
         try:
-            outputs = hook(request, bounded_world)
-            values, diagnostics = self._consume(
+            outputs = hook(hook_request, bounded_world)
+            (
+                records,
+                claims,
+                match_policies,
+                diagnostics,
+                emitted_resources,
+                records_complete,
+                claims_complete,
+            ) = self._consume_topology(
                 capability,
                 outputs,
-                maximum=maximum,
-                allowed=(TopologyProjectionRecord,),
-                validator=lambda value, label: self._topology_record(
-                    request,
-                    value,
-                    label,
-                ),
+                request=request,
+                world=bounded_world,
+                maximum_records=maximum_records,
+                maximum_claims=maximum_claims,
             )
+            checked_world_resources: set[ResourceKey] = set()
+            for index, claim in enumerate(claims):
+                endpoint = claim.endpoint
+                if (
+                    endpoint in emitted_resources
+                    or endpoint in checked_world_resources
+                ):
+                    continue
+                state = bounded_world.state_of(endpoint)
+                if state is None:
+                    raise self._error(
+                        capability,
+                        f"topology connector claim[{index}].endpoint is neither "
+                        "an emitted topology resource nor present in the bounded world",
+                        diagnostics=diagnostics,
+                    )
+                if type(state) is not ResourceStateView or state.resource != endpoint:
+                    raise self._error(
+                        capability,
+                        f"topology connector claim[{index}].endpoint resolved to "
+                        "an invalid bounded-world state",
+                        diagnostics=diagnostics,
+                    )
+                checked_world_resources.add(endpoint)
         except PluginCapabilityExecutionError:
             raise
         except PROCESS_CONTROL_EXCEPTIONS:
@@ -2036,8 +2926,12 @@ class PluginCapabilityExecutor:
                 "project_topology() failed inside plug-in",
             ) from error
         return TopologyExecutionResult(
-            records=cast(tuple[TopologyProjectionRecord, ...], values),
+            records=records,
             diagnostics=diagnostics,
+            claims=claims,
+            match_policies=match_policies,
+            records_complete=records_complete,
+            claims_complete=claims_complete,
         )
 
     def _supported_ir(
@@ -2161,6 +3055,19 @@ class PluginCapabilityExecutor:
                 capability,
                 "request must be an exact ForwardingProjectionRequest",
             )
+        request = cast(
+            ForwardingProjectionRequest,
+            self._snapshot_caller_input(
+                capability,
+                lambda: _snapshot_forwarding_projection_request(
+                    request,
+                    "request",
+                ),
+                unreadable_message=(
+                    "forwarding projection request could not be snapshotted"
+                ),
+            ),
+        )
 
         def validate_request() -> None:
             self._supported_ir(capability, request.ir_version)
@@ -2191,8 +3098,9 @@ class PluginCapabilityExecutor:
         )
         hook = self._require(capability, "project_forwarding")
         maximum = min(request.max_records, self.limits.max_forwarding_outputs)
+        hook_request = _snapshot_forwarding_projection_request(request, "request")
         try:
-            outputs = hook(request, bounded_world)
+            outputs = hook(hook_request, bounded_world)
             values, diagnostics = self._consume(
                 capability,
                 outputs,
@@ -2269,6 +3177,16 @@ class PluginCapabilityExecutor:
                 capability,
                 "request must be an exact ForwardingStepRequest",
             )
+        request = cast(
+            ForwardingStepRequest,
+            self._snapshot_caller_input(
+                capability,
+                lambda: _snapshot_forwarding_step_request(request, "request"),
+                unreadable_message=(
+                    "forwarding step request could not be snapshotted"
+                ),
+            ),
+        )
 
         def validate_request() -> None:
             if (
@@ -2315,8 +3233,9 @@ class PluginCapabilityExecutor:
             ),
         )
         hook = self._require(capability, "resolve_forwarding_step")
+        hook_request = _snapshot_forwarding_step_request(request, "request")
         try:
-            output = hook(request, bounded_world)
+            output = hook(hook_request, bounded_world)
         except PluginCapabilityExecutionError:
             raise
         except PROCESS_CONTROL_EXCEPTIONS:

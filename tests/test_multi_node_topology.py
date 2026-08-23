@@ -7,6 +7,7 @@ import unittest
 import uuid
 from collections import UserDict
 from itertools import combinations, permutations
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
@@ -28,7 +29,10 @@ from router_dump_analyzer.multi_node_topology import (
     _status_at,
     _status_window_at,
 )
-from router_dump_analyzer.plugin_api import FederationMatchState
+from router_dump_analyzer.plugin_api import FederationMatchState, WorldBasisKind
+from router_dump_analyzer.topology_federation import (
+    TopologyProjectionBasisSnapshot,
+)
 from router_dump_analyzer.topology_core import (
     resolve_connectivity_domain_reference,
 )
@@ -50,6 +54,56 @@ def javascript_function(source: str, name: str) -> str:
     return source[start:] if following is None else source[
         start : start + 1 + following.start()
     ]
+
+
+class TypedProjectionTemporalGateTests(unittest.TestCase):
+    def test_records_must_cover_the_full_resolved_uncertainty_interval(self) -> None:
+        basis = TopologyProjectionBasisSnapshot(
+            kind=WorldBasisKind.ABSOLUTE_TIME,
+            requested_time_ns=50,
+            resolved_at_min_ns=45,
+            resolved_at_max_ns=65,
+        )
+
+        self.assertTrue(
+            MultiNodeTopologyService._typed_record_active_during(
+                SimpleNamespace(valid_from_ns=40, valid_to_ns=66),
+                basis,
+            )
+        )
+        self.assertIsNone(
+            MultiNodeTopologyService._typed_record_active_during(
+                SimpleNamespace(valid_from_ns=40, valid_to_ns=60),
+                basis,
+            )
+        )
+        self.assertFalse(
+            MultiNodeTopologyService._typed_record_active_during(
+                SimpleNamespace(valid_from_ns=10, valid_to_ns=45),
+                basis,
+            )
+        )
+
+    def test_bounded_records_are_unknown_when_world_has_no_absolute_bounds(self) -> None:
+        basis = TopologyProjectionBasisSnapshot(
+            kind=WorldBasisKind.RELATIVE_CAPTURE_VECTOR,
+            requested_time_ns=None,
+            resolved_at_min_ns=None,
+            resolved_at_max_ns=None,
+        )
+
+        self.assertIsNone(
+            MultiNodeTopologyService._typed_record_active_during(
+                SimpleNamespace(valid_from_ns=40, valid_to_ns=60),
+                basis,
+            )
+        )
+        self.assertTrue(
+            MultiNodeTopologyService._typed_record_active_during(
+                SimpleNamespace(valid_from_ns=None, valid_to_ns=None),
+                basis,
+            )
+        )
 
 
 class TopologyStatusReplayTests(unittest.TestCase):
@@ -656,6 +710,30 @@ class MultiNodeTopologyTests(unittest.TestCase):
             sum(len(item["resources"]) for item in small["nodes"]),
             sum(len(item["resources"]) for item in full["nodes"]),
         )
+        for node in small["nodes"]:
+            self.assertLessEqual(len(node["resources"]), 1)
+            page = node["counts"]["resource_page"]
+            self.assertEqual(page["returned_count"], len(node["resources"]))
+            if page["total_count"] is not None:
+                self.assertLessEqual(
+                    page["returned_count"],
+                    page["total_count"],
+                )
+                self.assertEqual(
+                    page["truncated"],
+                    page["returned_count"] < page["total_count"],
+                )
+            for result in node["plugin_results"]:
+                counts = result["counts"]["resources"]
+                self.assertEqual(
+                    counts["returned_count"],
+                    len(result["resources"]),
+                )
+                if counts["total_count"] is not None:
+                    self.assertLessEqual(
+                        counts["returned_count"],
+                        counts["total_count"],
+                    )
 
     def test_mixed_generated_attachment_statuses_are_degraded(self) -> None:
         demo = generated_topology_demo()
@@ -1678,6 +1756,41 @@ class MultiNodeTopologyTests(unittest.TestCase):
             node["plugin_set_id"],
             "edge-c.generated.v1",
         )
+
+    def test_generated_demo_executes_typed_connector_claims_through_core(self) -> None:
+        response = self.client.post("/v1/topologies/query", json={})
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        service = generated_topology_demo()
+        self.assertTrue(
+            all(
+                "typed_topology_projection" not in plugin
+                for node in service.contract["nodes"]
+                for plugin_set in node["plugin_sets"]
+                for plugin in plugin_set["plugins"]
+            )
+        )
+
+        self.assertGreater(payload["counts"]["typed_connector_claims"], 0)
+        self.assertEqual(
+            payload["counts"]["unresolved_typed_connector_claims"],
+            0,
+        )
+        typed_links = [
+            link
+            for link in payload["inter_node_links"]
+            if link["link_id"].startswith("typed-federation:")
+        ]
+        self.assertTrue(typed_links)
+        self.assertTrue(
+            all(
+                link["inference"]["owner"] == "core_exact_matcher"
+                and link["inference"]["linker_plugin_id"] is None
+                for link in typed_links
+            )
+        )
+        self.assertTrue(payload["completeness"]["typed_federation_complete"])
 
     def test_single_member_query_preserves_single_sided_segment_claims(self) -> None:
         response = self.client.post(

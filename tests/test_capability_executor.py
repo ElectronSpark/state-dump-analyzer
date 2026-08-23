@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import replace
 from typing import Any, Self
 from unittest.mock import patch
@@ -26,6 +26,9 @@ from router_dump_analyzer.plugin_api import (
     CausalLinkTypeDescriptor,
     ChangeSet,
     ClockAnchor,
+    ConnectorClaim,
+    ConnectorMatchPolicyDescriptor,
+    ConnectorMatchPolicyKind,
     ConsistencyFinding,
     CorrelationWindow,
     DiagnosticSeverity,
@@ -43,6 +46,7 @@ from router_dump_analyzer.plugin_api import (
     ForwardingPacketState,
     ForwardingPacketTransition,
     ForwardingProjectionRequest,
+    ForwardingSteeringRule,
     ForwardingStepRequest,
     ForwardingStepResult,
     ForwardingTransitionOrigin,
@@ -62,6 +66,7 @@ from router_dump_analyzer.plugin_api import (
     RelationshipTypeDescriptor,
     ResourceKey,
     ResourceKindDescriptor,
+    ResourceStateView,
     SourceRecordRef,
     StateMutation,
     StatusPerspectiveDescriptor,
@@ -72,6 +77,7 @@ from router_dump_analyzer.plugin_api import (
     TopologyProjectionDescriptor,
     TopologyProjectionRecord,
     TopologyProjectionRequest,
+    TopologyResourceRecord,
     TopologyUsability,
     VrfForwardingState,
     WorldBasis,
@@ -144,6 +150,20 @@ def _schema() -> PluginSchema:
                 projection_id="opaque.graph",
                 label="Opaque graph",
                 supported_status_perspective_ids=("opaque.status",),
+            ),
+        ),
+        connector_match_policies=(
+            ConnectorMatchPolicyDescriptor(
+                policy_id="opaque.connector.exact.v1",
+                claim_contract_id="opaque.connector.v1",
+                kind=ConnectorMatchPolicyKind.EXACT_TOKEN,
+                argument_names=("token",),
+            ),
+            ConnectorMatchPolicyDescriptor(
+                policy_id="opaque.connector.alt.v1",
+                claim_contract_id="opaque.connector.alt.v1",
+                kind=ConnectorMatchPolicyKind.EXACT_TOKEN,
+                argument_names=("port",),
             ),
         ),
     )
@@ -239,10 +259,13 @@ class _World:
         states: Iterable[Any] = (),
         *,
         perspective_ref: StatusPerspectiveRef | None = PERSPECTIVE,
+        states_by_resource: dict[ResourceKey, ResourceStateView] | None = None,
     ) -> None:
         self._states = states
         self._perspective_ref = perspective_ref
+        self._states_by_resource = states_by_resource or {}
         self.last_limit: int | None = None
+        self.state_reads: list[ResourceKey] = []
 
     @property
     def basis(self) -> WorldBasis:
@@ -252,8 +275,9 @@ class _World:
     def perspective_ref(self) -> StatusPerspectiveRef | None:
         return self._perspective_ref
 
-    def state_of(self, resource: ResourceKey) -> None:
-        return None
+    def state_of(self, resource: ResourceKey) -> ResourceStateView | None:
+        self.state_reads.append(resource)
+        return self._states_by_resource.get(resource)
 
     def iter_states(
         self,
@@ -348,6 +372,29 @@ class _Plugin(AnalyzerPluginBase):
         self.evidence_analysis_called = True
         self.evidence_analysis_request = request
         return self.evidence_analysis_output
+
+
+class _ChangingMapping(Mapping[str, Any]):
+    """Return a different scalar on the validator and snapshot passes."""
+
+    def __init__(self) -> None:
+        self._items_calls = 0
+
+    def __getitem__(self, key: str) -> Any:
+        if key != "value":
+            raise KeyError(key)
+        return 1.0
+
+    def __iter__(self) -> Iterator[str]:
+        yield "value"
+
+    def __len__(self) -> int:
+        return 1
+
+    def items(self) -> Any:
+        self._items_calls += 1
+        value = 1.0 if self._items_calls == 1 else float("nan")
+        return (("value", value),)
 
 
 class _ExplodingManifestPlugin:
@@ -554,6 +601,59 @@ def _topology_record(
         source_resources=(RESOURCE, OTHER_RESOURCE),
         provenance=Provenance.RECONSTRUCTED,
         quality=Quality.EXACT,
+    )
+
+
+def _topology_resource_record(
+    resource: ResourceKey = RESOURCE,
+) -> TopologyProjectionRecord:
+    return TopologyProjectionRecord(
+        projection_id="opaque.graph",
+        status_perspective_id="opaque.status",
+        payload=TopologyResourceRecord(resource=resource),
+        usability=TopologyUsability.USABLE,
+        source_resources=(resource,),
+        provenance=Provenance.RECONSTRUCTED,
+        quality=Quality.EXACT,
+    )
+
+
+def _topology_claim(
+    *,
+    claim_id: str = "claim-one",
+    endpoint: ResourceKey = RESOURCE,
+    claim_contract_id: str = "opaque.connector.v1",
+    match_policy_id: str = "opaque.connector.exact.v1",
+    arguments: tuple[tuple[str, Any], ...] = (("token", "one"),),
+    status_perspective: StatusPerspectiveRef | None = PERSPECTIVE,
+) -> ConnectorClaim:
+    return ConnectorClaim(
+        claim_id=claim_id,
+        endpoint=endpoint,
+        claim_contract_id=claim_contract_id,
+        match_policy_id=match_policy_id,
+        arguments=arguments,
+        provenance=Provenance.OBSERVED,
+        quality=Quality.EXACT,
+        status_perspective=status_perspective,
+        evidence=(EVIDENCE,),
+    )
+
+
+def _resource_state(
+    resource: ResourceKey,
+    *,
+    exists: bool | None = False,
+) -> ResourceStateView:
+    return ResourceStateView(
+        resource=resource,
+        exists=exists,
+        properties={},
+        provenance=Provenance.RECONSTRUCTED,
+        quality=Quality.EXACT,
+        valid_from_ns=None,
+        valid_to_ns=None,
+        perspective_ref=PERSPECTIVE,
     )
 
 
@@ -1261,6 +1361,329 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
         ):
             executor.project_topology(undeclared, _World())  # type: ignore[arg-type]
 
+        forged_bound = replace(request)
+        object.__setattr__(forged_bound, "max_claims", True)
+        with self.assertRaisesRegex(
+            PluginCapabilityInputError,
+            "max_claims",
+        ):
+            executor.project_topology(forged_bound, _World())  # type: ignore[arg-type]
+
+    def test_topology_plugin_cannot_mutate_authoritative_request_scope(self) -> None:
+        plugin = _Plugin()
+        request = TopologyProjectionRequest(
+            projection_id="opaque.graph",
+            status_perspective_id="opaque.status",
+            seed_resources=(RESOURCE,),
+        )
+        observed_request: TopologyProjectionRequest | None = None
+
+        def mutate_request(
+            hook_request: TopologyProjectionRequest,
+            _world: Any,
+        ) -> Iterable[Any]:
+            nonlocal observed_request
+            observed_request = hook_request
+            object.__setattr__(hook_request, "projection_id", "opaque.other")
+            object.__setattr__(
+                hook_request.seed_resources[0],
+                "kind",
+                "MUTATED",
+            )
+            return (_topology_record(projection_id="opaque.other"),)
+
+        plugin.project_topology = mutate_request  # type: ignore[method-assign]
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "projection_id does not match the request",
+        ):
+            PluginCapabilityExecutor(plugin).project_topology(
+                request,
+                _World(),  # type: ignore[arg-type]
+            )
+
+        self.assertIsNot(observed_request, request)
+        self.assertEqual(request.projection_id, "opaque.graph")
+        self.assertEqual(request.seed_resources[0], RESOURCE)
+        self.assertEqual(request.seed_resources[0].kind, RESOURCE.kind)
+
+    def test_topology_returns_claims_and_canonical_referenced_policies(self) -> None:
+        plugin = _Plugin()
+        primary_claim = _topology_claim()
+        alternate_claim = _topology_claim(
+            claim_id="claim-two",
+            endpoint=OTHER_RESOURCE,
+            claim_contract_id="opaque.connector.alt.v1",
+            match_policy_id="opaque.connector.alt.v1",
+            arguments=(("port", 2),),
+        )
+        plugin.topology_output = (
+            primary_claim,
+            _diagnostic(),
+            alternate_claim,
+            _topology_resource_record(RESOURCE),
+            _topology_resource_record(OTHER_RESOURCE),
+        )
+        world = _World()
+        result = PluginCapabilityExecutor(plugin).project_topology(
+            TopologyProjectionRequest(
+                projection_id="opaque.graph",
+                status_perspective_id="opaque.status",
+                max_records=10,
+                max_claims=10,
+            ),
+            world,  # type: ignore[arg-type]
+        )
+
+        self.assertEqual(result.claims, (primary_claim, alternate_claim))
+        self.assertEqual(
+            tuple(policy.policy_id for policy in result.match_policies),
+            ("opaque.connector.alt.v1", "opaque.connector.exact.v1"),
+        )
+        self.assertEqual(len(result.records), 2)
+        self.assertEqual(result.diagnostics, (_diagnostic(),))
+        self.assertTrue(result.records_complete)
+        self.assertTrue(result.claims_complete)
+        self.assertEqual(world.state_reads, [])
+
+        plugin.topology_output = (_topology_record(),)
+        compatible = PluginCapabilityExecutor(plugin).project_topology(
+            TopologyProjectionRequest(
+                projection_id="opaque.graph",
+                status_perspective_id="opaque.status",
+            ),
+            _World(),  # type: ignore[arg-type]
+        )
+        self.assertEqual(compatible.claims, ())
+        self.assertEqual(compatible.match_policies, ())
+
+    def test_topology_outputs_are_deeply_detached_before_stream_advances(
+        self,
+    ) -> None:
+        plugin = _Plugin()
+        nested = {"label": "safe"}
+        properties = {"nested": nested}
+        diagnostic_details = {"phase": {"name": "safe"}}
+        resource_record = replace(
+            _topology_resource_record(),
+            properties=properties,
+        )
+        claim = _topology_claim()
+        diagnostic = replace(_diagnostic(), details=diagnostic_details)
+
+        def outputs() -> Iterable[Any]:
+            yield resource_record
+            # This runs only when the core asks for the next output. A raw
+            # retained record would therefore acquire an unvalidated object
+            # after its initial validation.
+            nested["late"] = object()
+            properties["also_late"] = object()
+            yield claim
+            yield diagnostic
+            diagnostic_details["phase"]["late"] = object()
+
+        plugin.topology_output = outputs()
+        result = PluginCapabilityExecutor(plugin).project_topology(
+            TopologyProjectionRequest(
+                projection_id="opaque.graph",
+                status_perspective_id="opaque.status",
+                max_records=10,
+                max_claims=10,
+            ),
+            _World(),  # type: ignore[arg-type]
+        )
+
+        detached_properties = result.records[0].properties
+        self.assertEqual(dict(detached_properties), {"nested": {"label": "safe"}})
+        self.assertNotIn("also_late", detached_properties)
+        self.assertNotIn("late", detached_properties["nested"])
+        self.assertIsNot(result.records[0], resource_record)
+        self.assertIsNot(result.claims[0], claim)
+        self.assertIsNot(result.claims[0].endpoint, claim.endpoint)
+        self.assertIsNot(result.diagnostics[0], diagnostic)
+        self.assertEqual(
+            dict(result.diagnostics[0].details["phase"]),
+            {"name": "safe"},
+        )
+        with self.assertRaises(TypeError):
+            detached_properties["new"] = "forbidden"  # type: ignore[index]
+        with self.assertRaises(TypeError):
+            detached_properties["nested"]["new"] = "forbidden"  # type: ignore[index]
+
+    def test_topology_snapshot_revalidates_stateful_mapping_values(self) -> None:
+        plugin = _Plugin()
+        plugin.topology_output = (
+            replace(
+                _topology_resource_record(),
+                properties=_ChangingMapping(),
+            ),
+        )
+
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "non-finite float",
+        ):
+            PluginCapabilityExecutor(plugin).project_topology(
+                TopologyProjectionRequest(
+                    projection_id="opaque.graph",
+                    status_perspective_id="opaque.status",
+                    max_records=10,
+                    max_claims=10,
+                ),
+                _World(),  # type: ignore[arg-type]
+            )
+
+    def test_topology_record_and_claim_bounds_report_independent_completeness(
+        self,
+    ) -> None:
+        plugin = _Plugin()
+        claim = _topology_claim()
+        plugin.topology_output = (
+            _topology_record(),
+            _topology_resource_record(),
+            claim,
+        )
+        world = _World()
+        result = PluginCapabilityExecutor(plugin).project_topology(
+            TopologyProjectionRequest(
+                projection_id="opaque.graph",
+                status_perspective_id="opaque.status",
+                max_records=1,
+                max_claims=1,
+            ),
+            world,  # type: ignore[arg-type]
+        )
+        self.assertEqual(result.records, (_topology_record(),))
+        self.assertEqual(result.claims, (claim,))
+        self.assertFalse(result.records_complete)
+        self.assertTrue(result.claims_complete)
+        self.assertEqual(world.state_reads, [])
+
+        second_claim = _topology_claim(claim_id="claim-two")
+        plugin.topology_output = (
+            _topology_resource_record(),
+            claim,
+            second_claim,
+        )
+        claims_truncated = PluginCapabilityExecutor(plugin).project_topology(
+            TopologyProjectionRequest(
+                projection_id="opaque.graph",
+                status_perspective_id="opaque.status",
+                max_records=1,
+                max_claims=1,
+            ),
+            _World(),  # type: ignore[arg-type]
+        )
+        self.assertTrue(claims_truncated.records_complete)
+        self.assertFalse(claims_truncated.claims_complete)
+        self.assertEqual(claims_truncated.claims, (claim,))
+
+    def test_topology_claims_match_declared_policy_and_world_perspective(
+        self,
+    ) -> None:
+        plugin = _Plugin()
+        executor = PluginCapabilityExecutor(plugin)
+        request = TopologyProjectionRequest(
+            projection_id="opaque.graph",
+            status_perspective_id="opaque.status",
+        )
+        invalid_claims = (
+            (_topology_claim(match_policy_id="opaque.missing"), "undeclared"),
+            (
+                _topology_claim(claim_contract_id="opaque.connector.other.v1"),
+                "claim_contract_id",
+            ),
+            (
+                _topology_claim(arguments=(("other", "one"),)),
+                "policy order",
+            ),
+            (
+                _topology_claim(
+                    status_perspective=StatusPerspectiveRef(
+                        "opaque.status",
+                        plugin_instance_id="foreign.instance",
+                    )
+                ),
+                "bounded world",
+            ),
+        )
+        for claim, message in invalid_claims:
+            with self.subTest(message=message), self.assertRaisesRegex(
+                PluginCapabilityOutputError,
+                message,
+            ):
+                plugin.topology_output = (claim, _topology_resource_record())
+                executor.project_topology(request, _World())  # type: ignore[arg-type]
+
+        forged = _topology_claim()
+        object.__setattr__(forged, "quality", "exact")
+        plugin.topology_output = (forged, _topology_resource_record())
+        with self.assertRaisesRegex(PluginCapabilityOutputError, "quality"):
+            executor.project_topology(request, _World())  # type: ignore[arg-type]
+
+        forged_endpoint = replace(RESOURCE)
+        object.__setattr__(forged_endpoint, "parts", (("id", True),))
+        plugin.topology_output = (
+            _topology_claim(endpoint=forged_endpoint),
+            _topology_resource_record(forged_endpoint),
+        )
+        with self.assertRaisesRegex(PluginCapabilityOutputError, "Boolean"):
+            executor.project_topology(request, _World())  # type: ignore[arg-type]
+
+    def test_topology_claim_endpoints_are_emitted_or_bounded_world_members(
+        self,
+    ) -> None:
+        plugin = _Plugin()
+        executor = PluginCapabilityExecutor(plugin)
+        request = TopologyProjectionRequest(
+            projection_id="opaque.graph",
+            status_perspective_id="opaque.status",
+            max_world_reads=1,
+        )
+        claim = _topology_claim()
+
+        plugin.topology_output = (claim,)
+        absent_state_world = _World(
+            states_by_resource={RESOURCE: _resource_state(RESOURCE, exists=False)}
+        )
+        result = executor.project_topology(
+            request,
+            absent_state_world,  # type: ignore[arg-type]
+        )
+        self.assertEqual(result.claims, (claim,))
+        self.assertEqual(absent_state_world.state_reads, [RESOURCE])
+
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "neither an emitted topology resource nor present",
+        ):
+            executor.project_topology(request, _World())  # type: ignore[arg-type]
+
+        plugin.topology_output = (
+            claim,
+            _topology_claim(claim_id="claim-two", endpoint=OTHER_RESOURCE),
+        )
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "world-read limit",
+        ):
+            executor.project_topology(
+                request,
+                _World(
+                    states_by_resource={
+                        RESOURCE: _resource_state(RESOURCE),
+                        OTHER_RESOURCE: _resource_state(OTHER_RESOURCE),
+                    }
+                ),  # type: ignore[arg-type]
+            )
+
+        plugin.topology_output = (claim, claim, _topology_resource_record())
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "claim identifiers must be unique",
+        ):
+            executor.project_topology(request, _World())  # type: ignore[arg-type]
+
     def test_forwarding_projection_requires_supported_ir_and_typed_mutations(
         self,
     ) -> None:
@@ -1293,6 +1716,38 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
                 _projection_request(),
                 _World(),  # type: ignore[arg-type]
             )
+
+    def test_forwarding_plugin_cannot_rewrite_authoritative_ir(self) -> None:
+        plugin = _Plugin()
+        request = _projection_request()
+        observed_request: ForwardingProjectionRequest | None = None
+
+        def mutate_request(
+            hook_request: ForwardingProjectionRequest,
+            _world: Any,
+        ) -> Iterable[Any]:
+            nonlocal observed_request
+            observed_request = hook_request
+            object.__setattr__(hook_request, "ir_version", "opaque.undeclared-ir")
+            return (
+                replace(
+                    _forwarding_mutation(),
+                    ir_version="opaque.undeclared-ir",
+                ),
+            )
+
+        plugin.project_forwarding = mutate_request  # type: ignore[method-assign]
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "ir_version does not match the request",
+        ):
+            PluginCapabilityExecutor(plugin).project_forwarding(
+                request,
+                _World(),  # type: ignore[arg-type]
+            )
+
+        self.assertIsNot(observed_request, request)
+        self.assertEqual(request.ir_version, FORWARDING_IR_VERSION)
 
     def test_forwarding_step_requires_exact_result_and_matching_before_state(
         self,
@@ -1331,6 +1786,49 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
                 request,
                 _World(),  # type: ignore[arg-type]
             )
+
+    def test_forwarding_plugin_cannot_inject_user_steering_authority(self) -> None:
+        plugin = _Plugin()
+        request = _step_request()
+        observed_request: ForwardingStepRequest | None = None
+
+        def inject_rule(
+            hook_request: ForwardingStepRequest,
+            _world: Any,
+        ) -> ForwardingStepResult:
+            nonlocal observed_request
+            observed_request = hook_request
+            injected = ForwardingSteeringRule(
+                rule_id="rule-injected",
+                target_step_id=hook_request.step_id,
+                action_contract_id="opaque.action",
+                reason="Injected by plug-in",
+                disposition=ForwardingPacketDisposition.DELIVER,
+            )
+            object.__setattr__(hook_request, "steering_rules", (injected,))
+            result = _step_result(hook_request)
+            return replace(
+                result,
+                transition=replace(
+                    result.transition,
+                    origin=ForwardingTransitionOrigin.USER_FORCED,
+                    forced_rule_id=injected.rule_id,
+                ),
+            )
+
+        plugin.resolve_forwarding_step = inject_rule  # type: ignore[method-assign]
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "does not match a request rule",
+        ):
+            PluginCapabilityExecutor(plugin).resolve_forwarding_step(
+                request,
+                _World(),  # type: ignore[arg-type]
+            )
+
+        self.assertIsNot(observed_request, request)
+        self.assertIsNot(observed_request.packet_state, request.packet_state)
+        self.assertEqual(request.steering_rules, ())
 
     def test_forwarding_step_retains_recoverable_diagnostic_and_fails_fatal(
         self,

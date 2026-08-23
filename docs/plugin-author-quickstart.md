@@ -147,6 +147,10 @@ The trusted process composition root packages that policy with its exact
 only `PluginCompositionDeploymentContext.state_dir`; platform names, firmware
 rules, chip identities, credentials, and configuration values remain in the
 deployment module rather than core or the durable plan.
+Create every primary and auxiliary registration before constructing the
+deployment. Construction takes sealed exact snapshots of both registries, so a
+later change to your caller-owned containers neither changes the deployment
+digest nor adds execution authority.
 
 That flag spelling applies to the standalone server, headless ingester, and
 private-analysis CLI. The interactive analyzer has two separate authorities:
@@ -587,7 +591,7 @@ Everything else is capability-gated:
 | `EVENT_REVERSION` | `revert()` | inverse/unknown `ChangeSet` |
 | `CORRELATION` | `correlate()` | causal links, relationship changes, clock anchors |
 | `CONSISTENCY_CHECK` | `check_consistency()` | PASS/FAIL/UNKNOWN findings |
-| `TOPOLOGY_PROJECTION` | `project_topology()` | bounded typed topology records |
+| `TOPOLOGY_PROJECTION` | `project_topology()` | bounded topology records, local connector claims, diagnostics |
 | `FORWARDING_PROJECTION` | `project_forwarding()` | bounded forwarding IR mutations |
 | `FORWARDING_TRACE` | `resolve_forwarding_step()` | one bounded node-local packet transition |
 | `EVIDENCE_ANALYSIS` | `analyze_evidence()` | citation-scoped advisory observations over already-authorized evidence |
@@ -690,8 +694,160 @@ steps must name the selected revision-set member. The returned
 detached `CapabilityProviderRef`; do not merge different providers' results
 without an explicit core-owned federation/linking operation.
 
-The current runtime-v2 session does not yet publish these routed optional
-results as temporal, topology, or route HTTP providers.
+#### Optional typed connector claims
+
+Use this only when a local topology endpoint must be joined to another
+revision-set member. Keep ordinary node-local resources and links as
+`TopologyProjectionRecord` values. Then:
+
+1. Add one or more `ConnectorMatchPolicyDescriptor` values to
+   `PluginSchema.connector_match_policies`.
+2. Return a `TopologyResourceRecord` for the local endpoint from
+   `project_topology()` (or make that exact endpoint available in the bounded
+   `ReadOnlyWorld`).
+3. Return a `ConnectorClaim` from the same iterator. Its
+   `claim_contract_id`, `match_policy_id`, and complete ordered argument-name
+   tuple must match the schema declaration exactly. Declare its normalized
+   link semantics explicitly when they are not the safe defaults:
+
+   ```python
+   ConnectorClaim(
+       # identity, endpoint, policy, arguments, provenance, and quality omitted
+       link_type="underlay.adjacency",
+       presentation=InterNodeLinkPresentation(
+           route_trace=InterNodeRouteTraceRole.INCLUDE,
+       ),
+   )
+   ```
+
+   The defaults are `link_type="connector"` and route-trace role `include`.
+   Use `overlay` for a presentation-only overlay; plug-ins cannot declare the
+   core-produced `conflict` role.
+4. Use `KeyAtom` or nested typed tuples whenever integer, string, byte, UUID,
+   IP, label, SID, or compound-key representations could alias. Do not add a
+   guessed remote endpoint to the local claim.
+5. Let the core qualify the claim with member, immutable revision, and exact
+   provider identity. `exact_token` policies are joined by complete typed
+   equality in core. A `linker` policy is sent only to its allowlisted
+   `FederationLinkerPlugin` with bounded normalized claims.
+
+`TopologyProjectionRequest.max_records` and `max_claims` are independent.
+The execution result exposes `records_complete` and `claims_complete`; never
+infer claim completeness from resource preview pagination. Unmatched and
+ambiguous claims are valid, visible federation outcomes rather than a reason
+to select the first candidate. The runnable implementation is
+`demo/rsl_demo_plugin/typed_topology.py`, and
+`tests/test_topology_federation.py` exercises different plug-ins and versions,
+typed-key separation, temporal claims, ambiguity, policy drift, and linker
+allowlisting.
+
+Validity remains half-open, but federation evaluates it over the selected
+world's resolved uncertainty interval, not only at a nominal point. The
+selection's `basis_time_ns` must equal that world's `requested_time_ns`. A
+bounded claim is authoritative only when
+`valid_from_ns <= resolved_at_min_ns` and
+`resolved_at_max_ns < valid_to_ns` (with either validity bound optional). A
+claim wholly outside that interval is inactive; one whose validity boundary
+crosses the interval, or whose bounded member basis is unknown, is excluded
+and makes the scoped typed result incomplete. It is never assumed current.
+Core applies the corresponding half-open validity gate to typed resources,
+endpoints, and links. Keep
+`catalog_revision_id`, `member_id`, revision IDs, and plug-in coordinates as
+exact non-empty strings. Core does not stringify them or fall back to another
+revision, and it discovers the optional typed projection from the exact
+immutable capability route rather than from an extra metadata opt-in flag.
+
+Typed `TopologyEndpointRecord` values are returned alongside resources and
+links. Federation output retains claim, result, and candidate properties,
+quality, evidence, provenance, and all grouped ambiguity audit material.
+Multiple local claims for the same token remain distinct candidates, including
+same-member fanout; neither iterator order nor a first-candidate shortcut may
+resolve them. A strict route boundary may consume a typed connector only when
+its resolution is `matched`, its federation execution is complete, and it is
+not truncated, and `presentation.route_trace` is `include`. `overlay` remains
+inspectable presentation evidence and never becomes a forwarding hop. For a
+directed result, core compares the ordered source and target using their exact
+member, revision, plug-in instance, projection, perspective, and typed resource
+identity; reversing those endpoints does not match. Undirected results may
+match either exact order. Malformed or partially qualified typed endpoints fail
+closed, while legacy non-typed link matching remains compatible.
+
+When a generated next hop selects a typed connector, carry a core-generic
+reference in its `topology_references` list:
+
+```json
+{
+  "reference_kind": "typed_inter_node_link",
+  "source_endpoint": {
+    "node_id": "node-a",
+    "resource_id": "interface/a",
+    "typed_resource_key": {
+      "namespace": "example",
+      "node": "node-a",
+      "layer": "underlay",
+      "kind": "INTERFACE",
+      "parts": [
+        {"name": "name", "value": {"type": "string", "value": "a"}}
+      ]
+    }
+  },
+  "target_endpoint": {
+    "node_id": "node-b",
+    "resource_id": "interface/b",
+    "typed_resource_key": {
+      "namespace": "example",
+      "node": "node-b",
+      "layer": "underlay",
+      "kind": "INTERFACE",
+      "parts": [
+        {"name": "name", "value": {"type": "string", "value": "b"}}
+      ]
+    }
+  }
+}
+```
+
+The plug-in declares the ordered endpoint nodes, its existing local next-hop
+resource IDs, and its own typed `ResourceKey` values. It neither predicts a
+core link hash nor supplies member, revision, plug-in-instance, projection, or
+perspective coordinates. Core binds those typed keys to the frozen topology's
+fully qualified endpoint references and then requires one exact
+`_matching_link` result for the ordered pair. Once this typed reference is
+declared, malformed, absent, reversed-directed, overlay, incomplete,
+truncated, or multiply matching evidence leaves the boundary unresolved;
+core does not downgrade it to another connectivity-domain reference in the
+same declaration. A next hop with no typed reference retains the legacy exact
+connectivity-domain/attachment join. Typed route use also requires the
+topology response's global `typed_federation_complete` to be `true` and
+`typed_federation_truncated` and `inter_node_links_truncated` to be `false`;
+one individually complete link cannot override partial federation coverage or
+an incomplete link page. Resource-record preview pagination is independent:
+an overall or node preview may be partial without invalidating a complete,
+untruncated claim/link decision. On success, the generated boundary's
+`graph_presentation.semantic_owner` copies the matched link's validated
+`inference.owner`: `core_exact_matcher` for core exact-token results or
+`federation_linker_plugin` for allowlisted-linker results. Its resolution
+summary and `text_source` follow that owner rather than describing a linker
+result as a core exact match. The response-level
+`semantic_ownership.boundary_resolution` summarizes the complete rendered
+boundary owners as that one owner, `node_topology_plugin`, `mixed`, or `none`.
+
+Identity matching does not make an unknown operational state healthy. In
+`strict` mode a matched typed link with `operational_status="unknown"` remains
+inactive and unresolved. In `best_effort` mode it may remain as a provisional
+`best_effort_inferred` branch, but it is still unobserved, has reduced
+confidence, and carries
+`typed_boundary_operational_status_unknown` with core-inference provenance.
+Emit `usable` or `unusable` only when your plug-in actually has that evidence.
+
+The generic topology and route HTTP providers publish these routed results.
+The host reconstructs each member's typed resource
+states and supplies them through `ReadOnlyWorld`; keep the topology plug-in
+stateless and module-level so a PROCESS worker can reproduce the exact target.
+Do not put a node dump or revision-specific claim list in the plug-in
+constructor and then represent it only with a `configuration_digest`: that
+digest attests configuration identity but does not transport configuration to
+a spawned worker.
 
 The generic node browser can show a bounded list of plug-in-projected route
 choices, but v1 has no separate route-catalog hook. The coordinator derives
@@ -838,6 +994,19 @@ must spell `PluginRegistry(..., allow_manifest_identity=True)` to enable a
 manifest-only fallback, and that registry is deliberately rejected before
 durable state is created.
 
+That opt-in also covers the narrower case where core can derive the package
+digest but cannot statically attest a stateful subprocess target. The
+registration is then marked `inline_only`: trusted local capability calls may
+use it after package revalidation, but PROCESS mode and every durable path
+reject it. An explicit package hash or the default strict registry never falls
+back. Do not enable this merely to make a production plug-in register; supply
+an importable immutable process target instead.
+Local code may retain that record in its mutable registry or use an unbound
+capability executor. It cannot freeze the record into an execution plan or bind
+it through `PlanBoundCapabilityRouter`. Durable pipelines snapshot and seal
+their primary/provider directories, so registrations added afterward remain
+local.
+
 For ordinary entry-point packages this is automatic. Keep every package or
 namespace search root inspectable and stable while it is loaded: across the
 complete scope, at most 4,096 fingerprint entries (regular files, ordinary
@@ -868,7 +1037,42 @@ configured state exists: PROCESS mode rejects the registration unless
 `plugin_process_module_target` names a module-level instance (not a class
 constructor), plus explicit coordinator/decoder targets when those custom
 objects carry the asserted state. Installed entry-point and direct-module
-loaders already provide the plug-in target. Trusted inline-only tests may keep
+loaders already provide the plug-in target. If the exported live instance must
+also carry a parent-only runtime/session adapter, keep that adapter out of the
+parser class identity and opt into an exact no-argument class bootstrap:
+
+```python
+from typing import Any
+
+from router_dump_analyzer.plugin_api import AnalyzerPlugin, AnalyzerPluginBase
+from router_dump_analyzer.plugin_loading import (
+    PluginProcessBootstrapDescriptor,
+)
+from .session import runtime as application_runtime
+
+class ExamplePlugin(AnalyzerPluginBase):
+    plugin_process_bootstrap: PluginProcessBootstrapDescriptor = (
+        PluginProcessBootstrapDescriptor(
+            module_target="example_router_plugin:ExamplePlugin",
+            construct_class=True,
+        )
+    )
+    runtime: Any
+    # describe/probe/locate_inputs/parser hooks must need no runtime attribute.
+
+entry_plugin = ExamplePlugin()
+entry_plugin.runtime = application_runtime
+plugin: AnalyzerPlugin = entry_plugin
+```
+
+The loader accepts that declaration only as an exact attribute on the live
+instance's concrete class and registration attests the named exact class. It
+does not copy `runtime` or any other live/configured state into the child. The
+runnable demo exercises this split in an actual fresh-process ingestion test.
+Do not use it for a configured parser; a non-default configuration digest still
+requires an explicit module-level instance process target.
+
+Trusted inline-only tests may keep
 a live object, but that does not make it PROCESS-capable. Open files, sockets,
 native iterators, and thread-affine objects only
 inside the child hook. The default child deadline is 300 seconds;
@@ -1292,6 +1496,14 @@ and follow this order:
    exact cycle identity, and the independent step/hop/recursion budgets with
    the helpers in `route_trace_core.py`.
 
+Treat every request object as read-only. Core keeps an authority snapshot and
+passes your hook a separate copy; forwarding step packet state and steering
+rules are deeply detached. Outputs are validated against the untouched core
+snapshot, so changing a request's IR, step/member identity, packet state, or
+steering rules inside the hook cannot authorize the changed result. In
+particular, only a rule present in the caller-authorized snapshot may justify
+`USER_FORCED`.
+
 Do not encode push, swap, PHP, SR behavior, or decapsulation only in
 `action_label` or `resolution_text`; the before/after packet states are the
 machine-readable result. A removed outer layer with an inner layer retained is
@@ -1380,8 +1592,15 @@ standalone normative vector synchronized:
 python -X utf8 -m rsl_demo_generator --write-ingestion-conformance-corpus path/to/runtime-v2-ingestion-conformance.tgz
 python -X utf8 -m rsl_demo_generator --verify-ingestion-conformance-corpus path/to/runtime-v2-ingestion-conformance.tgz
 python -m unittest tests.test_ingestion tests.test_capability_executor tests.test_plugin_composition tests.test_capability_router -v
+python scripts/run_topology_federation_gate.py
 python -m unittest discover -s state-dump-generator/tests -p "test_runtime_v2_vectors.py" -v
 ```
+
+The focused topology gate also executes the core-owned browser contract and
+JavaScript tests, so Node.js 18 or newer and `npm` must be available. Every
+phase has a 300-second deadline and a fresh bytecode cache; timeout cleanup
+terminates that phase's process tree instead of leaving plug-in test workers
+running.
 
 The archive is deliberately compact. Its status member executes through the
 current example parser and core ingestion coordinator. It also carries text,
@@ -1448,6 +1667,9 @@ A first plug-in is ready for review only when:
 - [ ] every advertised optional capability passes through
   `PluginCapabilityExecutor` in a golden test, including its over-budget or
   malformed-output case;
+- [ ] every emitted connector claim names a declared policy, points to an
+  emitted or world-visible local resource, preserves typed arguments, and has
+  matched/unresolved/ambiguous plus budget-completeness coverage;
 - [ ] golden tests cover applicable bad-input and temporal edge cases; and
 - [ ] no plug-in-specific branch was added to core or the browser.
 

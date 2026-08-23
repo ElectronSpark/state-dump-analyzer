@@ -13,17 +13,23 @@ not safe JavaScript numbers.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import Any
 from urllib.parse import quote, urlencode
+from uuid import UUID
 
 from router_dump_analyzer.canonical import (
     CanonicalValueError,
     bounded_value_key,
     canonical_opaque_value,
     opaque_value_json,
+)
+from router_dump_analyzer.capability_router import (
+    CapabilityProviderRef,
+    RevisionSetCapabilityKey,
 )
 from router_dump_analyzer.contract_validation import (
     bounded_mapping,
@@ -36,15 +42,34 @@ from router_dump_analyzer.corroboration import (
     MatcherId,
     exact_match_claims,
 )
+from router_dump_analyzer.federation_executor import (
+    FederationExecutionProvenance,
+)
 from router_dump_analyzer.normalized_data import contains_time
 from router_dump_analyzer.plugin_api import (
+    Evidence,
     FederationMatchState,
+    GlobalResourceRef,
     InterNodeLinkPresentation,
     InterNodeRouteTraceRole,
     KeyAtom,
+    Provenance,
+    Quality,
+    RelationDirection,
+    RelationshipView,
+    ResourceKey,
+    ResourceStateView,
+    StatusPerspectiveRef,
     TopologyDomainRole,
+    TopologyEndpointRecord,
+    TopologyLinkRecord,
     TopologyPluginSemanticsDescriptor,
+    TopologyProjectionRequest,
+    TopologyResourceRecord,
     TopologyTwoParticipantShape,
+    TopologyUsability,
+    WorldBasis,
+    WorldBasisKind,
 )
 from router_dump_analyzer.temporal_core import (
     RESOURCE_CREATION_OPERATIONS,
@@ -55,10 +80,22 @@ from router_dump_analyzer.temporal_core import (
     temporal_integer,
     temporal_order_key,
 )
+from router_dump_analyzer.topology_federation import (
+    TopologyFederatedClaimContext,
+    TopologyFederationAssembly,
+    TopologyFederationCoordinator,
+    TopologyFederationError,
+    TopologyProjectionBasisSnapshot,
+    TopologyProjectionInvocation,
+    TopologyProjectionSelection,
+)
 
 
 class MultiNodeTopologyRequestError(ValueError):
     """A multi-node request cannot be executed by the advertised providers."""
+
+
+type _TypedResourceScopeKey = tuple[GlobalResourceRef, str, str]
 
 
 _FEDERATION_STATE_BY_EXACT_MATCH_STATE = {
@@ -80,6 +117,63 @@ def _normalize_opaque_key(value: Any) -> dict[str, Any]:
         return opaque_value_json(value, key_atom_type=KeyAtom)
     except CanonicalValueError as error:
         raise MultiNodeTopologyRequestError(str(error)) from error
+
+
+def _exact_nonempty_string(value: Any, label: str) -> str:
+    """Validate one frozen coordinate without coercion or fallback."""
+
+    if type(value) is not str or not value or len(value) > 256:
+        raise MultiNodeTopologyRequestError(
+            f"{label} must be an exact non-empty string of at most 256 characters"
+        )
+    return value
+
+
+def _typed_json_value(value: Any) -> Any:
+    """Detach a typed plug-in value into JSON without scalar aliasing."""
+
+    value_type = type(value)
+    if value is None or value_type in {bool, float, str}:
+        return value
+    if value_type is int:
+        if -(2**53) + 1 <= value <= (2**53) - 1:
+            return value
+        return {"type": "int", "decimal": str(value)}
+    if value_type is bytes:
+        return {
+            "type": "bytes",
+            "base64": base64.b64encode(value).decode("ascii"),
+        }
+    if value_type is UUID:
+        return {"type": "uuid", "value": str(value)}
+    if value_type is tuple:
+        return [_typed_json_value(item) for item in value]
+    if isinstance(value, Mapping):
+        return {
+            _exact_nonempty_string(key, "typed property name"): _typed_json_value(
+                item
+            )
+            for key, item in value.items()
+        }
+    raise MultiNodeTopologyRequestError(
+        f"typed topology value has unsupported type {value_type.__name__}"
+    )
+
+
+def _typed_evidence(evidence: Evidence) -> dict[str, Any]:
+    """Return all immutable evidence coordinates in a JSON-safe shape."""
+
+    return {
+        "artifact_id": str(evidence.artifact_id),
+        "locator": evidence.locator,
+        "raw_timestamp_ns": (
+            None
+            if evidence.raw_timestamp_ns is None
+            else str(evidence.raw_timestamp_ns)
+        ),
+        "clock_domain": evidence.clock_domain,
+        "excerpt_sha256": evidence.excerpt_sha256,
+    }
 
 
 def _canonical_opaque_key(value: Any) -> tuple[dict[str, Any], str]:
@@ -500,6 +594,66 @@ def _status_window_at(
     }
 
 
+class _TopologyProjectionWorld:
+    """Minimal core-owned world for a provider that emits self-contained facts."""
+
+    def __init__(
+        self,
+        basis: WorldBasis,
+        perspective_ref: StatusPerspectiveRef,
+        states: Mapping[ResourceKey, ResourceStateView] | None = None,
+    ) -> None:
+        self._basis = basis
+        self._perspective_ref = perspective_ref
+        self._states = dict(states or {})
+
+    @property
+    def basis(self) -> WorldBasis:
+        return self._basis
+
+    @property
+    def perspective_ref(self) -> StatusPerspectiveRef:
+        return self._perspective_ref
+
+    def state_of(self, resource: ResourceKey) -> ResourceStateView | None:
+        return self._states.get(resource)
+
+    def iter_states(
+        self,
+        layers: frozenset[str] | None = None,
+        kinds: frozenset[str] | None = None,
+        limit: int | None = None,
+    ) -> Iterable[ResourceStateView]:
+        selected = (
+            state
+            for state in self._states.values()
+            if (layers is None or state.resource.layer in layers)
+            and (kinds is None or state.resource.kind in kinds)
+        )
+        if limit is None:
+            return tuple(selected)
+        return tuple(selected)[:limit]
+
+    def related(
+        self,
+        resource: ResourceKey,
+        direction: RelationDirection = RelationDirection.OUTGOING,
+        relation_types: frozenset[str] | None = None,
+        limit: int | None = None,
+    ) -> Iterable[RelationshipView]:
+        del resource, direction, relation_types, limit
+        return ()
+
+    def iter_relationships(
+        self,
+        relation_types: frozenset[str] | None = None,
+        layers: frozenset[str] | None = None,
+        limit: int | None = None,
+    ) -> Iterable[RelationshipView]:
+        del relation_types, layers, limit
+        return ()
+
+
 class MultiNodeTopologyService:
     """Coordinate independently selected plug-in projections across nodes."""
 
@@ -509,6 +663,14 @@ class MultiNodeTopologyService:
         contract: dict[str, Any],
         topology_profiles: list[dict[str, Any]],
         topology_metadata: dict[str, Any],
+        topology_federation: TopologyFederationCoordinator | None = None,
+        topology_projection_state_provider: (
+            Callable[
+                [CapabilityProviderRef, str, Mapping[str, Any]],
+                Mapping[ResourceKey, ResourceStateView],
+            ]
+            | None
+        ) = None,
     ) -> None:
         if not isinstance(contract, dict) or not isinstance(
             contract.get("nodes"),
@@ -570,6 +732,21 @@ class MultiNodeTopologyService:
             for index, item in enumerate(self.contract["nodes"])
         }
         self._contexts: dict[str, dict[str, Any]] = {}
+        if topology_federation is not None and type(
+            topology_federation
+        ) is not TopologyFederationCoordinator:
+            raise TypeError(
+                "topology_federation must be an exact TopologyFederationCoordinator"
+            )
+        if (
+            topology_projection_state_provider is not None
+            and not callable(topology_projection_state_provider)
+        ):
+            raise TypeError("topology_projection_state_provider must be callable")
+        self._topology_federation = topology_federation
+        self._topology_projection_state_provider = (
+            topology_projection_state_provider
+        )
 
     @staticmethod
     def normalize_basis(
@@ -972,6 +1149,11 @@ class MultiNodeTopologyService:
         snapshots: list[dict[str, Any]] = []
         all_claims: list[dict[str, Any]] = []
         all_segment_claims: list[dict[str, Any]] = []
+        typed_invocations: list[TopologyProjectionInvocation] = []
+        typed_invocations_complete = True
+        typed_resources: dict[
+            _TypedResourceScopeKey, tuple[dict[str, Any], ...]
+        ] = {}
         basis_kinds: set[str] = set()
         for node_query in node_queries:
             node = self._node(str(node_query["node_id"]))
@@ -987,6 +1169,13 @@ class MultiNodeTopologyService:
             snapshots.append(snapshot)
             all_claims.extend(snapshot.pop("_connector_claims"))
             all_segment_claims.extend(snapshot.pop("_network_segment_claims"))
+            typed_invocations.extend(snapshot.pop("_typed_invocations", ()))
+            typed_invocations_complete = bool(
+                typed_invocations_complete
+                and snapshot.pop("_typed_invocations_complete", True)
+            )
+            for scope, rows in snapshot.pop("_typed_resources", {}).items():
+                typed_resources[scope] = typed_resources.get(scope, ()) + rows
             basis_kinds.update(
                 item["basis_kind"] for item in snapshot["resolved_times"]
             )
@@ -997,6 +1186,56 @@ class MultiNodeTopologyService:
             unmatched_claims,
             links_truncated,
         ) = self._join_claims(all_claims, link_limit, context_id)
+        typed_assembly: TopologyFederationAssembly | None = None
+        typed_unmatched_claims: list[dict[str, Any]] = []
+        typed_federation_failures: list[dict[str, Any]] = []
+        if self._topology_federation is not None and typed_invocations:
+            try:
+                typed_assembly = self._topology_federation.federate(
+                    tuple(typed_invocations),
+                    invocations_complete=typed_invocations_complete,
+                )
+            except TopologyFederationError:
+                typed_federation_failures.append(
+                    {
+                        "reason_code": "typed_federation_input_rejected",
+                        "scope": "selected_typed_projections",
+                    }
+                )
+            if typed_assembly is not None:
+                (
+                    typed_links,
+                    typed_resolutions,
+                    typed_unmatched,
+                    typed_links_truncated,
+                ) = self._federated_claim_links(
+                    typed_assembly,
+                    typed_resources,
+                    link_limit,
+                    context_id,
+                    global_basis,
+                )
+                available_link_slots = max(0, link_limit - len(inter_node_links))
+                inter_node_links.extend(typed_links[:available_link_slots])
+                connector_resolutions.extend(typed_resolutions)
+                # UNRESOLVED is a complete typed federation outcome when a
+                # selected scope intentionally has no compatible remote member.
+                typed_unmatched_claims = typed_unmatched
+                links_truncated = (
+                    links_truncated
+                    or typed_links_truncated
+                    or len(typed_links) > available_link_slots
+                )
+                typed_federation_failures.extend(
+                    {
+                        "claim_contract_id": item.claim_contract_id,
+                        "match_policy_id": item.policy_id,
+                        "reason_code": item.reason_code,
+                        "linker_plugin_id": item.linker_plugin_id,
+                        "linker_plugin_version": item.linker_plugin_version,
+                    }
+                    for item in typed_assembly.failures
+                )
         (
             network_segments,
             segment_attachments,
@@ -1060,10 +1299,19 @@ class MultiNodeTopologyService:
                     len(item["plugin_results"]) for item in snapshots
                 ),
                 "resources": sum(len(item["resources"]) for item in snapshots),
+                "topology_endpoints": sum(
+                    len(item.get("topology_endpoints", [])) for item in snapshots
+                ),
                 "local_links": sum(len(item["local_links"]) for item in snapshots),
                 "connector_claims": len(all_claims),
+                "typed_connector_claims": (
+                    len(typed_assembly.claims) if typed_assembly is not None else 0
+                ),
                 "inter_node_links": len(inter_node_links),
                 "unmatched_connector_claims": len(unmatched_claims),
+                "unresolved_typed_connector_claims": len(
+                    typed_unmatched_claims
+                ),
                 "connector_resolutions": len(connector_resolutions),
                 "network_segment_claims": len(all_segment_claims),
                 "network_segments": len(network_segments),
@@ -1076,6 +1324,8 @@ class MultiNodeTopologyService:
                 and not segments_truncated
                 and not attachments_truncated
                 and not unresolved_segment_claims
+                and not typed_federation_failures
+                and (typed_assembly is None or typed_assembly.complete)
             ),
             "completeness": {
                 "complete": (
@@ -1085,13 +1335,33 @@ class MultiNodeTopologyService:
                     and not segments_truncated
                     and not attachments_truncated
                     and not unresolved_segment_claims
+                    and not typed_federation_failures
+                    and (typed_assembly is None or typed_assembly.complete)
                 ),
                 "incomplete_nodes": incomplete_nodes,
                 "unmatched_connector_claims": unmatched_claims,
+                "unresolved_typed_connector_claims": typed_unmatched_claims,
+                "typed_federation_failures": typed_federation_failures,
                 "inter_node_links_truncated": links_truncated,
                 "network_segments_truncated": segments_truncated,
                 "segment_attachments_truncated": attachments_truncated,
                 "unresolved_network_segment_claims": unresolved_segment_claims,
+                "typed_federation_complete": (
+                    None if typed_assembly is None else typed_assembly.complete
+                ),
+                "typed_federation_truncated": (
+                    False if typed_assembly is None else typed_assembly.truncated
+                ),
+                "inactive_typed_connector_claims": (
+                    0
+                    if typed_assembly is None
+                    else typed_assembly.inactive_claim_count
+                ),
+                "unknown_basis_typed_connector_claims": (
+                    0
+                    if typed_assembly is None
+                    else typed_assembly.temporal_basis_unknown_claim_count
+                ),
                 "clock_alignment": (
                     "capture_vector_not_simultaneous"
                     if resolved_basis["simultaneity"] == "not_implied"
@@ -1216,9 +1486,15 @@ class MultiNodeTopologyService:
         plugin_results: list[dict[str, Any]] = []
         resolved_times: list[dict[str, Any]] = []
         resources: list[dict[str, Any]] = []
+        topology_endpoints: list[dict[str, Any]] = []
         local_links: list[dict[str, Any]] = []
         claims: list[dict[str, Any]] = []
         segment_claims: list[dict[str, Any]] = []
+        typed_invocations: list[TopologyProjectionInvocation] = []
+        typed_invocations_complete = True
+        typed_resources: dict[
+            _TypedResourceScopeKey, tuple[dict[str, Any], ...]
+        ] = {}
         incomplete_reasons: list[dict[str, Any]] = []
 
         for selection in selections:
@@ -1241,6 +1517,7 @@ class MultiNodeTopologyService:
                         node, plugin_set_id, plugin, projection, perspective_id, reason
                     )
                 )
+                typed_invocations_complete = False
                 continue
             resolved_time = self._resolve_time(
                 node,
@@ -1270,6 +1547,7 @@ class MultiNodeTopologyService:
                         resolved_time,
                     )
                 )
+                typed_invocations_complete = False
                 continue
             result = self._run_projection(
                 node,
@@ -1279,23 +1557,43 @@ class MultiNodeTopologyService:
                 perspective_id,
                 resolved_time,
                 basis,
-                resource_limit,
+                max(0, resource_limit - len(resources)),
                 context_id,
             )
             plugin_results.append(result)
             resources.extend(result["resources"])
+            topology_endpoints.extend(result.get("topology_endpoints", []))
             local_links.extend(result["local_links"])
             claims.extend(result.pop("connector_claims"))
             segment_claims.extend(result.pop("network_segment_claims"))
+            typed_invocations.extend(result.pop("_typed_invocations", ()))
+            typed_invocations_complete = bool(
+                typed_invocations_complete
+                and result.pop("_typed_invocations_complete", True)
+            )
+            for scope, rows in result.pop("_typed_resources", {}).items():
+                typed_resources[scope] = typed_resources.get(scope, ()) + rows
             if not result["complete"]:
                 incomplete_reasons.append(
                     {
                         "plugin_id": plugin["plugin_id"],
                         "projection_id": projection["projection_id"],
-                        "reason_code": "projection_truncated",
+                        "reason_code": result.get(
+                            "incomplete_reason_code",
+                            "projection_truncated",
+                        ),
                     }
                 )
 
+        resource_totals = [
+            item["counts"]["resources"]["total_count"]
+            for item in plugin_results
+        ]
+        resource_total_count = (
+            None
+            if any(value is None for value in resource_totals)
+            else sum(int(value) for value in resource_totals)
+        )
         primary_projection = selections[0] if selections else None
         primary_time = resolved_times[0] if resolved_times else None
         individual_link = self._node_deep_link(
@@ -1348,10 +1646,20 @@ class MultiNodeTopologyService:
             "resources": resources,
             "resource_previews": resources,
             "resource_count": len(resources),
+            "topology_endpoints": topology_endpoints,
             "local_links": local_links,
             "counts": {
                 "plugin_results": len(plugin_results),
                 "resources": len(resources),
+                "resource_page": {
+                    "total_count": resource_total_count,
+                    "returned_count": len(resources),
+                    "truncated": any(
+                        bool(item["counts"]["resources"]["truncated"])
+                        for item in plugin_results
+                    ),
+                },
+                "topology_endpoints": len(topology_endpoints),
                 "local_links": len(local_links),
                 "connector_claims": len(claims),
                 "network_segment_claims": len(segment_claims),
@@ -1366,6 +1674,9 @@ class MultiNodeTopologyService:
             "deep_links": {"individual_node": individual_link},
             "_connector_claims": claims,
             "_network_segment_claims": segment_claims,
+            "_typed_invocations": typed_invocations,
+            "_typed_invocations_complete": typed_invocations_complete,
+            "_typed_resources": typed_resources,
         }
 
     def _projection_selections(
@@ -2043,28 +2354,1244 @@ class MultiNodeTopologyService:
                     "deep_link": source["deep_link"],
                 }
             )
-        truncated = len(all_resources) > len(resources)
+        typed_invocations: tuple[TopologyProjectionInvocation, ...] = ()
+        typed_resources: dict[
+            _TypedResourceScopeKey, tuple[dict[str, Any], ...]
+        ] = {}
+        typed_endpoints: list[dict[str, Any]] = []
+        typed_resource_rows: list[dict[str, Any]] = []
+        typed_inactive_record_count = 0
+        typed_unknown_basis_record_count = 0
+        typed_failure_reason: str | None = None
+        typed_records_complete = True
+        typed_claims_complete = True
+        if self._topology_federation is not None:
+            try:
+                selection = TopologyProjectionSelection(
+                    key=self._typed_revision_key(node),
+                    plugin_instance_id=_exact_nonempty_string(
+                        plugin.get("plugin_instance_id"),
+                        "typed topology plugin_instance_id",
+                    ),
+                    expected_node_id=_exact_nonempty_string(
+                        node.get("node_id"),
+                        "typed topology node_id",
+                    ),
+                    expected_basis_revision_id=_exact_nonempty_string(
+                        node.get("revision_id"),
+                        "typed topology revision_id",
+                    ),
+                    request=TopologyProjectionRequest(
+                        projection_id=_exact_nonempty_string(
+                            projection.get("projection_id"),
+                            "typed topology projection_id",
+                        ),
+                        status_perspective_id=_exact_nonempty_string(
+                            perspective_id,
+                            "typed topology status_perspective_id",
+                        ),
+                        max_records=max(1, min(resource_limit, 100_000)),
+                        max_world_reads=50_000,
+                        max_claims=10_000,
+                    ),
+                    basis_time_ns=timestamp_ns,
+                )
+                if self._topology_federation.projection_available(selection):
+                    invocation = (
+                        self._topology_federation.project_with_world_factory(
+                            selection,
+                            lambda provider: self._typed_projection_world(
+                                provider,
+                                perspective_id,
+                                resolved_time,
+                                (
+                                    self._topology_projection_state_provider(
+                                        provider,
+                                        perspective_id,
+                                        resolved_time,
+                                    )
+                                    if self._topology_projection_state_provider
+                                    is not None
+                                    else None
+                                ),
+                            ),
+                        )
+                    )
+                    typed_invocations = (invocation,)
+                    typed_records_complete = (
+                        invocation.invocation.result.records_complete
+                    )
+                    typed_claims_complete = (
+                        invocation.invocation.result.claims_complete
+                    )
+                    (
+                        typed_resource_rows,
+                        typed_local_links,
+                        typed_endpoints,
+                        typed_resources,
+                        typed_inactive_record_count,
+                        typed_unknown_basis_record_count,
+                    ) = self._render_typed_projection(
+                        node,
+                        plugin_set_id,
+                        plugin,
+                        projection,
+                        perspective_id,
+                        requested_basis,
+                        resolved_time,
+                        context_id,
+                        invocation,
+                    )
+                    local_links.extend(typed_local_links)
+            except (TopologyFederationError, MultiNodeTopologyRequestError):
+                typed_failure_reason = "typed_projection_failed"
+
+        all_legacy_resource_ids = {
+            str(item["resource_id"]) for item in all_resources
+        }
+        unique_typed_rows = [
+            item
+            for item in typed_resource_rows
+            if str(item["resource_id"]) not in all_legacy_resource_ids
+        ]
+        total_resource_count = len(all_resources) + len(unique_typed_rows)
+        remaining_resource_slots = max(0, resource_limit - len(resources))
+        resources.extend(unique_typed_rows[:remaining_resource_slots])
+        resource_truncated = (
+            len(resources) < total_resource_count or not typed_records_complete
+        )
+        projection_truncated = resource_truncated or not typed_claims_complete
+        complete = (
+            not projection_truncated
+            and typed_failure_reason is None
+            and typed_unknown_basis_record_count == 0
+        )
         return {
             "plugin_provenance": self._plugin_provenance(plugin, plugin_set_id),
             "projection_id": projection["projection_id"],
             "status_perspective_id": perspective_id,
             "resolved_time": resolved_time,
             "resources": resources,
+            "topology_endpoints": typed_endpoints,
             "local_links": local_links,
             "connector_claims": claims,
             "network_segment_claims": segment_claims,
             "counts": {
                 "resources": {
-                    "total_count": len(all_resources),
+                    "total_count": (
+                        total_resource_count
+                        if typed_records_complete
+                        else None
+                    ),
                     "returned_count": len(resources),
-                    "truncated": truncated,
+                    "truncated": resource_truncated,
                 },
                 "local_links": len(local_links),
                 "connector_claims": len(claims),
                 "network_segment_claims": len(segment_claims),
+                "typed_projection_records": (
+                    len(typed_invocations[0].invocation.result.records)
+                    if typed_invocations
+                    else 0
+                ),
+                "typed_connector_claims": (
+                    len(typed_invocations[0].invocation.result.claims)
+                    if typed_invocations
+                    else 0
+                ),
+                "typed_inactive_records": typed_inactive_record_count,
+                "typed_unknown_basis_records": typed_unknown_basis_record_count,
             },
-            "complete": not truncated,
+            "complete": complete,
+            "incomplete_reason_code": (
+                typed_failure_reason
+                or (
+                    "typed_record_basis_unknown"
+                    if typed_unknown_basis_record_count
+                    else "projection_truncated"
+                )
+            ),
+            "_typed_invocations": typed_invocations,
+            "_typed_invocations_complete": typed_failure_reason is None,
+            "_typed_resources": typed_resources,
         }
+
+    @staticmethod
+    def _typed_revision_key(node: Mapping[str, Any]) -> RevisionSetCapabilityKey:
+        return RevisionSetCapabilityKey(
+            catalog_revision_id=_exact_nonempty_string(
+                node.get("catalog_revision_id"),
+                "typed topology catalog_revision_id",
+            ),
+            member_id=_exact_nonempty_string(
+                node.get("member_id"),
+                "typed topology member_id",
+            ),
+        )
+
+    @staticmethod
+    def _typed_projection_world(
+        provider: CapabilityProviderRef,
+        perspective_id: str,
+        resolved_time: Mapping[str, Any],
+        states: Mapping[ResourceKey, ResourceStateView] | None = None,
+    ) -> _TopologyProjectionWorld:
+        timestamp_ns = _integer_ns(
+            resolved_time.get("query_time_ns")
+            if resolved_time.get("query_time_ns") is not None
+            else resolved_time["local_time_ns"],
+            "resolved topology projection time",
+        )
+        minimum_ns = _integer_ns(
+            resolved_time.get("absolute_min_ns", timestamp_ns),
+            "resolved topology projection minimum",
+        )
+        maximum_ns = _integer_ns(
+            resolved_time.get("absolute_max_ns", timestamp_ns),
+            "resolved topology projection maximum",
+        )
+        kind = (
+            WorldBasisKind.ABSOLUTE_TIME
+            if resolved_time.get("basis_kind") == "absolute_time"
+            else WorldBasisKind.RELATIVE_CAPTURE_VECTOR
+        )
+        quality = (
+            Quality.EXACT
+            if minimum_ns == maximum_ns
+            else Quality.BEST_EFFORT
+        )
+        return _TopologyProjectionWorld(
+            WorldBasis(
+                kind=kind,
+                requested_time_ns=timestamp_ns,
+                resolved_at_min_ns=minimum_ns,
+                resolved_at_max_ns=maximum_ns,
+                capture_ranges=(),
+                provenance=Provenance.RECONSTRUCTED,
+                quality=quality,
+                clock_domain=(
+                    str(resolved_time["local_clock_domain"])
+                    if resolved_time.get("local_clock_domain") is not None
+                    else None
+                ),
+            ),
+            StatusPerspectiveRef(
+                perspective_id=perspective_id,
+                plugin_instance_id=provider.pin.instance_id,
+                schema_digest=provider.pin.schema_digest,
+            ),
+            states,
+        )
+
+    @staticmethod
+    def _typed_resource_identity(
+        resource: ResourceKey,
+    ) -> tuple[str, dict[str, Any]]:
+        parts = [
+            {"name": name, "value": _normalize_opaque_key(value)}
+            for name, value in resource.parts
+        ]
+        identity = {
+            "namespace": resource.namespace,
+            "node": resource.node,
+            "layer": resource.layer,
+            "kind": resource.kind,
+            "parts": parts,
+        }
+        token = json.dumps(
+            identity,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:32]
+        return (
+            (
+                f"{resource.namespace}/{resource.node}/{resource.layer}/"
+                f"{resource.kind}/{digest}"
+            ),
+            identity,
+        )
+
+    @staticmethod
+    def _typed_resource_label(resource: ResourceKey) -> str:
+        labels: list[str] = []
+        for _name, raw_value in resource.parts:
+            value = raw_value.value if isinstance(raw_value, KeyAtom) else raw_value
+            labels.append(value.hex() if isinstance(value, bytes) else str(value))
+        return "/".join(labels) or resource.kind
+
+    @staticmethod
+    def _typed_record_active_during(
+        record: Any,
+        basis: TopologyProjectionBasisSnapshot,
+    ) -> bool | None:
+        """Apply half-open validity across the resolved clock interval.
+
+        A record is authoritative only when its validity covers every possible
+        instant in the member world's resolved uncertainty window.  A record
+        that overlaps only part of that window is retained as unknown rather
+        than being selected merely because it contains the requested instant.
+        """
+
+        minimum_ns = basis.resolved_at_min_ns
+        maximum_ns = basis.resolved_at_max_ns
+        if minimum_ns is None or maximum_ns is None:
+            if record.valid_from_ns is not None or record.valid_to_ns is not None:
+                return None
+            return True
+        if (
+            record.valid_to_ns is not None
+            and record.valid_to_ns <= minimum_ns
+        ) or (
+            record.valid_from_ns is not None
+            and record.valid_from_ns > maximum_ns
+        ):
+            return False
+        if (
+            record.valid_from_ns is None
+            or record.valid_from_ns <= minimum_ns
+        ) and (
+            record.valid_to_ns is None
+            or maximum_ns < record.valid_to_ns
+        ):
+            return True
+        return None
+
+    @staticmethod
+    def _typed_reference_resources(reference: Any) -> tuple[ResourceKey, ...]:
+        if reference.resource is not None:
+            return (reference.resource,)
+        if reference.match is not None:
+            return reference.match.resolved_candidates
+        return ()
+
+    def _typed_reference_payload(
+        self,
+        reference: Any,
+        rows_by_resource: Mapping[ResourceKey, list[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        resources = self._typed_reference_resources(reference)
+        candidates = []
+        resolved_resource_ids: list[str] = []
+        for resource in resources:
+            resource_id, typed_key = self._typed_resource_identity(resource)
+            rows = rows_by_resource.get(resource, [])
+            resolved_resource_ids.extend(
+                str(row["resource_id"]) for row in rows
+            )
+            candidates.append(
+                {
+                    "resource_id": resource_id,
+                    "typed_resource_key": typed_key,
+                    "rendered_resource_ids": [
+                        str(row["resource_id"]) for row in rows
+                    ],
+                }
+            )
+        if reference.resource is not None:
+            return {
+                "kind": "resource",
+                "resource": candidates[0],
+                "resolved_resource_ids": resolved_resource_ids,
+            }
+        assert reference.match is not None
+        return {
+            "kind": "match",
+            "matcher_id": reference.match.matcher_id,
+            "arguments": _typed_json_value(reference.match.arguments),
+            "resolved_candidates": candidates,
+            "resolved_resource_ids": resolved_resource_ids,
+        }
+
+    def _render_typed_projection(
+        self,
+        node: dict[str, Any],
+        plugin_set_id: str,
+        plugin: dict[str, Any],
+        projection: dict[str, Any],
+        perspective_id: str,
+        requested_basis: dict[str, Any],
+        resolved_time: dict[str, Any],
+        context_id: str,
+        invocation: TopologyProjectionInvocation,
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        dict[_TypedResourceScopeKey, tuple[dict[str, Any], ...]],
+        int,
+        int,
+    ]:
+        rows: list[dict[str, Any]] = []
+        local_links: list[dict[str, Any]] = []
+        endpoints: list[dict[str, Any]] = []
+        rows_by_resource: dict[ResourceKey, list[dict[str, Any]]] = {}
+        mutable_global_rows: dict[
+            _TypedResourceScopeKey, list[dict[str, Any]]
+        ] = {}
+        provider = invocation.invocation.provider
+        typed_records = invocation.invocation.result.records
+        active_records: list[Any] = []
+        inactive_record_count = 0
+        unknown_basis_record_count = 0
+
+        for record in typed_records:
+            active = self._typed_record_active_during(
+                record,
+                invocation.world_basis,
+            )
+            if active is None:
+                unknown_basis_record_count += 1
+            elif active:
+                active_records.append(record)
+            else:
+                inactive_record_count += 1
+
+        plugin_provenance = self._plugin_provenance(plugin, plugin_set_id) | {
+            "projection_id": projection["projection_id"],
+            "status_perspective_id": perspective_id,
+            "plan_digest": provider.plan_digest,
+            "catalog_revision_id": provider.catalog_revision_id,
+        }
+
+        for record in active_records:
+            if type(record.payload) is not TopologyResourceRecord:
+                continue
+            resource = record.payload.resource
+            resource_id, resource_key = self._typed_resource_identity(resource)
+            raw_label = record.properties.get("label")
+            label = (
+                raw_label
+                if type(raw_label) is str and raw_label
+                else self._typed_resource_label(resource)
+            )
+            properties = _typed_json_value(record.properties)
+            usability = TopologyUsability(record.usability)
+            status_class = (
+                "usable"
+                if record.exists is True and usability is TopologyUsability.USABLE
+                else "unusable"
+                if record.exists is True
+                and usability is TopologyUsability.UNUSABLE
+                else "unknown"
+            )
+            row = {
+                "resource_id": resource_id,
+                "node_id": node["node_id"],
+                "member_id": node["member_id"],
+                "revision_id": node["revision_id"],
+                "resource_ref": {
+                    "member_id": node["member_id"],
+                    "node_id": node["node_id"],
+                    "revision_id": node["revision_id"],
+                    "local_resource_id": resource_id,
+                    "typed_resource_key": resource_key,
+                    "plugin_instance_id": provider.pin.instance_id,
+                    "projection_id": projection["projection_id"],
+                    "status_perspective_id": perspective_id,
+                },
+                "kind": resource.kind,
+                "role": record.payload.role,
+                "presentation": {
+                    "two_participant_shape": (
+                        record.payload.presentation.two_participant_shape.value
+                    )
+                },
+                "label": label,
+                "exists": record.exists,
+                "status": usability.value,
+                "status_class": status_class,
+                "state": properties,
+                "properties": properties,
+                "status_perspective_id": perspective_id,
+                "basis_time_ns": (
+                    None
+                    if invocation.selection.basis_time_ns is None
+                    else str(invocation.selection.basis_time_ns)
+                ),
+                "quality": record.quality.value,
+                "temporal_resolution": "typed_projection",
+                "possible_states": [],
+                "unknown_fields": [
+                    {
+                        "name": item.name,
+                        "reason_code": item.reason_code,
+                        "message": item.message,
+                    }
+                    for item in record.unknown_fields
+                ],
+                "provenance": record.provenance.value,
+                "evidence": [_typed_evidence(item) for item in record.evidence],
+                "valid_from_ns": (
+                    None
+                    if record.valid_from_ns is None
+                    else str(record.valid_from_ns)
+                ),
+                "valid_to_ns": (
+                    None
+                    if record.valid_to_ns is None
+                    else str(record.valid_to_ns)
+                ),
+                "source_resources": [
+                    self._typed_resource_identity(item)[1]
+                    for item in record.source_resources
+                ],
+                "plugin_provenance": plugin_provenance,
+                "typed_projection": True,
+            }
+            row["deep_link"] = self._resource_deep_link(
+                node,
+                plugin_set_id,
+                plugin,
+                projection,
+                perspective_id,
+                resource_id,
+                requested_basis,
+                resolved_time,
+                context_id,
+            )
+            row["navigation_target"] = row["deep_link"]
+            rows.append(row)
+            rows_by_resource.setdefault(resource, []).append(row)
+            scoped_key = (
+                GlobalResourceRef(
+                    member_id=provider.member_id,
+                    revision_id=provider.basis_revision_id,
+                    plugin_instance_id=provider.pin.instance_id,
+                    resource=resource,
+                ),
+                projection["projection_id"],
+                perspective_id,
+            )
+            mutable_global_rows.setdefault(scoped_key, []).append(row)
+
+        for record in active_records:
+            if type(record.payload) is not TopologyEndpointRecord:
+                continue
+            target = self._typed_reference_payload(
+                record.payload.target,
+                rows_by_resource,
+            )
+            endpoints.append(
+                {
+                    "endpoint_id": record.payload.endpoint_id,
+                    "node_id": node["node_id"],
+                    "member_id": node["member_id"],
+                    "revision_id": node["revision_id"],
+                    "role": record.payload.role,
+                    "target": target,
+                    "resolved_resource_ids": target["resolved_resource_ids"],
+                    "exists": record.exists,
+                    "usability": record.usability.value,
+                    "properties": _typed_json_value(record.properties),
+                    "quality": record.quality.value,
+                    "provenance": record.provenance.value,
+                    "evidence": [
+                        _typed_evidence(item) for item in record.evidence
+                    ],
+                    "unknown_fields": [
+                        {
+                            "name": item.name,
+                            "reason_code": item.reason_code,
+                            "message": item.message,
+                        }
+                        for item in record.unknown_fields
+                    ],
+                    "valid_from_ns": (
+                        None
+                        if record.valid_from_ns is None
+                        else str(record.valid_from_ns)
+                    ),
+                    "valid_to_ns": (
+                        None
+                        if record.valid_to_ns is None
+                        else str(record.valid_to_ns)
+                    ),
+                    "plugin_provenance": plugin_provenance,
+                    "typed_projection": True,
+                }
+            )
+
+        for record in active_records:
+            if type(record.payload) is not TopologyLinkRecord:
+                continue
+            source_resources = self._typed_reference_resources(
+                record.payload.source
+            )
+            target_resources = self._typed_reference_resources(
+                record.payload.target
+            )
+            for source in source_resources:
+                for target in target_resources:
+                    for source_row in rows_by_resource.get(source, []):
+                        for target_row in rows_by_resource.get(target, []):
+                            local_links.append(
+                                {
+                                    "link_id": record.payload.link_id,
+                                    "source_resource_id": source_row["resource_id"],
+                                    "target_resource_id": target_row["resource_id"],
+                                    "source": self._typed_reference_payload(
+                                        record.payload.source,
+                                        rows_by_resource,
+                                    ),
+                                    "target": self._typed_reference_payload(
+                                        record.payload.target,
+                                        rows_by_resource,
+                                    ),
+                                    "directed": record.payload.directed,
+                                    "node_id": node["node_id"],
+                                    "exists": record.exists,
+                                    "usability": record.usability.value,
+                                    "properties": _typed_json_value(
+                                        record.properties
+                                    ),
+                                    "quality": record.quality.value,
+                                    "provenance": record.provenance.value,
+                                    "evidence": [
+                                        _typed_evidence(item)
+                                        for item in record.evidence
+                                    ],
+                                    "valid_from_ns": (
+                                        None
+                                        if record.valid_from_ns is None
+                                        else str(record.valid_from_ns)
+                                    ),
+                                    "valid_to_ns": (
+                                        None
+                                        if record.valid_to_ns is None
+                                        else str(record.valid_to_ns)
+                                    ),
+                                    "typed_projection": True,
+                                    "plugin_provenance": plugin_provenance,
+                                }
+                            )
+        return (
+            rows,
+            local_links,
+            endpoints,
+            {
+                key: tuple(values)
+                for key, values in mutable_global_rows.items()
+            },
+            inactive_record_count,
+            unknown_basis_record_count,
+        )
+
+    @staticmethod
+    def _typed_federation_endpoint(
+        endpoint: GlobalResourceRef,
+        claim_id: str,
+        context: TopologyFederatedClaimContext | None,
+        resources: Mapping[
+            _TypedResourceScopeKey, tuple[dict[str, Any], ...]
+        ],
+    ) -> dict[str, Any]:
+        rows = (
+            ()
+            if context is None
+            else resources.get(
+                (
+                    endpoint,
+                    context.projection_id,
+                    context.status_perspective_id,
+                ),
+                (),
+            )
+        )
+        resource_id, typed_key = MultiNodeTopologyService._typed_resource_identity(
+            endpoint.resource
+        )
+        payload = {
+            "member_id": endpoint.member_id,
+            "node_id": endpoint.resource.node,
+            "revision_id": endpoint.revision_id,
+            "resource_id": resource_id,
+            "claim_id": claim_id,
+            "plugin_instance_id": endpoint.plugin_instance_id,
+            "projection_id": (
+                None if context is None else context.projection_id
+            ),
+            "status_perspective_id": (
+                None if context is None else context.status_perspective_id
+            ),
+            "resource_ref": {
+                "member_id": endpoint.member_id,
+                "node_id": endpoint.resource.node,
+                "revision_id": endpoint.revision_id,
+                "local_resource_id": resource_id,
+                "typed_resource_key": typed_key,
+                "plugin_instance_id": endpoint.plugin_instance_id,
+                "projection_id": (
+                    None if context is None else context.projection_id
+                ),
+                "status_perspective_id": (
+                    None
+                    if context is None
+                    else context.status_perspective_id
+                ),
+            },
+            "status": "unknown",
+            "usable": None,
+            "projected_resource_candidates": [
+                {
+                    "resource_id": row["resource_id"],
+                    "status": row["status"],
+                    "status_class": row["status_class"],
+                    "quality": row["quality"],
+                    "deep_link": row.get("deep_link"),
+                }
+                for row in rows
+            ],
+        }
+        if len(rows) == 1:
+            row = rows[0]
+            payload["status"] = row["status"]
+            payload["usable"] = (
+                True
+                if row["status_class"] == "usable"
+                else False
+                if row["status_class"] == "unusable"
+                else None
+            )
+            payload["deep_link"] = row["deep_link"]
+        return payload
+
+    @staticmethod
+    def _federated_claim_identity(
+        endpoint: GlobalResourceRef,
+        claim_id: str,
+    ) -> tuple[str, str, str, str]:
+        return (
+            endpoint.member_id,
+            endpoint.revision_id,
+            endpoint.plugin_instance_id,
+            claim_id,
+        )
+
+    @staticmethod
+    def _federated_claim_payload(
+        claim: Any,
+        endpoint: dict[str, Any],
+    ) -> dict[str, Any]:
+        local = claim.claim
+        perspective = local.status_perspective
+        return {
+            "endpoint": endpoint,
+            "claim_id": local.claim_id,
+            "claim_contract_id": local.claim_contract_id,
+            "match_policy_id": local.match_policy_id,
+            "arguments": [
+                {"name": name, "value": _normalize_opaque_key(value)}
+                for name, value in local.arguments
+            ],
+            "provenance": local.provenance.value,
+            "quality": local.quality.value,
+            "link_type": local.link_type,
+            "presentation": {
+                "route_trace": local.presentation.route_trace.value,
+            },
+            "status_perspective": (
+                None
+                if perspective is None
+                else {
+                    "perspective_id": perspective.perspective_id,
+                    "plugin_instance_id": perspective.plugin_instance_id,
+                    "schema_digest": perspective.schema_digest,
+                }
+            ),
+            "role": local.role,
+            "valid_from_ns": (
+                None
+                if local.valid_from_ns is None
+                else str(local.valid_from_ns)
+            ),
+            "valid_to_ns": (
+                None if local.valid_to_ns is None else str(local.valid_to_ns)
+            ),
+            "evidence": [_typed_evidence(item) for item in local.evidence],
+        }
+
+    @staticmethod
+    def _federated_result_severity(state: FederationMatchState) -> int:
+        return {
+            FederationMatchState.MATCHED: 0,
+            FederationMatchState.UNRESOLVED: 1,
+            FederationMatchState.AMBIGUOUS: 2,
+            FederationMatchState.CONFLICT: 3,
+        }[state]
+
+    def _federated_claim_links(
+        self,
+        assembly: TopologyFederationAssembly,
+        resources: Mapping[
+            _TypedResourceScopeKey, tuple[dict[str, Any], ...]
+        ],
+        limit: int,
+        context_id: str,
+        basis: dict[str, Any],
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        bool,
+    ]:
+        links_by_identity: dict[tuple[Any, ...], dict[str, Any]] = {}
+        resolutions: list[dict[str, Any]] = []
+        unmatched: list[dict[str, Any]] = []
+        selected_node_ids = [str(item["node_id"]) for item in self.contract["nodes"]]
+        contexts_by_identity = {
+            self._federated_claim_identity(
+                item.claim.endpoint,
+                item.claim.claim.claim_id,
+            ): item
+            for item in assembly.claim_contexts
+        }
+        claims_by_identity = {
+            self._federated_claim_identity(
+                item.endpoint,
+                item.claim.claim_id,
+            ): item
+            for item in assembly.claims
+        }
+        global_claim_coverage_complete = bool(
+            assembly.invocations_complete
+            and assembly.claims_complete
+            and assembly.temporal_basis_unknown_claim_count == 0
+        )
+        global_claim_coverage_truncated = bool(
+            not assembly.invocations_complete or not assembly.claims_complete
+        )
+
+        for policy_execution in assembly.policy_executions:
+            execution = policy_execution.execution
+            state_counts: dict[str, int] = {}
+            resolution_claims: list[dict[str, Any]] = []
+            result_audits: list[dict[str, Any]] = []
+            for result in execution.results:
+                state = FederationMatchState(result.state)
+                state_counts[state.value] = state_counts.get(state.value, 0) + 1
+                source_identity = self._federated_claim_identity(
+                    result.source.endpoint,
+                    result.source.claim.claim_id,
+                )
+                source_context = contexts_by_identity.get(source_identity)
+                source = self._typed_federation_endpoint(
+                    result.source.endpoint,
+                    result.source.claim.claim_id,
+                    source_context,
+                    resources,
+                )
+                source_claim = self._federated_claim_payload(
+                    result.source,
+                    source,
+                )
+                resolution_claims.append(source_claim)
+                candidate_audits: list[dict[str, Any]] = []
+                for candidate in result.candidates:
+                    target_identity = self._federated_claim_identity(
+                        candidate.endpoint,
+                        candidate.claim_id,
+                    )
+                    target_context = contexts_by_identity.get(target_identity)
+                    target = self._typed_federation_endpoint(
+                        candidate.endpoint,
+                        candidate.claim_id,
+                        target_context,
+                        resources,
+                    )
+                    target_claim = claims_by_identity.get(target_identity)
+                    candidate_audits.append(
+                        {
+                            "claim_id": candidate.claim_id,
+                            "endpoint": target,
+                            "claim": (
+                                None
+                                if target_claim is None
+                                else self._federated_claim_payload(
+                                    target_claim,
+                                    target,
+                                )
+                            ),
+                            "quality": candidate.quality.value,
+                            "confidence": candidate.confidence,
+                            "evidence": [
+                                _typed_evidence(item)
+                                for item in candidate.evidence
+                            ],
+                        }
+                    )
+                result_audit = {
+                    "result_id": result.result_id,
+                    "match_policy_id": result.match_policy_id,
+                    "source": source_claim,
+                    "state": state.value,
+                    "candidates": candidate_audits,
+                    "provenance": result.provenance.value,
+                    "quality": result.quality.value,
+                    "link_type": result.link_type,
+                    "directed": result.directed,
+                    "properties": _typed_json_value(result.properties),
+                    "evidence": [
+                        _typed_evidence(item) for item in result.evidence
+                    ],
+                }
+                result_audits.append(result_audit)
+                if state is FederationMatchState.UNRESOLVED:
+                    unmatched.append(
+                        source
+                        | {
+                            "matcher_id": policy_execution.policy.policy_id,
+                            "claim_contract_id": (
+                                policy_execution.claim_contract_id
+                            ),
+                            "resolution": state.value,
+                            "reason_code": "no_compatible_remote_claim",
+                            "result": result_audit,
+                        }
+                    )
+                    continue
+                for candidate, candidate_audit in zip(
+                    result.candidates,
+                    candidate_audits,
+                    strict=True,
+                ):
+                    target = candidate_audit["endpoint"]
+                    target_identity = self._federated_claim_identity(
+                        candidate.endpoint,
+                        candidate.claim_id,
+                    )
+                    pair_identity = (
+                        (source_identity, target_identity)
+                        if result.directed
+                        else tuple(sorted((source_identity, target_identity)))
+                    )
+                    identity = (
+                        policy_execution.claim_contract_id,
+                        policy_execution.policy.policy_id,
+                        result.directed,
+                        pair_identity,
+                    )
+                    pair = (
+                        ((source_identity, source), (target_identity, target))
+                        if result.directed
+                        else tuple(
+                            sorted(
+                                (
+                                    (source_identity, source),
+                                    (target_identity, target),
+                                ),
+                                key=lambda item: item[0],
+                            )
+                        )
+                    )
+                    entry = links_by_identity.setdefault(
+                        identity,
+                        {
+                            "_pair": pair,
+                            "_states": [],
+                            "_qualities": [],
+                            "_audits": [],
+                            "_candidate_endpoints": {},
+                            "_claimed_link_types": set(),
+                            "_route_trace_roles": set(),
+                            "_execution_complete": global_claim_coverage_complete,
+                            "_execution_truncated": global_claim_coverage_truncated,
+                            "_execution_provenance": execution.provenance,
+                            "_linker_identity": execution.linker_identity,
+                        },
+                    )
+                    entry["_states"].append(state)
+                    entry["_qualities"].append(result.quality.value)
+                    entry["_audits"].append(result_audit)
+                    entry["_candidate_endpoints"][target_identity] = target
+                    entry["_execution_complete"] = bool(
+                        entry["_execution_complete"]
+                        and execution.complete
+                        and not execution.truncated
+                    )
+                    entry["_execution_truncated"] = bool(
+                        entry["_execution_truncated"] or execution.truncated
+                    )
+                    claimed_link_types = entry["_claimed_link_types"]
+                    claimed_link_types.add(result.source.claim.link_type)
+                    remote_claim = claims_by_identity.get(target_identity)
+                    if remote_claim is not None:
+                        claimed_link_types.add(remote_claim.claim.link_type)
+                        entry["_route_trace_roles"].add(
+                            remote_claim.claim.presentation.route_trace.value
+                        )
+                    if result.link_type not in {None, "unknown"}:
+                        claimed_link_types.add(result.link_type)
+                    entry["_route_trace_roles"].add(
+                        result.source.claim.presentation.route_trace.value
+                    )
+            resolutions.append(
+                {
+                    "matcher_id": policy_execution.policy.policy_id,
+                    "claim_contract_id": policy_execution.claim_contract_id,
+                    "resolution": (
+                        next(iter(state_counts))
+                        if len(state_counts) == 1
+                        else "mixed"
+                    ),
+                    "result_counts": state_counts,
+                    "claims": resolution_claims,
+                    "results": result_audits,
+                    "execution_provenance": execution.provenance.value,
+                    "linker_plugin_provenance": (
+                        None
+                        if execution.linker_identity is None
+                        else {
+                            "plugin_id": execution.linker_identity.plugin_id,
+                            "plugin_version": execution.linker_identity.plugin_version,
+                        }
+                    ),
+                    "complete": bool(
+                        global_claim_coverage_complete
+                        and execution.complete
+                        and not execution.truncated
+                    ),
+                    "truncated": bool(
+                        global_claim_coverage_truncated or execution.truncated
+                    ),
+                    "returned_count": len(execution.results),
+                    "total_count": (
+                        len(execution.results)
+                        if execution.complete and not execution.truncated
+                        else None
+                    ),
+                }
+            )
+
+        for failure in assembly.failures:
+            resolutions.append(
+                {
+                    "matcher_id": failure.policy_id,
+                    "claim_contract_id": failure.claim_contract_id,
+                    "resolution": "incomplete",
+                    "result_counts": {},
+                    "claims": [],
+                    "results": [],
+                    "execution_provenance": None,
+                    "linker_plugin_provenance": (
+                        None
+                        if failure.linker_plugin_id is None
+                        else {
+                            "plugin_id": failure.linker_plugin_id,
+                            "plugin_version": failure.linker_plugin_version,
+                        }
+                    ),
+                    "complete": False,
+                    "truncated": False,
+                    "returned_count": 0,
+                    "total_count": None,
+                    "reason_code": failure.reason_code,
+                }
+            )
+
+        ordered_links: list[dict[str, Any]] = []
+        quality_rank = {
+            "exact": 0,
+            "best_effort": 1,
+            "unknown": 2,
+            "ambiguous": 3,
+        }
+        for identity, aggregate in sorted(links_by_identity.items()):
+            endpoint_a = aggregate["_pair"][0][1]
+            endpoint_b = aggregate["_pair"][1][1]
+            state = max(
+                aggregate["_states"],
+                key=self._federated_result_severity,
+            )
+            claimed_link_types = tuple(sorted(aggregate["_claimed_link_types"]))
+            route_trace_roles = tuple(sorted(aggregate["_route_trace_roles"]))
+            if len(claimed_link_types) != 1 or len(route_trace_roles) != 1:
+                state = FederationMatchState.CONFLICT
+            federation_complete = bool(aggregate["_execution_complete"])
+            federation_truncated = bool(aggregate["_execution_truncated"])
+            source_usable = endpoint_a.get("usable")
+            target_usable = endpoint_b.get("usable")
+            usable = (
+                False
+                if state is FederationMatchState.MATCHED
+                and federation_complete
+                and False in {source_usable, target_usable}
+                else True
+                if state is FederationMatchState.MATCHED
+                and federation_complete
+                and {source_usable, target_usable} == {True}
+                else None
+            )
+            operational_status = (
+                "usable"
+                if usable is True
+                else "unusable"
+                if usable is False
+                else "unknown"
+            )
+            selected_quality = max(
+                aggregate["_qualities"],
+                key=lambda value: quality_rank[value],
+            )
+            if state in {
+                FederationMatchState.AMBIGUOUS,
+                FederationMatchState.CONFLICT,
+            }:
+                selected_quality = "ambiguous"
+            link_digest = hashlib.sha256(
+                json.dumps(
+                    identity,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()[:24]
+            link_id = f"typed-federation:{link_digest}"
+            linker_identity = aggregate["_linker_identity"]
+            execution_provenance = aggregate["_execution_provenance"]
+            inference_owner = (
+                "core_exact_matcher"
+                if execution_provenance
+                is FederationExecutionProvenance.CORE_EXACT_TOKEN
+                else "federation_linker_plugin"
+            )
+            audits = sorted(
+                aggregate["_audits"],
+                key=lambda item: item["result_id"],
+            )
+            candidate_endpoints = [
+                value
+                for _candidate_identity, value in sorted(
+                    aggregate["_candidate_endpoints"].items()
+                )
+            ]
+            plugin_provenance = sorted(
+                (
+                    {
+                        "plugin_instance_id": endpoint["plugin_instance_id"],
+                        "claim_id": endpoint["claim_id"],
+                        "projection_id": endpoint.get("projection_id"),
+                        "status_perspective_id": endpoint.get(
+                            "status_perspective_id"
+                        ),
+                    }
+                    for endpoint in (endpoint_a, endpoint_b)
+                ),
+                key=lambda item: (
+                    item["plugin_instance_id"],
+                    item["claim_id"],
+                    item["projection_id"] or "",
+                    item["status_perspective_id"] or "",
+                ),
+            )
+            ordered_links.append(
+                {
+                    "link_id": link_id,
+                    "typed_federation": True,
+                    "federation_complete": federation_complete,
+                    "federation_truncated": federation_truncated,
+                    "projection_role": (
+                        "presentation_conflict"
+                        if len(route_trace_roles) != 1
+                        else "presentation_overlay"
+                        if route_trace_roles[0] == "overlay"
+                        else "federated_connector"
+                    ),
+                    "presentation": {
+                        "physical_topology": (
+                            "suppress_when_network_segments_available"
+                        ),
+                        "route_trace": (
+                            route_trace_roles[0]
+                            if len(route_trace_roles) == 1
+                            else "conflict"
+                        ),
+                    },
+                    "resolution": state.value,
+                    "link_type": (
+                        claimed_link_types[0]
+                        if len(claimed_link_types) == 1
+                        else "unknown"
+                    ),
+                    "claimed_link_types": list(claimed_link_types),
+                    "directed": identity[2],
+                    "endpoint_a": endpoint_a,
+                    "endpoint_b": endpoint_b,
+                    "source": endpoint_a,
+                    "target": endpoint_b,
+                    "exists": None,
+                    "operational": {
+                        "usable": usable,
+                        "status": operational_status,
+                        "reason": (
+                            "plugin_projected_endpoint_status"
+                            if state is FederationMatchState.MATCHED
+                            and federation_complete
+                            else "federation_evidence_not_authoritative"
+                        ),
+                    },
+                    "status": operational_status,
+                    "operational_status": operational_status,
+                    "quality": selected_quality,
+                    "claim_contract_id": identity[0],
+                    "match_policy_id": identity[1],
+                    "inference": {
+                        "owner": inference_owner,
+                        "linker_plugin_id": (
+                            None
+                            if linker_identity is None
+                            else linker_identity.plugin_id
+                        ),
+                        "linker_plugin_version": (
+                            None
+                            if linker_identity is None
+                            else linker_identity.plugin_version
+                        ),
+                        "coordinator_action": (
+                            "compared complete ordered typed arguments"
+                            if linker_identity is None
+                            else "validated one allowlisted linker decision"
+                        ),
+                    },
+                    "plugin_provenance": plugin_provenance,
+                    "candidates": (
+                        candidate_endpoints
+                        if state
+                        in {
+                            FederationMatchState.AMBIGUOUS,
+                            FederationMatchState.CONFLICT,
+                        }
+                        else []
+                    ),
+                    "resolution_audit": audits,
+                    "deep_links": {
+                        "topology": {
+                            "href": self._topology_href(
+                                basis,
+                                selected_node_ids,
+                                link_id,
+                                context_id,
+                            ),
+                            "link_id": link_id,
+                        },
+                        "endpoint_a": endpoint_a.get("deep_link"),
+                        "endpoint_b": endpoint_b.get("deep_link"),
+                    },
+                }
+            )
+        authoritative_links = [
+            link
+            for link in ordered_links
+            if link.get("resolution") == FederationMatchState.MATCHED.value
+            and link.get("federation_complete") is True
+            and link.get("federation_truncated") is False
+        ]
+        return (
+            authoritative_links[:limit],
+            resolutions,
+            unmatched,
+            assembly.truncated or len(authoritative_links) > limit,
+        )
 
     def _assemble_network_segments(
         self,

@@ -7,11 +7,13 @@ import {
   toBigInt,
 } from "./shared.js";
 import {
+  authoritativeTopologyLink,
   declaredHealthPresentation,
   reconstructionTimelineModel,
   reconstructionTimelineValueAtPosition,
   replaceAbortController,
   routeEndpointSeedValue,
+  topologyResolutionLabel,
 } from "./view_models.js";
 
 const MAX_NODES = 32;
@@ -869,11 +871,13 @@ function normalizeQuery(raw, request, sourceMode) {
     });
   }
   const explicitLinks = firstArray(raw?.inter_node_links, raw?.links, raw?.boundary_links, raw?.edges);
-  const linkSource = explicitLinks.length
+  const linkSource = (explicitLinks.length
     ? explicitLinks
-    : firstArray(raw?.inferred_connectivity);
+    : firstArray(raw?.inferred_connectivity))
+    .filter(authoritativeTopologyLink);
   const unresolvedGroups = firstArray(raw?.connector_resolutions, raw?.boundary_resolutions)
-    .filter((item) => ["unresolved", "conflict"].includes(String(item?.resolution || "")))
+    .filter((item) => ["unresolved", "ambiguous", "conflict", "incomplete", "mixed"]
+      .includes(String(item?.resolution || "")))
     .map((item, index) => {
       const claims = firstArray(item?.claims, item?.candidates);
       const claim = claims[0] || {};
@@ -882,7 +886,7 @@ function normalizeQuery(raw, request, sourceMode) {
         link_id: `resolution:${item?.matcher_id || "matcher"}:${item?.match_key || index}`,
         source: claim,
         target: {
-          label: item?.resolution === "conflict" ? "Conflicting remote endpoints" : "No compatible remote endpoint",
+          label: topologyResolutionLabel(item?.resolution),
         },
         link_type: item?.matcher_id || "connector-resolution",
         status: "unknown",
@@ -7117,6 +7121,7 @@ function renderAttachmentComponents(attachment, geometry, attrs, options = {}) {
 function visibleDirectTopologyLinks(nodes, visibleDomains) {
   const planeHasSegments = visibleDomains.length > 0;
   return (state.query?.links || []).filter((link) => {
+    if (!authoritativeTopologyLink(link)) return false;
     const routeTraceRole = String(link.presentation?.route_trace ?? "include");
     const routeIncluded = routeTraceRole === "include";
     if (!routeIncluded || link.resolution_only) return false;
@@ -8703,7 +8708,9 @@ function evidenceLabel(value) {
 function renderLinkTable() {
   const body = byId("mn-link-table-body");
   const links = state.query?.links || [];
-  const topologyLinkCount = links.filter((link) => !link.resolution_only).length;
+  const topologyLinkCount = links.filter(
+    (link) => !link.resolution_only && authoritativeTopologyLink(link),
+  ).length;
   const resolutionOnlyCount = links.length - topologyLinkCount;
   byId("mn-link-table-count").textContent = resolutionOnlyCount
     ? `${formatInteger(topologyLinkCount)} links · ${formatInteger(resolutionOnlyCount)} unresolved`

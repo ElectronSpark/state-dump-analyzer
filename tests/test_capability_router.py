@@ -3,8 +3,12 @@ from __future__ import annotations
 import unittest
 from dataclasses import replace
 from typing import Any
+from unittest.mock import patch
 
-from router_dump_analyzer.capability_executor import PluginCapabilityOutputError
+from router_dump_analyzer.capability_executor import (
+    PluginCapabilityExecutor,
+    PluginCapabilityOutputError,
+)
 from router_dump_analyzer.capability_router import (
     CapabilityPlanUnavailableError,
     CapabilityProviderRegistry,
@@ -41,6 +45,7 @@ from router_dump_analyzer.plugin_execution_plan import (
     PluginExecutionPin,
     PluginExecutionPlan,
 )
+from router_dump_analyzer.plugin_identity import PluginExecutableIdentityError
 from router_dump_analyzer.plugin_schema_identity import (
     PluginSchemaIdentityError,
     plugin_schema_digest,
@@ -491,6 +496,92 @@ class CapabilityRouterTests(unittest.TestCase):
         self.assertFalse(record.verify_package_bytes)
         with self.assertRaisesRegex(ValueError, "revalidatable executable"):
             CapabilityProviderRegistry((record,))
+
+    def test_plan_bound_router_rejects_inline_only_primary_and_auxiliary(self) -> None:
+        package_identity = "package-sha256:" + "7" * 64
+        fallback_plugin = _RoutingPlugin("test.inline-only")
+        with (
+            patch(
+                "router_dump_analyzer.ingestion_pipeline."
+                "executable_plugin_fingerprint",
+                return_value=package_identity,
+            ),
+            patch(
+                "router_dump_analyzer.ingestion_pipeline."
+                "executable_module_target_fingerprint",
+                side_effect=PluginExecutableIdentityError(
+                    "target attestation unavailable"
+                ),
+            ),
+        ):
+            fallback = PluginRegistry(allow_manifest_identity=True).register(
+                fallback_plugin,
+                instance_id="inline-only",
+            )
+
+        # The compatibility record remains usable by trusted local callers and
+        # may remain in their mutable provider directory. Only plan-bound use is
+        # forbidden.
+        PluginCapabilityExecutor(fallback.execution_plugin)
+        strict_plugin = _RoutingPlugin("test.strict")
+        strict = _registered(strict_plugin, "strict-primary")
+        with patch(
+            "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+            side_effect=lambda plugin: (
+                package_identity
+                if plugin is fallback_plugin
+                else strict.package_hash
+            ),
+        ):
+            providers = CapabilityProviderRegistry((strict, fallback))
+            self.assertIs(
+                providers.get_by_execution_identity(
+                    fallback.instance_id,
+                    fallback.registered_execution_identity,
+                ),
+                fallback,
+            )
+            with self.assertRaisesRegex(ValueError, "process provider snapshots"):
+                providers.snapshot_exact(
+                    (
+                        (
+                            fallback.instance_id,
+                            fallback.registered_execution_identity,
+                        ),
+                    )
+                )
+            scenarios = (
+                (
+                    "primary",
+                    _plan(
+                        "node-primary",
+                        "basis-primary",
+                        _pin(
+                            fallback,
+                            fallback_plugin.schema,
+                            "primary_parser",
+                        ),
+                    ),
+                ),
+                (
+                    "auxiliary",
+                    _plan(
+                        "node-auxiliary",
+                        "basis-auxiliary",
+                        _pin(strict, strict_plugin.schema, "primary_parser"),
+                        _pin(
+                            fallback,
+                            fallback_plugin.schema,
+                            "analysis_assistant",
+                        ),
+                    ),
+                ),
+            )
+            for role, plan in scenarios:
+                with self.subTest(role=role), self.assertRaises(
+                    CapabilityRouteStaleError
+                ):
+                    _router(providers, plan)
 
     def test_configuration_change_requires_a_new_logical_instance(self) -> None:
         first = _registered(_RoutingPlugin("test.lineage"), "lineage.primary")

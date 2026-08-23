@@ -108,6 +108,24 @@ export function durableMutationDisposition(error) {
   return error?.ambiguous === true ? "retain" : "discard";
 }
 
+export function authoritativeTopologyLink(link) {
+  if (!link || typeof link !== "object") return false;
+  if (link.typed_federation !== true) return true;
+  return link.resolution === "matched"
+    && link.federation_complete === true
+    && link.federation_truncated === false;
+}
+
+export function topologyResolutionLabel(resolution) {
+  return {
+    ambiguous: "Multiple candidate remote endpoints",
+    conflict: "Conflicting remote endpoints",
+    incomplete: "Incomplete federation evidence",
+    mixed: "Mixed federation outcomes",
+    unresolved: "No compatible remote endpoint",
+  }[String(resolution || "unresolved")] || "Unresolved federation outcome";
+}
+
 export function durableReviewControlAvailability({
   ready,
   writable,

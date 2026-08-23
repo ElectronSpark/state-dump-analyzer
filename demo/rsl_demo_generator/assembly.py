@@ -2919,6 +2919,33 @@ def _attachment_resource_for_segment(
     )
 
 
+def _typed_connector_endpoint_reference(
+    node_id: str,
+    resource_id: str,
+) -> dict[str, Any]:
+    """Declare the demo provider's typed key without core qualification."""
+
+    return {
+        "node_id": node_id,
+        "resource_id": resource_id,
+        "typed_resource_key": {
+            "namespace": "demo.generated.topology",
+            "node": node_id,
+            "layer": "underlay",
+            "kind": "demo.topology.endpoint",
+            "parts": [
+                {
+                    "name": "resource_id",
+                    "value": {
+                        "type": "string",
+                        "value": resource_id,
+                    },
+                }
+            ],
+        },
+    }
+
+
 def _connectivity_next_hop_declaration(
     *,
     route_type: str,
@@ -2952,6 +2979,15 @@ def _connectivity_next_hop_declaration(
             f"{node_id} -> {next_node_id}"
         ) from error
     segment_id = str(selected["segment_id"])
+    selected_links = [
+        link for link in candidate_links if link.segment_id == segment_id
+    ]
+    if len(selected_links) != 1:
+        raise ValueError(
+            f"{declaration_id}: selected connectivity domain {segment_id} "
+            "does not identify exactly one generated link"
+        )
+    selected_link = selected_links[0]
     local_resource_id = _attachment_resource_for_segment(
         node_id,
         segment_id,
@@ -2973,6 +3009,37 @@ def _connectivity_next_hop_declaration(
     next_hop_id = (
         f"{node_id}/next-hop/{segment_id}/{next_node_id}"
     )
+    topology_references: list[dict[str, Any]] = [
+        {
+            "reference_kind": "connectivity_domain",
+            "match": {
+                "matcher_id": (
+                    GENERATED_PROJECTION_POLICY.topology_segment_matcher_id
+                ),
+                "matcher_contract_version": "1.0",
+                "arguments": {
+                    "segment_key": {
+                        "type": "string",
+                        "value": f"subnet:{segment_id}",
+                    }
+                },
+            },
+        }
+    ]
+    if len(selected_link.participants) == 2:
+        topology_references.append(
+            {
+                "reference_kind": "typed_inter_node_link",
+                "source_endpoint": _typed_connector_endpoint_reference(
+                    node_id,
+                    local_resource_id,
+                ),
+                "target_endpoint": _typed_connector_endpoint_reference(
+                    next_node_id,
+                    remote_resource_id,
+                ),
+            }
+        )
     return {
         "next_hop_id": next_hop_id,
         "node_id": next_node_id,
@@ -2989,23 +3056,7 @@ def _connectivity_next_hop_declaration(
             "resource_id": adjacency_resource_id,
             "neighbor_node_id": next_node_id,
         },
-        "topology_references": [
-            {
-                "reference_kind": "connectivity_domain",
-                "match": {
-                    "matcher_id": (
-                        GENERATED_PROJECTION_POLICY.topology_segment_matcher_id
-                    ),
-                    "matcher_contract_version": "1.0",
-                    "arguments": {
-                        "segment_key": {
-                            "type": "string",
-                            "value": f"subnet:{segment_id}",
-                        }
-                    },
-                },
-            }
-        ],
+        "topology_references": topology_references,
         "selection_owner": "plugin",
         "selection_policy_id": GENERATED_PROJECTION_POLICY.policy_id,
     }

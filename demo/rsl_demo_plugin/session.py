@@ -38,7 +38,6 @@ from .topology_contract import (
     build_topology_metadata,
     build_topology_profiles,
 )
-
 _Result = TypeVar("_Result")
 
 
@@ -233,16 +232,35 @@ class DemoTopologyProvider:
     def get(self) -> Any:
         with self._lock:
             if self._service is None:
+                # Keep the optional topology-capability implementation out of
+                # the primary parser's import-time executable identity.  The
+                # provider has its own strict module target and is attested
+                # when this request-owned topology service is constructed.
+                from .typed_topology import (
+                    build_demo_topology_federation,
+                    build_demo_topology_projection_state_provider,
+                )
+
                 dataset = self._data_source.load_dataset(
                     self._revision_store.default_revision_id
                 )
                 contract = build_topology_contract(self._revision_store)
+                topology_federation = build_demo_topology_federation(
+                    contract,
+                )
                 self._service = MultiNodeTopologyService(
                     contract=contract,
                     topology_profiles=build_topology_profiles(contract),
                     topology_metadata=build_topology_metadata(
                         dataset,
                         self._revision_store,
+                    ),
+                    topology_federation=topology_federation,
+                    topology_projection_state_provider=(
+                        build_demo_topology_projection_state_provider(
+                            contract,
+                            self._revision_store,
+                        )
                     ),
                 )
             return self._service

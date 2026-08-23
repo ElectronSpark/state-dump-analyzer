@@ -18,7 +18,11 @@ from .capability_router import (
     CapabilityProviderRegistry,
     CapabilityRouteStaleError,
 )
-from .ingestion_pipeline import PluginRegistry, RegisteredPlugin
+from .ingestion_pipeline import (
+    PluginRegistry,
+    RegisteredPlugin,
+    _require_no_inline_only_plugin_compatibility,
+)
 from .plugin_composition import PluginCompositionPolicy
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 
@@ -117,10 +121,29 @@ class PluginCompositionDeployment:
         if type(self.deployment_digest) is not str:
             raise TypeError("deployment_digest must be an exact string")
 
-        primary_records = self.primary_registry.records()
-        provider_records = self.capability_providers.records()
+        authority_primary_registry = self.primary_registry._sealed_snapshot()
+        authority_capability_providers = (
+            self.capability_providers._sealed_snapshot()
+        )
+        object.__setattr__(
+            self,
+            "primary_registry",
+            authority_primary_registry,
+        )
+        object.__setattr__(
+            self,
+            "capability_providers",
+            authority_capability_providers,
+        )
+
+        primary_records = authority_primary_registry.records()
+        provider_records = authority_capability_providers.records()
         if not primary_records:
             raise ValueError("deployment requires at least one primary plug-in")
+        _require_no_inline_only_plugin_compatibility(
+            (*primary_records, *provider_records),
+            boundary="plug-in composition deployment requires PROCESS-capable plug-ins",
+        )
 
         primary_by_coordinate: dict[tuple[str, str], RegisteredPlugin] = {}
         for primary in primary_records:
@@ -130,7 +153,7 @@ class PluginCompositionDeployment:
                 raise ValueError("primary execution coordinates must be unique")
             primary_by_coordinate[coordinate] = primary
             try:
-                provider = self.capability_providers.get_by_execution_identity(
+                provider = authority_capability_providers.get_by_execution_identity(
                     *coordinate
                 )
             except PROCESS_CONTROL_EXCEPTIONS:
@@ -157,7 +180,7 @@ class PluginCompositionDeployment:
             used_primary_coordinates.add(primary_coordinate)
             for selection in rule.auxiliaries:
                 try:
-                    self.capability_providers.get_by_execution_identity(
+                    authority_capability_providers.get_by_execution_identity(
                         selection.instance_id,
                         selection.registered_execution_identity,
                     )
@@ -212,8 +235,8 @@ def _detached_context(
 def _validated_deployment(value: object) -> PluginCompositionDeployment:
     if type(value) is not PluginCompositionDeployment:
         raise TypeError("deployment target must return PluginCompositionDeployment")
-    # Reconstruct the immutable shell while deliberately retaining the exact
-    # executable registry objects supplied by the trusted deployment.
+    # Reconstruct the immutable shell. Its constructor takes fresh sealed
+    # registry snapshots while retaining the exact registered plug-in records.
     return PluginCompositionDeployment(
         primary_registry=value.primary_registry,
         capability_providers=value.capability_providers,

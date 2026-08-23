@@ -293,7 +293,9 @@ form. Those two families and the single trusted
 `--plugin-deployment-module PACKAGE:ATTRIBUTE` descriptor are mutually
 exclusive. A descriptor returns an exact `PluginCompositionDeployment` (or is
 a factory called once with the canonical state directory) and binds primary
-registry, provider directory, policy, and deployment digest together. The server requires exactly one
+registry, provider directory, policy, and deployment digest together. The
+descriptor holds sealed exact registry snapshots; later mutation of the
+factory's caller-owned registries cannot alter its digest or authority. The server requires exactly one
 identity mode; `--trust-control-plane-headers` replaces the resolver only on a
 loopback bind. `--grant-instance-operator` is valid only with that trusted
 mode and the same loopback restriction. The module resolver is synchronous and returns a verified
@@ -1682,6 +1684,19 @@ registries share that fail-closed default. A compatibility-only local/test
 embedding must explicitly enable `allow_manifest_identity=True`; durable
 commands and control planes reject that manifest-only registry.
 
+When that opt-in registry can derive and revalidate package bytes but cannot
+attest a stateful subprocess target, the registration is retained only for
+explicitly trusted inline capability use. Its opaque
+`registered_execution_identity` binds the `inline_only` restriction; the
+candidate wire schema gains no compatibility field. Process workers and every
+durable boundary reject the registration. Strict registries and explicit
+loader-supplied package identities do not downgrade to this mode.
+Durable pipeline construction takes sealed exact snapshots of its primary and
+provider registries. Subsequent `register()`/`add_registered()` calls on the
+caller-owned containers remain local and cannot change candidate selection or
+published execution authority. Plan-bound capability routing also rejects an
+`inline_only` record even when a trusted local provider directory retains it.
+
 The durable servers and headless command execute both probe and ingestion in
 fresh `spawn` child processes. The default child deadline is 300 seconds; the
 headless command further caps it to the requested per-import `--timeout`.
@@ -1726,7 +1741,20 @@ must declare explicit process module targets. A non-default programmatic
 `plugin_process_module_target` (not a constructor), and configured custom
 coordinator/decoder state requires its corresponding explicit target. Process
 pipeline construction validates those descriptors; installed and direct-module
-loaders already supply their plug-in target. This child boundary is killable
+loaders already supply their plug-in target. A loader MAY replace only the
+plug-in's process coordinate when the exported live instance's exact concrete
+class declares an immutable `PluginProcessBootstrapDescriptor` under the exact
+class attribute `plugin_process_bootstrap`. The declaration is not inherited or
+read through a descriptor. Its normalized target must resolve either to that
+live instance or, with `construct_class=True`, to its exact no-argument concrete
+class. The latter lets an application-facing live instance carry a parent-only
+`runtime` adapter while the stateless parser is reconstructed without that
+adapter in the child. It does not carry configuration and does not relax the
+non-default-configuration rule. The artifact coordinate remains the selected
+entry point/module instance; the distinct class constructor is recorded and
+attested only as process-bootstrap identity.
+
+This child boundary is killable
 fault isolation, not a security sandbox: it does not remove the plug-in's
 host-user filesystem, network, environment, or operating-system privileges.
 Ingestion returns only bounded JSON metadata through IPC; the parent verifies
@@ -2580,6 +2608,164 @@ the selected federation/linker plug-in and returned with provenance/evidence.
 Missing clocks, revisions, plug-ins, watermarks, or candidates remain scoped
 partial results with reason codes.
 
+The typed `ConnectorClaim` supplies `link_type` (default `connector`) and
+`presentation: InterNodeLinkPresentation` (default `route_trace: include`).
+For an otherwise exact two-claim match, disagreement in either normalized
+field produces `conflict`; link-type conflicts use `link_type: unknown`, sorted
+`claimed_link_types`, and `plugin_link_type_mismatch`, while route-trace-role
+conflicts use the core-only `conflict` role and
+`plugin_route_trace_role_mismatch`. `unresolved` results have no candidates,
+`matched` has exactly one, `ambiguous` at least two, and `conflict` at least
+one.
+
+Federation linker registration and execution are trusted, synchronous inline
+calls. The API intentionally has no in-process federation timeout setting or
+timeout result; deployments needing a killable deadline must supervise the
+linker in a separate process.
+
+The executable v1 response makes typed-claim coverage explicit alongside the
+legacy segment view:
+
+```json
+{
+  "counts": {
+    "typed_connector_claims": 6,
+    "unresolved_typed_connector_claims": 0
+  },
+  "completeness": {
+    "typed_federation_complete": true,
+    "typed_federation_truncated": false,
+    "inactive_typed_connector_claims": 0,
+    "unresolved_typed_connector_claims": []
+  }
+}
+```
+
+Every typed `connector_resolutions[]` item identifies the policy and claim
+contract, reports per-state counts, execution provenance
+(`core_exact_token` or `linker_plugin`), linker identity when applicable, and
+independent `complete`/`truncated` flags. This array is the bounded audit of all
+matched, unresolved, ambiguous, and conflicting outcomes. Only complete,
+non-truncated matched outcomes with complete qualified endpoints are promoted
+to authoritative typed `inter_node_links[]`; incomplete or non-matched audit
+results MUST NOT be rendered as graph edges. Those graph links carry global
+endpoints, operational quality, match-policy identity, and an
+`inference.owner` of `core_exact_matcher` or `federation_linker_plugin`. An
+unresolved claim is a complete resolution when
+the selected query intentionally contains no compatible remote member; it is
+listed under `unresolved_typed_connector_claims` but does not by itself make
+the execution partial. Truncation or provider failure does.
+
+Typed record and claim validity uses half-open intervals over the selected
+world's resolved uncertainty bounds. The projection selection
+`basis_time_ns` must equal `WorldBasis.requested_time_ns`. A bounded claim is
+authoritative only when `valid_from_ns <= resolved_at_min_ns` and
+`resolved_at_max_ns < valid_to_ns`, with either validity bound optional. A
+wholly disjoint claim is inactive; a validity boundary crossing the resolved
+interval, or a bounded claim with no resolved member basis, is omitted and
+reported through unknown-basis counts and incomplete coverage. Inactive
+claims, including duplicates, consume the claim input budget before filtering.
+The typed node result returns
+`topology_endpoints[]` as well as resources and local links. Its resource page
+reports exact `returned_count` and `truncated`; `total_count` is `null` when the
+provider record stream is incomplete and otherwise is the exact eligible
+total.
+
+Frozen catalog, member, revision, plug-in, projection, and perspective
+coordinates retain exact string types; the API does not stringify values or
+substitute another revision. Endpoint status is scoped by those coordinates,
+so multiple projections or perspectives cannot overwrite one another. Claim,
+result, and candidate properties, evidence, provenance, and quality remain in
+the bounded audit payload, including every grouped result that made a match
+ambiguous. Same-member fanout is therefore visible and input-order invariant.
+For strict route-boundary completion, a typed link is usable evidence only when
+`resolution` is `matched`, `federation_complete` is true, and
+`federation_truncated` is false, and `presentation.route_trace` is `include`.
+An `overlay` link remains presentation-only. A directed link additionally
+requires the route boundary's ordered source and target to match the exact
+member, revision, plug-in instance, projection, perspective, and typed resource
+identity exposed by `endpoint_a`/`source` and `endpoint_b`/`target`; the reverse
+order remains unresolved. An undirected link accepts either exact order.
+Malformed, inconsistent, or partially qualified typed endpoints fail closed.
+All other typed states remain unresolved or best-effort incomplete.
+
+A matched typed identity does not turn unknown operational status into an
+observed route. With `operational_status: "unknown"`, `strict` mode emits an
+inactive unresolved boundary with `observed: false` and reason
+`typed_boundary_operational_status_unknown`. `best_effort` mode may retain the
+selected branch as provisional `best_effort_inferred` reachability, but keeps
+`observed: false`, reduces confidence, and attaches that reason plus explicit
+core-inference provenance. `usable` and `unusable` remain complete observed
+states; an unusable boundary is inactive.
+
+A generated next-hop declaration selects this path with one
+`typed_inter_node_link` entry (other reference kinds may coexist):
+
+```json
+{
+  "topology_references": [
+    {
+      "reference_kind": "typed_inter_node_link",
+      "source_endpoint": {
+        "node_id": "node-a",
+        "resource_id": "interface/a",
+        "typed_resource_key": {
+          "namespace": "example",
+          "node": "node-a",
+          "layer": "underlay",
+          "kind": "INTERFACE",
+          "parts": [
+            {"name": "name", "value": {"type": "string", "value": "a"}}
+          ]
+        }
+      },
+      "target_endpoint": {
+        "node_id": "node-b",
+        "resource_id": "interface/b",
+        "typed_resource_key": {
+          "namespace": "example",
+          "node": "node-b",
+          "layer": "underlay",
+          "kind": "INTERFACE",
+          "parts": [
+            {"name": "name", "value": {"type": "string", "value": "b"}}
+          ]
+        }
+      }
+    }
+  ]
+}
+```
+
+The reference is exact and ordered, but deliberately uses only coordinates the
+forwarding plug-in can declare: endpoint node, its current local next-hop
+resource ID, and its typed `ResourceKey`. It contains no core-generated link
+ID and no member/revision/provider qualification. Core binds the two keys to
+the frozen topology endpoints and selects exactly one candidate only through
+the resulting fully qualified endpoint equality. If the typed reference is
+present but malformed, missing, multiply matched, reversed for a directed
+link, overlay-only, incomplete, or truncated, the boundary remains unresolved
+even when a legacy connectivity-domain reference also appears in the
+declaration. When no typed reference is present, the existing exact
+domain/attachment join and legacy unordered local-resource link matching
+remain compatible. A typed boundary additionally requires the response-level
+`completeness.typed_federation_complete` to be exactly `true` and
+both `completeness.typed_federation_truncated` and
+`completeness.inter_node_links_truncated` to be exactly `false`; an
+individually complete link cannot make globally partial evidence or a partial
+link page authoritative. A missing link-page truncation flag also fails
+closed. Overall/node resource-preview pagination remains independent: a
+partial record preview does not invalidate a complete typed claim/link page.
+A resolved boundary copies the link's validated `inference.owner`
+(`core_exact_matcher` or `federation_linker_plugin`) into
+`graph_presentation.semantic_owner`. Core-exact boundaries use
+`text_source: "core_exact_join_summary"`; linker-owned boundaries use
+`text_source: "federation_linker_resolution_summary"` and describe the
+allowlisted linker result while limiting core's role to exact endpoint
+validation. `semantic_ownership.boundary_resolution` is computed from complete
+rendered boundaries and is one of `core_exact_matcher`,
+`federation_linker_plugin`, `node_topology_plugin`, `mixed`, or `none`.
+
 #### Shared-medium segment projection
 
 A local plug-in represents a subnet or other multi-access medium with the
@@ -2884,6 +3070,12 @@ Coordinators validate hook output with
 `validate_forwarding_step_result(request, result)`. This checks the exact step
 and packet-before state and couples a selected user steering rule to its
 forced-rule provenance and declared candidate/packet/disposition overrides.
+The capability executor retains a detached authority snapshot and passes a
+separate request copy to the plug-in. Packet state, resource keys, lookup
+context, and steering rules are deeply detached; changing the hook copy cannot
+rewrite the step/member or fabricate user steering that was absent from the
+authorized request. Projection output is likewise checked against a retained
+IR/perspective/budget snapshot rather than the plug-in-visible request object.
 
 Packet size and MTU fields are comparable only when their complete
 `basis_contract_id` values match exactly. The generic MTU result is
@@ -3292,10 +3484,12 @@ canonical local lookup/packet context, endpoint attachment declarations, and
 local terminal/delivery classification. The core owns temporal/context
 resolution, immutable flow direction, exact endpoint and constraint
 evaluation, budgets, branch expansion, exact canonical-state cycle detection,
-stable ordering, coverage, comparison, and navigation. The federation linker
-owns inter-node boundary and endpoint-attachment matches and their candidate
-evidence; it does not reinterpret a node plug-in's split-horizon or local
-delivery decision.
+stable ordering, coverage, comparison, and navigation. Core owns only
+type-preserving equality for an explicitly declared exact-token boundary. An
+allowlisted federation linker owns semantic inter-node boundary and
+endpoint-attachment matching for an explicitly declared linker policy and
+returns its candidate evidence; neither path reinterprets a node plug-in's
+split-horizon or local delivery decision.
 
 For a generated immutable projection, the version-2 evidence shape is more
 specific than the normalized response above. Each coverage case declares

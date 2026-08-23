@@ -868,7 +868,12 @@ _OPAQUE_ID_PATTERN = re.compile(r"^[^\s\x00-\x1f\x7f]+$")
 
 
 def _validate_dashboard_id(value: str, label: str) -> None:
-    if not value or len(value) > 128 or _DASHBOARD_ID_PATTERN.fullmatch(value) is None:
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > 128
+        or _DASHBOARD_ID_PATTERN.fullmatch(value) is None
+    ):
         raise ValueError(
             f"{label} must be a lowercase dotted, dashed, or underscored identifier"
         )
@@ -876,7 +881,8 @@ def _validate_dashboard_id(value: str, label: str) -> None:
 
 def _validate_dashboard_field(value: str, label: str) -> None:
     if (
-        not value
+        type(value) is not str
+        or not value
         or len(value) > 256
         or _DASHBOARD_FIELD_PATTERN.fullmatch(value) is None
     ):
@@ -887,7 +893,7 @@ def _validate_opaque_id(value: str, label: str) -> None:
     """Validate only transport safety and bounds; callers must not parse the ID."""
 
     if (
-        not isinstance(value, str)
+        type(value) is not str
         or not value
         or len(value) > 256
         or _OPAQUE_ID_PATTERN.fullmatch(value) is None
@@ -1532,6 +1538,7 @@ class PluginSchema:
     record_lane_presets: tuple[RecordLanePreset, ...] = ()
     status_perspectives: tuple[StatusPerspectiveDescriptor, ...] = ()
     topology_projections: tuple[TopologyProjectionDescriptor, ...] = ()
+    connector_match_policies: tuple[ConnectorMatchPolicyDescriptor, ...] = ()
 
     def __post_init__(self) -> None:
         resource_kind_ids = [descriptor.kind for descriptor in self.resource_kinds]
@@ -1651,6 +1658,21 @@ class PluginSchema:
             raise ValueError(
                 "plugin topology projections reference unknown status perspectives: "
                 + ", ".join(sorted(unknown))
+            )
+        if type(self.connector_match_policies) is not tuple or any(
+            type(descriptor) is not ConnectorMatchPolicyDescriptor
+            for descriptor in self.connector_match_policies
+        ):
+            raise ValueError(
+                "plugin connector match policies must be an immutable tuple of "
+                "ConnectorMatchPolicyDescriptor values"
+            )
+        match_policy_ids = [
+            descriptor.policy_id for descriptor in self.connector_match_policies
+        ]
+        if len(match_policy_ids) != len(set(match_policy_ids)):
+            raise ValueError(
+                "plugin connector match policy identifiers must be unique"
             )
 
 
@@ -2752,6 +2774,7 @@ class TopologyProjectionRequest:
     max_records: int = 10_000
     max_world_reads: int = 50_000
     seed_resources: tuple[ResourceKey, ...] = ()
+    max_claims: int = 10_000
 
     def __post_init__(self) -> None:
         _validate_dashboard_id(self.projection_id, "topology projection request ID")
@@ -2774,6 +2797,14 @@ class TopologyProjectionRequest:
             maximum=1_000_000,
             exact=False,
             message="topology max_world_reads must be between 1 and 1000000",
+        )
+        strict_integer(
+            self.max_claims,
+            "topology max_claims",
+            minimum=1,
+            maximum=100_000,
+            exact=False,
+            message="topology max_claims must be between 1 and 100000",
         )
         if len(self.seed_resources) != len(set(self.seed_resources)):
             raise ValueError("topology seed resources must be unique")
@@ -2847,8 +2878,15 @@ class TopologyResourceRecord:
     )
 
     def __post_init__(self) -> None:
-        if self.role is not None and (not self.role or len(self.role) > 128):
-            raise ValueError("topology resource role must contain 1 to 128 characters")
+        if self.role is not None:
+            bounded_string(
+                self.role,
+                "topology resource role",
+                maximum=128,
+                message=(
+                    "topology resource role must contain 1 to 128 characters"
+                ),
+            )
         if not isinstance(self.presentation, TopologyResourcePresentation):
             raise ValueError(
                 "topology resource presentation must be TopologyResourcePresentation"
@@ -2862,10 +2900,21 @@ class TopologyEndpointRecord:
     role: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.endpoint_id or len(self.endpoint_id) > 256:
-            raise ValueError("topology endpoint_id must contain 1 to 256 characters")
-        if self.role is not None and (not self.role or len(self.role) > 128):
-            raise ValueError("topology endpoint role must contain 1 to 128 characters")
+        bounded_string(
+            self.endpoint_id,
+            "topology endpoint_id",
+            maximum=256,
+            message="topology endpoint_id must contain 1 to 256 characters",
+        )
+        if self.role is not None:
+            bounded_string(
+                self.role,
+                "topology endpoint role",
+                maximum=128,
+                message=(
+                    "topology endpoint role must contain 1 to 128 characters"
+                ),
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2878,8 +2927,12 @@ class TopologyLinkRecord:
     directed: bool = False
 
     def __post_init__(self) -> None:
-        if not self.link_id or len(self.link_id) > 256:
-            raise ValueError("topology link_id must contain 1 to 256 characters")
+        bounded_string(
+            self.link_id,
+            "topology link_id",
+            maximum=256,
+            message="topology link_id must contain 1 to 256 characters",
+        )
         if not isinstance(self.directed, bool):
             raise ValueError("topology link directed must be a boolean")
 
@@ -3023,6 +3076,10 @@ class ConnectorClaim:
     valid_from_ns: int | None = None
     valid_to_ns: int | None = None
     evidence: tuple[Evidence, ...] = ()
+    link_type: str = "connector"
+    presentation: InterNodeLinkPresentation = field(
+        default_factory=InterNodeLinkPresentation
+    )
 
     def __post_init__(self) -> None:
         _validate_opaque_id(self.claim_id, "connector claim_id")
@@ -3076,6 +3133,12 @@ class ConnectorClaim:
             "connector claim quality",
             message="unsupported connector claim quality",
         )
+        _validate_dashboard_id(self.link_type, "connector claim link_type")
+        if not isinstance(self.presentation, InterNodeLinkPresentation):
+            raise ValueError(
+                "connector claim presentation must be an "
+                "InterNodeLinkPresentation"
+            )
         if self.status_perspective is not None and not isinstance(
             self.status_perspective,
             StatusPerspectiveRef,
@@ -3114,6 +3177,11 @@ class ConnectorClaim:
             bounds_message=("connector claims support at most 64 evidence items"),
             item_message=("connector claim evidence must contain Evidence values"),
         )
+
+
+type TopologyProjectionOutput = (
+    TopologyProjectionRecord | ConnectorClaim | PluginDiagnostic
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3252,6 +3320,10 @@ class FederationLinkResult:
         if state is FederationMatchState.CONFLICT and not self.candidates:
             raise ValueError(
                 "conflicting federation results require at least one candidate"
+            )
+        if state is FederationMatchState.UNRESOLVED and self.candidates:
+            raise ValueError(
+                "unresolved federation results must not contain candidates"
             )
         coerce_enum(
             Provenance,
@@ -5263,7 +5335,7 @@ class AnalyzerPluginBase:
         self,
         request: TopologyProjectionRequest,
         world: ReadOnlyWorld,
-    ) -> Iterable[TopologyProjectionRecord | PluginDiagnostic]:
+    ) -> Iterable[TopologyProjectionOutput]:
         self._require_capability_override(
             PluginCapability.TOPOLOGY_PROJECTION,
             "project_topology",
@@ -5362,7 +5434,7 @@ class AnalyzerPlugin(Protocol):
         self,
         request: TopologyProjectionRequest,
         world: ReadOnlyWorld,
-    ) -> Iterable[TopologyProjectionRecord | PluginDiagnostic]: ...
+    ) -> Iterable[TopologyProjectionOutput]: ...
 
     def project_forwarding(
         self,

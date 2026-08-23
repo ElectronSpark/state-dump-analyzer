@@ -887,6 +887,12 @@ immutable artifact digest. Registry-derived identities are recalculated immediat
 before plug-in execution. The manifest-only
 compatibility fallback is available only to an explicitly opted-out local/test
 embedding (`allow_manifest_identity=True`) and cannot back durable execution.
+If package bytes can still be derived but a stateful process target cannot be
+attested, that non-strict registry records the exact package identity as
+`inline_only`: trusted inline capability use remains available with package
+revalidation, while process workers and durable publication reject the
+registration. Explicit loader-supplied hashes and strict registries never take
+this fallback.
 The durable servers and `router-dump-ingest` run plug-in probe and parsing in
 spawned child processes with a bounded deadline (300 seconds by default).
 Timeouts are killed and reaped, become durable import failures, and never
@@ -897,7 +903,12 @@ decoders, providers, or bound methods. Configured/stateful components use
 explicit process module targets. A non-default programmatic configuration
 digest requires an explicit module-instance plug-in target, with corresponding
 targets for asserted custom coordinator/decoder state; installed/direct-module
-loaders provide their target automatically. The child must reproduce the frozen
+loaders provide their target automatically. A live entry-point instance that
+adds only parent-side runtime integration may declare an exact immutable
+`PluginProcessBootstrapDescriptor` on its concrete class, naming the same live
+instance or its exact no-argument class as the separately attested child target.
+The declaration carries no configuration and does not relax the configured
+state rule. The child must reproduce the frozen
 execution identity. That identity includes every non-recursive loader target,
 each target's source-backed module/package and Python-code identity, loader
 mode, package-verification choice, and frozen ingestion/artifact limit used by
@@ -1044,12 +1055,18 @@ To refresh an intentional API change, run
 repeat the two checks above. Plug-in authors can type-check their own package
 against the installed core with the same Python 3.12 strict-mypy settings.
 
+The typed cross-node topology surface is exported the same way. The public
+core facade includes the frozen federation executor and coordinator models;
+plug-in-owned claim, match-policy, and linker protocols remain in
+`router_dump_analyzer.plugin_api`.
+
 ### Run the checks
 
 With `router-dump-analyzer-demo` activated:
 
 ```powershell
 python -m pip install -e .\state-dump-generator
+python scripts/run_topology_federation_gate.py
 python -m ruff check --select E9,F63,F7,F82 src demo state-dump-generator/src tests demo/tests state-dump-generator/tests
 python -m mypy --python-version 3.12 --ignore-missing-imports --check-untyped-defs src/router_dump_analyzer/canonical.py src/router_dump_analyzer/route_trace_core.py src/router_dump_analyzer/topology_core.py
 python -m unittest discover -s tests -v
@@ -1057,6 +1074,36 @@ python -m unittest discover -s demo/tests -v
 python -m unittest discover -s state-dump-generator/tests -v
 npm --prefix frontend run check
 ```
+
+`run_topology_federation_gate.py` is the short executable pass gate for the
+complete connector-claim path. It must end with
+`PASS: typed topology federation gate`. Its nine fail-fast phases prove:
+
+1. the declared plug-in contract, maintained author-document consistency,
+   exact validation, detached outputs and authority-bearing requests,
+   steering-intent isolation, and independent record/claim budgets;
+2. immutable heterogeneous provider routing, exact-token and allowlisted-linker
+   federation, interval-bound temporal and ambiguity handling, and directed,
+   presentation-safe route matching;
+3. the browser-facing generated topology API, including incomplete and
+   single-member claim coverage;
+4. generated typed route HTTP integration, including full-window temporal
+   filtering, strict and best-effort unknown-status behavior, exact/linker
+   ownership, and every incomplete or truncated fail-closed path;
+5. local-only identity compatibility without PROCESS, durable, or composition
+   authority, plus the real demo's live-runtime/PROCESS-safe class-bootstrap
+   split;
+6. checked-in `.pyi` drift detection;
+7. runtime/stub structural parity, including generated dataclass constructors;
+8. strict type checking of downstream public-API consumers; and
+9. executable frontend manifest, syntax, and JavaScript behavior tests.
+
+Every phase runs in a fresh bytecode-cache directory with a 300-second
+wall-clock timeout. Timeout cleanup terminates that phase's process tree, so a
+failed check does not leave test workers behind. A missing Node/npm runtime,
+timeout, non-zero phase, stale stub, typing error, or frontend contract failure
+is a failed gate. The complete core, demo, generator, and frontend suites
+listed above remain the release gate.
 
 The frontend check requires Node.js 18 or newer but installs no packages. CI
 runs the same gates on Windows and Linux with Python 3.12 and Node 22. A second
