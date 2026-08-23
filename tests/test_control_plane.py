@@ -9,6 +9,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -19,7 +20,11 @@ from router_dump_analyzer.annotation_store import (
     ReviewSubject,
     ReviewSubjectKind,
 )
-from router_dump_analyzer.capability_router import RevisionSetCapabilityKey
+from router_dump_analyzer.capability_router import (
+    CapabilityProviderRegistry,
+    CapabilityRouteSelector,
+    RevisionSetCapabilityKey,
+)
 from router_dump_analyzer.control_plane import (
     ControlPlane,
     ControlPlaneError,
@@ -41,6 +46,7 @@ from router_dump_analyzer.ingestion_pipeline import (
     _windows_path_units,
 )
 from router_dump_analyzer.plugin_api import (
+    CorrelationWindow,
     DomainEvent,
     Evidence,
     InputParserKind,
@@ -53,6 +59,15 @@ from router_dump_analyzer.plugin_api import (
     SourceRecordEmission,
     SourceRecordRef,
     derive_event_uid,
+)
+from router_dump_analyzer.plugin_composition import PluginCompositionPolicy
+from router_dump_analyzer.plugin_composition_deployment import (
+    PluginCompositionDeployment,
+    PluginCompositionDeploymentContext,
+    load_plugin_composition_deployment,
+)
+from router_dump_analyzer.plugin_execution_plan import (
+    PluginExecutionPlanAuthority,
 )
 from router_dump_analyzer.private_analysis_promotion import (
     ProposalReviewRetentionReferences,
@@ -167,7 +182,192 @@ class _EventPlugin(ParseOnlyPlugin):
             )
 
 
+class _RoutableEventPlugin(_EventPlugin):
+    manifest = replace(
+        _EventPlugin.manifest,
+        plugin_id="tests.control-plane-trusted-inline",
+        capabilities=frozenset(
+            {
+                PluginCapability.TEXT_TRACE_PARSE,
+                PluginCapability.CORRELATION,
+            }
+        ),
+    )
+
+    def correlate(self, reader: Any, window: Any) -> tuple[()]:
+        del reader, window
+        return ()
+
+
 class ControlPlaneTests(unittest.TestCase):
+    def test_trusted_inline_control_plane_is_explicit_atomic_and_keeps_publisher_process(
+        self,
+    ) -> None:
+        registry = PluginRegistry(allow_manifest_identity=True)
+        registry.register(
+            _EventPlugin(),
+            package_hash="manifest-sha256:" + "c" * 64,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            strict_root = Path(directory) / "strict"
+            with self.assertRaisesRegex(ValueError, "executable plug-in identities"):
+                ControlPlane(strict_root, registry=registry)
+            self.assertFalse(strict_root.exists())
+
+            incompatible_root = Path(directory) / "incompatible"
+            with self.assertRaisesRegex(ValueError, "plugin_execution_mode='inline'"):
+                ControlPlane(
+                    incompatible_root,
+                    registry=registry,
+                    pipeline_limits=PipelineLimits(
+                        plugin_execution_mode=PluginExecutionMode.PROCESS,
+                    ),
+                    allow_inline_only=True,
+                )
+            self.assertFalse(incompatible_root.exists())
+
+            trusted_root = Path(directory) / "trusted"
+            control = ControlPlane(
+                trusted_root,
+                registry=registry,
+                allow_inline_only=True,
+            )
+            try:
+                self.assertTrue(control.allow_inline_only)
+                self.assertTrue(control.requires_inline_execution)
+                self.assertIs(
+                    control.ingestion.limits.plugin_execution_mode,
+                    PluginExecutionMode.INLINE,
+                )
+                self.assertIs(
+                    control.ingestion.limits.effective_publisher_execution_mode,
+                    PluginExecutionMode.PROCESS,
+                )
+            finally:
+                control.close()
+
+            invalid_root = Path(directory) / "invalid"
+            with self.assertRaisesRegex(TypeError, "exact boolean"):
+                ControlPlane(
+                    invalid_root,
+                    registry=registry,
+                    allow_inline_only=1,  # type: ignore[arg-type]
+                )
+            self.assertFalse(invalid_root.exists())
+
+    def test_loaded_manifest_inline_deployment_survives_restart_and_routes_capabilities(
+        self,
+    ) -> None:
+        registry = PluginRegistry(allow_manifest_identity=True)
+        registered = registry.register(
+            _RoutableEventPlugin(),
+            package_hash="manifest-sha256:" + "d" * 64,
+            instance_id="trusted-inline-primary",
+        )
+        deployment = PluginCompositionDeployment(
+            registry,
+            CapabilityProviderRegistry.from_primary_registry(registry),
+            PluginCompositionPolicy(),
+            allow_inline_only=True,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "control"
+            contexts: list[PluginCompositionDeploymentContext] = []
+
+            def factory(
+                context: PluginCompositionDeploymentContext,
+            ) -> PluginCompositionDeployment:
+                contexts.append(context)
+                return deployment
+
+            module = SimpleNamespace(create_deployment=factory)
+            with patch(
+                "router_dump_analyzer.plugin_composition_deployment."
+                "importlib.import_module",
+                return_value=module,
+            ):
+                loaded = load_plugin_composition_deployment(
+                    "tests.trusted_inline_deployment:create_deployment",
+                    context=PluginCompositionDeploymentContext(root),
+                )
+
+            self.assertEqual(len(contexts), 1)
+            self.assertEqual(contexts[0].state_dir, root.resolve())
+            control = ControlPlane(
+                root,
+                registry=loaded.primary_registry,
+                plugin_composition_policy=loaded.policy,
+                capability_providers=loaded.capability_providers,
+                allow_inline_only=loaded.allow_inline_only,
+                pipeline_limits=PipelineLimits(
+                    max_upload_bytes=1024 * 1024,
+                    max_workers=1,
+                    lease_seconds=30,
+                    poll_interval_seconds=0.01,
+                    plugin_execution_mode=PluginExecutionMode.INLINE,
+                ),
+            )
+            try:
+                self.assertIs(
+                    control.ingestion.limits.effective_publisher_execution_mode,
+                    PluginExecutionMode.PROCESS,
+                )
+                control.sessions.create_project(
+                    "tenant-a",
+                    "Project A",
+                    project_id="project-a",
+                )
+                control.sessions.create_workspace(
+                    "tenant-a",
+                    "project-a",
+                    "Workspace A",
+                    workspace_id="workspace-a",
+                )
+                completed = self._ingest(control)
+                revision_id = completed.revision_id
+                revision = control.sessions.get_revision("tenant-a", revision_id)
+                assert revision.execution_plan is not None
+                self.assertIs(
+                    revision.execution_plan.execution_plan_authority,
+                    PluginExecutionPlanAuthority.TRUSTED_INLINE_MANIFEST,
+                )
+            finally:
+                control.close()
+
+            reopened = ControlPlane(
+                root,
+                registry=loaded.primary_registry,
+                plugin_composition_policy=loaded.policy,
+                capability_providers=loaded.capability_providers,
+                allow_inline_only=loaded.allow_inline_only,
+                pipeline_limits=PipelineLimits(
+                    max_upload_bytes=1024 * 1024,
+                    max_workers=1,
+                    lease_seconds=30,
+                    poll_interval_seconds=0.01,
+                    plugin_execution_mode=PluginExecutionMode.INLINE,
+                ),
+            )
+            try:
+                scope = reopened.scope("tenant-a", "project-a", "workspace-a")
+                router = reopened.capability_router_for_revision(scope, revision_id)
+                route = router.resolve(
+                    CapabilityRouteSelector(PluginCapability.CORRELATION)
+                )
+                self.assertEqual(route.provider.pin.instance_id, registered.instance_id)
+                invocation = route.correlate(
+                    object(),  # type: ignore[arg-type]
+                    CorrelationWindow(None, None, 1),
+                )
+                self.assertEqual(
+                    invocation.provider.pin.instance_id,
+                    registered.instance_id,
+                )
+                self.assertEqual(invocation.result.causal_links, ())
+            finally:
+                reopened.close()
+
     @unittest.skipUnless(os.name == "nt", "exercises the Windows path budget")
     def test_composition_root_rejects_long_state_dir_before_creation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

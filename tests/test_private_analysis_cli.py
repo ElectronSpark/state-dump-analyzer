@@ -272,6 +272,8 @@ class PrivateAnalysisCliTests(unittest.TestCase):
             primary_registry=registry,
             capability_providers=providers,
             policy=policy,
+            allow_inline_only=True,
+            requires_inline_execution=True,
         )
         service = SimpleNamespace(list_runners=lambda _scope: ())
         control_plane = _ControlPlane(service, {})
@@ -306,6 +308,7 @@ class PrivateAnalysisCliTests(unittest.TestCase):
         self.assertIs(control_plane.values["registry"], registry)
         self.assertIs(control_plane.values["capability_providers"], providers)
         self.assertIs(control_plane.values["plugin_composition_policy"], policy)
+        self.assertIs(control_plane.values["allow_inline_only"], True)
 
     def test_list_cursor_is_an_exact_pair_and_versions_are_canonical(self) -> None:
         common = [

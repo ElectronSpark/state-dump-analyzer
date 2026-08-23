@@ -12,10 +12,12 @@ from router_dump_analyzer.plugin_composition import (
 from router_dump_analyzer.plugin_execution_plan import (
     PLUGIN_EXECUTION_PLAN_VERSION,
     PLUGIN_EXECUTION_PLAN_VERSION_V1,
+    PLUGIN_EXECUTION_PLAN_VERSION_V2,
     DecoderIdentity,
     PluginArtifactIdentity,
     PluginExecutionPin,
     PluginExecutionPlan,
+    PluginExecutionPlanAuthority,
     RevisionExecutionPlanRef,
     plugin_execution_pin_uses_legacy_identity,
     plugin_execution_plan_dict,
@@ -84,6 +86,7 @@ class PluginExecutionPlanTests(unittest.TestCase):
             document["composition_policy_digest"],
             DEFAULT_PLUGIN_COMPOSITION_POLICY_DIGEST,
         )
+        self.assertEqual(document["execution_plan_authority"], "process")
         self.assertEqual(plugin_execution_plan_from_dict(document), plan)
         self.assertEqual(plugin_execution_plan_dict(plan), document)
 
@@ -118,7 +121,21 @@ class PluginExecutionPlanTests(unittest.TestCase):
             parsed.composition_policy_digest,
             "sha256:" + "0" * 64,
         )
-        with self.assertRaisesRegex(ValueError, "v2.*require"):
+        v2 = PluginExecutionPlan(
+            node_id="router-a",
+            basis_revision_id="upload-sha256-abc",
+            plugins=(_pin(),),
+            contract_version=PLUGIN_EXECUTION_PLAN_VERSION_V2,
+        )
+        v2_document = plugin_execution_plan_dict(v2)
+        self.assertNotIn("execution_plan_authority", v2_document)
+        self.assertIs(
+            v2.execution_plan_authority,
+            PluginExecutionPlanAuthority.LEGACY_UNRECORDED,
+        )
+        self.assertEqual(plugin_execution_plan_from_dict(v2_document), v2)
+        self.assertTrue(plugin_execution_plan_is_executable(v2))
+        with self.assertRaisesRegex(ValueError, "v3.*require"):
             replace(legacy, contract_version=PLUGIN_EXECUTION_PLAN_VERSION)
         with self.assertRaisesRegex(ValueError, "v1.*cannot carry"):
             PluginExecutionPlan(
@@ -129,10 +146,53 @@ class PluginExecutionPlanTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "v1.*composition policy"):
             replace(legacy, composition_policy_digest=DIGEST_A)
-        with self.assertRaisesRegex(ValueError, "v2.*non-legacy"):
+        with self.assertRaisesRegex(ValueError, "current.*non-legacy"):
             replace(
                 _plan(),
                 composition_policy_digest="sha256:" + "0" * 64,
+                plan_digest="",
+            )
+
+    def test_v3_authority_is_exact_and_matches_artifact_identity_tier(self) -> None:
+        manifest_pin = replace(
+            _pin(),
+            artifact=replace(
+                _pin().artifact,
+                package_hash="manifest-sha256:" + "d" * 64,
+            ),
+        )
+        manifest_plan = PluginExecutionPlan(
+            node_id="router-a",
+            basis_revision_id="basis-a",
+            plugins=(manifest_pin,),
+            execution_plan_authority=(
+                PluginExecutionPlanAuthority.TRUSTED_INLINE_MANIFEST
+            ),
+        )
+        self.assertEqual(
+            plugin_execution_plan_dict(manifest_plan)["execution_plan_authority"],
+            "trusted_inline_manifest",
+        )
+        with self.assertRaisesRegex(ValueError, "contradicts"):
+            replace(
+                manifest_plan,
+                execution_plan_authority=(
+                    PluginExecutionPlanAuthority.TRUSTED_INLINE_ATTESTED
+                ),
+                plan_digest="",
+            )
+        with self.assertRaisesRegex(ValueError, "contradicts"):
+            replace(
+                _plan(),
+                execution_plan_authority=(
+                    PluginExecutionPlanAuthority.TRUSTED_INLINE_MANIFEST
+                ),
+                plan_digest="",
+            )
+        with self.assertRaisesRegex(TypeError, "exact"):
+            replace(
+                _plan(),
+                execution_plan_authority="process",  # type: ignore[arg-type]
                 plan_digest="",
             )
 
@@ -168,6 +228,14 @@ class PluginExecutionPlanTests(unittest.TestCase):
             plan_digest="",
         )
         self.assertNotEqual(policy_changed.plan_digest, base_digest)
+        authority_changed = replace(
+            _plan(first),
+            execution_plan_authority=(
+                PluginExecutionPlanAuthority.TRUSTED_INLINE_ATTESTED
+            ),
+            plan_digest="",
+        )
+        self.assertNotEqual(authority_changed.plan_digest, base_digest)
 
     def test_snapshot_and_root_exports_preserve_policy_identity(self) -> None:
         plan = replace(
@@ -191,6 +259,14 @@ class PluginExecutionPlanTests(unittest.TestCase):
             router_dump_analyzer.PLUGIN_EXECUTION_PLAN_VERSION_V1,
             PLUGIN_EXECUTION_PLAN_VERSION_V1,
         )
+        self.assertEqual(
+            router_dump_analyzer.PLUGIN_EXECUTION_PLAN_VERSION_V2,
+            PLUGIN_EXECUTION_PLAN_VERSION_V2,
+        )
+        self.assertIs(
+            router_dump_analyzer.PluginExecutionPlanAuthority,
+            PluginExecutionPlanAuthority,
+        )
 
     def test_tampering_and_unknown_fields_fail_closed(self) -> None:
         document = plugin_execution_plan_dict(_plan())
@@ -206,6 +282,10 @@ class PluginExecutionPlanTests(unittest.TestCase):
         del missing_policy["composition_policy_digest"]
         with self.assertRaisesRegex(ValueError, "exactly"):
             plugin_execution_plan_from_dict(missing_policy)
+        missing_authority = copy.deepcopy(document)
+        del missing_authority["execution_plan_authority"]
+        with self.assertRaisesRegex(ValueError, "exactly"):
+            plugin_execution_plan_from_dict(missing_authority)
         legacy_with_policy = plugin_execution_plan_dict(
             PluginExecutionPlan(
                 node_id="router-a",

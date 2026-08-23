@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import inspect
 import json
 import multiprocessing
 import os
@@ -56,7 +57,9 @@ from router_dump_analyzer.ingestion_pipeline import (
     RegisteredPlugin,
     RetentionHostInventoryCoverage,
     RetentionPolicy,
+    _dataset_with_execution_plan,
     _execution_plan_for_result,
+    _ingest_registered_plugin,
     _ingest_plugin_child,
     _path_for_containment_comparison,
     _probe_plugin_child,
@@ -84,6 +87,7 @@ from router_dump_analyzer.plugin_composition import (
 from router_dump_analyzer.plugin_execution_plan import (
     DecoderIdentity,
     PluginExecutionPlan,
+    PluginExecutionPlanAuthority,
     plugin_execution_plan_dict,
     plugin_execution_plan_from_dict,
 )
@@ -708,6 +712,16 @@ class _BoundaryChildCoordinator(IngestionCoordinator):
 
 
 class DurableIngestionPipelineTests(unittest.TestCase):
+    def test_execution_authority_parameters_are_structurally_required(self) -> None:
+        for function, parameter_name in (
+            (_ingest_registered_plugin, "execution_mode"),
+            (_execution_plan_for_result, "execution_plan_authority"),
+            (_dataset_with_execution_plan, "execution_plan_authority"),
+        ):
+            with self.subTest(function=function.__name__):
+                parameter = inspect.signature(function).parameters[parameter_name]
+                self.assertIs(parameter.default, inspect.Parameter.empty)
+
     def setUp(self) -> None:
         self.scope = ImportScope("tenant-a", "project-a", "workspace-a")
         self.other_scope = ImportScope(
@@ -1342,6 +1356,10 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             execution_plan = publisher.revisions[0][1]["execution_plan"]
             self.assertIsInstance(execution_plan, PluginExecutionPlan)
             assert isinstance(execution_plan, PluginExecutionPlan)
+            self.assertIs(
+                execution_plan.execution_plan_authority,
+                PluginExecutionPlanAuthority.TRUSTED_INLINE_ATTESTED,
+            )
             self.assertEqual(execution_plan.node_id, "router-a")
             self.assertEqual(
                 execution_plan.basis_revision_id,
@@ -1797,12 +1815,20 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                     ),
                 )
 
-            baseline = _execution_plan_for_result(registered("1", "a"), result)
+            baseline = _execution_plan_for_result(
+                registered("1", "a"),
+                result,
+                execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
+            )
             package_changed = _execution_plan_for_result(
-                registered("2", "a"), result
+                registered("2", "a"),
+                result,
+                execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
             )
             configuration_changed = _execution_plan_for_result(
-                registered("1", "b"), result
+                registered("1", "b"),
+                result,
+                execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
             )
             changed_dataset = dict(result.dataset)
             changed_schema = dict(changed_dataset["schema"])
@@ -1811,6 +1837,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             schema_changed = _execution_plan_for_result(
                 registered("1", "a"),
                 replace(result, dataset=changed_dataset),
+                execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
             )
 
             self.assertEqual(
@@ -2549,8 +2576,16 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             input_path.write_bytes(_fixture_bytes())
             result = IngestionCoordinator().ingest(ParseOnlyPlugin(), input_path)
         self.assertNotEqual(
-            _execution_plan_for_result(diagnostic, result).plan_digest,
-            _execution_plan_for_result(fixed_node, result).plan_digest,
+            _execution_plan_for_result(
+                diagnostic,
+                result,
+                execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
+            ).plan_digest,
+            _execution_plan_for_result(
+                fixed_node,
+                result,
+                execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
+            ).plan_digest,
         )
 
         forged = replace(
@@ -3011,11 +3046,21 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             input_path = Path(directory) / "status.jsonl"
             input_path.write_bytes(_fixture_bytes())
             result = coordinator.ingest(registered.execution_plugin, input_path)
-        self.assertIsNone(_execution_plan_for_result(registered, result).decoder)
+        self.assertIsNone(
+            _execution_plan_for_result(
+                registered,
+                result,
+                execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
+            ).decoder
+        )
         assert coordinator.trace_decoder is not None
         tuple(coordinator.trace_decoder.iter_ctf(None, None))
         self.assertEqual(
-            _execution_plan_for_result(registered, result).decoder,
+            _execution_plan_for_result(
+                registered,
+                result,
+                execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
+            ).decoder,
             decoder_identity,
         )
 
@@ -3276,8 +3321,98 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                         registry=registry,
                         publisher=_Publisher(),
                         limits=limits,
-                    )
+                )
                 self.assertFalse(state_dir.exists())
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+            return_value="package-sha256:" + ("8" * 64),
+        ):
+            state_dir = Path(directory) / "trusted-state"
+            publisher = _Publisher()
+            trusted = DurableIngestionPipeline(
+                state_dir,
+                registry=registry,
+                publisher=publisher,
+                limits=replace(
+                    self._limits(),
+                    publisher_execution_mode=PluginExecutionMode.INLINE,
+                ),
+                allow_inline_only=True,
+            )
+            self.assertTrue(trusted.allow_inline_only)
+            self.assertTrue(trusted.requires_inline_execution)
+            with trusted:
+                admitted = trusted.submit_bytes(
+                    self.scope,
+                    _fixture_bytes(),
+                    original_name="status.jsonl",
+                )
+                completed = trusted.wait(self.scope, admitted.import_id, timeout=10)
+            self.assertEqual(completed.state, ImportState.COMPLETED)
+            plan = publisher.revisions[0][1]["execution_plan"]
+            self.assertIs(
+                plan.execution_plan_authority,
+                PluginExecutionPlanAuthority.TRUSTED_INLINE_ATTESTED,
+            )
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+            return_value="package-sha256:" + ("8" * 64),
+        ):
+            state_dir = Path(directory) / "process-state"
+            with self.assertRaisesRegex(ValueError, "plugin_execution_mode='inline'"):
+                DurableIngestionPipeline(
+                    state_dir,
+                    registry=registry,
+                    limits=PipelineLimits(
+                        plugin_execution_mode=PluginExecutionMode.PROCESS,
+                    ),
+                    allow_inline_only=True,
+                )
+            self.assertFalse(state_dir.exists())
+        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(
+            TypeError, "exact boolean"
+        ):
+            DurableIngestionPipeline(
+                Path(directory) / "bad-policy",
+                registry=registry,
+                limits=self._limits(),
+                allow_inline_only=1,  # type: ignore[arg-type]
+            )
+
+    def test_manifest_inline_pipeline_publishes_weakest_plan_authority(self) -> None:
+        registry = PluginRegistry(allow_manifest_identity=True)
+        registry.register(
+            ParseOnlyPlugin(),
+            package_hash="manifest-sha256:" + "b" * 64,
+        )
+        publisher = _Publisher()
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline = DurableIngestionPipeline(
+                Path(directory),
+                registry=registry,
+                publisher=publisher,
+                limits=replace(
+                    self._limits(),
+                    publisher_execution_mode=PluginExecutionMode.INLINE,
+                ),
+                allow_inline_only=True,
+            )
+            with pipeline:
+                admitted = pipeline.submit_bytes(
+                    self.scope,
+                    _fixture_bytes(),
+                    original_name="status.jsonl",
+                )
+                completed = pipeline.wait(self.scope, admitted.import_id, timeout=10)
+        self.assertEqual(completed.state, ImportState.COMPLETED)
+        self.assertEqual(len(publisher.revisions), 1)
+        plan = publisher.revisions[0][1]["execution_plan"]
+        self.assertIs(
+            plan.execution_plan_authority,
+            PluginExecutionPlanAuthority.TRUSTED_INLINE_MANIFEST,
+        )
 
     def test_durable_pipeline_seals_registry_against_late_inline_only_registration(
         self,
@@ -3356,7 +3491,11 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             path.write_bytes(_fixture_bytes())
             result = registered.coordinator.ingest(plugin, path)
         with self.assertRaisesRegex(ValueError, "PROCESS-capable"):
-            _execution_plan_for_result(registered, result)
+            _execution_plan_for_result(
+                registered,
+                result,
+                execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
+            )
 
     def test_non_strict_registry_keeps_normal_process_bootstrap_unchanged(
         self,

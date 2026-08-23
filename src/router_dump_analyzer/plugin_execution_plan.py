@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Final
 
 from .canonical import strict_canonical_json_bytes, strict_canonical_json_sha256
@@ -20,8 +21,11 @@ from .public_text import contains_unsafe_identifier_text, has_visible_identity_a
 PLUGIN_EXECUTION_PLAN_VERSION_V1: Final = (
     "router_dump_analyzer.plugin_execution_plan.v1"
 )
-PLUGIN_EXECUTION_PLAN_VERSION: Final = (
+PLUGIN_EXECUTION_PLAN_VERSION_V2: Final = (
     "router_dump_analyzer.plugin_execution_plan.v2"
+)
+PLUGIN_EXECUTION_PLAN_VERSION: Final = (
+    "router_dump_analyzer.plugin_execution_plan.v3"
 )
 _LEGACY_REGISTERED_EXECUTION_IDENTITY: Final = "sha256:" + "0" * 64
 _LEGACY_COMPOSITION_POLICY_DIGEST: Final = "sha256:" + "0" * 64
@@ -32,6 +36,21 @@ _SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PACKAGE_DIGEST_PATTERN = re.compile(
     r"^(?:(?:manifest|module|package)-sha256|sha256):[0-9a-f]{64}$"
 )
+
+
+class PluginExecutionPlanAuthority(StrEnum):
+    """Weakest publication authority bound across one complete plan.
+
+    ``PROCESS`` means the primary parser ran behind the child-process boundary
+    and every pin was PROCESS-capable. It does not claim that later capability
+    hooks are subprocess-isolated; those hooks remain synchronous in-process
+    calls under the plan-bound router.
+    """
+
+    LEGACY_UNRECORDED = "legacy_unrecorded"
+    PROCESS = "process"
+    TRUSTED_INLINE_ATTESTED = "trusted_inline_attested"
+    TRUSTED_INLINE_MANIFEST = "trusted_inline_manifest"
 
 
 def _opaque(value: object, label: str, *, maximum: int = 256) -> str:
@@ -292,6 +311,10 @@ def _plan_payload(plan: PluginExecutionPlan) -> dict[str, Any]:
         payload["composition_policy_digest"] = (
             plan.composition_policy_digest
         )
+    if plan.contract_version == PLUGIN_EXECUTION_PLAN_VERSION:
+        payload["execution_plan_authority"] = (
+            plan.execution_plan_authority.value
+        )
     return payload
 
 
@@ -311,6 +334,9 @@ class PluginExecutionPlan:
     decoder: DecoderIdentity | None = None
     contract_version: str = PLUGIN_EXECUTION_PLAN_VERSION
     composition_policy_digest: str = ""
+    execution_plan_authority: PluginExecutionPlanAuthority = (
+        PluginExecutionPlanAuthority.PROCESS
+    )
     plan_digest: str = ""
 
     def __post_init__(self) -> None:
@@ -318,9 +344,39 @@ class PluginExecutionPlan:
             raise TypeError("contract_version must be an exact string")
         if self.contract_version not in (
             PLUGIN_EXECUTION_PLAN_VERSION_V1,
+            PLUGIN_EXECUTION_PLAN_VERSION_V2,
             PLUGIN_EXECUTION_PLAN_VERSION,
         ):
             raise ValueError("unsupported plug-in execution-plan version")
+        if (
+            type(self.execution_plan_authority)
+            is not PluginExecutionPlanAuthority
+        ):
+            raise TypeError(
+                "execution_plan_authority must be an exact "
+                "PluginExecutionPlanAuthority"
+            )
+        if self.contract_version != PLUGIN_EXECUTION_PLAN_VERSION:
+            if self.execution_plan_authority not in (
+                PluginExecutionPlanAuthority.PROCESS,
+                PluginExecutionPlanAuthority.LEGACY_UNRECORDED,
+            ):
+                raise ValueError(
+                    "legacy plug-in execution plans cannot carry trusted-inline "
+                    "ingestion authority"
+                )
+            object.__setattr__(
+                self,
+                "execution_plan_authority",
+                PluginExecutionPlanAuthority.LEGACY_UNRECORDED,
+            )
+        elif (
+            self.execution_plan_authority
+            is PluginExecutionPlanAuthority.LEGACY_UNRECORDED
+        ):
+            raise ValueError(
+                "v3 plug-in execution plans require recorded plan authority"
+            )
         if type(self.composition_policy_digest) is not str:
             raise TypeError(
                 "composition_policy_digest must be an exact string"
@@ -348,7 +404,7 @@ class PluginExecutionPlan:
             _digest(selected_policy_digest, "composition_policy_digest")
             if selected_policy_digest == _LEGACY_COMPOSITION_POLICY_DIGEST:
                 raise ValueError(
-                    "v2 plug-in execution plans require a non-legacy "
+                    "current plug-in execution plans require a non-legacy "
                     "composition policy digest"
                 )
             object.__setattr__(
@@ -364,13 +420,14 @@ class PluginExecutionPlan:
             raise ValueError("plugins must contain 1 to 128 pins")
         pins = tuple(_snapshot_execution_pin(pin) for pin in self.plugins)
         object.__setattr__(self, "plugins", pins)
-        if self.contract_version == PLUGIN_EXECUTION_PLAN_VERSION and any(
+        if self.contract_version != PLUGIN_EXECUTION_PLAN_VERSION_V1 and any(
             pin.registered_execution_identity
             == _LEGACY_REGISTERED_EXECUTION_IDENTITY
             for pin in pins
         ):
             raise ValueError(
-                "v2 plug-in execution pins require registered execution identities"
+                "executable plug-in execution pins require registered execution "
+                "identities"
             )
         if self.contract_version == PLUGIN_EXECUTION_PLAN_VERSION_V1 and any(
             pin.registered_execution_identity
@@ -387,6 +444,19 @@ class PluginExecutionPlan:
             raise ValueError(
                 "plug-in execution plan must contain exactly one primary_parser pin"
             )
+        if self.contract_version == PLUGIN_EXECUTION_PLAN_VERSION:
+            contains_manifest_identity = any(
+                pin.artifact.package_hash.startswith("manifest-sha256:")
+                for pin in self.plugins
+            )
+            if contains_manifest_identity != (
+                self.execution_plan_authority
+                is PluginExecutionPlanAuthority.TRUSTED_INLINE_MANIFEST
+            ):
+                raise ValueError(
+                    "v3 plug-in execution-plan authority contradicts its "
+                    "artifact identities"
+                )
         if self.decoder is not None:
             object.__setattr__(
                 self,
@@ -423,6 +493,7 @@ def _snapshot_execution_plan(plan: PluginExecutionPlan) -> PluginExecutionPlan:
         decoder=plan.decoder,
         contract_version=plan.contract_version,
         composition_policy_digest=plan.composition_policy_digest,
+        execution_plan_authority=plan.execution_plan_authority,
         plan_digest=plan.plan_digest,
     )
 
@@ -442,7 +513,10 @@ def plugin_execution_plan_is_executable(plan: PluginExecutionPlan) -> bool:
     """
 
     detached = _snapshot_execution_plan(plan)
-    return detached.contract_version == PLUGIN_EXECUTION_PLAN_VERSION
+    return detached.contract_version in (
+        PLUGIN_EXECUTION_PLAN_VERSION_V2,
+        PLUGIN_EXECUTION_PLAN_VERSION,
+    )
 
 
 def plugin_execution_plan_digest(plan: PluginExecutionPlan) -> str:
@@ -492,6 +566,7 @@ def plugin_execution_plan_from_dict(value: object) -> PluginExecutionPlan:
     contract_version = value.get("contract_version")
     if contract_version not in (
         PLUGIN_EXECUTION_PLAN_VERSION_V1,
+        PLUGIN_EXECUTION_PLAN_VERSION_V2,
         PLUGIN_EXECUTION_PLAN_VERSION,
     ):
         raise ValueError("unsupported plug-in execution-plan version")
@@ -503,8 +578,10 @@ def plugin_execution_plan_from_dict(value: object) -> PluginExecutionPlan:
         "decoder",
         "plan_digest",
     }
-    if contract_version == PLUGIN_EXECUTION_PLAN_VERSION:
+    if contract_version != PLUGIN_EXECUTION_PLAN_VERSION_V1:
         plan_keys.add("composition_policy_digest")
+    if contract_version == PLUGIN_EXECUTION_PLAN_VERSION:
+        plan_keys.add("execution_plan_authority")
     plan = _exact_mapping(value, "execution plan", plan_keys)
     _digest(plan["plan_digest"], "plan_digest")
     raw_plugins = plan["plugins"]
@@ -515,7 +592,7 @@ def plugin_execution_plan_from_dict(value: object) -> PluginExecutionPlan:
         "instance_id", "plugin_id", "plugin_version", "core_api_version", "artifact",
         "configuration_digest", "schema_digest", "schema_versions", "capabilities", "roles",
     }
-    if contract_version == PLUGIN_EXECUTION_PLAN_VERSION:
+    if contract_version != PLUGIN_EXECUTION_PLAN_VERSION_V1:
         pin_keys.add("registered_execution_identity")
     artifact_keys = {
         "distribution_name", "distribution_version", "package_hash", "entry_point_name", "module_target",
@@ -534,7 +611,7 @@ def plugin_execution_plan_from_dict(value: object) -> PluginExecutionPlan:
                 schema_digest=parsed["schema_digest"],
                 registered_execution_identity=(
                     parsed["registered_execution_identity"]
-                    if contract_version == PLUGIN_EXECUTION_PLAN_VERSION
+                    if contract_version != PLUGIN_EXECUTION_PLAN_VERSION_V1
                     else _LEGACY_REGISTERED_EXECUTION_IDENTITY
                 ),
                 schema_versions=_wire_tuple(parsed["schema_versions"], "schema_versions"),
@@ -559,8 +636,15 @@ def plugin_execution_plan_from_dict(value: object) -> PluginExecutionPlan:
         decoder=decoder,
         composition_policy_digest=(
             plan["composition_policy_digest"]
-            if contract_version == PLUGIN_EXECUTION_PLAN_VERSION
+            if contract_version != PLUGIN_EXECUTION_PLAN_VERSION_V1
             else _LEGACY_COMPOSITION_POLICY_DIGEST
+        ),
+        execution_plan_authority=(
+            PluginExecutionPlanAuthority(
+                plan["execution_plan_authority"]
+            )
+            if contract_version == PLUGIN_EXECUTION_PLAN_VERSION
+            else PluginExecutionPlanAuthority.LEGACY_UNRECORDED
         ),
         plan_digest=plan["plan_digest"],
     )
@@ -590,7 +674,9 @@ __all__ = [
     "MAX_PLUGIN_EXECUTION_PLAN_WIRE_BYTES",
     "PLUGIN_EXECUTION_PLAN_VERSION",
     "PLUGIN_EXECUTION_PLAN_VERSION_V1",
+    "PLUGIN_EXECUTION_PLAN_VERSION_V2",
     "DecoderIdentity",
+    "PluginExecutionPlanAuthority",
     "PluginArtifactIdentity",
     "PluginExecutionPin",
     "PluginExecutionPlan",

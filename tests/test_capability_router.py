@@ -44,6 +44,7 @@ from router_dump_analyzer.plugin_execution_plan import (
     PluginArtifactIdentity,
     PluginExecutionPin,
     PluginExecutionPlan,
+    PluginExecutionPlanAuthority,
 )
 from router_dump_analyzer.plugin_identity import PluginExecutableIdentityError
 from router_dump_analyzer.plugin_schema_identity import (
@@ -177,11 +178,17 @@ def _pin(
     )
 
 
-def _plan(node_id: str, basis: str, *pins: PluginExecutionPin) -> PluginExecutionPlan:
+def _plan(
+    node_id: str,
+    basis: str,
+    *pins: PluginExecutionPin,
+    authority: PluginExecutionPlanAuthority = PluginExecutionPlanAuthority.PROCESS,
+) -> PluginExecutionPlan:
     return PluginExecutionPlan(
         node_id=node_id,
         basis_revision_id=basis,
         plugins=tuple(pins),
+        execution_plan_authority=authority,
     )
 
 
@@ -191,12 +198,14 @@ def _router(
     *,
     catalog_revision_id: str = "catalog-revision-1",
     member_id: str = "member-1",
+    allow_inline_only: bool = False,
 ) -> PlanBoundCapabilityRouter:
     return PlanBoundCapabilityRouter(
         providers,
         plan,
         catalog_revision_id=catalog_revision_id,
         member_id=member_id,
+        allow_inline_only=allow_inline_only,
     )
 
 
@@ -485,7 +494,9 @@ class CapabilityRouterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate"):
             providers.add_registered(first)
 
-    def test_manifest_only_provider_identity_is_never_routable(self) -> None:
+    def test_manifest_only_provider_requires_matching_inline_plan_and_opt_in(
+        self,
+    ) -> None:
         plugin = _RoutingPlugin("test.manifest-only")
         compatibility = PluginRegistry(allow_manifest_identity=True)
         record = compatibility.register(
@@ -494,8 +505,20 @@ class CapabilityRouterTests(unittest.TestCase):
             instance_id="manifest.primary",
         )
         self.assertFalse(record.verify_package_bytes)
-        with self.assertRaisesRegex(ValueError, "revalidatable executable"):
-            CapabilityProviderRegistry((record,))
+        providers = CapabilityProviderRegistry((record,))
+        plan = _plan(
+            "node-a",
+            "basis-a",
+            _pin(record, plugin.schema, "primary_parser"),
+            authority=PluginExecutionPlanAuthority.TRUSTED_INLINE_MANIFEST,
+        )
+        with self.assertRaises(CapabilityRouteStaleError):
+            _router(providers, plan)
+        router = _router(providers, plan, allow_inline_only=True)
+        route = router.resolve(
+            CapabilityRouteSelector(PluginCapability.CORRELATION)
+        )
+        self.assertEqual(route.provider.pin.instance_id, record.instance_id)
 
     def test_plan_bound_router_rejects_inline_only_primary_and_auxiliary(self) -> None:
         package_identity = "package-sha256:" + "7" * 64
@@ -561,6 +584,9 @@ class CapabilityRouterTests(unittest.TestCase):
                             fallback_plugin.schema,
                             "primary_parser",
                         ),
+                        authority=(
+                            PluginExecutionPlanAuthority.TRUSTED_INLINE_ATTESTED
+                        ),
                     ),
                 ),
                 (
@@ -574,6 +600,9 @@ class CapabilityRouterTests(unittest.TestCase):
                             fallback_plugin.schema,
                             "analysis_assistant",
                         ),
+                        authority=(
+                            PluginExecutionPlanAuthority.TRUSTED_INLINE_ATTESTED
+                        ),
                     ),
                 ),
             )
@@ -582,6 +611,24 @@ class CapabilityRouterTests(unittest.TestCase):
                     CapabilityRouteStaleError
                 ):
                     _router(providers, plan)
+                with self.subTest(role=role, opted=True):
+                    _router(providers, plan, allow_inline_only=True)
+
+            process_claim = _plan(
+                "node-process-claim",
+                "basis-process-claim",
+                _pin(fallback, fallback_plugin.schema, "primary_parser"),
+            )
+            with self.assertRaises(CapabilityRouteStaleError):
+                _router(providers, process_claim, allow_inline_only=True)
+            with self.assertRaisesRegex(TypeError, "exact boolean"):
+                PlanBoundCapabilityRouter(
+                    providers,
+                    scenarios[0][1],
+                    catalog_revision_id="catalog",
+                    member_id="member",
+                    allow_inline_only=1,  # type: ignore[arg-type]
+                )
 
     def test_configuration_change_requires_a_new_logical_instance(self) -> None:
         first = _registered(_RoutingPlugin("test.lineage"), "lineage.primary")

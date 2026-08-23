@@ -124,7 +124,7 @@ declared schema versions, capabilities, and core-assigned role. An optional
 decoder pin records its ID, version, and executable digest. The plan binds the
 node and source revision basis, the exact deployment-owned composition-policy
 digest, and a deterministic content digest. It contains configuration digests
-only—never configuration values or secrets. The v2 canonical wire member is
+only—never configuration values or secrets. The v2-and-later canonical wire member is
 `composition_policy_digest`; changing any policy rule changes the plan even
 when the rule selected for this primary parser is unchanged.
 
@@ -136,14 +136,29 @@ fields identify that unique primary parser. A plan-level decoder belongs to
 the primary parser; a non-primary pin with its own decoder is not representable
 in any plan and MUST fail closed.
 
-New publications use execution-plan v2, whose pins also carry the
-content-addressed `registered_execution_identity` frozen at registration.
-Retained v1 plans remain readable/displayable and preserve their original wire
-shape and digest; they cannot carry either v2 field. Decoding records both
-missing identities with reserved all-zero SHA-256 sentinels internally. A v2
-plan MUST carry a non-reserved registered execution identity for every pin and
-a non-reserved composition-policy digest. A retained v1 plan MUST NOT authorize
-capability execution, provider binding, auxiliary composition, or
+New publications use execution-plan v3. Its pins carry the content-addressed
+`registered_execution_identity` frozen at registration, as introduced by v2,
+and its closed `PluginExecutionPlanAuthority` wire member
+`execution_plan_authority` records the weakest authority across
+the complete plan: `process`, `trusted_inline_attested`, or
+`trusted_inline_manifest`. `process` means primary ingestion used the spawned
+child boundary and every pin was PROCESS-capable; it MUST NOT be read as a
+claim that later capability hooks execute in subprocesses. The attested inline
+tier has package-byte identity and records that primary ingestion actually ran
+inline; the registered plug-in may or may not also have a usable process
+bootstrap. The manifest inline tier is weaker: core can revalidate only the
+frozen manifest and registered identity, not the implementation bytes, so it is
+not a reproducible-code claim.
+
+Retained v2 plans remain executable and preserve their original wire shape and
+digest; decoding projects their absent authority as `legacy_unrecorded` rather
+than inventing PROCESS execution. Retained v1 plans remain
+readable/displayable and preserve their original wire shape and digest; they
+cannot carry the v2 identity/policy fields or the v3 authority field. Decoding
+records missing identities with reserved all-zero SHA-256 sentinels internally.
+V2 and v3 MUST carry a non-reserved registered execution identity for every pin
+and a non-reserved composition-policy digest. A retained v1 plan MUST NOT
+authorize capability execution, provider binding, auxiliary composition, or
 private-analysis evidence production. Canonical plan wire payloads are bounded
 before persistence.
 
@@ -182,7 +197,7 @@ bootstrap's expected registered identity is the sole excluded field because
 including it would be recursive. A target-only or limit-only change MUST
 produce a different registered identity and therefore a different plan digest.
 
-The durable registry rejects manifest-only executable identity. The installed
+The strict durable registry rejects manifest-only executable identity. The installed
 entry-point loaders record the owning distribution name/version, selected
 entry-point name, and normalized `module:attribute` target. An explicit
 `--plugin-module` selection is not misrepresented as an installed package: its
@@ -458,8 +473,9 @@ Plug-ins may import the complete reusable construction/result vocabulary from
 `router_dump_analyzer.corroboration` for these public types.
 
 The implemented local store/queue is transactional and restart-recoverable.
-Its durable `ControlPlane`, API-only server, and headless command execute
-plug-in probe and ingestion in deadline-bounded, killable spawned children.
+By default, its durable `ControlPlane`, API-only server, and headless command
+execute plug-in probe and ingestion in deadline-bounded, killable spawned
+children. The explicit trusted-inline deployment exception is specified below.
 `router-dump-server` fixes either a repeatable installed-entry-point/direct-module
 allowlist or one trusted `PluginCompositionDeployment` at construction,
 requires a host-owned identity resolver (or the
@@ -611,16 +627,18 @@ so several revisions remain replayable; the complete pin chooses the release.
 A provider record MUST originate at
 `PluginRegistry.register()` so executable, manifest, configuration, and decoder
 identity reuse the existing registration boundary. Manifest-only compatibility
-records and caller-asserted, non-revalidatable hashes MUST NOT enter the
-capability registry. A changed configuration
+records MAY enter this inert directory only when they are the exact
+registry-created compatibility records; caller-asserted, non-revalidatable
+hashes MUST NOT enter it. A changed configuration
 MUST use a new instance ID even when two revisions never select both
 configurations together; otherwise perspective identity would be ambiguous.
 Providers may come from separate primary-parser registries.
-A registry-derived `inline_only` record MAY remain in a caller-owned mutable
-provider directory for trusted local, unbound capability execution. It MUST NOT
-bind an execution-plan pin: `PlanBoundCapabilityRouter`, revision-set routing,
-child-safe provider snapshots, and every durable composition edge reject it as
-stale authority.
+A registry-derived `inline_only` record MAY remain in a provider directory for
+trusted local execution. A strict deployment and PROCESS plan MUST reject it.
+It MAY bind a v3 execution-plan pin only when the descriptor, durable pipeline,
+and `PlanBoundCapabilityRouter` all receive the explicit trusted-inline policy;
+the plan authority MUST then be one of the two trusted-inline values and MUST
+reflect the weakest selected pin.
 
 The router digest-verifies and detaches the selected revision plan, requires
 one primary parser, resolves only pins whose exact capability plus optional
@@ -643,7 +661,7 @@ Ordinary probe/selection always chooses one primary parser. A deployment MAY
 provide an immutable `PluginCompositionPolicy` which matches that parser's
 exact instance ID and content-addressed registered execution identity and adds
 canonically ordered auxiliary provider pins with explicit roles. Core stores
-the policy digest with the import and in every new v2 execution plan, and MUST
+the policy digest with the import and in every new v3 execution plan, and MUST
 refuse to execute queued work or re-admit a child plan under a different
 policy. A plug-in MUST NOT select peers by platform/firmware
 strings, depend on registry order, or publish a synthetic composite plug-in.
@@ -657,7 +675,8 @@ MUST NOT stage or publish its revision; exact child-plan comparison remains
 independently required.
 
 The public deployment boundary is
-`PluginCompositionDeployment(primary_registry, capability_providers, policy)`.
+`PluginCompositionDeployment(primary_registry, capability_providers, policy,
+*, allow_inline_only=False)`.
 All three fields MUST be exact core container types. Every primary record MUST
 also be the same object in the provider directory; every policy primary and
 auxiliary coordinate MUST resolve exactly. A descriptor or one-argument
@@ -672,6 +691,27 @@ Construction takes sealed exact snapshots of both registries before validation
 and digesting. Later registration in the caller-owned mutable containers cannot
 change deployment authority, and the registries exposed by the descriptor
 reject further registration.
+
+The exact-boolean `allow_inline_only` option MUST default to false. In that
+strict mode, construction MUST reject every registry-created `inline_only`
+record before durable state is created. A trusted, single-host deployment MAY
+set it to true to admit such records, including an explicit manifest-identity
+fallback. Deployment contract v2 and `deployment_digest` MUST bind the flag.
+`requires_inline_execution` MUST be derived across all sealed primary and
+provider records, including unused releases retained for historical plans. If
+any record requires it, the complete primary probe/ingestion pipeline MUST run
+INLINE; a policy rule MUST NOT select PROCESS on a per-job basis. Every shipped
+composition root MUST forward the descriptor policy to `ControlPlane`, the
+durable pipeline, and plan-bound routing. Neither HTTP/input data nor a plug-in
+hook may toggle it. Publisher execution remains PROCESS by default unless the
+embedding explicitly overrides that independent mode.
+
+Trusted-inline mode has no subprocess crash, CPU, or memory containment, no
+killable timeout guarantee, and no guarantee that `close()` can be interrupted.
+The same live object and mutable state may be shared across jobs, tenants, and
+concurrent workers with the process's ambient host access. All tenants and
+operators sharing that instance MUST trust the plug-in. The plug-in MUST be
+thread-safe, or the embedding MUST configure `max_workers=1`.
 
 `LoadedPlugin.register()` MAY receive explicit `instance_id` and
 `configuration_digest` coordinates from that trusted deployment. A deployment
@@ -714,7 +754,7 @@ time independently for every revision, freezes an indexed read-only corpus,
 enforces disclosure policy, and owns citation accounting. In explicit
 full-fidelity local mode the corpus MAY retain plug-in-owned normalized fields
 and bounded `copy_text`; `never_assistant` evidence is unconditionally denied.
-The stable `plugin_schema.v1` evidence payload includes the exact v2
+The stable `plugin_schema.v1` evidence payload includes the exact v2-and-later
 `registered_execution_identity`. Retained plan-v1 pins never recorded that
 identity or the current timeline semantics and are ineligible for evidence
 production; the internal all-zero sentinel MUST NOT be promoted into an
@@ -1919,17 +1959,19 @@ a general exemption: a regular file or contained alias named `.git`, `.hg`,
 participates in identity, and an escaping alias with such a name still fails
 closed. Registries fail closed by default when no executable file is
 inspectable. A compatibility-only local/test embedding may explicitly pass
-`allow_manifest_identity=True`; the headless CLI and every durable
-`ControlPlane` reject that fallback before state is created.
+`allow_manifest_identity=True`; strict headless and `ControlPlane` construction
+reject that fallback before state is created. A descriptor-owned
+`allow_inline_only=True` may explicitly admit it for trusted single-host
+durable execution.
 
 The opt-out applies consistently to both registration identity and process
 target compatibility. If package identity succeeds but a stateful target
 cannot be statically attested, a non-strict, registry-derived registration is
 marked `inline_only`; exact package bytes are still revalidated before trusted
 inline capability use. It has no subprocess bootstrap and is rejected by
-PROCESS execution and durable pipelines. A strict registry, an explicit
-loader-supplied package hash, or any durable use remains fail-closed and never
-downgrades to this compatibility form.
+PROCESS execution. It enters a durable pipeline only through the same explicit
+trusted-inline deployment policy. A strict registry or an explicit
+loader-supplied package hash never downgrades to this compatibility form.
 Durable pipelines seal exact registry/provider snapshots at construction;
 later registration in either caller-owned container cannot enter probing,
 selection, execution-plan publication, or plan-bound capability routing.
@@ -1957,7 +1999,7 @@ manifest/hash.
 ## 6. Process and security model
 
 The plug-in remains trusted application code, not a sandboxed parser, while
-the dump remains hostile input. The optional durable profile uses
+the dump remains hostile input. The strict optional durable profile uses
 transactional SQLite queue claims, renewable fenced leases, heartbeats, and
 restart recovery. Queue coordination workers are application threads, but
 both the complete allowlisted probe and selected ingestion run in a fresh
@@ -1968,7 +2010,8 @@ for trusted local/test code. Inline execution is synchronous and deliberately
 makes no timeout or
 bounded-shutdown promise; core does not create an unkillable helper thread and
 misreport its queue wait as cancellation. Only process mode is a killable fault
-boundary.
+boundary. The descriptor-level trusted-inline mode defined in section 2 is the
+explicit exception and retains all of its shared-state/host-access risks.
 
 Every in-process executable plug-in boundary MUST rethrow `KeyboardInterrupt`,
 `SystemExit`, and `GeneratorExit` unchanged and MUST contain every other

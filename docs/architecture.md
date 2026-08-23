@@ -1,7 +1,7 @@
 # Architecture and library decisions
 
 Status: distributed-production target plus implemented local-profile notes,
-updated 2026-08-04
+updated 2026-08-23
 Runtime: Python 3.12; the local prototype supports Windows and Linux/WSL, while
 the production server and isolated analysis workers target Linux
 
@@ -10,8 +10,10 @@ the production server and isolated analysis workers target Linux
 The distributed-production target starts as a modular monolith with isolated
 workers, not as microservices and not as a graph-database product. The shipped
 single-host profile uses the same modular boundary: queue coordination remains
-in-process, while durable plug-in probe and ingestion run in deadline-bounded,
-killable child processes.
+in-process, while strict durable plug-in probe and ingestion run in
+deadline-bounded, killable child processes. An explicit trusted-inline
+single-host deployment is the documented compatibility exception, not the
+default production posture.
 
 ```mermaid
 flowchart LR
@@ -150,12 +152,13 @@ records all of:
 - Clock alignment configuration.
 
 The implemented local profile represents that claim with the immutable,
-versioned `PluginExecutionPlan`. New revisions use plan v2. It is an ordered
+versioned `PluginExecutionPlan`. New revisions use plan v3. It is an ordered
 tuple of producer pins rather
 than a synthetic composite plug-in, so each configured instance retains its
 own artifact, configuration, schema, capability, role, and optional decoder
 identity. The plan digest covers its node and source-revision basis and every
-pin field plus the exact v2 `composition_policy_digest`. A policy change is a
+pin field plus the exact `composition_policy_digest` and v3
+`execution_plan_authority`. A policy change is a
 new interpretation identity even when the selected primary-to-auxiliary rule
 is unchanged. Configuration values and secrets are deliberately absent. Catalog
 rows persist the canonical plan and digest; normalized datasets and correlation
@@ -189,7 +192,7 @@ instance IDs. The immutable plan—not a
 mutable node map—selects which instance belongs to a revision. Exactly one pin
 has `primary_parser`; additional pins carry core-assigned composition roles.
 The registry can retain several exact releases of one logical instance so old
-and new revisions are both replayable. Every v2 pin carries the exact
+and new revisions are both replayable. Every v2/v3 pin carries the exact
 `registered_execution_identity`, which covers the full frozen registration and
 must never use the reserved all-zero digest. Retained plan-v1 rows have no such
 wire member; decoding represents that absence internally with the reserved
@@ -198,6 +201,12 @@ They also have no composition-policy digest or current timeline identity.
 Those rows remain available to passive catalog/history projections but cannot
 bind a provider, execute a capability, attach an auxiliary, or produce
 private-analysis evidence.
+Plan v2 remains executable and decodes its absent authority as
+`legacy_unrecorded`; core does not rewrite its bytes or retroactively call it
+PROCESS. V3 records the weakest whole-plan authority: PROCESS, trusted inline
+with package-byte attestation, or trusted inline with manifest identity only.
+PROCESS describes primary ingestion, not the isolation of later capability
+hooks. The manifest tier is explicitly non-reproducible at the code-byte level.
 An unfinished pre-contract queue row is different from published history. Its
 upgrade transaction clears obsolete candidates and selection while binding the
 composition policy explicitly active for the required re-probe. Staged and
@@ -230,8 +239,9 @@ must provide an immutable artifact digest instead. Headless ingestion, programma
 registries, and every server control
 plane fail closed by default if no executable identity can be derived and
 reject a manifest-only identity. A local/test embedding must explicitly pass
-`allow_manifest_identity=True` to obtain the compatibility fallback and cannot
-use that registry to publish durable revisions. A top-level regular plug-in
+`allow_manifest_identity=True` to obtain the compatibility fallback. Strict
+durable deployment rejects that registry; an explicitly trusted descriptor may
+publish it only with `allow_inline_only=True`. A top-level regular plug-in
 package does not absorb an unrelated sibling distribution. A preceding
 namespace portion is necessarily conservative: every contributing search root
 enters its identity, including otherwise unrelated namespace siblings.
@@ -239,14 +249,16 @@ enters its identity, including otherwise unrelated namespace siblings.
 If that non-strict registry can revalidate package bytes but cannot attest a
 stateful subprocess target, registration is retained only as `inline_only`.
 It may back trusted in-process capability routing with package revalidation,
-but it has no process bootstrap and is rejected by process execution and every
-durable pipeline. Strict mode and explicit artifact/package identities remain
-fail-closed.
+but it has no process bootstrap and is rejected by process execution. It can
+enter durable publication only through the explicit trusted-inline deployment
+mode. Strict mode and explicit artifact/package identities remain fail-closed.
 Durable owners take sealed exact snapshots of both primary and provider
 registries before creating queue authority. Later changes to a caller-owned
 local registry cannot enter probe selection or plan publication, and
 plan-bound routers reject `inline_only` records even when an unbound local
-provider directory retains them.
+provider directory retains them, unless the router receives the matching
+trusted-inline deployment policy and the v3 plan records trusted-inline
+authority.
 Ordinary directories, including empty ones, enter the digest because they can
 change import and resource-existence semantics. File reads are bounded by the
 opened handle's declared size plus a growth sentinel and are accepted only when
@@ -1093,8 +1105,10 @@ executor. It digest-verifies and detaches a revision plan, resolves an exact
 capability plus optional role/instance, and treats zero or multiple matches as
 errors rather than using plan or registration order. It revalidates the full
 registered executable identity and normalized schema before and after
-invocation; manifest-only or otherwise non-revalidatable provider records are
-rejected at registry admission. A
+invocation. Its provider directory may retain exact registry-created
+manifest/inline compatibility records as inert history, but a strict router
+rejects them; an opted-in router requires a matching v3 trusted-inline
+authority. Caller-asserted non-revalidatable records fail registry admission. A
 mid-call mutation discards the result. A perspective-specific world must carry
 the selected instance/schema qualifiers, and forwarding steps must name the
 selected revision-set member. Every successful result retains a detached producer
@@ -1132,6 +1146,25 @@ The descriptor snapshots and seals both registries before validating that
 digest. Caller-owned registries remain independently mutable for local use, but
 later additions cannot change the descriptor's record set or deployment
 identity.
+
+Deployment contract v2 adds the exact-boolean `allow_inline_only` policy and
+binds it into `deployment_digest`. False is unchanged strict PROCESS admission.
+True admits registry-created inline-only records, including manifest-only
+identity, for an explicitly trusted single-host composition. Core derives
+`requires_inline_execution` across the complete sealed primary/provider
+directory rather than the selected rule. Thus an unused provider retained for
+historical plans forces the whole primary ingestion pipeline inline; per-job
+mode switching cannot let one live object alternate between PROCESS and INLINE.
+Server, headless ingestion, embedded durable analysis, and private-analysis CLI
+roots forward the descriptor policy, while HTTP/input data has no toggle. The
+publisher remains PROCESS by default unless an embedding independently
+overrides it.
+
+Inline durable ingestion shares live objects and mutable state across jobs,
+tenants, and workers and inherits ambient process access. It has no subprocess
+crash, CPU, or memory containment, no killable timeout, and no interruptible
+`close()` guarantee. Every tenant/operator sharing the instance must trust it;
+the plug-in must be thread-safe or the deployment must use `max_workers=1`.
 
 Standalone roots spell the selector `--plugin-deployment-module`. The
 interactive analyzer instead uses

@@ -1,11 +1,19 @@
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Final
 
-__all__ = ['PLUGIN_EXECUTION_PLAN_VERSION_V1', 'PLUGIN_EXECUTION_PLAN_VERSION', 'MAX_PLUGIN_EXECUTION_PLAN_WIRE_BYTES', 'PluginArtifactIdentity', 'DecoderIdentity', 'PluginExecutionPin', 'snapshot_plugin_execution_pin', 'plugin_execution_pin_uses_legacy_identity', 'plugin_execution_plan_plugin_ids', 'plugin_execution_pin_dict', 'PluginExecutionPlan', 'snapshot_plugin_execution_plan', 'plugin_execution_plan_is_executable', 'plugin_execution_plan_digest', 'primary_parser_execution_pin', 'plugin_execution_plan_dict', 'plugin_execution_plan_from_dict', 'RevisionExecutionPlanRef']
+__all__ = ['PLUGIN_EXECUTION_PLAN_VERSION_V1', 'PLUGIN_EXECUTION_PLAN_VERSION_V2', 'PLUGIN_EXECUTION_PLAN_VERSION', 'MAX_PLUGIN_EXECUTION_PLAN_WIRE_BYTES', 'PluginExecutionPlanAuthority', 'PluginArtifactIdentity', 'DecoderIdentity', 'PluginExecutionPin', 'snapshot_plugin_execution_pin', 'plugin_execution_pin_uses_legacy_identity', 'plugin_execution_plan_plugin_ids', 'plugin_execution_pin_dict', 'PluginExecutionPlan', 'snapshot_plugin_execution_plan', 'plugin_execution_plan_is_executable', 'plugin_execution_plan_digest', 'primary_parser_execution_pin', 'plugin_execution_plan_dict', 'plugin_execution_plan_from_dict', 'RevisionExecutionPlanRef']
 
 PLUGIN_EXECUTION_PLAN_VERSION_V1: Final[str]
+PLUGIN_EXECUTION_PLAN_VERSION_V2: Final[str]
 PLUGIN_EXECUTION_PLAN_VERSION: Final[str]
 MAX_PLUGIN_EXECUTION_PLAN_WIRE_BYTES: Final[int]
+
+class PluginExecutionPlanAuthority(StrEnum):
+    LEGACY_UNRECORDED = 'legacy_unrecorded'
+    PROCESS = 'process'
+    TRUSTED_INLINE_ATTESTED = 'trusted_inline_attested'
+    TRUSTED_INLINE_MANIFEST = 'trusted_inline_manifest'
 
 @dataclass(frozen=True, slots=True)
 class PluginArtifactIdentity:
@@ -51,6 +59,7 @@ class PluginExecutionPlan:
     decoder: DecoderIdentity | None = ...
     contract_version: str = ...
     composition_policy_digest: str = ...
+    execution_plan_authority: PluginExecutionPlanAuthority = ...
     plan_digest: str = ...
     def __post_init__(self) -> None: ...
 

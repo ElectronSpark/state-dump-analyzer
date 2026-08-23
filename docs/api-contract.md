@@ -307,6 +307,15 @@ absent by default. The server CLI exposes them only after an explicit
 listeners. The durable plug-in allowlist is fixed at construction and cannot
 be expanded by an upload.
 
+`PluginCompositionDeployment(..., allow_inline_only=True)` is an explicit,
+descriptor-owned trusted-local opt-in. It cannot be selected by HTTP, an
+uploaded fixture, or another plug-in hook. Its deployment-v2 digest binds the
+flag. `requires_inline_execution` is computed across every frozen primary and
+provider record, including unused historical providers; if true, all primary
+probe and parsing for that deployment run inline. The default descriptor remains
+strict and PROCESS-only. The publisher remains PROCESS by default unless the
+embedding separately overrides its execution mode.
+
 The interactive analyzer can mount the same durable surface beside one
 immediate single-input analysis. Its selectors remain independent:
 
@@ -446,9 +455,12 @@ trusted. It does not claim to detect a privileged actor coherently replacing
 every authority row or restoring the complete catalog from an older snapshot.
 
 Each revision item includes `execution_plan`. New durable publications expose
-the closed `router_dump_analyzer.plugin_execution_plan.v2` object: node and
+the closed `router_dump_analyzer.plugin_execution_plan.v3` object: node and
 source-revision basis, ordered producer pins, optional decoder identity, and
-the exact `composition_policy_digest` plus `plan_digest`. A pin exposes
+the exact `composition_policy_digest`, closed `execution_plan_authority`, and
+`plan_digest`. `PluginExecutionPlanAuthority` is the weakest whole-plan value:
+`process`,
+`trusted_inline_attested`, or `trusted_inline_manifest`. A pin exposes
 artifact/configuration/schema/capability/role and
 content-addressed registered-execution identity but never configuration
 values. The current identity also commits to the complete non-recursive
@@ -467,11 +479,15 @@ active for the upgrade, and are re-probed before execution. Already staged or
 completed legacy publications keep their historical policy and remain
 planless, so idempotent crash replay uses the original payload.
 
-The strict reader retains v1 with its original byte/shape/digest contract. A
+The strict reader retains v1 and v2 with their original byte/shape/digest
+contracts. A
 retained v1 pin has no `registered_execution_identity`, and its plan has no
 `composition_policy_digest`; decoding uses reserved all-zero sentinels only
 inside the passive value. V2 requires both fields, rejects either reserved
-legacy-zero value, and is bounded to 512 KiB of canonical plan JSON. V1 remains
+legacy-zero value, remains executable, and decodes its historically absent
+authority as `legacy_unrecorded` rather than claiming PROCESS. V3 adds the
+closed authority field. Every version is bounded to 512 KiB of canonical plan
+JSON. V1 remains
 readable in catalog responses but cannot bind a capability provider, execute a
 capability, or produce private-analysis evidence.
 
@@ -486,6 +502,13 @@ producer-qualified results through typed capability methods. The router and
 provider registry are trusted in-process composition objects; underscore
 attributes and Python introspection are outside the supported API and are not
 a sandbox for hostile in-process callers.
+
+`process` describes only primary ingestion and does not claim that later
+capability hooks execute behind a subprocess boundary. An opted-in inline-only
+provider can be routed only when the plan records a trusted-inline authority
+and the router receives the same deployment policy. The manifest tier is not a
+code-reproducibility claim: it freezes and revalidates manifest/registered
+identity but cannot attest implementation bytes.
 
 The core-owned in-process consumer is
 `ControlPlane.capability_router_for_revision(scope, revision_id, member_id=None)`.
@@ -1681,24 +1704,29 @@ immediately before execution. Sourceless `.pyc`/`.pyo` modules require a
 trusted loader-supplied artifact digest because embedded build paths are not
 relocation-stable. Programmatic
 registries share that fail-closed default. A compatibility-only local/test
-embedding must explicitly enable `allow_manifest_identity=True`; durable
-commands and control planes reject that manifest-only registry.
+embedding must explicitly enable `allow_manifest_identity=True`; strict durable
+commands and control planes reject that manifest-only registry. A trusted
+deployment may admit it only with descriptor-owned
+`allow_inline_only=True`.
 
 When that opt-in registry can derive and revalidate package bytes but cannot
 attest a stateful subprocess target, the registration is retained only for
 explicitly trusted inline capability use. Its opaque
 `registered_execution_identity` binds the `inline_only` restriction; the
 candidate wire schema gains no compatibility field. Process workers and every
-durable boundary reject the registration. Strict registries and explicit
-loader-supplied package identities do not downgrade to this mode.
+strict durable boundary reject the registration. An opted-in trusted-inline
+boundary accepts it and stamps the weaker whole-plan authority. Strict
+registries and explicit loader-supplied package identities do not downgrade to
+this mode.
 Durable pipeline construction takes sealed exact snapshots of its primary and
 provider registries. Subsequent `register()`/`add_registered()` calls on the
 caller-owned containers remain local and cannot change candidate selection or
 published execution authority. Plan-bound capability routing also rejects an
-`inline_only` record even when a trusted local provider directory retains it.
+`inline_only` record unless its router receives that same explicit deployment
+policy and its v3 plan records a trusted-inline authority.
 
-The durable servers and headless command execute both probe and ingestion in
-fresh `spawn` child processes. The default child deadline is 300 seconds; the
+By default, the durable servers and headless command execute both probe and
+ingestion in fresh `spawn` child processes. The default child deadline is 300 seconds; the
 headless command further caps it to the requested per-import `--timeout`.
 Timeout includes spawn, plug-in execution, bounded result transfer, and clean
 exit. A timed-out child is terminated, then killed if it does not exit, and is
@@ -1709,7 +1737,11 @@ Partial staged output is removed and neither case publishes a revision.
 
 Programmatic embeddings may explicitly request synchronous `inline` execution
 for trusted local/tests. That mode has no timeout or bounded cancellation
-claim; only the default process mode is killable. Admission and publication
+claim; only the default process mode is killable. It also has no subprocess
+crash/CPU/memory containment; `close()` may stall or fail; and one live object
+and its state may be shared across jobs, tenants, and concurrent workers with
+ambient host access. All tenants/operators sharing the instance must trust it.
+Use a thread-safe implementation or `max_workers=1`. Admission and publication
 catalog calls have an independent deadline and execution-mode override; null
 values inherit their plug-in equivalents. Production process mode includes
 spawn, publisher work, result transfer, and exit in the enforced budget, then
@@ -4375,8 +4407,10 @@ package import scope; `module-sha256:` is the corresponding top-level-module
 form. A trusted loader may instead provide an immutable package/artifact
 digest. All registries fail closed by default if none is
 available. A manifest-only fallback requires the explicit local/test
-`allow_manifest_identity=True` compatibility opt-out and is rejected by
-durable headless/server execution. Clients still treat `package_hash` as
+`allow_manifest_identity=True` compatibility opt-out and is rejected by strict
+durable headless/server execution. A descriptor-owned
+`allow_inline_only=True` may admit it only as trusted-inline manifest authority.
+Clients still treat `package_hash` as
 opaque and echo the exact candidate field.
 
 ## 9. Errors and pagination

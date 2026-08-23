@@ -344,7 +344,7 @@ its descriptor exposes `attempt_count`, configured `max_attempts`,
 a failed import and may cancel a non-terminal import that is not currently
 leased.
 
-The durable `ControlPlane` and `router-dump-ingest` run both allowlisted probe
+By default, the durable `ControlPlane` and `router-dump-ingest` run both allowlisted probe
 and selected plug-in ingestion in fresh child processes created with Python's
 `spawn` start method. The checked child deadline is 300 seconds by default and
 covers process startup, plug-in work, result transfer, and clean exit. The
@@ -382,6 +382,18 @@ safely cancel an arbitrary thread, so core does not create a daemon helper
 that survives an apparent timeout. Process mode is the only killable
 production boundary.
 
+A composition descriptor may deliberately choose the compatibility boundary
+with `PluginCompositionDeployment(..., allow_inline_only=True)`. The option is
+fixed by deployment code and bound into its v2 digest; requests and uploads
+cannot toggle it. If any sealed primary or provider record is inline-only,
+including an unused historical provider, `requires_inline_execution` forces the
+complete primary pipeline inline. Inline execution has no subprocess crash,
+CPU, or memory containment, no killable timeout, and no interruptible `close()`
+guarantee. One live object/state can be shared across jobs, tenants, and
+workers. All users of the instance must trust it; use thread-safe plug-ins or
+`max_workers=1`. The publisher remains PROCESS by default unless separately
+overridden.
+
 The candidate field is named `package_hash` for compatibility, but its value
 is an opaque exact registry identity. A trusted loader may register an
 immutable package/artifact digest. Otherwise core derives a bounded
@@ -395,18 +407,21 @@ not relocation-stable. Registries,
 headless ingestion, and the server control plane fail closed when that
 executable identity cannot be derived. A compatibility-only local/test caller
 must explicitly construct `PluginRegistry(..., allow_manifest_identity=True)`;
-headless and server control planes reject that registry. Clients always echo
-the returned value.
+strict headless and server control planes reject that registry. An explicitly
+trusted-inline deployment may admit it as manifest-only authority. Clients
+always echo the returned value.
 
 If only the stateful process target is unattestable while the package digest is
 valid, that non-strict local registry records `inline_only` compatibility and
 continues to revalidate package bytes for trusted inline calls. It supplies no
 worker bootstrap and is rejected by headless PROCESS execution and durable
-publication. Strict and explicit-digest registrations remain fail-closed.
+publication unless the deployment explicitly opts into trusted-inline mode.
+Strict and explicit-digest registrations remain fail-closed.
 At construction, the durable control plane takes sealed exact snapshots of the
 primary and capability-provider registries. Registrations added later to the
 caller's local containers cannot enter probing or publication, and plan-bound
-capability routing rejects compatibility records retained for local use.
+capability routing rejects compatibility records unless both the router policy
+and the retained v3 plan carry trusted-inline authority.
 
 Content-addressed publication uses verified same-directory temporary files
 and atomic replacement. A truncated final object left by an interrupted older
@@ -1654,7 +1669,7 @@ relationship, or promotes a human assertion into device truth.
 
 ## 10. Operational limits and scaling boundary
 
-The checked defaults are two queue-coordination worker threads, killable
+The strict checked defaults are two queue-coordination worker threads, killable
 spawned child processes for plug-in probe and ingestion, a 300-second child
 deadline, 300-second renewable leases, three attempts, at most 1,000 active
 imports per workspace, 1 MiB upload chunks, an 8 GiB upload limit, a 2 GiB

@@ -24,6 +24,12 @@ from router_dump_analyzer import (
     FederationLinkerRegistry,
     FederationLinkExecutor,
     PLUGIN_PROCESS_BOOTSTRAP_DESCRIPTOR_ATTRIBUTE,
+    CapabilityProviderRegistry,
+    PluginCompositionDeployment,
+    PluginCompositionPolicy,
+    PluginExecutionPlan,
+    PluginExecutionPlanAuthority,
+    PluginRegistry,
     PluginProcessBootstrapDescriptor,
     RevisionSetCapabilityRouter,
     TopologyFederationAssembly,
@@ -60,6 +66,26 @@ class MemoryArtifactReader:
 
 def _application_factory(request: ControlPlaneApplicationRequest) -> object:
     return request.control_plane
+
+
+def _trusted_inline_deployment(
+    registry: PluginRegistry,
+    providers: CapabilityProviderRegistry,
+    policy: PluginCompositionPolicy,
+) -> PluginCompositionDeployment:
+    deployment = PluginCompositionDeployment(
+        registry,
+        providers,
+        policy,
+        allow_inline_only=True,
+    )
+    requires_inline: bool = deployment.requires_inline_execution
+    del requires_inline
+    return deployment
+
+
+def _plan_authority(plan: PluginExecutionPlan) -> PluginExecutionPlanAuthority:
+    return plan.execution_plan_authority
 
 
 def _exercise_federation_coordinator(

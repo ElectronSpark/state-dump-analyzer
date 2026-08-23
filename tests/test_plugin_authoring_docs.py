@@ -254,6 +254,29 @@ class PluginAuthoringDocumentationTests(unittest.TestCase):
         self.assertIn("exactly one bounded", api_contract)
         self.assertIn("process-control", api_contract)
 
+    def test_trusted_inline_durable_admission_is_explicit_and_bounded(self) -> None:
+        documents = tuple(
+            (ROOT / path).read_text(encoding="utf-8")
+            for path in (
+                "README.md",
+                "demo/README.md",
+                "docs/plugin-author-quickstart.md",
+                "docs/plugin-contract.md",
+                "docs/api-contract.md",
+                "docs/architecture.md",
+                "docs/control-plane.md",
+            )
+        )
+        for document in documents:
+            with self.subTest(document=document[:32]):
+                self.assertIn("allow_inline_only=True", document)
+                self.assertIn("PROCESS", document)
+                self.assertIn("max_workers=1", document)
+                self.assertIn("killable", document)
+        for document in documents[2:5]:
+            with self.subTest(authority_document=document[:32]):
+                self.assertIn("trusted_inline_manifest", document)
+
     def test_codex_and_fable_share_one_maintenance_rule(self) -> None:
         memory = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         fable_import = (ROOT / "CLAUDE.md").read_text(encoding="utf-8").strip()

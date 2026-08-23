@@ -683,6 +683,7 @@ def run(
         composition_options = {
             "plugin_composition_policy": composition.policy,
             "capability_providers": composition.capability_providers,
+            "allow_inline_only": composition.allow_inline_only,
         }
     else:
         loaded_plugins = _load_plugins(

@@ -79,6 +79,8 @@ class ServerCliTests(unittest.TestCase):
             primary_registry=registry,
             capability_providers=providers,
             policy=policy,
+            allow_inline_only=True,
+            requires_inline_execution=True,
         )
         captured: list[_ControlPlane] = []
         contexts: list[Any] = []
@@ -116,6 +118,7 @@ class ServerCliTests(unittest.TestCase):
         self.assertIs(captured[0].values["registry"], registry)
         self.assertIs(captured[0].values["capability_providers"], providers)
         self.assertIs(captured[0].values["plugin_composition_policy"], policy)
+        self.assertIs(captured[0].values["allow_inline_only"], True)
 
     def test_installed_plugin_coordinates_reach_production_registry(self) -> None:
         loaded = LoadedPlugin(

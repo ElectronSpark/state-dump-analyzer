@@ -467,6 +467,8 @@ class DurableIngestionPipeline:
     lock_root: Path
     content_lock_root: Path
     registry: PluginRegistry
+    allow_inline_only: bool
+    requires_inline_execution: bool
     capability_providers: CapabilityProviderRegistry
     composition_policy: PluginCompositionPolicy
     publisher: RevisionCatalogPublisher
@@ -474,7 +476,7 @@ class DurableIngestionPipeline:
     limits: PipelineLimits
     retention_policy: RetentionPolicy
     worker_id: str
-    def __init__(self, root: Path, *, registry: PluginRegistry, publisher: RevisionCatalogPublisher | None = None, publisher_module_target: str | None = None, limits: PipelineLimits | None = None, retention_policy: RetentionPolicy | None = None, composition_policy: PluginCompositionPolicy | None = None, capability_providers: CapabilityProviderRegistry | None = None, worker_id: str | None = None) -> None: ...
+    def __init__(self, root: Path, *, registry: PluginRegistry, publisher: RevisionCatalogPublisher | None = None, publisher_module_target: str | None = None, limits: PipelineLimits | None = None, retention_policy: RetentionPolicy | None = None, composition_policy: PluginCompositionPolicy | None = None, capability_providers: CapabilityProviderRegistry | None = None, worker_id: str | None = None, allow_inline_only: bool = False) -> None: ...
     def start(self) -> None: ...
     def close(self, *, timeout: float = 30.0) -> None: ...
     def worker_health(self) -> WorkerHealthSnapshot: ...

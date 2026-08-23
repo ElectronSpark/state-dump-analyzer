@@ -33,6 +33,7 @@ from .ingestion_pipeline import (
     PluginRegistry,
     RegisteredPlugin,
     _require_no_inline_only_plugin_compatibility,
+    _registered_plugin_uses_inline_only_compatibility,
     registered_plugin_matches_execution_pin,
 )
 from .plugin_api import (
@@ -50,6 +51,7 @@ from .plugin_api import (
 from .plugin_execution_plan import (
     PluginExecutionPin,
     PluginExecutionPlan,
+    PluginExecutionPlanAuthority,
     plugin_execution_plan_is_executable,
     primary_parser_execution_pin,
     snapshot_plugin_execution_pin,
@@ -146,16 +148,11 @@ class CapabilityProviderRegistry:
     ) -> CapabilityProviderRegistry:
         if type(registry) is not PluginRegistry:
             raise TypeError("registry must be an exact PluginRegistry")
-        # Compatibility-only manifest identities remain valid primary parser
-        # registrations for legacy/embedded ingestion, but they are not
-        # eligible capability providers.  Omitting them here keeps a default
-        # no-composition pipeline backward compatible while any policy that
-        # tries to select one still fails closed as a missing exact provider.
-        return cls(
-            provider
-            for provider in registry.records()
-            if provider.verify_package_bytes
-        )
+        # A provider directory is an inert identity/schema index, not execution
+        # authority. Registry-created INLINE-only records may therefore be
+        # retained here; deployment, ingestion, and plan-bound routing each
+        # still require their own explicit trusted-inline authorization.
+        return cls(registry.records())
 
     def add_registered(self, provider: RegisteredPlugin) -> str:
         with self._mutation_lock:
@@ -165,9 +162,13 @@ class CapabilityProviderRegistry:
                 raise TypeError("provider must be an exact RegisteredPlugin")
             if provider._registered_execution_identity_snapshot is None:
                 raise ValueError("provider must be created by PluginRegistry.register()")
-            if not provider.verify_package_bytes:
+            if (
+                not provider.verify_package_bytes
+                and not _registered_plugin_uses_inline_only_compatibility(provider)
+            ):
                 raise ValueError(
-                    "capability providers require a revalidatable executable identity"
+                    "capability providers require a revalidatable executable "
+                    "identity or a registry-created INLINE-only identity"
                 )
             instance_id = _opaque(provider.instance_id, "provider instance_id")
             if self._provider_count >= _MAX_PROVIDERS:
@@ -531,9 +532,12 @@ class PlanBoundCapabilityRouter:
         catalog_revision_id: str,
         member_id: str,
         limits: PluginCapabilityLimits | None = None,
+        allow_inline_only: bool = False,
     ) -> None:
         if type(providers) is not CapabilityProviderRegistry:
             raise TypeError("providers must be a CapabilityProviderRegistry")
+        if type(allow_inline_only) is not bool:
+            raise TypeError("allow_inline_only must be an exact boolean")
         if plan is None:
             raise CapabilityPlanUnavailableError(
                 "selected revision has no immutable plug-in execution plan"
@@ -561,6 +565,7 @@ class PlanBoundCapabilityRouter:
         self.member_id: str = _opaque(member_id, "member_id")
         self.plan: PluginExecutionPlan = detached_plan
         self.limits: PluginCapabilityLimits = limits or PluginCapabilityLimits()
+        self.allow_inline_only: bool = allow_inline_only
         self._providers = providers
         self._bound: dict[str, _BoundProvider] = {}
 
@@ -611,15 +616,37 @@ class PlanBoundCapabilityRouter:
         registered: RegisteredPlugin,
     ) -> None:
         try:
-            _require_no_inline_only_plugin_compatibility(
-                (registered,),
-                boundary=(
-                    "plan-bound capability routing requires PROCESS-capable plug-ins"
-                ),
+            trusted_inline_plan = self.plan.execution_plan_authority in (
+                PluginExecutionPlanAuthority.TRUSTED_INLINE_ATTESTED,
+                PluginExecutionPlanAuthority.TRUSTED_INLINE_MANIFEST,
             )
+            inline_only_provider = (
+                _registered_plugin_uses_inline_only_compatibility(registered)
+            )
+            if (
+                trusted_inline_plan
+                and inline_only_provider
+                and not self.allow_inline_only
+            ):
+                raise CapabilityRouteStaleError(
+                    "trusted INLINE execution plan requires explicit routing "
+                    "authorization"
+                )
+            if (
+                not trusted_inline_plan and inline_only_provider
+            ):
+                _require_no_inline_only_plugin_compatibility(
+                    (registered,),
+                    boundary=(
+                        "PROCESS or legacy execution plans require PROCESS-capable "
+                        "plug-ins"
+                    ),
+                )
             PluginRegistry.revalidate_registered_identity(registered)
             matches = registered_plugin_matches_execution_pin(pin, registered)
         except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except CapabilityRouteStaleError:
             raise
         except BaseException as error:
             raise CapabilityRouteStaleError(

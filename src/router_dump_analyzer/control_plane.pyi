@@ -78,6 +78,8 @@ class SessionCatalogPublisher(RevisionCatalogPublisher):
 class ControlPlane:
     root: Path
     limits: ControlPlaneLimits
+    allow_inline_only: bool
+    requires_inline_execution: bool
     sessions: SqliteSessionStore
     annotations: ReviewOverlayStore
     private_analysis_runs: SqlitePrivateAnalysisRunStore
@@ -88,7 +90,7 @@ class ControlPlane:
     publisher: SessionCatalogPublisher
     ingestion: DurableIngestionPipeline
     capability_providers: CapabilityProviderRegistry
-    def __init__(self, root: str | Path, *, registry: PluginRegistry, pipeline_limits: PipelineLimits | None = None, retention_policy: RetentionPolicy | None = None, plugin_composition_policy: PluginCompositionPolicy | None = None, capability_providers: CapabilityProviderRegistry | None = None, limits: ControlPlaneLimits | None = None, private_analysis_runners: tuple[PrivateAnalysisRunnerRegistration, ...] = (), private_analysis_execution_limits: PrivateAnalysisExecutionLimits | None = None, private_analysis_ceilings: PrivateAnalysisDeploymentCeilings | None = None) -> None: ...
+    def __init__(self, root: str | Path, *, registry: PluginRegistry, pipeline_limits: PipelineLimits | None = None, retention_policy: RetentionPolicy | None = None, plugin_composition_policy: PluginCompositionPolicy | None = None, capability_providers: CapabilityProviderRegistry | None = None, limits: ControlPlaneLimits | None = None, private_analysis_runners: tuple[PrivateAnalysisRunnerRegistration, ...] = (), private_analysis_execution_limits: PrivateAnalysisExecutionLimits | None = None, private_analysis_ceilings: PrivateAnalysisDeploymentCeilings | None = None, allow_inline_only: bool = False) -> None: ...
     def start(self) -> None: ...
     def close(self, *, timeout: float = 30.0) -> None: ...
     def __enter__(self) -> Self: ...

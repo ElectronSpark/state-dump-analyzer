@@ -91,7 +91,8 @@ class PlanBoundCapabilityRouter:
     member_id: str
     plan: PluginExecutionPlan
     limits: PluginCapabilityLimits
-    def __init__(self, providers: CapabilityProviderRegistry, plan: PluginExecutionPlan | None, *, catalog_revision_id: str, member_id: str, limits: PluginCapabilityLimits | None = None) -> None: ...
+    allow_inline_only: bool
+    def __init__(self, providers: CapabilityProviderRegistry, plan: PluginExecutionPlan | None, *, catalog_revision_id: str, member_id: str, limits: PluginCapabilityLimits | None = None, allow_inline_only: bool = False) -> None: ...
     def resolve(self, selector: CapabilityRouteSelector) -> PlanBoundCapabilityRoute: ...
 
 @dataclass(frozen=True, slots=True)

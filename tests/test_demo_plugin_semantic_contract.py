@@ -46,6 +46,9 @@ from router_dump_analyzer.plugin_identity import (
     PluginExecutableIdentityError,
     executable_module_target_fingerprint,
 )
+from router_dump_analyzer.plugin_execution_plan import (
+    PluginExecutionPlanAuthority,
+)
 from router_dump_analyzer.plugin_loading import (
     load_plugin_entry_point_with_coordinates,
 )
@@ -268,6 +271,7 @@ class DemoPluginSemanticContractTests(unittest.TestCase):
             result,
             capability_providers=deployment.capability_providers,
             composition_policy=deployment.policy,
+            execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
         )
 
         self.assertEqual(

@@ -82,6 +82,8 @@ from .ingestion_pipeline import (
     RetentionReport,
     RevisionCatalogPublisher,
     _require_no_inline_only_plugin_compatibility,
+    _registered_plugin_uses_inline_only_compatibility,
+    _registered_plugins_require_inline_execution,
     validate_ingestion_state_root,
 )
 from .normalized_data import (
@@ -1267,11 +1269,29 @@ class ControlPlane:
         private_analysis_runners: tuple[PrivateAnalysisRunnerRegistration, ...] = (),
         private_analysis_execution_limits: PrivateAnalysisExecutionLimits | None = None,
         private_analysis_ceilings: PrivateAnalysisDeploymentCeilings | None = None,
+        allow_inline_only: bool = False,
     ) -> None:
         if type(registry) is not PluginRegistry:
             raise TypeError("registry must be an exact PluginRegistry")
+        if type(allow_inline_only) is not bool:
+            raise TypeError("allow_inline_only must be an exact boolean")
+        if pipeline_limits is not None and type(pipeline_limits) is not PipelineLimits:
+            raise TypeError("pipeline_limits must be PipelineLimits or None")
         authority_registry = registry._sealed_snapshot()
-        authority_registry.require_executable_identities()
+        authority_records = authority_registry.records()
+        if allow_inline_only:
+            for record in authority_records:
+                PluginRegistry.revalidate_registered_identity(record)
+                if (
+                    not record.verify_package_bytes
+                    and not _registered_plugin_uses_inline_only_compatibility(record)
+                ):
+                    raise ValueError(
+                        "trusted INLINE-only durable control plane requires "
+                        "registered manifest compatibility identities"
+                    )
+        else:
+            authority_registry.require_executable_identities()
         authority_capability_providers: CapabilityProviderRegistry | None = None
         if capability_providers is not None:
             if type(capability_providers) is not CapabilityProviderRegistry:
@@ -1282,11 +1302,59 @@ class ControlPlane:
             authority_capability_providers = (
                 capability_providers._sealed_snapshot()
             )
-            _require_no_inline_only_plugin_compatibility(
-                authority_capability_providers.records(),
-                boundary=(
-                    "durable control plane requires PROCESS-capable plug-in providers"
-                ),
+            provider_records = authority_capability_providers.records()
+            if not allow_inline_only:
+                _require_no_inline_only_plugin_compatibility(
+                    provider_records,
+                    boundary=(
+                        "durable control plane requires PROCESS-capable plug-in "
+                        "providers"
+                    ),
+                )
+            else:
+                for record in provider_records:
+                    PluginRegistry.revalidate_registered_identity(record)
+                    if (
+                        not record.verify_package_bytes
+                        and not _registered_plugin_uses_inline_only_compatibility(
+                            record
+                        )
+                    ):
+                        raise ValueError(
+                            "trusted INLINE-only capability providers require "
+                            "registered manifest compatibility identities"
+                        )
+        else:
+            provider_records = authority_records
+        requires_inline_execution = _registered_plugins_require_inline_execution(
+            (*authority_records, *provider_records)
+        )
+        effective_pipeline_limits = pipeline_limits or PipelineLimits(
+            plugin_execution_mode=(
+                PluginExecutionMode.INLINE
+                if requires_inline_execution
+                else PluginExecutionMode.PROCESS
+            ),
+            publisher_execution_mode=PluginExecutionMode.PROCESS,
+        )
+        if (
+            requires_inline_execution
+            and effective_pipeline_limits.plugin_execution_mode
+            is not PluginExecutionMode.INLINE
+        ):
+            raise ValueError(
+                "trusted INLINE-only durable control plane requires "
+                "PipelineLimits(plugin_execution_mode='inline')"
+            )
+        if (
+            allow_inline_only
+            and effective_pipeline_limits.plugin_execution_mode
+            is PluginExecutionMode.INLINE
+            and effective_pipeline_limits.publisher_execution_mode is None
+        ):
+            effective_pipeline_limits = replace(
+                effective_pipeline_limits,
+                publisher_execution_mode=PluginExecutionMode.PROCESS,
             )
         # Validate the longest core-owned ingestion pathname before creating
         # SQLite files or directories, so an unsupported Windows state root
@@ -1294,9 +1362,8 @@ class ControlPlane:
         self.root: Path = validate_ingestion_state_root(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.limits: ControlPlaneLimits = limits or ControlPlaneLimits()
-        effective_pipeline_limits = pipeline_limits or PipelineLimits(
-            plugin_execution_mode=PluginExecutionMode.PROCESS,
-        )
+        self.allow_inline_only: bool = allow_inline_only
+        self.requires_inline_execution: bool = requires_inline_execution
         self._lock = threading.RLock()
         self._closed = False
         self._started = False
@@ -1447,6 +1514,7 @@ class ControlPlane:
                 retention_policy=retention_policy,
                 composition_policy=plugin_composition_policy,
                 capability_providers=authority_capability_providers,
+                allow_inline_only=allow_inline_only,
             )
             # Published execution plans and their exact provider directory
             # remain available to topology, route, and private-analysis
@@ -2761,6 +2829,7 @@ class ControlPlane:
             descriptor.execution_plan,
             catalog_revision_id=descriptor.revision_id,
             member_id=member_id,
+            allow_inline_only=self.allow_inline_only,
         )
 
     def capability_router_for_revision_set(

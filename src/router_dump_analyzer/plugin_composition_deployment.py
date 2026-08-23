@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import importlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
@@ -22,12 +22,14 @@ from .ingestion_pipeline import (
     PluginRegistry,
     RegisteredPlugin,
     _require_no_inline_only_plugin_compatibility,
+    _registered_plugin_uses_inline_only_compatibility,
+    _registered_plugins_require_inline_execution,
 )
 from .plugin_composition import PluginCompositionPolicy
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 
 PLUGIN_COMPOSITION_DEPLOYMENT_VERSION: Final = (
-    "router_dump_analyzer.plugin_composition_deployment.v1"
+    "router_dump_analyzer.plugin_composition_deployment.v2"
 )
 
 _PATH_TYPE: Final = type(Path())
@@ -56,11 +58,21 @@ class PluginCompositionDeploymentContext:
         object.__setattr__(self, "state_dir", resolved)
 
 
-def _execution_coordinate(record: RegisteredPlugin) -> str:
+def _execution_coordinate(
+    record: RegisteredPlugin,
+    *,
+    allow_inline_only: bool,
+) -> str:
     if type(record) is not RegisteredPlugin:
         raise TypeError("deployment registries must contain registered plug-ins")
     if (
-        not record.verify_package_bytes
+        (
+            not record.verify_package_bytes
+            and not (
+                allow_inline_only
+                and _registered_plugin_uses_inline_only_compatibility(record)
+            )
+        )
         or record._registered_execution_identity_snapshot is None
     ):
         raise ValueError("deployment plug-ins require executable identities")
@@ -82,6 +94,8 @@ def _deployment_digest(
     primary_records: tuple[RegisteredPlugin, ...],
     provider_records: tuple[RegisteredPlugin, ...],
     policy: PluginCompositionPolicy,
+    *,
+    allow_inline_only: bool,
 ) -> str:
     # Registered execution identities are already content-addressed projections
     # of exact configured instances.  Hashing only those opaque coordinates
@@ -89,11 +103,20 @@ def _deployment_digest(
     # labels into this deployment-level identity document.
     payload = {
         "contract_version": PLUGIN_COMPOSITION_DEPLOYMENT_VERSION,
+        "allow_inline_only": allow_inline_only,
         "primary_execution_identities": sorted(
-            _execution_coordinate(record) for record in primary_records
+            _execution_coordinate(
+                record,
+                allow_inline_only=allow_inline_only,
+            )
+            for record in primary_records
         ),
         "provider_execution_identities": sorted(
-            _execution_coordinate(record) for record in provider_records
+            _execution_coordinate(
+                record,
+                allow_inline_only=allow_inline_only,
+            )
+            for record in provider_records
         ),
         "policy_digest": policy.policy_digest,
     }
@@ -108,6 +131,8 @@ class PluginCompositionDeployment:
     capability_providers: CapabilityProviderRegistry
     policy: PluginCompositionPolicy
     deployment_digest: str = ""
+    allow_inline_only: bool = field(default=False, kw_only=True)
+    requires_inline_execution: bool = field(init=False)
 
     def __post_init__(self) -> None:
         if type(self.primary_registry) is not PluginRegistry:
@@ -120,6 +145,8 @@ class PluginCompositionDeployment:
             raise TypeError("policy must be an exact PluginCompositionPolicy")
         if type(self.deployment_digest) is not str:
             raise TypeError("deployment_digest must be an exact string")
+        if type(self.allow_inline_only) is not bool:
+            raise TypeError("allow_inline_only must be an exact boolean")
 
         authority_primary_registry = self.primary_registry._sealed_snapshot()
         authority_capability_providers = (
@@ -140,14 +167,30 @@ class PluginCompositionDeployment:
         provider_records = authority_capability_providers.records()
         if not primary_records:
             raise ValueError("deployment requires at least one primary plug-in")
-        _require_no_inline_only_plugin_compatibility(
-            (*primary_records, *provider_records),
-            boundary="plug-in composition deployment requires PROCESS-capable plug-ins",
+        all_records = (*primary_records, *provider_records)
+        requires_inline_execution = _registered_plugins_require_inline_execution(
+            all_records
         )
+        object.__setattr__(
+            self,
+            "requires_inline_execution",
+            requires_inline_execution,
+        )
+        if not self.allow_inline_only:
+            _require_no_inline_only_plugin_compatibility(
+                all_records,
+                boundary=(
+                    "plug-in composition deployment requires PROCESS-capable "
+                    "plug-ins unless allow_inline_only=True"
+                ),
+            )
 
         primary_by_coordinate: dict[tuple[str, str], RegisteredPlugin] = {}
         for primary in primary_records:
-            identity = _execution_coordinate(primary)
+            identity = _execution_coordinate(
+                primary,
+                allow_inline_only=self.allow_inline_only,
+            )
             coordinate = (primary.instance_id, identity)
             if coordinate in primary_by_coordinate:
                 raise ValueError("primary execution coordinates must be unique")
@@ -193,7 +236,12 @@ class PluginCompositionDeployment:
         if len(used_primary_coordinates) != len(self.policy.rules):
             raise ValueError("composition policy contains an unused rule")
 
-        expected = _deployment_digest(primary_records, provider_records, self.policy)
+        expected = _deployment_digest(
+            primary_records,
+            provider_records,
+            self.policy,
+            allow_inline_only=self.allow_inline_only,
+        )
         if self.deployment_digest:
             if (
                 _DIGEST.fullmatch(self.deployment_digest) is None
@@ -242,6 +290,7 @@ def _validated_deployment(value: object) -> PluginCompositionDeployment:
         capability_providers=value.capability_providers,
         policy=value.policy,
         deployment_digest=value.deployment_digest,
+        allow_inline_only=value.allow_inline_only,
     )
 
 

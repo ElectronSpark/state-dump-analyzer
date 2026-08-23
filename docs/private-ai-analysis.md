@@ -263,13 +263,14 @@ execution plan therefore qualifies every evidence
 producer without relying on registration order, matching product names, or a
 synthetic composite plug-in.
 
-The `plugin_schema.v1` evidence payload includes a current plan-v2 pin's exact
+The `plugin_schema.v1` evidence payload includes a current plan-v3 pin's exact
 content-addressed `registered_execution_identity`. A retained plan-v1 pin had
 neither that field nor the current timeline/composition semantics. Such a plan
 remains catalog-readable but is rejected before corpus construction; its
 internal all-zero sentinel is never emitted as evidence authority. Changing a
 v2 identity changes the payload content digest, evidence reference digest, and
-corpus snapshot identity.
+corpus snapshot identity. Retained plan-v2 pins carry the same registered
+execution identity but decode without invented execution authority.
 
 ## Typed request and advisory-output values
 

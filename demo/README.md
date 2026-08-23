@@ -158,6 +158,30 @@ the durable import stores that policy digest and workers reject restart drift.
 deliberately does not hide several providers behind a composite plug-in. The
 process parent also revalidates every selected auxiliary after child parsing
 before accepting its returned plan; live drift cannot reach revision staging.
+
+The bundled demo deliberately keeps that strict PROCESS default. A trusted
+single-host deployment with a registry-created `inline_only` plug-in can adapt
+the same factory shape explicitly:
+
+```python
+from router_dump_analyzer import PluginCompositionDeployment
+
+return PluginCompositionDeployment(
+    primary_registry,
+    capability_providers,
+    composition_policy,
+    allow_inline_only=True,
+)
+```
+
+The option is part of deployment code, not an HTTP or upload switch. It forces
+the whole primary pipeline inline when any primary or retained provider record
+requires it—even an unused historical provider—and plan v3 records the weakest
+whole-plan authority. Use it only when every tenant/operator trusts the live
+plug-in. There is no child-process crash/resource containment or killable
+timeout; `close()` may stall, and live state may be shared concurrently. Make
+the plug-in thread-safe or set `max_workers=1`. The publisher remains PROCESS
+by default. A manifest-only plan is not code-byte reproducible.
 The executable heterogeneous cases live in
 `tests/test_demo_plugin_semantic_contract.py`,
 `tests/test_plugin_composition.py`, and `tests/test_capability_router.py`; they

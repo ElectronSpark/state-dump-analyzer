@@ -81,6 +81,7 @@ from .plugin_composition import (
 from .plugin_execution_plan import (
     DecoderIdentity,
     PluginArtifactIdentity,
+    PluginExecutionPlanAuthority,
     PluginExecutionPin,
     PluginExecutionPlan,
     plugin_execution_pin_uses_legacy_identity,
@@ -1717,18 +1718,47 @@ def _require_no_inline_only_plugin_compatibility(
     inline_only = tuple(
         f"{record.plugin_id}@{record.plugin_version}"
         for record in selected
-        if record._process_bootstrap is None
-        and record._process_bootstrap_error
-        in {
-            _MANIFEST_PROCESS_BOOTSTRAP_ERROR,
-            _PROCESS_TARGET_PROCESS_BOOTSTRAP_ERROR,
-        }
+        if _registered_plugin_uses_inline_only_compatibility(record)
     )
     if inline_only:
         raise ValueError(
             f"{boundary}; INLINE-only compatibility registrations: "
             + ", ".join(inline_only)
         )
+
+
+def _registered_plugin_uses_inline_only_compatibility(
+    record: RegisteredPlugin,
+) -> bool:
+    """Return whether a registry explicitly admitted INLINE compatibility."""
+
+    if type(record) is not RegisteredPlugin:
+        raise TypeError("plug-in compatibility checks require registered plug-ins")
+    if type(record._process_bootstrap) is _PluginProcessBootstrap:
+        return False
+    return record._process_bootstrap_error in (
+        _MANIFEST_PROCESS_BOOTSTRAP_ERROR,
+        _PROCESS_TARGET_PROCESS_BOOTSTRAP_ERROR,
+    )
+
+
+def _validated_allow_inline_only(value: object) -> bool:
+    """Validate one authority-bearing trusted-inline switch exactly."""
+
+    if type(value) is not bool:
+        raise TypeError("allow_inline_only must be an exact boolean")
+    return value
+
+
+def _registered_plugins_require_inline_execution(
+    records: Iterable[RegisteredPlugin],
+) -> bool:
+    """Return whether any selected registration is explicitly INLINE-only."""
+
+    return any(
+        _registered_plugin_uses_inline_only_compatibility(record)
+        for record in tuple(records)
+    )
 
 
 def registered_plugin_matches_execution_pin(
@@ -2955,11 +2985,17 @@ def _registered_execution_pin(
     *,
     schema_digest: str,
     roles: tuple[str, ...],
+    allow_inline_only: bool = False,
 ) -> PluginExecutionPin:
-    _require_no_inline_only_plugin_compatibility(
-        (registered,),
-        boundary="plug-in execution pins require PROCESS-capable plug-ins",
-    )
+    allow_inline_only = _validated_allow_inline_only(allow_inline_only)
+    if not allow_inline_only:
+        _require_no_inline_only_plugin_compatibility(
+            (registered,),
+            boundary=(
+                "plug-in execution pins require PROCESS-capable plug-ins unless "
+                "trusted INLINE-only execution is explicit"
+            ),
+        )
     return PluginExecutionPin(
         instance_id=registered.instance_id,
         plugin_id=registered.plugin_id,
@@ -2984,18 +3020,28 @@ def _registered_execution_pin(
 def _auxiliary_execution_pin(
     capability_providers: CapabilityProviderRegistry,
     selection: PluginParticipationSelection,
+    *,
+    allow_inline_only: bool = False,
 ) -> PluginExecutionPin:
+    allow_inline_only = _validated_allow_inline_only(allow_inline_only)
     try:
         registered = capability_providers.get_by_execution_identity(
             selection.instance_id,
             selection.registered_execution_identity,
         )
-        _require_no_inline_only_plugin_compatibility(
-            (registered,),
-            boundary="durable ingestion requires PROCESS-capable auxiliary plug-ins",
-        )
+        if not allow_inline_only:
+            _require_no_inline_only_plugin_compatibility(
+                (registered,),
+                boundary=(
+                    "durable ingestion requires PROCESS-capable auxiliary plug-ins "
+                    "unless trusted INLINE-only execution is explicit"
+                ),
+            )
         PluginRegistry.revalidate_registered_identity(registered)
-        if not registered.verify_package_bytes:
+        if not registered.verify_package_bytes and not (
+            allow_inline_only
+            and _registered_plugin_uses_inline_only_compatibility(registered)
+        ):
             raise IngestionPipelineError(
                 "an auxiliary plug-in requires a revalidatable executable identity"
             )
@@ -3020,7 +3066,90 @@ def _auxiliary_execution_pin(
         registered,
         schema_digest=schema_digest,
         roles=selection.roles,
+        allow_inline_only=allow_inline_only,
     )
+
+
+def _selected_composition_records(
+    registered: RegisteredPlugin,
+    *,
+    capability_providers: CapabilityProviderRegistry | None,
+    composition_policy: PluginCompositionPolicy | None,
+) -> tuple[RegisteredPlugin, ...]:
+    """Resolve the exact live records selected for one primary execution."""
+
+    if type(registered) is not RegisteredPlugin:
+        raise TypeError("registered must be an exact RegisteredPlugin")
+    selected_policy = (
+        PluginCompositionPolicy() if composition_policy is None else composition_policy
+    )
+    if type(selected_policy) is not PluginCompositionPolicy:
+        raise TypeError("composition_policy must be PluginCompositionPolicy or None")
+    selections = selected_policy.auxiliaries_for(
+        primary_instance_id=registered.instance_id,
+        primary_registered_execution_identity=(
+            registered.registered_execution_identity
+        ),
+    )
+    if selections and capability_providers is None:
+        raise IngestionPipelineError(
+            "an auxiliary plug-in composition requires the exact capability "
+            "provider registry"
+        )
+    auxiliaries: list[RegisteredPlugin] = []
+    for selection in selections:
+        assert capability_providers is not None
+        try:
+            auxiliary = capability_providers.get_by_execution_identity(
+                selection.instance_id,
+                selection.registered_execution_identity,
+            )
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise IngestionPipelineError(
+                "an auxiliary plug-in selected by the composition policy is "
+                "not registered"
+            ) from error
+        auxiliaries.append(auxiliary)
+    return (registered, *auxiliaries)
+
+
+def _execution_plan_authority_for_mode(
+    records: Iterable[RegisteredPlugin],
+    *,
+    execution_mode: PluginExecutionMode,
+    allow_inline_only: bool,
+) -> PluginExecutionPlanAuthority:
+    """Derive the closed durable authority from the actual execution branch."""
+
+    allow_inline_only = _validated_allow_inline_only(allow_inline_only)
+    if type(execution_mode) is not PluginExecutionMode:
+        raise TypeError("execution_mode must be an exact PluginExecutionMode")
+    selected = tuple(records)
+    if not selected or any(type(record) is not RegisteredPlugin for record in selected):
+        raise TypeError("execution authority requires registered plug-ins")
+    contains_inline_only = _registered_plugins_require_inline_execution(selected)
+    if contains_inline_only and not allow_inline_only:
+        _require_no_inline_only_plugin_compatibility(
+            selected,
+            boundary=(
+                "durable ingestion requires PROCESS-capable plug-ins unless "
+                "trusted INLINE-only execution is explicit"
+            ),
+        )
+    if execution_mode is PluginExecutionMode.PROCESS:
+        if contains_inline_only:
+            raise IngestionPipelineError(
+                "PROCESS execution cannot use an INLINE-only plug-in"
+            )
+        return PluginExecutionPlanAuthority.PROCESS
+    if any(
+        record.package_hash.startswith("manifest-sha256:")
+        for record in selected
+    ):
+        return PluginExecutionPlanAuthority.TRUSTED_INLINE_MANIFEST
+    return PluginExecutionPlanAuthority.TRUSTED_INLINE_ATTESTED
 
 
 def _frozen_auxiliary_execution_pins(
@@ -3088,9 +3217,20 @@ def _execution_plan_for_result(
     capability_providers: CapabilityProviderRegistry | None = None,
     composition_policy: PluginCompositionPolicy | None = None,
     frozen_auxiliary_pins: tuple[PluginExecutionPin, ...] | None = None,
+    allow_inline_only: bool = False,
+    execution_plan_authority: PluginExecutionPlanAuthority,
 ) -> PluginExecutionPlan:
     """Freeze the executable interpretation that produced one result."""
 
+    allow_inline_only = _validated_allow_inline_only(allow_inline_only)
+    if (
+        type(execution_plan_authority)
+        is not PluginExecutionPlanAuthority
+    ):
+        raise TypeError(
+            "execution_plan_authority must be an exact "
+            "PluginExecutionPlanAuthority"
+        )
     decoder_identity = _ACTIVE_DECODER_IDENTITY.get()
     _ACTIVE_DECODER_IDENTITY.set(None)
     if decoder_identity is not None:
@@ -3120,6 +3260,7 @@ def _execution_plan_for_result(
         registered,
         schema_digest=schema_digest,
         roles=("primary_parser",),
+        allow_inline_only=allow_inline_only,
     )
     selected_policy = (
         PluginCompositionPolicy() if composition_policy is None else composition_policy
@@ -3164,7 +3305,11 @@ def _execution_plan_for_result(
     else:
         auxiliary_pins = (
             tuple(
-                _auxiliary_execution_pin(capability_providers, selection)
+                _auxiliary_execution_pin(
+                    capability_providers,
+                    selection,
+                    allow_inline_only=allow_inline_only,
+                )
                 for selection in auxiliary_selections
             )
             if capability_providers is not None
@@ -3176,6 +3321,7 @@ def _execution_plan_for_result(
         plugins=(primary_pin, *auxiliary_pins),
         decoder=executed_decoder_identity,
         composition_policy_digest=selected_policy.policy_digest,
+        execution_plan_authority=execution_plan_authority,
     )
 
 
@@ -3186,13 +3332,18 @@ def _dataset_with_execution_plan(
     capability_providers: CapabilityProviderRegistry | None = None,
     composition_policy: PluginCompositionPolicy | None = None,
     frozen_auxiliary_pins: tuple[PluginExecutionPin, ...] | None = None,
+    allow_inline_only: bool = False,
+    execution_plan_authority: PluginExecutionPlanAuthority,
 ) -> tuple[bytes, PluginExecutionPlan]:
+    allow_inline_only = _validated_allow_inline_only(allow_inline_only)
     plan = _execution_plan_for_result(
         registered,
         result,
         capability_providers=capability_providers,
         composition_policy=composition_policy,
         frozen_auxiliary_pins=frozen_auxiliary_pins,
+        allow_inline_only=allow_inline_only,
+        execution_plan_authority=execution_plan_authority,
     )
     dataset = dict(result.dataset)
     raw_ingestion = dataset.get("_ingestion")
@@ -3230,6 +3381,8 @@ def _execution_plan_matches_composition(
     *,
     capability_providers: CapabilityProviderRegistry,
     composition_policy: PluginCompositionPolicy,
+    allow_inline_only: bool = False,
+    expected_execution_plan_authority: PluginExecutionPlanAuthority,
 ) -> bool:
     """Re-admit a child-produced plan against the exact parent policy.
 
@@ -3239,13 +3392,32 @@ def _execution_plan_matches_composition(
     before the plan can be staged.
     """
 
-    try:
-        _require_no_inline_only_plugin_compatibility(
-            (registered,),
-            boundary=(
-                "durable ingestion requires PROCESS-capable primary plug-ins"
-            ),
+    allow_inline_only = _validated_allow_inline_only(allow_inline_only)
+    if (
+        type(expected_execution_plan_authority)
+        is not PluginExecutionPlanAuthority
+    ):
+        raise TypeError(
+            "expected_execution_plan_authority must be an exact "
+            "PluginExecutionPlanAuthority"
         )
+    if plan.execution_plan_authority is not expected_execution_plan_authority:
+        return False
+    if (
+        plan.execution_plan_authority
+        is PluginExecutionPlanAuthority.PROCESS
+        and _registered_plugin_uses_inline_only_compatibility(registered)
+    ):
+        return False
+    try:
+        if not allow_inline_only:
+            _require_no_inline_only_plugin_compatibility(
+                (registered,),
+                boundary=(
+                    "durable ingestion requires PROCESS-capable primary plug-ins "
+                    "unless trusted INLINE-only execution is explicit"
+                ),
+            )
         PluginRegistry.revalidate_registered_identity(registered)
     except PROCESS_CONTROL_EXCEPTIONS:
         raise
@@ -3274,15 +3446,31 @@ def _execution_plan_matches_composition(
                 selection.instance_id,
                 selection.registered_execution_identity,
             )
-            _require_no_inline_only_plugin_compatibility(
-                (auxiliary,),
-                boundary=(
-                    "durable ingestion requires PROCESS-capable auxiliary plug-ins"
-                ),
-            )
+            if (
+                plan.execution_plan_authority
+                is PluginExecutionPlanAuthority.PROCESS
+                and _registered_plugin_uses_inline_only_compatibility(auxiliary)
+            ):
+                return False
+            if not allow_inline_only:
+                _require_no_inline_only_plugin_compatibility(
+                    (auxiliary,),
+                    boundary=(
+                        "durable ingestion requires PROCESS-capable auxiliary "
+                        "plug-ins unless trusted INLINE-only execution is explicit"
+                    ),
+                )
             PluginRegistry.revalidate_registered_identity(auxiliary)
             if (
-                not auxiliary.verify_package_bytes
+                (
+                    not auxiliary.verify_package_bytes
+                    and not (
+                        allow_inline_only
+                        and _registered_plugin_uses_inline_only_compatibility(
+                            auxiliary
+                        )
+                    )
+                )
                 or auxiliary.decoder_identity is not None
                 or not registered_plugin_matches_execution_pin(pin, auxiliary)
             ):
@@ -3323,14 +3511,33 @@ def _ingest_registered_plugin(
     capability_providers: CapabilityProviderRegistry | None = None,
     composition_policy: PluginCompositionPolicy | None = None,
     frozen_auxiliary_pins: tuple[PluginExecutionPin, ...] | None = None,
+    allow_inline_only: bool = False,
+    execution_mode: PluginExecutionMode,
     node_hint: str | None,
     metadata: Mapping[str, Any],
 ) -> tuple[IngestionResult, bytes, PluginExecutionPlan]:
     """Execute and bind the identities revalidated for this exact run."""
 
-    _require_no_inline_only_plugin_compatibility(
-        (registered,),
-        boundary="durable ingestion requires PROCESS-capable primary plug-ins",
+    allow_inline_only = _validated_allow_inline_only(allow_inline_only)
+    if frozen_auxiliary_pins is not None and capability_providers is None:
+        if execution_mode is not PluginExecutionMode.PROCESS or any(
+            pin.artifact.package_hash.startswith("manifest-sha256:")
+            for pin in frozen_auxiliary_pins
+        ):
+            raise IngestionPipelineError(
+                "frozen auxiliary pins are valid only for PROCESS execution"
+            )
+        selected_records = (registered,)
+    else:
+        selected_records = _selected_composition_records(
+            registered,
+            capability_providers=capability_providers,
+            composition_policy=composition_policy,
+        )
+    execution_plan_authority = _execution_plan_authority_for_mode(
+        selected_records,
+        execution_mode=execution_mode,
+        allow_inline_only=allow_inline_only,
     )
     token = _ACTIVE_DECODER_IDENTITY.set(None)
     try:
@@ -3348,6 +3555,8 @@ def _ingest_registered_plugin(
             capability_providers=capability_providers,
             composition_policy=composition_policy,
             frozen_auxiliary_pins=frozen_auxiliary_pins,
+            allow_inline_only=allow_inline_only,
+            execution_plan_authority=execution_plan_authority,
         )
         if not _execution_plan_matches_registration(execution_plan, registered):
             raise IngestionPipelineError(
@@ -3633,6 +3842,7 @@ def _ingest_plugin_child(
             Path(input_path),
             frozen_auxiliary_pins=frozen_auxiliary_pins,
             composition_policy=composition_policy,
+            execution_mode=PluginExecutionMode.PROCESS,
             node_hint=node_hint,
             metadata=metadata,
         )
@@ -4101,11 +4311,39 @@ class DurableIngestionPipeline:
         composition_policy: PluginCompositionPolicy | None = None,
         capability_providers: CapabilityProviderRegistry | None = None,
         worker_id: str | None = None,
+        allow_inline_only: bool = False,
     ) -> None:
         if type(registry) is not PluginRegistry:
             raise TypeError("registry must be an exact PluginRegistry")
+        if type(allow_inline_only) is not bool:
+            raise TypeError("allow_inline_only must be an exact boolean")
         selected_registry = registry._sealed_snapshot()
-        selected_registry.require_executable_identities()
+        selected_records = selected_registry.records()
+        if allow_inline_only:
+            for record in selected_records:
+                PluginRegistry.revalidate_registered_identity(record)
+                if (
+                    not record.verify_package_bytes
+                    and not _registered_plugin_uses_inline_only_compatibility(record)
+                ):
+                    raise ValueError(
+                        "trusted INLINE-only durable ingestion requires registered "
+                        "manifest compatibility identities"
+                    )
+        else:
+            selected_registry.require_executable_identities()
+        selected_limits = limits or PipelineLimits()
+        if (
+            allow_inline_only
+            and selected_limits.plugin_execution_mode is PluginExecutionMode.INLINE
+            and selected_limits.publisher_execution_mode is None
+        ):
+            # Trusted-inline plug-in consent must not silently weaken the
+            # independent catalog publication boundary.
+            selected_limits = replace(
+                selected_limits,
+                publisher_execution_mode=PluginExecutionMode.PROCESS,
+            )
         self.root: Path = validate_ingestion_state_root(root)
         self.database_path: Path = self.root / "control-plane.sqlite3"
         self.blob_root: Path = self.root / "blobs"
@@ -4123,7 +4361,7 @@ class DurableIngestionPipeline:
 
         if capability_providers is None:
             candidate_capability_providers = ProviderRegistry.from_primary_registry(
-                selected_registry
+                selected_registry,
             )
         elif type(capability_providers) is not ProviderRegistry:
             raise TypeError(
@@ -4135,10 +4373,37 @@ class DurableIngestionPipeline:
         selected_capability_providers = (
             candidate_capability_providers._sealed_snapshot()
         )
-        _require_no_inline_only_plugin_compatibility(
-            selected_capability_providers.records(),
-            boundary="durable ingestion requires PROCESS-capable auxiliary plug-ins",
+        selected_provider_records = selected_capability_providers.records()
+        if not allow_inline_only:
+            _require_no_inline_only_plugin_compatibility(
+                selected_provider_records,
+                boundary=(
+                    "durable ingestion requires PROCESS-capable auxiliary plug-ins"
+                ),
+            )
+        elif any(
+            not record.verify_package_bytes
+            and not _registered_plugin_uses_inline_only_compatibility(record)
+            for record in selected_provider_records
+        ):
+            raise ValueError(
+                "trusted INLINE-only capability providers require registered "
+                "manifest compatibility identities"
+            )
+        requires_inline_execution = _registered_plugins_require_inline_execution(
+            (*selected_records, *selected_provider_records)
         )
+        if (
+            requires_inline_execution
+            and selected_limits.plugin_execution_mode
+            is not PluginExecutionMode.INLINE
+        ):
+            raise ValueError(
+                "trusted INLINE-only durable ingestion requires "
+                "PipelineLimits(plugin_execution_mode='inline')"
+            )
+        self.allow_inline_only: bool = allow_inline_only
+        self.requires_inline_execution: bool = requires_inline_execution
         self.capability_providers: CapabilityProviderRegistry = (
             selected_capability_providers
         )
@@ -4165,7 +4430,7 @@ class DurableIngestionPipeline:
                 module_target=publisher_module_target,
             )
         )
-        self.limits: PipelineLimits = limits or PipelineLimits()
+        self.limits: PipelineLimits = selected_limits
         if self.limits.plugin_execution_mode is PluginExecutionMode.PROCESS:
             # Materialize the inert descriptors now so a configured object
             # cannot remain apparently registered until the first queued job
@@ -10497,6 +10762,8 @@ class DurableIngestionPipeline:
         *,
         capability_providers: CapabilityProviderRegistry,
         composition_policy: PluginCompositionPolicy,
+        allow_inline_only: bool,
+        expected_execution_plan_authority: PluginExecutionPlanAuthority,
     ) -> _StagedChildIngestion:
         try:
             raw_revision_id = payload.get("revision_id")
@@ -10549,6 +10816,10 @@ class DurableIngestionPipeline:
                     registered,
                     capability_providers=capability_providers,
                     composition_policy=composition_policy,
+                    allow_inline_only=allow_inline_only,
+                    expected_execution_plan_authority=(
+                        expected_execution_plan_authority
+                    ),
                 )
             ):
                 raise ValueError(
@@ -10599,6 +10870,16 @@ class DurableIngestionPipeline:
             raise IngestionPipelineError("stored import metadata is invalid")
         node_hint = str(row["node_hint"]) if row["node_hint"] is not None else None
         input_path = self._blob_path(row)
+        selected_composition_records = _selected_composition_records(
+            registered,
+            capability_providers=self.capability_providers,
+            composition_policy=self.composition_policy,
+        )
+        expected_execution_plan_authority = _execution_plan_authority_for_mode(
+            selected_composition_records,
+            execution_mode=self.limits.plugin_execution_mode,
+            allow_inline_only=self.allow_inline_only,
+        )
         temporary = self.spool_root / f"{uuid4().hex}.dataset.child.partial"
         temporary_lock = temporary.with_name(f".{temporary.name}.active.lock")
         prepared_content: _PreparedContentFile | None = None
@@ -10637,6 +10918,10 @@ class DurableIngestionPipeline:
                     registered,
                     capability_providers=self.capability_providers,
                     composition_policy=self.composition_policy,
+                    allow_inline_only=self.allow_inline_only,
+                    expected_execution_plan_authority=(
+                        expected_execution_plan_authority
+                    ),
                 )
             else:
                 result, dataset_json, execution_plan = _run_plugin_inline(
@@ -10645,6 +10930,8 @@ class DurableIngestionPipeline:
                         input_path,
                         capability_providers=self.capability_providers,
                         composition_policy=self.composition_policy,
+                        allow_inline_only=self.allow_inline_only,
+                        execution_mode=self.limits.plugin_execution_mode,
                         node_hint=node_hint,
                         # Authorization/catalog coordinates remain core-private.
                         # A plug-in receives caller-supplied parsing metadata.
@@ -10700,6 +10987,10 @@ class DurableIngestionPipeline:
                 registered,
                 capability_providers=self.capability_providers,
                 composition_policy=self.composition_policy,
+                allow_inline_only=self.allow_inline_only,
+                expected_execution_plan_authority=(
+                    expected_execution_plan_authority
+                ),
             ):
                 error_type = (
                     PluginExecutionProcessError

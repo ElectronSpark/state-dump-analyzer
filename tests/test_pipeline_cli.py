@@ -145,6 +145,8 @@ class PipelineCliTests(unittest.TestCase):
             capability_providers=providers,
             policy=policy,
             deployment_digest="sha256:" + "a" * 64,
+            allow_inline_only=True,
+            requires_inline_execution=True,
         )
         captured: dict[str, object] = {}
 
@@ -200,6 +202,18 @@ class PipelineCliTests(unittest.TestCase):
         self.assertIs(captured["registry"], registry)
         self.assertIs(captured["capability_providers"], providers)
         self.assertIs(captured["plugin_composition_policy"], policy)
+        self.assertIs(captured["allow_inline_only"], True)
+        effective_limits = captured["pipeline_limits"]
+        self.assertIsInstance(effective_limits, PipelineLimits)
+        assert isinstance(effective_limits, PipelineLimits)
+        self.assertIs(
+            effective_limits.plugin_execution_mode,
+            PluginExecutionMode.INLINE,
+        )
+        self.assertIs(
+            effective_limits.effective_publisher_execution_mode,
+            PluginExecutionMode.PROCESS,
+        )
 
     def test_pre_import_failure_does_not_print_raw_exception_text(self) -> None:
         stderr = io.StringIO()

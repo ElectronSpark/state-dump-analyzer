@@ -249,6 +249,8 @@ class CoreCliTests(unittest.TestCase):
                 "primary_registry": registry,
                 "capability_providers": providers,
                 "policy": policy,
+                "allow_inline_only": True,
+                "requires_inline_execution": True,
             },
         )()
         captured: dict[str, Any] = {}
@@ -293,6 +295,7 @@ class CoreCliTests(unittest.TestCase):
         self.assertIs(captured["registry"], registry)
         self.assertIs(captured["capability_providers"], providers)
         self.assertIs(captured["plugin_composition_policy"], policy)
+        self.assertIs(captured["allow_inline_only"], True)
 
     def test_local_private_analysis_deployment_reaches_embedded_control_plane(
         self,

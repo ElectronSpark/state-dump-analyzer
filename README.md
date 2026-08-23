@@ -720,7 +720,31 @@ dump and mounts no single-node analyzer routes, frontend, or assets. Its
 configured instances remain distinct through probing, manual selection,
 restart, publication, and capability routing by their paired `instance_id` and
 `registered_execution_identity`.
-private-analysis lifecycle routes remain inert when the optional deployment
+
+The descriptor is strict by default. A trusted, single-host embedding whose
+registry intentionally uses `allow_manifest_identity=True` may opt the complete
+durable deployment into synchronous inline execution at the descriptor call
+site:
+
+```python
+from router_dump_analyzer import PluginCompositionDeployment
+
+return PluginCompositionDeployment(
+    primary_registry,
+    capability_providers,
+    composition_policy,
+    allow_inline_only=True,
+)
+```
+
+That option is deployment-owned Python authority; no upload, HTTP request, or
+command-line input can enable it. It admits registry-created `inline_only`
+records, including the manifest-identity fallback, and forces the whole primary
+ingestion pipeline inline if any primary or retained provider record requires
+it. Even an otherwise unused provider kept for historical plans therefore
+selects inline execution. The default constructor remains PROCESS-only.
+
+Private-analysis lifecycle routes remain inert when the optional deployment
 module is omitted. The `PACKAGE:ATTRIBUTE` target is process-trusted local
 Python: it must return a frozen `PrivateAnalysisDeployment`, or be a factory
 called once with a frozen context containing only the canonical state
@@ -772,7 +796,7 @@ import. The primary parser still comes from probe/selection. A
 content-addressed deployment rule may attach exact auxiliary capability
 providers and roles to that exact primary executable identity; registration
 order and matching names never select them. The policy digest is stored with
-the queued import and in the current v2 execution plan; a worker refuses to
+the queued import and in the current v3 execution plan; a worker refuses to
 continue if deployment composition has changed. Process workers also
 live-revalidate selected auxiliaries after the child returns and before its
 plan can be staged, so executable or manifest drift during parsing fails the
@@ -781,8 +805,10 @@ candidates/selection and binding the explicitly active policy before re-probe;
 staged and completed history is never rewritten. Even an unrelated policy edit
 therefore changes the durable revision/session/private-analysis identity.
 Retained plan-v1 rows stay readable but cannot route or produce private
-evidence. This lets one topology contain different platforms, firmware,
-and chip-specific helpers without merging their authority.
+evidence. Retained plan-v2 rows remain executable but decode their previously
+unrecorded execution authority as `legacy_unrecorded`; new plan-v3 rows record
+the weakest whole-plan authority. This lets one topology contain different
+platforms, firmware, and chip-specific helpers without merging their authority.
 `ControlPlane.capability_router_for_revision()` and
 `capability_router_for_revision_set()` are the production consumers: they load
 the retained plan, preserve session or snapshot member IDs, and resolve only
@@ -885,16 +911,20 @@ as a one-file package. Sourceless `.pyc`/`.pyo` modules fail closed because
 embedded build paths are not relocation-stable; their loader must supply an
 immutable artifact digest. Registry-derived identities are recalculated immediately
 before plug-in execution. The manifest-only
-compatibility fallback is available only to an explicitly opted-out local/test
-embedding (`allow_manifest_identity=True`) and cannot back durable execution.
+compatibility fallback is available only to an explicitly opted-in local/test
+registry (`allow_manifest_identity=True`). It cannot back PROCESS execution,
+but an explicitly trusted deployment may admit it with
+`PluginCompositionDeployment(..., allow_inline_only=True)`.
 If package bytes can still be derived but a stateful process target cannot be
 attested, that non-strict registry records the exact package identity as
 `inline_only`: trusted inline capability use remains available with package
-revalidation, while process workers and durable publication reject the
-registration. Explicit loader-supplied hashes and strict registries never take
-this fallback.
-The durable servers and `router-dump-ingest` run plug-in probe and parsing in
-spawned child processes with a bounded deadline (300 seconds by default).
+revalidation. Process workers still reject the registration; durable
+publication accepts it only through the same explicit trusted-inline deployment
+mode. Explicit loader-supplied hashes and strict registries never take this
+fallback.
+By default, the durable servers and `router-dump-ingest` run plug-in probe and
+parsing in spawned child processes with a bounded deadline (300 seconds by
+default).
 Timeouts are killed and reaped, become durable import failures, and never
 publish a partial dataset. Core sends only an inert scalar/tuple bootstrap,
 then reloads module-level targets or invokes importable no-argument constructors
@@ -919,7 +949,14 @@ targets fail closed. This protects the control-plane process from a hung or
 crashed plug-in; it does not remove the plug-in's filesystem, network, or
 host-user access. Programmatic embeddings may explicitly choose synchronous
 `inline` execution for trusted local/tests, but it has no timeout or
-bounded-cancellation claim; process mode is the only killable boundary.
+bounded-cancellation claim; process mode is the only killable boundary. Trusted
+inline durable deployment also forfeits subprocess crash, CPU, and memory
+containment; `close()` may stall or fail; the same live object and mutable state
+may be shared across jobs, tenants, and concurrent workers; and the plug-in has
+the embedding process's ambient host access. Every tenant and operator sharing
+that instance must trust it. Make the plug-in thread-safe or configure one
+worker (`max_workers=1`). The durable publisher remains PROCESS by default
+unless the embedding explicitly overrides that separate mode.
 Across validator descriptors/hooks, capability execution, registry probing,
 trusted inline ingestion, installed loading, runtime/session providers, and
 normalized temporal/topology/route callbacks, the core boundary policy rethrows
@@ -1090,9 +1127,9 @@ complete connector-claim path. It must end with
 4. generated typed route HTTP integration, including full-window temporal
    filtering, strict and best-effort unknown-status behavior, exact/linker
    ownership, and every incomplete or truncated fail-closed path;
-5. local-only identity compatibility without PROCESS, durable, or composition
-   authority, plus the real demo's live-runtime/PROCESS-safe class-bootstrap
-   split;
+5. local-only identity compatibility without PROCESS authority, including the
+   explicit trusted-inline durable deployment boundary, plus the real demo's
+   live-runtime/PROCESS-safe class-bootstrap split;
 6. checked-in `.pyi` drift detection;
 7. runtime/stub structural parity, including generated dataclass constructors;
 8. strict type checking of downstream public-API consumers; and

@@ -43,6 +43,7 @@ from router_dump_analyzer.plugin_composition import (
 from router_dump_analyzer.plugin_execution_plan import (
     DecoderIdentity,
     PluginExecutionPlan,
+    PluginExecutionPlanAuthority,
     plugin_execution_plan_dict,
     plugin_execution_plan_plugin_ids,
 )
@@ -130,6 +131,9 @@ class PluginCompositionTests(unittest.TestCase):
                     result,
                     capability_providers=providers,
                     composition_policy=policy,
+                    execution_plan_authority=(
+                        PluginExecutionPlanAuthority.PROCESS
+                    ),
                 )
             else:
                 DurableIngestionPipeline._child_ingestion_metadata(
@@ -137,6 +141,10 @@ class PluginCompositionTests(unittest.TestCase):
                     primary,
                     capability_providers=providers,
                     composition_policy=policy,
+                    allow_inline_only=False,
+                    expected_execution_plan_authority=(
+                        PluginExecutionPlanAuthority.PROCESS
+                    ),
                 )
         self.assertNotIn(
             "PRIVATE-AUXILIARY-MANIFEST-DETAIL",
@@ -241,6 +249,7 @@ class PluginCompositionTests(unittest.TestCase):
             result,
             capability_providers=providers,
             composition_policy=policy,
+            execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
         )
 
         self.assertEqual(
@@ -284,12 +293,14 @@ class PluginCompositionTests(unittest.TestCase):
                 result,
                 capability_providers=providers,
                 composition_policy=stale_policy,
+                execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
             )
         with self.assertRaisesRegex(TypeError, "composition_policy"):
             _execution_plan_for_result(  # type: ignore[arg-type]
                 primary,
                 result,
                 composition_policy=False,
+                execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
             )
 
     def test_unrelated_policy_change_alters_all_durable_revision_identities(
@@ -357,12 +368,14 @@ class PluginCompositionTests(unittest.TestCase):
             result,
             capability_providers=providers,
             composition_policy=original_policy,
+            execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
         )
         changed_dataset, changed_plan = _dataset_with_execution_plan(
             primary,
             result,
             capability_providers=providers,
             composition_policy=changed_policy,
+            execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
         )
         self.assertEqual(original_plan.plugins, changed_plan.plugins)
         self.assertNotEqual(
@@ -486,12 +499,14 @@ class PluginCompositionTests(unittest.TestCase):
             result,
             capability_providers=providers,
             composition_policy=policy,
+            execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
         )
         second = _execution_plan_for_result(
             primary,
             result,
             capability_providers=providers,
             composition_policy=policy,
+            execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
         )
         self.assertEqual(first, second)
         self.assertEqual(
@@ -520,7 +535,11 @@ class PluginCompositionTests(unittest.TestCase):
             source = Path(directory) / "status.jsonl"
             source.write_bytes(_fixture_bytes())
             result = coordinator.ingest(plugin, source)
-            plan = _execution_plan_for_result(registered, result)
+            plan = _execution_plan_for_result(
+                registered,
+                result,
+                execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
+            )
 
             def attest(**changes: object) -> None:
                 ingestion: dict[str, object] = {
@@ -611,6 +630,7 @@ class PluginCompositionTests(unittest.TestCase):
             result,
             capability_providers=providers,
             composition_policy=policy,
+            execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
         )
 
         def payload(plan: PluginExecutionPlan) -> dict[str, object]:
@@ -630,6 +650,10 @@ class PluginCompositionTests(unittest.TestCase):
             primary,
             capability_providers=providers,
             composition_policy=policy,
+            allow_inline_only=False,
+            expected_execution_plan_authority=(
+                PluginExecutionPlanAuthority.PROCESS
+            ),
         )
         self.assertEqual(accepted.execution_plan, valid_plan)
 
@@ -690,6 +714,10 @@ class PluginCompositionTests(unittest.TestCase):
                     primary,
                     capability_providers=providers,
                     composition_policy=policy,
+                    allow_inline_only=False,
+                    expected_execution_plan_authority=(
+                        PluginExecutionPlanAuthority.PROCESS
+                    ),
                 )
 
         with patch.object(
@@ -704,6 +732,10 @@ class PluginCompositionTests(unittest.TestCase):
                     primary,
                     capability_providers=providers,
                     composition_policy=policy,
+                    allow_inline_only=False,
+                    expected_execution_plan_authority=(
+                        PluginExecutionPlanAuthority.PROCESS
+                    ),
                 )
             )
         self.assertEqual(accepted_without_provider_invocation.execution_plan, valid_plan)
@@ -721,6 +753,10 @@ class PluginCompositionTests(unittest.TestCase):
                     primary,
                     capability_providers=providers,
                     composition_policy=policy,
+                    allow_inline_only=False,
+                    expected_execution_plan_authority=(
+                        PluginExecutionPlanAuthority.PROCESS
+                    ),
                 )
             )
         self.assertEqual(
@@ -781,6 +817,9 @@ class PluginCompositionTests(unittest.TestCase):
                         result,
                         capability_providers=providers,
                         composition_policy=policy,
+                        execution_plan_authority=(
+                            PluginExecutionPlanAuthority.PROCESS
+                        ),
                     )
                     payload = {
                         "revision_id": result.revision_id,
@@ -1005,6 +1044,7 @@ class PluginCompositionTests(unittest.TestCase):
                 result,
                 capability_providers=providers,
                 composition_policy=policy,
+                execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
             )
 
     def test_non_revalidatable_auxiliary_is_rejected_before_plan_publication(
@@ -1049,7 +1089,7 @@ class PluginCompositionTests(unittest.TestCase):
             result = primary_coordinator.ingest(primary_plugin, path)
 
         providers = CapabilityProviderRegistry.from_primary_registry(registry)
-        self.assertNotIn(auxiliary.instance_id, providers.instance_ids())
+        self.assertIn(auxiliary.instance_id, providers.instance_ids())
         with self.assertRaisesRegex(
             IngestionPipelineError,
             "identity or schema could not be frozen",
@@ -1059,7 +1099,22 @@ class PluginCompositionTests(unittest.TestCase):
                 result,
                 capability_providers=providers,
                 composition_policy=policy,
+                execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
             )
+        trusted_plan = _execution_plan_for_result(
+            primary,
+            result,
+            capability_providers=providers,
+            composition_policy=policy,
+            allow_inline_only=True,
+            execution_plan_authority=(
+                PluginExecutionPlanAuthority.TRUSTED_INLINE_MANIFEST
+            ),
+        )
+        self.assertIs(
+            trusted_plan.execution_plan_authority,
+            PluginExecutionPlanAuthority.TRUSTED_INLINE_MANIFEST,
+        )
 
     def test_process_auxiliary_pinning_matches_inline_revalidation(
         self,
@@ -1164,6 +1219,17 @@ class PluginCompositionTests(unittest.TestCase):
             ):
                 freeze()
 
+        with patch(
+            "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+            return_value=package_identity,
+        ):
+            trusted_pin = _auxiliary_execution_pin(
+                providers,
+                selection,
+                allow_inline_only=True,
+            )
+        self.assertEqual(trusted_pin.instance_id, auxiliary.instance_id)
+
         with tempfile.TemporaryDirectory() as directory:
             state_dir = Path(directory) / "state"
             with self.assertRaisesRegex(ValueError, "PROCESS-capable auxiliary"):
@@ -1176,6 +1242,22 @@ class PluginCompositionTests(unittest.TestCase):
                     ),
                 )
             self.assertFalse(state_dir.exists())
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+            return_value=package_identity,
+        ):
+            trusted_pipeline = DurableIngestionPipeline(
+                Path(directory),
+                registry=PluginRegistry((ParseOnlyPlugin(),)),
+                capability_providers=providers,
+                limits=PipelineLimits(
+                    plugin_execution_mode=PluginExecutionMode.INLINE,
+                    publisher_execution_mode=PluginExecutionMode.INLINE,
+                ),
+                allow_inline_only=True,
+            )
+            self.assertTrue(trusted_pipeline.requires_inline_execution)
+            trusted_pipeline.close()
 
     def test_durable_pipeline_seals_provider_snapshot_against_late_auxiliary(
         self,

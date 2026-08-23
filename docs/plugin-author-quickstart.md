@@ -126,12 +126,16 @@ capability-provider pins through a content-addressed
 `PluginCompositionPolicy`. A rule matches the exact primary instance and
 registered execution identity, then lists canonically ordered auxiliary
 instance identities and roles. The core freezes that policy digest with the
-import and as the v2 plan's `composition_policy_digest`, then rejects worker
+import and as the v3 plan's `composition_policy_digest`, then rejects worker
 or child-plan drift. Therefore any policy edit changes the plan, normalized
 dataset, catalog revision, session member, and private-analysis revision
-identity even when this primary parser selects the same rule. Retained plan-v1
-rows remain displayable but cannot route capabilities or produce private
-evidence. The core's `PlanBoundCapabilityRouter`
+identity even when this primary parser selects the same rule. Plan v3 also
+records the weakest whole-plan `PluginExecutionPlanAuthority` in
+`execution_plan_authority`: `process`,
+`trusted_inline_attested`, or `trusted_inline_manifest`. Retained plan-v2 rows
+remain executable and decode that formerly absent field as
+`legacy_unrecorded`; retained plan-v1 rows remain displayable but cannot route
+capabilities or produce private evidence. The core's `PlanBoundCapabilityRouter`
 resolves the resulting plan; never emulate composition with a synthetic
 composite plug-in, infer a provider from names, or depend on registration
 order. Immediately before an auxiliary pin is frozen, core revalidates that
@@ -140,7 +144,7 @@ registration-time validation alone is not execution authority. Because a
 process child may parse for a long time, the parent repeats those live checks
 around identity/schema reads and at the final child-plan acceptance edge.
 Auxiliary drift after spawn fails the import before revision staging.
-The trusted process composition root packages that policy with its exact
+The trusted composition root packages that policy with its exact
 `PluginRegistry` and `CapabilityProviderRegistry` in one frozen
 `PluginCompositionDeployment`. Load it with the mutually exclusive
 `--plugin-deployment-module PACKAGE:ATTRIBUTE` selector. Its factory receives
@@ -151,6 +155,29 @@ Create every primary and auxiliary registration before constructing the
 deployment. Construction takes sealed exact snapshots of both registries, so a
 later change to your caller-owned containers neither changes the deployment
 digest nor adds execution authority.
+
+The descriptor remains PROCESS-only unless its trusted source explicitly opts
+in at construction:
+
+```python
+from router_dump_analyzer import PluginCompositionDeployment
+
+return PluginCompositionDeployment(
+    primary_registry,
+    capability_providers,
+    composition_policy,
+    allow_inline_only=True,
+)
+```
+
+Use this only for a trusted single-host deployment. It admits registry-created
+`inline_only` registrations, including a registry's explicit manifest-identity
+fallback. The deployment-v2 digest commits to the flag. Its derived
+`requires_inline_execution` examines every primary and provider record, not
+only the provider selected by today's policy; an unused historical provider can
+therefore force the complete primary pipeline inline. The four core composition
+roots forward this policy, and neither an HTTP request nor uploaded data can
+enable it.
 
 That flag spelling applies to the standalone server, headless ingester, and
 private-analysis CLI. The interactive analyzer has two separate authorities:
@@ -991,21 +1018,37 @@ registry-derived identity immediately before execution.
 Programmatic
 registries have the same fail-closed default. A compatibility-only embedding
 must spell `PluginRegistry(..., allow_manifest_identity=True)` to enable a
-manifest-only fallback, and that registry is deliberately rejected before
-durable state is created.
+manifest-only fallback. A strict durable deployment deliberately rejects that
+registry before state is created. The explicit trusted-inline descriptor above
+is the intended composition-root admission path. A lower-level trusted
+embedding may instead pass the same exact-boolean `allow_inline_only=True` to
+`ControlPlane` or `DurableIngestionPipeline`; it must also select INLINE plug-in
+execution when an admitted registration is INLINE-only. None of these options
+can be supplied by an upload, HTTP request, or tenant.
 
 That opt-in also covers the narrower case where core can derive the package
 digest but cannot statically attest a stateful subprocess target. The
 registration is then marked `inline_only`: trusted local capability calls may
-use it after package revalidation, but PROCESS mode and every durable path
-reject it. An explicit package hash or the default strict registry never falls
-back. Do not enable this merely to make a production plug-in register; supply
-an importable immutable process target instead.
-Local code may retain that record in its mutable registry or use an unbound
-capability executor. It cannot freeze the record into an execution plan or bind
-it through `PlanBoundCapabilityRouter`. Durable pipelines snapshot and seal
-their primary/provider directories, so registrations added afterward remain
-local.
+use it after package revalidation, but PROCESS mode rejects it. An explicitly
+opted-in trusted-inline durable deployment may freeze and route it; the plan's
+authority records whether all package bytes were attested or whether the weaker
+manifest-only identity was used. An explicit package hash or the default strict
+registry never falls back. Do not enable this merely to make an untrusted or
+public production plug-in register; supply an importable immutable process
+target instead. Durable pipelines snapshot and seal their primary/provider
+directories, so registrations added afterward remain local.
+
+`trusted_inline_manifest` is deliberately weaker than reproducible executable
+identity: core can recheck the frozen manifest and registered identity, but not
+the plug-in's code bytes. `process` describes only primary ingestion behind the
+child-process boundary; it does not claim that later capability hooks are
+subprocess-isolated. Trusted inline ingestion has no killable timeout, crash or
+resource-exhaustion containment, and `close()` may stall or fail. The live
+object and its mutable state may be shared across jobs, tenants, and concurrent
+workers with ambient host access. All tenants/operators sharing the process
+must trust the plug-in; make it thread-safe or set `max_workers=1`. Core keeps
+the publisher in PROCESS mode by default unless the embedding separately and
+explicitly overrides it.
 
 For ordinary entry-point packages this is automatic. Keep every package or
 namespace search root inspectable and stable while it is loaded: across the
@@ -1022,7 +1065,7 @@ not replace a package's runtime `__path__` after registration; adding a valid
 search root changes its executable identity, while dropping the defining root
 is rejected.
 
-The durable servers and headless command invoke both probe and ingestion in a
+By default, the durable servers and headless command invoke both probe and ingestion in a
 fresh child created with Python's `spawn` start method. Core serializes only a
 bounded inert bootstrap: it never pickles the live plug-in, registry,
 coordinator, decoder, provider, or a bound method. Installed/direct-module
@@ -1072,7 +1115,7 @@ runnable demo exercises this split in an actual fresh-process ingestion test.
 Do not use it for a configured parser; a non-default configuration digest still
 requires an explicit module-level instance process target.
 
-Trusted inline-only tests may keep
+Trusted inline-only tests and explicitly opted-in deployments may keep
 a live object, but that does not make it PROCESS-capable. Open files, sockets,
 native iterators, and thread-affine objects only
 inside the child hook. The default child deadline is 300 seconds;

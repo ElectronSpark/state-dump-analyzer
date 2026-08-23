@@ -136,6 +136,83 @@ class PluginCompositionDeploymentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "INLINE-only"):
             PluginCompositionDeployment(primary_registry, providers, policy)
 
+        with patch(
+            "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+            side_effect=lambda plugin: (
+                package_identity
+                if plugin is auxiliary.plugin
+                else primary.package_hash
+            ),
+        ):
+            trusted = PluginCompositionDeployment(
+                primary_registry,
+                providers,
+                policy,
+                allow_inline_only=True,
+            )
+        self.assertTrue(trusted.allow_inline_only)
+        self.assertTrue(trusted.requires_inline_execution)
+
+    def test_manifest_only_primary_requires_explicit_trusted_inline_policy(
+        self,
+    ) -> None:
+        registry = PluginRegistry(allow_manifest_identity=True)
+        primary = registry.register(
+            ParseOnlyPlugin(),
+            instance_id="manifest-primary",
+            package_hash="manifest-sha256:" + "6" * 64,
+        )
+        providers = CapabilityProviderRegistry.from_primary_registry(registry)
+        policy = PluginCompositionPolicy(
+            (
+                PluginCompositionRule(
+                    primary_instance_id=primary.instance_id,
+                    primary_registered_execution_identity=(
+                        primary.registered_execution_identity
+                    ),
+                    auxiliaries=(),
+                ),
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "allow_inline_only=True"):
+            PluginCompositionDeployment(registry, providers, policy)
+        trusted = PluginCompositionDeployment(
+            registry,
+            providers,
+            policy,
+            allow_inline_only=True,
+        )
+        self.assertTrue(trusted.requires_inline_execution)
+        self.assertIs(
+            trusted.capability_providers.get_by_execution_identity(
+                primary.instance_id,
+                primary.registered_execution_identity,
+            ),
+            primary,
+        )
+        for invalid in (1, "true", None):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(
+                TypeError, "exact boolean"
+            ):
+                PluginCompositionDeployment(
+                    registry,
+                    providers,
+                    policy,
+                    allow_inline_only=invalid,  # type: ignore[arg-type]
+                )
+
+    def test_inline_policy_is_bound_into_the_deployment_digest(self) -> None:
+        strict = _deployment()
+        trusted = PluginCompositionDeployment(
+            strict.primary_registry,
+            strict.capability_providers,
+            strict.policy,
+            allow_inline_only=True,
+        )
+        self.assertFalse(strict.requires_inline_execution)
+        self.assertFalse(trusted.requires_inline_execution)
+        self.assertNotEqual(strict.deployment_digest, trusted.deployment_digest)
+
     def test_deployment_seals_exact_registry_snapshots_against_late_mutation(
         self,
     ) -> None:
@@ -330,7 +407,13 @@ class PluginCompositionDeploymentTests(unittest.TestCase):
     def test_loader_accepts_exact_value_and_calls_factory_once_with_detached_context(
         self,
     ) -> None:
-        deployment = _deployment()
+        base = _deployment()
+        deployment = PluginCompositionDeployment(
+            base.primary_registry,
+            base.capability_providers,
+            base.policy,
+            allow_inline_only=True,
+        )
         received: list[PluginCompositionDeploymentContext] = []
 
         def factory(context: PluginCompositionDeploymentContext) -> object:
@@ -369,6 +452,9 @@ class PluginCompositionDeploymentTests(unittest.TestCase):
         )
         self.assertEqual(loaded.deployment_digest, deployment.deployment_digest)
         self.assertEqual(exact.deployment_digest, deployment.deployment_digest)
+        self.assertTrue(loaded.allow_inline_only)
+        self.assertTrue(exact.allow_inline_only)
+        self.assertFalse(loaded.requires_inline_execution)
 
     def test_loader_bounds_failures_and_preserves_process_control(self) -> None:
         secret = r"failed at C:\private\proprietary\deployment.py"

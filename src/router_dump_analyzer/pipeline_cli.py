@@ -370,6 +370,7 @@ def run(
         )
     state_dir = configuration.state_dir.expanduser().resolve()
     composition_options: dict[str, Any] = {}
+    requires_inline_execution = False
     if configuration.plugin_deployment_module is not None:
         composition = plugin_deployment_loader(
             configuration.plugin_deployment_module,
@@ -380,7 +381,9 @@ def run(
         composition_options = {
             "plugin_composition_policy": composition.policy,
             "capability_providers": composition.capability_providers,
+            "allow_inline_only": composition.allow_inline_only,
         }
+        requires_inline_execution = composition.requires_inline_execution
     else:
         loaded_plugins = _load_plugins(
             configuration,
@@ -394,7 +397,12 @@ def run(
     effective_pipeline_limits = pipeline_limits or PipelineLimits()
     effective_pipeline_limits = replace(
         effective_pipeline_limits,
-        plugin_execution_mode=PluginExecutionMode.PROCESS,
+        plugin_execution_mode=(
+            PluginExecutionMode.INLINE
+            if requires_inline_execution
+            else PluginExecutionMode.PROCESS
+        ),
+        publisher_execution_mode=PluginExecutionMode.PROCESS,
         plugin_execution_timeout_seconds=max(
             0.05,
             min(
