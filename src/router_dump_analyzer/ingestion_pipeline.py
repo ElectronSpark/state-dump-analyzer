@@ -57,38 +57,47 @@ from .ingestion import (
     IngestionError,
     IngestionLimits,
     IngestionResult,
+    snapshot_ingestion_result_for_publication,
 )
 from .operational_logging import emit_operational_event
 from .plugin_api import (
     MAX_PROBE_DETECTED_TEXT_LENGTH,
     MAX_PROBE_REASON_LENGTH,
     AnalyzerPlugin,
+    CaptureRange,
     PluginCapability,
     PluginManifest,
     ProbeMatchKind,
     ProbeResult,
+    Provenance,
+    Quality,
     ReconstructionSupport,
     TimelineTimeBasis,
+    WorldBasis,
+    WorldBasisKind,
     validate_probe_report,
     validate_probe_result,
 )
 from .plugin_composition import (
     DEFAULT_PLUGIN_COMPOSITION_POLICY_DIGEST,
+    REVISION_CONSISTENCY_ROLE,
     PluginCompositionPolicy,
     PluginCompositionRule,
     PluginParticipationSelection,
 )
 from .plugin_execution_plan import (
+    MAX_EXECUTION_IDENTITY_LENGTH,
     DecoderIdentity,
     PluginArtifactIdentity,
-    PluginExecutionPlanAuthority,
     PluginExecutionPin,
     PluginExecutionPlan,
+    PluginExecutionPlanAuthority,
     plugin_execution_pin_uses_legacy_identity,
     plugin_execution_plan_dict,
     plugin_execution_plan_from_dict,
     plugin_execution_plan_is_executable,
     primary_parser_execution_pin,
+    validate_execution_identity,
 )
 from .plugin_identity import (
     PluginExecutableIdentityError,
@@ -97,6 +106,7 @@ from .plugin_identity import (
 )
 from .plugin_loading import load_process_bootstrap_target
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
+from .revision_world import IngestionRevisionWorld
 from .value_core import parse_canonical_decimal_integer
 
 if TYPE_CHECKING:
@@ -106,7 +116,7 @@ MAX_SCOPE_ID_LENGTH = 128
 MAX_IMPORT_ID_LENGTH = 128
 MAX_FILENAME_LENGTH = 512
 MAX_CONTENT_TYPE_LENGTH = 256
-MAX_NODE_HINT_LENGTH = 1_024
+MAX_NODE_HINT_LENGTH = MAX_EXECUTION_IDENTITY_LENGTH
 MAX_IMPORT_METADATA_BYTES = 65_536
 MAX_EVENT_MESSAGE_LENGTH = 2_048
 MAX_IDEMPOTENCY_KEY_LENGTH = 256
@@ -1123,9 +1133,7 @@ class CatalogPublisherProcessBootstrap:
                 raise ValueError("core catalog process bootstrap cannot name a target")
         elif self.target is None:
             raise ValueError("custom catalog process bootstrap requires a target")
-        expected_argument_count = (
-            1 if self.loader_kind == "core_sqlite_session" else 0
-        )
+        expected_argument_count = 1 if self.loader_kind == "core_sqlite_session" else 0
         if len(self.constructor_args) != expected_argument_count:
             raise ValueError("catalog process constructor arguments are invalid")
 
@@ -1479,16 +1487,14 @@ def _plugin_process_bootstrap_identity_material(
         bootstrap.decoder_target_executable_identity,
     )
     if any(
-        value is not None
-        and re.fullmatch(r"target-sha256:[0-9a-f]{64}", value) is None
+        value is not None and re.fullmatch(r"target-sha256:[0-9a-f]{64}", value) is None
         for value in target_identities
     ):
         raise ValueError("process bootstrap target executable identity is invalid")
-    if (
-        (bootstrap.coordinator_target is None)
-        != (bootstrap.coordinator_target_executable_identity is None)
-        or (bootstrap.decoder_target is None)
-        != (bootstrap.decoder_target_executable_identity is None)
+    if (bootstrap.coordinator_target is None) != (
+        bootstrap.coordinator_target_executable_identity is None
+    ) or (bootstrap.decoder_target is None) != (
+        bootstrap.decoder_target_executable_identity is None
     ):
         raise ValueError("process bootstrap target executable identity is incomplete")
     if type(bootstrap.verify_package_bytes) is not bool:
@@ -1539,6 +1545,17 @@ def _plugin_process_bootstrap_identity_material(
     }
 
 
+def _plugin_process_bootstrap_digest(
+    bootstrap: _PluginProcessBootstrap,
+) -> str:
+    """Bind one PROCESS plan pin to its complete inert child bootstrap."""
+
+    material = _plugin_process_bootstrap_identity_material(bootstrap)
+    return (
+        "sha256:" + hashlib.sha256(canonical_json(material).encode("utf-8")).hexdigest()
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class RegisteredPlugin:
     plugin: Any
@@ -1565,6 +1582,8 @@ class RegisteredPlugin:
     _execution_plugin: Any | None = None
     _decoder_implementation_snapshot: Any | None = None
     _registered_execution_identity_snapshot: str | None = None
+    _ingestion_limit_values_snapshot: tuple[int, ...] = ()
+    _artifact_limit_values_snapshot: tuple[int, ...] = ()
     _process_bootstrap: _PluginProcessBootstrap | None = None
     _process_bootstrap_error: str | None = None
 
@@ -1658,6 +1677,11 @@ class RegisteredPlugin:
             material["process_bootstrap_compatibility"] = (
                 _INLINE_ONLY_PROCESS_COMPATIBILITY
             )
+        if type(process_bootstrap) is not _PluginProcessBootstrap:
+            material["trusted_inline_ingestion_limits"] = {
+                "ingestion": list(self._ingestion_limit_values_snapshot),
+                "artifact": list(self._artifact_limit_values_snapshot),
+            }
         return material
 
     @property
@@ -1702,13 +1726,24 @@ class RegisteredPlugin:
             raise ValueError(self._process_bootstrap_error)
         return replace(bootstrap)
 
+    @property
+    def process_bootstrap_digest(self) -> str | None:
+        """Return the canonical PROCESS bootstrap digest, or ``None`` inline."""
+
+        if (
+            type(self._process_bootstrap) is not _PluginProcessBootstrap
+            or self._process_bootstrap_error is not None
+        ):
+            return None
+        return _plugin_process_bootstrap_digest(self.process_bootstrap)
+
 
 def _require_no_inline_only_plugin_compatibility(
     records: Iterable[RegisteredPlugin],
     *,
     boundary: str,
 ) -> None:
-    """Reject compatibility records at a durable/process authority boundary."""
+    """Reject every non-PROCESS record at a process authority boundary."""
 
     if type(boundary) is not str or not boundary:
         raise ValueError("plug-in compatibility boundary must be a non-empty string")
@@ -1718,12 +1753,14 @@ def _require_no_inline_only_plugin_compatibility(
     inline_only = tuple(
         f"{record.plugin_id}@{record.plugin_version}"
         for record in selected
-        if _registered_plugin_uses_inline_only_compatibility(record)
+        if (
+            type(record._process_bootstrap) is not _PluginProcessBootstrap
+            or record._process_bootstrap_error is not None
+        )
     )
     if inline_only:
         raise ValueError(
-            f"{boundary}; INLINE-only compatibility registrations: "
-            + ", ".join(inline_only)
+            f"{boundary}; INLINE-only registrations: " + ", ".join(inline_only)
         )
 
 
@@ -1742,6 +1779,37 @@ def _registered_plugin_uses_inline_only_compatibility(
     )
 
 
+def _registered_plugin_is_process_capable(record: RegisteredPlugin) -> bool:
+    """Return whether registration retained a fully validated child bootstrap."""
+
+    if type(record) is not RegisteredPlugin:
+        raise TypeError("plug-in capability checks require registered plug-ins")
+    return (
+        type(record._process_bootstrap) is _PluginProcessBootstrap
+        and record._process_bootstrap_error is None
+    )
+
+
+def _registered_plugin_is_trusted_inline_capable(record: RegisteredPlugin) -> bool:
+    """Return whether one frozen registration may run under explicit trust.
+
+    Trusted-inline authority is broader than the manifest compatibility tier:
+    a configured registration can retain an exact registered execution identity
+    while lacking the child-reconstructable bootstrap required by PROCESS mode.
+    The explicit ``allow_inline_only`` decision may authorize that registration,
+    but never an ad-hoc/direct ``RegisteredPlugin`` value without a frozen
+    identity.
+    """
+
+    if type(record) is not RegisteredPlugin:
+        raise TypeError("plug-in capability checks require registered plug-ins")
+    return record._registered_execution_identity_snapshot is not None and (
+        record.verify_package_bytes
+        or type(record._process_bootstrap) is _PluginProcessBootstrap
+        or _registered_plugin_uses_inline_only_compatibility(record)
+    )
+
+
 def _validated_allow_inline_only(value: object) -> bool:
     """Validate one authority-bearing trusted-inline switch exactly."""
 
@@ -1756,8 +1824,7 @@ def _registered_plugins_require_inline_execution(
     """Return whether any selected registration is explicitly INLINE-only."""
 
     return any(
-        _registered_plugin_uses_inline_only_compatibility(record)
-        for record in tuple(records)
+        not _registered_plugin_is_process_capable(record) for record in tuple(records)
     )
 
 
@@ -1772,6 +1839,17 @@ def registered_plugin_matches_execution_pin(
     if type(registered) is not RegisteredPlugin:
         raise TypeError("registered must be an exact RegisteredPlugin")
     artifact = pin.artifact
+    bootstrap_digest_matches = pin.process_bootstrap_digest is None
+    if not bootstrap_digest_matches:
+        bootstrap = registered._process_bootstrap
+        if type(bootstrap) is _PluginProcessBootstrap:
+            try:
+                bootstrap_digest_matches = (
+                    _plugin_process_bootstrap_digest(bootstrap)
+                    == pin.process_bootstrap_digest
+                )
+            except (TypeError, ValueError):
+                bootstrap_digest_matches = False
     return (
         pin.instance_id == registered.instance_id
         and pin.plugin_id == registered.plugin_id
@@ -1786,6 +1864,7 @@ def registered_plugin_matches_execution_pin(
         and not plugin_execution_pin_uses_legacy_identity(pin)
         and pin.registered_execution_identity
         == registered.registered_execution_identity
+        and bootstrap_digest_matches
         and pin.schema_versions == registered.schema_versions
         and pin.capabilities == registered.capabilities
     )
@@ -1837,8 +1916,7 @@ def _snapshot_ingestion_limit_bootstrap(
             getattr(limits, name) for name in _INGESTION_LIMIT_BOOTSTRAP_FIELDS
         )
         artifact_values = tuple(
-            getattr(artifact_limits, name)
-            for name in _ARTIFACT_LIMIT_BOOTSTRAP_FIELDS
+            getattr(artifact_limits, name) for name in _ARTIFACT_LIMIT_BOOTSTRAP_FIELDS
         )
     except PROCESS_CONTROL_EXCEPTIONS:
         raise
@@ -1851,6 +1929,70 @@ def _snapshot_ingestion_limit_bootstrap(
             "coordinator process bootstrap limits are not exact integers"
         )
     return ingestion_values, artifact_values
+
+
+def _ingestion_limits_from_snapshot(
+    ingestion_values: tuple[int, ...],
+    artifact_values: tuple[int, ...],
+) -> IngestionLimits:
+    if (
+        type(ingestion_values) is not tuple
+        or len(ingestion_values) != len(_INGESTION_LIMIT_BOOTSTRAP_FIELDS)
+        or any(type(value) is not int for value in ingestion_values)
+        or type(artifact_values) is not tuple
+        or len(artifact_values) != len(_ARTIFACT_LIMIT_BOOTSTRAP_FIELDS)
+        or any(type(value) is not int for value in artifact_values)
+    ):
+        raise IngestionPipelineError(
+            "registered coordinator limits snapshot is invalid"
+        )
+    artifact_limits = ArtifactLimits(
+        **dict(
+            zip(
+                _ARTIFACT_LIMIT_BOOTSTRAP_FIELDS,
+                artifact_values,
+                strict=True,
+            )
+        )
+    )
+    return IngestionLimits(
+        **dict(
+            zip(
+                _INGESTION_LIMIT_BOOTSTRAP_FIELDS,
+                ingestion_values,
+                strict=True,
+            )
+        ),
+        artifact_limits=artifact_limits,
+    )
+
+
+def _registered_ingestion_limits(record: RegisteredPlugin) -> IngestionLimits:
+    """Return immutable registration quotas and reject live coordinator drift."""
+
+    if type(record) is not RegisteredPlugin:
+        raise TypeError("registered must be an exact RegisteredPlugin")
+    registration_values = (
+        record._ingestion_limit_values_snapshot,
+        record._artifact_limit_values_snapshot,
+    )
+    bootstrap = record._process_bootstrap
+    frozen_values = (
+        (bootstrap.ingestion_limit_values, bootstrap.artifact_limit_values)
+        if type(bootstrap) is _PluginProcessBootstrap
+        else registration_values
+    )
+    if registration_values != frozen_values:
+        raise IngestionPipelineError(
+            "registered coordinator limits snapshot disagrees with its bootstrap"
+        )
+    limits = _ingestion_limits_from_snapshot(*frozen_values)
+    current_values = _snapshot_ingestion_limit_bootstrap(record.coordinator)
+    if current_values != frozen_values:
+        raise IngestionPipelineError(
+            "registered coordinator limits changed after registration"
+        )
+    return limits
 
 
 def _normalized_explicit_bootstrap_target(value: str, label: str) -> str:
@@ -1872,9 +2014,7 @@ def _process_target_executable_identity(
     subject: object,
     *,
     label: str,
-    declared_code_cache: dict[
-        tuple[str, Path, str], tuple[CodeType, ...]
-    ]
+    declared_code_cache: dict[tuple[str, Path, str], tuple[CodeType, ...]]
     | None = None,
 ) -> str:
     """Snapshot one exact module target and its executable implementation."""
@@ -1921,9 +2061,7 @@ def _current_process_target_executable_identities(
     record: RegisteredPlugin,
     bootstrap: _PluginProcessBootstrap,
 ) -> tuple[str, str | None, str | None]:
-    declared_code_cache: dict[
-        tuple[str, Path, str], tuple[CodeType, ...]
-    ] = {}
+    declared_code_cache: dict[tuple[str, Path, str], tuple[CodeType, ...]] = {}
     plugin_identity = _process_target_executable_identity(
         bootstrap.plugin_target,
         _process_target_identity_subject(
@@ -2141,9 +2279,7 @@ class PluginRegistry:
             raise TypeError("deferred process bootstrap must be an exact descriptor")
         if _deferred_process_bootstrap is not None:
             try:
-                _plugin_process_bootstrap_identity_material(
-                    _deferred_process_bootstrap
-                )
+                _plugin_process_bootstrap_identity_material(_deferred_process_bootstrap)
             except (TypeError, ValueError) as error:
                 raise IngestionPipelineError(
                     "child plug-in bootstrap identity is invalid"
@@ -2483,10 +2619,7 @@ class PluginRegistry:
             and resolved_configuration_digest != _DEFAULT_PLUGIN_CONFIGURATION_DIGEST
         ):
             missing_targets: list[str] = []
-            if (
-                plugin_process_module_target is None
-                or plugin_process_construct_class
-            ):
+            if plugin_process_module_target is None or plugin_process_construct_class:
                 missing_targets.append("plugin_process_module_target")
             if (
                 coordinator is not None
@@ -2494,16 +2627,12 @@ class PluginRegistry:
                 and coordinator_module_target is None
             ):
                 missing_targets.append("coordinator_module_target")
-            if (
-                decoder_implementation is not None
-                and decoder_module_target is None
-            ):
+            if decoder_implementation is not None and decoder_module_target is None:
                 missing_targets.append("decoder_module_target")
             if missing_targets:
                 process_bootstrap_error = (
                     "configured/stateful PROCESS registration requires explicit "
-                    "module-level process targets: "
-                    + ", ".join(missing_targets)
+                    "module-level process targets: " + ", ".join(missing_targets)
                 )
         record = RegisteredPlugin(
             plugin=plugin,
@@ -2551,6 +2680,8 @@ class PluginRegistry:
             _manifest_identity_snapshot=manifest_identity,
             _execution_plugin=execution_plugin,
             _decoder_implementation_snapshot=decoder_implementation,
+            _ingestion_limit_values_snapshot=ingestion_limit_values,
+            _artifact_limit_values_snapshot=artifact_limit_values,
             _process_bootstrap_error=process_bootstrap_error,
         )
         # Validate the same artifact projection used later by execution plans
@@ -2575,9 +2706,7 @@ class PluginRegistry:
                 schema_version="router_dump_analyzer.plugin_process_bootstrap.v2",
                 plugin_loader_kind=plugin_loader_kind,
                 plugin_target=plugin_process_target,
-                plugin_target_executable_identity=(
-                    plugin_target_executable_identity
-                ),
+                plugin_target_executable_identity=(plugin_target_executable_identity),
                 coordinator_loader_kind=coordinator_loader_kind,
                 coordinator_target=coordinator_process_target,
                 coordinator_target_executable_identity=(
@@ -2585,9 +2714,7 @@ class PluginRegistry:
                 ),
                 decoder_loader_kind=decoder_loader_kind,
                 decoder_target=decoder_process_target,
-                decoder_target_executable_identity=(
-                    decoder_target_executable_identity
-                ),
+                decoder_target_executable_identity=(decoder_target_executable_identity),
                 ingestion_limit_values=ingestion_limit_values,
                 artifact_limit_values=artifact_limit_values,
                 package_hash=record.package_hash,
@@ -2624,13 +2751,10 @@ class PluginRegistry:
                     ),
                 ),
             )
-        if (
-            _deferred_process_bootstrap is not None
-            and (
-                record._process_bootstrap != _deferred_process_bootstrap
-                or record.registered_execution_identity
-                != _deferred_process_bootstrap.expected_registered_execution_identity
-            )
+        if _deferred_process_bootstrap is not None and (
+            record._process_bootstrap != _deferred_process_bootstrap
+            or record.registered_execution_identity
+            != _deferred_process_bootstrap.expected_registered_execution_identity
         ):
             raise IngestionPipelineError(
                 "child plug-in bootstrap does not match the registered execution identity"
@@ -2681,8 +2805,7 @@ class PluginRegistry:
             and (instance_id is None or record.instance_id == instance_id)
             and (
                 registered_execution_identity is None
-                or record.registered_execution_identity
-                == registered_execution_identity
+                or record.registered_execution_identity == registered_execution_identity
             )
         ]
         if len(matches) != 1:
@@ -2804,6 +2927,7 @@ class PluginRegistry:
     def revalidate_registered_identity(cls, record: RegisteredPlugin) -> None:
         cls.revalidate_executable_identity(record)
         cls.revalidate_manifest_identity(record)
+        _registered_ingestion_limits(record)
         try:
             active_decoder = getattr(record.coordinator, "trace_decoder", None)
         except PROCESS_CONTROL_EXCEPTIONS:
@@ -2865,6 +2989,14 @@ class PluginRegistry:
                 "durable ingestion requires executable plug-in identities; "
                 "manifest-only identities: " + ", ".join(manifest_only)
             )
+        for record in self.records():
+            if (
+                not _registered_plugin_is_process_capable(record)
+                and record._process_bootstrap_error is not None
+                and "requires explicit module-level process targets"
+                in record._process_bootstrap_error
+            ):
+                raise ValueError(record._process_bootstrap_error)
         _require_no_inline_only_plugin_compatibility(
             self.records(),
             boundary="durable ingestion requires executable plug-in identities",
@@ -2903,11 +3035,12 @@ class PluginRegistry:
         for record in self.records():
             self.revalidate_registered_identity(record)
             try:
+                registered_limits = _registered_ingestion_limits(record)
                 with CoreArtifactReader(
                     input_path,
                     node_hint=node_hint,
                     metadata=metadata,
-                    limits=record.coordinator.limits.artifact_limits,
+                    limits=registered_limits.artifact_limits,
                 ) as reader:
                     report = validate_probe_report(
                         record.execution_plugin.probe(reader.inventory),
@@ -2915,9 +3048,9 @@ class PluginRegistry:
                             artifact.artifact_id
                             for artifact in reader.inventory.artifacts
                         },
-                        maximum_diagnostics=(record.coordinator.limits.max_diagnostics),
+                        maximum_diagnostics=(registered_limits.max_diagnostics),
                         maximum_evidence_items=(
-                            record.coordinator.limits.max_evidence_per_output
+                            registered_limits.max_evidence_per_output
                         ),
                     )
             except PROCESS_CONTROL_EXCEPTIONS:
@@ -2985,9 +3118,12 @@ def _registered_execution_pin(
     *,
     schema_digest: str,
     roles: tuple[str, ...],
+    process_authority: bool,
     allow_inline_only: bool = False,
 ) -> PluginExecutionPin:
     allow_inline_only = _validated_allow_inline_only(allow_inline_only)
+    if type(process_authority) is not bool:
+        raise TypeError("process_authority must be an exact boolean")
     if not allow_inline_only:
         _require_no_inline_only_plugin_compatibility(
             (registered,),
@@ -3011,6 +3147,9 @@ def _registered_execution_pin(
         configuration_digest=registered.configuration_digest,
         schema_digest=schema_digest,
         registered_execution_identity=registered.registered_execution_identity,
+        process_bootstrap_digest=(
+            registered.process_bootstrap_digest if process_authority else None
+        ),
         schema_versions=registered.schema_versions,
         capabilities=registered.capabilities,
         roles=roles,
@@ -3021,9 +3160,12 @@ def _auxiliary_execution_pin(
     capability_providers: CapabilityProviderRegistry,
     selection: PluginParticipationSelection,
     *,
+    process_authority: bool,
     allow_inline_only: bool = False,
 ) -> PluginExecutionPin:
     allow_inline_only = _validated_allow_inline_only(allow_inline_only)
+    if type(process_authority) is not bool:
+        raise TypeError("process_authority must be an exact boolean")
     try:
         registered = capability_providers.get_by_execution_identity(
             selection.instance_id,
@@ -3038,12 +3180,12 @@ def _auxiliary_execution_pin(
                 ),
             )
         PluginRegistry.revalidate_registered_identity(registered)
-        if not registered.verify_package_bytes and not (
+        if not _registered_plugin_is_process_capable(registered) and not (
             allow_inline_only
-            and _registered_plugin_uses_inline_only_compatibility(registered)
+            and _registered_plugin_is_trusted_inline_capable(registered)
         ):
             raise IngestionPipelineError(
-                "an auxiliary plug-in requires a revalidatable executable identity"
+                "an auxiliary plug-in requires a validated process bootstrap"
             )
         if registered.decoder_identity is not None:
             raise IngestionPipelineError(
@@ -3066,6 +3208,7 @@ def _auxiliary_execution_pin(
         registered,
         schema_digest=schema_digest,
         roles=selection.roles,
+        process_authority=process_authority,
         allow_inline_only=allow_inline_only,
     )
 
@@ -3144,10 +3287,7 @@ def _execution_plan_authority_for_mode(
                 "PROCESS execution cannot use an INLINE-only plug-in"
             )
         return PluginExecutionPlanAuthority.PROCESS
-    if any(
-        record.package_hash.startswith("manifest-sha256:")
-        for record in selected
-    ):
+    if any(record.package_hash.startswith("manifest-sha256:") for record in selected):
         return PluginExecutionPlanAuthority.TRUSTED_INLINE_MANIFEST
     return PluginExecutionPlanAuthority.TRUSTED_INLINE_ATTESTED
 
@@ -3181,7 +3321,7 @@ def _frozen_auxiliary_execution_pins(
             )
             PluginRegistry.revalidate_registered_identity(registered)
             if (
-                not registered.verify_package_bytes
+                not _registered_plugin_is_process_capable(registered)
                 or registered.decoder_identity is not None
             ):
                 raise IngestionPipelineError(
@@ -3205,9 +3345,141 @@ def _frozen_auxiliary_execution_pins(
                 registered,
                 schema_digest=schema_digest,
                 roles=selection.roles,
+                process_authority=True,
             )
         )
     return tuple(pins)
+
+
+def _frozen_auxiliary_process_bootstraps(
+    capability_providers: CapabilityProviderRegistry,
+    selections: tuple[PluginParticipationSelection, ...],
+) -> tuple[_PluginProcessBootstrap, ...]:
+    """Freeze child-safe executable descriptors for selected auxiliaries.
+
+    The existing execution pins remain the parent-owned authority recorded in
+    the immutable plan.  A consistency materialization hook also needs the
+    selected auxiliary implementation inside the killable ingestion child.
+    Only core-owned scalar bootstrap descriptors cross the spawn boundary;
+    plug-in objects and bound methods never do.
+    """
+
+    bootstraps: list[_PluginProcessBootstrap] = []
+    for selection in selections:
+        if REVISION_CONSISTENCY_ROLE not in selection.roles:
+            continue
+        try:
+            registered = capability_providers.get_by_execution_identity(
+                selection.instance_id,
+                selection.registered_execution_identity,
+            )
+            if PluginCapability.CONSISTENCY_CHECK.value not in registered.capabilities:
+                raise IngestionPipelineError(
+                    "a revision consistency auxiliary does not declare "
+                    "CONSISTENCY_CHECK"
+                )
+            _require_no_inline_only_plugin_compatibility(
+                (registered,),
+                boundary=(
+                    "PROCESS consistency materialization requires "
+                    "PROCESS-capable auxiliary plug-ins"
+                ),
+            )
+            PluginRegistry.revalidate_registered_identity(registered)
+            if (
+                not _registered_plugin_is_process_capable(registered)
+                or registered.decoder_identity is not None
+            ):
+                raise IngestionPipelineError(
+                    "an auxiliary consistency provider is not eligible for "
+                    "PROCESS execution"
+                )
+            bootstrap = registered.process_bootstrap
+            PluginRegistry.revalidate_registered_identity(registered)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except IngestionPipelineError:
+            raise
+        except BaseException as error:
+            raise IngestionPipelineError(
+                "auxiliary consistency provider bootstrap could not be frozen"
+            ) from error
+        bootstraps.append(bootstrap)
+    return tuple(bootstraps)
+
+
+def _validated_consistency_process_bootstraps(
+    frozen_auxiliary_pins: tuple[PluginExecutionPin, ...],
+    auxiliary_bootstraps: tuple[_PluginProcessBootstrap, ...],
+) -> tuple[_PluginProcessBootstrap, ...]:
+    """Validate the exact materialization-only child load set.
+
+    The parent freezes all policy-selected auxiliary pins because the complete
+    composition remains part of the revision plan.  The ingestion child needs
+    executable implementations only for pins carrying the reserved consistency
+    role.  Validate that filtered set entirely from scalar coordinates before
+    importing any auxiliary target, so injected, duplicated, or stale spawn
+    payloads cannot make the child load unrelated plug-in code.
+    """
+
+    if type(frozen_auxiliary_pins) is not tuple or any(
+        type(pin) is not PluginExecutionPin for pin in frozen_auxiliary_pins
+    ):
+        raise IngestionPipelineError("frozen auxiliary execution pins are invalid")
+    if type(auxiliary_bootstraps) is not tuple or any(
+        type(bootstrap) is not _PluginProcessBootstrap
+        for bootstrap in auxiliary_bootstraps
+    ):
+        raise IngestionPipelineError(
+            "consistency auxiliary process bootstraps are invalid"
+        )
+
+    expected: list[PluginExecutionPin] = []
+    for pin in frozen_auxiliary_pins:
+        if REVISION_CONSISTENCY_ROLE not in pin.roles:
+            continue
+        if PluginCapability.CONSISTENCY_CHECK.value not in pin.capabilities:
+            raise IngestionPipelineError(
+                "a revision consistency auxiliary does not declare CONSISTENCY_CHECK"
+            )
+        expected.append(pin)
+    if len(expected) != len(auxiliary_bootstraps):
+        raise IngestionPipelineError(
+            "consistency auxiliary bootstraps do not match the frozen plan pins"
+        )
+    if len(expected) != len({pin.instance_id for pin in expected}):
+        raise IngestionPipelineError(
+            "consistency auxiliary plan pins contain duplicate instances"
+        )
+
+    for pin, bootstrap in zip(expected, auxiliary_bootstraps, strict=True):
+        try:
+            bootstrap_digest = _plugin_process_bootstrap_digest(bootstrap)
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise IngestionPipelineError(
+                "consistency auxiliary process bootstrap is invalid"
+            ) from error
+        artifact = pin.artifact
+        if (
+            bootstrap.decoder_identity_values is not None
+            or pin.process_bootstrap_digest is None
+            or bootstrap_digest != pin.process_bootstrap_digest
+            or bootstrap.instance_id != pin.instance_id
+            or bootstrap.expected_registered_execution_identity
+            != pin.registered_execution_identity
+            or bootstrap.package_hash != artifact.package_hash
+            or bootstrap.distribution_name != artifact.distribution_name
+            or bootstrap.distribution_version != artifact.distribution_version
+            or bootstrap.entry_point_name != artifact.entry_point_name
+            or bootstrap.module_target != artifact.module_target
+            or bootstrap.configuration_digest != pin.configuration_digest
+        ):
+            raise IngestionPipelineError(
+                "consistency auxiliary bootstrap does not match its frozen plan pin"
+            )
+    return auxiliary_bootstraps
 
 
 def _execution_plan_for_result(
@@ -3223,13 +3495,9 @@ def _execution_plan_for_result(
     """Freeze the executable interpretation that produced one result."""
 
     allow_inline_only = _validated_allow_inline_only(allow_inline_only)
-    if (
-        type(execution_plan_authority)
-        is not PluginExecutionPlanAuthority
-    ):
+    if type(execution_plan_authority) is not PluginExecutionPlanAuthority:
         raise TypeError(
-            "execution_plan_authority must be an exact "
-            "PluginExecutionPlanAuthority"
+            "execution_plan_authority must be an exact PluginExecutionPlanAuthority"
         )
     decoder_identity = _ACTIVE_DECODER_IDENTITY.get()
     _ACTIVE_DECODER_IDENTITY.set(None)
@@ -3260,6 +3528,9 @@ def _execution_plan_for_result(
         registered,
         schema_digest=schema_digest,
         roles=("primary_parser",),
+        process_authority=(
+            execution_plan_authority is PluginExecutionPlanAuthority.PROCESS
+        ),
         allow_inline_only=allow_inline_only,
     )
     selected_policy = (
@@ -3308,6 +3579,9 @@ def _execution_plan_for_result(
                 _auxiliary_execution_pin(
                     capability_providers,
                     selection,
+                    process_authority=(
+                        execution_plan_authority is PluginExecutionPlanAuthority.PROCESS
+                    ),
                     allow_inline_only=allow_inline_only,
                 )
                 for selection in auxiliary_selections
@@ -3325,6 +3599,84 @@ def _execution_plan_for_result(
     )
 
 
+def _revision_world_basis(result: IngestionResult) -> WorldBasis:
+    """Describe the observed status capture without inventing common time.
+
+    Each artifact/clock-domain pair remains an independent capture range. The
+    world therefore stays honest for dumps whose clocks are unrelated or whose
+    collection intervals do not overlap. Artifacts that emitted no state are
+    retained as unbounded ranges so the basis still describes the complete
+    admitted inventory.
+    """
+
+    ranges: dict[
+        tuple[Any, str | None],
+        tuple[int | None, int | None, bool],
+    ] = {}
+    observations = (*result.snapshots, *result.relationship_observations)
+    for observation in observations:
+        evidence = observation.evidence
+        key = (evidence.artifact_id, evidence.clock_domain)
+        minimum = observation.observed_at_min_ns
+        maximum = observation.observed_at_max_ns
+        current_minimum, current_maximum, has_unbounded = ranges.get(
+            key,
+            (None, None, False),
+        )
+        if minimum is None or maximum is None:
+            ranges[key] = (current_minimum, current_maximum, True)
+            continue
+        ranges[key] = (
+            minimum if current_minimum is None else min(current_minimum, minimum),
+            maximum if current_maximum is None else max(current_maximum, maximum),
+            has_unbounded,
+        )
+
+    inventory_ids = {item.artifact_id for item in result.inventory.artifacts}
+    observed_ids = {artifact_id for artifact_id, _clock in ranges}
+    for artifact_id in inventory_ids - observed_ids:
+        ranges[(artifact_id, None)] = (None, None, True)
+
+    capture_ranges = tuple(
+        CaptureRange(
+            scope=(
+                f"node:{result.node_id}/artifact:{artifact_id}/clock:"
+                f"{clock_domain or 'unspecified'}"
+            ),
+            observed_at_min_ns=None if bounds[2] else bounds[0],
+            observed_at_max_ns=None if bounds[2] else bounds[1],
+            evidence=(),
+            clock_domain=clock_domain,
+        )
+        for (artifact_id, clock_domain), bounds in sorted(
+            ranges.items(),
+            key=lambda item: (
+                item[0][0].bytes,
+                item[0][1] is None,
+                item[0][1] or "",
+            ),
+        )
+    )
+    qualities = {observation.quality for observation in observations}
+    quality = Quality.EXACT
+    for candidate in (Quality.UNKNOWN, Quality.AMBIGUOUS, Quality.BEST_EFFORT):
+        if candidate in qualities:
+            quality = candidate
+            break
+    if not observations:
+        quality = Quality.UNKNOWN
+    return WorldBasis(
+        kind=WorldBasisKind.OBSERVED_CAPTURE_VECTOR,
+        requested_time_ns=None,
+        resolved_at_min_ns=None,
+        resolved_at_max_ns=None,
+        capture_ranges=capture_ranges,
+        provenance=Provenance.OBSERVED,
+        quality=quality,
+        clock_domain=None,
+    )
+
+
 def _dataset_with_execution_plan(
     registered: RegisteredPlugin,
     result: IngestionResult,
@@ -3332,6 +3684,7 @@ def _dataset_with_execution_plan(
     capability_providers: CapabilityProviderRegistry | None = None,
     composition_policy: PluginCompositionPolicy | None = None,
     frozen_auxiliary_pins: tuple[PluginExecutionPin, ...] | None = None,
+    frozen_process_providers: tuple[RegisteredPlugin, ...] | None = None,
     allow_inline_only: bool = False,
     execution_plan_authority: PluginExecutionPlanAuthority,
 ) -> tuple[bytes, PluginExecutionPlan]:
@@ -3345,14 +3698,132 @@ def _dataset_with_execution_plan(
         allow_inline_only=allow_inline_only,
         execution_plan_authority=execution_plan_authority,
     )
+    # Import lazily: the capability router binds RegisteredPlugin from this
+    # module, while materialization itself is intentionally a later pipeline
+    # stage rather than part of parser normalization.
+    from .consistency_materialization import (
+        materialize_revision_consistency,
+        not_applicable_consistency_materialization,
+        revision_consistency_selected_pins,
+    )
+
+    consistency_pins = revision_consistency_selected_pins(plan)
+    if not consistency_pins:
+        consistency = not_applicable_consistency_materialization(plan)
+    else:
+        if capability_providers is None:
+            if frozen_process_providers is None:
+                raise IngestionPipelineError(
+                    "consistency materialization requires the exact plan-bound "
+                    "capability provider registry"
+                )
+            from .capability_router import (
+                CapabilityProviderRegistry as ProviderRegistry,
+            )
+
+            capability_providers = ProviderRegistry._from_frozen_process_execution_plan(
+                frozen_process_providers,
+                plan,
+                consistency_pins,
+            )
+        elif frozen_process_providers is not None:
+            raise IngestionPipelineError(
+                "consistency materialization received conflicting provider sources"
+            )
+        from .capability_router import PlanBoundCapabilityRouter
+
+        world = IngestionRevisionWorld(
+            basis=_revision_world_basis(result),
+            snapshots=result.snapshots,
+            relationship_observations=result.relationship_observations,
+        )
+        router = PlanBoundCapabilityRouter._for_required_pins(
+            capability_providers,
+            plan,
+            catalog_revision_id=result.revision_id,
+            member_id=result.revision_id,
+            required_pins=consistency_pins,
+            allow_inline_only=allow_inline_only,
+        )
+        consistency = materialize_revision_consistency(
+            plan=plan,
+            router=router,
+            world=world,
+            artifact_ids=tuple(
+                artifact.artifact_id for artifact in result.inventory.artifacts
+            ),
+        )
+
     dataset = dict(result.dataset)
     raw_ingestion = dataset.get("_ingestion")
     if not isinstance(raw_ingestion, Mapping):
         raise IngestionPipelineError("normalized dataset lacks ingestion metadata")
     ingestion_metadata = dict(raw_ingestion)
+    ingestion_metadata["mode"] = "core-ingestion-v3"
     ingestion_metadata["plugin_execution_plan_digest"] = plan.plan_digest
+    ingestion_metadata["consistency_materialization_status"] = consistency.status.value
     dataset["_ingestion"] = ingestion_metadata
+    inventory = dataset.get("inventory")
+    if not isinstance(inventory, Mapping):
+        raise IngestionPipelineError("normalized dataset inventory is invalid")
+    detached_inventory = dict(inventory)
+    detached_inventory["mode"] = "core-ingestion-v3"
+    dataset["inventory"] = detached_inventory
+    fragment = consistency.dataset_fragment()
+    dataset["findings"] = fragment["findings"]
+    consistency_diagnostics = fragment["consistency_diagnostics"]
+    dataset["consistency_diagnostics"] = consistency_diagnostics
+    dataset["consistency_materialization"] = fragment["consistency_materialization"]
+    raw_diagnostics = dataset.get("diagnostics")
+    if not isinstance(raw_diagnostics, list):
+        raise IngestionPipelineError("normalized dataset diagnostics are invalid")
+    dataset["diagnostics"] = [*raw_diagnostics, *consistency_diagnostics]
+    raw_summary = dataset.get("summary")
+    if not isinstance(raw_summary, Mapping):
+        raise IngestionPipelineError("normalized dataset summary is invalid")
+    summary = dict(raw_summary)
+    summary["consistency"] = fragment["consistency_summary"]
+    dataset["summary"] = summary
     return canonical_json(dataset).encode("utf-8"), plan
+
+
+def _snapshot_coordinator_result(
+    value: object,
+    *,
+    registered: RegisteredPlugin,
+    expected_node_id: str | None,
+) -> IngestionResult:
+    """Admit one coordinator handoff without trusting class or JSON aliases."""
+
+    try:
+        return snapshot_ingestion_result_for_publication(
+            value,
+            limits=_registered_ingestion_limits(registered),
+            plugin_id=registered.plugin_id,
+            timeline_time_basis=TimelineTimeBasis(
+                registered.timeline_time_basis
+            ),
+            timeline_clock_domain=registered.timeline_clock_domain,
+            expected_node_id=expected_node_id,
+        )
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except IngestionError as error:
+        if str(error) == (
+            "ingestion coordinator dataset is not bound to its typed result"
+        ):
+            raise IngestionPipelineError(str(error)) from error
+        raise IngestionPipelineError(
+            "ingestion coordinator returned an invalid result"
+        ) from error
+    except (TypeError, ValueError) as error:
+        raise IngestionPipelineError(
+            "ingestion coordinator returned an invalid result"
+        ) from error
+    except BaseException as error:
+        raise IngestionPipelineError(
+            "ingestion coordinator result could not be validated"
+        ) from error
 
 
 def _execution_plan_matches_registration(
@@ -3393,20 +3864,30 @@ def _execution_plan_matches_composition(
     """
 
     allow_inline_only = _validated_allow_inline_only(allow_inline_only)
-    if (
-        type(expected_execution_plan_authority)
-        is not PluginExecutionPlanAuthority
-    ):
+    if type(expected_execution_plan_authority) is not PluginExecutionPlanAuthority:
         raise TypeError(
             "expected_execution_plan_authority must be an exact "
             "PluginExecutionPlanAuthority"
         )
     if plan.execution_plan_authority is not expected_execution_plan_authority:
         return False
+    trusted_inline_plan = plan.execution_plan_authority in (
+        PluginExecutionPlanAuthority.TRUSTED_INLINE_ATTESTED,
+        PluginExecutionPlanAuthority.TRUSTED_INLINE_MANIFEST,
+    )
+    if trusted_inline_plan and not _registered_plugin_is_trusted_inline_capable(
+        registered
+    ):
+        return False
     if (
-        plan.execution_plan_authority
-        is PluginExecutionPlanAuthority.PROCESS
-        and _registered_plugin_uses_inline_only_compatibility(registered)
+        trusted_inline_plan
+        and not _registered_plugin_is_process_capable(registered)
+        and not allow_inline_only
+    ):
+        return False
+    if (
+        plan.execution_plan_authority is PluginExecutionPlanAuthority.PROCESS
+        and not _registered_plugin_is_process_capable(registered)
     ):
         return False
     try:
@@ -3447,9 +3928,12 @@ def _execution_plan_matches_composition(
                 selection.registered_execution_identity,
             )
             if (
-                plan.execution_plan_authority
-                is PluginExecutionPlanAuthority.PROCESS
-                and _registered_plugin_uses_inline_only_compatibility(auxiliary)
+                plan.execution_plan_authority is PluginExecutionPlanAuthority.PROCESS
+                and not _registered_plugin_is_process_capable(auxiliary)
+            ):
+                return False
+            if trusted_inline_plan and not _registered_plugin_is_trusted_inline_capable(
+                auxiliary
             ):
                 return False
             if not allow_inline_only:
@@ -3463,12 +3947,10 @@ def _execution_plan_matches_composition(
             PluginRegistry.revalidate_registered_identity(auxiliary)
             if (
                 (
-                    not auxiliary.verify_package_bytes
+                    not _registered_plugin_is_process_capable(auxiliary)
                     and not (
                         allow_inline_only
-                        and _registered_plugin_uses_inline_only_compatibility(
-                            auxiliary
-                        )
+                        and _registered_plugin_is_trusted_inline_capable(auxiliary)
                     )
                 )
                 or auxiliary.decoder_identity is not None
@@ -3511,6 +3993,7 @@ def _ingest_registered_plugin(
     capability_providers: CapabilityProviderRegistry | None = None,
     composition_policy: PluginCompositionPolicy | None = None,
     frozen_auxiliary_pins: tuple[PluginExecutionPin, ...] | None = None,
+    frozen_process_providers: tuple[RegisteredPlugin, ...] | None = None,
     allow_inline_only: bool = False,
     execution_mode: PluginExecutionMode,
     node_hint: str | None,
@@ -3519,6 +4002,25 @@ def _ingest_registered_plugin(
     """Execute and bind the identities revalidated for this exact run."""
 
     allow_inline_only = _validated_allow_inline_only(allow_inline_only)
+    if frozen_process_providers is not None:
+        if (
+            type(frozen_process_providers) is not tuple
+            or not frozen_process_providers
+            or any(
+                type(provider) is not RegisteredPlugin
+                for provider in frozen_process_providers
+            )
+        ):
+            raise TypeError(
+                "frozen_process_providers must contain exact registered plug-ins"
+            )
+        if (
+            execution_mode is not PluginExecutionMode.PROCESS
+            or capability_providers is not None
+        ):
+            raise IngestionPipelineError(
+                "frozen process providers are valid only inside PROCESS ingestion"
+            )
     if frozen_auxiliary_pins is not None and capability_providers is None:
         if execution_mode is not PluginExecutionMode.PROCESS or any(
             pin.artifact.package_hash.startswith("manifest-sha256:")
@@ -3542,11 +4044,15 @@ def _ingest_registered_plugin(
     token = _ACTIVE_DECODER_IDENTITY.set(None)
     try:
         PluginRegistry.revalidate_registered_identity(registered)
-        result = registered.coordinator.ingest(
-            registered.execution_plugin,
-            input_path,
-            node_hint=node_hint,
-            metadata=metadata,
+        result = _snapshot_coordinator_result(
+            registered.coordinator.ingest(
+                registered.execution_plugin,
+                input_path,
+                node_hint=node_hint,
+                metadata=metadata,
+            ),
+            registered=registered,
+            expected_node_id=node_hint,
         )
         PluginRegistry.revalidate_registered_identity(registered)
         dataset_json, execution_plan = _dataset_with_execution_plan(
@@ -3555,6 +4061,7 @@ def _ingest_registered_plugin(
             capability_providers=capability_providers,
             composition_policy=composition_policy,
             frozen_auxiliary_pins=frozen_auxiliary_pins,
+            frozen_process_providers=frozen_process_providers,
             allow_inline_only=allow_inline_only,
             execution_plan_authority=execution_plan_authority,
         )
@@ -3608,8 +4115,7 @@ def _ingestion_limits_from_process_bootstrap(
         or len(bootstrap.ingestion_limit_values)
         != len(_INGESTION_LIMIT_BOOTSTRAP_FIELDS)
         or type(bootstrap.artifact_limit_values) is not tuple
-        or len(bootstrap.artifact_limit_values)
-        != len(_ARTIFACT_LIMIT_BOOTSTRAP_FIELDS)
+        or len(bootstrap.artifact_limit_values) != len(_ARTIFACT_LIMIT_BOOTSTRAP_FIELDS)
         or any(
             type(value) is not int
             for value in (
@@ -3823,24 +4329,54 @@ def _probe_plugin_child(
 def _ingest_plugin_child(
     connection: Any,
     bootstrap: _PluginProcessBootstrap,
+    expected_primary_process_bootstrap_digest: str,
     input_path: str,
     node_hint: str | None,
     metadata: dict[str, Any],
     staged_path: str,
     frozen_auxiliary_pins: tuple[PluginExecutionPin, ...] = (),
     composition_policy: PluginCompositionPolicy | None = None,
+    auxiliary_bootstraps: tuple[_PluginProcessBootstrap, ...] = (),
 ) -> None:
     try:
-        registry = PluginRegistry(require_executable_identity=True)
-        registered = _register_process_bootstrap(
-            registry,
-            bootstrap,
-            defer_executable_attestation=True,
+        if (
+            type(expected_primary_process_bootstrap_digest) is not str
+            or re.fullmatch(
+                r"sha256:[0-9a-f]{64}",
+                expected_primary_process_bootstrap_digest,
+            )
+            is None
+            or _plugin_process_bootstrap_digest(bootstrap)
+            != expected_primary_process_bootstrap_digest
+        ):
+            raise IngestionPipelineError(
+                "primary process bootstrap does not match its parent authority"
+            )
+        selected_auxiliary_bootstraps = _validated_consistency_process_bootstraps(
+            frozen_auxiliary_pins,
+            auxiliary_bootstraps,
+        )
+        if any(
+            auxiliary.instance_id == bootstrap.instance_id
+            or auxiliary.expected_registered_execution_identity
+            == bootstrap.expected_registered_execution_identity
+            for auxiliary in selected_auxiliary_bootstraps
+        ):
+            raise IngestionPipelineError(
+                "primary and auxiliary process bootstraps must be distinct"
+            )
+        registry = _registry_from_process_bootstraps(
+            (bootstrap, *selected_auxiliary_bootstraps)
+        )
+        registered = registry.get_by_execution_identity(
+            bootstrap.instance_id,
+            bootstrap.expected_registered_execution_identity,
         )
         result, dataset_json, execution_plan = _ingest_registered_plugin(
             registered,
             Path(input_path),
             frozen_auxiliary_pins=frozen_auxiliary_pins,
+            frozen_process_providers=registry.records(),
             composition_policy=composition_policy,
             execution_mode=PluginExecutionMode.PROCESS,
             node_hint=node_hint,
@@ -4183,6 +4719,7 @@ def _validate_plugin_child_spawn_args(args: tuple[Any, ...]) -> None:
                     value.configuration_digest,
                     value.schema_digest,
                     value.registered_execution_identity,
+                    value.process_bootstrap_digest,
                     value.schema_versions,
                     value.capabilities,
                     value.roles,
@@ -4322,16 +4859,21 @@ class DurableIngestionPipeline:
         if allow_inline_only:
             for record in selected_records:
                 PluginRegistry.revalidate_registered_identity(record)
-                if (
-                    not record.verify_package_bytes
-                    and not _registered_plugin_uses_inline_only_compatibility(record)
-                ):
+                if not _registered_plugin_is_process_capable(
+                    record
+                ) and not _registered_plugin_is_trusted_inline_capable(record):
                     raise ValueError(
                         "trusted INLINE-only durable ingestion requires registered "
-                        "manifest compatibility identities"
+                        "attested execution identities"
                     )
         else:
             selected_registry.require_executable_identities()
+            for record in selected_records:
+                if not _registered_plugin_is_process_capable(record):
+                    raise ValueError(
+                        record._process_bootstrap_error
+                        or "durable ingestion requires validated process bootstraps"
+                    )
         selected_limits = limits or PipelineLimits()
         if (
             allow_inline_only
@@ -4381,22 +4923,28 @@ class DurableIngestionPipeline:
                     "durable ingestion requires PROCESS-capable auxiliary plug-ins"
                 ),
             )
+            for record in selected_provider_records:
+                if not _registered_plugin_is_process_capable(record):
+                    raise ValueError(
+                        record._process_bootstrap_error
+                        or "durable ingestion requires validated auxiliary process "
+                        "bootstraps"
+                    )
         elif any(
-            not record.verify_package_bytes
-            and not _registered_plugin_uses_inline_only_compatibility(record)
+            not _registered_plugin_is_process_capable(record)
+            and not _registered_plugin_is_trusted_inline_capable(record)
             for record in selected_provider_records
         ):
             raise ValueError(
                 "trusted INLINE-only capability providers require registered "
-                "manifest compatibility identities"
+                "attested execution identities"
             )
         requires_inline_execution = _registered_plugins_require_inline_execution(
             (*selected_records, *selected_provider_records)
         )
         if (
             requires_inline_execution
-            and selected_limits.plugin_execution_mode
-            is not PluginExecutionMode.INLINE
+            and selected_limits.plugin_execution_mode is not PluginExecutionMode.INLINE
         ):
             raise ValueError(
                 "trusted INLINE-only durable ingestion requires "
@@ -5813,7 +6361,10 @@ class DurableIngestionPipeline:
             path,
             expected_sha256=staged.dataset_sha256,
         )
-        if ingestion.get("plugin_execution_plan_digest") != staged.execution_plan.plan_digest:
+        if (
+            ingestion.get("plugin_execution_plan_digest")
+            != staged.execution_plan.plan_digest
+        ):
             raise IngestionPipelineError(
                 "staged dataset execution-plan digest does not match child metadata"
             )
@@ -5831,9 +6382,7 @@ class DurableIngestionPipeline:
                 validate_private_analysis_timeline_metadata,
             )
 
-            validate_private_analysis_timeline_metadata(
-                {"_ingestion": ingestion}
-            )
+            validate_private_analysis_timeline_metadata({"_ingestion": ingestion})
         except PROCESS_CONTROL_EXCEPTIONS:
             raise
         except BaseException as error:
@@ -6428,10 +6977,10 @@ class DurableIngestionPipeline:
         if not isinstance(auto_select, bool):
             raise TypeError("auto_select must be a boolean")
         if node_hint is not None:
-            node_hint = _bounded_text(
+            node_hint = validate_execution_identity(
                 node_hint,
                 "node_hint",
-                MAX_NODE_HINT_LENGTH,
+                maximum=MAX_NODE_HINT_LENGTH,
             )
         metadata_json = _import_metadata_json(metadata)
 
@@ -9678,10 +10227,7 @@ class DurableIngestionPipeline:
             matching_candidates = tuple(
                 candidate
                 for candidate in candidate_rows
-                if (
-                    instance_id is None
-                    or candidate["instance_id"] == instance_id
-                )
+                if (instance_id is None or candidate["instance_id"] == instance_id)
                 and (
                     registered_execution_identity is None
                     or candidate["registered_execution_identity"]
@@ -10897,18 +11443,29 @@ class DurableIngestionPipeline:
                     self.capability_providers,
                     auxiliary_selections,
                 )
+                child_auxiliary_bootstraps = _frozen_auxiliary_process_bootstraps(
+                    self.capability_providers,
+                    auxiliary_selections,
+                )
                 process_bootstrap = registered.process_bootstrap
+                primary_bootstrap_digest = registered.process_bootstrap_digest
+                if primary_bootstrap_digest is None:
+                    raise IngestionPipelineError(
+                        "PROCESS ingestion lacks its primary bootstrap digest"
+                    )
                 PluginRegistry.revalidate_registered_identity(registered)
                 payload = _run_plugin_child(
                     _ingest_plugin_child,
                     (
                         process_bootstrap,
+                        primary_bootstrap_digest,
                         str(input_path),
                         node_hint,
                         upload_metadata,
                         str(temporary),
                         child_auxiliary_pins,
                         self.composition_policy,
+                        child_auxiliary_bootstraps,
                     ),
                     timeout_seconds=(self.limits.plugin_execution_timeout_seconds),
                     stage="ingest",
@@ -10988,9 +11545,7 @@ class DurableIngestionPipeline:
                 capability_providers=self.capability_providers,
                 composition_policy=self.composition_policy,
                 allow_inline_only=self.allow_inline_only,
-                expected_execution_plan_authority=(
-                    expected_execution_plan_authority
-                ),
+                expected_execution_plan_authority=(expected_execution_plan_authority),
             ):
                 error_type = (
                     PluginExecutionProcessError

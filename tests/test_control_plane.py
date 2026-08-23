@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -32,7 +33,9 @@ from router_dump_analyzer.control_plane import (
     ControlPlaneScopeError,
     DatasetIntegrityError,
     RetentionObservationMode,
+    RevisionConsistencyFindingsPage,
     SubjectResolutionError,
+    validate_revision_consistency_dataset,
 )
 from router_dump_analyzer.ingestion_pipeline import (
     WINDOWS_MAX_STATE_ROOT_UNITS,
@@ -68,6 +71,7 @@ from router_dump_analyzer.plugin_composition_deployment import (
 )
 from router_dump_analyzer.plugin_execution_plan import (
     PluginExecutionPlanAuthority,
+    primary_parser_execution_pin,
 )
 from router_dump_analyzer.private_analysis_promotion import (
     ProposalReviewRetentionReferences,
@@ -200,6 +204,152 @@ class _RoutableEventPlugin(_EventPlugin):
 
 
 class ControlPlaneTests(unittest.TestCase):
+    @staticmethod
+    def _materialized_consistency_dataset(
+        dataset: dict[str, Any],
+        descriptor: Any,
+        *,
+        finding_count: int = 2,
+    ) -> tuple[dict[str, Any], Any]:
+        value = json.loads(json.dumps(dataset))
+        plan = descriptor.execution_plan
+        assert plan is not None
+        primary = primary_parser_execution_pin(plan)
+        consistency_pin = replace(
+            primary,
+            capabilities=tuple(
+                sorted(
+                    {
+                        *primary.capabilities,
+                        PluginCapability.CONSISTENCY_CHECK.value,
+                    }
+                )
+            ),
+        )
+        plan = replace(
+            plan,
+            plugins=tuple(
+                consistency_pin if pin.instance_id == primary.instance_id else pin
+                for pin in plan.plugins
+            ),
+            plan_digest="",
+        )
+        metadata = dict(descriptor.metadata)
+        metadata["plugin_execution_plan_digest"] = plan.plan_digest
+        descriptor = replace(
+            descriptor,
+            execution_plan=plan,
+            metadata=metadata,
+        )
+        plan_digest = plan.plan_digest
+        value["_ingestion"]["plugin_execution_plan_digest"] = plan_digest
+        basis = {
+            "kind": "observed_capture_vector",
+            "requested_time_ns": None,
+            "resolved_at_min_ns": "100",
+            "resolved_at_max_ns": "200",
+            "capture_ranges": [],
+            "provenance": "observed",
+            "quality": "exact",
+            "clock_domain": None,
+            "selector": None,
+            "node_resolutions": [],
+            "watermark": None,
+            "unresolved_reason": None,
+        }
+        basis_digest = (
+            "sha256:"
+            + hashlib.sha256(
+                json.dumps(basis, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+        )
+        value["_ingestion"]["mode"] = "core-ingestion-v3"
+        value["_ingestion"]["consistency_materialization_status"] = "complete"
+        provider = {
+            "member_id": plan.basis_revision_id,
+            "node_id": plan.node_id,
+            "basis_revision_id": plan.basis_revision_id,
+            "plan_digest": plan.plan_digest,
+            "instance_id": consistency_pin.instance_id,
+            "plugin_id": consistency_pin.plugin_id,
+            "plugin_version": consistency_pin.plugin_version,
+            "registered_execution_identity": (
+                consistency_pin.registered_execution_identity
+            ),
+            "configuration_digest": consistency_pin.configuration_digest,
+            "schema_digest": consistency_pin.schema_digest,
+            "package_hash": consistency_pin.artifact.package_hash,
+            "capability": PluginCapability.CONSISTENCY_CHECK.value,
+            "roles": list(consistency_pin.roles),
+        }
+        artifact_id = value["inventory"]["members"][0]["artifact_id"]
+        finding_payloads = [
+            {
+                "rule_id": f"rule-{ordinal}",
+                "severity": "error",
+                "result": "fail",
+                "summary": f"Rule {ordinal} failed.",
+                "resources": [],
+                "resource_references": [],
+                "provenance": "reconstructed",
+                "quality": "exact",
+                "basis": basis,
+                "evidence": [
+                    {
+                        "artifact_id": artifact_id,
+                        "locator": f"private-status.dump:{ordinal}",
+                        "raw_timestamp_ns": None,
+                        "clock_domain": None,
+                        "excerpt_sha256": None,
+                    }
+                ],
+                "execution_plan_digest": plan_digest,
+                "details": {"ordinal": ordinal, "path": ["a", "b"]},
+                "producer": provider,
+            }
+            for ordinal in range(finding_count)
+        ]
+        value["findings"] = sorted(
+            (
+                {
+                    **payload,
+                    "finding_id": "sha256:"
+                    + hashlib.sha256(
+                        json.dumps(
+                            payload,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                }
+                for payload in finding_payloads
+            ),
+            key=lambda finding: finding["finding_id"],
+        )
+        value["consistency_diagnostics"] = []
+        value["summary"]["consistency"] = {
+            "pass": 0,
+            "fail": finding_count,
+            "unknown": 0,
+        }
+        value["consistency_materialization"] = {
+            "schema_version": ("router_dump_analyzer.consistency_materialization.v1"),
+            "status": "complete",
+            "plan_digest": plan_digest,
+            "basis": basis,
+            "basis_digest": basis_digest,
+            "providers": [provider],
+            "provider_count": 1,
+            "finding_count": finding_count,
+            "diagnostic_count": 0,
+            "emitted_finding_count": finding_count,
+            "emitted_diagnostic_count": 0,
+            "duplicate_findings_discarded": 0,
+            "duplicate_diagnostics_discarded": 0,
+            "world_reads": finding_count,
+        }
+        return value, descriptor
+
     def test_trusted_inline_control_plane_is_explicit_atomic_and_keeps_publisher_process(
         self,
     ) -> None:
@@ -607,10 +757,31 @@ class ControlPlaneTests(unittest.TestCase):
             admitted.import_id,
             timeout=10,
         )
+        private_diagnostics = []
+        if completed.state is not ImportState.COMPLETED:
+            with control.ingestion._connect() as connection:
+                private_diagnostics = [
+                    dict(row)
+                    for row in connection.execute(
+                        "SELECT * FROM ingestion_failure_diagnostics "
+                        "WHERE import_id = ? ORDER BY attempt_number",
+                        (admitted.import_id,),
+                    ).fetchall()
+                ]
         self.assertEqual(
             completed.state,
             ImportState.COMPLETED,
-            completed.error_message,
+            (
+                completed.error_message,
+                [
+                    (event.event_type, event.message, dict(event.payload))
+                    for event in control.ingestion.events(
+                        scope,
+                        admitted.import_id,
+                    )
+                ],
+                private_diagnostics,
+            ),
         )
         return completed
 
@@ -658,6 +829,452 @@ class ControlPlaneTests(unittest.TestCase):
             revision.revision_id,
         )
         self.assertEqual(len(reloaded["events"]), 2)
+
+    def test_consistency_findings_page_is_indexed_paginated_and_detached(self) -> None:
+        control = self._control_plane(self._root())
+        completed = self._ingest(control)
+        scope = control.scope("tenant-a", "project-a", "workspace-a")
+        loaded = control._load_revision(scope, completed.revision_id)
+        dataset, descriptor = self._materialized_consistency_dataset(
+            dict(loaded.dataset),
+            loaded.descriptor,
+        )
+        index = control._index_dataset(descriptor, dataset)
+        indexed = replace(
+            loaded,
+            descriptor=descriptor,
+            dataset=dataset,
+            index=index,
+        )
+
+        with patch.object(control, "_load_revision", return_value=indexed) as load:
+            first = control.list_revision_consistency_findings(
+                scope,
+                completed.revision_id,
+                limit=1,
+            )
+            second = control.list_revision_consistency_findings(
+                scope,
+                completed.revision_id,
+                limit=1,
+                offset=1,
+            )
+            beyond_end = control.list_revision_consistency_findings(
+                scope,
+                completed.revision_id,
+                offset=(1 << 53) - 1,
+            )
+
+        self.assertIsInstance(first, RevisionConsistencyFindingsPage)
+        self.assertEqual(first.total_count, 2)
+        self.assertEqual(first.next_offset, 1)
+        self.assertEqual(first.items[0]["rule_id"], dataset["findings"][0]["rule_id"])
+        self.assertEqual(second.next_offset, None)
+        self.assertEqual(second.items[0]["rule_id"], dataset["findings"][1]["rule_id"])
+        self.assertEqual(beyond_end.items, ())
+        self.assertIsNone(beyond_end.next_offset)
+        self.assertEqual(first.materialization["status"], "complete")
+        self.assertEqual(load.call_args.args, (scope, completed.revision_id))
+        self.assertEqual(
+            first.items[0]["evidence"][0]["locator"],
+            dataset["findings"][0]["evidence"][0]["locator"],
+        )
+
+        with patch.object(control, "_load_revision", return_value=indexed):
+            client_page = control.list_revision_consistency_findings_for_client(
+                scope,
+                completed.revision_id,
+                limit=1,
+            )
+        self.assertEqual(
+            client_page.items[0]["evidence"],
+            [
+                {
+                    "artifact_id": dataset["inventory"]["members"][0][
+                        "artifact_id"
+                    ],
+                    "raw_timestamp_ns": None,
+                    "clock_domain": None,
+                    "excerpt_sha256": None,
+                }
+            ],
+        )
+        self.assertNotIn("locator", json.dumps(client_page.materialization))
+        self.assertEqual(
+            set(client_page.materialization),
+            set(dataset["consistency_materialization"]),
+        )
+
+        first.items[0]["details"]["ordinal"] = 999  # type: ignore[index]
+        first.materialization["status"] = "mutated"  # type: ignore[index]
+        self.assertNotEqual(index.findings[0]["details"]["ordinal"], 999)
+        self.assertEqual(
+            index.consistency_materialization["status"],
+            "complete",
+        )
+
+    def test_consistency_findings_page_uses_legacy_not_materialized_state(self) -> None:
+        control = self._control_plane(self._root())
+        completed = self._ingest(control)
+        scope = control.scope("tenant-a", "project-a", "workspace-a")
+        loaded = control._load_revision(scope, completed.revision_id)
+        dataset = json.loads(json.dumps(loaded.dataset))
+        dataset["_ingestion"].pop("mode", None)
+        dataset["_ingestion"].pop("consistency_materialization_status", None)
+        dataset.pop("consistency_materialization", None)
+        dataset.pop("consistency_diagnostics", None)
+        dataset["inventory"]["mode"] = "core-ingestion-v2"
+        dataset["findings"] = [{"legacy_rule": "vendor.rule"}]
+        index = control._index_dataset(loaded.descriptor, dataset)
+        indexed = replace(loaded, dataset=dataset, index=index)
+
+        with patch.object(control, "_load_revision", return_value=indexed):
+            page = control.list_revision_consistency_findings(
+                scope,
+                completed.revision_id,
+            )
+
+        self.assertEqual(page.materialization["status"], "not_materialized")
+        self.assertEqual(page.materialization["finding_count"], 1)
+        self.assertIsNone(page.materialization["provider_count"])
+        self.assertEqual(page.items, ({"legacy_rule": "vendor.rule"},))
+
+    def test_legacy_consistency_dataset_requires_exact_execution_plan_binding(
+        self,
+    ) -> None:
+        control = self._control_plane(self._root())
+        completed = self._ingest(control)
+        scope = control.scope("tenant-a", "project-a", "workspace-a")
+        loaded = control._load_revision(scope, completed.revision_id)
+        dataset = json.loads(json.dumps(loaded.dataset))
+        dataset["_ingestion"].pop("mode", None)
+        dataset["_ingestion"].pop("consistency_materialization_status", None)
+        dataset.pop("consistency_materialization", None)
+        dataset.pop("consistency_diagnostics", None)
+        dataset["inventory"]["mode"] = "core-ingestion-v2"
+
+        validate_revision_consistency_dataset(
+            dataset,
+            execution_plan=loaded.descriptor.execution_plan,
+        )
+        with self.assertRaisesRegex(DatasetIntegrityError, "lacks its exact"):
+            validate_revision_consistency_dataset(dataset, execution_plan=None)
+
+        dataset["_ingestion"]["plugin_execution_plan_digest"] = "sha256:" + ("f" * 64)
+        with self.assertRaisesRegex(DatasetIntegrityError, "does not match"):
+            validate_revision_consistency_dataset(
+                dataset,
+                execution_plan=loaded.descriptor.execution_plan,
+            )
+
+        dataset["_ingestion"]["plugin_execution_plan_digest"] = None
+        findings, envelope = validate_revision_consistency_dataset(
+            dataset,
+            execution_plan=None,
+        )
+        self.assertEqual(findings, ())
+        self.assertIsNone(envelope["plan_digest"])
+
+    def test_core_ingestion_v3_requires_valid_consistency_materialization(self) -> None:
+        control = self._control_plane(self._root())
+        completed = self._ingest(control)
+        scope = control.scope("tenant-a", "project-a", "workspace-a")
+        loaded = control._load_revision(scope, completed.revision_id)
+        dataset, descriptor = self._materialized_consistency_dataset(
+            dict(loaded.dataset),
+            loaded.descriptor,
+        )
+        control._index_dataset(descriptor, dataset)
+
+        class ExplodingList(list[object]):
+            def __iter__(self):
+                raise RuntimeError("materialized array was traversed")
+
+        findings_subclass = json.loads(json.dumps(dataset))
+        findings_subclass["findings"] = ExplodingList(
+            findings_subclass["findings"]
+        )
+        with self.assertRaisesRegex(DatasetIntegrityError, "findings"):
+            control._index_dataset(descriptor, findings_subclass)
+
+        for required_array in (
+            "findings",
+            "consistency_diagnostics",
+            "diagnostics",
+        ):
+            with self.subTest(missing_array=required_array):
+                missing_array = json.loads(json.dumps(dataset))
+                missing_array.pop(required_array)
+                with self.assertRaisesRegex(DatasetIntegrityError, required_array):
+                    control._index_dataset(descriptor, missing_array)
+
+        for envelope_field in tuple(dataset["consistency_materialization"]):
+            with self.subTest(missing_envelope_field=envelope_field):
+                partial_envelope = json.loads(json.dumps(dataset))
+                partial_envelope["consistency_materialization"].pop(envelope_field)
+                with self.assertRaisesRegex(DatasetIntegrityError, "exact schema"):
+                    control._index_dataset(descriptor, partial_envelope)
+
+        def recompute_finding(record: dict[str, Any]) -> None:
+            payload = dict(record)
+            payload.pop("finding_id", None)
+            record["finding_id"] = "sha256:" + hashlib.sha256(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+
+        outside_evidence = json.loads(json.dumps(dataset))
+        outside_evidence["findings"][0]["evidence"][0]["artifact_id"] = (
+            "00000000-0000-0000-0000-000000000099"
+        )
+        recompute_finding(outside_evidence["findings"][0])
+        outside_evidence["findings"].sort(key=lambda item: item["finding_id"])
+        with self.assertRaisesRegex(DatasetIntegrityError, "not canonical"):
+            control._index_dataset(descriptor, outside_evidence)
+
+        unsafe_details = json.loads(json.dumps(dataset))
+        unsafe_details["findings"][0]["details"]["unsafe"] = 1 << 60
+        recompute_finding(unsafe_details["findings"][0])
+        unsafe_details["findings"].sort(key=lambda item: item["finding_id"])
+        with self.assertRaisesRegex(DatasetIntegrityError, "not canonical"):
+            control._index_dataset(descriptor, unsafe_details)
+
+        empty_key_parts = json.loads(json.dumps(dataset))
+        identity = {
+            "namespace": "tests",
+            "node": "router-a",
+            "layer": "test",
+            "kind": "ITEM",
+            "parts": [],
+        }
+        resource_id = (
+            "tests/router-a/test/ITEM/"
+            + hashlib.sha256(
+                json.dumps(identity, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            ).hexdigest()[:32]
+        )
+        empty_key_parts["findings"][0]["resources"] = [resource_id]
+        empty_key_parts["findings"][0]["resource_references"] = [
+            {"resource_id": resource_id, "typed_resource_key": identity}
+        ]
+        recompute_finding(empty_key_parts["findings"][0])
+        empty_key_parts["findings"].sort(key=lambda item: item["finding_id"])
+        with self.assertRaisesRegex(DatasetIntegrityError, "not canonical"):
+            control._index_dataset(descriptor, empty_key_parts)
+
+        diagnostic_dataset = json.loads(json.dumps(dataset))
+        diagnostic_payload = {
+            "stage": "consistency",
+            "severity": "warning",
+            "code": "consistency.warning",
+            "message": "Bounded warning",
+            "recoverable": True,
+            "evidence": [],
+            "details": {"ordinal": 0, "items": ["a", "b"]},
+            "origin": "plugin",
+            "producer": diagnostic_dataset["consistency_materialization"]["providers"][
+                0
+            ],
+        }
+        diagnostic = {
+            **diagnostic_payload,
+            "diagnostic_id": "sha256:"
+            + hashlib.sha256(
+                json.dumps(
+                    diagnostic_payload,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        }
+        diagnostic_dataset["consistency_diagnostics"] = [diagnostic]
+        diagnostic_dataset["diagnostics"].append(diagnostic)
+        diagnostic_dataset["consistency_materialization"]["diagnostic_count"] = 1
+        diagnostic_dataset["consistency_materialization"][
+            "emitted_diagnostic_count"
+        ] = 1
+        control._index_dataset(descriptor, diagnostic_dataset)
+        forged_diagnostic_copy = json.loads(json.dumps(diagnostic_dataset))
+        forged_diagnostic_copy["diagnostics"][-1]["details"]["ordinal"] = False
+        with self.assertRaisesRegex(DatasetIntegrityError, "diagnostic suffix"):
+            control._index_dataset(descriptor, forged_diagnostic_copy)
+
+        not_applicable = json.loads(json.dumps(loaded.dataset))
+        not_applicable_index = control._index_dataset(
+            loaded.descriptor,
+            not_applicable,
+        )
+        self.assertEqual(
+            not_applicable_index.consistency_materialization["status"],
+            "not_applicable",
+        )
+
+        missing = json.loads(json.dumps(dataset))
+        missing.pop("consistency_materialization")
+        with self.assertRaisesRegex(
+            DatasetIntegrityError,
+            "partial core-ingestion-v3",
+        ):
+            control._index_dataset(descriptor, missing)
+
+        null_status_marker = json.loads(json.dumps(dataset))
+        null_status_marker.pop("consistency_materialization")
+        null_status_marker.pop("consistency_diagnostics")
+        null_status_marker["_ingestion"].pop("mode")
+        null_status_marker["_ingestion"][
+            "consistency_materialization_status"
+        ] = None
+        null_status_marker["inventory"]["mode"] = "core-ingestion-v2"
+        with self.assertRaisesRegex(
+            DatasetIntegrityError,
+            "partial core-ingestion-v3",
+        ):
+            control._index_dataset(descriptor, null_status_marker)
+
+        bad_count = json.loads(json.dumps(dataset))
+        bad_count["consistency_materialization"]["finding_count"] = 1
+        with self.assertRaisesRegex(DatasetIntegrityError, "finding count"):
+            control._index_dataset(descriptor, bad_count)
+
+        unsafe_count = json.loads(json.dumps(dataset))
+        unsafe_count["consistency_materialization"]["world_reads"] = 1 << 53
+        with self.assertRaisesRegex(DatasetIntegrityError, "exact schema"):
+            control._index_dataset(descriptor, unsafe_count)
+
+        bad_plan = json.loads(json.dumps(dataset))
+        bad_plan["consistency_materialization"]["plan_digest"] = "sha256:" + ("0" * 64)
+        with self.assertRaisesRegex(DatasetIntegrityError, "plan digest"):
+            control._index_dataset(descriptor, bad_plan)
+
+        forged_provider = json.loads(json.dumps(dataset))
+        forged_provider["consistency_materialization"]["providers"][0][
+            "instance_id"
+        ] = "forged-provider"
+        with self.assertRaisesRegex(DatasetIntegrityError, "exact plan"):
+            control._index_dataset(descriptor, forged_provider)
+
+        too_many_providers = json.loads(json.dumps(dataset))
+        too_many_providers["consistency_materialization"]["providers"] = [
+            too_many_providers["consistency_materialization"]["providers"][0]
+        ] * 33
+        with self.assertRaisesRegex(DatasetIntegrityError, "durable limit"):
+            control._index_dataset(descriptor, too_many_providers)
+
+        class ExplodingProvider(dict[str, object]):
+            def get(self, key: str, default: object = None) -> object:
+                raise RuntimeError("materialized provider was traversed")
+
+        provider_subclass = json.loads(json.dumps(dataset))
+        provider_subclass["consistency_materialization"]["providers"][0] = (
+            ExplodingProvider(
+                provider_subclass["consistency_materialization"]["providers"][0]
+            )
+        )
+        with self.assertRaisesRegex(DatasetIntegrityError, "array of objects"):
+            control._index_dataset(descriptor, provider_subclass)
+
+        forged_producer = json.loads(json.dumps(dataset))
+        forged_producer["findings"][0]["producer"]["instance_id"] = "forged-provider"
+        forged_payload = dict(forged_producer["findings"][0])
+        forged_payload.pop("finding_id")
+        forged_producer["findings"][0]["finding_id"] = (
+            "sha256:"
+            + hashlib.sha256(
+                json.dumps(
+                    forged_payload,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+        )
+        forged_producer["findings"].sort(key=lambda item: item["finding_id"])
+        with self.assertRaisesRegex(DatasetIntegrityError, "producer"):
+            control._index_dataset(descriptor, forged_producer)
+
+        changed_payload = json.loads(json.dumps(dataset))
+        changed_payload["findings"][0]["details"]["ordinal"] = 999
+        with self.assertRaisesRegex(DatasetIntegrityError, "not canonical"):
+            control._index_dataset(descriptor, changed_payload)
+
+        forged_status = json.loads(json.dumps(dataset))
+        forged_status["_ingestion"]["consistency_materialization_status"] = (
+            "not_applicable"
+        )
+        with self.assertRaisesRegex(DatasetIntegrityError, "consistency status"):
+            control._index_dataset(descriptor, forged_status)
+
+        forged_summary = json.loads(json.dumps(dataset))
+        forged_summary["summary"]["consistency"]["pass"] = False
+        with self.assertRaisesRegex(DatasetIntegrityError, "consistency summary"):
+            control._index_dataset(descriptor, forged_summary)
+
+        forged_basis_copy = json.loads(json.dumps(dataset))
+        materialization = forged_basis_copy["consistency_materialization"]
+        materialization["basis"]["numeric_alias"] = 0
+        materialization["basis_digest"] = (
+            "sha256:"
+            + hashlib.sha256(
+                json.dumps(
+                    materialization["basis"],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+        )
+        for finding in forged_basis_copy["findings"]:
+            finding["basis"]["numeric_alias"] = False
+            finding_payload = dict(finding)
+            finding_payload.pop("finding_id")
+            finding["finding_id"] = (
+                "sha256:"
+                + hashlib.sha256(
+                    json.dumps(
+                        finding_payload,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+            )
+        forged_basis_copy["findings"].sort(key=lambda item: item["finding_id"])
+        with self.assertRaisesRegex(DatasetIntegrityError, "not canonical"):
+            control._index_dataset(descriptor, forged_basis_copy)
+
+    def test_consistency_findings_page_validates_exact_paging_integers(self) -> None:
+        control = self._control_plane(self._root())
+        completed = self._ingest(control)
+        scope = control.scope("tenant-a", "project-a", "workspace-a")
+        control.sessions.create_workspace(
+            "tenant-a",
+            "project-a",
+            "Workspace B",
+            workspace_id="workspace-b",
+        )
+        other_scope = control.scope("tenant-a", "project-a", "workspace-b")
+        with self.assertRaises(SubjectResolutionError):
+            control.list_revision_consistency_findings(
+                other_scope,
+                completed.revision_id,
+            )
+        for invalid in (0, 5_001, True, 1.0):
+            with self.subTest(limit=invalid), self.assertRaises(ValueError):
+                control.list_revision_consistency_findings(
+                    scope,
+                    completed.revision_id,
+                    limit=invalid,  # type: ignore[arg-type]
+                )
+        for invalid in (-1, 1 << 53, True, 1.0):
+            with self.subTest(offset=invalid), self.assertRaises(ValueError):
+                control.list_revision_consistency_findings(
+                    scope,
+                    completed.revision_id,
+                    offset=invalid,  # type: ignore[arg-type]
+                )
 
     def test_published_revision_and_session_build_exact_capability_routers(
         self,
@@ -719,7 +1336,9 @@ class ControlPlaneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exactly one"):
             control.capability_router_for_revision_set(scope)
 
-    def test_dataset_loading_binds_catalog_dataset_and_full_execution_plan(self) -> None:
+    def test_dataset_loading_binds_catalog_dataset_and_full_execution_plan(
+        self,
+    ) -> None:
         control = self._control_plane(self._root())
         completed = self._ingest(control)
         scope = control.scope("tenant-a", "project-a", "workspace-a")
@@ -732,9 +1351,9 @@ class ControlPlaneTests(unittest.TestCase):
         assert execution_plan is not None
 
         dataset_digest_mismatch = json.loads(json.dumps(dataset))
-        dataset_digest_mismatch["_ingestion"][
-            "plugin_execution_plan_digest"
-        ] = "sha256:" + ("0" * 64)
+        dataset_digest_mismatch["_ingestion"]["plugin_execution_plan_digest"] = (
+            "sha256:" + ("0" * 64)
+        )
         with self.assertRaisesRegex(DatasetIntegrityError, "full catalog plan"):
             control._index_dataset(revision, dataset_digest_mismatch)
 
@@ -756,9 +1375,9 @@ class ControlPlaneTests(unittest.TestCase):
             changed_basis.plan_digest
         )
         changed_basis_dataset = json.loads(json.dumps(dataset))
-        changed_basis_dataset["_ingestion"][
-            "plugin_execution_plan_digest"
-        ] = changed_basis.plan_digest
+        changed_basis_dataset["_ingestion"]["plugin_execution_plan_digest"] = (
+            changed_basis.plan_digest
+        )
         with self.assertRaisesRegex(DatasetIntegrityError, "basis"):
             control._index_dataset(
                 replace(
@@ -784,9 +1403,12 @@ class ControlPlaneTests(unittest.TestCase):
             multi_provider_plan.plan_digest
         )
         multi_provider_dataset = json.loads(json.dumps(dataset))
-        multi_provider_dataset["_ingestion"][
-            "plugin_execution_plan_digest"
-        ] = multi_provider_plan.plan_digest
+        multi_provider_dataset["_ingestion"]["plugin_execution_plan_digest"] = (
+            multi_provider_plan.plan_digest
+        )
+        multi_provider_dataset["consistency_materialization"]["plan_digest"] = (
+            multi_provider_plan.plan_digest
+        )
         control._index_dataset(
             replace(
                 revision,
@@ -800,6 +1422,14 @@ class ControlPlaneTests(unittest.TestCase):
         planless_metadata.pop("plugin_execution_plan_digest")
         planless_dataset = json.loads(json.dumps(dataset))
         planless_dataset["_ingestion"].pop("plugin_execution_plan_digest")
+        planless_dataset["_ingestion"]["mode"] = "core-ingestion-v2"
+        planless_dataset["_ingestion"].pop(
+            "consistency_materialization_status",
+            None,
+        )
+        planless_dataset["inventory"]["mode"] = "core-ingestion-v2"
+        planless_dataset.pop("consistency_materialization")
+        planless_dataset.pop("consistency_diagnostics")
         planless_revision = replace(
             revision,
             execution_plan=None,

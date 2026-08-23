@@ -424,6 +424,18 @@ using install order. Historical releases may retain one logical instance ID;
 a configuration change receives a new ID. Neither facility makes the currently unavailable
 runtime-v2 temporal, topology, or route HTTP providers appear.
 
+Durable ingestion now materializes declared revision consistency checks before
+it hashes or publishes a dataset. The primary parser participates when it
+declares `CONSISTENCY_CHECK`; explicitly composed auxiliaries participate only
+with `REVISION_CONSISTENCY_ROLE`. Results are immutable, plan-bound, bounded,
+and queryable through both the single-revision API and the workspace-scoped
+control plane. A failed rule invocation cannot publish a partial revision, and
+older revisions are labeled `not_materialized` rather than silently analyzed
+with today's plug-in code. Durable/admin records retain exact evidence
+locators for offline review; browser and public HTTP projections use a closed
+core evidence shape and omit every raw locator. Only plug-in-owned finding
+`details` pass through descriptor-sensitive property redaction.
+
 The maintained author smoke path is:
 
 ```powershell
@@ -436,7 +448,7 @@ router-dump-plugin-validate demo_router `
   --node-hint router-1 `
   --metadata platform=demo-router-os `
   --metadata software_version=1
-python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_capability_executor tests.test_capability_router -v
+python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_capability_executor tests.test_capability_router tests.test_consistency_materialization tests.test_consistency_ingestion tests.test_revision_world -v
 python -m unittest discover -s demo/tests -v
 python -m unittest discover -s state-dump-generator/tests `
   -p "test_runtime_v2_vectors.py" -v
@@ -796,7 +808,7 @@ import. The primary parser still comes from probe/selection. A
 content-addressed deployment rule may attach exact auxiliary capability
 providers and roles to that exact primary executable identity; registration
 order and matching names never select them. The policy digest is stored with
-the queued import and in the current v3 execution plan; a worker refuses to
+the queued import and in the current v4 execution plan; a worker refuses to
 continue if deployment composition has changed. Process workers also
 live-revalidate selected auxiliaries after the child returns and before its
 plan can be staged, so executable or manifest drift during parsing fails the
@@ -806,8 +818,11 @@ staged and completed history is never rewritten. Even an unrelated policy edit
 therefore changes the durable revision/session/private-analysis identity.
 Retained plan-v1 rows stay readable but cannot route or produce private
 evidence. Retained plan-v2 rows remain executable but decode their previously
-unrecorded execution authority as `legacy_unrecorded`; new plan-v3 rows record
-the weakest whole-plan authority. This lets one topology contain different
+unrecorded execution authority as `legacy_unrecorded`; retained plan-v3 rows
+record the weakest whole-plan authority. New plan-v4 PROCESS pins additionally
+commit to the exact inert child bootstrap before any target is imported;
+trusted-inline v4 pins carry `null` because they have no subprocess authority.
+This lets one topology contain different
 platforms, firmware, and chip-specific helpers without merging their authority.
 `ControlPlane.capability_router_for_revision()` and
 `capability_router_for_revision_set()` are the production consumers: they load

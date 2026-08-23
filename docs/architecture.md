@@ -152,13 +152,14 @@ records all of:
 - Clock alignment configuration.
 
 The implemented local profile represents that claim with the immutable,
-versioned `PluginExecutionPlan`. New revisions use plan v3. It is an ordered
+versioned `PluginExecutionPlan`. New revisions use plan v4. It is an ordered
 tuple of producer pins rather
 than a synthetic composite plug-in, so each configured instance retains its
 own artifact, configuration, schema, capability, role, and optional decoder
 identity. The plan digest covers its node and source-revision basis and every
-pin field plus the exact `composition_policy_digest` and v3
-`execution_plan_authority`. A policy change is a
+pin field plus the exact `composition_policy_digest`, v3-and-later
+`execution_plan_authority`, and v4 PROCESS `process_bootstrap_digest`. A policy
+change is a
 new interpretation identity even when the selected primary-to-auxiliary rule
 is unchanged. Configuration values and secrets are deliberately absent. Catalog
 rows persist the canonical plan and digest; normalized datasets and correlation
@@ -192,7 +193,7 @@ instance IDs. The immutable plan—not a
 mutable node map—selects which instance belongs to a revision. Exactly one pin
 has `primary_parser`; additional pins carry core-assigned composition roles.
 The registry can retain several exact releases of one logical instance so old
-and new revisions are both replayable. Every v2/v3 pin carries the exact
+and new revisions are both replayable. Every v2-and-later pin carries the exact
 `registered_execution_identity`, which covers the full frozen registration and
 must never use the reserved all-zero digest. Retained plan-v1 rows have no such
 wire member; decoding represents that absence internally with the reserved
@@ -207,6 +208,11 @@ PROCESS. V3 records the weakest whole-plan authority: PROCESS, trusted inline
 with package-byte attestation, or trusted inline with manifest identity only.
 PROCESS describes primary ingestion, not the isolation of later capability
 hooks. The manifest tier is explicitly non-reproducible at the code-byte level.
+V4 is the publication format. Each PROCESS pin also carries a canonical digest
+of its complete non-recursive child bootstrap. The child compares that digest
+before importing a plug-in, coordinator, or decoder target; trusted-inline v4
+pins carry `null`. V2 and v3 retain their historical wire bytes and remain
+executable without retroactively invented bootstrap authority.
 An unfinished pre-contract queue row is different from published history. Its
 upgrade transaction clears obsolete candidates and selection while binding the
 composition policy explicitly active for the required re-probe. Staged and
@@ -257,7 +263,7 @@ registries before creating queue authority. Later changes to a caller-owned
 local registry cannot enter probe selection or plan publication, and
 plan-bound routers reject `inline_only` records even when an unbound local
 provider directory retains them, unless the router receives the matching
-trusted-inline deployment policy and the v3 plan records trusted-inline
+trusted-inline deployment policy and the v3-or-v4 plan records trusted-inline
 authority.
 Ordinary directories, including empty ones, enter the digest because they can
 change import and resource-existence semantics. File reads are bounded by the
@@ -1067,6 +1073,17 @@ must select the same implemented hook. CTF dispatch additionally requires an
 explicitly configured core `TraceDecoder`; this repository does not ship a
 built-in decoder in runtime v2.
 
+Custom coordinators do not bypass this validation or become publication
+authorities. Publication first checks the exact frozen registration limits and
+exact tuple counts without traversing coordinator-owned items, captures every
+top-level result reference once, binds the selected node to the requested hint,
+and then detaches the result. It revalidates portable inventory-name collisions
+and the complete parent-artifact graph, source-record coordinate alignment and
+uniqueness, schema/output types, and aggregate budgets. Core rebuilds the
+closed dataset from those detached typed values and requires exact equality
+with the coordinator-supplied dataset before the execution plan or consistency
+stage can observe it.
+
 The selection preflight shares that boundary rather than approximating it.
 `validate_probe_report()` owns result and diagnostic field bounds, while
 `validate_plugin_diagnostic()` is reused by ingestion and optional capability
@@ -1100,6 +1117,58 @@ non-recoverable or invalid output fails the call without a partial result.
 This executor makes the hook protocol testable but does not install runtime-v2
 temporal, topology, or route providers.
 
+The durable ingestion coordinator does use that boundary for one scheduled
+stage: revision consistency materialization. After normalization and complete
+execution-plan freeze, core constructs an immutable indexed
+`IngestionRevisionWorld` by replaying validated snapshots and explicit
+relationship observations with the same order/patch semantics as dataset
+normalization. Its `WorldBasis` is an observed capture vector with independent
+artifact/clock ranges; no latest-event timestamp is promoted to common truth.
+One unknown-time observation makes its complete artifact/clock range unbounded,
+even when sibling observations carry exact bounds.
+The primary pin participates when it declares `CONSISTENCY_CHECK`; an auxiliary
+participates only through the explicit `revision_consistency` role.
+Parser/discovery yields are detached through a bounded typed deep snapshot
+before iterator advancement, so later plug-in mutation cannot alter either the
+normalized dataset or this immutable revision world.
+Each capability invocation also receives detached basis and perspective
+objects, preventing one provider from changing the revision coordinates seen
+by the next provider through `object.__setattr__`.
+
+`PlanBoundCapabilityRouter` executes those exact pins inside the same killable
+child as PROCESS ingestion (or the explicitly trusted inline boundary), and a
+revision-wide materializer layers aggregate provider/output/reference/read/
+byte limits over each executor's limits. It canonicalizes findings and
+recoverable diagnostics with producer and plan provenance, validates admitted
+evidence and exact basis equality, and writes a complete/not-applicable
+envelope. This happens before dataset serialization and hashing, so any failure
+prevents staging/publication and a policy/provider/output change changes the
+published revision identity. Reads never execute a hook retroactively.
+Both boundaries reject oversized capture-range and node-resolution vectors
+before traversal or ownership snapshot, and cap nested plus aggregate basis
+evidence.
+The durable form retains evidence locators and the complete canonical basis;
+its digest commits to that richer basis. Public HTTP/browser projection is a
+separate closed boundary: it omits locators, validates exact structural
+domains, and applies descriptor-sensitive redaction only to plug-in-owned
+finding details.
+The read side repeats the v3 storage checks: envelope fields and counts are
+exact, evidence artifacts must be in the revision inventory, typed resource
+keys are reconstructed and their canonical IDs rederived, and bounded
+noncanonical data fails as dataset corruption rather than being repaired or
+partly displayed.
+
+The parent freezes every policy-selected auxiliary pin into the complete plan,
+but transfers executable child bootstraps only for the primary and auxiliaries
+carrying `revision_consistency`. Before importing an auxiliary target, the
+child compares its scalar bootstrap coordinates and order with those frozen
+role-selected pins and rejects extras, omissions, duplicates, or mismatches.
+An internal pin-scoped router retains the complete plan and plan digest while
+binding only the selected consistency pins; the public/default router continues
+to bind and validate the complete plan. Consequently an unrelated topology or
+evidence auxiliary is recorded in revision provenance without being loaded for
+this scheduled stage.
+
 `PlanBoundCapabilityRouter` is the production composition layer above that
 executor. It digest-verifies and detaches a revision plan, resolves an exact
 capability plus optional role/instance, and treats zero or multiple matches as
@@ -1107,7 +1176,7 @@ errors rather than using plan or registration order. It revalidates the full
 registered executable identity and normalized schema before and after
 invocation. Its provider directory may retain exact registry-created
 manifest/inline compatibility records as inert history, but a strict router
-rejects them; an opted-in router requires a matching v3 trusted-inline
+rejects them; an opted-in router requires a matching v3-or-v4 trusted-inline
 authority. Caller-asserted non-revalidatable records fail registry admission. A
 mid-call mutation discards the result. A perspective-specific world must carry
 the selected instance/schema qualifiers, and forwarding steps must name the

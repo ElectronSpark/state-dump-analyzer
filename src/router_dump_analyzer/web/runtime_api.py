@@ -20,9 +20,17 @@ from fastapi.responses import Response
 from fastapi.routing import APIRoute
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from router_dump_analyzer.control_plane import (
+    DatasetIntegrityError,
+    validate_revision_consistency_dataset,
+)
 from router_dump_analyzer.history_search_core import HistorySearchCapacityError
 from router_dump_analyzer.multi_node_route import MultiNodeRouteRequestError
 from router_dump_analyzer.multi_node_topology import MultiNodeTopologyRequestError
+from router_dump_analyzer.normalized_data import (
+    project_consistency_findings_for_client,
+    project_consistency_materialization_for_client,
+)
 from router_dump_analyzer.plugin_api import MAX_TIMESTAMP_NS, MIN_TIMESTAMP_NS
 from router_dump_analyzer.process_control import PROCESS_CONTROL_EXCEPTIONS
 from router_dump_analyzer.public_text import (
@@ -159,6 +167,7 @@ def _redact_resource_view(*args: Any, **kwargs: Any) -> Any:
 def source_record_for_event(event: dict[str, Any]) -> dict[str, Any]:
     return _data_service().source_record_for_event(event)
 
+
 MAX_CORRELATION_NODES = 500
 MAX_TIMELINE_RESOURCE_LANES = 100
 MAX_TIMELINE_GLYPHS = 10_000
@@ -207,42 +216,42 @@ class _RuntimeApiErrorPolicy:
 # specific declared policy independently of table order, while message
 # exposure remains an exact-class capability. A new subclass therefore cannot
 # inherit permission to publish arbitrary exception text.
-_RUNTIME_API_ERROR_POLICY_BY_CLASS: Mapping[
-    type[Exception], _RuntimeApiErrorPolicy
-] = MappingProxyType(
-    {
-        TemporalTopologyRequestError: _RuntimeApiErrorPolicy(
-            422,
-            "temporal topology request was rejected",
-            expose_message=True,
-        ),
-        MultiNodeRouteRequestError: _RuntimeApiErrorPolicy(
-            422,
-            "route trace request was rejected",
-            expose_message=True,
-        ),
-        MultiNodeTopologyRequestError: _RuntimeApiErrorPolicy(
-            422,
-            "topology request was rejected",
-            expose_message=True,
-        ),
-        SourceRecordRequestError: _RuntimeApiErrorPolicy(
-            422,
-            "source-record request was rejected",
-            expose_message=True,
-        ),
-        # Bare built-ins can originate in storage, paths, plug-ins, or
-        # integration code. They are never a caller-validation contract.
-        ValueError: _RuntimeApiErrorPolicy(
-            500,
-            "internal analysis operation failed",
-        ),
-        TypeError: _RuntimeApiErrorPolicy(
-            500,
-            "internal analysis operation failed",
-        ),
-        TimeoutError: _RuntimeApiErrorPolicy(504, "analysis operation timed out"),
-    }
+_RUNTIME_API_ERROR_POLICY_BY_CLASS: Mapping[type[Exception], _RuntimeApiErrorPolicy] = (
+    MappingProxyType(
+        {
+            TemporalTopologyRequestError: _RuntimeApiErrorPolicy(
+                422,
+                "temporal topology request was rejected",
+                expose_message=True,
+            ),
+            MultiNodeRouteRequestError: _RuntimeApiErrorPolicy(
+                422,
+                "route trace request was rejected",
+                expose_message=True,
+            ),
+            MultiNodeTopologyRequestError: _RuntimeApiErrorPolicy(
+                422,
+                "topology request was rejected",
+                expose_message=True,
+            ),
+            SourceRecordRequestError: _RuntimeApiErrorPolicy(
+                422,
+                "source-record request was rejected",
+                expose_message=True,
+            ),
+            # Bare built-ins can originate in storage, paths, plug-ins, or
+            # integration code. They are never a caller-validation contract.
+            ValueError: _RuntimeApiErrorPolicy(
+                500,
+                "internal analysis operation failed",
+            ),
+            TypeError: _RuntimeApiErrorPolicy(
+                500,
+                "internal analysis operation failed",
+            ),
+            TimeoutError: _RuntimeApiErrorPolicy(504, "analysis operation timed out"),
+        }
+    )
 )
 
 _RUNTIME_API_REQUEST_ERROR_ROOTS = (
@@ -485,10 +494,10 @@ def _require_revision_store():
     return store
 
 
-def _require_revision(revision_id: str) -> None:
+def _require_revision(revision_id: str) -> Any:
     store = _require_revision_store()
     try:
-        store.revision(revision_id)
+        return store.revision(revision_id)
     except KeyError as error:
         raise _RuntimeHTTPResponse(
             status_code=404,
@@ -632,7 +641,9 @@ def _graph_payload(timestamp_ns: int) -> dict[str, Any]:
                 "quality": view["quality"],
                 "state_basis": "selected from temporal resource intervals",
                 "complete_record": record is not None,
-                "presentation_tags": record.get("presentation_tags", []) if record else [],
+                "presentation_tags": record.get("presentation_tags", [])
+                if record
+                else [],
                 "icon": descriptor_index.get(view["kind"], {}).get("icon"),
             }
         )
@@ -688,7 +699,9 @@ def _correlation_payload(body: dict[str, Any]) -> dict[str, Any]:
         raise _RuntimeHTTPResponse(status_code=422, detail="direction must be a string")
     direction = direction_value
     if direction not in {"incoming", "outgoing", "both"}:
-        raise _RuntimeHTTPResponse(status_code=422, detail="direction must be incoming, outgoing or both")
+        raise _RuntimeHTTPResponse(
+            status_code=422, detail="direction must be incoming, outgoing or both"
+        )
     depth = _body_integer(body, "depth", 3, minimum=0, maximum=20)
     max_nodes = _body_integer(
         body,
@@ -698,13 +711,9 @@ def _correlation_payload(body: dict[str, Any]) -> dict[str, Any]:
         maximum=MAX_CORRELATION_NODES,
     )
     active_node_ids = {str(node["id"]) for node in payload["nodes"]}
-    known_node_ids = {
-        resource_id(record) for record in dataset.get("resources", [])
-    }
+    known_node_ids = {resource_id(record) for record in dataset.get("resources", [])}
     unknown_roots = [
-        identifier
-        for identifier in requested_roots
-        if identifier not in known_node_ids
+        identifier for identifier in requested_roots if identifier not in known_node_ids
     ]
     inactive_roots = [
         identifier
@@ -796,7 +805,9 @@ def _indexed_correlation_payload(
 
     runtime = history_runtime(dataset)
     if runtime is None:  # pragma: no cover - guarded by the caller
-        raise _RuntimeHTTPResponse(status_code=500, detail="scale indexes are unavailable")
+        raise _RuntimeHTTPResponse(
+            status_code=500, detail="scale indexes are unavailable"
+        )
     timestamp_ns = _body_timestamp_ns(
         body,
         "time_ns",
@@ -813,7 +824,9 @@ def _indexed_correlation_payload(
         )
     depth = _body_integer(body, "depth", 3, minimum=0, maximum=20)
     if depth < 0 or depth > 20:
-        raise _RuntimeHTTPResponse(status_code=422, detail="depth must be between 0 and 20")
+        raise _RuntimeHTTPResponse(
+            status_code=422, detail="depth must be between 0 and 20"
+        )
     relation_types = set(_body_string_list(body, "relation_types"))
     requested_roots = _body_string_list(body, "resource_ids")
     defaulted = not requested_roots
@@ -843,9 +856,7 @@ def _indexed_correlation_payload(
     ]
     active_root_set = set(active_roots)
     inactive_roots = [
-        identifier
-        for identifier in known_roots
-        if identifier not in active_root_set
+        identifier for identifier in known_roots if identifier not in active_root_set
     ]
     roots = active_roots[:max_nodes]
     dropped_roots = active_roots[max_nodes:]
@@ -918,9 +929,7 @@ def _indexed_correlation_payload(
             )
             edge_records[key] = relationship
 
-    descriptor_index = {
-        item["kind"]: item for item in dataset["kind_descriptors"]
-    }
+    descriptor_index = {item["kind"]: item for item in dataset["kind_descriptors"]}
     nodes: list[dict[str, Any]] = []
     for identifier in sorted(reached):
         view = resource_state_at(identifier, timestamp_ns)
@@ -1127,9 +1136,7 @@ def _node_workspace_dataset(
             }
         state = item.get("state") if isinstance(item.get("state"), dict) else {}
         properties = (
-            item.get("properties")
-            if isinstance(item.get("properties"), dict)
-            else {}
+            item.get("properties") if isinstance(item.get("properties"), dict) else {}
         )
         normalized_state = {**properties, **state}
         if "status" not in normalized_state and item.get("status") is not None:
@@ -1236,9 +1243,7 @@ def _node_workspace_dataset(
         }
         for kind in kinds
     ]
-    relation_types = sorted(
-        {item["relation_type"] for item in relationship_intervals}
-    )
+    relation_types = sorted({item["relation_type"] for item in relationship_intervals})
     relationship_descriptors = [
         {
             "relation_type": relation_type,
@@ -1271,9 +1276,7 @@ def _node_workspace_dataset(
             projections.append(
                 {
                     "projection_id": projection_id,
-                    "label": str(
-                        selection.get("projection_label") or projection_id
-                    ),
+                    "label": str(selection.get("projection_label") or projection_id),
                     "supported_status_perspective_ids": [perspective_id],
                     "default_status_perspective_id": perspective_id,
                     "plugin_id": selection.get("plugin_id"),
@@ -1286,8 +1289,7 @@ def _node_workspace_dataset(
                     "status_perspective_id": perspective_id,
                     "layer_id": perspective_id,
                     "label": str(
-                        selection.get("status_perspective_label")
-                        or perspective_id
+                        selection.get("status_perspective_label") or perspective_id
                     ),
                 }
             )
@@ -1361,9 +1363,7 @@ def _node_workspace_dataset(
             },
             "scale_mode": False,
             "large_dataset": False,
-            "initial_resource_ids": [
-                item["resource_id"] for item in resources[:20]
-            ],
+            "initial_resource_ids": [item["resource_id"] for item in resources[:20]],
             "initial_focus_resource_id": (
                 resources[0]["resource_id"] if resources else None
             ),
@@ -1399,10 +1399,18 @@ def _node_workspace_dataset(
             "topology": topology_capabilities,
         },
         "summary": {
-            "parse": {"artifacts": len(node.get("plugin_results", [])), "errors": 0, "skipped": 0},
+            "parse": {
+                "artifacts": len(node.get("plugin_results", [])),
+                "errors": 0,
+                "skipped": 0,
+            },
             "consistency": {"pass": 0, "fail": 0, "unknown": 0},
         },
-        "coverage": {"exact_outputs": len(resources), "best_effort_outputs": 0, "unknown_outputs": 0},
+        "coverage": {
+            "exact_outputs": len(resources),
+            "best_effort_outputs": 0,
+            "unknown_outputs": 0,
+        },
         "findings": [],
         "gaps": [],
         "review_prompts": [],
@@ -1440,7 +1448,9 @@ def node_workspace_dataset(
     """Return one exact member revision used by the fabric view."""
 
     if basis_kind not in {None, "absolute_time", "relative_to_watermark"}:
-        raise _RuntimeHTTPResponse(status_code=422, detail="unsupported node workspace basis_kind")
+        raise _RuntimeHTTPResponse(
+            status_code=422, detail="unsupported node workspace basis_kind"
+        )
     if time_ns is not None and basis_offset_ns is not None:
         raise _RuntimeHTTPResponse(
             status_code=422,
@@ -1481,16 +1491,10 @@ def node_workspace_dataset(
         "event_count": descriptor.event_count,
         "resource_count": descriptor.resource_count,
         "basis": {
-            "kind": basis_kind or (
-                "absolute_time" if time_ns is not None
-                else "relative_to_watermark"
-            ),
+            "kind": basis_kind
+            or ("absolute_time" if time_ns is not None else "relative_to_watermark"),
             "time_ns": str(time_ns) if time_ns is not None else None,
-            "offset_ns": (
-                str(basis_offset_ns)
-                if basis_offset_ns is not None
-                else "0"
-            ),
+            "offset_ns": (str(basis_offset_ns) if basis_offset_ns is not None else "0"),
             "clock_domain": clock_domain,
             "clock_policy": clock_policy,
         },
@@ -1588,9 +1592,7 @@ def capabilities(revision_id: str) -> dict[str, Any]:
         "revision_id": revision_id,
         "implemented": implemented,
         "limitations": dataset.get("gaps", []),
-        "disclosure": str(
-            _analysis_metadata(dataset).get("disclosure") or ""
-        ),
+        "disclosure": str(_analysis_metadata(dataset).get("disclosure") or ""),
     }
 
 
@@ -1643,9 +1645,7 @@ def multi_node_topology_capabilities(
 ) -> dict[str, Any]:
     """Advertise executable, node-specific plug-in projection selections."""
 
-    _require_topology_assembly(
-        assembly_id or _active_topology_assembly_id()
-    )
+    _require_topology_assembly(assembly_id or _active_topology_assembly_id())
     return _multi_node_topology().capabilities()
 
 
@@ -1704,9 +1704,7 @@ def multi_node_route_capabilities(
 ) -> dict[str, Any]:
     """Advertise cross-node route resolvers and candidate-path semantics."""
 
-    _require_topology_assembly(
-        assembly_id or _active_topology_assembly_id()
-    )
+    _require_topology_assembly(assembly_id or _active_topology_assembly_id())
     return _multi_node_call(_multi_node_route().capabilities)
 
 
@@ -1718,9 +1716,7 @@ def query_multi_node_route_tables(
 ) -> dict[str, Any]:
     """Return time-bound, plug-in-owned route-table rows for selected nodes."""
 
-    _require_topology_assembly(
-        assembly_id or _active_topology_assembly_id()
-    )
+    _require_topology_assembly(assembly_id or _active_topology_assembly_id())
     return _multi_node_call(_multi_node_route().route_tables, body)
 
 
@@ -1788,15 +1784,16 @@ def _validate_resource_table_view_id(
 
     if view_id is None:
         return
-    descriptors = (
-        dataset.get("resource_table_view_descriptors")
-        or dataset.get("schema", {}).get("resource_table_views", [])
-    )
+    descriptors = dataset.get("resource_table_view_descriptors") or dataset.get(
+        "schema", {}
+    ).get("resource_table_views", [])
     if not any(
         isinstance(item, dict) and item.get("view_id") == view_id
         for item in descriptors
     ):
-        raise _RuntimeHTTPResponse(status_code=400, detail="unknown resource table view")
+        raise _RuntimeHTTPResponse(
+            status_code=400, detail="unknown resource table view"
+        )
 
 
 @api_router.get("/v1/revisions/{revision_id:path}/resources/at")
@@ -1845,10 +1842,14 @@ def resource_tables_query(
     _validate_resource_table_view_id(dataset, view_id)
     kinds = _body_string_list(body, "kinds")
     layers = _body_string_list(body, "layers")
-    if "search" in body and body["search"] is not None and not isinstance(
-        body["search"], str
+    if (
+        "search" in body
+        and body["search"] is not None
+        and not isinstance(body["search"], str)
     ):
-        raise _RuntimeHTTPResponse(status_code=422, detail="search must be a string or null")
+        raise _RuntimeHTTPResponse(
+            status_code=422, detail="search must be a string or null"
+        )
     timestamp_ns = _body_timestamp_ns(
         body,
         "time_ns",
@@ -1896,9 +1897,7 @@ def dashboards_query(
         int(_analysis_metadata(dataset)["capture_ns"]),
     )
     dashboard_ids = (
-        _body_string_list(body, "dashboard_ids")
-        if "dashboard_ids" in body
-        else None
+        _body_string_list(body, "dashboard_ids") if "dashboard_ids" in body else None
     )
     return dashboard_query(timestamp_ns, dashboard_ids=dashboard_ids)
 
@@ -1979,8 +1978,7 @@ def _bounded_history_filter_values(
         raise _RuntimeHTTPResponse(
             status_code=422,
             detail=(
-                f"{field} must contain at most "
-                f"{MAX_EVENT_LOG_FILTER_VALUES} values"
+                f"{field} must contain at most {MAX_EVENT_LOG_FILTER_VALUES} values"
             ),
         )
     if any(len(value) > MAX_EVENT_LOG_FILTER_LENGTH for value in values):
@@ -2025,11 +2023,7 @@ def _event_log_locate(body: dict[str, Any]) -> tuple[str, str] | None:
             status_code=422,
             detail="locate.kind must be event or source",
         )
-    if (
-        not isinstance(uid, str)
-        or not uid
-        or len(uid) > MAX_EVENT_LOG_UID_LENGTH
-    ):
+    if not isinstance(uid, str) or not uid or len(uid) > MAX_EVENT_LOG_UID_LENGTH:
         raise _RuntimeHTTPResponse(
             status_code=422,
             detail=(
@@ -2275,7 +2269,9 @@ def _indexed_event_only_log_page(
                 (
                     index
                     for index in range(same_time_start, same_time_end)
-                    if str(events[index].get("event_uid") or events[index].get("event_id"))
+                    if str(
+                        events[index].get("event_uid") or events[index].get("event_id")
+                    )
                     == locate[1]
                 ),
                 None,
@@ -2288,9 +2284,7 @@ def _indexed_event_only_log_page(
                 elif target_index < left:
                     located_display_index = inside_count + target_index
                 else:
-                    located_display_index = (
-                        inside_count + left + target_index - right
-                    )
+                    located_display_index = inside_count + left + target_index - right
 
     page_end = min(total_count, offset + limit)
     items: list[dict[str, Any]] = []
@@ -2392,9 +2386,7 @@ def event_density_query(
                 if str(event.get("outcome", "")) == "failure":
                     failure_times.append(timestamp_ns)
                 event_type = str(
-                    event.get("event_type")
-                    or event.get("event_name")
-                    or "unknown"
+                    event.get("event_type") or event.get("event_name") or "unknown"
                 )
                 times_by_type.setdefault(event_type, []).append(timestamp_ns)
             runtime.failure_event_times = failure_times
@@ -2405,9 +2397,7 @@ def event_density_query(
         response_bins: list[dict[str, Any]] = []
         for index in range(bin_count):
             bin_start_ns = start_ns + (integer_span * index) // bin_count
-            bin_end_exclusive = (
-                start_ns + (integer_span * (index + 1)) // bin_count
-            )
+            bin_end_exclusive = start_ns + (integer_span * (index + 1)) // bin_count
             bin_left = bisect_left(
                 runtime.event_times,
                 bin_start_ns,
@@ -2480,9 +2470,7 @@ def event_density_query(
             if str(event.get("outcome", "")) == "failure":
                 aggregate["failure_count"] += 1
             event_type = str(
-                event.get("event_type")
-                or event.get("event_name")
-                or "unknown"
+                event.get("event_type") or event.get("event_name") or "unknown"
             )
             aggregate["types"][event_type] += 1
 
@@ -2492,9 +2480,7 @@ def event_density_query(
             bin_end_ns = (
                 end_ns
                 if index == bin_count - 1
-                else start_ns
-                + (integer_span * (index + 1)) // bin_count
-                - 1
+                else start_ns + (integer_span * (index + 1)) // bin_count - 1
             )
             response_bins.append(
                 {
@@ -2550,10 +2536,7 @@ def event_log_query(
     if len(raw_search) > MAX_EVENT_LOG_SEARCH_LENGTH:
         raise _RuntimeHTTPResponse(
             status_code=422,
-            detail=(
-                "search must be at most "
-                f"{MAX_EVENT_LOG_SEARCH_LENGTH} characters"
-            ),
+            detail=(f"search must be at most {MAX_EVENT_LOG_SEARCH_LENGTH} characters"),
         )
     search = raw_search.casefold()
     selected_range = _selected_history_range(body)
@@ -2637,9 +2620,7 @@ def event_log_query(
     # id, stream kind, raw uid, membership, raw entry. Event projections are
     # deliberately not retained for all 100K+ rows; they are redacted before
     # search and again only for the bounded return page.
-    candidates: list[
-        tuple[int, int, int, str, str, str, str, dict[str, Any]]
-    ] = []
+    candidates: list[tuple[int, int, int, str, str, str, str, dict[str, Any]]] = []
     inside_count = 0
 
     def append_candidate(
@@ -2713,9 +2694,7 @@ def event_log_query(
                 if search not in search_text:
                     continue
             uid = str(
-                event.get("event_uid")
-                or event.get("event_id")
-                or f"event-{index}"
+                event.get("event_uid") or event.get("event_id") or f"event-{index}"
             )
             append_candidate(
                 stream_kind="event",
@@ -2793,9 +2772,7 @@ def event_log_query(
                 "timestamp_ns": str(timestamp_ns),
                 "membership": membership,
                 "in_selected_range": (
-                    None
-                    if selected_range is None
-                    else membership == "inside"
+                    None if selected_range is None else membership == "inside"
                 ),
                 "entry": safe_entry,
             }
@@ -2863,11 +2840,7 @@ def source_records_query(
         known_source_types=known_source_types,
     )
     result["items"] = [
-        {
-            key: value
-            for key, value in item.items()
-            if key != "copy_text"
-        }
+        {key: value for key, value in item.items() if key != "copy_text"}
         for item in result.get("items", [])
     ]
     return {
@@ -3025,9 +2998,7 @@ def event_log_selection(
                         "uid": uid,
                         "timestamp_ns": str(item.get("timestamp_ns", "0")),
                         "resource_ids": (
-                            _event_resource_ids(entry)
-                            if kind == "event"
-                            else []
+                            _event_resource_ids(entry) if kind == "event" else []
                         ),
                         "entry": entry,
                     }
@@ -3108,9 +3079,7 @@ def event_log_selection(
     )
     return {
         "revision_id": revision_id,
-        "selection_ranges": [
-            {"start": start, "end": end} for start, end in ranges
-        ],
+        "selection_ranges": [{"start": start, "end": end} for start, end in ranges],
         "selection_count": len(selected_items),
         "items": selected_items,
         "copy_action_label": copy_action_label,
@@ -3173,8 +3142,7 @@ def _effective_relationship_intervals(
             )
         relationship_candidates = dataset["relationship_intervals"]
     descriptors = {
-        item["relation_type"]: item
-        for item in dataset["relationship_descriptors"]
+        item["relation_type"]: item for item in dataset["relationship_descriptors"]
     }
     result: list[dict[str, Any]] = []
     seen: set[tuple[str, str | None, str | None]] = set()
@@ -3204,7 +3172,9 @@ def _effective_relationship_intervals(
                         "target_lifecycle",
                     ),
                 ]
-                finite_starts = [item for item in start_candidates if item[0] is not None]
+                finite_starts = [
+                    item for item in start_candidates if item[0] is not None
+                ]
                 effective_start = (
                     max(finite_starts, key=lambda item: int(item[0]))
                     if finite_starts
@@ -3260,18 +3230,12 @@ def _effective_relationship_intervals(
                 result.append(
                     {
                         **relationship,
-                        "relationship_valid_from_ns": relationship.get(
-                            "valid_from_ns"
-                        ),
-                        "relationship_valid_to_ns": relationship.get(
-                            "valid_to_ns"
-                        ),
+                        "relationship_valid_from_ns": relationship.get("valid_from_ns"),
+                        "relationship_valid_to_ns": relationship.get("valid_to_ns"),
                         "relationship_start_event_uid": relationship.get(
                             "start_event_uid"
                         ),
-                        "relationship_end_event_uid": relationship.get(
-                            "end_event_uid"
-                        ),
+                        "relationship_end_event_uid": relationship.get("end_event_uid"),
                         "valid_from_ns": start_ns,
                         "valid_to_ns": end_ns,
                         "start_ns": start_ns,
@@ -3302,8 +3266,7 @@ def _relationship_mutations_in_window(
     query_end_ns: int,
 ) -> list[dict[str, Any]]:
     descriptors = {
-        item["relation_type"]: item
-        for item in dataset["relationship_descriptors"]
+        item["relation_type"]: item for item in dataset["relationship_descriptors"]
     }
     runtime = history_runtime(dataset)
     if runtime is not None:
@@ -3389,7 +3352,8 @@ def _timeline_mark(
         "effect_type": effect_type,
         "duration_to_next_change_ns": (
             str(next_change_ns - int(event["timestamp_ns"]))
-            if next_change_ns is not None and next_change_ns >= int(event["timestamp_ns"])
+            if next_change_ns is not None
+            and next_change_ns >= int(event["timestamp_ns"])
             else None
         ),
         "resource_id": resource_identifier,
@@ -3489,8 +3453,7 @@ def _bounded_timeline_clusters(
                         allocation - 1,
                         max(
                             0,
-                            ((int(mark["time_ns"]) - start_ns) * allocation)
-                            // span,
+                            ((int(mark["time_ns"]) - start_ns) * allocation) // span,
                         ),
                     )
                     while len(groups) <= bin_index:
@@ -3501,8 +3464,7 @@ def _bounded_timeline_clusters(
             for mark in marks:
                 if (
                     groups
-                    and int(mark["time_ns"])
-                    - int(groups[-1][-1]["time_ns"])
+                    and int(mark["time_ns"]) - int(groups[-1][-1]["time_ns"])
                     <= cluster_window_ns
                 ):
                     groups[-1].append(mark)
@@ -3535,9 +3497,7 @@ def _bounded_timeline_clusters(
                     # so a client cannot render the undisclosed tail twice. In
                     # forced mode the lane marks are removed, so the bounded
                     # preview is sufficient for interaction and source jumps.
-                    "event_uids": [
-                        item["event_uid"] for item in cluster_event_marks
-                    ],
+                    "event_uids": [item["event_uid"] for item in cluster_event_marks],
                     "first_event_uid": group[0]["event_uid"],
                     "last_event_uid": group[-1]["event_uid"],
                     "items": preview,
@@ -3601,11 +3561,7 @@ def timeline_query(
     allow_empty = _body_boolean(body, "allow_empty")
     only_with_activity = _body_boolean(body, "only_with_activity")
     runtime = history_runtime(dataset)
-    if (
-        runtime is not None
-        and not requested_id_values
-        and not allow_empty
-    ):
+    if runtime is not None and not requested_id_values and not allow_empty:
         requested_id_values = list(dict.fromkeys(runtime.initial_resource_ids))
     history_roots = _body_string_list(body, "relationship_history_roots")
     history_candidate_ids: list[str] = []
@@ -3686,10 +3642,14 @@ def timeline_query(
             ),
         )
     requested_ids = set(requested_id_values)
-    if "search" in body and body["search"] is not None and not isinstance(
-        body["search"], str
+    if (
+        "search" in body
+        and body["search"] is not None
+        and not isinstance(body["search"], str)
     ):
-        raise _RuntimeHTTPResponse(status_code=422, detail="search must be a string or null")
+        raise _RuntimeHTTPResponse(
+            status_code=422, detail="search must be a string or null"
+        )
     search = str(body.get("search") or "").casefold()
     if runtime is not None:
         filtered: list[dict[str, Any]] = []
@@ -3743,13 +3703,17 @@ def timeline_query(
             item
             for item in lifecycle_by_resource.get(identifier, [])
             if (item.get("valid_to_ns") is None or int(item["valid_to_ns"]) > start_ns)
-            and (item.get("valid_from_ns") is None or int(item["valid_from_ns"]) < end_ns)
+            and (
+                item.get("valid_from_ns") is None or int(item["valid_from_ns"]) < end_ns
+            )
         ]
         statuses = [
             item
             for item in state_by_resource.get(identifier, [])
             if (item.get("valid_to_ns") is None or int(item["valid_to_ns"]) > start_ns)
-            and (item.get("valid_from_ns") is None or int(item["valid_from_ns"]) < end_ns)
+            and (
+                item.get("valid_from_ns") is None or int(item["valid_from_ns"]) < end_ns
+            )
         ]
         if runtime is not None:
             resource_events = [
@@ -3759,9 +3723,7 @@ def timeline_query(
             ]
         else:
             resource_events = [
-                item
-                for item in filtered
-                if identifier in _event_resource_ids(item)
+                item for item in filtered if identifier in _event_resource_ids(item)
             ]
         resource_events = [
             redact_event_for_client(item, dataset) for item in resource_events
@@ -3787,7 +3749,9 @@ def timeline_query(
                 **item,
                 "start_ns": item.get("valid_from_ns"),
                 "end_ns": item.get("valid_to_ns"),
-                "duration_ns": _interval_duration(item.get("valid_from_ns"), item.get("valid_to_ns")),
+                "duration_ns": _interval_duration(
+                    item.get("valid_from_ns"), item.get("valid_to_ns")
+                ),
                 "open_start": item.get("valid_from_ns") is None,
                 "open_end": item.get("valid_to_ns") is None,
             }
@@ -3802,8 +3766,12 @@ def timeline_query(
                 ).get("state", {}),
                 "start_ns": item.get("valid_from_ns"),
                 "end_ns": item.get("valid_to_ns"),
-                "duration_ns": _interval_duration(item.get("valid_from_ns"), item.get("valid_to_ns")),
-                "start_event_uid": item.get("start_event_uid", item.get("cause_event_uid")),
+                "duration_ns": _interval_duration(
+                    item.get("valid_from_ns"), item.get("valid_to_ns")
+                ),
+                "start_event_uid": item.get(
+                    "start_event_uid", item.get("cause_event_uid")
+                ),
             }
             for item in statuses
         ]
@@ -3884,12 +3852,12 @@ def timeline_query(
     )
     cursor_time_ns = None
     if "cursor_time_ns" in body and body["cursor_time_ns"] is not None:
-        cursor_time_ns = str(
-            _body_timestamp_ns(body, "cursor_time_ns", start_ns)
-        )
+        cursor_time_ns = str(_body_timestamp_ns(body, "cursor_time_ns", start_ns))
     selected_range = body.get("range")
     if selected_range is not None and not isinstance(selected_range, dict):
-        raise _RuntimeHTTPResponse(status_code=422, detail="range must be an object or null")
+        raise _RuntimeHTTPResponse(
+            status_code=422, detail="range must be an object or null"
+        )
     if isinstance(selected_range, dict):
         for key in ("start_ns", "end_ns"):
             if key in selected_range:
@@ -3957,9 +3925,7 @@ def timeline_query(
             "accepted_resource_ids": history_expanded_ids,
             "dropped_resource_ids": history_dropped_ids,
             "truncated": bool(
-                dropped_base_ids
-                or history_dropped_roots
-                or history_dropped_ids
+                dropped_base_ids or history_dropped_roots or history_dropped_ids
             ),
         },
         "aggregation": "resource-lanes-with-time-window-clusters",
@@ -4016,9 +3982,7 @@ def timeline_cluster_detail(
             if identifier in _event_resource_ids(item)
         ]
     selected = [
-        item
-        for item in candidates
-        if start_ns <= int(item["timestamp_ns"]) <= end_ns
+        item for item in candidates if start_ns <= int(item["timestamp_ns"]) <= end_ns
     ]
     selected.sort(
         key=lambda item: temporal_order_key(
@@ -4029,9 +3993,7 @@ def timeline_cluster_detail(
     )
     page = selected[offset : offset + limit]
     items = [
-        _timeline_mark(
-            redact_event_for_client(item, dataset), identifier, None
-        )
+        _timeline_mark(redact_event_for_client(item, dataset), identifier, None)
         for item in page
     ]
     next_offset = offset + len(items)
@@ -4092,10 +4054,41 @@ def correlation_query(
 
 
 @api_router.get("/v1/revisions/{revision_id:path}/consistency-findings")
-def consistency_findings(revision_id: str) -> dict[str, Any]:
-    _require_revision(revision_id)
-    items = load_dataset()["findings"]
-    return {"items": items, "count": len(items), "next_cursor": None}
+def consistency_findings(
+    revision_id: str,
+    limit: int = Query(default=1_000, ge=1, le=5_000),
+    offset: int = Query(default=0, ge=0, le=MAX_JSON_SAFE_INTEGER),
+) -> dict[str, Any]:
+    descriptor = _require_revision(revision_id)
+    dataset = load_dataset()
+    try:
+        raw_items, materialization = validate_revision_consistency_dataset(
+            dataset,
+            execution_plan=descriptor.execution_plan,
+        )
+    except DatasetIntegrityError as error:
+        raise _RuntimeHTTPResponse(
+            status_code=500,
+            detail="revision consistency materialization is invalid",
+        ) from error
+    page = raw_items[offset : offset + limit]
+    items = project_consistency_findings_for_client(dataset, page)
+    total_count = len(raw_items)
+    next_offset = offset + len(page)
+    if next_offset >= total_count:
+        next_offset = None
+    return {
+        "revision_id": revision_id,
+        "materialization": project_consistency_materialization_for_client(
+            materialization,
+        ),
+        "items": items,
+        "count": len(items),
+        "total_count": total_count,
+        "offset": offset,
+        "limit": limit,
+        "next_offset": next_offset,
+    }
 
 
 def _route_capabilities_payload(revision_id: str) -> dict[str, Any]:
@@ -4138,22 +4131,20 @@ def _resolve_route_payload(
         if isinstance(item, dict)
     ]
     next_hops = [
-        str(item["node_id"])
-        for item in candidate_next_hops
-        if item.get("node_id")
+        str(item["node_id"]) for item in candidate_next_hops if item.get("node_id")
     ]
     egress_interfaces = [
-        str(item["via"])
-        for item in candidate_next_hops
-        if item.get("via")
+        str(item["via"]) for item in candidate_next_hops if item.get("via")
     ]
     children = [
         {
             "kind": "next_hop",
             "resource_id": item.get("node_id") or item.get("via"),
             "state": (
-                "active" if item.get("active") is True
-                else "inactive" if item.get("active") is False
+                "active"
+                if item.get("active") is True
+                else "inactive"
+                if item.get("active") is False
                 else "unknown"
             ),
             "relation_type": "candidate_next_hop",

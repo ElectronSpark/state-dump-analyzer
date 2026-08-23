@@ -39,7 +39,9 @@ from router_dump_analyzer.plugin_api import (
     ResourceKindDescriptor,
 )
 from router_dump_analyzer.plugin_execution_plan import (
+    PLUGIN_EXECUTION_PLAN_VERSION,
     PLUGIN_EXECUTION_PLAN_VERSION_V1,
+    PLUGIN_EXECUTION_PLAN_VERSION_V3,
     DecoderIdentity,
     PluginArtifactIdentity,
     PluginExecutionPin,
@@ -183,12 +185,14 @@ def _plan(
     basis: str,
     *pins: PluginExecutionPin,
     authority: PluginExecutionPlanAuthority = PluginExecutionPlanAuthority.PROCESS,
+    contract_version: str = PLUGIN_EXECUTION_PLAN_VERSION_V3,
 ) -> PluginExecutionPlan:
     return PluginExecutionPlan(
         node_id=node_id,
         basis_revision_id=basis,
         plugins=tuple(pins),
         execution_plan_authority=authority,
+        contract_version=contract_version,
     )
 
 
@@ -217,9 +221,7 @@ class CapabilityRouterTests(unittest.TestCase):
         first_registered = _registered(first, "analysis.first")
         second_registered = _registered(second, "analysis.second")
         router = _router(
-            CapabilityProviderRegistry(
-                (first_registered, second_registered)
-            ),
+            CapabilityProviderRegistry((first_registered, second_registered)),
             _plan(
                 "node-a",
                 "basis-a",
@@ -270,6 +272,7 @@ class CapabilityRouterTests(unittest.TestCase):
         legacy_pin = replace(
             _pin(registered, plugin.schema, "primary_parser", "correlator"),
             registered_execution_identity="sha256:" + "0" * 64,
+            process_bootstrap_digest=None,
         )
         plan = PluginExecutionPlan(
             node_id="node-a",
@@ -286,6 +289,38 @@ class CapabilityRouterTests(unittest.TestCase):
                 plan,
             )
         self.assertEqual(plugin.correlate_calls, 0)
+
+    def test_v4_process_bootstrap_digest_binds_exact_registered_provider(self) -> None:
+        plugin = _RoutingPlugin("test.v4-bootstrap")
+        record = _registered(plugin, "v4-bootstrap.primary")
+        pin = replace(
+            _pin(record, plugin.schema, "primary_parser", "correlator"),
+            process_bootstrap_digest=record.process_bootstrap_digest,
+        )
+        providers = CapabilityProviderRegistry((record,))
+        router = _router(
+            providers,
+            _plan(
+                "node-a",
+                "basis-a",
+                pin,
+                contract_version=PLUGIN_EXECUTION_PLAN_VERSION,
+            ),
+        )
+        router.resolve(CapabilityRouteSelector(PluginCapability.CORRELATION))
+        with self.assertRaises(CapabilityRouteStaleError):
+            _router(
+                providers,
+                _plan(
+                    "node-a",
+                    "basis-a",
+                    replace(
+                        pin,
+                        process_bootstrap_digest="sha256:" + "0" * 64,
+                    ),
+                    contract_version=PLUGIN_EXECUTION_PLAN_VERSION,
+                ),
+            )
 
     def test_two_nodes_bind_different_plugins_for_the_same_capability(self) -> None:
         alpha = _RoutingPlugin("test.alpha")
@@ -346,7 +381,14 @@ class CapabilityRouterTests(unittest.TestCase):
         second_pin = _pin(second_record, second.schema, "observer")
         router = _router(
             providers,
-            _plan("node-a", "source-a", first_pin, second_pin),
+            _plan(
+                "node-a",
+                "source-a",
+                first_pin,
+                second_pin,
+                authority=PluginExecutionPlanAuthority.TRUSTED_INLINE_ATTESTED,
+            ),
+            allow_inline_only=True,
         )
 
         with self.assertRaises(CapabilityRouteAmbiguousError):
@@ -388,7 +430,13 @@ class CapabilityRouterTests(unittest.TestCase):
         ):
             route = _router(
                 CapabilityProviderRegistry(records),
-                _plan("node-a", "source-a", *pins),
+                _plan(
+                    "node-a",
+                    "source-a",
+                    *pins,
+                    authority=(PluginExecutionPlanAuthority.TRUSTED_INLINE_ATTESTED),
+                ),
+                allow_inline_only=True,
             ).resolve(selector)
             selected.append(route.provider.pin.instance_id)
         self.assertEqual(selected, ["order.observer", "order.observer"])
@@ -515,9 +563,7 @@ class CapabilityRouterTests(unittest.TestCase):
         with self.assertRaises(CapabilityRouteStaleError):
             _router(providers, plan)
         router = _router(providers, plan, allow_inline_only=True)
-        route = router.resolve(
-            CapabilityRouteSelector(PluginCapability.CORRELATION)
-        )
+        route = router.resolve(CapabilityRouteSelector(PluginCapability.CORRELATION))
         self.assertEqual(route.provider.pin.instance_id, record.instance_id)
 
     def test_plan_bound_router_rejects_inline_only_primary_and_auxiliary(self) -> None:
@@ -525,8 +571,7 @@ class CapabilityRouterTests(unittest.TestCase):
         fallback_plugin = _RoutingPlugin("test.inline-only")
         with (
             patch(
-                "router_dump_analyzer.ingestion_pipeline."
-                "executable_plugin_fingerprint",
+                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
                 return_value=package_identity,
             ),
             patch(
@@ -551,9 +596,7 @@ class CapabilityRouterTests(unittest.TestCase):
         with patch(
             "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
             side_effect=lambda plugin: (
-                package_identity
-                if plugin is fallback_plugin
-                else strict.package_hash
+                package_identity if plugin is fallback_plugin else strict.package_hash
             ),
         ):
             providers = CapabilityProviderRegistry((strict, fallback))
@@ -607,8 +650,9 @@ class CapabilityRouterTests(unittest.TestCase):
                 ),
             )
             for role, plan in scenarios:
-                with self.subTest(role=role), self.assertRaises(
-                    CapabilityRouteStaleError
+                with (
+                    self.subTest(role=role),
+                    self.assertRaises(CapabilityRouteStaleError),
                 ):
                     _router(providers, plan)
                 with self.subTest(role=role, opted=True):
@@ -860,7 +904,9 @@ class CapabilityRouterTests(unittest.TestCase):
                 "source-a",
                 _pin(primary, primary_plugin.schema, "primary_parser"),
                 _pin(observer, observer_plugin.schema, "observer"),
+                authority=PluginExecutionPlanAuthority.TRUSTED_INLINE_ATTESTED,
             ),
+            allow_inline_only=True,
         )
 
         with self.assertRaises(CapabilityRouteAmbiguousError):

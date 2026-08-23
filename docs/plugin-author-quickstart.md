@@ -20,7 +20,9 @@ The example plug-in:
    record;
 7. runs through the core-owned runtime-v2 ingestion/workspace test independently
    of the large demo's compatibility adapter; and
-8. passes the generic author validator and its own golden test.
+8. implements one bounded revision-consistency rule whose findings are
+   materialized durably with the frozen execution plan; and
+9. passes the generic author validator and its own golden test.
 
 The validator proves the plug-in-facing package and protocol shape. The core
 owns both the web command and the durable headless ingestion command. For an
@@ -42,7 +44,7 @@ router-dump-plugin-validate --list
 python -X utf8 -m rsl_demo_generator --verify-conformance-fixture demo/fixtures/minimal-status.jsonl
 router-dump-plugin-validate demo_router --artifact demo/fixtures/minimal-status.jsonl --node-hint router-1 --metadata platform=demo-router-os --metadata software_version=1
 python -m unittest discover -s demo/tests -v
-python -m unittest tests.test_artifact_core tests.test_ingestion -v
+python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_consistency_materialization tests.test_consistency_ingestion tests.test_revision_world -v
 python -m unittest discover -s state-dump-generator/tests -p "test_runtime_v2_vectors.py" -v
 python -X utf8 -m router_dump_analyzer.pipeline_cli --plugin demo_router --state-dir .runtime/plugin-author-state --tenant author-smoke --project example --workspace first-run --input demo/fixtures/minimal-status.jsonl --node-hint router-1 --pretty
 ```
@@ -126,13 +128,16 @@ capability-provider pins through a content-addressed
 `PluginCompositionPolicy`. A rule matches the exact primary instance and
 registered execution identity, then lists canonically ordered auxiliary
 instance identities and roles. The core freezes that policy digest with the
-import and as the v3 plan's `composition_policy_digest`, then rejects worker
+import and as the v4 plan's `composition_policy_digest`, then rejects worker
 or child-plan drift. Therefore any policy edit changes the plan, normalized
 dataset, catalog revision, session member, and private-analysis revision
-identity even when this primary parser selects the same rule. Plan v3 also
+identity even when this primary parser selects the same rule. Plan v4 also
 records the weakest whole-plan `PluginExecutionPlanAuthority` in
 `execution_plan_authority`: `process`,
-`trusted_inline_attested`, or `trusted_inline_manifest`. Retained plan-v2 rows
+`trusted_inline_attested`, or `trusted_inline_manifest`. Each PROCESS pin also
+commits to its exact inert child bootstrap so target substitution is rejected
+before import; trusted-inline pins carry no subprocess-bootstrap commitment.
+Retained plan-v3 rows preserve their authority and remain executable. Plan-v2 rows
 remain executable and decode that formerly absent field as
 `legacy_unrecorded`; retained plan-v1 rows remain displayable but cannot route
 capabilities or produce private evidence. The core's `PlanBoundCapabilityRouter`
@@ -325,7 +330,8 @@ demo/
     `-- test_plugin.py
 ```
 
-Copy the parser/schema portion of `rsl_demo_plugin/__init__.py`, its
+Copy the parser/schema/revision-consistency portion of
+`rsl_demo_plugin/__init__.py`, its
 `CONFORMANCE_STATUS_RECORDS` plus renderer, its golden test, and the entry-point
 declaration into a new independently installable `src/`-layout distribution.
 Rename the distribution, import package, entry-point name, plug-in ID, platform
@@ -359,10 +365,10 @@ plugin: AnalyzerPlugin = MyRouterPlugin()
 Do not target `MyRouterPlugin` or a factory function. Do not load Python code
 from a router dump.
 
-## 3. Implement only five things
+## 3. Implement the parser and one revision rule
 
-Subclass `AnalyzerPluginBase`. A first status-only plug-in implements these
-members:
+Subclass `AnalyzerPluginBase`. The teaching plug-in implements one status
+parser and one bounded revision-consistency rule through these members:
 
 ### A. Manifest
 
@@ -373,7 +379,12 @@ manifest = PluginManifest(
     core_api_version=CORE_PLUGIN_API_VERSION,
     supported_platforms=("my-router-os",),
     supported_software_versions=">=1,<2",
-    capabilities=frozenset({PluginCapability.STATUS_PARSE}),
+    capabilities=frozenset(
+        {
+            PluginCapability.STATUS_PARSE,
+            PluginCapability.CONSISTENCY_CHECK,
+        }
+    ),
     reconstruction_default=ReconstructionSupport.EXACT,
     timeline_time_basis=TimelineTimeBasis.ABSOLUTE_UNIX_NS,
 )
@@ -581,6 +592,13 @@ Unsupported values, cycles, non-finite floats, oversized integers, strings,
 bytes, containers, nesting, discovery results, or parser streams fail closed;
 core never stringifies or truncates an invalid semantic value.
 
+Each discovery or parser `yield` transfers ownership of that value to core
+immediately. Core takes a bounded, typed deep snapshot and revalidates the
+snapshot before it advances or closes the iterator. Mutating a yielded
+dataclass, mapping, sequence, or nested value afterward cannot change the
+published revision. Plug-ins must still treat yielded values as immutable and
+must not rely on object identity being retained.
+
 Those checks share one ingestion-wide budget rather than resetting for each
 yield. The default aggregate ceilings are 2,000,000 outputs, 100,000
 diagnostics, 4,000,000 each of evidence items, event subjects, and event links,
@@ -596,6 +614,81 @@ ingestion metadata. It does not yet materialize those markers into public
 relationship intervals or completeness query semantics. Emit honest scoped
 markers now, but do not write a test that assumes the current runtime-v2
 workspace has already applied their absence inference.
+
+### F. Revision consistency rule
+
+The runnable example also implements `check_consistency(world)`. Keep this
+rule device-specific: the plug-in interprets `oper_status`, while core supplies
+an immutable final-revision `ReadOnlyWorld` and owns execution, quotas,
+provenance, storage, and HTTP projection. Return each `ConsistencyFinding`
+with `basis=world.basis`; do not manufacture a timestamp or replace a capture
+vector with the dataset's latest event time.
+
+```python
+def check_consistency(self, world: ReadOnlyWorld):
+    scan_limit = 10_000
+    scanned = tuple(
+        world.iter_states(
+            kinds=frozenset({"INTERFACE"}),
+            limit=scan_limit + 1,  # one completeness sentinel
+        )
+    )
+    truncated = len(scanned) > scan_limit
+    states = scanned[:scan_limit]
+    failing = tuple(
+        state for state in states
+        if state.properties.get("oper_status") != "up"
+    )
+    if failing:
+        result = FindingResult.FAIL
+        severity = DiagnosticSeverity.ERROR
+        summary = f"At least {len(failing)} interface(s) are not up."
+    elif truncated or not states:
+        result = FindingResult.UNKNOWN
+        severity = DiagnosticSeverity.WARNING
+        summary = (
+            "The bounded scan was incomplete."
+            if truncated
+            else "No interface state was available."
+        )
+    else:
+        result = FindingResult.PASS
+        severity = DiagnosticSeverity.INFO
+        summary = "All observed interfaces are operationally up."
+    yield ConsistencyFinding(
+        rule_id="example.interface-operational-status",
+        severity=severity,
+        result=result,
+        summary=summary,
+        resources=tuple(state.resource for state in failing[:32]),
+        provenance=Provenance.RECONSTRUCTED,
+        quality=Quality.EXACT if failing or (states and not truncated) else Quality.UNKNOWN,
+        basis=world.basis,
+        evidence=tuple(
+            evidence
+            for state in failing[:32]
+            for evidence in state.evidence[:1]
+        ),
+        details={
+            "interface_count": len(states),
+            "scan_limit": scan_limit,
+            "scan_truncated": truncated,
+        },
+    )
+```
+
+Import `ConsistencyFinding`, `DiagnosticSeverity`, `FindingResult`,
+`Provenance`, `Quality`, and `ReadOnlyWorld` from
+`router_dump_analyzer.plugin_api`. The complete example
+also returns `UNKNOWN` when no interface state exists or the sentinel proves
+that the bounded scan was truncated. Never infer PASS from an unverified
+prefix. Evidence must belong to this revision's admitted artifact
+inventory, and every referenced resource must use the declared schema. Exact
+evidence locators are retained in the durable/admin record for trusted offline
+review. Public browser and HTTP projections deliberately omit `locator`; only
+the plug-in-owned `details` mapping uses descriptor-sensitive property
+redaction, while core basis/evidence fields use closed field-and-domain
+allowlists.
 
 ## 4. Know which hooks are optional
 
@@ -651,6 +744,20 @@ diagnostics. A missing capability raises
 the one exception to the world wrapper: the caller supplies the already
 bounded/indexed `CorrelationReader`, and the executor validates its exact
 bounded `CorrelationWindow` and outputs.
+
+The durable ingestion pipeline additionally schedules one optional hook:
+`CONSISTENCY_CHECK`. It freezes the execution plan, builds the immutable
+revision world, invokes the primary parser automatically when that capability
+is declared, and stores findings before canonical dataset bytes are hashed and
+published. An auxiliary provider participates only when the deployment gives
+its exact plan pin the root-exported `REVISION_CONSISTENCY_ROLE`; merely
+declaring the capability is not enough. A malformed finding, foreign evidence,
+basis mismatch, stale provider, quota failure, timeout, or fatal diagnostic
+aborts publication rather than producing a partial findings list. Revisions
+without a selected provider store `not_applicable`, distinct from legacy
+revisions whose status is `not_materialized`.
+Capture ranges, per-node resolutions, nested evidence, and aggregate basis
+evidence are bounded before core traverses or snapshots them.
 
 `analyze_evidence()` is also deliberately narrower than a world-reading hook.
 It receives an immutable `EvidenceAnalysisRequest` containing only evidence
@@ -1114,6 +1221,20 @@ does not copy `runtime` or any other live/configured state into the child. The
 runnable demo exercises this split in an actual fresh-process ingestion test.
 Do not use it for a configured parser; a non-default configuration digest still
 requires an explicit module-level instance process target.
+
+An advanced custom coordinator still hands data back through the core-owned
+publication boundary. It must return an exact `IngestionResult` whose
+`node_id` equals the requested `node_hint` when one was supplied. Each
+`SourceRecordEmission` must have one aligned, unique
+`SourceRecordOrigin(parser_id, input_ordinal, output_ordinal)` within the
+registered coordinator's frozen input/output limits. Core captures result
+references once, reapplies those limits, detaches and validates the inventory,
+schema, and typed streams, rebuilds the closed dataset, and requires the
+coordinator's dataset to match exactly. Do not inject custom dataset fields or
+rely on relaxed limits from a mutated coordinator. Embeddings and conformance
+tests may call the root-exported
+`snapshot_ingestion_result_for_publication()` directly; the durable pipeline
+always applies that boundary before publication.
 
 Trusted inline-only tests and explicitly opted-in deployments may keep
 a live object, but that does not make it PROCESS-capable. Open files, sockets,
@@ -1634,7 +1755,7 @@ standalone normative vector synchronized:
 ```text
 python -X utf8 -m rsl_demo_generator --write-ingestion-conformance-corpus path/to/runtime-v2-ingestion-conformance.tgz
 python -X utf8 -m rsl_demo_generator --verify-ingestion-conformance-corpus path/to/runtime-v2-ingestion-conformance.tgz
-python -m unittest tests.test_ingestion tests.test_capability_executor tests.test_plugin_composition tests.test_capability_router -v
+python -m unittest tests.test_ingestion tests.test_capability_executor tests.test_plugin_composition tests.test_capability_router tests.test_consistency_materialization tests.test_consistency_ingestion tests.test_revision_world -v
 python scripts/run_topology_federation_gate.py
 python -m unittest discover -s state-dump-generator/tests -p "test_runtime_v2_vectors.py" -v
 ```

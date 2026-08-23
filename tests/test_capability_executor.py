@@ -7,6 +7,7 @@ from typing import Any, Self
 from unittest.mock import patch
 from uuid import UUID
 
+import router_dump_analyzer.capability_executor as capability_executor_module
 from router_dump_analyzer.capability_executor import (
     PluginCapabilityBindingError,
     PluginCapabilityExecutionError,
@@ -64,6 +65,8 @@ from router_dump_analyzer.plugin_api import (
     RelationshipMutation,
     RelationshipOperation,
     RelationshipTypeDescriptor,
+    RelationshipView,
+    ResolvedNodeBasis,
     ResourceKey,
     ResourceKindDescriptor,
     ResourceStateView,
@@ -201,6 +204,7 @@ def _execution_pin(plugin: _Plugin) -> PluginExecutionPin:
         configuration_digest="sha256:" + "b" * 64,
         schema_digest=plugin_schema_digest(schema),
         registered_execution_identity="sha256:" + "e" * 64,
+        process_bootstrap_digest="sha256:" + "f" * 64,
         schema_versions=("router_dump_analyzer.plugin_schema.v1",),
         capabilities=tuple(
             sorted(
@@ -258,18 +262,24 @@ class _World:
         self,
         states: Iterable[Any] = (),
         *,
+        basis: WorldBasis = BASIS,
         perspective_ref: StatusPerspectiveRef | None = PERSPECTIVE,
         states_by_resource: dict[ResourceKey, ResourceStateView] | None = None,
+        relationships: Iterable[Any] = (),
+        honor_limit: bool = False,
     ) -> None:
         self._states = states
+        self._basis = basis
         self._perspective_ref = perspective_ref
         self._states_by_resource = states_by_resource or {}
+        self._relationships = relationships
+        self._honor_limit = honor_limit
         self.last_limit: int | None = None
         self.state_reads: list[ResourceKey] = []
 
     @property
     def basis(self) -> WorldBasis:
-        return BASIS
+        return self._basis
 
     @property
     def perspective_ref(self) -> StatusPerspectiveRef | None:
@@ -286,6 +296,8 @@ class _World:
         limit: int | None = None,
     ) -> Iterable[Any]:
         self.last_limit = limit
+        if self._honor_limit and limit is not None:
+            return tuple(self._states)[:limit]
         return self._states
 
     def related(
@@ -296,7 +308,9 @@ class _World:
         limit: int | None = None,
     ) -> Iterable[Any]:
         self.last_limit = limit
-        return ()
+        if self._honor_limit and limit is not None:
+            return tuple(self._relationships)[:limit]
+        return self._relationships
 
     def iter_relationships(
         self,
@@ -305,7 +319,9 @@ class _World:
         limit: int | None = None,
     ) -> Iterable[Any]:
         self.last_limit = limit
-        return ()
+        if self._honor_limit and limit is not None:
+            return tuple(self._relationships)[:limit]
+        return self._relationships
 
 
 class _Plugin(AnalyzerPluginBase):
@@ -657,6 +673,21 @@ def _resource_state(
     )
 
 
+def _relationship() -> RelationshipView:
+    return RelationshipView(
+        source=RESOURCE,
+        target=RESOURCE,
+        relation_type="opaque.link",
+        attributes={"nested": {"status": "up"}},
+        provenance=Provenance.RECONSTRUCTED,
+        quality=Quality.EXACT,
+        valid_from_ns=1,
+        valid_to_ns=None,
+        evidence=(EVIDENCE,),
+        perspective_ref=PERSPECTIVE,
+    )
+
+
 def _projection_request(ir_version: str = FORWARDING_IR_VERSION) -> Any:
     return ForwardingProjectionRequest(
         ir_version=ir_version,
@@ -859,9 +890,7 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
             GeneratorExit("process control"),
         ):
             with self.subTest(failure=type(failure).__name__):
-                plugin = _Plugin(
-                    manifest=_exploding_supports_manifest(failure)
-                )
+                plugin = _Plugin(manifest=_exploding_supports_manifest(failure))
                 executor = PluginCapabilityExecutor(plugin)
                 self.assertEqual(
                     executor.apply(EVENT, _World()),  # type: ignore[arg-type]
@@ -1088,9 +1117,7 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
                         plugin,
                         output_name,
                         ChangeSet(
-                            state=_ExplodingTuple(
-                                exception_type("process control")
-                            )
+                            state=_ExplodingTuple(exception_type("process control"))
                         ),
                     )
                     executor = PluginCapabilityExecutor(plugin)
@@ -1102,9 +1129,7 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
             with self.subTest(exception_type=exception_type.__name__):
                 with self.assertRaises(exception_type):
                     PluginCapabilityExecutor(
-                        _ExplodingManifestPlugin(
-                            exception_type("process control")
-                        )  # type: ignore[arg-type]
+                        _ExplodingManifestPlugin(exception_type("process control"))  # type: ignore[arg-type]
                     )
 
                 plugin = _ExplodingApplyPlugin(exception_type("process control"))
@@ -1192,6 +1217,39 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(PluginCapabilityOutputError, "signed 64-bit"):
             executor.check_consistency(_World())  # type: ignore[arg-type]
+
+        resolution = ResolvedNodeBasis(
+            node_id="node-a",
+            local_clock_domain=None,
+            local_min_ns=None,
+            local_max_ns=None,
+            absolute_min_ns=None,
+            absolute_max_ns=None,
+            mapping_method=None,
+            quality=Quality.UNKNOWN,
+            reason_code="not-observed",
+        )
+        plugin.consistency_output = (
+            replace(
+                plugin.consistency_output[0],
+                basis=replace(
+                    BASIS,
+                    node_resolutions=(
+                        resolution,
+                        replace(resolution, node_id="node-b"),
+                    ),
+                ),
+            ),
+        )
+        bounded_executor = PluginCapabilityExecutor(
+            plugin,
+            limits=PluginCapabilityLimits(max_world_basis_node_resolutions=1),
+        )
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "node_resolutions must be a bounded tuple",
+        ):
+            bounded_executor.check_consistency(_World())  # type: ignore[arg-type]
 
     def test_change_set_schema_references_and_limits_are_enforced(self) -> None:
         plugin = _Plugin()
@@ -1312,17 +1370,20 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
             return (finding,)
 
         plugin.check_consistency = check  # type: ignore[method-assign]
-        world = _World((object(), object()))
+        world = _World(
+            (_resource_state(RESOURCE), _resource_state(RESOURCE)),
+            honor_limit=True,
+        )
         executor = PluginCapabilityExecutor(
             plugin,
             limits=PluginCapabilityLimits(max_world_reads=1),
         )
         with self.assertRaisesRegex(
             PluginCapabilityOutputError,
-            "bounded read",
+            "world-read limit",
         ):
             executor.check_consistency(world)  # type: ignore[arg-type]
-        self.assertEqual(world.last_limit, 1)
+        self.assertEqual(world.last_limit, 2)
 
         plugin = _Plugin()
         plugin.consistency_output = (finding, _diagnostic())
@@ -1331,6 +1392,398 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
         )
         self.assertEqual(result.findings, (finding,))
         self.assertEqual(result.diagnostics, (_diagnostic(),))
+
+    def test_consistency_receives_detached_world_basis_and_perspective(self) -> None:
+        plugin = _Plugin()
+        perspective = StatusPerspectiveRef("opaque.status")
+        caller_world = _World(perspective_ref=perspective)
+
+        def mutate_world(world: Any) -> Iterable[Any]:
+            object.__setattr__(
+                world.basis,
+                "unresolved_reason",
+                "mutated-by-plugin",
+            )
+            object.__setattr__(
+                world.perspective_ref,
+                "perspective_id",
+                "mutated.by-plugin",
+            )
+            return ()
+
+        plugin.check_consistency = mutate_world  # type: ignore[method-assign]
+        PluginCapabilityExecutor(plugin).check_consistency(caller_world)  # type: ignore[arg-type]
+
+        self.assertIsNone(BASIS.unresolved_reason)
+        self.assertEqual(perspective.perspective_id, "opaque.status")
+
+    def test_consistency_world_reads_return_detached_state_and_relationships(
+        self,
+    ) -> None:
+        plugin = _Plugin()
+        state = replace(
+            _resource_state(RESOURCE, exists=True),
+            properties={"nested": {"status": "up"}},
+            evidence=(EVIDENCE,),
+        )
+        relationship = _relationship()
+        caller_world = _World(
+            (state,),
+            states_by_resource={RESOURCE: state},
+            relationships=(relationship,),
+            honor_limit=True,
+        )
+        returned: list[object] = []
+
+        def mutate_views(world: Any) -> Iterable[Any]:
+            state_by_key = world.state_of(RESOURCE)
+            state_by_scan = next(iter(world.iter_states()))
+            related = next(iter(world.related(RESOURCE)))
+            relationship_by_scan = next(iter(world.iter_relationships()))
+            returned.extend(
+                (state_by_key, state_by_scan, related, relationship_by_scan)
+            )
+            object.__setattr__(state_by_key, "exists", False)
+            object.__setattr__(state_by_scan, "properties", {"status": "mutated"})
+            object.__setattr__(related, "relation_type", "mutated.link")
+            object.__setattr__(
+                relationship_by_scan,
+                "attributes",
+                {"status": "mutated"},
+            )
+            return ()
+
+        plugin.check_consistency = mutate_views  # type: ignore[method-assign]
+        PluginCapabilityExecutor(plugin).check_consistency(caller_world)  # type: ignore[arg-type]
+
+        self.assertTrue(state.exists)
+        self.assertEqual(state.properties, {"nested": {"status": "up"}})
+        self.assertEqual(relationship.relation_type, "opaque.link")
+        self.assertEqual(
+            relationship.attributes,
+            {"nested": {"status": "up"}},
+        )
+        self.assertTrue(all(item is not state for item in returned[:2]))
+        self.assertTrue(all(item is not relationship for item in returned[2:]))
+
+    def test_consistency_world_provider_failures_use_the_input_error_domain(
+        self,
+    ) -> None:
+        class FaultIterator:
+            def __init__(self, mode: str) -> None:
+                self.mode = mode
+                self.returned = False
+
+            def __iter__(self) -> Self:
+                return self
+
+            def __next__(self) -> ResourceStateView:
+                if self.mode == "next":
+                    raise Boom("caller world next failed")
+                if self.returned:
+                    raise StopIteration
+                self.returned = True
+                return _resource_state(RESOURCE)
+
+            def close(self) -> None:
+                if self.mode == "close":
+                    raise Boom("caller world close failed")
+
+        class FaultWorld(_World):
+            def __init__(self, mode: str) -> None:
+                super().__init__()
+                self.mode = mode
+
+            def state_of(self, resource: ResourceKey) -> None:
+                del resource
+                raise Boom("caller world state failed")
+
+            def iter_states(self, **_kwargs: Any) -> Iterable[Any]:
+                if self.mode == "iter":
+                    raise Boom("caller world iterator construction failed")
+                return FaultIterator(self.mode)
+
+        for mode in ("state", "iter", "next", "close"):
+            with self.subTest(mode=mode):
+                plugin = _Plugin()
+
+                def read(world: Any, *, selected: str = mode) -> Iterable[Any]:
+                    if selected == "state":
+                        world.state_of(RESOURCE)
+                    else:
+                        tuple(world.iter_states())
+                    return ()
+
+                plugin.check_consistency = read  # type: ignore[method-assign]
+                with self.assertRaises(PluginCapabilityInputError) as raised:
+                    PluginCapabilityExecutor(plugin).check_consistency(  # type: ignore[arg-type]
+                        FaultWorld(mode)
+                    )
+                self.assertIs(
+                    raised.exception.capability,
+                    PluginCapability.CONSISTENCY_CHECK,
+                )
+
+    def test_consistency_world_field_quality_has_a_sentinel_bound(self) -> None:
+        class LyingFieldQuality(Mapping[str, Quality]):
+            def __getitem__(self, key: str) -> Quality:
+                return Quality.EXACT
+
+            def __iter__(self) -> Iterator[str]:
+                for index in range(2_000):
+                    yield f"field-{index}"
+
+            def __len__(self) -> int:
+                return 0
+
+            def items(self) -> Iterable[tuple[str, Quality]]:
+                for index in range(2_000):
+                    yield f"field-{index}", Quality.EXACT
+
+        plugin = _Plugin()
+
+        def scan(world: Any) -> Iterable[Any]:
+            tuple(world.iter_states())
+            return ()
+
+        plugin.check_consistency = scan  # type: ignore[method-assign]
+        state = replace(
+            _resource_state(RESOURCE),
+            field_quality=LyingFieldQuality(),
+        )
+        with self.assertRaisesRegex(PluginCapabilityInputError, "unreadable state"):
+            PluginCapabilityExecutor(plugin).check_consistency(  # type: ignore[arg-type]
+                _World((state,))
+            )
+
+    def test_consistency_resource_identity_is_bounded_before_traversal(self) -> None:
+        class TupleSubclass(tuple):
+            pass
+
+        for label, parts in (
+            ("tuple_subclass", TupleSubclass((("id", "one"),))),
+            (
+                "too_many_parts",
+                tuple((f"part-{index}", index) for index in range(33)),
+            ),
+        ):
+            with self.subTest(label=label):
+                resource = replace(RESOURCE)
+                object.__setattr__(resource, "parts", parts)
+                plugin = _Plugin()
+                plugin.consistency_output = (
+                    ConsistencyFinding(
+                        rule_id="opaque.resource-shape",
+                        severity=DiagnosticSeverity.WARNING,
+                        result=FindingResult.UNKNOWN,
+                        summary="Invalid resource identity",
+                        resources=(resource,),
+                        provenance=Provenance.RECONSTRUCTED,
+                        quality=Quality.UNKNOWN,
+                        basis=BASIS,
+                        evidence=(),
+                    ),
+                )
+                with self.assertRaisesRegex(
+                    PluginCapabilityOutputError,
+                    "parts must be an exact tuple of 1 to 32 items",
+                ):
+                    PluginCapabilityExecutor(plugin).check_consistency(  # type: ignore[arg-type]
+                        _World()
+                    )
+
+    def test_consistency_requires_mapping_details_and_detaches_before_advance(
+        self,
+    ) -> None:
+        plugin = _Plugin()
+        executor = PluginCapabilityExecutor(plugin)
+        invalid = ConsistencyFinding(
+            rule_id="opaque.rule",
+            severity=DiagnosticSeverity.WARNING,
+            result=FindingResult.UNKNOWN,
+            summary="Invalid details root",
+            resources=(RESOURCE,),
+            provenance=Provenance.RECONSTRUCTED,
+            quality=Quality.UNKNOWN,
+            basis=BASIS,
+            evidence=(EVIDENCE,),
+            details="not-a-properties-mapping",  # type: ignore[arg-type]
+        )
+        plugin.consistency_output = (invalid,)
+        with self.assertRaisesRegex(PluginCapabilityOutputError, "must be a mapping"):
+            executor.check_consistency(_World())  # type: ignore[arg-type]
+
+        nested = {"before": "safe"}
+        details = {"nested": nested}
+        finding = replace(invalid, details=details)
+
+        def outputs() -> Iterable[Any]:
+            yield finding
+            nested["late"] = object()
+            details["also_late"] = object()
+            yield _diagnostic()
+
+        plugin.consistency_output = outputs()
+        result = executor.check_consistency(_World())  # type: ignore[arg-type]
+        detached = result.findings[0]
+        self.assertIsNot(detached, finding)
+        self.assertEqual(dict(detached.details), {"nested": {"before": "safe"}})
+        self.assertNotIn("late", detached.details["nested"])
+        self.assertIsNot(detached.basis, finding.basis)
+        self.assertIsNot(detached.resources[0], finding.resources[0])
+        self.assertIsNot(detached.evidence[0], finding.evidence[0])
+        with self.assertRaises(TypeError):
+            detached.details["new"] = "forbidden"  # type: ignore[index]
+
+    def test_consistency_reuses_one_detached_copy_of_a_shared_large_basis(self) -> None:
+        plugin = _Plugin()
+        resolution = ResolvedNodeBasis(
+            node_id="node-0",
+            local_clock_domain=None,
+            local_min_ns=None,
+            local_max_ns=None,
+            absolute_min_ns=None,
+            absolute_max_ns=None,
+            mapping_method=None,
+            quality=Quality.UNKNOWN,
+            reason_code="not-observed",
+        )
+        large_basis = replace(
+            BASIS,
+            node_resolutions=tuple(
+                replace(resolution, node_id=f"node-{index}")
+                for index in range(256)
+            ),
+        )
+        finding = ConsistencyFinding(
+            rule_id="opaque.shared-basis",
+            severity=DiagnosticSeverity.WARNING,
+            result=FindingResult.UNKNOWN,
+            summary="Shared revision basis",
+            resources=(),
+            provenance=Provenance.RECONSTRUCTED,
+            quality=Quality.UNKNOWN,
+            basis=large_basis,
+            evidence=(),
+        )
+        plugin.consistency_output = (finding,) * 100
+
+        original_snapshot = capability_executor_module._snapshot_world_basis
+        with patch.object(
+            capability_executor_module,
+            "_snapshot_world_basis",
+            wraps=original_snapshot,
+        ) as snapshot:
+            result = PluginCapabilityExecutor(plugin).check_consistency(  # type: ignore[arg-type]
+                _World(basis=large_basis)
+            )
+
+        self.assertEqual(len(result.findings), 100)
+        # bounded-world copy, authoritative copy, first emitted basis, and the
+        # final post-generator mutation check. Cache hits do not resnapshot.
+        self.assertEqual(snapshot.call_count, 4)
+        self.assertEqual(len({id(item.basis) for item in result.findings}), 1)
+        self.assertIsNot(result.findings[0].basis, large_basis)
+
+    def test_consistency_detachment_has_invocation_wide_aggregate_limits(self) -> None:
+        plugin = _Plugin()
+        finding = ConsistencyFinding(
+            rule_id="opaque.aggregate",
+            severity=DiagnosticSeverity.WARNING,
+            result=FindingResult.UNKNOWN,
+            summary="A summary too large for the configured aggregate budget",
+            resources=(RESOURCE,),
+            provenance=Provenance.RECONSTRUCTED,
+            quality=Quality.UNKNOWN,
+            basis=BASIS,
+            evidence=(EVIDENCE,),
+            details={"nested": {"value": "payload"}},
+        )
+        plugin.consistency_output = (finding,) * 2
+        executor = PluginCapabilityExecutor(
+            plugin,
+            limits=PluginCapabilityLimits(max_consistency_snapshot_units=10),
+        )
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "aggregate snapshot-unit limit",
+        ):
+            executor.check_consistency(_World())  # type: ignore[arg-type]
+
+        plugin.consistency_output = (
+            finding,
+            replace(finding, basis=replace(BASIS)),
+        )
+        executor = PluginCapabilityExecutor(
+            plugin,
+            limits=PluginCapabilityLimits(max_consistency_basis_variants=1),
+        )
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "distinct basis limit",
+        ):
+            executor.check_consistency(_World())  # type: ignore[arg-type]
+
+        oversized_key = ResourceKey(
+            namespace="opaque",
+            node="node-a",
+            layer="control",
+            kind="opaque.item",
+            parts=(("id", ("x" * 200,) * 10),),
+        )
+        plugin.consistency_output = (
+            replace(finding, resources=(oversized_key,), evidence=(), details={}),
+        )
+        executor = PluginCapabilityExecutor(
+            plugin,
+            limits=PluginCapabilityLimits(max_consistency_snapshot_units=1_000),
+        )
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "aggregate snapshot-unit limit",
+        ):
+            executor.check_consistency(_World())  # type: ignore[arg-type]
+
+        plugin.consistency_output = (
+            replace(_diagnostic(), details={"payload": "x" * 100}),
+        )
+        executor = PluginCapabilityExecutor(
+            plugin,
+            limits=PluginCapabilityLimits(max_consistency_snapshot_units=50),
+        )
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "aggregate snapshot-unit limit",
+        ):
+            executor.check_consistency(_World())  # type: ignore[arg-type]
+
+    def test_consistency_rejects_a_cached_basis_mutated_between_yields(self) -> None:
+        plugin = _Plugin()
+        mutable_basis = replace(BASIS)
+        finding = ConsistencyFinding(
+            rule_id="opaque.mutable-basis",
+            severity=DiagnosticSeverity.WARNING,
+            result=FindingResult.UNKNOWN,
+            summary="Mutable basis",
+            resources=(),
+            provenance=Provenance.RECONSTRUCTED,
+            quality=Quality.UNKNOWN,
+            basis=mutable_basis,
+            evidence=(),
+        )
+
+        def outputs() -> Iterable[Any]:
+            yield finding
+            object.__setattr__(mutable_basis, "unresolved_reason", "mutated")
+            yield finding
+            object.__setattr__(mutable_basis, "unresolved_reason", None)
+
+        plugin.consistency_output = outputs()
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "basis changed after it was yielded",
+        ):
+            PluginCapabilityExecutor(plugin).check_consistency(_World())  # type: ignore[arg-type]
 
     def test_topology_requires_declared_request_and_matching_records(self) -> None:
         plugin = _Plugin()
@@ -1608,9 +2061,12 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
             ),
         )
         for claim, message in invalid_claims:
-            with self.subTest(message=message), self.assertRaisesRegex(
-                PluginCapabilityOutputError,
-                message,
+            with (
+                self.subTest(message=message),
+                self.assertRaisesRegex(
+                    PluginCapabilityOutputError,
+                    message,
+                ),
             ):
                 plugin.topology_output = (claim, _topology_resource_record())
                 executor.project_topology(request, _World())  # type: ignore[arg-type]

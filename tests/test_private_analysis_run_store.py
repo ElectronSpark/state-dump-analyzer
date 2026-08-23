@@ -118,6 +118,7 @@ def _execution_plan(node_id: str, suffix: str) -> PluginExecutionPlan:
         configuration_digest="sha256:" + "c" * 64,
         schema_digest="sha256:" + "d" * 64,
         registered_execution_identity="sha256:" + suffix * 64,
+        process_bootstrap_digest="sha256:" + "e" * 64,
         capabilities=("source_record_parser",),
         roles=("primary_parser",),
     )
@@ -740,8 +741,7 @@ class PrivateAnalysisRunStoreTests(unittest.TestCase):
         inspection = sqlite3.connect(self.database)
         try:
             stored_verifier = inspection.execute(
-                "SELECT owner_verifier_digest "
-                "FROM private_analysis_run_cleanup_fences"
+                "SELECT owner_verifier_digest FROM private_analysis_run_cleanup_fences"
             ).fetchone()[0]
             raw_row = inspection.execute(
                 "SELECT * FROM private_analysis_run_cleanup_fences"
@@ -880,9 +880,7 @@ class PrivateAnalysisRunStoreTests(unittest.TestCase):
         )
         self.assertIs(completed.state, PrivateAnalysisRunState.COMPLETED)
         self.assertFalse(completed.cleanup_pending)
-        self.assertIsNone(
-            self.store.get_cleanup_fence(request.scope, running.run_id)
-        )
+        self.assertIsNone(self.store.get_cleanup_fence(request.scope, running.run_id))
         with self.assertRaisesRegex(
             PrivateAnalysisRunConflict,
             "terminal cleanup capability",
@@ -1026,7 +1024,9 @@ class PrivateAnalysisRunStoreTests(unittest.TestCase):
             }
         finally:
             inspection.close()
-        self.assertFalse(any("pid" in column or "process" in column for column in columns))
+        self.assertFalse(
+            any("pid" in column or "process" in column for column in columns)
+        )
         self.assertNotIn("fence_id", columns)
         self.assertIn("owner_verifier_digest", columns)
 
@@ -1110,8 +1110,7 @@ class PrivateAnalysisRunStoreTests(unittest.TestCase):
                 "SELECT * FROM private_analysis_run_cleanup_fences"
             ).fetchone()
             verifier = inspection.execute(
-                "SELECT owner_verifier_digest "
-                "FROM private_analysis_run_cleanup_fences"
+                "SELECT owner_verifier_digest FROM private_analysis_run_cleanup_fences"
             ).fetchone()[0]
         finally:
             inspection.close()

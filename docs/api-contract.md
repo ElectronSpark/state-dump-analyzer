@@ -241,9 +241,39 @@ envelopes, and raises a typed execution error for fatal or invalid output.
 Caller-owned request validation instead raises the root-exported
 `PluginCapabilityInputError` before the hook is resolved or invoked; malformed
 plug-in output remains `PluginCapabilityOutputError`.
-This makes the hook contract executable without implying that the current
-runtime-v2 host has scheduled those hooks or exposed temporal, topology, or
-route APIs; the providers above remain `None`.
+This makes the hook contract executable without implying temporal, topology,
+or route providers; those runtime-v2 providers remain `None`. Durable
+ingestion now schedules `CONSISTENCY_CHECK` after the execution plan is frozen
+and before normalized bytes are hashed. Its canonical dataset contains
+`findings`, producer-qualified `consistency_diagnostics`, summary counts, and
+a `consistency_materialization` envelope whose status is `complete` or
+`not_applicable`. Legacy revisions lacking that envelope are surfaced as
+`not_materialized`; they are not recomputed during a read.
+`PluginCapabilityLimits` independently bounds basis capture ranges, node
+resolutions, per-container evidence, and aggregate basis evidence before the
+executor snapshots plug-in output; revision materialization applies its own
+aggregate limits before publication.
+
+The durable v1 envelope is a closed object containing `schema_version`,
+`status`, `plan_digest`, `basis`, `basis_digest`, `providers`,
+`provider_count`, `finding_count`, `diagnostic_count`,
+`emitted_finding_count`, `emitted_diagnostic_count`,
+`duplicate_findings_discarded`, `duplicate_diagnostics_discarded`, and
+`world_reads`. A core-ingestion-v3 revision stores only `complete` or
+`not_applicable`; `not_materialized` is a read-time compatibility projection
+for older revisions. Readers revalidate envelope counts and limits, require
+every evidence artifact to belong to the revision inventory, reconstruct typed
+resource-key parts and rederive their canonical resource IDs, and enforce the
+same list/value/byte domains before projection. A noncanonical or unsafe stored
+record is a dataset-integrity failure, never a partially projected finding.
+
+For PROCESS ingestion the complete plan still records every composed
+auxiliary, while the child loads only the primary and the exact auxiliaries
+selected for this stage by `REVISION_CONSISTENCY_ROLE`. A scalar pre-load check
+rejects any extra, missing, duplicated, reordered, or mismatched auxiliary
+bootstrap. The stage-specific router retains the full plan digest but cannot
+route a pin outside that selected set; ordinary router construction continues
+to validate the whole plan.
 
 Runtime-v2 ingestion also validates and retains scoped
 `RelationshipCollectionObservation` markers as private normalized metadata.
@@ -402,6 +432,7 @@ All paths below are relative to `/v1/control-plane`.
 | `POST` | `.../private-analysis-runs/{run_id}/proposal-decisions/{decision_id}/recover` | Explicitly resume one pending human promotion; requires the decision `If-Match`. |
 | `GET` | `/projects/{project_id}/workspaces/{workspace_id}/fixtures` | List immutable fixtures. |
 | `GET` | `/projects/{project_id}/workspaces/{workspace_id}/revisions` | List immutable revisions; optional `node_id` or `fixture_id`. |
+| `GET` | `/projects/{project_id}/workspaces/{workspace_id}/revisions/{revision_id}/consistency-findings` | Page durable, schema-redacted consistency findings and their materialization envelope. |
 | `GET, POST` | `/projects/{project_id}/workspaces/{workspace_id}/sessions` | List or create mutable sessions. |
 | `GET, PATCH, DELETE` | `/projects/{project_id}/workspaces/{workspace_id}/sessions/{session_id}` | Read, update, or permanently delete one session. |
 | `PUT, DELETE` | `/projects/{project_id}/workspaces/{workspace_id}/sessions/{session_id}/members/{member_id}` | Add/replace or remove one exact fixture/revision member. |
@@ -427,6 +458,22 @@ All paths below are relative to `/v1/control-plane`.
 | `GET` | `/projects/{project_id}/workspaces/{workspace_id}/retention/audit` | Return bounded store-specific retention journals. |
 
 Here, an abbreviated `...` preserves the same project/workspace prefix.
+
+Consistency finding pages accept `limit` from 1 through 5,000 and a
+JSON-safe non-negative `offset`. They return `items`, `count`, `total_count`,
+`offset`, `limit`, `next_offset`, the exact `revision_id`, and the detached
+materialization envelope. Cross-workspace revision IDs are concealed as 404.
+Typed resource-key atoms remain in the durable dataset for exact offline
+analysis but are omitted from HTTP; public findings retain stable
+`resource_id` references. Plug-in-owned `details` pass through
+descriptor-sensitive property redaction. Core-owned finding basis, producer,
+and evidence use closed field-and-domain allowlists; evidence `locator` is
+always omitted, while artifact/time/hash coordinates remain when valid. The
+materialization `basis_digest` commits to the richer durable basis rather than
+this reduced public projection. The single-node
+runtime route
+`GET /v1/revisions/{revision_id}/consistency-findings?limit=&offset=` uses the
+same bounded page shape and client projection.
 
 The private-analysis policy `GET` returns a numeric strong `ETag`. An
 unconfigured workspace returns `ETag: "0"`, `explicit: false`, and the closed
@@ -455,7 +502,7 @@ trusted. It does not claim to detect a privileged actor coherently replacing
 every authority row or restoring the complete catalog from an older snapshot.
 
 Each revision item includes `execution_plan`. New durable publications expose
-the closed `router_dump_analyzer.plugin_execution_plan.v3` object: node and
+the closed `router_dump_analyzer.plugin_execution_plan.v4` object: node and
 source-revision basis, ordered producer pins, optional decoder identity, and
 the exact `composition_policy_digest`, closed `execution_plan_authority`, and
 `plan_digest`. `PluginExecutionPlanAuthority` is the weakest whole-plan value:
@@ -463,11 +510,14 @@ the exact `composition_policy_digest`, closed `execution_plan_authority`, and
 `trusted_inline_attested`, or `trusted_inline_manifest`. A pin exposes
 artifact/configuration/schema/capability/role and
 content-addressed registered-execution identity but never configuration
-values. The current identity also commits to the complete non-recursive
+values. A PROCESS pin's `process_bootstrap_digest` separately commits to the
+complete non-recursive
 process-reconstruction bootstrap (all loader kinds/targets, each external
 target's source-backed executable identity, verification mode, frozen
 ingestion/artifact limits, and reconstruction coordinates); only its
-self-referential expected-identity member is excluded. `plugin_ids` is the
+self-referential expected-identity member is excluded, and the child validates
+that commitment before importing any target. Trusted-inline v4 pins carry
+`process_bootstrap_digest: null`. `plugin_ids` is the
 ordered distinct
 projection of the plan's plug-in IDs and must agree with it. The normalized
 dataset `_ingestion.plugin_execution_plan_digest`, catalog metadata, plan body,
@@ -479,14 +529,15 @@ active for the upgrade, and are re-probed before execution. Already staged or
 completed legacy publications keep their historical policy and remain
 planless, so idempotent crash replay uses the original payload.
 
-The strict reader retains v1 and v2 with their original byte/shape/digest
+The strict reader retains v1, v2, and v3 with their original byte/shape/digest
 contracts. A
 retained v1 pin has no `registered_execution_identity`, and its plan has no
 `composition_policy_digest`; decoding uses reserved all-zero sentinels only
 inside the passive value. V2 requires both fields, rejects either reserved
 legacy-zero value, remains executable, and decodes its historically absent
 authority as `legacy_unrecorded` rather than claiming PROCESS. V3 adds the
-closed authority field. Every version is bounded to 512 KiB of canonical plan
+closed authority field. V4 adds the per-pin bootstrap commitment for PROCESS
+plans without rewriting retained history. Every version is bounded to 512 KiB of canonical plan
 JSON. V1 remains
 readable in catalog responses but cannot bind a capability provider, execute a
 capability, or produce private-analysis evidence.
@@ -1723,7 +1774,7 @@ provider registries. Subsequent `register()`/`add_registered()` calls on the
 caller-owned containers remain local and cannot change candidate selection or
 published execution authority. Plan-bound capability routing also rejects an
 `inline_only` record unless its router receives that same explicit deployment
-policy and its v3 plan records a trusted-inline authority.
+policy and its v3-or-v4 plan records a trusted-inline authority.
 
 By default, the durable servers and headless command execute both probe and
 ingestion in fresh `spawn` child processes. The default child deadline is 300 seconds; the

@@ -6,10 +6,511 @@ import random
 import re
 import unittest
 
+from router_dump_analyzer.normalized_data import (
+    project_consistency_findings_for_client,
+    project_consistency_materialization_for_client,
+)
 from tests.support.normalized_data import static_data_service
+
+VALID_FINDING_ID = "sha256:" + ("f" * 64)
+VALID_ARTIFACT_ID = "00000000-0000-0000-0000-000000000001"
 
 
 class NormalizedDataServiceTests(unittest.TestCase):
+    def test_consistency_materialization_uses_an_exact_client_envelope(self) -> None:
+        class UnknownBranchMustNotBeRead(dict):
+            def items(self):
+                raise AssertionError("unknown materialization branch was traversed")
+
+        digest = "sha256:" + ("a" * 64)
+        private_marker = "private-materialization-extension"
+        materialization = {
+            "schema_version": "router_dump_analyzer.consistency_materialization.v1",
+            "status": "complete",
+            "plan_digest": digest,
+            "basis_digest": digest,
+            "provider_count": "private-count-marker",
+            "finding_count": 1 << 53,
+            "diagnostic_count": 0,
+            "emitted_finding_count": 0,
+            "emitted_diagnostic_count": 0,
+            "duplicate_findings_discarded": 0,
+            "duplicate_diagnostics_discarded": 0,
+            "world_reads": True,
+            "basis": {
+                "kind": "observed_capture_vector",
+                "requested_time_ns": None,
+                "capture_ranges": [
+                    {
+                        "scope": "node-a",
+                        "evidence": [
+                            {
+                                "artifact_id": VALID_ARTIFACT_ID,
+                                "locator": "C:/private/status.dump:7",
+                            }
+                        ],
+                    }
+                ],
+                "private_extension": UnknownBranchMustNotBeRead(
+                    {"marker": private_marker}
+                ),
+            },
+            "providers": [
+                {
+                    "plugin_id": "plugin-a",
+                    "plugin_version": "1",
+                    "roles": ["revision-consistency"],
+                    "private_extension": private_marker,
+                }
+            ],
+            "private_extension": private_marker,
+        }
+
+        projected = project_consistency_materialization_for_client(
+            materialization,
+        )
+        serialized = json.dumps(projected)
+
+        self.assertNotIn("provider_count", projected)
+        self.assertNotIn("finding_count", projected)
+        self.assertNotIn("world_reads", projected)
+        self.assertEqual(projected["diagnostic_count"], 0)
+        self.assertEqual(
+            projected["basis"]["capture_ranges"][0]["evidence"],
+            [{"artifact_id": VALID_ARTIFACT_ID}],
+        )
+        self.assertNotIn("locator", serialized)
+        self.assertNotIn(private_marker, serialized)
+        self.assertNotIn("private_extension", serialized)
+        malformed = project_consistency_materialization_for_client(
+            {
+                "schema_version": 1,
+                "status": {"marker": private_marker},
+                "plan_digest": private_marker,
+                "basis_digest": private_marker,
+            }
+        )
+        self.assertEqual(malformed, {})
+
+    def test_consistency_finding_details_use_descriptor_redaction(self) -> None:
+        projected = project_consistency_findings_for_client(
+            {
+                "kind_descriptors": [
+                    {
+                        "kind": "INTERFACE",
+                        "properties": [
+                            {"name": "secret", "sensitive": True},
+                        ],
+                    }
+                ],
+                "resources": [],
+            },
+            (
+                {
+                    "finding_id": VALID_FINDING_ID,
+                    "details": {
+                        "secret": "must-not-cross-the-client-boundary",
+                        "visible": "retained",
+                    },
+                },
+            ),
+        )
+
+        self.assertEqual(
+            projected,
+            [{"finding_id": VALID_FINDING_ID, "details": {"visible": "retained"}}],
+        )
+
+    def test_consistency_core_evidence_ignores_property_name_collisions(self) -> None:
+        projected = project_consistency_findings_for_client(
+            {
+                "kind_descriptors": [
+                    {
+                        "kind": "INTERFACE",
+                        "properties": [
+                            {"name": name, "sensitive": True}
+                            for name in ("artifact_id", "kind", "quality", "scope")
+                        ],
+                    }
+                ],
+                "resources": [],
+            },
+            (
+                {
+                    "finding_id": VALID_FINDING_ID,
+                    "details": {"kind": "hidden-plugin-property"},
+                    "evidence": [
+                        {
+                            "artifact_id": VALID_ARTIFACT_ID,
+                            "locator": "private:7",
+                        }
+                    ],
+                    "basis": {
+                        "kind": "observed_capture_vector",
+                        "provenance": "observed",
+                        "quality": "exact",
+                        "capture_ranges": [
+                            {
+                                "scope": "node-a",
+                                "evidence": [
+                                    {
+                                        "artifact_id": VALID_ARTIFACT_ID,
+                                        "locator": "private:7",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                },
+            ),
+        )
+
+        finding = projected[0]
+        self.assertEqual(finding["details"], {})
+        self.assertEqual(finding["evidence"], [{"artifact_id": VALID_ARTIFACT_ID}])
+        self.assertEqual(finding["basis"]["kind"], "observed_capture_vector")
+        self.assertEqual(finding["basis"]["quality"], "exact")
+        self.assertEqual(
+            finding["basis"]["capture_ranges"][0]["scope"],
+            "node-a",
+        )
+        self.assertNotIn("locator", json.dumps(finding))
+
+    def test_consistency_resource_references_fail_closed_without_coercion(
+        self,
+    ) -> None:
+        private_marker = "opaque-driver-key-must-not-cross"
+        valid_reference = {
+            "resource_id": "node-x/forwarding/INTERFACE/abc",
+            "typed_resource_key": {
+                "namespace": "driver",
+                "parts": [{"name": "opaque", "value": private_marker}],
+            },
+        }
+        cases = (
+            (
+                "list",
+                [valid_reference],
+                [{"resource_id": valid_reference["resource_id"]}],
+            ),
+            (
+                "tuple",
+                (valid_reference,),
+                [{"resource_id": valid_reference["resource_id"]}],
+            ),
+            ("mapping", valid_reference, []),
+            ("scalar", private_marker, []),
+            (
+                "malformed-items",
+                [
+                    {"resource_id": {"private": private_marker}},
+                    {"resource_id": 7},
+                    {"resource_id": True},
+                    {"resource_id": ""},
+                    {"typed_resource_key": {"private": private_marker}},
+                    private_marker,
+                ],
+                [],
+            ),
+        )
+
+        for name, references, expected in cases:
+            with self.subTest(name=name):
+                projected = project_consistency_findings_for_client(
+                    {"kind_descriptors": []},
+                    (
+                        {
+                            "finding_id": VALID_FINDING_ID,
+                            "resource_references": references,
+                        },
+                    ),
+                )
+                serialized = json.dumps(projected)
+                self.assertEqual(projected[0]["resource_references"], expected)
+                self.assertNotIn("typed_resource_key", serialized)
+                self.assertNotIn(private_marker, serialized)
+
+    def test_consistency_resources_and_unknown_fields_fail_closed(self) -> None:
+        private_marker = "private-typed-resource-atom"
+        projected = project_consistency_findings_for_client(
+            {"kind_descriptors": []},
+            (
+                {
+                    "finding_id": VALID_FINDING_ID,
+                    "resources": [
+                        "node-x/forwarding/INTERFACE/abc",
+                        {"typed_resource_key": {"value": private_marker}},
+                        7,
+                        True,
+                        "",
+                    ],
+                    "resource_references": [],
+                    "private_extension": {
+                        "typed_resource_key": {"value": private_marker}
+                    },
+                },
+            ),
+        )
+
+        serialized = json.dumps(projected)
+        self.assertEqual(
+            projected,
+            [
+                {
+                    "finding_id": VALID_FINDING_ID,
+                    "resources": ["node-x/forwarding/INTERFACE/abc"],
+                    "resource_references": [],
+                }
+            ],
+        )
+        self.assertNotIn(private_marker, serialized)
+        self.assertNotIn("private_extension", serialized)
+
+    def test_consistency_known_fields_reject_private_malformed_shapes(self) -> None:
+        private_marker = "private-known-field-atom"
+        private_value = {"typed_resource_key": {"parts": [{"value": private_marker}]}}
+        projected = project_consistency_findings_for_client(
+            {"kind_descriptors": []},
+            (
+                {
+                    "finding_id": private_value,
+                    "summary": private_value,
+                    "details": [private_marker],
+                    "resources": [],
+                    "resource_references": [],
+                    "producer": {
+                        "plugin_id": private_value,
+                        "roles": [private_value],
+                        "unknown": private_value,
+                    },
+                    "basis": {
+                        "kind": private_value,
+                        "capture_ranges": [
+                            {"scope": private_value, "private": private_value}
+                        ],
+                        "selector": {"kind": private_value},
+                    },
+                    "evidence": [
+                        {"artifact_id": private_value, "locator": private_value}
+                    ],
+                },
+            ),
+        )
+
+        serialized = json.dumps(projected)
+        self.assertNotIn(private_marker, serialized)
+        self.assertNotIn("finding_id", projected[0])
+        self.assertNotIn("summary", projected[0])
+        self.assertEqual(projected[0]["details"], {})
+        self.assertEqual(projected[0]["producer"], {"roles": []})
+        self.assertEqual(projected[0]["evidence"], [])
+        self.assertEqual(projected[0]["basis"]["capture_ranges"], [])
+
+    def test_consistency_known_string_slots_enforce_exact_public_domains(self) -> None:
+        projected = project_consistency_findings_for_client(
+            {"kind_descriptors": [], "resources": []},
+            (
+                {
+                    "finding_id": "sha256:" + ("G" * 64),
+                    "execution_plan_digest": "sha256:" + ("z" * 64),
+                    "rule_id": "rule.valid",
+                    "summary": "summary remains open text",
+                    "severity": "severe",
+                    "result": "maybe",
+                    "provenance": "guessed",
+                    "quality": "certain",
+                    "evidence": [
+                        {
+                            "artifact_id": "not-a-uuid",
+                            "raw_timestamp_ns": "01",
+                            "excerpt_sha256": "F" * 64,
+                        }
+                    ],
+                    "basis": {
+                        "kind": "vendor_basis",
+                        "requested_time_ns": "+1",
+                        "resolved_at_min_ns": str(1 << 63),
+                        "provenance": "guessed",
+                        "quality": "certain",
+                        "capture_ranges": [],
+                        "node_resolutions": [
+                            {"node_id": "node-a", "quality": "certain"}
+                        ],
+                        "selector": {
+                            "kind": "wall_clock",
+                            "time_ns": "01",
+                            "clock_policy": "relaxed",
+                        },
+                        "watermark": {
+                            "local_time_ns": "01",
+                            "clock_domain": "clock-a",
+                            "provenance": "guessed",
+                            "quality": "certain",
+                            "scope": {},
+                            "evidence": [],
+                        },
+                    },
+                    "producer": {
+                        "plugin_id": "plugin-a",
+                        "plan_digest": "sha256:" + ("Z" * 64),
+                        "configuration_digest": "sha256:" + ("x" * 63),
+                        "schema_digest": "md5:" + ("a" * 64),
+                        "registered_execution_identity": "sha256:invalid",
+                        "package_hash": "sha1:" + ("a" * 64),
+                        "capability": "status_parse",
+                        "roles": ["revision_consistency"],
+                    },
+                },
+            ),
+        )
+
+        finding = projected[0]
+        self.assertEqual(finding["rule_id"], "rule.valid")
+        self.assertEqual(finding["summary"], "summary remains open text")
+        for field in (
+            "finding_id",
+            "execution_plan_digest",
+            "severity",
+            "result",
+            "provenance",
+            "quality",
+        ):
+            self.assertNotIn(field, finding)
+        self.assertEqual(finding["evidence"], [])
+        self.assertNotIn("kind", finding["basis"])
+        self.assertNotIn("requested_time_ns", finding["basis"])
+        self.assertEqual(finding["basis"]["node_resolutions"], [])
+        self.assertNotIn("kind", finding["basis"]["selector"])
+        self.assertNotIn("time_ns", finding["basis"]["selector"])
+        self.assertNotIn("local_time_ns", finding["basis"]["watermark"])
+        self.assertEqual(
+            finding["producer"],
+            {"plugin_id": "plugin-a", "roles": ["revision_consistency"]},
+        )
+
+    def test_consistency_projection_does_not_traverse_resources(self) -> None:
+        class ResourcesMustNotBeRead:
+            def __iter__(self):
+                raise AssertionError("consistency projection traversed resources")
+
+        projected = project_consistency_findings_for_client(
+            {
+                "kind_descriptors": [
+                    {
+                        "kind": "INTERFACE",
+                        "properties": [{"name": "secret", "sensitive": True}],
+                    }
+                ],
+                "resources": ResourcesMustNotBeRead(),
+            },
+            (
+                {
+                    "finding_id": VALID_FINDING_ID,
+                    "details": {"secret": "hidden", "visible": "kept"},
+                },
+            ),
+        )
+
+        self.assertEqual(
+            projected,
+            [{"finding_id": VALID_FINDING_ID, "details": {"visible": "kept"}}],
+        )
+
+    def test_consistency_projection_does_not_traverse_unknown_structural_branches(
+        self,
+    ) -> None:
+        class UnknownBranchMustNotBeRead(dict):
+            def items(self):
+                raise AssertionError("unknown consistency branch was traversed")
+
+        private = UnknownBranchMustNotBeRead({"marker": "private"})
+        projected = project_consistency_findings_for_client(
+            {"kind_descriptors": [], "resources": []},
+            (
+                {
+                    "finding_id": VALID_FINDING_ID,
+                    "basis": {
+                        "kind": "observed_capture_vector",
+                        "private_extension": private,
+                    },
+                    "producer": {
+                        "plugin_id": "plugin-a",
+                        "private_extension": private,
+                    },
+                    "resource_references": [
+                        {
+                            "resource_id": "resource-a",
+                            "private_extension": private,
+                        }
+                    ],
+                },
+            ),
+        )
+
+        self.assertEqual(projected[0]["basis"]["kind"], "observed_capture_vector")
+        self.assertEqual(
+            projected[0]["producer"], {"plugin_id": "plugin-a", "roles": []}
+        )
+        self.assertEqual(
+            projected[0]["resource_references"],
+            [{"resource_id": "resource-a"}],
+        )
+
+    def test_client_bootstrap_uses_consistency_reference_projection(self) -> None:
+        dataset = self.dataset()
+        private_marker = "bootstrap-private-resource-key"
+        dataset["findings"] = [
+            {
+                "finding_id": VALID_FINDING_ID,
+                "resource_references": (
+                    {
+                        "resource_id": "node-x/forwarding/INTERFACE/abc",
+                        "typed_resource_key": {
+                            "namespace": "driver",
+                            "parts": [{"name": "opaque", "value": private_marker}],
+                        },
+                    },
+                ),
+            }
+        ]
+        dataset["consistency_materialization"] = {
+            "schema_version": "router_dump_analyzer.consistency_materialization.v1",
+            "status": "not_materialized",
+            "plan_digest": None,
+            "basis_digest": None,
+            "provider_count": private_marker,
+            "finding_count": 1,
+            "diagnostic_count": None,
+            "emitted_finding_count": None,
+            "emitted_diagnostic_count": None,
+            "duplicate_findings_discarded": None,
+            "duplicate_diagnostics_discarded": None,
+            "world_reads": None,
+            "basis": None,
+            "providers": None,
+            "private_extension": private_marker,
+        }
+
+        client = static_data_service(dataset).client_dataset()
+        serialized = json.dumps(client)
+
+        self.assertEqual(
+            client["findings"][0]["resource_references"],
+            [{"resource_id": "node-x/forwarding/INTERFACE/abc"}],
+        )
+        self.assertNotIn("typed_resource_key", serialized)
+        self.assertNotIn(private_marker, serialized)
+        self.assertNotIn(
+            "provider_count",
+            client["consistency_materialization"],
+        )
+        self.assertEqual(
+            client["consistency_materialization"],
+            project_consistency_materialization_for_client(
+                dataset["consistency_materialization"]
+            ),
+        )
+
     def dataset(self) -> dict:
         resource_id = "node-x/INTERFACE/1"
         return {
@@ -199,9 +700,7 @@ class NormalizedDataServiceTests(unittest.TestCase):
                         "relation_type": "depends_on",
                         "source": resource_id,
                         "target": resource_id,
-                        "type": {
-                            "secret": "relationship-core-container-marker"
-                        },
+                        "type": {"secret": "relationship-core-container-marker"},
                         "private_extension": "relationship-private-marker",
                     }
                 ],
@@ -262,9 +761,7 @@ class NormalizedDataServiceTests(unittest.TestCase):
         descriptor = dataset["kind_descriptors"][0]
         descriptor["condition_field"] = "secret"
         dataset["state_intervals"][0]["status"] = "classified-condition"
-        dataset["state_intervals"][0]["properties"]["secret"] = (
-            "classified-condition"
-        )
+        dataset["state_intervals"][0]["properties"]["secret"] = "classified-condition"
         dataset["events"] = [
             {
                 "event_uid": "sensitive-condition-event",
@@ -354,9 +851,7 @@ class NormalizedDataServiceTests(unittest.TestCase):
             with self.subTest(name=name):
                 dataset = self.dataset()
                 dataset["demo"]["label"] = "Demo label"
-                dataset["kind_descriptors"][0]["label"] = (
-                    "Interface schema label"
-                )
+                dataset["kind_descriptors"][0]["label"] = "Interface schema label"
                 dataset["nodes"] = [
                     {
                         "node_id": "node-x",
@@ -585,9 +1080,7 @@ class NormalizedDataServiceTests(unittest.TestCase):
                 wrapper=wrapper,
             )
             payload[wrapper].extend(hidden_payload[wrapper])
-            adversarial["resources"][0]["state"].update(
-                copy.deepcopy(payload)
-            )
+            adversarial["resources"][0]["state"].update(copy.deepcopy(payload))
             adversarial["resources"][0]["key"] = copy.deepcopy(payload)
             adversarial["state_intervals"][0]["properties"].update(
                 copy.deepcopy(payload)

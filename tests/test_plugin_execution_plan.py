@@ -13,6 +13,7 @@ from router_dump_analyzer.plugin_execution_plan import (
     PLUGIN_EXECUTION_PLAN_VERSION,
     PLUGIN_EXECUTION_PLAN_VERSION_V1,
     PLUGIN_EXECUTION_PLAN_VERSION_V2,
+    PLUGIN_EXECUTION_PLAN_VERSION_V3,
     DecoderIdentity,
     PluginArtifactIdentity,
     PluginExecutionPin,
@@ -31,6 +32,7 @@ from router_dump_analyzer.plugin_execution_plan import (
 DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64
 PACKAGE_DIGEST = "package-sha256:" + "c" * 64
+BOOTSTRAP_DIGEST = "sha256:" + "d" * 64
 
 
 class _HostileString(str):
@@ -58,6 +60,7 @@ def _pin(instance_id: str = "forwarding.0") -> PluginExecutionPin:
         configuration_digest=DIGEST_A,
         schema_digest=DIGEST_B,
         registered_execution_identity="sha256:" + "e" * 64,
+        process_bootstrap_digest=BOOTSTRAP_DIGEST,
         schema_versions=("resource.v3", "event.v2"),
         capabilities=("dump.parse", "route.resolve"),
         roles=("primary_parser", "forwarding_observer"),
@@ -94,6 +97,7 @@ class PluginExecutionPlanTests(unittest.TestCase):
         legacy_pin = replace(
             _pin(),
             registered_execution_identity="sha256:" + "0" * 64,
+            process_bootstrap_digest=None,
         )
         legacy = PluginExecutionPlan(
             node_id="router-a",
@@ -106,8 +110,7 @@ class PluginExecutionPlanTests(unittest.TestCase):
         self.assertNotIn("registered_execution_identity", document["plugins"][0])
         self.assertEqual(
             legacy.plan_digest,
-            "sha256:ab2f4836be4ee1430c54d45d5dc36f71"
-            "aa75c9534ce89231c5ce24326fdec9ff",
+            "sha256:ab2f4836be4ee1430c54d45d5dc36f71aa75c9534ce89231c5ce24326fdec9ff",
         )
         parsed = plugin_execution_plan_from_dict(document)
         self.assertEqual(parsed, legacy)
@@ -124,7 +127,7 @@ class PluginExecutionPlanTests(unittest.TestCase):
         v2 = PluginExecutionPlan(
             node_id="router-a",
             basis_revision_id="upload-sha256-abc",
-            plugins=(_pin(),),
+            plugins=(replace(_pin(), process_bootstrap_digest=None),),
             contract_version=PLUGIN_EXECUTION_PLAN_VERSION_V2,
         )
         v2_document = plugin_execution_plan_dict(v2)
@@ -135,13 +138,24 @@ class PluginExecutionPlanTests(unittest.TestCase):
         )
         self.assertEqual(plugin_execution_plan_from_dict(v2_document), v2)
         self.assertTrue(plugin_execution_plan_is_executable(v2))
-        with self.assertRaisesRegex(ValueError, "v3.*require"):
+        v3 = PluginExecutionPlan(
+            node_id="router-a",
+            basis_revision_id="upload-sha256-abc",
+            plugins=(replace(_pin(), process_bootstrap_digest=None),),
+            contract_version=PLUGIN_EXECUTION_PLAN_VERSION_V3,
+            execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
+        )
+        v3_document = plugin_execution_plan_dict(v3)
+        self.assertNotIn("process_bootstrap_digest", v3_document["plugins"][0])
+        self.assertEqual(plugin_execution_plan_from_dict(v3_document), v3)
+        self.assertTrue(plugin_execution_plan_is_executable(v3))
+        with self.assertRaisesRegex(ValueError, "v3-v4.*require"):
             replace(legacy, contract_version=PLUGIN_EXECUTION_PLAN_VERSION)
         with self.assertRaisesRegex(ValueError, "v1.*cannot carry"):
             PluginExecutionPlan(
                 node_id="router-a",
                 basis_revision_id="upload-sha256-abc",
-                plugins=(_pin(),),
+                plugins=(replace(_pin(), process_bootstrap_digest=None),),
                 contract_version=PLUGIN_EXECUTION_PLAN_VERSION_V1,
             )
         with self.assertRaisesRegex(ValueError, "v1.*composition policy"):
@@ -156,6 +170,7 @@ class PluginExecutionPlanTests(unittest.TestCase):
     def test_v3_authority_is_exact_and_matches_artifact_identity_tier(self) -> None:
         manifest_pin = replace(
             _pin(),
+            process_bootstrap_digest=None,
             artifact=replace(
                 _pin().artifact,
                 package_hash="manifest-sha256:" + "d" * 64,
@@ -197,17 +212,22 @@ class PluginExecutionPlanTests(unittest.TestCase):
             )
 
     def test_canonical_wire_size_is_bounded_at_construction(self) -> None:
-        with patch(
-            "router_dump_analyzer.plugin_execution_plan."
-            "MAX_PLUGIN_EXECUTION_PLAN_WIRE_BYTES",
-            1,
-        ), self.assertRaisesRegex(ValueError, "wire-size limit"):
+        with (
+            patch(
+                "router_dump_analyzer.plugin_execution_plan."
+                "MAX_PLUGIN_EXECUTION_PLAN_WIRE_BYTES",
+                1,
+            ),
+            self.assertRaisesRegex(ValueError, "wire-size limit"),
+        ):
             _plan()
 
     def test_digest_covers_order_and_every_identity_dimension(self) -> None:
         first = _pin("forwarding.0")
         second = replace(_pin("forwarding.1"), roles=("forwarding_observer",))
-        self.assertNotEqual(_plan(first, second).plan_digest, _plan(second, first).plan_digest)
+        self.assertNotEqual(
+            _plan(first, second).plan_digest, _plan(second, first).plan_digest
+        )
         mutations = (
             replace(first, configuration_digest=DIGEST_B),
             replace(first, schema_digest=DIGEST_A),
@@ -215,6 +235,7 @@ class PluginExecutionPlanTests(unittest.TestCase):
                 first,
                 registered_execution_identity="sha256:" + "f" * 64,
             ),
+            replace(first, process_bootstrap_digest=DIGEST_A),
             replace(first, roles=("primary_parser", "secondary_parser")),
             replace(first, capabilities=("dump.parse",)),
         )
@@ -230,6 +251,7 @@ class PluginExecutionPlanTests(unittest.TestCase):
         self.assertNotEqual(policy_changed.plan_digest, base_digest)
         authority_changed = replace(
             _plan(first),
+            plugins=(replace(first, process_bootstrap_digest=None),),
             execution_plan_authority=(
                 PluginExecutionPlanAuthority.TRUSTED_INLINE_ATTESTED
             ),
@@ -263,6 +285,10 @@ class PluginExecutionPlanTests(unittest.TestCase):
             router_dump_analyzer.PLUGIN_EXECUTION_PLAN_VERSION_V2,
             PLUGIN_EXECUTION_PLAN_VERSION_V2,
         )
+        self.assertEqual(
+            router_dump_analyzer.PLUGIN_EXECUTION_PLAN_VERSION_V3,
+            PLUGIN_EXECUTION_PLAN_VERSION_V3,
+        )
         self.assertIs(
             router_dump_analyzer.PluginExecutionPlanAuthority,
             PluginExecutionPlanAuthority,
@@ -294,6 +320,7 @@ class PluginExecutionPlanTests(unittest.TestCase):
                     replace(
                         _pin(),
                         registered_execution_identity="sha256:" + "0" * 64,
+                        process_bootstrap_digest=None,
                     ),
                 ),
                 contract_version=PLUGIN_EXECUTION_PLAN_VERSION_V1,
@@ -307,7 +334,9 @@ class PluginExecutionPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "plan_digest"):
             plugin_execution_plan_from_dict(missing_digest)
 
-    def test_duplicate_instances_mutable_containers_and_bad_hashes_are_rejected(self) -> None:
+    def test_duplicate_instances_mutable_containers_and_bad_hashes_are_rejected(
+        self,
+    ) -> None:
         with self.assertRaisesRegex(ValueError, "instance IDs"):
             _plan(_pin(), _pin())
         with self.assertRaisesRegex(TypeError, "tuple"):
@@ -340,7 +369,29 @@ class PluginExecutionPlanTests(unittest.TestCase):
         )
         self.assertEqual(reference.plan_digest, plan.plan_digest)
 
-    def test_primary_parser_role_is_unique_without_forbidding_provider_pins(self) -> None:
+    def test_v4_field_append_preserves_legacy_positional_pin_construction(self) -> None:
+        template = _pin()
+        positional = PluginExecutionPin(
+            template.instance_id,
+            template.plugin_id,
+            template.plugin_version,
+            template.core_api_version,
+            template.artifact,
+            template.configuration_digest,
+            template.schema_digest,
+            template.registered_execution_identity,
+            template.schema_versions,
+            template.capabilities,
+            template.roles,
+        )
+        self.assertEqual(positional.schema_versions, template.schema_versions)
+        self.assertEqual(positional.capabilities, template.capabilities)
+        self.assertEqual(positional.roles, template.roles)
+        self.assertIsNone(positional.process_bootstrap_digest)
+
+    def test_primary_parser_role_is_unique_without_forbidding_provider_pins(
+        self,
+    ) -> None:
         primary = _pin("parser")
         secondary = replace(
             _pin("observer"),

@@ -33,7 +33,9 @@ def _pin(instance_id: str, plugin_id: str) -> PluginExecutionPin:
         ),
         configuration_digest=_DIGEST_A,
         schema_digest=_DIGEST_B,
-        registered_execution_identity="sha256:" + instance_id.encode().hex()[:64].ljust(64, "0"),
+        registered_execution_identity="sha256:"
+        + instance_id.encode().hex()[:64].ljust(64, "0"),
+        process_bootstrap_digest="sha256:" + "e" * 64,
         roles=(("primary_parser",) if instance_id == "forwarding.0" else ()),
     )
 

@@ -161,9 +161,7 @@ _DEMO_TOPOLOGY_SCHEMA = PluginSchema(
         TopologyProjectionDescriptor(
             projection_id=DEMO_TOPOLOGY_PROJECTION_ID,
             label="Generated point-to-point connectors",
-            supported_status_perspective_ids=(
-                DEMO_TOPOLOGY_PERSPECTIVE_ID,
-            ),
+            supported_status_perspective_ids=(DEMO_TOPOLOGY_PERSPECTIVE_ID,),
             default_status_perspective_id=DEMO_TOPOLOGY_PERSPECTIVE_ID,
         ),
     ),
@@ -194,8 +192,7 @@ class DemoTopologyProjectionPlugin(AnalyzerPluginBase):
     ) -> tuple[TopologyProjectionOutput, ...]:
         if (
             request.projection_id != DEMO_TOPOLOGY_PROJECTION_ID
-            or request.status_perspective_id
-            != DEMO_TOPOLOGY_PERSPECTIVE_ID
+            or request.status_perspective_id != DEMO_TOPOLOGY_PERSPECTIVE_ID
         ):
             return ()
         outputs: list[TopologyProjectionOutput] = []
@@ -285,9 +282,7 @@ demo_topology_projection_plugin: DemoTopologyProjectionPlugin = (
 )
 
 
-_EMPTY_TOPOLOGY_STATES: Mapping[ResourceKey, ResourceStateView] = (
-    MappingProxyType({})
-)
+_EMPTY_TOPOLOGY_STATES: Mapping[ResourceKey, ResourceStateView] = MappingProxyType({})
 
 
 class _DemoTopologyProjectionStateProvider:
@@ -355,9 +350,7 @@ def _claim_state(node_id: str, raw_claim: Mapping[str, Any]) -> ResourceStateVie
         exists=True,
         properties={
             "interface_resource_id": raw_resource_id,
-            "interface_name": str(
-                raw_claim.get("interface_name") or raw_resource_id
-            ),
+            "interface_name": str(raw_claim.get("interface_name") or raw_resource_id),
             "claim_id": claim_id,
             "segment_key": segment_key,
             "render_hint": str(subnet.get("render_hint") or "shared_subnet"),
@@ -366,9 +359,7 @@ def _claim_state(node_id: str, raw_claim: Mapping[str, Any]) -> ResourceStateVie
             ),
             "status": str(raw_claim.get("status") or "unknown"),
             "confidence": raw_confidence,
-            "attachment_kind": str(
-                raw_claim.get("attachment_kind") or "logical"
-            ),
+            "attachment_kind": str(raw_claim.get("attachment_kind") or "logical"),
         },
         provenance=Provenance.OBSERVED,
         quality=quality,
@@ -402,6 +393,7 @@ def _execution_pin(registered: Any, schema: PluginSchema) -> PluginExecutionPin:
         configuration_digest=registered.configuration_digest,
         schema_digest=plugin_schema_digest(schema),
         registered_execution_identity=registered.registered_execution_identity,
+        process_bootstrap_digest=registered.process_bootstrap_digest,
         schema_versions=registered.schema_versions,
         capabilities=registered.capabilities,
         roles=("primary_parser", "topology_projection"),
@@ -465,9 +457,7 @@ def build_demo_topology_federation(
                 ),
             )
         )
-    return TopologyFederationCoordinator(
-        RevisionSetCapabilityRouter(tuple(routers))
-    )
+    return TopologyFederationCoordinator(RevisionSetCapabilityRouter(tuple(routers)))
 
 
 def build_demo_topology_projection_state_provider(

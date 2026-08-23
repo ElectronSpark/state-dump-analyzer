@@ -47,12 +47,19 @@ from router_dump_analyzer.plugin_api import (  # noqa: E402
     EvidenceAnalysisFact,
     EvidenceAnalysisKind,
     EvidenceAnalysisRequest,
+    FindingResult,
     InputParserKind,
     PluginCapability,
     PluginDiagnostic,
     ProbeMatchKind,
+    Provenance,
+    Quality,
+    ResourceKey,
+    ResourceStateView,
     SnapshotObservation,
     SourceRecordEmission,
+    WorldBasis,
+    WorldBasisKind,
 )
 from router_dump_analyzer.plugin_validation import validate_plugin  # noqa: E402
 
@@ -104,10 +111,65 @@ def fixture_inventory(
 
 
 class DemoPluginTests(unittest.TestCase):
+    def test_consistency_scan_never_reports_pass_from_a_bounded_prefix(self) -> None:
+        basis = WorldBasis(
+            kind=WorldBasisKind.OBSERVED_CAPTURE_VECTOR,
+            requested_time_ns=None,
+            resolved_at_min_ns=None,
+            resolved_at_max_ns=None,
+            capture_ranges=(),
+            provenance=Provenance.OBSERVED,
+            quality=Quality.EXACT,
+        )
+
+        class LimitAwareWorld:
+            @property
+            def basis(self) -> WorldBasis:
+                return basis
+
+            @property
+            def perspective_ref(self):
+                return None
+
+            def iter_states(self, *, layers=None, kinds=None, limit=None):
+                del layers, kinds
+                state = ResourceStateView(
+                    resource=ResourceKey(
+                        namespace="demo.test",
+                        node="router-1",
+                        layer="data-plane",
+                        kind="INTERFACE",
+                        parts=(("ifindex", 1),),
+                    ),
+                    exists=True,
+                    properties={"oper_status": "up"},
+                    provenance=Provenance.OBSERVED,
+                    quality=Quality.EXACT,
+                    valid_from_ns=None,
+                    valid_to_ns=None,
+                )
+                states = (state,) * 10_001
+                return states if limit is None else states[:limit]
+
+        finding = (
+            PluginCapabilityExecutor(plugin)
+            .check_consistency(LimitAwareWorld())
+            .findings[0]
+        )
+        self.assertEqual(finding.result, FindingResult.UNKNOWN)
+        self.assertEqual(finding.quality, Quality.UNKNOWN)
+        self.assertTrue(finding.details["scan_truncated"])
+        self.assertEqual(finding.details["interface_count"], 10_000)
+
     def test_schema_probe_and_validator_are_complete(self) -> None:
         self.assertEqual(
             plugin.manifest.capabilities,
-            frozenset({PluginCapability.STATUS_PARSE}),
+            frozenset(
+                {
+                    PluginCapability.STATUS_PARSE,
+                    PluginCapability.CONSISTENCY_CHECK,
+                }
+            ),
         )
         self.assertEqual(
             evidence_plugin.manifest.capabilities,
@@ -158,12 +220,8 @@ class DemoPluginTests(unittest.TestCase):
         expected_categories = {
             EvidenceAnalysisKind.ROUTE_TRACE: "route_resolution",
             EvidenceAnalysisKind.TRACE_CORRELATION: "trace_event_correlation",
-            EvidenceAnalysisKind.EVIDENCE_CORRELATION: (
-                "cross_evidence_correlation"
-            ),
-            EvidenceAnalysisKind.EVIDENCE_INTERPRETATION: (
-                "evidence_interpretation"
-            ),
+            EvidenceAnalysisKind.EVIDENCE_CORRELATION: ("cross_evidence_correlation"),
+            EvidenceAnalysisKind.EVIDENCE_INTERPRETATION: ("evidence_interpretation"),
         }
         executor = PluginCapabilityExecutor(evidence_plugin)
         for analysis_kind, category in expected_categories.items():

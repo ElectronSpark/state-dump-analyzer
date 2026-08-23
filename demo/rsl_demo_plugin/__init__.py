@@ -24,6 +24,7 @@ from router_dump_analyzer.plugin_api import (
     AnalyzerPluginBase,
     ArtifactReader,
     ConditionClass,
+    ConsistencyFinding,
     DiagnosticSeverity,
     DiagnosticStage,
     DumpInventory,
@@ -31,6 +32,7 @@ from router_dump_analyzer.plugin_api import (
     EvidenceAnalysisKind,
     EvidenceAnalysisObservation,
     EvidenceAnalysisRequest,
+    FindingResult,
     InputParserKind,
     InputSpec,
     PluginCapability,
@@ -44,6 +46,7 @@ from router_dump_analyzer.plugin_api import (
     PropertyPatch,
     Provenance,
     Quality,
+    ReadOnlyWorld,
     ReconstructionSupport,
     ResourceKey,
     ResourceKindDescriptor,
@@ -68,9 +71,7 @@ PARSER_ID = "demo.interface-status.v1"
 PLATFORM_ID = "demo-router-os"
 SOFTWARE_VERSION = "1"
 DEVICE_CLOCK = "demo-router-realtime"
-GENERATED_PROJECTION_POLICY_ID = (
-    "demo.example-router.generated-fixture-policy.v1"
-)
+GENERATED_PROJECTION_POLICY_ID = "demo.example-router.generated-fixture-policy.v1"
 GENERATED_ASSEMBLY_FORMAT_VERSION = 2
 GENERATED_COVERAGE_FORMAT_VERSION = 3
 GENERATED_COVERAGE_REGISTRY_ID = "router-state-lab-demo-coverage-v3"
@@ -86,8 +87,7 @@ GENERATED_SCHEMA_CONTRACT_VERSION = 1
 # separately below because it changes from the standalone scale tree to the
 # fully materialized multi-node archive.
 GENERATED_SCHEMA_BODY_SHA256 = (
-    "a4ce55e49b792f8cba87bfb020bfa1c5"
-    "6aaac7f01dd4ec7b98324991ab919110"
+    "a4ce55e49b792f8cba87bfb020bfa1c56aaac7f01dd4ec7b98324991ab919110"
 )
 
 
@@ -153,9 +153,7 @@ class ExampleRouterGeneratedProjectionPolicy:
                 or ".." in path.parts
                 or path.as_posix() != path_text
             ):
-                raise ValueError(
-                    f"unsafe generated projection path: {path_text!r}"
-                )
+                raise ValueError(f"unsafe generated projection path: {path_text!r}")
 
     @property
     def plugin_id(self) -> str:
@@ -190,8 +188,7 @@ class ExampleRouterGeneratedProjectionPolicy:
 
     def projection_member_registry(self) -> dict[str, dict[str, str]]:
         return {
-            member.member_id: member.descriptor()
-            for member in self.projection_members
+            member.member_id: member.descriptor() for member in self.projection_members
         }
 
     def projection_file_descriptor(
@@ -204,9 +201,8 @@ class ExampleRouterGeneratedProjectionPolicy:
         member = self.projection_member(member_id)
         if records < 0:
             raise ValueError("projection record count cannot be negative")
-        if (
-            len(sha256_hex) != 64
-            or any(character not in "0123456789abcdef" for character in sha256_hex)
+        if len(sha256_hex) != 64 or any(
+            character not in "0123456789abcdef" for character in sha256_hex
         ):
             raise ValueError("projection member requires a lowercase SHA-256")
         return {
@@ -280,9 +276,7 @@ class ExampleRouterGeneratedProjectionPolicy:
 
         return {
             "resource_association_topology": (
-                self.base_projection_capabilities()[
-                    "resource_association_topology"
-                ]
+                self.base_projection_capabilities()["resource_association_topology"]
             ),
             "underlay_topology": {
                 "available": True,
@@ -396,18 +390,12 @@ class ExampleRouterGeneratedProjectionPolicy:
             "plugin_version": self.plugin_version,
             "projection_policy_id": self.policy_id,
             "plugin_projection_root": self.projection_root,
-            "generated_schema_contract": (
-                self.generated_schema_contract_descriptor()
-            ),
+            "generated_schema_contract": (self.generated_schema_contract_descriptor()),
             "precomputed_projection_capability": (
                 self.projection_capability_descriptor()
             ),
-            "fixture_materialization": (
-                self.generation_materialization_descriptor()
-            ),
-            "projection_capabilities": (
-                self.materialized_projection_capabilities()
-            ),
+            "fixture_materialization": (self.generation_materialization_descriptor()),
+            "projection_capabilities": (self.materialized_projection_capabilities()),
         }
         for field, expected in expected_fields.items():
             if schema.get(field) != expected:
@@ -427,9 +415,7 @@ class ExampleRouterGeneratedProjectionPolicy:
             "fixture_materialization",
         ):
             template.pop(field, None)
-        template["projection_capabilities"] = (
-            self.base_projection_capabilities()
-        )
+        template["projection_capabilities"] = self.base_projection_capabilities()
         self.validate_generated_schema_template(template)
 
     def archive_plugin_descriptor(self) -> dict[str, Any]:
@@ -445,9 +431,7 @@ class ExampleRouterGeneratedProjectionPolicy:
             "precomputed_projection_capability": (
                 self.projection_capability_descriptor()
             ),
-            "generated_schema_contract": (
-                self.generated_schema_contract_descriptor()
-            ),
+            "generated_schema_contract": (self.generated_schema_contract_descriptor()),
         }
 
     def projection_manifest_identity(
@@ -514,8 +498,7 @@ class ExampleRouterGeneratedProjectionPolicy:
             raise ValueError("next hop has no plug-in-declared connectivity domain")
         evpn_route = route_type in {"evpn_mac_ip", "evpn_service", "evpn_ip_prefix"}
         has_evpn_access = any(
-            item.get("classification") == "evpn_access"
-            for item in choices
+            item.get("classification") == "evpn_access" for item in choices
         )
 
         def rank(item: Mapping[str, Any]) -> tuple[int, int, int, str]:
@@ -571,9 +554,7 @@ class ExampleRouterGeneratedProjectionPolicy:
                 )
         files = manifest.get("files")
         if not isinstance(files, Mapping):
-            raise ValueError(
-                "precomputed projection manifest lacks a file registry"
-            )
+            raise ValueError("precomputed projection manifest lacks a file registry")
         expected_members = self.projection_member_registry()
         if set(files) != set(expected_members):
             raise ValueError(
@@ -598,10 +579,7 @@ class ExampleRouterGeneratedProjectionPolicy:
 
         if not isinstance(registry, Mapping):
             raise ValueError("coverage registry must be an object")
-        if (
-            registry.get("format_version")
-            != GENERATED_COVERAGE_FORMAT_VERSION
-        ):
+        if registry.get("format_version") != GENERATED_COVERAGE_FORMAT_VERSION:
             raise ValueError("unsupported demo coverage format version")
         if registry.get("registry_id") != GENERATED_COVERAGE_REGISTRY_ID:
             raise ValueError("unsupported demo coverage registry")
@@ -643,35 +621,27 @@ class ExampleRouterGeneratedProjectionPolicy:
                 f"coverage case {case_id} lacks evidence_analysis capability"
             )
         analysis_intents = case.get("private_analysis_intents")
-        allowed_analysis_intents = {
-            item.value for item in EvidenceAnalysisKind
-        }
+        allowed_analysis_intents = {item.value for item in EvidenceAnalysisKind}
         if (
             not isinstance(analysis_intents, list)
             or not analysis_intents
             or analysis_intents != sorted(set(analysis_intents))
             or any(
-                not isinstance(item, str)
-                or item not in allowed_analysis_intents
+                not isinstance(item, str) or item not in allowed_analysis_intents
                 for item in analysis_intents
             )
         ):
             raise ValueError(
-                f"coverage case {case_id} has invalid "
-                "private_analysis_intents"
+                f"coverage case {case_id} has invalid private_analysis_intents"
             )
         involved_nodes = case.get("involved_nodes")
         if not isinstance(involved_nodes, list) or any(
             not isinstance(item, str) or not item for item in involved_nodes
         ):
-            raise ValueError(
-                f"coverage case {case_id} has invalid involved_nodes"
-            )
+            raise ValueError(f"coverage case {case_id} has invalid involved_nodes")
         evidence_refs = case.get("evidence_refs")
         if not isinstance(evidence_refs, list):
-            raise ValueError(
-                f"coverage case {case_id} has invalid evidence_refs"
-            )
+            raise ValueError(f"coverage case {case_id} has invalid evidence_refs")
         for evidence in evidence_refs:
             self.coverage_evidence_namespaced_fields(
                 evidence,
@@ -679,18 +649,12 @@ class ExampleRouterGeneratedProjectionPolicy:
             )
         candidate_paths = case.get("candidate_paths")
         if not isinstance(candidate_paths, list):
-            raise ValueError(
-                f"coverage case {case_id} lacks candidate_paths"
-            )
+            raise ValueError(f"coverage case {case_id} lacks candidate_paths")
         route_case = "route_resolution" in capabilities
         if route_case and not candidate_paths:
-            raise ValueError(
-                f"route coverage case {case_id} has no candidate_paths"
-            )
+            raise ValueError(f"route coverage case {case_id} has no candidate_paths")
         if not route_case and candidate_paths:
-            raise ValueError(
-                f"non-route coverage case {case_id} has candidate_paths"
-            )
+            raise ValueError(f"non-route coverage case {case_id} has candidate_paths")
 
         candidate_ids: set[str] = set()
         directions: set[str] = set()
@@ -703,13 +667,10 @@ class ExampleRouterGeneratedProjectionPolicy:
                 )
             candidate_id = path.get("candidate_id")
             if not isinstance(candidate_id, str) or not candidate_id:
-                raise ValueError(
-                    f"coverage case {case_id} has an invalid candidate_id"
-                )
+                raise ValueError(f"coverage case {case_id} has an invalid candidate_id")
             if candidate_id in candidate_ids:
                 raise ValueError(
-                    f"coverage case {case_id} has duplicate candidate_id "
-                    f"{candidate_id}"
+                    f"coverage case {case_id} has duplicate candidate_id {candidate_id}"
                 )
             candidate_ids.add(candidate_id)
             direction = path.get("direction")
@@ -723,13 +684,11 @@ class ExampleRouterGeneratedProjectionPolicy:
                 not isinstance(sequence, list)
                 or not sequence
                 or any(
-                    not isinstance(node_id, str) or not node_id
-                    for node_id in sequence
+                    not isinstance(node_id, str) or not node_id for node_id in sequence
                 )
             ):
                 raise ValueError(
-                    f"coverage candidate {candidate_id} has invalid "
-                    "node_sequence"
+                    f"coverage candidate {candidate_id} has invalid node_sequence"
                 )
             unknown_nodes = set(sequence) - involved
             if unknown_nodes:
@@ -745,8 +704,7 @@ class ExampleRouterGeneratedProjectionPolicy:
             alternative = path.get("alternative_state")
             if not isinstance(alternative, str) or not alternative:
                 raise ValueError(
-                    f"coverage candidate {candidate_id} has invalid "
-                    "alternative_state"
+                    f"coverage candidate {candidate_id} has invalid alternative_state"
                 )
             if path["selected_active"]:
                 active_directions.add(str(direction))
@@ -755,15 +713,11 @@ class ExampleRouterGeneratedProjectionPolicy:
                 or not path["steering_profile_id"]
             ):
                 raise ValueError(
-                    f"coverage candidate {candidate_id} has invalid "
-                    "steering_profile_id"
+                    f"coverage candidate {candidate_id} has invalid steering_profile_id"
                 )
-            if "counterfactual" in path and (
-                type(path["counterfactual"]) is not bool
-            ):
+            if "counterfactual" in path and (type(path["counterfactual"]) is not bool):
                 raise ValueError(
-                    f"coverage candidate {candidate_id} has invalid "
-                    "counterfactual"
+                    f"coverage candidate {candidate_id} has invalid counterfactual"
                 )
             if "inferred" in path and type(path["inferred"]) is not bool:
                 raise ValueError(
@@ -772,8 +726,7 @@ class ExampleRouterGeneratedProjectionPolicy:
             if "resolution_modes" in path:
                 resolution_modes = path["resolution_modes"]
                 if not isinstance(resolution_modes, list) or any(
-                    not isinstance(mode, str) or not mode
-                    for mode in resolution_modes
+                    not isinstance(mode, str) or not mode for mode in resolution_modes
                 ):
                     raise ValueError(
                         f"coverage candidate {candidate_id} has invalid "
@@ -804,19 +757,13 @@ class ExampleRouterGeneratedProjectionPolicy:
         """
 
         if not isinstance(evidence, Mapping):
-            raise ValueError(
-                f"coverage case {case_id} has non-object evidence"
-            )
+            raise ValueError(f"coverage case {case_id} has non-object evidence")
         node_id = evidence.get("node_id")
         revision_id = evidence.get("revision_id")
         if not isinstance(node_id, str) or not node_id:
-            raise ValueError(
-                f"coverage case {case_id} evidence lacks node_id"
-            )
+            raise ValueError(f"coverage case {case_id} evidence lacks node_id")
         if not isinstance(revision_id, str) or not revision_id:
-            raise ValueError(
-                f"coverage case {case_id} evidence lacks revision_id"
-            )
+            raise ValueError(f"coverage case {case_id} evidence lacks revision_id")
         evidence_kind = evidence.get("evidence_kind")
         required_by_kind = {
             "route_projection": (
@@ -837,8 +784,7 @@ class ExampleRouterGeneratedProjectionPolicy:
         namespaced_fields = required_by_kind.get(str(evidence_kind))
         if namespaced_fields is None:
             raise ValueError(
-                f"coverage case {case_id} has unknown evidence kind "
-                f"{evidence_kind!r}"
+                f"coverage case {case_id} has unknown evidence kind {evidence_kind!r}"
             )
         required_fields = {
             "route_projection": (),
@@ -864,9 +810,7 @@ class ExampleRouterGeneratedProjectionPolicy:
         }[str(evidence_kind)]
         for field in (*namespaced_fields, *required_fields):
             if field not in evidence:
-                raise ValueError(
-                    f"coverage {evidence_kind} evidence lacks {field}"
-                )
+                raise ValueError(f"coverage {evidence_kind} evidence lacks {field}")
         for field in namespaced_fields:
             value = evidence[field]
             if not isinstance(value, str) or not value:
@@ -879,12 +823,11 @@ class ExampleRouterGeneratedProjectionPolicy:
                 raise ValueError(
                     "topology coverage evidence calculation must be an object"
                 )
-        if evidence_kind == "temporal_event" and type(
-            evidence.get("state_changed")
-        ) is not bool:
-            raise ValueError(
-                "temporal coverage evidence state_changed must be boolean"
-            )
+        if (
+            evidence_kind == "temporal_event"
+            and type(evidence.get("state_changed")) is not bool
+        ):
+            raise ValueError("temporal coverage evidence state_changed must be boolean")
         return namespaced_fields
 
     def validate_forwarding_row(
@@ -899,13 +842,10 @@ class ExampleRouterGeneratedProjectionPolicy:
         if not isinstance(row, Mapping):
             raise ValueError("forwarding projection row must be an object")
         forwarding_id = row.get("forwarding_id")
-        if (
-            not isinstance(forwarding_id, str)
-            or not forwarding_id.startswith(f"{node_id}/")
+        if not isinstance(forwarding_id, str) or not forwarding_id.startswith(
+            f"{node_id}/"
         ):
-            raise ValueError(
-                f"{node_id} forwarding row ID is not namespaced"
-            )
+            raise ValueError(f"{node_id} forwarding row ID is not namespaced")
         if row.get("node_id") != node_id:
             raise ValueError(f"{node_id} forwarding row has wrong node identity")
         if row.get("revision_id") != revision_id:
@@ -1052,14 +992,12 @@ class ExampleRouterGeneratedProjectionPolicy:
             reference
             for reference in references
             if isinstance(reference, Mapping)
-            and reference.get("reference_kind")
-            == "typed_inter_node_link"
+            and reference.get("reference_kind") == "typed_inter_node_link"
         ]
         if (
             len(domain_references) != 1
             or len(typed_references) > 1
-            or len(domain_references) + len(typed_references)
-            != len(references)
+            or len(domain_references) + len(typed_references) != len(references)
         ):
             raise ValueError(
                 f"{node_id} forwarding candidate {candidate_id} has invalid "
@@ -1078,9 +1016,7 @@ class ExampleRouterGeneratedProjectionPolicy:
             )
         arguments = match.get("arguments")
         segment_key = (
-            arguments.get("segment_key")
-            if isinstance(arguments, Mapping)
-            else None
+            arguments.get("segment_key") if isinstance(arguments, Mapping) else None
         )
         if (
             not isinstance(segment_key, Mapping)
@@ -1125,10 +1061,8 @@ class ExampleRouterGeneratedProjectionPolicy:
             if (
                 type(source_endpoint) is not dict
                 or type(target_endpoint) is not dict
-                or source_endpoint
-                != expected_endpoint(node_id, local_resource)
-                or target_endpoint
-                != expected_endpoint(next_node_id, remote_resource)
+                or source_endpoint != expected_endpoint(node_id, local_resource)
+                or target_endpoint != expected_endpoint(next_node_id, remote_resource)
             ):
                 raise ValueError(
                     f"{node_id} forwarding candidate {candidate_id} has "
@@ -1143,12 +1077,8 @@ class ExampleRouterGeneratedProjectionPolicy:
             "plugin_version": self.plugin_version,
             "projection_policy_id": self.policy_id,
             "projection_format_version": self.format_version,
-            "projection_capability": (
-                self.projection_capability_descriptor()
-            ),
-            "generated_schema_contract": (
-                self.generated_schema_contract_descriptor()
-            ),
+            "projection_capability": (self.projection_capability_descriptor()),
+            "generated_schema_contract": (self.generated_schema_contract_descriptor()),
             "load_mode": "validated_immutable_precomputed_projection",
             "parser_replayed": False,
         }
@@ -1160,12 +1090,8 @@ GENERATED_TOPOLOGY_PROFILE: Final[TopologyProfileSpec] = TopologyProfileSpec(
     projection_role="underlay",
     presentation_roles=("underlay",),
 )
-GENERATED_TOPOLOGY_SEGMENT_MATCHER_ID = (
-    "demo.connectivity-domain-key.exact.v1"
-)
-GENERATED_TOPOLOGY_FEDERATION_PLUGIN_ID = (
-    "demo.fabric.federation-linker"
-)
+GENERATED_TOPOLOGY_SEGMENT_MATCHER_ID = "demo.connectivity-domain-key.exact.v1"
+GENERATED_TOPOLOGY_FEDERATION_PLUGIN_ID = "demo.fabric.federation-linker"
 
 _GENERATED_PACKET_PROFILES: dict[str, dict[str, Any]] = {
     "native-ip": {
@@ -1292,9 +1218,7 @@ _GENERATED_PACKET_PROFILES: dict[str, dict[str, Any]] = {
     },
 }
 
-GENERATED_PROJECTION_MEMBERS: Final[
-    tuple[GeneratedProjectionMemberSpec, ...]
-] = (
+GENERATED_PROJECTION_MEMBERS: Final[tuple[GeneratedProjectionMemberSpec, ...]] = (
     GeneratedProjectionMemberSpec(
         member_id="topology",
         relative_path="topology.json",
@@ -1331,9 +1255,7 @@ GENERATED_PROJECTION_POLICY: ExampleRouterGeneratedProjectionPolicy = (
         format_version=GENERATED_PROJECTION_FORMAT_VERSION,
         topology_profile=GENERATED_TOPOLOGY_PROFILE,
         topology_segment_matcher_id=GENERATED_TOPOLOGY_SEGMENT_MATCHER_ID,
-        topology_federation_plugin_id=(
-            GENERATED_TOPOLOGY_FEDERATION_PLUGIN_ID
-        ),
+        topology_federation_plugin_id=(GENERATED_TOPOLOGY_FEDERATION_PLUGIN_ID),
         packet_profiles=_GENERATED_PACKET_PROFILES,
         projection_root=GENERATED_PROJECTION_ROOT,
         projection_capability_id=GENERATED_PROJECTION_CAPABILITY_ID,
@@ -1502,6 +1424,7 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
         capabilities=frozenset(
             {
                 PluginCapability.STATUS_PARSE,
+                PluginCapability.CONSISTENCY_CHECK,
             }
         ),
         reconstruction_default=ReconstructionSupport.EXACT,
@@ -1513,6 +1436,81 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
 
     def describe(self) -> PluginSchema:
         return SCHEMA
+
+    def check_consistency(
+        self,
+        world: ReadOnlyWorld,
+    ) -> Iterable[ConsistencyFinding | PluginDiagnostic]:
+        """Demonstrate one bounded, revision-basis consistency rule.
+
+        The plug-in owns the meaning of ``oper_status``. Core owns the
+        immutable world, execution-plan binding, quotas, provenance envelope,
+        and durable publication of this result.
+        """
+
+        scan_limit = 10_000
+        scanned = tuple(
+            world.iter_states(
+                kinds=frozenset({"INTERFACE"}),
+                # One sentinel distinguishes a complete bounded scan from a
+                # clean prefix returned by a limit-aware core world.
+                limit=scan_limit + 1,
+            )
+        )
+        scan_truncated = len(scanned) > scan_limit
+        states = scanned[:scan_limit]
+        failing = tuple(
+            state for state in states if state.properties.get("oper_status") != "up"
+        )
+        if failing:
+            result = FindingResult.FAIL
+            severity = DiagnosticSeverity.ERROR
+            selected = failing[:32]
+            summary = (
+                f"At least {len(failing)} interface(s) are not operationally up."
+                if scan_truncated
+                else f"{len(failing)} interface(s) are not operationally up."
+            )
+        elif scan_truncated:
+            result = FindingResult.UNKNOWN
+            severity = DiagnosticSeverity.WARNING
+            selected = ()
+            summary = (
+                "The bounded interface scan was truncated before completeness "
+                "could be established."
+            )
+        elif states:
+            result = FindingResult.PASS
+            severity = DiagnosticSeverity.INFO
+            selected = states[:1]
+            summary = "All observed interfaces are operationally up."
+        else:
+            result = FindingResult.UNKNOWN
+            severity = DiagnosticSeverity.WARNING
+            selected = ()
+            summary = "No interface state was available for this revision."
+        evidence = tuple(item for state in selected for item in state.evidence[:1])
+        yield ConsistencyFinding(
+            rule_id="demo.interface-operational-status",
+            severity=severity,
+            result=result,
+            summary=summary,
+            resources=tuple(state.resource for state in selected),
+            provenance=Provenance.RECONSTRUCTED,
+            quality=(
+                Quality.EXACT
+                if states and (failing or not scan_truncated)
+                else Quality.UNKNOWN
+            ),
+            basis=world.basis,
+            evidence=evidence,
+            details={
+                "interface_count": len(states),
+                "non_up_count": len(failing),
+                "scan_limit": scan_limit,
+                "scan_truncated": scan_truncated,
+            },
+        )
 
     def describe_generated_fixture(self) -> dict[str, Any]:
         """Expose the demo-only immutable projection contract.
@@ -1526,12 +1524,10 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
             "plugin_id": self.manifest.plugin_id,
             "plugin_version": self.manifest.plugin_version,
             "schema_contract": (
-                self.generated_projection_policy
-                .generated_schema_contract_descriptor()
+                self.generated_projection_policy.generated_schema_contract_descriptor()
             ),
             "projection_capability": (
-                self.generated_projection_policy
-                .projection_capability_descriptor()
+                self.generated_projection_policy.projection_capability_descriptor()
             ),
             "runtime_load": (
                 self.generated_projection_policy.runtime_load_descriptor()
@@ -1550,13 +1546,12 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
         declared_platform = inventory.metadata.get("platform")
         declared_version = inventory.metadata.get("software_version")
         exact = (
-            declared_platform == PLATFORM_ID
-            and declared_version == SOFTWARE_VERSION
+            declared_platform == PLATFORM_ID and declared_version == SOFTWARE_VERSION
         )
-        incompatible = (
-            declared_platform not in (None, PLATFORM_ID)
-            or declared_version not in (None, SOFTWARE_VERSION)
-        )
+        incompatible = declared_platform not in (
+            None,
+            PLATFORM_ID,
+        ) or declared_version not in (None, SOFTWARE_VERSION)
         if exact:
             match_kind = ProbeMatchKind.EXACT
             confidence = 1.0
@@ -1582,9 +1577,7 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
                 ),
                 detected_platform=PLATFORM_ID,
                 detected_software_version=(
-                    declared_version
-                    if isinstance(declared_version, str)
-                    else None
+                    declared_version if isinstance(declared_version, str) else None
                 ),
                 match_kind=match_kind,
             )
@@ -1699,9 +1692,7 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
                 }
                 yield SourceRecordEmission(
                     timestamp_ns=timestamp_ns,
-                    timestamp_uncertainty_ns=(
-                        0 if timestamp_ns is not None else None
-                    ),
+                    timestamp_uncertainty_ns=(0 if timestamp_ns is not None else None),
                     source_type="status-json",
                     source_name=STATUS_FILENAME,
                     record_name="interface_status",
@@ -1724,12 +1715,10 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
                     state=PropertyPatch(
                         set_values=properties,
                         field_quality={
-                            field_name: Quality.EXACT
-                            for field_name in properties
+                            field_name: Quality.EXACT for field_name in properties
                         },
                         field_provenance={
-                            field_name: Provenance.OBSERVED
-                            for field_name in properties
+                            field_name: Provenance.OBSERVED for field_name in properties
                         },
                         complete=True,
                     ),
@@ -1789,14 +1778,10 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
             default_source_sequence,
         )
         if type(source_sequence) is not int or source_sequence < 0:
-            raise ValueError(
-                "source_sequence must be a non-negative integer"
-            )
+            raise ValueError("source_sequence must be a non-negative integer")
         lifecycle = record.get("lifecycle", "snapshot")
         if lifecycle not in {"create", "modify", "snapshot"}:
-            raise ValueError(
-                "lifecycle must be create, modify, or snapshot"
-            )
+            raise ValueError("lifecycle must be create, modify, or snapshot")
         ifindex = record.get("ifindex")
         if type(ifindex) is not int or ifindex < 0:
             raise ValueError("ifindex must be a non-negative integer")

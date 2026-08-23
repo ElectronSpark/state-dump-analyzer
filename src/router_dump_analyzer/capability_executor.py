@@ -19,6 +19,7 @@ from uuid import UUID
 
 from .canonical import strict_canonical_json
 from .plugin_api import (
+    MAX_CAPTURE_RANGE_SCOPE_LENGTH,
     MAX_TIMESTAMP_NS,
     MIN_TIMESTAMP_NS,
     AbsoluteTimeSelector,
@@ -27,6 +28,7 @@ from .plugin_api import (
     CaptureRange,
     CausalLink,
     ChangeSet,
+    ClockAlignmentPolicy,
     ClockAnchor,
     ConnectorClaim,
     ConnectorMatchPolicyDescriptor,
@@ -94,6 +96,7 @@ from .plugin_api import (
     UnknownChange,
     UnknownField,
     VrfForwardingState,
+    WatermarkScope,
     WorldBasis,
     WorldBasisKind,
     validate_plugin_diagnostic,
@@ -154,6 +157,13 @@ class PluginCapabilityLimits:
     max_evidence_per_output: int = 64
     max_resource_references: int = 4_096
     max_topology_claims: int = 100_000
+    max_world_basis_capture_ranges: int = 100_000
+    max_world_basis_node_resolutions: int = 100_000
+    max_world_basis_evidence: int = 100_000
+    max_consistency_snapshot_units: int = 1_000_000
+    max_consistency_resource_references: int = 100_000
+    max_consistency_evidence_references: int = 100_000
+    max_consistency_basis_variants: int = 8
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -179,6 +189,31 @@ class PluginCapabilityLimits:
             ("max_diagnostics", self.max_diagnostics),
             ("max_evidence_per_output", self.max_evidence_per_output),
             ("max_resource_references", self.max_resource_references),
+            (
+                "max_world_basis_capture_ranges",
+                self.max_world_basis_capture_ranges,
+            ),
+            (
+                "max_world_basis_node_resolutions",
+                self.max_world_basis_node_resolutions,
+            ),
+            ("max_world_basis_evidence", self.max_world_basis_evidence),
+            (
+                "max_consistency_snapshot_units",
+                self.max_consistency_snapshot_units,
+            ),
+            (
+                "max_consistency_resource_references",
+                self.max_consistency_resource_references,
+            ),
+            (
+                "max_consistency_evidence_references",
+                self.max_consistency_evidence_references,
+            ),
+            (
+                "max_consistency_basis_variants",
+                self.max_consistency_basis_variants,
+            ),
         ):
             if type(value) is not int or not 1 <= value <= 1_000_000:
                 raise ValueError(f"{name} must be an integer between 1 and 1000000")
@@ -243,13 +278,11 @@ class _SchemaIndex:
         for resource_kind in schema.resource_kinds:
             key_fields[resource_kind.kind] = resource_kind.key_fields
             property_roots[resource_kind.kind] = frozenset(
-                item.name.partition(".")[0]
-                for item in resource_kind.properties
+                item.name.partition(".")[0] for item in resource_kind.properties
             )
         policies = schema.connector_match_policies
         if type(policies) is not tuple or any(
-            type(policy) is not ConnectorMatchPolicyDescriptor
-            for policy in policies
+            type(policy) is not ConnectorMatchPolicyDescriptor for policy in policies
         ):
             raise ValueError(
                 "connector match policies must be an exact descriptor tuple"
@@ -273,15 +306,13 @@ class _SchemaIndex:
             key_fields_by_kind=key_fields,
             property_roots_by_kind=property_roots,
             relationship_types=frozenset(
-                descriptor.relation_type
-                for descriptor in schema.relationship_types
+                descriptor.relation_type for descriptor in schema.relationship_types
             ),
             causal_link_types=frozenset(
                 descriptor.link_type for descriptor in schema.causal_link_types
             ),
             perspectives=frozenset(
-                descriptor.perspective_id
-                for descriptor in schema.status_perspectives
+                descriptor.perspective_id for descriptor in schema.status_perspectives
             ),
             topology_perspectives={
                 descriptor.projection_id: frozenset(
@@ -290,8 +321,7 @@ class _SchemaIndex:
                 for descriptor in schema.topology_projections
             },
             connector_match_policies={
-                descriptor.policy_id: descriptor
-                for descriptor in detached_policies
+                descriptor.policy_id: descriptor for descriptor in detached_policies
             },
         )
 
@@ -307,12 +337,14 @@ class _BoundedWorld:
         *,
         basis: WorldBasis,
         perspective_ref: StatusPerspectiveRef | None,
+        maximum_evidence: int,
     ) -> None:
         self._world = world
         self._remaining = maximum_reads
         self._capability = capability
         self._basis = basis
         self._perspective_ref = perspective_ref
+        self._maximum_evidence = maximum_evidence
 
     @property
     def basis(self) -> WorldBasis:
@@ -336,39 +368,136 @@ class _BoundedWorld:
 
     def state_of(self, resource: ResourceKey) -> ResourceStateView | None:
         self._charge()
-        return self._world.state_of(resource)
+        value = self._world_input(
+            lambda: self._world.state_of(resource),
+            "world provider failed while reading state",
+        )
+        if value is None:
+            return None
+        return cast(
+            ResourceStateView,
+            self._detach_world_item(
+                value,
+                _snapshot_world_state_view,
+                "world provider returned an unreadable state",
+            ),
+        )
+
+    def _detach_world_item[Item](
+        self,
+        value: object,
+        detacher: Callable[..., Item],
+        message: str,
+    ) -> Item:
+        try:
+            return detacher(value, maximum_evidence=self._maximum_evidence)
+        except PluginCapabilityExecutionError:
+            raise
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise PluginCapabilityInputError(
+                message,
+                capability=self._capability,
+            ) from error
+
+    def _world_input[Item](
+        self,
+        operation: Callable[[], Item],
+        message: str,
+    ) -> Item:
+        """Run one caller-owned world operation in the caller-input domain."""
+
+        try:
+            return operation()
+        except PluginCapabilityExecutionError:
+            raise
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise PluginCapabilityInputError(
+                message,
+                capability=self._capability,
+            ) from error
 
     def _bounded_iter[Item](
         self,
         producer: Callable[[int], Iterable[Item]],
         requested_limit: int | None,
+        *,
+        detacher: Callable[..., Item],
+        unreadable_message: str,
     ) -> Iterator[Item]:
-        if self._remaining <= 0:
-            raise PluginCapabilityOutputError(
-                "plug-in exceeded the configured world-read limit",
-                capability=self._capability,
-            )
-        allowed = self._remaining
+        remaining = self._remaining
+        allowed = remaining
         if requested_limit is not None:
             if type(requested_limit) is not int or requested_limit < 0:
                 raise ValueError("world read limit must be a non-negative integer")
             allowed = min(allowed, requested_limit)
-        iterator = iter(producer(allowed))
+        cap_limited = requested_limit is None or requested_limit >= remaining
+        # Probe one item beyond the wrapper cap so a limit-aware underlying
+        # world cannot silently turn an incomplete plug-in scan into a clean
+        # result.  Explicit smaller plug-in limits remain normal pagination.
+        producer_limit = (
+            allowed + 1 if cap_limited and requested_limit != 0 else allowed
+        )
+        iterator = self._world_input(
+            lambda: iter(producer(producer_limit)),
+            "world provider could not start a bounded read",
+        )
         count = 0
+        completed = False
         try:
-            for item in iterator:
+            while True:
+                try:
+                    item = next(iterator)
+                except StopIteration:
+                    completed = True
+                    break
+                except PluginCapabilityExecutionError:
+                    raise
+                except PROCESS_CONTROL_EXCEPTIONS:
+                    raise
+                except BaseException as error:
+                    raise PluginCapabilityInputError(
+                        "world provider failed during a bounded read",
+                        capability=self._capability,
+                    ) from error
                 if count >= allowed:
+                    message = (
+                        "plug-in exceeded the configured world-read limit"
+                        if cap_limited
+                        else "world provider exceeded the bounded read request"
+                    )
                     raise PluginCapabilityOutputError(
-                        "world provider exceeded the bounded read request",
+                        message,
                         capability=self._capability,
                     )
                 self._charge()
                 count += 1
-                yield item
+                yield self._detach_world_item(
+                    item,
+                    detacher,
+                    unreadable_message,
+                )
         finally:
-            close = getattr(iterator, "close", None)
-            if callable(close):
-                close()
+            try:
+                close = self._world_input(
+                    lambda: getattr(iterator, "close", None),
+                    "world provider iterator could not be closed",
+                )
+                if callable(close):
+                    self._world_input(
+                        close,
+                        "world provider iterator could not be closed",
+                    )
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except PluginCapabilityInputError:
+                # Do not hide a stronger quota/output failure or a consumer
+                # cancellation with a secondary close failure.
+                if completed:
+                    raise
 
     def iter_states(
         self,
@@ -383,6 +512,8 @@ class _BoundedWorld:
                 limit=bounded,
             ),
             limit,
+            detacher=_snapshot_world_state_view,
+            unreadable_message="world provider returned an unreadable state",
         )
 
     def related(
@@ -404,6 +535,8 @@ class _BoundedWorld:
                 limit=bounded,
             ),
             limit,
+            detacher=_snapshot_world_relationship_view,
+            unreadable_message="world provider returned an unreadable relationship",
         )
 
     def iter_relationships(
@@ -419,13 +552,29 @@ class _BoundedWorld:
                 limit=bounded,
             ),
             limit,
+            detacher=_snapshot_world_relationship_view,
+            unreadable_message="world provider returned an unreadable relationship",
         )
 
 
 class _ValueBudget:
-    def __init__(self) -> None:
+    def __init__(self, maximum: int = 4_096) -> None:
         self.units = 0
         self.active: set[int] = set()
+        self.maximum = maximum
+
+
+class _AggregateValueBudget:
+    """One invocation-wide allocation proxy for detached consistency output."""
+
+    def __init__(self, maximum: int) -> None:
+        self.units = 0
+        self.maximum = maximum
+
+    def charge(self, amount: int, label: str) -> None:
+        self.units += max(amount, 1)
+        if self.units > self.maximum:
+            raise ValueError(f"{label} exceeds the aggregate snapshot-unit limit")
 
 
 def _evidence_analysis_json_projection(value: Any) -> Any:
@@ -438,8 +587,7 @@ def _evidence_analysis_json_projection(value: Any) -> Any:
 
     if isinstance(value, Mapping):
         return {
-            key: _evidence_analysis_json_projection(item)
-            for key, item in value.items()
+            key: _evidence_analysis_json_projection(item) for key, item in value.items()
         }
     if type(value) is tuple:
         return [_evidence_analysis_json_projection(item) for item in value]
@@ -457,8 +605,8 @@ def _validate_value(
 
     current = budget or _ValueBudget()
     current.units += 1
-    if current.units > 4_096:
-        raise ValueError(f"{label} exceeds 4096 value units")
+    if current.units > current.maximum:
+        raise ValueError(f"{label} exceeds {current.maximum} value units")
     if depth > 16:
         raise ValueError(f"{label} exceeds 16 container levels")
     if value is None or type(value) is bool or isinstance(value, UUID):
@@ -502,7 +650,12 @@ def _validate_value(
         current.active.add(identity)
         try:
             for key, item in value.items():
-                if not isinstance(key, str) or not key or len(key) > 256:
+                if (
+                    not isinstance(key, str)
+                    or not key
+                    or len(key) > 256
+                    or "\x00" in key
+                ):
                     raise ValueError(
                         f"{label} mapping keys must contain 1 to 256 characters"
                     )
@@ -523,6 +676,7 @@ def _snapshot_property_value(
     label: str,
     *,
     budget: _ValueBudget | None = None,
+    aggregate_budget: _AggregateValueBudget | None = None,
     depth: int = 0,
 ) -> Any:
     """Deeply detach one already-bounded plug-in value.
@@ -536,8 +690,10 @@ def _snapshot_property_value(
 
     current = budget or _ValueBudget()
     current.units += 1
-    if current.units > 4_096:
-        raise ValueError(f"{label} exceeds 4096 value units")
+    if current.units > current.maximum:
+        raise ValueError(f"{label} exceeds {current.maximum} value units")
+    if aggregate_budget is not None:
+        aggregate_budget.charge(1, label)
     if depth > 16:
         raise ValueError(f"{label} exceeds 16 container levels")
     value_type = type(value)
@@ -546,6 +702,8 @@ def _snapshot_property_value(
     if value_type is int:
         if value.bit_length() > 4_096:
             raise ValueError(f"{label} contains an integer exceeding 4096 bits")
+        if aggregate_budget is not None:
+            aggregate_budget.charge(max(1, (value.bit_length() + 7) // 8), label)
         return value
     if value_type is float:
         if not isfinite(value):
@@ -554,12 +712,18 @@ def _snapshot_property_value(
     if value_type is str:
         if len(value) > 65_536:
             raise ValueError(f"{label} contains an atom exceeding 65536 units")
+        if aggregate_budget is not None:
+            aggregate_budget.charge(len(value), label)
         return value
     if value_type is bytes:
         if len(value) > 65_536:
             raise ValueError(f"{label} contains an atom exceeding 65536 units")
+        if aggregate_budget is not None:
+            aggregate_budget.charge(len(value), label)
         return bytes(value)
     if value_type is UUID:
+        if aggregate_budget is not None:
+            aggregate_budget.charge(16, label)
         return UUID(bytes=value.bytes)
     if value_type is tuple:
         if len(value) > 1_024:
@@ -574,6 +738,7 @@ def _snapshot_property_value(
                     item,
                     label,
                     budget=current,
+                    aggregate_budget=aggregate_budget,
                     depth=depth + 1,
                 )
                 for item in value
@@ -589,17 +754,23 @@ def _snapshot_property_value(
         try:
             for index, (key, item) in enumerate(value.items()):
                 if index >= 1_024:
-                    raise ValueError(
-                        f"{label} contains a mapping exceeding 1024 items"
-                    )
-                if type(key) is not str or not key or len(key) > 256:
+                    raise ValueError(f"{label} contains a mapping exceeding 1024 items")
+                if (
+                    type(key) is not str
+                    or not key
+                    or len(key) > 256
+                    or "\x00" in key
+                ):
                     raise ValueError(
                         f"{label} mapping keys must contain 1 to 256 characters"
                     )
+                if aggregate_budget is not None:
+                    aggregate_budget.charge(len(key), label)
                 detached[key] = _snapshot_property_value(
                     item,
                     label,
                     budget=current,
+                    aggregate_budget=aggregate_budget,
                     depth=depth + 1,
                 )
         finally:
@@ -608,28 +779,60 @@ def _snapshot_property_value(
     raise ValueError(f"{label} contains unsupported type {value_type.__name__}")
 
 
-def _snapshot_key_value(value: Any, label: str, *, depth: int = 0) -> Any:
+def _snapshot_key_value(
+    value: Any,
+    label: str,
+    *,
+    depth: int = 0,
+    units: list[int] | None = None,
+    charge_unit: bool = True,
+) -> Any:
+    current_units = units if units is not None else [0]
+    if charge_unit:
+        current_units[0] += 1
+    if current_units[0] > 1_024:
+        raise ValueError(f"{label} exceeds 1024 typed value units")
     if depth > 4:
         raise ValueError(f"{label} exceeds four tuple levels")
     value_type = type(value)
-    if value_type in {int, str}:
+    if value_type is int:
+        if value.bit_length() > 4_096:
+            raise ValueError(f"{label} contains an integer exceeding 4096 bits")
+        return value
+    if value_type is str:
+        if len(value) > 4_096:
+            raise ValueError(f"{label} contains text exceeding 4096 units")
         return value
     if value_type is bytes:
+        if len(value) > 4_096:
+            raise ValueError(f"{label} contains bytes exceeding 4096 units")
         return bytes(value)
     if value_type is UUID:
         return UUID(bytes=value.bytes)
     if value_type is KeyAtom:
+        if type(value.type_tag) is not str:
+            raise ValueError(f"{label}.type_tag must be an exact string")
+        KeyAtom.__post_init__(value)
         return KeyAtom(
             type_tag=value.type_tag,
             value=_snapshot_key_value(
                 value.value,
                 f"{label}.value",
                 depth=depth + 1,
+                units=current_units,
+                charge_unit=False,
             ),
         )
     if value_type is tuple:
+        if len(value) > 32:
+            raise ValueError(f"{label} tuples support at most 32 values")
         return tuple(
-            _snapshot_key_value(item, f"{label}[{index}]", depth=depth + 1)
+            _snapshot_key_value(
+                item,
+                f"{label}[{index}]",
+                depth=depth + 1,
+                units=current_units,
+            )
             for index, item in enumerate(value)
         )
     raise ValueError(f"{label} contains an unsupported key value")
@@ -638,24 +841,152 @@ def _snapshot_key_value(value: Any, label: str, *, depth: int = 0) -> Any:
 def _snapshot_resource_key(value: ResourceKey, label: str) -> ResourceKey:
     if type(value) is not ResourceKey:
         raise ValueError(f"{label} must be an exact ResourceKey")
+    for field_name in ("namespace", "node", "layer", "kind"):
+        if type(getattr(value, field_name)) is not str:
+            raise ValueError(f"{label}.{field_name} must be an exact string")
+    if type(value.parts) is not tuple or not 1 <= len(value.parts) <= 32:
+        raise ValueError(f"{label}.parts must be an exact tuple of 1 to 32 items")
+    units = [0]
+    detached_parts: list[tuple[str, Any]] = []
+    for index, part in enumerate(value.parts):
+        if type(part) is not tuple or len(part) != 2 or type(part[0]) is not str:
+            raise ValueError(
+                f"{label}.parts[{index}] must be an exact (name, value) tuple"
+            )
+        detached_parts.append(
+            (
+                part[0],
+                _snapshot_key_value(
+                    part[1],
+                    f"{label}.parts[{index}][1]",
+                    units=units,
+                ),
+            )
+        )
     return ResourceKey(
         namespace=value.namespace,
         node=value.node,
         layer=value.layer,
         kind=value.kind,
-        parts=tuple(
-            (
-                name,
-                _snapshot_key_value(part, f"{label}.parts[{index}][1]"),
-            )
-            for index, (name, part) in enumerate(value.parts)
-        ),
+        parts=tuple(detached_parts),
     )
+
+
+def _key_value_snapshot_units(value: Any) -> int:
+    value_type = type(value)
+    if value_type is int:
+        return 1 + max(1, (value.bit_length() + 7) // 8)
+    if value_type is str:
+        return 1 + len(value)
+    if value_type is bytes:
+        return 1 + len(value)
+    if value_type is UUID:
+        return 17
+    if value_type is KeyAtom:
+        return 1 + len(value.type_tag) + _key_value_snapshot_units(value.value)
+    if value_type is tuple:
+        return 1 + sum(_key_value_snapshot_units(item) for item in value)
+    raise ValueError("resource key contains an unsupported value")
+
+
+def _resource_key_snapshot_units(value: ResourceKey) -> int:
+    return (
+        1
+        + len(value.namespace)
+        + len(value.node)
+        + len(value.layer)
+        + len(value.kind)
+        + sum(
+            len(name) + _key_value_snapshot_units(part)
+            for name, part in value.parts
+        )
+    )
+
+
+def _evidence_snapshot_units(value: Evidence) -> int:
+    return (
+        17
+        + len(value.locator)
+        + len(value.clock_domain or "")
+        + len(value.excerpt_sha256 or "")
+    )
+
+
+def _world_basis_snapshot_units(value: WorldBasis) -> int:
+    units = (
+        1
+        + len(value.clock_domain or "")
+        + len(value.unresolved_reason or "")
+    )
+    for capture in value.capture_ranges:
+        units += 1 + len(capture.scope) + len(capture.clock_domain or "")
+        units += sum(_evidence_snapshot_units(item) for item in capture.evidence)
+    selector = value.selector
+    if type(selector) is AbsoluteTimeSelector:
+        units += 1 + len(selector.clock_domain)
+    elif type(selector) is RelativeToWatermarkSelector:
+        units += (
+            1
+            + len(selector.scope.node_id)
+            + len(selector.scope.status_perspective_id)
+            + len(selector.scope.topology_projection_id or "")
+        )
+    for resolution in value.node_resolutions:
+        units += (
+            1
+            + len(resolution.node_id)
+            + len(resolution.local_clock_domain or "")
+            + len(resolution.mapping_method or "")
+            + len(resolution.reason_code or "")
+        )
+        units += sum(_evidence_snapshot_units(item) for item in resolution.evidence)
+    watermark = value.watermark
+    if watermark is not None:
+        units += (
+            1
+            + len(watermark.scope.node_id)
+            + len(watermark.scope.status_perspective_id)
+            + len(watermark.scope.topology_projection_id or "")
+            + len(watermark.clock_domain)
+            + len(watermark.mapping_method or "")
+        )
+        units += sum(_evidence_snapshot_units(item) for item in watermark.evidence)
+    return units
 
 
 def _snapshot_evidence(value: Evidence, label: str) -> Evidence:
     if type(value) is not Evidence:
         raise ValueError(f"{label} must be an exact Evidence")
+    if type(value.artifact_id) is not UUID:
+        raise TypeError(f"{label}.artifact_id must be an exact UUID")
+    if (
+        type(value.locator) is not str
+        or not value.locator
+        or len(value.locator) > 4_096
+    ):
+        raise ValueError(f"{label}.locator must contain 1 to 4096 characters")
+    if value.raw_timestamp_ns is not None and (
+        type(value.raw_timestamp_ns) is not int
+        or not MIN_TIMESTAMP_NS <= value.raw_timestamp_ns <= MAX_TIMESTAMP_NS
+    ):
+        raise ValueError(f"{label}.raw_timestamp_ns must be a signed 64-bit integer")
+    if value.clock_domain is not None and (
+        type(value.clock_domain) is not str
+        or not value.clock_domain
+        or len(value.clock_domain) > 256
+    ):
+        raise ValueError(
+            f"{label}.clock_domain must contain 1 to 256 characters or be None"
+        )
+    if value.excerpt_sha256 is not None and (
+        type(value.excerpt_sha256) is not str
+        or len(value.excerpt_sha256) != 64
+        or any(
+            character not in "0123456789abcdefABCDEF"
+            for character in value.excerpt_sha256
+        )
+    ):
+        raise ValueError(f"{label}.excerpt_sha256 must be a 64-digit hex digest")
     return Evidence(
         artifact_id=UUID(bytes=value.artifact_id.bytes),
         locator=value.locator,
@@ -675,6 +1006,156 @@ def _snapshot_evidence_items(
     )
 
 
+def _snapshot_watermark_scope(value: WatermarkScope, label: str) -> WatermarkScope:
+    if type(value) is not WatermarkScope:
+        raise ValueError(f"{label} must be an exact WatermarkScope")
+    return WatermarkScope(
+        node_id=value.node_id,
+        status_perspective_id=value.status_perspective_id,
+        topology_projection_id=value.topology_projection_id,
+    )
+
+
+def _snapshot_world_basis(value: WorldBasis, label: str) -> WorldBasis:
+    """Detach every nested value in an already-validated world basis."""
+
+    if type(value) is not WorldBasis:
+        raise ValueError(f"{label} must be an exact WorldBasis")
+    selector = value.selector
+    if type(selector) is AbsoluteTimeSelector:
+        detached_selector: AbsoluteTimeSelector | RelativeToWatermarkSelector | None = (
+            AbsoluteTimeSelector(
+                time_ns=selector.time_ns,
+                clock_domain=selector.clock_domain,
+                clock_policy=ClockAlignmentPolicy(selector.clock_policy),
+            )
+        )
+    elif type(selector) is RelativeToWatermarkSelector:
+        detached_selector = RelativeToWatermarkSelector(
+            offset_ns=selector.offset_ns,
+            scope=_snapshot_watermark_scope(selector.scope, f"{label}.selector.scope"),
+            clock_policy=ClockAlignmentPolicy(selector.clock_policy),
+        )
+    elif selector is None:
+        detached_selector = None
+    else:
+        raise ValueError(f"{label}.selector is invalid")
+
+    watermark = value.watermark
+    detached_watermark = (
+        None
+        if watermark is None
+        else ReconstructionWatermark(
+            scope=_snapshot_watermark_scope(
+                watermark.scope,
+                f"{label}.watermark.scope",
+            ),
+            local_time_ns=watermark.local_time_ns,
+            clock_domain=watermark.clock_domain,
+            provenance=Provenance(watermark.provenance),
+            quality=Quality(watermark.quality),
+            absolute_min_ns=watermark.absolute_min_ns,
+            absolute_max_ns=watermark.absolute_max_ns,
+            mapping_method=watermark.mapping_method,
+            evidence=_snapshot_evidence_items(
+                watermark.evidence,
+                f"{label}.watermark.evidence",
+            ),
+        )
+    )
+    return WorldBasis(
+        kind=WorldBasisKind(value.kind),
+        requested_time_ns=value.requested_time_ns,
+        resolved_at_min_ns=value.resolved_at_min_ns,
+        resolved_at_max_ns=value.resolved_at_max_ns,
+        capture_ranges=tuple(
+            CaptureRange(
+                scope=item.scope,
+                observed_at_min_ns=item.observed_at_min_ns,
+                observed_at_max_ns=item.observed_at_max_ns,
+                evidence=_snapshot_evidence_items(
+                    item.evidence,
+                    f"{label}.capture_ranges[{index}].evidence",
+                ),
+                clock_domain=item.clock_domain,
+            )
+            for index, item in enumerate(value.capture_ranges)
+        ),
+        provenance=Provenance(value.provenance),
+        quality=Quality(value.quality),
+        clock_domain=value.clock_domain,
+        selector=detached_selector,
+        node_resolutions=tuple(
+            ResolvedNodeBasis(
+                node_id=item.node_id,
+                local_clock_domain=item.local_clock_domain,
+                local_min_ns=item.local_min_ns,
+                local_max_ns=item.local_max_ns,
+                absolute_min_ns=item.absolute_min_ns,
+                absolute_max_ns=item.absolute_max_ns,
+                mapping_method=item.mapping_method,
+                quality=Quality(item.quality),
+                reason_code=item.reason_code,
+                evidence=_snapshot_evidence_items(
+                    item.evidence,
+                    f"{label}.node_resolutions[{index}].evidence",
+                ),
+            )
+            for index, item in enumerate(value.node_resolutions)
+        ),
+        watermark=detached_watermark,
+        unresolved_reason=value.unresolved_reason,
+    )
+
+
+def _snapshot_consistency_finding(
+    value: ConsistencyFinding,
+    *,
+    basis: WorldBasis | None = None,
+    resources: tuple[ResourceKey, ...] | None = None,
+    detail_budget: _ValueBudget | None = None,
+    aggregate_budget: _AggregateValueBudget | None = None,
+) -> ConsistencyFinding:
+    if type(value) is not ConsistencyFinding:
+        raise ValueError("consistency finding must be exact")
+    if not isinstance(value.details, Mapping):
+        raise TypeError("consistency finding details must be a mapping")
+    return ConsistencyFinding(
+        rule_id=value.rule_id,
+        severity=DiagnosticSeverity(value.severity),
+        result=FindingResult(value.result),
+        summary=value.summary,
+        resources=(
+            tuple(
+                _snapshot_resource_key(
+                    resource,
+                    f"consistency finding resources[{index}]",
+                )
+                for index, resource in enumerate(value.resources)
+            )
+            if resources is None
+            else resources
+        ),
+        provenance=Provenance(value.provenance),
+        quality=Quality(value.quality),
+        basis=(
+            _snapshot_world_basis(value.basis, "consistency finding basis")
+            if basis is None
+            else basis
+        ),
+        evidence=_snapshot_evidence_items(
+            value.evidence,
+            "consistency finding evidence",
+        ),
+        details=_snapshot_property_value(
+            value.details,
+            "consistency finding details",
+            budget=detail_budget,
+            aggregate_budget=aggregate_budget,
+        ),
+    )
+
+
 def _snapshot_status_perspective(
     value: StatusPerspectiveRef | None,
 ) -> StatusPerspectiveRef | None:
@@ -682,13 +1163,198 @@ def _snapshot_status_perspective(
         return None
     if type(value) is not StatusPerspectiveRef:
         raise ValueError(
-            "connector claim status_perspective must be an exact "
-            "StatusPerspectiveRef"
+            "connector claim status_perspective must be an exact StatusPerspectiveRef"
         )
     return StatusPerspectiveRef(
         perspective_id=value.perspective_id,
         plugin_instance_id=value.plugin_instance_id,
         schema_digest=value.schema_digest,
+    )
+
+
+def _snapshot_world_time(value: object, label: str) -> int | None:
+    if value is None:
+        return None
+    if type(value) is not int or not MIN_TIMESTAMP_NS <= value <= MAX_TIMESTAMP_NS:
+        raise ValueError(f"{label} must be a signed 64-bit integer or None")
+    return value
+
+
+def _snapshot_world_evidence(
+    values: object,
+    label: str,
+    *,
+    maximum: int,
+) -> tuple[Evidence, ...]:
+    if type(values) is not tuple or len(values) > maximum:
+        raise ValueError(f"{label} must be a bounded exact tuple")
+    return _snapshot_evidence_items(values, label)
+
+
+def _snapshot_world_unknown_fields(
+    values: object,
+    label: str,
+    *,
+    maximum_evidence: int,
+) -> tuple[UnknownField, ...]:
+    if type(values) is not tuple or len(values) > 1_024:
+        raise ValueError(f"{label} must be a bounded exact tuple")
+    detached: list[UnknownField] = []
+    for index, value in enumerate(values):
+        item_label = f"{label}[{index}]"
+        if type(value) is not UnknownField:
+            raise ValueError(f"{item_label} must be an exact UnknownField")
+        for field_name, maximum in (
+            ("name", 256),
+            ("reason_code", 256),
+            ("message", 8_192),
+        ):
+            field_value = getattr(value, field_name)
+            if (
+                type(field_value) is not str
+                or not field_value
+                or len(field_value) > maximum
+            ):
+                raise ValueError(f"{item_label}.{field_name} is invalid")
+        detached.append(
+            UnknownField(
+                name=value.name,
+                reason_code=value.reason_code,
+                message=value.message,
+                evidence=_snapshot_world_evidence(
+                    value.evidence,
+                    f"{item_label}.evidence",
+                    maximum=maximum_evidence,
+                ),
+            )
+        )
+    return tuple(detached)
+
+
+def _snapshot_world_field_quality(
+    value: object,
+    label: str,
+) -> Mapping[str, Quality]:
+    if not isinstance(value, Mapping) or len(value) > 1_024:
+        raise ValueError(f"{label} must be a bounded mapping")
+    detached: dict[str, Quality] = {}
+    for index, (key, quality) in enumerate(value.items()):
+        if index >= 1_024:
+            raise ValueError(f"{label} must be a bounded mapping")
+        if type(key) is not str or not key or len(key) > 256:
+            raise ValueError(f"{label} keys must contain 1 to 256 characters")
+        if key in detached:
+            raise ValueError(f"{label} keys must be unique")
+        if type(quality) is not Quality:
+            raise ValueError(f"{label}[{key!r}] must be an exact Quality")
+        detached[key] = Quality(quality)
+    return MappingProxyType(detached)
+
+
+def _snapshot_world_state_view(
+    value: object,
+    *,
+    maximum_evidence: int,
+) -> ResourceStateView:
+    if type(value) is not ResourceStateView:
+        raise ValueError("world state must be an exact ResourceStateView")
+    if value.exists is not None and type(value.exists) is not bool:
+        raise ValueError("world state exists must be an exact boolean or None")
+    if not isinstance(value.properties, Mapping):
+        raise TypeError("world state properties must be a mapping")
+    if type(value.provenance) is not Provenance or type(value.quality) is not Quality:
+        raise ValueError("world state provenance and quality must be exact enums")
+    valid_from_ns = _snapshot_world_time(value.valid_from_ns, "world state valid_from_ns")
+    valid_to_ns = _snapshot_world_time(value.valid_to_ns, "world state valid_to_ns")
+    observed_at_min_ns = _snapshot_world_time(
+        value.observed_at_min_ns,
+        "world state observed_at_min_ns",
+    )
+    observed_at_max_ns = _snapshot_world_time(
+        value.observed_at_max_ns,
+        "world state observed_at_max_ns",
+    )
+    if valid_from_ns is not None and valid_to_ns is not None and valid_from_ns > valid_to_ns:
+        raise ValueError("world state validity bounds are reversed")
+    if (
+        observed_at_min_ns is not None
+        and observed_at_max_ns is not None
+        and observed_at_min_ns > observed_at_max_ns
+    ):
+        raise ValueError("world state observation bounds are reversed")
+    return ResourceStateView(
+        resource=_snapshot_resource_key(value.resource, "world state resource"),
+        exists=value.exists,
+        properties=_snapshot_property_value(value.properties, "world state properties"),
+        provenance=Provenance(value.provenance),
+        quality=Quality(value.quality),
+        valid_from_ns=valid_from_ns,
+        valid_to_ns=valid_to_ns,
+        observed_at_min_ns=observed_at_min_ns,
+        observed_at_max_ns=observed_at_max_ns,
+        field_quality=_snapshot_world_field_quality(
+            value.field_quality,
+            "world state field_quality",
+        ),
+        unknown_fields=_snapshot_world_unknown_fields(
+            value.unknown_fields,
+            "world state unknown_fields",
+            maximum_evidence=maximum_evidence,
+        ),
+        evidence=_snapshot_world_evidence(
+            value.evidence,
+            "world state evidence",
+            maximum=maximum_evidence,
+        ),
+        perspective_ref=_snapshot_status_perspective(value.perspective_ref),
+    )
+
+
+def _snapshot_world_relationship_view(
+    value: object,
+    *,
+    maximum_evidence: int,
+) -> RelationshipView:
+    if type(value) is not RelationshipView:
+        raise ValueError("world relationship must be an exact RelationshipView")
+    if (
+        type(value.relation_type) is not str
+        or not value.relation_type
+        or len(value.relation_type) > 256
+    ):
+        raise ValueError("world relationship type must contain 1 to 256 characters")
+    if not isinstance(value.attributes, Mapping):
+        raise TypeError("world relationship attributes must be a mapping")
+    if type(value.provenance) is not Provenance or type(value.quality) is not Quality:
+        raise ValueError("world relationship provenance and quality must be exact enums")
+    valid_from_ns = _snapshot_world_time(
+        value.valid_from_ns,
+        "world relationship valid_from_ns",
+    )
+    valid_to_ns = _snapshot_world_time(
+        value.valid_to_ns,
+        "world relationship valid_to_ns",
+    )
+    if valid_from_ns is not None and valid_to_ns is not None and valid_from_ns > valid_to_ns:
+        raise ValueError("world relationship validity bounds are reversed")
+    return RelationshipView(
+        source=_snapshot_resource_key(value.source, "world relationship source"),
+        target=_snapshot_resource_key(value.target, "world relationship target"),
+        relation_type=value.relation_type,
+        attributes=_snapshot_property_value(
+            value.attributes,
+            "world relationship attributes",
+        ),
+        provenance=Provenance(value.provenance),
+        quality=Quality(value.quality),
+        valid_from_ns=valid_from_ns,
+        valid_to_ns=valid_to_ns,
+        evidence=_snapshot_world_evidence(
+            value.evidence,
+            "world relationship evidence",
+            maximum=maximum_evidence,
+        ),
+        perspective_ref=_snapshot_status_perspective(value.perspective_ref),
     )
 
 
@@ -1039,9 +1705,7 @@ class PluginCapabilityExecutor:
         try:
             raw_capabilities = manifest.capabilities
             if type(raw_capabilities) is not frozenset:
-                raise TypeError(
-                    "manifest capabilities must be an exact frozenset"
-                )
+                raise TypeError("manifest capabilities must be an exact frozenset")
             declared_capabilities = frozenset(
                 item.value if type(item) is PluginCapability else item
                 for item in raw_capabilities
@@ -1253,16 +1917,19 @@ class PluginCapabilityExecutor:
     def _resource(self, value: Any, label: str) -> ResourceKey:
         if type(value) is not ResourceKey:
             raise ValueError(f"{label} must be an exact ResourceKey")
-        expected = self._schema.key_fields_by_kind.get(value.kind)
+        # Validate exact/bounded nested identity before any comprehension over
+        # plug-in-controlled containers.  Frozen dataclasses remain mutable via
+        # object.__setattr__, so constructor-time validation is insufficient.
+        detached = _snapshot_resource_key(value, label)
+        expected = self._schema.key_fields_by_kind.get(detached.kind)
         if expected is None:
             raise ValueError(
-                f"{label} references undeclared resource kind {value.kind!r}"
+                f"{label} references undeclared resource kind {detached.kind!r}"
             )
-        actual = tuple(name for name, _item in value.parts)
+        actual = tuple(name for name, _item in detached.parts)
         if actual != expected:
             raise ValueError(
-                f"{label} key fields do not match the declared order for "
-                f"{value.kind!r}"
+                f"{label} key fields do not match the declared order for {value.kind!r}"
             )
         return value
 
@@ -1301,21 +1968,41 @@ class PluginCapabilityExecutor:
         return value
 
     def _evidence_tuple(self, value: Any, label: str) -> tuple[Evidence, ...]:
-        if not isinstance(value, tuple):
-            raise TypeError(f"{label} must be a tuple")
+        if type(value) is not tuple:
+            raise TypeError(f"{label} must be an exact tuple")
         if len(value) > self.limits.max_evidence_per_output:
             raise ValueError(f"{label} exceeds the configured evidence limit")
         for index, item in enumerate(value):
             self._evidence(item, f"{label}[{index}]")
         return cast(tuple[Evidence, ...], value)
 
-    def _diagnostic(self, value: Any, label: str) -> PluginDiagnostic:
+    def _diagnostic(
+        self,
+        value: Any,
+        label: str,
+        *,
+        detail_budget: _ValueBudget | None = None,
+        aggregate_budget: _AggregateValueBudget | None = None,
+    ) -> PluginDiagnostic:
         diagnostic = validate_plugin_diagnostic(
             value,
             label=label,
             expected_origin=DiagnosticOrigin.PLUGIN,
             maximum_evidence_items=self.limits.max_evidence_per_output,
         )
+        if aggregate_budget is not None:
+            aggregate_budget.charge(
+                len(diagnostic.code)
+                + len(diagnostic.message)
+                + sum(
+                    len(evidence.locator)
+                    + len(evidence.clock_domain or "")
+                    + len(evidence.excerpt_sha256 or "")
+                    + 16
+                    for evidence in diagnostic.evidence
+                ),
+                label,
+            )
         return PluginDiagnostic(
             stage=DiagnosticStage(diagnostic.stage),
             severity=DiagnosticSeverity(diagnostic.severity),
@@ -1329,6 +2016,8 @@ class PluginCapabilityExecutor:
             details=_snapshot_property_value(
                 diagnostic.details,
                 f"{label}.details",
+                budget=detail_budget,
+                aggregate_budget=aggregate_budget,
             ),
             origin=DiagnosticOrigin(diagnostic.origin),
         )
@@ -1376,25 +2065,20 @@ class PluginCapabilityExecutor:
             raise ValueError(f"{label} must be an exact StatusPerspectiveRef")
         if value.perspective_id not in self._schema.perspectives:
             raise ValueError(
-                f"{label} references undeclared perspective "
-                f"{value.perspective_id!r}"
+                f"{label} references undeclared perspective {value.perspective_id!r}"
             )
         if (
             value.plugin_instance_id is not None
             and self._bound_instance_id is not None
             and value.plugin_instance_id != self._bound_instance_id
         ):
-            raise ValueError(
-                f"{label} references a different plug-in instance"
-            )
+            raise ValueError(f"{label} references a different plug-in instance")
         if (
             require_bound_qualifiers
             and self._bound_instance_id is not None
             and value.plugin_instance_id != self._bound_instance_id
         ):
-            raise ValueError(
-                f"{label} must identify the bound plug-in instance"
-            )
+            raise ValueError(f"{label} must identify the bound plug-in instance")
         if (
             value.schema_digest is not None
             and self._bound_schema_digest is not None
@@ -1441,7 +2125,12 @@ class PluginCapabilityExecutor:
                 raise ValueError(
                     "world.perspective_ref does not match the requested perspective"
                 )
-            snapshot.extend((basis, perspective_ref))
+            snapshot.extend(
+                (
+                    _snapshot_world_basis(basis, "world.basis"),
+                    _snapshot_status_perspective(perspective_ref),
+                )
+            )
 
         self._validate_caller_input(
             capability,
@@ -1457,6 +2146,7 @@ class PluginCapabilityExecutor:
                 capability,
                 basis=cast(WorldBasis, basis),
                 perspective_ref=cast(StatusPerspectiveRef | None, perspective_ref),
+                maximum_evidence=self.limits.max_evidence_per_output,
             ),
         )
 
@@ -1472,17 +2162,20 @@ class PluginCapabilityExecutor:
         if len(value.set_values) > 1_024:
             raise ValueError(f"{label}.set_values exceeds 1024 entries")
         _validate_value(value.set_values, f"{label}.set_values")
-        if not isinstance(value.remove_fields, tuple) or len(value.remove_fields) > 1_024:
+        if (
+            not isinstance(value.remove_fields, tuple)
+            or len(value.remove_fields) > 1_024
+        ):
             raise ValueError(f"{label}.remove_fields must be a bounded tuple")
-        if not isinstance(value.unknown_fields, tuple) or len(value.unknown_fields) > 1_024:
+        if (
+            not isinstance(value.unknown_fields, tuple)
+            or len(value.unknown_fields) > 1_024
+        ):
             raise ValueError(f"{label}.unknown_fields must be a bounded tuple")
         mentioned = {
             *(str(name).split(".", 1)[0] for name in value.set_values),
             *(str(name).split(".", 1)[0] for name in value.remove_fields),
-            *(
-                str(unknown.name).split(".", 1)[0]
-                for unknown in value.unknown_fields
-            ),
+            *(str(unknown.name).split(".", 1)[0] for unknown in value.unknown_fields),
         }
         if resource_kind is not None:
             allowed = self._schema.property_roots_by_kind[resource_kind]
@@ -1581,8 +2274,7 @@ class PluginCapabilityExecutor:
         self._event_uid(value.target_event_uid, f"{label}.target_event_uid")
         if value.link_type not in self._schema.causal_link_types:
             raise ValueError(
-                f"{label} references undeclared causal link type "
-                f"{value.link_type!r}"
+                f"{label} references undeclared causal link type {value.link_type!r}"
             )
         if (
             isinstance(value.confidence, bool)
@@ -1695,9 +2387,10 @@ class PluginCapabilityExecutor:
             raise ValueError(f"{label}.affected_resources must be a bounded tuple")
         for index, resource in enumerate(value.affected_resources):
             self._resource(resource, f"{label}.affected_resources[{index}]")
-        if not isinstance(value.affected_fields, tuple) or len(
-            value.affected_fields
-        ) > self.limits.max_resource_references:
+        if (
+            not isinstance(value.affected_fields, tuple)
+            or len(value.affected_fields) > self.limits.max_resource_references
+        ):
             raise ValueError(f"{label}.affected_fields must be a bounded tuple")
         if (
             value.relation_type is not None
@@ -1737,7 +2430,9 @@ class PluginCapabilityExecutor:
     ) -> ChangeSet:
         if type(value) is not ChangeSet:
             raise self._error(capability, "hook must return an exact ChangeSet")
-        collections: tuple[tuple[str, Any, type[Any], Callable[[Any, str], Any]], ...] = (
+        collections: tuple[
+            tuple[str, Any, type[Any], Callable[[Any, str], Any]], ...
+        ] = (
             ("state", value.state, StateMutation, self._state_mutation),
             (
                 "relationships",
@@ -1761,9 +2456,7 @@ class PluginCapabilityExecutor:
                     raise TypeError(f"ChangeSet.{name} must be a tuple")
                 total += len(items)
                 if any(type(item) is not item_type for item in items):
-                    raise ValueError(
-                        f"ChangeSet.{name} contains an unsupported output"
-                    )
+                    raise ValueError(f"ChangeSet.{name} contains an unsupported output")
                 for index, item in enumerate(items):
                     validator(item, f"ChangeSet.{name}[{index}]")
             if total > self.limits.max_change_items:
@@ -1873,6 +2566,8 @@ class PluginCapabilityExecutor:
         allowed: tuple[type[Any], ...],
         validator: Callable[[Any, str], None],
         detacher: Callable[[Any], Any] | None = None,
+        detached_validator: Callable[[Any, str], None] | None = None,
+        diagnostic_handler: Callable[[Any, str], PluginDiagnostic] | None = None,
     ) -> tuple[tuple[Any, ...], tuple[PluginDiagnostic, ...]]:
         values: list[Any] = []
         diagnostics: list[PluginDiagnostic] = []
@@ -1893,7 +2588,7 @@ class PluginCapabilityExecutor:
                     )
                 if type(output) is PluginDiagnostic:
                     try:
-                        diagnostic = self._diagnostic(
+                        diagnostic = (diagnostic_handler or self._diagnostic)(
                             output,
                             f"{capability.value}[{index}]",
                         )
@@ -1922,11 +2617,9 @@ class PluginCapabilityExecutor:
                     )
                 try:
                     validator(output, f"{capability.value}[{index}]")
-                    detached_output = (
-                        output if detacher is None else detacher(output)
-                    )
+                    detached_output = output if detacher is None else detacher(output)
                     if detacher is not None:
-                        validator(
+                        (detached_validator or validator)(
                             detached_output,
                             f"{capability.value}[{index}]",
                         )
@@ -1966,9 +2659,7 @@ class PluginCapabilityExecutor:
                 raise ValueError("window time bounds are reversed")
             if (
                 type(window.max_events) is not int
-                or not 1
-                <= window.max_events
-                <= self.limits.max_correlation_outputs
+                or not 1 <= window.max_events <= self.limits.max_correlation_outputs
             ):
                 raise ValueError("window max_events is outside core bounds")
             if (
@@ -2003,15 +2694,11 @@ class PluginCapabilityExecutor:
                 "correlate() failed inside plug-in",
             ) from error
         return CorrelationExecutionResult(
-            causal_links=tuple(
-                item for item in values if type(item) is CausalLink
-            ),
+            causal_links=tuple(item for item in values if type(item) is CausalLink),
             relationship_mutations=tuple(
                 item for item in values if type(item) is RelationshipMutation
             ),
-            clock_anchors=tuple(
-                item for item in values if type(item) is ClockAnchor
-            ),
+            clock_anchors=tuple(item for item in values if type(item) is ClockAnchor),
             diagnostics=diagnostics,
         )
 
@@ -2030,9 +2717,7 @@ class PluginCapabilityExecutor:
         label: str,
     ) -> None:
         if type(value) is not EvidenceAnalysisObservation:
-            raise ValueError(
-                f"{label} must be an exact EvidenceAnalysisObservation"
-            )
+            raise ValueError(f"{label} must be an exact EvidenceAnalysisObservation")
         if (
             type(value.observation_id) is not str
             or not value.observation_id
@@ -2045,10 +2730,7 @@ class PluginCapabilityExecutor:
             or len(value.category) > 256
         ):
             raise ValueError(f"{label}.category must contain 1 to 256 characters")
-        if (
-            type(value.summary) is not str
-            or not 1 <= len(value.summary) <= 8_192
-        ):
+        if type(value.summary) is not str or not 1 <= len(value.summary) <= 8_192:
             raise ValueError(f"{label}.summary must contain 1 to 8192 characters")
         if type(value.cited_reference_digests) is not tuple:
             raise TypeError(f"{label}.cited_reference_digests must be a tuple")
@@ -2065,9 +2747,7 @@ class PluginCapabilityExecutor:
                 "canonically ordered values"
             )
         admitted = {fact.reference_digest for fact in request.facts}
-        if any(
-            digest not in admitted for digest in value.cited_reference_digests
-        ):
+        if any(digest not in admitted for digest in value.cited_reference_digests):
             raise ValueError(f"{label} cites evidence outside its request")
         self._enum(value.quality, Quality, f"{label}.quality")
         _validate_value(value.details, f"{label}.details")
@@ -2124,8 +2804,7 @@ class PluginCapabilityExecutor:
             for index, fact in enumerate(request.facts):
                 if type(fact) is not EvidenceAnalysisFact:
                     raise TypeError(
-                        f"request.facts[{index}] must be an exact "
-                        "EvidenceAnalysisFact"
+                        f"request.facts[{index}] must be an exact EvidenceAnalysisFact"
                     )
                 if fact.reference_digest in digests:
                     raise ValueError("request.facts must have unique references")
@@ -2157,17 +2836,13 @@ class PluginCapabilityExecutor:
                     f"request.facts[{index}].time_end_ns",
                 )
                 if (fact.time_start_ns is None) != (fact.time_end_ns is None):
-                    raise ValueError(
-                        f"request.facts[{index}] time bounds disagree"
-                    )
+                    raise ValueError(f"request.facts[{index}] time bounds disagree")
                 if (
                     fact.time_start_ns is not None
                     and fact.time_end_ns is not None
                     and fact.time_start_ns > fact.time_end_ns
                 ):
-                    raise ValueError(
-                        f"request.facts[{index}] time bounds are reversed"
-                    )
+                    raise ValueError(f"request.facts[{index}] time bounds are reversed")
                 if fact.time_clock_domain is not None and (
                     type(fact.time_clock_domain) is not str
                     or not fact.time_clock_domain
@@ -2261,10 +2936,9 @@ class PluginCapabilityExecutor:
                 detacher=detach_observation,
             )
             observation_ids = tuple(value.observation_id for value in values)
-            if (
-                tuple(sorted(observation_ids)) != observation_ids
-                or len(set(observation_ids)) != len(observation_ids)
-            ):
+            if tuple(sorted(observation_ids)) != observation_ids or len(
+                set(observation_ids)
+            ) != len(observation_ids):
                 raise self._error(
                     capability,
                     "evidence analysis observation IDs must be unique and "
@@ -2316,6 +2990,24 @@ class PluginCapabilityExecutor:
         self._enum(value.kind, WorldBasisKind, f"{label}.kind")
         self._enum(value.provenance, Provenance, f"{label}.provenance")
         self._enum(value.quality, Quality, f"{label}.quality")
+        if value.clock_domain is not None and (
+            type(value.clock_domain) is not str
+            or not value.clock_domain
+            or len(value.clock_domain) > 256
+            or "\x00" in value.clock_domain
+        ):
+            raise ValueError(
+                f"{label}.clock_domain must contain 1 to 256 characters or be None"
+            )
+        if value.unresolved_reason is not None and (
+            type(value.unresolved_reason) is not str
+            or not value.unresolved_reason
+            or len(value.unresolved_reason) > 8_192
+            or "\x00" in value.unresolved_reason
+        ):
+            raise ValueError(
+                f"{label}.unresolved_reason must contain 1 to 8192 characters or be None"
+            )
         for field_name in (
             "requested_time_ns",
             "resolved_at_min_ns",
@@ -2328,14 +3020,35 @@ class PluginCapabilityExecutor:
             and value.resolved_at_min_ns > value.resolved_at_max_ns
         ):
             raise ValueError(f"{label} resolved bounds are reversed")
-        if not isinstance(value.capture_ranges, tuple) or len(
-            value.capture_ranges
-        ) > 1_024:
+        if (
+            type(value.capture_ranges) is not tuple
+            or len(value.capture_ranges) > self.limits.max_world_basis_capture_ranges
+        ):
             raise ValueError(f"{label}.capture_ranges must be a bounded tuple")
+        basis_evidence_count = 0
         for index, item in enumerate(value.capture_ranges):
             if type(item) is not CaptureRange:
                 raise ValueError(
                     f"{label}.capture_ranges[{index}] must be an exact CaptureRange"
+                )
+            if (
+                type(item.scope) is not str
+                or not item.scope
+                or len(item.scope) > MAX_CAPTURE_RANGE_SCOPE_LENGTH
+                or "\x00" in item.scope
+            ):
+                raise ValueError(
+                    f"{label}.capture_ranges[{index}].scope must contain 1 to "
+                    f"{MAX_CAPTURE_RANGE_SCOPE_LENGTH} characters"
+                )
+            if item.clock_domain is not None and (
+                type(item.clock_domain) is not str
+                or not item.clock_domain
+                or len(item.clock_domain) > 256
+                or "\x00" in item.clock_domain
+            ):
+                raise ValueError(
+                    f"{label}.capture_ranges[{index}].clock_domain is invalid"
                 )
             self._optional_time(
                 item.observed_at_min_ns,
@@ -2350,13 +3063,14 @@ class PluginCapabilityExecutor:
                 and item.observed_at_max_ns is not None
                 and item.observed_at_min_ns > item.observed_at_max_ns
             ):
-                raise ValueError(
-                    f"{label}.capture_ranges[{index}] bounds are reversed"
-                )
+                raise ValueError(f"{label}.capture_ranges[{index}] bounds are reversed")
             self._evidence_tuple(
                 item.evidence,
                 f"{label}.capture_ranges[{index}].evidence",
             )
+            basis_evidence_count += len(item.evidence)
+            if basis_evidence_count > self.limits.max_world_basis_evidence:
+                raise ValueError(f"{label} evidence exceeds its aggregate limit")
         selector = value.selector
         if selector is not None:
             if type(selector) is AbsoluteTimeSelector:
@@ -2364,6 +3078,15 @@ class PluginCapabilityExecutor:
                     selector.time_ns,
                     f"{label}.selector.time_ns",
                 )
+                if (
+                    type(selector.clock_domain) is not str
+                    or not selector.clock_domain
+                    or len(selector.clock_domain) > 256
+                    or "\x00" in selector.clock_domain
+                    or type(selector.clock_policy) is not ClockAlignmentPolicy
+                ):
+                    raise ValueError(f"{label}.selector is invalid")
+                AbsoluteTimeSelector.__post_init__(selector)
             elif type(selector) is RelativeToWatermarkSelector:
                 self._optional_time(
                     selector.offset_ns,
@@ -2373,16 +3096,55 @@ class PluginCapabilityExecutor:
                     raise ValueError(
                         f"{label}.selector.offset_ns must be zero or negative"
                     )
+                if type(selector.clock_policy) is not ClockAlignmentPolicy:
+                    raise ValueError(f"{label}.selector is invalid")
+                self._watermark_scope(
+                    selector.scope,
+                    f"{label}.selector.scope",
+                )
+                RelativeToWatermarkSelector.__post_init__(selector)
             else:
                 raise ValueError(f"{label}.selector is invalid")
-        if not isinstance(value.node_resolutions, tuple):
-            raise TypeError(f"{label}.node_resolutions must be a tuple")
+        if (
+            type(value.node_resolutions) is not tuple
+            or len(value.node_resolutions)
+            > self.limits.max_world_basis_node_resolutions
+        ):
+            raise ValueError(f"{label}.node_resolutions must be a bounded tuple")
         for index, resolution in enumerate(value.node_resolutions):
             if type(resolution) is not ResolvedNodeBasis:
                 raise ValueError(
                     f"{label}.node_resolutions[{index}] must be an exact "
                     "ResolvedNodeBasis"
                 )
+            if type(resolution.quality) is not Quality:
+                raise ValueError(
+                    f"{label}.node_resolutions[{index}].quality must be an exact Quality"
+                )
+            for field_name, text, maximum in (
+                ("node_id", resolution.node_id, 256),
+                ("local_clock_domain", resolution.local_clock_domain, 256),
+                ("mapping_method", resolution.mapping_method, 256),
+                ("reason_code", resolution.reason_code, 128),
+            ):
+                if field_name == "node_id":
+                    valid = (
+                        type(text) is str
+                        and bool(text)
+                        and len(text) <= maximum
+                        and "\x00" not in text
+                    )
+                else:
+                    valid = text is None or (
+                        type(text) is str
+                        and bool(text)
+                        and len(text) <= maximum
+                        and "\x00" not in text
+                    )
+                if not valid:
+                    raise ValueError(
+                        f"{label}.node_resolutions[{index}].{field_name} is invalid"
+                    )
             for field_name in (
                 "local_min_ns",
                 "local_max_ns",
@@ -2393,12 +3155,40 @@ class PluginCapabilityExecutor:
                     getattr(resolution, field_name),
                     f"{label}.node_resolutions[{index}].{field_name}",
                 )
+            self._evidence_tuple(
+                resolution.evidence,
+                f"{label}.node_resolutions[{index}].evidence",
+            )
+            ResolvedNodeBasis.__post_init__(resolution)
+            basis_evidence_count += len(resolution.evidence)
+            if basis_evidence_count > self.limits.max_world_basis_evidence:
+                raise ValueError(f"{label} evidence exceeds its aggregate limit")
         watermark = value.watermark
         if watermark is not None:
             if type(watermark) is not ReconstructionWatermark:
                 raise ValueError(
                     f"{label}.watermark must be an exact ReconstructionWatermark"
                 )
+            self._watermark_scope(
+                watermark.scope,
+                f"{label}.watermark.scope",
+            )
+            if (
+                type(watermark.clock_domain) is not str
+                or not watermark.clock_domain
+                or len(watermark.clock_domain) > 256
+                or "\x00" in watermark.clock_domain
+                or type(watermark.provenance) is not Provenance
+                or type(watermark.quality) is not Quality
+            ):
+                raise ValueError(f"{label}.watermark metadata is invalid")
+            if watermark.mapping_method is not None and (
+                type(watermark.mapping_method) is not str
+                or not watermark.mapping_method
+                or len(watermark.mapping_method) > 256
+                or "\x00" in watermark.mapping_method
+            ):
+                raise ValueError(f"{label}.watermark.mapping_method is invalid")
             self._optional_time(
                 watermark.local_time_ns,
                 f"{label}.watermark.local_time_ns",
@@ -2411,27 +3201,74 @@ class PluginCapabilityExecutor:
                 watermark.absolute_max_ns,
                 f"{label}.watermark.absolute_max_ns",
             )
+            self._evidence_tuple(
+                watermark.evidence,
+                f"{label}.watermark.evidence",
+            )
+            ReconstructionWatermark.__post_init__(watermark)
+            basis_evidence_count += len(watermark.evidence)
+            if basis_evidence_count > self.limits.max_world_basis_evidence:
+                raise ValueError(f"{label} evidence exceeds its aggregate limit")
         return value
 
-    def _finding(self, value: Any, label: str) -> None:
+    @staticmethod
+    def _watermark_scope(value: Any, label: str) -> WatermarkScope:
+        if type(value) is not WatermarkScope:
+            raise ValueError(f"{label} must be an exact WatermarkScope")
+        for field_name, text, maximum, optional in (
+            ("node_id", value.node_id, 256, False),
+            (
+                "status_perspective_id",
+                value.status_perspective_id,
+                128,
+                False,
+            ),
+            (
+                "topology_projection_id",
+                value.topology_projection_id,
+                128,
+                True,
+            ),
+        ):
+            if optional and text is None:
+                continue
+            if (
+                type(text) is not str
+                or not text
+                or len(text) > maximum
+                or "\x00" in text
+            ):
+                raise ValueError(f"{label}.{field_name} is invalid")
+        WatermarkScope.__post_init__(value)
+        return value
+
+    def _finding(
+        self,
+        value: Any,
+        label: str,
+        *,
+        validate_basis: bool = True,
+    ) -> None:
         if type(value) is not ConsistencyFinding:
             raise ValueError(f"{label} must be an exact ConsistencyFinding")
         if (
-            not isinstance(value.rule_id, str)
+            type(value.rule_id) is not str
             or not value.rule_id
             or len(value.rule_id) > 256
+            or "\x00" in value.rule_id
         ):
             raise ValueError(f"{label}.rule_id must contain 1 to 256 characters")
         self._enum(value.severity, DiagnosticSeverity, f"{label}.severity")
         self._enum(value.result, FindingResult, f"{label}.result")
         if (
-            not isinstance(value.summary, str)
+            type(value.summary) is not str
             or not value.summary
             or len(value.summary) > 8_192
+            or "\x00" in value.summary
         ):
             raise ValueError(f"{label}.summary must contain 1 to 8192 characters")
         if (
-            not isinstance(value.resources, tuple)
+            type(value.resources) is not tuple
             or len(value.resources) > self.limits.max_resource_references
         ):
             raise ValueError(f"{label}.resources must be a bounded tuple")
@@ -2443,7 +3280,10 @@ class PluginCapabilityExecutor:
             evidence=value.evidence,
             label=label,
         )
-        self._world_basis(value.basis, f"{label}.basis")
+        if validate_basis:
+            self._world_basis(value.basis, f"{label}.basis")
+        if not isinstance(value.details, Mapping):
+            raise TypeError(f"{label}.details must be a mapping")
         _validate_value(value.details, f"{label}.details")
 
     def check_consistency(
@@ -2456,6 +3296,190 @@ class PluginCapabilityExecutor:
             capability,
             self.limits.max_world_reads,
         )
+        # Keep a core-private authoritative basis.  The plug-in receives a
+        # separate detached copy through ``bounded_world`` and can therefore
+        # never mutate the basis used to bind retained findings.
+        authoritative_basis = _snapshot_world_basis(
+            bounded_world.basis,
+            "world.basis",
+        )
+        basis_cache: dict[int, tuple[WorldBasis, WorldBasis, int]] = {}
+        resource_cache: dict[int, tuple[ResourceKey, ResourceKey, int]] = {}
+        canonical_resources: dict[ResourceKey, ResourceKey] = {}
+        aggregate_budget = _AggregateValueBudget(
+            self.limits.max_consistency_snapshot_units
+        )
+        detail_budget = _ValueBudget(self.limits.max_consistency_snapshot_units)
+        resource_references = 0
+        evidence_references = 0
+
+        def resolve_basis(value: WorldBasis, label: str) -> WorldBasis:
+            identity = id(value)
+            cached = basis_cache.get(identity)
+            if cached is not None and cached[0] is value:
+                aggregate_budget.charge(
+                    cached[2],
+                    "consistency finding bases",
+                )
+                self._world_basis(value, label)
+                if value != cached[1]:
+                    raise ValueError(
+                        "consistency finding basis changed after it was yielded"
+                    )
+                return authoritative_basis
+            if len(basis_cache) >= self.limits.max_consistency_basis_variants:
+                raise ValueError(
+                    "consistency findings exceeded the distinct basis limit"
+                )
+            self._world_basis(value, label)
+            detached = _snapshot_world_basis(value, label)
+            if detached != authoritative_basis:
+                raise ValueError(
+                    "consistency finding basis does not match the revision world basis"
+                )
+            basis_units = _world_basis_snapshot_units(detached)
+            aggregate_budget.charge(
+                basis_units,
+                "consistency finding bases",
+            )
+            # Retain the original object as part of the cache entry.  This
+            # prevents Python object-ID reuse from aliasing a later basis.
+            basis_cache[identity] = (value, detached, basis_units)
+            return authoritative_basis
+
+        def resolve_resource(value: ResourceKey, label: str) -> ResourceKey:
+            identity = id(value)
+            cached = resource_cache.get(identity)
+            if cached is not None and cached[0] is value:
+                aggregate_budget.charge(
+                    cached[2],
+                    "consistency finding resources",
+                )
+                if _snapshot_resource_key(value, label) != cached[1]:
+                    raise ValueError(
+                        "consistency finding resource changed after it was yielded"
+                    )
+                return cached[1]
+            self._resource(value, label)
+            detached = _snapshot_resource_key(value, label)
+            resource_units = _resource_key_snapshot_units(detached)
+            aggregate_budget.charge(
+                resource_units,
+                "consistency finding resources",
+            )
+            canonical = canonical_resources.setdefault(detached, detached)
+            resource_cache[identity] = (value, canonical, resource_units)
+            return canonical
+
+        def validate_finding(value: Any, label: str) -> None:
+            self._finding(value, label, validate_basis=False)
+
+        def detach_finding(value: ConsistencyFinding) -> ConsistencyFinding:
+            nonlocal evidence_references, resource_references
+            resource_references += len(value.resources)
+            if (
+                resource_references
+                > self.limits.max_consistency_resource_references
+            ):
+                raise ValueError(
+                    "consistency findings exceeded the aggregate resource-reference limit"
+                )
+            evidence_references += len(value.evidence)
+            if (
+                evidence_references
+                > self.limits.max_consistency_evidence_references
+            ):
+                raise ValueError(
+                    "consistency findings exceeded the aggregate evidence-reference limit"
+                )
+            aggregate_budget.charge(
+                len(value.rule_id)
+                + len(value.summary)
+                + sum(
+                    len(evidence.locator)
+                    + len(evidence.clock_domain or "")
+                    + len(evidence.excerpt_sha256 or "")
+                    + 16
+                    for evidence in value.evidence
+                )
+                + len(value.resources),
+                "consistency findings",
+            )
+            detached_resources = tuple(
+                resolve_resource(
+                    resource,
+                    f"consistency finding resources[{index}]",
+                )
+                for index, resource in enumerate(value.resources)
+            )
+            return _snapshot_consistency_finding(
+                value,
+                basis=resolve_basis(value.basis, "consistency finding basis"),
+                resources=detached_resources,
+                detail_budget=detail_budget,
+                aggregate_budget=aggregate_budget,
+            )
+
+        def detach_diagnostic(value: Any, label: str) -> PluginDiagnostic:
+            nonlocal evidence_references
+            diagnostic = self._diagnostic(
+                value,
+                label,
+                detail_budget=detail_budget,
+                aggregate_budget=aggregate_budget,
+            )
+            evidence_references += len(diagnostic.evidence)
+            if (
+                evidence_references
+                > self.limits.max_consistency_evidence_references
+            ):
+                raise ValueError(
+                    "consistency outputs exceeded the aggregate evidence-reference limit"
+                )
+            return diagnostic
+
+        def verify_cached_inputs() -> None:
+            try:
+                for original, initial, _units in basis_cache.values():
+                    self._world_basis(original, "consistency finding basis")
+                    if (
+                        _snapshot_world_basis(
+                            original,
+                            "consistency finding basis",
+                        )
+                        != initial
+                    ):
+                        raise ValueError(
+                            "consistency finding basis changed after it was yielded"
+                        )
+                for original, detached, _units in resource_cache.values():
+                    self._resource(original, "consistency finding resource")
+                    if (
+                        _snapshot_resource_key(
+                            original,
+                            "consistency finding resource",
+                        )
+                        != detached
+                    ):
+                        raise ValueError(
+                            "consistency finding resource changed after it was yielded"
+                        )
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except (TypeError, ValueError) as error:
+                raise self._error(capability, str(error)) from error
+            except BaseException as error:
+                raise self._error(
+                    capability,
+                    "consistency finding identity changed after it was yielded",
+                ) from error
+
+        def validate_detached(value: Any, label: str) -> None:
+            if type(value) is not ConsistencyFinding:
+                raise ValueError(f"{label} must be an exact ConsistencyFinding")
+            if value.basis is not authoritative_basis:
+                raise ValueError(f"{label}.basis is not core-owned")
+
         hook = self._require(capability, "check_consistency")
         try:
             outputs = hook(bounded_world)
@@ -2464,8 +3488,12 @@ class PluginCapabilityExecutor:
                 outputs,
                 maximum=self.limits.max_consistency_outputs,
                 allowed=(ConsistencyFinding,),
-                validator=self._finding,
+                validator=validate_finding,
+                detacher=detach_finding,
+                detached_validator=validate_detached,
+                diagnostic_handler=detach_diagnostic,
             )
+            verify_cached_inputs()
         except PluginCapabilityExecutionError:
             raise
         except PROCESS_CONTROL_EXCEPTIONS:
@@ -2492,7 +3520,10 @@ class PluginCapabilityExecutor:
         else:
             assert value.match is not None
             _validate_value(value.match.arguments, f"{label}.match.arguments")
-            if len(value.match.resolved_candidates) > self.limits.max_resource_references:
+            if (
+                len(value.match.resolved_candidates)
+                > self.limits.max_resource_references
+            ):
                 raise ValueError(
                     f"{label}.match.resolved_candidates exceeds the reference limit"
                 )
@@ -2540,9 +3571,10 @@ class PluginCapabilityExecutor:
         else:
             raise ValueError(f"{label}.payload is unsupported")
         _validate_value(value.properties, f"{label}.properties")
-        if not isinstance(value.unknown_fields, tuple) or len(
-            value.unknown_fields
-        ) > 1_024:
+        if (
+            not isinstance(value.unknown_fields, tuple)
+            or len(value.unknown_fields) > 1_024
+        ):
             raise ValueError(f"{label}.unknown_fields must be a bounded tuple")
         for index, item in enumerate(value.unknown_fields):
             if type(item) is not UnknownField:
@@ -2600,9 +3632,7 @@ class PluginCapabilityExecutor:
                     depth=depth + 1,
                 )
             return
-        raise ValueError(
-            f"{label} must use exact KeyValue scalars, KeyAtom, or tuples"
-        )
+        raise ValueError(f"{label} must use exact KeyValue scalars, KeyAtom, or tuples")
 
     def _connector_claim(
         self,
@@ -2640,8 +3670,7 @@ class PluginCapabilityExecutor:
             raise ValueError(f"{label}.link_type must be an exact string")
         if type(value.presentation) is not InterNodeLinkPresentation:
             raise ValueError(
-                f"{label}.presentation must be an exact "
-                "InterNodeLinkPresentation"
+                f"{label}.presentation must be an exact InterNodeLinkPresentation"
             )
         InterNodeLinkPresentation.__post_init__(value.presentation)
         perspective = value.status_perspective
@@ -2709,10 +3738,7 @@ class PluginCapabilityExecutor:
         # plug-in from hiding an unbounded run of one output category before the
         # other category while still permitting independently bounded results.
         maximum_scanned = (
-            maximum_records
-            + maximum_claims
-            + self.limits.max_diagnostics
-            + 1
+            maximum_records + maximum_claims + self.limits.max_diagnostics + 1
         )
         exhausted = False
         try:
@@ -2845,9 +3871,7 @@ class PluginCapabilityExecutor:
                 type(request.seed_resources) is not tuple
                 or len(request.seed_resources) > self.limits.max_resource_references
             ):
-                raise ValueError(
-                    "request.seed_resources must be a bounded exact tuple"
-                )
+                raise ValueError("request.seed_resources must be a bounded exact tuple")
             if len(request.seed_resources) != len(set(request.seed_resources)):
                 raise ValueError("request.seed_resources must be unique")
             for index, resource in enumerate(request.seed_resources):
@@ -2895,10 +3919,7 @@ class PluginCapabilityExecutor:
             checked_world_resources: set[ResourceKey] = set()
             for index, claim in enumerate(claims):
                 endpoint = claim.endpoint
-                if (
-                    endpoint in emitted_resources
-                    or endpoint in checked_world_resources
-                ):
+                if endpoint in emitted_resources or endpoint in checked_world_resources:
                     continue
                 state = bounded_world.state_of(endpoint)
                 if state is None:
@@ -3182,9 +4203,7 @@ class PluginCapabilityExecutor:
             self._snapshot_caller_input(
                 capability,
                 lambda: _snapshot_forwarding_step_request(request, "request"),
-                unreadable_message=(
-                    "forwarding step request could not be snapshotted"
-                ),
+                unreadable_message=("forwarding step request could not be snapshotted"),
             ),
         )
 

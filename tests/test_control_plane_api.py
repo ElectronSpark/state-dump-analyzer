@@ -104,6 +104,9 @@ class _PluginNsEventPlugin(_EventPlugin):
             yield output
 
 
+_CONFIGURED_PLUGIN_NS_EVENT_PLUGIN = _PluginNsEventPlugin()
+
+
 def _fixture_bytes(*, ifindex: int, final_state: str = "up") -> bytes:
     return (
         "\n".join(
@@ -532,10 +535,21 @@ class ControlPlaneApiTests(unittest.TestCase):
             body["import_id"],
             timeout=10,
         )
+        private_diagnostics = []
+        if completed.state is not ImportState.COMPLETED:
+            with self.control_plane.ingestion._connect() as connection:
+                private_diagnostics = [
+                    dict(row)
+                    for row in connection.execute(
+                        "SELECT * FROM ingestion_failure_diagnostics "
+                        "WHERE import_id = ? ORDER BY attempt_number",
+                        (body["import_id"],),
+                    ).fetchall()
+                ]
         self.assertEqual(
             completed.state,
             ImportState.COMPLETED,
-            completed.error_message,
+            (completed.error_message, private_diagnostics),
         )
         fetched = self.client.get(
             f"{self.workspace_path}/imports/{body['import_id']}",
@@ -576,17 +590,91 @@ class ControlPlaneApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()["items"]
 
+    def test_revision_consistency_findings_are_bounded_and_scope_concealed(
+        self,
+    ) -> None:
+        from tests.support.consistency_plugin import ConsistencyParsePlugin
+
+        self._replace_control_plane(PluginRegistry((ConsistencyParsePlugin(),)))
+        self._provision_scope(self.tenant_a)
+        self._upload(
+            _fixture_bytes(ifindex=71),
+            original_name="status.jsonl",
+            idempotency_key="consistency-upload",
+        )
+        revision_id = self._catalog_revisions()[0]["revision_id"]
+        path = f"{self.workspace_path}/revisions/{revision_id}/consistency-findings"
+        with patch.object(
+            self.control_plane,
+            "load_revision_dataset",
+            side_effect=AssertionError("full dataset copy is forbidden"),
+        ):
+            response = self.client.get(
+                path,
+                params={"limit": 1, "offset": 0},
+                headers=self._read_headers(self.tenant_a),
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["revision_id"], revision_id)
+        self.assertEqual(payload["materialization"]["status"], "complete")
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["total_count"], 1)
+        self.assertIsNone(payload["next_offset"])
+        self.assertNotIn("next_cursor", payload)
+        self.assertEqual(len(payload["items"]), 1)
+        references = payload["items"][0]["resource_references"]
+        self.assertEqual(set(references[0]), {"resource_id"})
+        serialized = json.dumps(payload)
+        self.assertNotIn("locator", serialized)
+        self.assertEqual(
+            set(payload["materialization"]),
+            {
+                "schema_version",
+                "status",
+                "plan_digest",
+                "basis",
+                "basis_digest",
+                "providers",
+                "provider_count",
+                "finding_count",
+                "diagnostic_count",
+                "emitted_finding_count",
+                "emitted_diagnostic_count",
+                "duplicate_findings_discarded",
+                "duplicate_diagnostics_discarded",
+                "world_reads",
+            },
+        )
+
+        invalid = self.client.get(
+            path,
+            params={"limit": 0},
+            headers=self._read_headers(self.tenant_a),
+        )
+        self.assertEqual(invalid.status_code, 422, invalid.text)
+
+        self._provision_scope(self.tenant_b)
+        concealed = self.client.get(
+            path,
+            headers=self._read_headers(self.tenant_b),
+        )
+        self.assertEqual(concealed.status_code, 404, concealed.text)
+
     def test_manual_selection_forwards_exact_configured_instance_identity(
         self,
     ) -> None:
         registry = PluginRegistry((_PluginNsEventPlugin(),))
         existing = registry.records()[0]
         configured = registry.register(
-            _PluginNsEventPlugin(),
-            package_hash=existing.package_hash,
+            _CONFIGURED_PLUGIN_NS_EVENT_PLUGIN,
             instance_id="tests.event-plugin.configured",
             configuration_digest="sha256:" + ("2" * 64),
+            plugin_process_module_target=(
+                "tests.test_control_plane_api:_CONFIGURED_PLUGIN_NS_EVENT_PLUGIN"
+            ),
         )
+        self.assertEqual(configured.package_hash, existing.package_hash)
         self._replace_control_plane(registry)
         self._provision_scope(self.tenant_a)
         admitted = self.client.post(
@@ -628,10 +716,7 @@ class ControlPlaneApiTests(unittest.TestCase):
         )
         self.assertEqual(
             len(
-                {
-                    candidate["registered_execution_identity"]
-                    for candidate in candidates
-                }
+                {candidate["registered_execution_identity"] for candidate in candidates}
             ),
             2,
         )
@@ -694,7 +779,9 @@ class ControlPlaneApiTests(unittest.TestCase):
         )
         self.assertEqual(accepted.status_code, 200, accepted.text)
         completed = self.control_plane.ingestion.wait(scope, import_id, timeout=10)
-        self.assertEqual(completed.state, ImportState.COMPLETED, completed.error_message)
+        self.assertEqual(
+            completed.state, ImportState.COMPLETED, completed.error_message
+        )
         assert completed.revision_id is not None
         plan = self.control_plane.sessions.get_revision(
             self.tenant_a,

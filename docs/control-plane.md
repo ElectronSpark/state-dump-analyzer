@@ -421,7 +421,7 @@ At construction, the durable control plane takes sealed exact snapshots of the
 primary and capability-provider registries. Registrations added later to the
 caller's local containers cannot enter probing or publication, and plan-bound
 capability routing rejects compatibility records unless both the router policy
-and the retained v3 plan carry trusted-inline authority.
+and the retained v3-or-v4 plan carry trusted-inline authority.
 
 Content-addressed publication uses verified same-directory temporary files
 and atomic replacement. A truncated final object left by an interrupted older
@@ -1090,7 +1090,7 @@ All routes have the prefix `/v1/control-plane`.
 | Projects | `GET, POST /projects` |
 | Workspaces | `GET, POST /projects/{project_id}/workspaces` |
 | Private analysis | `GET, PUT .../private-analysis-policy` (`PUT` requires `control-plane:admin` and `If-Match`); `GET .../private-analysis-capabilities`; `GET .../private-analysis-runners`; `GET, POST .../private-analysis-runs`; `GET .../private-analysis-runs/{run_id}`; `POST .../private-analysis-runs/{run_id}/execute`; `POST .../private-analysis-runs/{run_id}/cancel`; `GET .../private-analysis-runs/{run_id}/report`; `POST .../private-analysis-runs/{run_id}/proposals/{proposal_id}/decision`; `GET .../private-analysis-runs/{run_id}/proposal-decisions`; `GET .../private-analysis-runs/{run_id}/proposal-decisions/{decision_id}`; `POST .../private-analysis-runs/{run_id}/proposal-decisions/{decision_id}/recover` |
-| Catalog | `GET /projects/{project_id}/workspaces/{workspace_id}/fixtures`; `GET .../revisions?node_id=...` |
+| Catalog | `GET /projects/{project_id}/workspaces/{workspace_id}/fixtures`; `GET .../revisions?node_id=...`; `GET .../revisions/{revision_id}/consistency-findings` |
 | Sessions | `GET, POST .../sessions`; `GET, PATCH, DELETE .../sessions/{session_id}`; `PUT, DELETE .../sessions/{session_id}/members/{member_id}`; `POST .../sessions/{session_id}/snapshots`; `GET .../snapshots`; `GET .../snapshots/{snapshot_id}` |
 | Imports | `GET, POST .../imports`; `GET .../imports/{import_id}`; `GET .../candidates`; `GET .../events`; `GET .../events/stream`; `POST .../selection`; `POST .../resume`; `POST .../cancel` |
 | Annotations | `GET, POST .../annotations`; `GET, PATCH, DELETE .../annotations/{annotation_id}` |
@@ -1106,6 +1106,14 @@ Project, workspace, fixture, revision, session, and snapshot collections use
 `next_offset` when another request may be needed. Annotation and correlation
 lists use the same bounded `limit`/`offset` inputs; the review-audit feed uses
 `after_sequence`. Their pages are capped at 5,000.
+Consistency-finding pages use the same cap, return total and next offsets plus
+the immutable materialization envelope, conceal foreign-workspace revisions,
+and redact plug-in-owned details before HTTP serialization. Durable/admin
+records retain exact evidence locators; the public response always omits those
+locators and validates core basis/evidence/producer fields through closed
+allowlists. `complete` and
+`not_applicable` are publication-time facts; `not_materialized` identifies
+legacy history and never triggers plug-in execution during a read.
 Every browser-visible numeric `offset`, `next_offset`, and sequence coordinate
 is restricted to JavaScript's exact non-negative integer domain
 `0..9007199254740991`; a route may declare a smaller maximum. `2^53` and larger

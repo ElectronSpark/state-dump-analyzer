@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-__all__ = ['CORE_INGESTION_RUNTIME_CAPABILITY_ID', 'IngestionError', 'IngestionLimits', 'IngestionResult', 'IngestionCoordinator', 'InMemoryRevisionStore', 'IngestedDatasetSource', 'IngestedDataPolicy', 'CoreIngestionSession', 'CoreIngestionRuntime']
+__all__ = ['CORE_INGESTION_RUNTIME_CAPABILITY_ID', 'IngestionError', 'IngestionLimits', 'SourceRecordOrigin', 'IngestionResult', 'snapshot_ingestion_result_for_publication', 'IngestionCoordinator', 'InMemoryRevisionStore', 'IngestedDatasetSource', 'IngestedDataPolicy', 'CoreIngestionSession', 'CoreIngestionRuntime']
 
 CORE_INGESTION_RUNTIME_CAPABILITY_ID: str
 
@@ -73,6 +73,13 @@ class IngestionLimits:
     def __post_init__(self) -> None: ...
 
 @dataclass(frozen=True, slots=True)
+class SourceRecordOrigin:
+    parser_id: str
+    input_ordinal: int
+    output_ordinal: int
+    def __post_init__(self) -> None: ...
+
+@dataclass(frozen=True, slots=True)
 class IngestionResult:
     inventory: DumpInventory
     schema: PluginSchema
@@ -85,6 +92,8 @@ class IngestionResult:
     relationship_collections: tuple[RelationshipCollectionObservation, ...]
     events: tuple[DomainEvent, ...]
     source_records: tuple[SourceRecordEmission, ...]
+    source_record_origins: tuple[SourceRecordOrigin, ...] = ...
+    def __post_init__(self) -> None: ...
 
 @dataclass(frozen=True, slots=True)
 class _ParsedSourceRecord:
@@ -115,6 +124,8 @@ class _SchemaIndex:
     perspective_ids: frozenset[str]
     @classmethod
     def build(cls, schema: PluginSchema) -> _SchemaIndex: ...
+
+def snapshot_ingestion_result_for_publication(value: object, *, limits: IngestionLimits, plugin_id: str, timeline_time_basis: TimelineTimeBasis, timeline_clock_domain: str | None, expected_node_id: str | None) -> IngestionResult: ...
 
 class IngestionCoordinator:
     trace_decoder: TraceDecoder | None

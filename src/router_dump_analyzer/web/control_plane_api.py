@@ -912,7 +912,9 @@ def _validated_resolver_response_headers(
             name_bytes = name.encode("ascii")
             value_bytes = header_value.encode("latin-1")
         except UnicodeEncodeError as error:
-            raise ValueError("resolver response header text is not wire-safe") from error
+            raise ValueError(
+                "resolver response header text is not wire-safe"
+            ) from error
         if not name_bytes or len(name_bytes) > _MAX_RESOLVER_HEADER_NAME_BYTES:
             raise ValueError("resolver response header name is invalid")
         if not all(
@@ -2259,9 +2261,7 @@ def _scoped_workspace_disclosure_policy_json(
         or record.project_id != scope.project_id
         or record.workspace_id != scope.workspace_id
     ):
-        raise SessionStoreError(
-            "stored workspace disclosure policy scope is invalid"
-        )
+        raise SessionStoreError("stored workspace disclosure policy scope is invalid")
     return _workspace_disclosure_policy_json(record)
 
 
@@ -3166,9 +3166,7 @@ def list_private_analysis_runners(
     try:
         values = _private_analysis_service(request).list_runners(scope)
         response.headers["Cache-Control"] = "no-store"
-        return {
-            "items": [private_analysis_runner_to_wire(value) for value in values]
-        }
+        return {"items": [private_analysis_runner_to_wire(value) for value in values]}
     except Exception as error:
         _raise_api_error(error)
 
@@ -3797,6 +3795,45 @@ def list_revisions(
         return {
             "items": [_json_value(item) for item in values],
             "next_offset": offset + len(values) if len(values) == limit else None,
+        }
+    except Exception as error:
+        _raise_api_error(error)
+
+
+@control_plane_router.get(
+    "/projects/{project_id}/workspaces/{workspace_id}/revisions/"
+    "{revision_id:path}/consistency-findings"
+)
+def list_revision_consistency_findings(
+    project_id: str,
+    workspace_id: str,
+    revision_id: str,
+    request: Request,
+    limit: int = Query(default=1_000, ge=1, le=MAX_PAGE_LIMIT),
+    offset: int = Query(default=0, ge=0, le=MAX_JSON_SAFE_INTEGER),
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
+) -> dict[str, Any]:
+    """Return one bounded, schema-redacted page of durable findings."""
+
+    tenant_id = _tenant(x_tenant_id)
+    scope = _scope(request, tenant_id, project_id, workspace_id)
+    try:
+        control_plane = _control_plane(request)
+        page = control_plane.list_revision_consistency_findings_for_client(
+            scope,
+            revision_id,
+            limit=limit,
+            offset=offset,
+        )
+        return {
+            "revision_id": page.revision_id,
+            "materialization": _json_value(page.materialization),
+            "items": [_json_value(item) for item in page.items],
+            "count": len(page.items),
+            "total_count": page.total_count,
+            "offset": page.offset,
+            "limit": page.limit,
+            "next_offset": page.next_offset,
         }
     except Exception as error:
         _raise_api_error(error)

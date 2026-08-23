@@ -16,6 +16,9 @@ from rsl_demo_plugin import (
 )
 
 from router_dump_analyzer import (
+    PLUGIN_PROCESS_BOOTSTRAP_DESCRIPTOR_ATTRIBUTE,
+    REVISION_CONSISTENCY_ROLE,
+    CapabilityProviderRegistry,
     ControlPlaneApplicationFactory,
     ControlPlaneApplicationRequest,
     FederationExecutionError,
@@ -23,20 +26,28 @@ from router_dump_analyzer import (
     FederationLinkerLimits,
     FederationLinkerRegistry,
     FederationLinkExecutor,
-    PLUGIN_PROCESS_BOOTSTRAP_DESCRIPTOR_ATTRIBUTE,
-    CapabilityProviderRegistry,
     PluginCompositionDeployment,
     PluginCompositionPolicy,
     PluginExecutionPlan,
     PluginExecutionPlanAuthority,
-    PluginRegistry,
     PluginProcessBootstrapDescriptor,
+    PluginRegistry,
+    RevisionConsistencyFindingsPage,
     RevisionSetCapabilityRouter,
+    SourceRecordOrigin,
     TopologyFederationAssembly,
     TopologyFederationCoordinator,
     TopologyFederationLimits,
     TopologyProjectionBasisSnapshot,
     TopologyProjectionInvocation,
+    snapshot_ingestion_result_for_publication,
+)
+from router_dump_analyzer.consistency_materialization import (
+    ConsistencyMaterializationLimits,
+)
+from router_dump_analyzer.normalized_data import (
+    project_consistency_findings_for_client,
+    project_consistency_materialization_for_client,
 )
 from router_dump_analyzer.plugin_api import (
     AnalyzerPlugin,
@@ -137,20 +148,25 @@ def exercise_public_surface(document: Mapping[str, Any]) -> None:
     federation_registry: FederationLinkerRegistry = federation_executor.registry
     federation_executor_limits: FederationLinkerLimits = federation_executor.limits
     federation_error = FederationExecutionError("typed boundary")
-    linker_identity: FederationLinkerIdentity | None = (
-        federation_error.linker_identity
-    )
-    federation_diagnostics: tuple[PluginDiagnostic, ...] = (
-        federation_error.diagnostics
-    )
+    linker_identity: FederationLinkerIdentity | None = federation_error.linker_identity
+    federation_diagnostics: tuple[PluginDiagnostic, ...] = federation_error.diagnostics
     federation_limits = TopologyFederationLimits()
     process_bootstrap = PluginProcessBootstrapDescriptor(
         module_target="rsl_demo_plugin:ExampleRouterPlugin",
         construct_class=True,
     )
-    process_bootstrap_attribute: str = (
-        PLUGIN_PROCESS_BOOTSTRAP_DESCRIPTOR_ATTRIBUTE
+    process_bootstrap_attribute: str = PLUGIN_PROCESS_BOOTSTRAP_DESCRIPTOR_ATTRIBUTE
+    consistency_role: str = REVISION_CONSISTENCY_ROLE
+    consistency_page_type: type[RevisionConsistencyFindingsPage] = (
+        RevisionConsistencyFindingsPage
     )
+    consistency_limits = ConsistencyMaterializationLimits()
+    consistency_projection = project_consistency_findings_for_client
+    consistency_materialization_projection = (
+        project_consistency_materialization_for_client
+    )
+    source_record_origin_type: type[SourceRecordOrigin] = SourceRecordOrigin
+    publication_snapshot = snapshot_ingestion_result_for_publication
 
     nodes: tuple[NodeSpec, ...] = parse_node_selection(())
     config = AssemblyConfig(nodes=nodes)
@@ -171,6 +187,13 @@ def exercise_public_surface(document: Mapping[str, Any]) -> None:
         federation_limits,
         process_bootstrap,
         process_bootstrap_attribute,
+        consistency_role,
+        consistency_page_type,
+        consistency_limits,
+        consistency_projection,
+        consistency_materialization_projection,
+        source_record_origin_type,
+        publication_snapshot,
         _exercise_federation_coordinator,
         _exercise_topology_federation_result,
         config,

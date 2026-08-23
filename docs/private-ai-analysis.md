@@ -263,7 +263,7 @@ execution plan therefore qualifies every evidence
 producer without relying on registration order, matching product names, or a
 synthetic composite plug-in.
 
-The `plugin_schema.v1` evidence payload includes a current plan-v3 pin's exact
+The `plugin_schema.v1` evidence payload includes a current plan-v4 pin's exact
 content-addressed `registered_execution_identity`. A retained plan-v1 pin had
 neither that field nor the current timeline/composition semantics. Such a plan
 remains catalog-readable but is rejected before corpus construction; its

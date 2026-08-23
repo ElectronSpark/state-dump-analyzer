@@ -35,6 +35,7 @@ from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any, Self
+from uuid import UUID
 
 from .annotation_store import (
     CorrelationReport,
@@ -52,12 +53,26 @@ from .annotation_store import (
     ReviewSubjectKind,
     build_correlation_report,
 )
-from .canonical import canonical_json
+from .canonical import canonical_json, strict_canonical_json
 from .capability_router import (
     CapabilityProviderRegistry,
     CapabilityRouteSelector,
     PlanBoundCapabilityRouter,
     RevisionSetCapabilityRouter,
+)
+from .consistency_materialization import (
+    CONSISTENCY_MATERIALIZATION_COUNT_FIELDS,
+    CONSISTENCY_MATERIALIZATION_SCHEMA_VERSION,
+    ConsistencyMaterializationError,
+    ConsistencyMaterializationLimits,
+    _validate_materialized_artifact_ids,
+    _validate_materialized_consistency_basis,
+    _validate_materialized_consistency_diagnostic,
+    _validate_materialized_consistency_finding,
+    _validate_materialized_provider_projection,
+    legacy_consistency_materialization_envelope,
+    revision_consistency_selected_pins,
+    validate_consistency_materialization_envelope,
 )
 from .corroboration import (
     CorroborationFact,
@@ -81,13 +96,16 @@ from .ingestion_pipeline import (
     RetentionPolicy,
     RetentionReport,
     RevisionCatalogPublisher,
-    _require_no_inline_only_plugin_compatibility,
-    _registered_plugin_uses_inline_only_compatibility,
+    _registered_plugin_is_process_capable,
+    _registered_plugin_is_trusted_inline_capable,
     _registered_plugins_require_inline_execution,
+    _require_no_inline_only_plugin_compatibility,
     validate_ingestion_state_root,
 )
 from .normalized_data import (
     event_redaction_policy,
+    project_consistency_findings_for_client,
+    project_consistency_materialization_for_client,
     redact_event_for_client,
     resource_id,
 )
@@ -101,6 +119,7 @@ from .plugin_api import (
 )
 from .plugin_composition import PluginCompositionPolicy
 from .plugin_execution_plan import (
+    PluginExecutionPin,
     PluginExecutionPlan,
     plugin_execution_plan_plugin_ids,
     primary_parser_execution_pin,
@@ -180,7 +199,7 @@ from .source_record_core import (
     project_source_record_for_log,
     source_record_event_uids,
 )
-from .value_core import parse_canonical_decimal_integer
+from .value_core import MAX_JSON_SAFE_INTEGER, parse_canonical_decimal_integer
 
 _DEFAULT_MAX_DATASET_BYTES = 2 * 1024 * 1024 * 1024
 _DEFAULT_DATASET_CACHE_ENTRIES = 4
@@ -193,6 +212,7 @@ _DEFAULT_MAX_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_PAYLOAD_BYTES = (
     DEFAULT_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_PAYLOAD_BYTES
 )
 _DATASET_FORMAT = "router_dump_analyzer.canonical-json.v1"
+_CONSISTENCY_MATERIALIZATION_INGESTION_MODE = "core-ingestion-v3"
 _MAX_RETENTION_RELEASE_ACTIONS = 10_000
 _MAX_RETENTION_ACTOR_LENGTH = 256
 _MAX_RETENTION_OPERATION_ID_LENGTH = 248
@@ -220,13 +240,12 @@ def _private_analysis_plain_json(value: object) -> object:
     """Project an executor-validated frozen JSON value to plain containers."""
 
     if isinstance(value, Mapping):
-        return {
-            key: _private_analysis_plain_json(item)
-            for key, item in value.items()
-        }
+        return {key: _private_analysis_plain_json(item) for key, item in value.items()}
     if type(value) in {tuple, list}:
         return [_private_analysis_plain_json(item) for item in value]
     return value
+
+
 _PRIVATE_RUN_STORE_BINDING_NAME = ".private-analysis-run-store.binding.json"
 _PRIVATE_RUN_STORE_BINDING_LOCK_NAME = ".private-analysis-run-store.binding.lock"
 _MAX_PRIVATE_RUN_STORE_BINDING_BYTES = 1_024
@@ -431,11 +450,55 @@ class ControlPlaneLimits:
 
 
 @dataclass(frozen=True, slots=True)
+class RevisionConsistencyFindingsPage:
+    """One detached, workspace-authorized page of durable findings."""
+
+    revision_id: str
+    materialization: Mapping[str, Any]
+    items: tuple[Mapping[str, Any], ...]
+    offset: int
+    limit: int
+    total_count: int
+    next_offset: int | None
+
+    def __post_init__(self) -> None:
+        if type(self.revision_id) is not str or not self.revision_id:
+            raise ValueError("revision_id must be a non-empty string")
+        if not isinstance(self.materialization, Mapping):
+            raise TypeError("materialization must be a mapping")
+        if type(self.items) is not tuple or any(
+            not isinstance(item, Mapping) for item in self.items
+        ):
+            raise TypeError("items must be a tuple of mappings")
+        if (
+            type(self.offset) is not int
+            or not 0 <= self.offset <= MAX_JSON_SAFE_INTEGER
+        ):
+            raise ValueError("offset must be a JSON-safe non-negative integer")
+        if type(self.limit) is not int or not 1 <= self.limit <= 5_000:
+            raise ValueError("limit must be between 1 and 5000")
+        if (
+            type(self.total_count) is not int
+            or not 0 <= self.total_count <= MAX_JSON_SAFE_INTEGER
+        ):
+            raise ValueError("total_count must be a JSON-safe non-negative integer")
+        if self.next_offset is not None and (
+            type(self.next_offset) is not int
+            or not 0 <= self.next_offset <= MAX_JSON_SAFE_INTEGER
+            or self.next_offset <= self.offset
+            or self.next_offset >= self.total_count
+        ):
+            raise ValueError("next_offset must identify a later page")
+
+
+@dataclass(frozen=True, slots=True)
 class _DatasetIndex:
     events: Mapping[str, Mapping[str, Any]]
     source_records: Mapping[str, Mapping[str, Any]]
     resources: frozenset[str]
     relationships: frozenset[str]
+    findings: tuple[Mapping[str, Any], ...]
+    consistency_materialization: Mapping[str, Any]
     timeline_start_ns: int
     timeline_end_ns: int
 
@@ -993,6 +1056,61 @@ def _non_negative_ns(value: object, *, label: str) -> int:
         ) from error
 
 
+def _consistency_count(value: object, *, label: str) -> int:
+    if type(value) is not int or not 0 <= value <= MAX_JSON_SAFE_INTEGER:
+        raise DatasetIntegrityError(f"{label} must be a JSON-safe non-negative integer")
+    return value
+
+
+def _consistency_provider_projection(
+    pin: PluginExecutionPin,
+    plan: PluginExecutionPlan,
+) -> dict[str, Any]:
+    return {
+        "member_id": plan.basis_revision_id,
+        "node_id": plan.node_id,
+        "basis_revision_id": plan.basis_revision_id,
+        "plan_digest": plan.plan_digest,
+        "instance_id": pin.instance_id,
+        "plugin_id": pin.plugin_id,
+        "plugin_version": pin.plugin_version,
+        "registered_execution_identity": pin.registered_execution_identity,
+        "configuration_digest": pin.configuration_digest,
+        "schema_digest": pin.schema_digest,
+        "package_hash": pin.artifact.package_hash,
+        "capability": PluginCapability.CONSISTENCY_CHECK.value,
+        "roles": list(pin.roles),
+    }
+
+
+def _verified_materialized_identity(
+    record: Mapping[str, Any],
+    *,
+    identity_field: str,
+    label: str,
+) -> str:
+    identifier = record.get(identity_field)
+    if (
+        type(identifier) is not str
+        or len(identifier) != 71
+        or not identifier.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in identifier[7:])
+    ):
+        raise DatasetIntegrityError(f"{label} has an invalid identifier")
+    payload = dict(record)
+    payload.pop(identity_field, None)
+    try:
+        canonical_payload = strict_canonical_json(payload)
+    except (TypeError, ValueError) as error:
+        raise DatasetIntegrityError(f"{label} is not canonical") from error
+    expected = "sha256:" + hashlib.sha256(
+        canonical_payload.encode("utf-8")
+    ).hexdigest()
+    if identifier != expected:
+        raise DatasetIntegrityError(f"{label} identifier does not match its record")
+    return identifier
+
+
 def _event_ns(value: object, *, label: str) -> int:
     try:
         return parse_canonical_decimal_integer(
@@ -1282,13 +1400,12 @@ class ControlPlane:
         if allow_inline_only:
             for record in authority_records:
                 PluginRegistry.revalidate_registered_identity(record)
-                if (
-                    not record.verify_package_bytes
-                    and not _registered_plugin_uses_inline_only_compatibility(record)
-                ):
+                if not _registered_plugin_is_process_capable(
+                    record
+                ) and not _registered_plugin_is_trusted_inline_capable(record):
                     raise ValueError(
                         "trusted INLINE-only durable control plane requires "
-                        "registered manifest compatibility identities"
+                        "registered attested execution identities"
                     )
         else:
             authority_registry.require_executable_identities()
@@ -1299,9 +1416,7 @@ class ControlPlane:
                     "capability_providers must be an exact "
                     "CapabilityProviderRegistry or None"
                 )
-            authority_capability_providers = (
-                capability_providers._sealed_snapshot()
-            )
+            authority_capability_providers = capability_providers._sealed_snapshot()
             provider_records = authority_capability_providers.records()
             if not allow_inline_only:
                 _require_no_inline_only_plugin_compatibility(
@@ -1314,15 +1429,12 @@ class ControlPlane:
             else:
                 for record in provider_records:
                     PluginRegistry.revalidate_registered_identity(record)
-                    if (
-                        not record.verify_package_bytes
-                        and not _registered_plugin_uses_inline_only_compatibility(
-                            record
-                        )
-                    ):
+                    if not _registered_plugin_is_process_capable(
+                        record
+                    ) and not _registered_plugin_is_trusted_inline_capable(record):
                         raise ValueError(
                             "trusted INLINE-only capability providers require "
-                            "registered manifest compatibility identities"
+                            "registered attested execution identities"
                         )
         else:
             provider_records = authority_records
@@ -1896,9 +2008,7 @@ class ControlPlane:
             payload: dict[str, Any] = {
                 "arguments_digest": arguments.arguments_digest,
                 "intent": arguments.intent.value,
-                "parent_reference_digests": list(
-                    arguments.parent_reference_digests
-                ),
+                "parent_reference_digests": list(arguments.parent_reference_digests),
                 "observations": observations,
             }
             evidence_rank = {
@@ -1921,17 +2031,13 @@ class ControlPlane:
                 revision=target,
                 producer=producer,
                 kind=EvidenceKind.PLUGIN_CAPABILITY_RESULT,
-                subject_kind=(
-                    PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_SUBJECT_KIND
-                ),
+                subject_kind=(PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_SUBJECT_KIND),
                 locator_digest=evidence_locator_digest(
                     PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_SUBJECT_KIND,
                     {"arguments_digest": arguments.arguments_digest},
                 ),
                 evidence_class=evidence_class,
-                payload_schema=(
-                    PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_PAYLOAD_SCHEMA
-                ),
+                payload_schema=(PRIVATE_ANALYSIS_CAPABILITY_EVIDENCE_PAYLOAD_SCHEMA),
                 fact_provenance=EvidenceFactProvenance.PLUGIN_ANALYZED,
                 time_range=EvidenceTimeRange.unknown(),
                 content_digest=evidence_payload_digest(
@@ -2471,7 +2577,7 @@ class ControlPlane:
         construction_checkpoint: Callable[[], None] | None = None,
     ) -> list[Mapping[str, Any]]:
         value = dataset.get(field, [])
-        if not isinstance(value, list):
+        if type(value) is not list:
             raise DatasetIntegrityError(f"dataset {field} must be an array of objects")
         for ordinal, item in enumerate(value):
             if ordinal % 256 == 0 and construction_checkpoint is not None:
@@ -2481,6 +2587,476 @@ class ControlPlane:
                     f"dataset {field} must be an array of objects"
                 )
         return value
+
+    @classmethod
+    def _consistency_index(
+        cls,
+        dataset: Mapping[str, Any],
+        ingestion: Mapping[str, Any],
+        *,
+        plan_digest: object,
+        execution_plan: PluginExecutionPlan | None,
+        construction_checkpoint: Callable[[], None] | None = None,
+    ) -> tuple[tuple[Mapping[str, Any], ...], Mapping[str, Any]]:
+        storage_limits = ConsistencyMaterializationLimits()
+        envelope_present = "consistency_materialization" in dataset
+        envelope = dataset.get("consistency_materialization")
+        requires_materialization = (
+            ingestion.get("mode") == _CONSISTENCY_MATERIALIZATION_INGESTION_MODE
+        )
+        raw_findings = dataset.get("findings", [])
+        if (
+            (requires_materialization or envelope_present)
+            and type(raw_findings) is list
+            and len(raw_findings) > storage_limits.max_findings
+        ):
+            raise DatasetIntegrityError(
+                "materialized consistency findings exceed the durable limit"
+            )
+        findings = tuple(
+            cls._mapping_list(
+                dataset,
+                "findings",
+                construction_checkpoint=construction_checkpoint,
+            )
+        )
+        if requires_materialization or envelope_present:
+            for required_array in (
+                "findings",
+                "consistency_diagnostics",
+                "diagnostics",
+            ):
+                if (
+                    required_array not in dataset
+                    or type(dataset[required_array]) is not list
+                ):
+                    raise DatasetIntegrityError(
+                        f"core-ingestion-v3 dataset requires {required_array}"
+                    )
+        if execution_plan is None:
+            if plan_digest is not None:
+                raise DatasetIntegrityError(
+                    "dataset execution-plan digest lacks its exact execution plan"
+                )
+        elif type(plan_digest) is not str or execution_plan.plan_digest != plan_digest:
+            raise DatasetIntegrityError(
+                "dataset execution-plan digest does not match its execution plan"
+            )
+        if not envelope_present:
+            inventory = dataset.get("inventory")
+            carries_v3_marker = (
+                requires_materialization
+                or "consistency_materialization_status" in ingestion
+                or "consistency_diagnostics" in dataset
+                or (
+                    isinstance(inventory, Mapping)
+                    and inventory.get("mode")
+                    == _CONSISTENCY_MATERIALIZATION_INGESTION_MODE
+                )
+            )
+            if carries_v3_marker:
+                raise DatasetIntegrityError(
+                    "dataset has partial core-ingestion-v3 consistency metadata"
+                )
+            return findings, legacy_consistency_materialization_envelope(
+                plan_digest=plan_digest if type(plan_digest) is str else None,
+                finding_count=len(findings),
+            )
+        if not isinstance(envelope, Mapping):
+            raise DatasetIntegrityError("consistency materialization must be an object")
+        try:
+            validate_consistency_materialization_envelope(envelope)
+        except (TypeError, ValueError) as error:
+            raise DatasetIntegrityError(
+                "consistency materialization does not use its exact schema"
+            ) from error
+        if ingestion.get("mode") != _CONSISTENCY_MATERIALIZATION_INGESTION_MODE:
+            raise DatasetIntegrityError(
+                "consistency materialization requires core-ingestion-v3 metadata"
+            )
+        inventory = dataset.get("inventory")
+        if (
+            not isinstance(inventory, Mapping)
+            or inventory.get("mode")
+            != _CONSISTENCY_MATERIALIZATION_INGESTION_MODE
+        ):
+            raise DatasetIntegrityError(
+                "consistency materialization requires core-ingestion-v3 inventory"
+            )
+        inventory_members = inventory.get("members")
+        inventory_artifact_count = inventory.get("artifacts")
+        if (
+            type(inventory_members) is not list
+            or type(inventory_artifact_count) is not int
+            or inventory_artifact_count != len(inventory_members)
+            or len(inventory_members) > storage_limits.max_artifact_ids
+        ):
+            raise DatasetIntegrityError(
+                "consistency materialization inventory is invalid"
+            )
+        admitted_artifact_ids: set[UUID] = set()
+        for member in inventory_members:
+            artifact_text = member.get("artifact_id") if type(member) is dict else None
+            try:
+                artifact_id = UUID(artifact_text)
+            except (AttributeError, TypeError, ValueError) as error:
+                raise DatasetIntegrityError(
+                    "consistency materialization inventory artifact is invalid"
+                ) from error
+            if str(artifact_id) != artifact_text or artifact_id in admitted_artifact_ids:
+                raise DatasetIntegrityError(
+                    "consistency materialization inventory artifact is invalid"
+                )
+            admitted_artifact_ids.add(artifact_id)
+        frozen_artifact_ids = _validate_materialized_artifact_ids(
+            frozenset(admitted_artifact_ids),
+            storage_limits,
+        )
+        if envelope.get("schema_version") != CONSISTENCY_MATERIALIZATION_SCHEMA_VERSION:
+            raise DatasetIntegrityError(
+                "consistency materialization schema is unsupported"
+            )
+        status = envelope.get("status")
+        if type(status) is not str or status not in {
+            "complete",
+            "not_applicable",
+        }:
+            raise DatasetIntegrityError("consistency materialization status is invalid")
+        if ingestion.get("consistency_materialization_status") != status:
+            raise DatasetIntegrityError(
+                "ingestion consistency status does not match its materialization"
+            )
+        if type(plan_digest) is not str or envelope.get("plan_digest") != plan_digest:
+            raise DatasetIntegrityError(
+                "consistency materialization plan digest does not match ingestion"
+            )
+        assert execution_plan is not None
+        try:
+            selected_pins = revision_consistency_selected_pins(execution_plan)
+        except (TypeError, ValueError, RuntimeError) as error:
+            raise DatasetIntegrityError(
+                "consistency provider selection is invalid"
+            ) from error
+        expected_providers = tuple(
+            _consistency_provider_projection(pin, execution_plan)
+            for pin in selected_pins
+        )
+
+        providers = envelope.get("providers")
+        if type(providers) is not list:
+            raise DatasetIntegrityError(
+                "consistency materialization providers must be an array of objects"
+            )
+        if len(providers) > storage_limits.max_providers:
+            raise DatasetIntegrityError(
+                "consistency materialization providers exceed the durable limit"
+            )
+        if any(type(provider) is not dict for provider in providers):
+            raise DatasetIntegrityError(
+                "consistency materialization providers must be an array of objects"
+            )
+        provider_instance_ids: set[str] = set()
+        for provider in providers:
+            try:
+                _validate_materialized_provider_projection(
+                    provider,
+                    "consistency materialization provider",
+                )
+            except (TypeError, ValueError) as error:
+                raise DatasetIntegrityError(
+                    "consistency materialization provider is not canonical"
+                ) from error
+            instance_id = provider.get("instance_id")
+            if type(instance_id) is not str or not instance_id:
+                raise DatasetIntegrityError(
+                    "consistency materialization provider lacks an instance identifier"
+                )
+            if instance_id in provider_instance_ids:
+                raise DatasetIntegrityError(
+                    "consistency materialization contains duplicate providers"
+                )
+            provider_instance_ids.add(instance_id)
+            if (
+                provider.get("plan_digest") != plan_digest
+                or provider.get("capability")
+                != PluginCapability.CONSISTENCY_CHECK.value
+            ):
+                raise DatasetIntegrityError(
+                    "consistency materialization provider is not bound to its plan"
+                )
+        if tuple(dict(provider) for provider in providers) != expected_providers:
+            raise DatasetIntegrityError(
+                "consistency materialization providers do not match the exact plan"
+            )
+        provider_records = {
+            strict_canonical_json(provider): provider for provider in expected_providers
+        }
+        raw_consistency_diagnostics = dataset.get("consistency_diagnostics")
+        if (
+            type(raw_consistency_diagnostics) is list
+            and len(raw_consistency_diagnostics) > storage_limits.max_diagnostics
+        ):
+            raise DatasetIntegrityError(
+                "materialized consistency diagnostics exceed the durable limit"
+            )
+        diagnostics = tuple(
+            cls._mapping_list(
+                dataset,
+                "consistency_diagnostics",
+                construction_checkpoint=construction_checkpoint,
+            )
+        )
+        raw_generic_diagnostics = dataset.get("diagnostics")
+        if type(raw_generic_diagnostics) is not list:
+            raise DatasetIntegrityError("dataset diagnostics must be an array")
+        generic_suffix = (
+            raw_generic_diagnostics[-len(diagnostics) :] if diagnostics else []
+        )
+        if any(not isinstance(value, Mapping) for value in generic_suffix):
+            raise DatasetIntegrityError(
+                "generic diagnostics do not retain the consistency diagnostic suffix"
+            )
+        try:
+            diagnostics_match = not diagnostics or strict_canonical_json(
+                [dict(value) for value in generic_suffix]
+            ) == strict_canonical_json([dict(value) for value in diagnostics])
+        except (TypeError, ValueError) as error:
+            raise DatasetIntegrityError(
+                "generic diagnostics contain a non-canonical consistency suffix"
+            ) from error
+        if len(raw_generic_diagnostics) < len(diagnostics) or not diagnostics_match:
+            raise DatasetIntegrityError(
+                "generic diagnostics do not retain the consistency diagnostic suffix"
+            )
+        counts = {
+            field: _consistency_count(
+                envelope.get(field),
+                label=f"consistency materialization {field}",
+            )
+            for field in CONSISTENCY_MATERIALIZATION_COUNT_FIELDS
+        }
+        if counts["provider_count"] != len(providers):
+            raise DatasetIntegrityError(
+                "consistency materialization provider count does not match providers"
+            )
+        if counts["finding_count"] != len(findings):
+            raise DatasetIntegrityError(
+                "consistency materialization finding count does not match findings"
+            )
+        if counts["diagnostic_count"] != len(diagnostics):
+            raise DatasetIntegrityError(
+                "consistency materialization diagnostic count does not match diagnostics"
+            )
+        if (
+            counts["emitted_finding_count"]
+            != counts["finding_count"] + counts["duplicate_findings_discarded"]
+            or counts["emitted_diagnostic_count"]
+            != counts["diagnostic_count"] + counts["duplicate_diagnostics_discarded"]
+        ):
+            raise DatasetIntegrityError(
+                "consistency materialization emitted and duplicate counts disagree"
+            )
+        if (
+            counts["emitted_finding_count"] > storage_limits.max_findings
+            or counts["emitted_diagnostic_count"] > storage_limits.max_diagnostics
+            or counts["world_reads"] > storage_limits.max_world_reads
+        ):
+            raise DatasetIntegrityError(
+                "consistency materialization counts exceed durable limits"
+            )
+
+        finding_ids: set[str] = set()
+        aggregate_resource_count = [0]
+        aggregate_evidence_count = [0]
+        consistency_summary = {"pass": 0, "fail": 0, "unknown": 0}
+        previous_finding_id: str | None = None
+        for ordinal, finding in enumerate(findings):
+            if ordinal % 256 == 0 and construction_checkpoint is not None:
+                construction_checkpoint()
+            try:
+                _validate_materialized_consistency_finding(
+                    finding,
+                    artifact_ids=frozen_artifact_ids,
+                    limits=storage_limits,
+                    aggregate_resource_count=aggregate_resource_count,
+                    aggregate_evidence_count=aggregate_evidence_count,
+                )
+            except (ConsistencyMaterializationError, TypeError, ValueError) as error:
+                raise DatasetIntegrityError(
+                    "materialized consistency finding is not canonical"
+                ) from error
+            identifier = _verified_materialized_identity(
+                finding,
+                identity_field="finding_id",
+                label="materialized consistency finding",
+            )
+            if identifier in finding_ids:
+                raise DatasetIntegrityError(
+                    "materialized consistency findings contain a duplicate identifier"
+                )
+            finding_ids.add(identifier)
+            if previous_finding_id is not None and identifier <= previous_finding_id:
+                raise DatasetIntegrityError(
+                    "materialized consistency findings are not canonically ordered"
+                )
+            previous_finding_id = identifier
+            if finding.get("execution_plan_digest") != plan_digest:
+                raise DatasetIntegrityError(
+                    "materialized consistency finding plan digest does not match ingestion"
+                )
+            result = finding.get("result")
+            if result not in consistency_summary:
+                raise DatasetIntegrityError(
+                    "materialized consistency finding result is invalid"
+                )
+            consistency_summary[result] += 1
+            producer = finding.get("producer")
+            if (
+                not isinstance(producer, Mapping)
+                or strict_canonical_json(dict(producer)) not in provider_records
+            ):
+                raise DatasetIntegrityError(
+                    "materialized consistency finding producer is not plan-selected"
+                )
+
+        diagnostic_ids: set[str] = set()
+        previous_diagnostic_id: str | None = None
+        for diagnostic in diagnostics:
+            try:
+                _validate_materialized_consistency_diagnostic(
+                    diagnostic,
+                    artifact_ids=frozen_artifact_ids,
+                    limits=storage_limits,
+                    aggregate_evidence_count=aggregate_evidence_count,
+                )
+            except (ConsistencyMaterializationError, TypeError, ValueError) as error:
+                raise DatasetIntegrityError(
+                    "materialized consistency diagnostic is not canonical"
+                ) from error
+            identifier = _verified_materialized_identity(
+                diagnostic,
+                identity_field="diagnostic_id",
+                label="materialized consistency diagnostic",
+            )
+            if identifier in diagnostic_ids:
+                raise DatasetIntegrityError(
+                    "materialized consistency diagnostics contain a duplicate identifier"
+                )
+            diagnostic_ids.add(identifier)
+            if (
+                previous_diagnostic_id is not None
+                and identifier <= previous_diagnostic_id
+            ):
+                raise DatasetIntegrityError(
+                    "materialized consistency diagnostics are not canonically ordered"
+                )
+            previous_diagnostic_id = identifier
+            producer = diagnostic.get("producer")
+            if (
+                not isinstance(producer, Mapping)
+                or strict_canonical_json(dict(producer)) not in provider_records
+            ):
+                raise DatasetIntegrityError(
+                    "materialized consistency diagnostic producer is not plan-selected"
+                )
+
+        basis = envelope.get("basis")
+        basis_digest = envelope.get("basis_digest")
+        if status == "not_applicable":
+            if (
+                findings
+                or diagnostics
+                or providers
+                or any(counts.values())
+                or basis is not None
+                or basis_digest is not None
+            ):
+                raise DatasetIntegrityError(
+                    "not_applicable consistency materialization contains output"
+                )
+        else:
+            if not providers:
+                raise DatasetIntegrityError(
+                    "complete consistency materialization lacks a provider"
+                )
+            if not isinstance(basis, Mapping):
+                raise DatasetIntegrityError(
+                    "complete consistency materialization lacks a basis"
+                )
+            try:
+                canonical_basis = _validate_materialized_consistency_basis(
+                    basis,
+                    artifact_ids=frozen_artifact_ids,
+                    limits=storage_limits,
+                    aggregate_evidence_count=aggregate_evidence_count,
+                )
+            except (ConsistencyMaterializationError, TypeError, ValueError) as error:
+                raise DatasetIntegrityError(
+                    "consistency materialization basis is not canonical"
+                ) from error
+            expected_basis_digest = (
+                "sha256:"
+                + hashlib.sha256(
+                    strict_canonical_json(dict(basis)).encode("utf-8")
+                ).hexdigest()
+            )
+            if basis_digest != expected_basis_digest:
+                raise DatasetIntegrityError(
+                    "consistency materialization basis digest does not match its basis"
+                )
+            if any(
+                not isinstance(finding.get("basis"), Mapping)
+                or strict_canonical_json(dict(finding["basis"])) != canonical_basis
+                for finding in findings
+            ):
+                raise DatasetIntegrityError(
+                    "materialized consistency finding basis does not match its envelope"
+                )
+        summary = dataset.get("summary")
+        summary_consistency = (
+            summary.get("consistency") if isinstance(summary, Mapping) else None
+        )
+        if (
+            type(summary_consistency) is not dict
+            or set(summary_consistency) != set(consistency_summary)
+            or any(
+                type(value) is not int or value < 0
+                for value in summary_consistency.values()
+            )
+            or summary_consistency != consistency_summary
+        ):
+            raise DatasetIntegrityError(
+                "dataset consistency summary does not match materialized findings"
+            )
+        published_projection = {
+            "_ingestion": {
+                "mode": _CONSISTENCY_MATERIALIZATION_INGESTION_MODE,
+                "plugin_execution_plan_digest": plan_digest,
+                "consistency_materialization_status": status,
+            },
+            "inventory": {"mode": _CONSISTENCY_MATERIALIZATION_INGESTION_MODE},
+            "findings": [dict(value) for value in findings],
+            "consistency_diagnostics": [dict(value) for value in diagnostics],
+            "consistency_materialization": dict(envelope),
+            "diagnostics": [dict(value) for value in diagnostics],
+            "summary": {"consistency": summary_consistency},
+        }
+        serialized_bytes = 0
+        encoder = json.JSONEncoder(
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        for chunk in encoder.iterencode(published_projection):
+            serialized_bytes += len(chunk.encode("utf-8"))
+            if serialized_bytes > storage_limits.max_serialized_bytes:
+                raise DatasetIntegrityError(
+                    "consistency materialization exceeds the durable byte limit"
+                )
+            if construction_checkpoint is not None:
+                construction_checkpoint()
+        return findings, deepcopy(dict(envelope))
 
     @classmethod
     def _index_dataset(
@@ -2657,6 +3233,13 @@ class ControlPlane:
                 if ordinal % 256 == 0 and construction_checkpoint is not None:
                     construction_checkpoint()
                 relationships.add(relationship_subject_id(relationship))
+        findings, consistency_materialization = cls._consistency_index(
+            dataset,
+            ingestion,
+            plan_digest=dataset_plan_digest,
+            execution_plan=execution_plan,
+            construction_checkpoint=construction_checkpoint,
+        )
         if construction_checkpoint is not None:
             construction_checkpoint()
         return _DatasetIndex(
@@ -2664,6 +3247,8 @@ class ControlPlane:
             source_records=source_records,
             resources=frozenset(resources),
             relationships=frozenset(relationships),
+            findings=findings,
+            consistency_materialization=consistency_materialization,
             timeline_start_ns=timeline_start,
             timeline_end_ns=timeline_end,
         )
@@ -2791,6 +3376,71 @@ class ControlPlane:
         """Load and verify one catalog revision, returning a detached value."""
 
         return deepcopy(dict(self._load_revision(scope, revision_id).dataset))
+
+    def list_revision_consistency_findings(
+        self,
+        scope: ReviewScope,
+        revision_id: str,
+        *,
+        limit: int = 1_000,
+        offset: int = 0,
+    ) -> RevisionConsistencyFindingsPage:
+        """Return one detached page from the revision's verified index."""
+
+        if type(limit) is not int or not 1 <= limit <= 5_000:
+            raise ValueError("limit must be between 1 and 5000")
+        if type(offset) is not int or not 0 <= offset <= MAX_JSON_SAFE_INTEGER:
+            raise ValueError(f"offset must be between 0 and {MAX_JSON_SAFE_INTEGER}")
+        loaded = self._load_revision(scope, revision_id)
+        total_count = len(loaded.index.findings)
+        page_end = min(offset + limit, total_count)
+        items = tuple(
+            deepcopy(dict(item)) for item in loaded.index.findings[offset:page_end]
+        )
+        next_offset = page_end if page_end < total_count else None
+        return RevisionConsistencyFindingsPage(
+            revision_id=loaded.descriptor.revision_id,
+            materialization=deepcopy(dict(loaded.index.consistency_materialization)),
+            items=items,
+            offset=offset,
+            limit=limit,
+            total_count=total_count,
+            next_offset=next_offset,
+        )
+
+    def list_revision_consistency_findings_for_client(
+        self,
+        scope: ReviewScope,
+        revision_id: str,
+        *,
+        limit: int = 1_000,
+        offset: int = 0,
+    ) -> RevisionConsistencyFindingsPage:
+        """Return one verified page projected without copying the full dataset."""
+
+        if type(limit) is not int or not 1 <= limit <= 5_000:
+            raise ValueError("limit must be between 1 and 5000")
+        if type(offset) is not int or not 0 <= offset <= MAX_JSON_SAFE_INTEGER:
+            raise ValueError(f"offset must be between 0 and {MAX_JSON_SAFE_INTEGER}")
+        loaded = self._load_revision(scope, revision_id)
+        total_count = len(loaded.index.findings)
+        page_end = min(offset + limit, total_count)
+        projected = project_consistency_findings_for_client(
+            loaded.dataset,
+            loaded.index.findings[offset:page_end],
+        )
+        next_offset = page_end if page_end < total_count else None
+        return RevisionConsistencyFindingsPage(
+            revision_id=loaded.descriptor.revision_id,
+            materialization=project_consistency_materialization_for_client(
+                loaded.index.consistency_materialization,
+            ),
+            items=tuple(projected),
+            offset=offset,
+            limit=limit,
+            total_count=total_count,
+            next_offset=next_offset,
+        )
 
     def capability_router_for_revision(
         self,
@@ -3698,13 +4348,43 @@ class ControlPlane:
         )
 
 
+def validate_revision_consistency_dataset(
+    dataset: Mapping[str, Any],
+    *,
+    execution_plan: PluginExecutionPlan | None,
+    construction_checkpoint: Callable[[], None] | None = None,
+) -> tuple[tuple[Mapping[str, Any], ...], Mapping[str, Any]]:
+    """Validate and detach one revision's durable consistency contract.
+
+    Runtime and durable control-plane routes share this exact validator so a
+    malformed materialization envelope can never be reinterpreted as legacy
+    output at one transport boundary.
+    """
+
+    if not isinstance(dataset, Mapping):
+        raise DatasetIntegrityError("dataset must be an object")
+    ingestion = dataset.get("_ingestion")
+    if not isinstance(ingestion, Mapping):
+        raise DatasetIntegrityError("dataset lacks the core ingestion envelope")
+    plan_digest = ingestion.get("plugin_execution_plan_digest")
+    return ControlPlane._consistency_index(
+        dataset,
+        ingestion,
+        plan_digest=plan_digest,
+        execution_plan=execution_plan,
+        construction_checkpoint=construction_checkpoint,
+    )
+
+
 __all__ = [
     "ControlPlane",
     "ControlPlaneError",
     "ControlPlaneLimits",
     "ControlPlaneScopeError",
     "DatasetIntegrityError",
+    "RevisionConsistencyFindingsPage",
     "SessionCatalogPublisher",
     "SubjectResolutionError",
     "relationship_subject_id",
+    "validate_revision_consistency_dataset",
 ]

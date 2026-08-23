@@ -21,8 +21,8 @@ from .capability_router import (
 from .ingestion_pipeline import (
     PluginRegistry,
     RegisteredPlugin,
-    _require_no_inline_only_plugin_compatibility,
-    _registered_plugin_uses_inline_only_compatibility,
+    _registered_plugin_is_process_capable,
+    _registered_plugin_is_trusted_inline_capable,
     _registered_plugins_require_inline_execution,
 )
 from .plugin_composition import PluginCompositionPolicy
@@ -66,15 +66,11 @@ def _execution_coordinate(
     if type(record) is not RegisteredPlugin:
         raise TypeError("deployment registries must contain registered plug-ins")
     if (
-        (
-            not record.verify_package_bytes
-            and not (
-                allow_inline_only
-                and _registered_plugin_uses_inline_only_compatibility(record)
-            )
+        not _registered_plugin_is_process_capable(record)
+        and not (
+            allow_inline_only and _registered_plugin_is_trusted_inline_capable(record)
         )
-        or record._registered_execution_identity_snapshot is None
-    ):
+    ) or record._registered_execution_identity_snapshot is None:
         raise ValueError("deployment plug-ins require executable identities")
     try:
         PluginRegistry.revalidate_registered_identity(record)
@@ -82,9 +78,7 @@ def _execution_coordinate(
     except PROCESS_CONTROL_EXCEPTIONS:
         raise
     except BaseException:  # noqa: BLE001 - plug-in properties are extension code.
-        raise ValueError(
-            "deployment plug-in executable identity is invalid"
-        ) from None
+        raise ValueError("deployment plug-in executable identity is invalid") from None
     if _DIGEST.fullmatch(identity) is None:
         raise ValueError("deployment plug-in execution identity is invalid")
     return identity
@@ -149,9 +143,7 @@ class PluginCompositionDeployment:
             raise TypeError("allow_inline_only must be an exact boolean")
 
         authority_primary_registry = self.primary_registry._sealed_snapshot()
-        authority_capability_providers = (
-            self.capability_providers._sealed_snapshot()
-        )
+        authority_capability_providers = self.capability_providers._sealed_snapshot()
         object.__setattr__(
             self,
             "primary_registry",
@@ -176,13 +168,10 @@ class PluginCompositionDeployment:
             "requires_inline_execution",
             requires_inline_execution,
         )
-        if not self.allow_inline_only:
-            _require_no_inline_only_plugin_compatibility(
-                all_records,
-                boundary=(
-                    "plug-in composition deployment requires PROCESS-capable "
-                    "plug-ins unless allow_inline_only=True"
-                ),
+        if requires_inline_execution and not self.allow_inline_only:
+            raise ValueError(
+                "plug-in composition deployment has INLINE-only registrations; "
+                "PROCESS-capable plug-ins are required unless allow_inline_only=True"
             )
 
         primary_by_coordinate: dict[tuple[str, str], RegisteredPlugin] = {}

@@ -120,9 +120,7 @@ class PluginCompositionTests(unittest.TestCase):
         payload: dict[str, object],
     ) -> None:
         expected_error = (
-            IngestionPipelineError
-            if mode == "inline"
-            else PluginExecutionProcessError
+            IngestionPipelineError if mode == "inline" else PluginExecutionProcessError
         )
         with self.assertRaises(expected_error) as caught:
             if mode == "inline":
@@ -131,9 +129,7 @@ class PluginCompositionTests(unittest.TestCase):
                     result,
                     capability_providers=providers,
                     composition_policy=policy,
-                    execution_plan_authority=(
-                        PluginExecutionPlanAuthority.PROCESS
-                    ),
+                    execution_plan_authority=(PluginExecutionPlanAuthority.PROCESS),
                 )
             else:
                 DurableIngestionPipeline._child_ingestion_metadata(
@@ -499,14 +495,20 @@ class PluginCompositionTests(unittest.TestCase):
             result,
             capability_providers=providers,
             composition_policy=policy,
-            execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
+            allow_inline_only=True,
+            execution_plan_authority=(
+                PluginExecutionPlanAuthority.TRUSTED_INLINE_ATTESTED
+            ),
         )
         second = _execution_plan_for_result(
             primary,
             result,
             capability_providers=providers,
             composition_policy=policy,
-            execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
+            allow_inline_only=True,
+            execution_plan_authority=(
+                PluginExecutionPlanAuthority.TRUSTED_INLINE_ATTESTED
+            ),
         )
         self.assertEqual(first, second)
         self.assertEqual(
@@ -583,8 +585,9 @@ class PluginCompositionTests(unittest.TestCase):
                 },
                 {"plugin_execution_plan_digest": "sha256:" + "0" * 64},
             ):
-                with self.subTest(forged=forged), self.assertRaises(
-                    IngestionPipelineError
+                with (
+                    self.subTest(forged=forged),
+                    self.assertRaises(IngestionPipelineError),
                 ):
                     attest(**forged)
 
@@ -651,9 +654,7 @@ class PluginCompositionTests(unittest.TestCase):
             capability_providers=providers,
             composition_policy=policy,
             allow_inline_only=False,
-            expected_execution_plan_authority=(
-                PluginExecutionPlanAuthority.PROCESS
-            ),
+            expected_execution_plan_authority=(PluginExecutionPlanAuthority.PROCESS),
         )
         self.assertEqual(accepted.execution_plan, valid_plan)
 
@@ -738,7 +739,9 @@ class PluginCompositionTests(unittest.TestCase):
                     ),
                 )
             )
-        self.assertEqual(accepted_without_provider_invocation.execution_plan, valid_plan)
+        self.assertEqual(
+            accepted_without_provider_invocation.execution_plan, valid_plan
+        )
         describe.assert_not_called()
 
         with patch.object(
@@ -817,9 +820,7 @@ class PluginCompositionTests(unittest.TestCase):
                         result,
                         capability_providers=providers,
                         composition_policy=policy,
-                        execution_plan_authority=(
-                            PluginExecutionPlanAuthority.PROCESS
-                        ),
+                        execution_plan_authority=(PluginExecutionPlanAuthority.PROCESS),
                     )
                     payload = {
                         "revision_id": result.revision_id,
@@ -833,6 +834,7 @@ class PluginCompositionTests(unittest.TestCase):
                     }
 
                     if drift == "executable":
+
                         def drifted_fingerprint(
                             value: object,
                             expected: object = auxiliary_plugin,
@@ -1135,7 +1137,11 @@ class PluginCompositionTests(unittest.TestCase):
         freezers = (
             (
                 "inline",
-                lambda: _auxiliary_execution_pin(providers, selections[0]),
+                lambda: _auxiliary_execution_pin(
+                    providers,
+                    selections[0],
+                    process_authority=True,
+                ),
             ),
             (
                 "process",
@@ -1206,16 +1212,26 @@ class PluginCompositionTests(unittest.TestCase):
             roles=("private_analysis_evidence",),
         )
         freezers = (
-            ("inline", lambda: _auxiliary_execution_pin(providers, selection)),
+            (
+                "inline",
+                lambda: _auxiliary_execution_pin(
+                    providers,
+                    selection,
+                    process_authority=False,
+                ),
+            ),
             (
                 "process",
                 lambda: _frozen_auxiliary_execution_pins(providers, (selection,)),
             ),
         )
         for mode, freeze in freezers:
-            with self.subTest(mode=mode), self.assertRaisesRegex(
-                IngestionPipelineError,
-                "identity or schema could not be frozen",
+            with (
+                self.subTest(mode=mode),
+                self.assertRaisesRegex(
+                    IngestionPipelineError,
+                    "identity or schema could not be frozen",
+                ),
             ):
                 freeze()
 
@@ -1226,6 +1242,7 @@ class PluginCompositionTests(unittest.TestCase):
             trusted_pin = _auxiliary_execution_pin(
                 providers,
                 selection,
+                process_authority=False,
                 allow_inline_only=True,
             )
         self.assertEqual(trusted_pin.instance_id, auxiliary.instance_id)
@@ -1242,9 +1259,12 @@ class PluginCompositionTests(unittest.TestCase):
                     ),
                 )
             self.assertFalse(state_dir.exists())
-        with tempfile.TemporaryDirectory() as directory, patch(
-            "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
-            return_value=package_identity,
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch(
+                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                return_value=package_identity,
+            ),
         ):
             trusted_pipeline = DurableIngestionPipeline(
                 Path(directory),
@@ -1295,15 +1315,12 @@ class PluginCompositionTests(unittest.TestCase):
                     ),
                 ),
             ):
-                auxiliary = PluginRegistry(
-                    allow_manifest_identity=True
-                ).register(
+                auxiliary = PluginRegistry(allow_manifest_identity=True).register(
                     auxiliary_plugin,
                     instance_id="late-inline-only-auxiliary",
                 )
             with patch(
-                "router_dump_analyzer.ingestion_pipeline."
-                "executable_plugin_fingerprint",
+                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
                 return_value=package_identity,
             ):
                 providers.add_registered(auxiliary)

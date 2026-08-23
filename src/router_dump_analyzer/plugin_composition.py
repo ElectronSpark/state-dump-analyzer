@@ -19,6 +19,7 @@ from .public_text import contains_unsafe_identifier_text, has_visible_identity_a
 PLUGIN_COMPOSITION_POLICY_VERSION: Final = (
     "router_dump_analyzer.plugin_composition_policy.v1"
 )
+REVISION_CONSISTENCY_ROLE: Final = "revision_consistency"
 MAX_PLUGIN_COMPOSITION_RULES: Final = 256
 MAX_PLUGIN_COMPOSITION_AUXILIARIES: Final = 127
 
@@ -257,6 +258,7 @@ __all__ = [
     "MAX_PLUGIN_COMPOSITION_AUXILIARIES",
     "MAX_PLUGIN_COMPOSITION_RULES",
     "PLUGIN_COMPOSITION_POLICY_VERSION",
+    "REVISION_CONSISTENCY_ROLE",
     "PluginCompositionPolicy",
     "PluginCompositionRule",
     "PluginParticipationSelection",

@@ -8,13 +8,13 @@ from .private_analysis_promotion import PrivateAnalysisProposalReviewService, Sq
 from .private_analysis_run_store import SqlitePrivateAnalysisRunStore
 from .private_analysis_service import PrivateAnalysisDeploymentCeilings, PrivateAnalysisService
 from .session_store import AnalysisRevisionDescriptor, CatalogRetentionInventory, CatalogRetentionPolicy, CatalogRetentionResult, SqliteSessionStore, WorkspaceDescriptor
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Self
 
-__all__ = ['ControlPlaneError', 'ControlPlaneScopeError', 'DatasetIntegrityError', 'SubjectResolutionError', 'ControlPlaneLimits', 'relationship_subject_id', 'SessionCatalogPublisher', 'ControlPlane']
+__all__ = ['ControlPlaneError', 'ControlPlaneScopeError', 'DatasetIntegrityError', 'SubjectResolutionError', 'ControlPlaneLimits', 'RevisionConsistencyFindingsPage', 'relationship_subject_id', 'SessionCatalogPublisher', 'ControlPlane', 'validate_revision_consistency_dataset']
 
 class ControlPlaneError(RuntimeError): ...
 class ControlPlaneScopeError(ValueError, ControlPlaneError): ...
@@ -39,11 +39,24 @@ class ControlPlaneLimits:
     def __post_init__(self) -> None: ...
 
 @dataclass(frozen=True, slots=True)
+class RevisionConsistencyFindingsPage:
+    revision_id: str
+    materialization: Mapping[str, Any]
+    items: tuple[Mapping[str, Any], ...]
+    offset: int
+    limit: int
+    total_count: int
+    next_offset: int | None
+    def __post_init__(self) -> None: ...
+
+@dataclass(frozen=True, slots=True)
 class _DatasetIndex:
     events: Mapping[str, Mapping[str, Any]]
     source_records: Mapping[str, Mapping[str, Any]]
     resources: frozenset[str]
     relationships: frozenset[str]
+    findings: tuple[Mapping[str, Any], ...]
+    consistency_materialization: Mapping[str, Any]
     timeline_start_ns: int
     timeline_end_ns: int
 
@@ -101,6 +114,8 @@ class ControlPlane:
     def retention_inventory(self, scope: ReviewScope, *, catalog_policy: CatalogRetentionPolicy | None = None, review_policy: ReviewRetentionPolicy | None = None, now_ns: int | None = None) -> ControlPlaneRetentionResult: ...
     def run_retention(self, scope: ReviewScope, *, catalog_policy: CatalogRetentionPolicy, review_policy: ReviewRetentionPolicy, actor: str, operation_id: str, now_ns: int | None = None) -> ControlPlaneRetentionResult: ...
     def load_revision_dataset(self, scope: ReviewScope, revision_id: str) -> dict[str, Any]: ...
+    def list_revision_consistency_findings(self, scope: ReviewScope, revision_id: str, *, limit: int = 1000, offset: int = 0) -> RevisionConsistencyFindingsPage: ...
+    def list_revision_consistency_findings_for_client(self, scope: ReviewScope, revision_id: str, *, limit: int = 1000, offset: int = 0) -> RevisionConsistencyFindingsPage: ...
     def capability_router_for_revision(self, scope: ReviewScope, revision_id: str, *, member_id: str | None = None) -> PlanBoundCapabilityRouter: ...
     def capability_router_for_revision_set(self, scope: ReviewScope, *, revision_ids: Iterable[str] = (), session_id: str | None = None, snapshot_id: str | None = None) -> RevisionSetCapabilityRouter: ...
     def resolve_catalog_revision(self, scope: ReviewScope, *, fixture_id: str, source_revision_id: str | None = None) -> AnalysisRevisionDescriptor: ...
@@ -114,3 +129,5 @@ class ControlPlane:
     def update_correlation(self, scope: ReviewScope, correlation_id: str, *, expected_version: int, actor: str, subjects: Iterable[ReviewSubject] | None = None, edges: Iterable[ManualCorrelationEdge] | None = None, rationale: str | None = None, tags: Iterable[str] | None = None, confidence: float | None = None, replace_confidence: bool = False) -> ManualEventCorrelation: ...
     def delete_correlation(self, scope: ReviewScope, correlation_id: str, *, expected_version: int, actor: str) -> ManualEventCorrelation: ...
     def build_report(self, scope: ReviewScope, *, revision_ids: Iterable[str] = (), session_id: str | None = None, snapshot_id: str | None = None) -> CorrelationReport: ...
+
+def validate_revision_consistency_dataset(dataset: Mapping[str, Any], *, execution_plan: PluginExecutionPlan | None, construction_checkpoint: Callable[[], None] | None = None) -> tuple[tuple[Mapping[str, Any], ...], Mapping[str, Any]]: ...

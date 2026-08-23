@@ -26,6 +26,8 @@ from tests.test_ingestion import ParseOnlyPlugin
 
 _CONFIG_A = "sha256:" + "a" * 64
 _CONFIG_B = "sha256:" + "b" * 64
+_DEPLOYMENT_PRIMARY_PLUGIN = ParseOnlyPlugin()
+_DEPLOYMENT_ALTERNATE_PLUGIN = ParseOnlyPlugin()
 
 
 class _HostileFailure(BaseException):
@@ -39,13 +41,23 @@ def _registries() -> tuple[
     object,
 ]:
     primary_registry = PluginRegistry()
-    primary = LoadedPlugin(ParseOnlyPlugin()).register(
+    primary = LoadedPlugin(
+        _DEPLOYMENT_PRIMARY_PLUGIN,
+        process_module_target=(
+            "tests.test_plugin_composition_deployment:_DEPLOYMENT_PRIMARY_PLUGIN"
+        ),
+    ).register(
         primary_registry,
         instance_id="platform-a.primary",
         configuration_digest=_CONFIG_A,
     )
     second_registry = PluginRegistry()
-    alternate = LoadedPlugin(ParseOnlyPlugin()).register(
+    alternate = LoadedPlugin(
+        _DEPLOYMENT_ALTERNATE_PLUGIN,
+        process_module_target=(
+            "tests.test_plugin_composition_deployment:_DEPLOYMENT_ALTERNATE_PLUGIN"
+        ),
+    ).register(
         second_registry,
         instance_id="platform-a.alternate",
         configuration_digest=_CONFIG_B,
@@ -106,9 +118,7 @@ class PluginCompositionDeploymentTests(unittest.TestCase):
         with patch(
             "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
             side_effect=lambda plugin: (
-                package_identity
-                if plugin is auxiliary.plugin
-                else primary.package_hash
+                package_identity if plugin is auxiliary.plugin else primary.package_hash
             ),
         ):
             providers = CapabilityProviderRegistry((primary, auxiliary))
@@ -139,9 +149,7 @@ class PluginCompositionDeploymentTests(unittest.TestCase):
         with patch(
             "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
             side_effect=lambda plugin: (
-                package_identity
-                if plugin is auxiliary.plugin
-                else primary.package_hash
+                package_identity if plugin is auxiliary.plugin else primary.package_hash
             ),
         ):
             trusted = PluginCompositionDeployment(
@@ -191,8 +199,9 @@ class PluginCompositionDeploymentTests(unittest.TestCase):
             primary,
         )
         for invalid in (1, "true", None):
-            with self.subTest(invalid=invalid), self.assertRaisesRegex(
-                TypeError, "exact boolean"
+            with (
+                self.subTest(invalid=invalid),
+                self.assertRaisesRegex(TypeError, "exact boolean"),
             ):
                 PluginCompositionDeployment(
                     registry,
@@ -246,8 +255,7 @@ class PluginCompositionDeploymentTests(unittest.TestCase):
         late_plugin = ParseOnlyPlugin()
         with (
             patch(
-                "router_dump_analyzer.ingestion_pipeline."
-                "executable_plugin_fingerprint",
+                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
                 return_value=package_identity,
             ),
             patch(
@@ -336,7 +344,12 @@ class PluginCompositionDeploymentTests(unittest.TestCase):
             )
 
         duplicate_registry = PluginRegistry()
-        duplicate = LoadedPlugin(ParseOnlyPlugin()).register(
+        duplicate = LoadedPlugin(
+            _DEPLOYMENT_PRIMARY_PLUGIN,
+            process_module_target=(
+                "tests.test_plugin_composition_deployment:_DEPLOYMENT_PRIMARY_PLUGIN"
+            ),
+        ).register(
             duplicate_registry,
             instance_id=primary.instance_id,
             configuration_digest=_CONFIG_A,

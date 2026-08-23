@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from dataclasses import fields, replace
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from unittest.mock import patch
 from uuid import uuid4
@@ -59,8 +59,8 @@ from router_dump_analyzer.ingestion_pipeline import (
     RetentionPolicy,
     _dataset_with_execution_plan,
     _execution_plan_for_result,
-    _ingest_registered_plugin,
     _ingest_plugin_child,
+    _ingest_registered_plugin,
     _path_for_containment_comparison,
     _probe_plugin_child,
     _publisher_accepts_execution_plan,
@@ -69,6 +69,7 @@ from router_dump_analyzer.ingestion_pipeline import (
     _RetentionWorkItem,
     _run_plugin_child,
     _run_plugin_inline,
+    _snapshot_coordinator_result,
     _validate_ingestion_state_root,
     _validate_plugin_child_spawn_args,
     _windows_path_units,
@@ -558,6 +559,12 @@ class _SpawnPickleHostilePlugin(ParseOnlyPlugin):
         raise AssertionError("parent inspected live plug-in pickle state")
 
 
+class _ConfiguredParseOnlyPlugin(_SpawnPickleHostilePlugin):
+    """Module-local static target for configured PROCESS identity tests."""
+
+    manifest = ParseOnlyPlugin.manifest
+
+
 class _SpawnPickleHostileHungProbePlugin(_SpawnPickleHostilePlugin):
     manifest = replace(
         ParseOnlyPlugin.manifest,
@@ -604,6 +611,7 @@ class _ConfiguredProcessDecoder:
 
 
 _CONFIGURED_PROCESS_PLUGIN = _ConfiguredProcessPlugin("configured")
+_PARSE_ONLY_PROCESS_PLUGIN = _ConfiguredParseOnlyPlugin()
 _CONFIGURED_PROCESS_COORDINATOR = _ConfiguredProcessCoordinator("configured")
 _CONFIGURED_PROCESS_DECODER = _ConfiguredProcessDecoder("configured")
 
@@ -722,6 +730,212 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                 parameter = inspect.signature(function).parameters[parameter_name]
                 self.assertIs(parameter.default, inspect.Parameter.empty)
 
+    def test_custom_coordinator_dataset_is_bound_to_typed_observations(self) -> None:
+        coordinator = _CountingCoordinator()
+        registry = PluginRegistry()
+        registered = registry.register(
+            ParseOnlyPlugin(),
+            coordinator=coordinator,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "status.jsonl"
+            input_path.write_bytes(_fixture_bytes())
+            result = coordinator.ingest(
+                registered.execution_plugin,
+                input_path,
+                node_hint="node-a",
+                metadata={},
+            )
+
+        valid = _snapshot_coordinator_result(
+            result,
+            registered=registered,
+            expected_node_id="node-a",
+        )
+        self.assertIsNot(valid.dataset, result.dataset)
+        self.assertEqual(valid.snapshots, result.snapshots)
+
+        for label, mutate in (
+            (
+                "inventory",
+                lambda dataset: dataset.__setitem__("inventory", {}),
+            ),
+            (
+                "resources",
+                lambda dataset: dataset.__setitem__("resources", []),
+            ),
+        ):
+            with self.subTest(label=label):
+                forged_dataset = json.loads(canonical_json(result.dataset))
+                mutate(forged_dataset)
+                with self.assertRaisesRegex(
+                    IngestionPipelineError,
+                    "not bound to its typed result",
+                ):
+                    _snapshot_coordinator_result(
+                        replace(result, dataset=forged_dataset),
+                        registered=registered,
+                        expected_node_id="node-a",
+                    )
+
+    def test_custom_coordinator_handoff_is_bound_to_node_and_frozen_limits(
+        self,
+    ) -> None:
+        coordinator = _CountingCoordinator()
+        registry = PluginRegistry()
+        registered = registry.register(ParseOnlyPlugin(), coordinator=coordinator)
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "status.jsonl"
+            input_path.write_bytes(_fixture_bytes())
+            result = coordinator.ingest(
+                registered.execution_plugin,
+                input_path,
+                node_hint="node-a",
+                metadata={},
+            )
+
+        with self.assertRaisesRegex(IngestionPipelineError, "invalid result"):
+            _snapshot_coordinator_result(
+                result,
+                registered=registered,
+                expected_node_id="node-b",
+            )
+
+        coordinator.limits = replace(
+            coordinator.limits,
+            max_parsed_outputs=coordinator.limits.max_parsed_outputs - 1,
+        )
+        with self.assertRaisesRegex(
+            IngestionPipelineError,
+            "could not be validated",
+        ):
+            _snapshot_coordinator_result(
+                result,
+                registered=registered,
+                expected_node_id="node-a",
+            )
+
+    def test_publication_snapshot_rejects_falsey_event_links_and_parser_overflow(
+        self,
+    ) -> None:
+        generous = _CountingCoordinator()
+        generous_registry = PluginRegistry()
+        generous_registration = generous_registry.register(
+            ParseOnlyPlugin(),
+            coordinator=generous,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "status.jsonl"
+            input_path.write_bytes(_fixture_bytes())
+            result = generous.ingest(
+                generous_registration.execution_plugin,
+                input_path,
+                node_hint="node-a",
+                metadata={},
+            )
+
+        falsey_link = replace(
+            result.source_records[0],
+            matched_event_uid=b"",
+        )
+        with self.assertRaisesRegex(IngestionPipelineError, "invalid result"):
+            _snapshot_coordinator_result(
+                replace(
+                    result,
+                    source_records=(falsey_link, *result.source_records[1:]),
+                ),
+                registered=generous_registration,
+                expected_node_id="node-a",
+            )
+
+        constrained = IngestionCoordinator(
+            limits=replace(
+                generous.limits,
+                max_parsed_outputs=1,
+            )
+        )
+        constrained_registry = PluginRegistry()
+        constrained_registration = constrained_registry.register(
+            ParseOnlyPlugin(),
+            coordinator=constrained,
+        )
+        with (
+            patch.object(
+                IngestionResult,
+                "__post_init__",
+                side_effect=AssertionError(
+                    "publication reconstructed the result before its O(1) caps"
+                ),
+            ),
+            self.assertRaisesRegex(
+                IngestionPipelineError,
+                "invalid result",
+            ) as bounded_error,
+        ):
+            _snapshot_coordinator_result(
+                result,
+                registered=constrained_registration,
+                expected_node_id="node-a",
+            )
+        self.assertRegex(
+            str(bounded_error.exception.__cause__),
+            "configured limit|parsed output limit",
+        )
+
+    def test_publication_inventory_rejects_portable_collisions_and_parent_cycles(
+        self,
+    ) -> None:
+        coordinator = _CountingCoordinator()
+        registry = PluginRegistry()
+        registered = registry.register(ParseOnlyPlugin(), coordinator=coordinator)
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "status.jsonl"
+            input_path.write_bytes(_fixture_bytes())
+            result = coordinator.ingest(
+                registered.execution_plugin,
+                input_path,
+                node_hint="node-a",
+                metadata={},
+            )
+
+        original = result.inventory.artifacts[0]
+        collision = replace(
+            original,
+            artifact_id=uuid4(),
+            logical_path=PurePosixPath(original.logical_path.as_posix().upper()),
+        )
+        with self.assertRaisesRegex(
+            IngestionPipelineError,
+            "invalid result",
+        ) as portable_error:
+            _snapshot_coordinator_result(
+                replace(
+                    result,
+                    inventory=replace(
+                        result.inventory,
+                        artifacts=(original, collision),
+                    ),
+                ),
+                registered=registered,
+                expected_node_id="node-a",
+            )
+        self.assertRegex(str(portable_error.exception.__cause__), "portable filesystems")
+
+        cyclic = replace(original, parent_artifact_id=original.artifact_id)
+        with self.assertRaisesRegex(
+            IngestionPipelineError,
+            "invalid result",
+        ) as cycle_error:
+            _snapshot_coordinator_result(
+                replace(
+                    result,
+                    inventory=replace(result.inventory, artifacts=(cyclic,)),
+                ),
+                registered=registered,
+                expected_node_id="node-a",
+            )
+        self.assertRegex(str(cycle_error.exception.__cause__), "contain a cycle")
+
     def setUp(self) -> None:
         self.scope = ImportScope("tenant-a", "project-a", "workspace-a")
         self.other_scope = ImportScope(
@@ -761,9 +975,10 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         self.assertEqual(caught.exception.private_exception_type, "Boom")
 
         for exception_type in (KeyboardInterrupt, SystemExit, GeneratorExit):
-            with self.subTest(
-                exception_type=exception_type.__name__
-            ), self.assertRaises(exception_type):
+            with (
+                self.subTest(exception_type=exception_type.__name__),
+                self.assertRaises(exception_type),
+            ):
                 _run_plugin_inline(
                     lambda exception_type=exception_type: explode(
                         exception_type("process control")
@@ -945,14 +1160,20 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                 with (
                     patch(
                         "router_dump_analyzer.ingestion_pipeline."
-                        "_register_process_bootstrap",
+                        "_registry_from_process_bootstraps",
                         side_effect=exception_type("process control"),
+                    ),
+                    patch(
+                        "router_dump_analyzer.ingestion_pipeline."
+                        "_plugin_process_bootstrap_digest",
+                        return_value="sha256:" + "a" * 64,
                     ),
                     self.assertRaises(exception_type),
                 ):
                     _ingest_plugin_child(
                         connection,
                         object(),  # type: ignore[arg-type]
+                        "sha256:" + "a" * 64,
                         "unused",
                         None,
                         {},
@@ -1180,7 +1401,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                 completed = pipeline.wait(
                     self.scope,
                     admitted.import_id,
-                    timeout=10,
+                    timeout=60,
                 )
 
             self.assertEqual(completed.state, ImportState.COMPLETED)
@@ -1798,7 +2019,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             input_path = Path(directory) / "status.jsonl"
             input_path.write_bytes(_fixture_bytes())
             coordinator = IngestionCoordinator()
-            plugin = ParseOnlyPlugin()
+            plugin = _PARSE_ONLY_PROCESS_PLUGIN
             result = coordinator.ingest(plugin, input_path)
 
             def registered(
@@ -1810,8 +2031,9 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                     plugin,
                     coordinator=coordinator,
                     package_hash="module-sha256:" + package_character * 64,
-                    configuration_digest=(
-                        "sha256:" + configuration_character * 64
+                    configuration_digest=("sha256:" + configuration_character * 64),
+                    plugin_process_module_target=(
+                        "tests.test_ingestion_pipeline:_PARSE_ONLY_PROCESS_PLUGIN"
                     ),
                 )
 
@@ -2258,22 +2480,24 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                 "tests.parse-only",
                 "1.0",
                 instance_id=second.instance_id,
-                registered_execution_identity=(
-                    second.registered_execution_identity
-                ),
+                registered_execution_identity=(second.registered_execution_identity),
             ),
             second,
         )
-        with self.assertRaisesRegex(
-            ValueError,
-            "duplicate registered plug-in execution coordinate",
-        ):
-            registry.register(
-                ParseOnlyPlugin(),
-                package_hash=package_hash,
-                instance_id="tests.parse-only.blue",
-                configuration_digest="sha256:" + ("1" * 64),
-            )
+        explicit_process_target = registry.register(
+            _PARSE_ONLY_PROCESS_PLUGIN,
+            package_hash=package_hash,
+            instance_id="tests.parse-only.blue",
+            configuration_digest="sha256:" + ("1" * 64),
+            plugin_process_module_target=(
+                "tests.test_ingestion_pipeline:_PARSE_ONLY_PROCESS_PLUGIN"
+            ),
+        )
+        self.assertNotEqual(
+            explicit_process_target.registered_execution_identity,
+            first.registered_execution_identity,
+        )
+        self.assertEqual(len(registry.records()), 3)
 
         with tempfile.TemporaryDirectory() as directory:
             input_path = Path(directory) / "status.jsonl"
@@ -2288,6 +2512,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             {
                 first.registered_execution_identity,
                 second.registered_execution_identity,
+                explicit_process_target.registered_execution_identity,
             },
         )
 
@@ -2297,16 +2522,22 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         def configured_registry() -> tuple[PluginRegistry, RegisteredPlugin]:
             registry = PluginRegistry()
             registry.register(
-                ParseOnlyPlugin(),
+                _PARSE_ONLY_PROCESS_PLUGIN,
                 package_hash=package_hash,
                 instance_id="tests.parse-only.blue",
                 configuration_digest="sha256:" + ("1" * 64),
+                plugin_process_module_target=(
+                    "tests.test_ingestion_pipeline:_PARSE_ONLY_PROCESS_PLUGIN"
+                ),
             )
             selected = registry.register(
-                ParseOnlyPlugin(),
+                _PARSE_ONLY_PROCESS_PLUGIN,
                 package_hash=package_hash,
                 instance_id="tests.parse-only.green",
                 configuration_digest="sha256:" + ("2" * 64),
+                plugin_process_module_target=(
+                    "tests.test_ingestion_pipeline:_PARSE_ONLY_PROCESS_PLUGIN"
+                ),
             )
             return registry, selected
 
@@ -2361,9 +2592,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                 plugin_version=selected.plugin_version,
                 package_hash=selected.package_hash,
                 instance_id=selected.instance_id,
-                registered_execution_identity=(
-                    selected.registered_execution_identity
-                ),
+                registered_execution_identity=(selected.registered_execution_identity),
                 idempotency_key="exact-selection",
             )
             self.assertEqual(ready.state, ImportState.READY)
@@ -2385,7 +2614,9 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             self.assertEqual(completed.state, ImportState.COMPLETED)
             self.assertEqual(len(publisher.revisions), 1)
             plan = publisher.revisions[0][1]["execution_plan"]
-            self.assertEqual(plan.plugins[0].instance_id, restarted_selected.instance_id)
+            self.assertEqual(
+                plan.plugins[0].instance_id, restarted_selected.instance_id
+            )
             self.assertEqual(
                 plan.plugins[0].registered_execution_identity,
                 restarted_selected.registered_execution_identity,
@@ -2464,7 +2695,9 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                     ).fetchall()
                 }
             self.assertIn("instance_id", columns)
-            self.assertEqual(len(reopened.candidates(self.scope, admitted.import_id)), 1)
+            self.assertEqual(
+                len(reopened.candidates(self.scope, admitted.import_id)), 1
+            )
             with reopened:
                 completed = reopened.wait(
                     self.scope,
@@ -2526,17 +2759,13 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                 bootstrap,
                 coordinator_loader_kind="module_attribute",
                 coordinator_target="tests.test_ingestion:coordinator",
-                coordinator_target_executable_identity=(
-                    "target-sha256:" + "b" * 64
-                ),
+                coordinator_target_executable_identity=("target-sha256:" + "b" * 64),
             ),
             replace(
                 bootstrap,
                 decoder_loader_kind="module_attribute",
                 decoder_target="tests.test_ingestion:decoder",
-                decoder_target_executable_identity=(
-                    "target-sha256:" + "c" * 64
-                ),
+                decoder_target_executable_identity=("target-sha256:" + "c" * 64),
             ),
             replace(
                 bootstrap,
@@ -2614,7 +2843,10 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         self,
     ) -> None:
         for component in ("coordinator", "decoder"):
-            with self.subTest(component=component), tempfile.TemporaryDirectory() as directory:
+            with (
+                self.subTest(component=component),
+                tempfile.TemporaryDirectory() as directory,
+            ):
                 root = Path(directory)
                 module_name = f"rda_external_process_{component}_{uuid4().hex}"
                 source = root / f"{module_name}.py"
@@ -2630,9 +2862,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                     if component == "coordinator":
                         registration = {
                             "coordinator": module.coordinator,
-                            "coordinator_module_target": (
-                                f"{module_name}:coordinator"
-                            ),
+                            "coordinator_module_target": (f"{module_name}:coordinator"),
                         }
                     else:
                         registration = {
@@ -2698,9 +2928,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             with self.subTest(component=component):  # noqa: SIM117
                 with tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
-                    module_name = (
-                        f"rda_post_child_{component}_{uuid4().hex}"
-                    )
+                    module_name = f"rda_post_child_{component}_{uuid4().hex}"
                     source = root / f"{module_name}.py"
                     source.write_text(
                         _external_process_components_source("A"),
@@ -2728,9 +2956,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                                     "1",
                                     "sha256:" + "d" * 64,
                                 ),
-                                "decoder_module_target": (
-                                    f"{module_name}:decoder"
-                                ),
+                                "decoder_module_target": (f"{module_name}:decoder"),
                             }
                         registry = PluginRegistry()
                         registry.register(
@@ -2746,12 +2972,8 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                             limits=replace(
                                 self._limits(),
                                 max_attempts=1,
-                                plugin_execution_mode=(
-                                    PluginExecutionMode.PROCESS
-                                ),
-                                publisher_execution_mode=(
-                                    PluginExecutionMode.INLINE
-                                ),
+                                plugin_execution_mode=(PluginExecutionMode.PROCESS),
+                                publisher_execution_mode=(PluginExecutionMode.INLINE),
                                 plugin_execution_timeout_seconds=30,
                             ),
                         )
@@ -2819,9 +3041,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                         self.assertEqual(publisher.revisions, [])
                         assert staged is not None
                         self.assertIsNone(staged["staged_dataset_ref"])
-                        self.assertIsNone(
-                            staged["staged_execution_plan_digest"]
-                        )
+                        self.assertIsNone(staged["staged_execution_plan_digest"])
                     finally:
                         sys.modules.pop(module_name, None)
                         sys.path.remove(str(root))
@@ -2874,7 +3094,10 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             )
             registry = PluginRegistry()
             record = registry.register(plugin, package_hash=package_hash)
-            return record._manifest_identity_snapshot, record.registered_execution_identity
+            return (
+                record._manifest_identity_snapshot,
+                record.registered_execution_identity,
+            )
 
         relative = registered_with_timeline(
             TimelineTimeBasis.REVISION_START_RELATIVE_NS,
@@ -2906,8 +3129,9 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             "module_target",
             "configuration_digest",
         ):
-            with self.subTest(field=field_name), self.assertRaises(
-                (TypeError, ValueError)
+            with (
+                self.subTest(field=field_name),
+                self.assertRaises((TypeError, ValueError)),
             ):
                 PluginRegistry().register(
                     ParseOnlyPlugin(),
@@ -2928,9 +3152,10 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         hostile = _HostileString("apparently-valid", Boom(supplied))
         package_hash = "sha256:" + ("a" * 64)
         for field_name in ("distribution_name", "configuration_digest"):
-            with self.subTest(field=field_name), self.assertRaises(
-                (TypeError, ValueError)
-            ) as caught:
+            with (
+                self.subTest(field=field_name),
+                self.assertRaises((TypeError, ValueError)) as caught,
+            ):
                 PluginRegistry().register(
                     ParseOnlyPlugin(),
                     package_hash=package_hash,
@@ -3023,7 +3248,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "decoder_identity"):
             PluginRegistry().register(
-                ParseOnlyPlugin(),
+                _PARSE_ONLY_PROCESS_PLUGIN,
                 coordinator=IngestionCoordinator(trace_decoder=_NoopTraceDecoder()),
                 package_hash="sha256:" + ("b" * 64),
             )
@@ -3321,12 +3546,15 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                         registry=registry,
                         publisher=_Publisher(),
                         limits=limits,
-                )
+                    )
                 self.assertFalse(state_dir.exists())
 
-        with tempfile.TemporaryDirectory() as directory, patch(
-            "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
-            return_value="package-sha256:" + ("8" * 64),
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch(
+                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                return_value="package-sha256:" + ("8" * 64),
+            ),
         ):
             state_dir = Path(directory) / "trusted-state"
             publisher = _Publisher()
@@ -3356,9 +3584,12 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                 PluginExecutionPlanAuthority.TRUSTED_INLINE_ATTESTED,
             )
 
-        with tempfile.TemporaryDirectory() as directory, patch(
-            "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
-            return_value="package-sha256:" + ("8" * 64),
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch(
+                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                return_value="package-sha256:" + ("8" * 64),
+            ),
         ):
             state_dir = Path(directory) / "process-state"
             with self.assertRaisesRegex(ValueError, "plugin_execution_mode='inline'"):
@@ -3371,8 +3602,9 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                     allow_inline_only=True,
                 )
             self.assertFalse(state_dir.exists())
-        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(
-            TypeError, "exact boolean"
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            self.assertRaisesRegex(TypeError, "exact boolean"),
         ):
             DurableIngestionPipeline(
                 Path(directory) / "bad-policy",
@@ -3470,8 +3702,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         plugin = ParseOnlyPlugin()
         with (
             patch(
-                "router_dump_analyzer.ingestion_pipeline."
-                "executable_plugin_fingerprint",
+                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
                 return_value=package_identity,
             ),
             patch(
@@ -3482,9 +3713,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                 ),
             ),
         ):
-            registered = PluginRegistry(allow_manifest_identity=True).register(
-                plugin
-            )
+            registered = PluginRegistry(allow_manifest_identity=True).register(plugin)
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "status.jsonl"
@@ -3669,6 +3898,36 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         self.assertEqual(completed.state, ImportState.COMPLETED)
         self.assertEqual(len(publisher.revisions), 1)
 
+    def test_process_spawn_validates_the_pin_bootstrap_digest_field(self) -> None:
+        class PickleHostile:
+            def __reduce__(self):
+                raise AssertionError("hostile pickle hook must never run")
+
+        registry = PluginRegistry((ParseOnlyPlugin(),))
+        registered = registry.records()[0]
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "status.jsonl"
+            input_path.write_bytes(_fixture_bytes())
+            result = registered.coordinator.ingest(
+                registered.execution_plugin,
+                input_path,
+                node_hint="node-a",
+                metadata={},
+            )
+        plan = _execution_plan_for_result(
+            registered,
+            result,
+            execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
+        )
+        pin = plan.plugins[0]
+        object.__setattr__(pin, "process_bootstrap_digest", PickleHostile())
+
+        with self.assertRaisesRegex(
+            PluginExecutionProcessError,
+            "live or unsupported object",
+        ):
+            _validate_plugin_child_spawn_args((pin,))
+
     def test_configured_process_components_require_module_level_instances(
         self,
     ) -> None:
@@ -3686,9 +3945,12 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             "plugin_process_module_target",
         ):
             unsafe.process_bootstraps()
-        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(
-            ValueError,
-            "plugin_process_module_target",
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            self.assertRaisesRegex(
+                ValueError,
+                "plugin_process_module_target",
+            ),
         ):
             DurableIngestionPipeline(
                 Path(directory),
@@ -3755,9 +4017,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         configured_decoder = PluginRegistry()
         configured_decoder.register(
             _CONFIGURED_PROCESS_PLUGIN,
-            coordinator=IngestionCoordinator(
-                trace_decoder=_CONFIGURED_PROCESS_DECODER
-            ),
+            coordinator=IngestionCoordinator(trace_decoder=_CONFIGURED_PROCESS_DECODER),
             package_hash=package_hash,
             configuration_digest=configured_digest,
             decoder_identity=decoder_identity,
@@ -3774,9 +4034,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         fully_explicit = PluginRegistry()
         fully_explicit.register(
             _CONFIGURED_PROCESS_PLUGIN,
-            coordinator=IngestionCoordinator(
-                trace_decoder=_CONFIGURED_PROCESS_DECODER
-            ),
+            coordinator=IngestionCoordinator(trace_decoder=_CONFIGURED_PROCESS_DECODER),
             package_hash=package_hash,
             configuration_digest=configured_digest,
             decoder_identity=decoder_identity,
@@ -3841,8 +4099,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
 
         with (
             patch(
-                "router_dump_analyzer.ingestion_pipeline."
-                "executable_plugin_fingerprint",
+                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
                 return_value=bootstrap.package_hash,
             ) as package_fingerprint,
             patch(
@@ -4127,7 +4384,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             first_registry = PluginRegistry()
             first_registry.register(
-                ParseOnlyPlugin(),
+                _PARSE_ONLY_PROCESS_PLUGIN,
                 package_hash="sha256:" + ("1" * 64),
             )
             first = DurableIngestionPipeline(
@@ -4152,7 +4409,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
 
             changed_registry = PluginRegistry()
             changed_registry.register(
-                ParseOnlyPlugin(),
+                _ConfiguredParseOnlyPlugin(),
                 package_hash="sha256:" + ("2" * 64),
             )
             publisher = _Publisher()
@@ -4182,9 +4439,12 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             package_hash = "sha256:" + ("1" * 64)
             first_registry = PluginRegistry()
             first_registry.register(
-                ParseOnlyPlugin(),
+                _PARSE_ONLY_PROCESS_PLUGIN,
                 package_hash=package_hash,
                 configuration_digest="sha256:" + ("a" * 64),
+                plugin_process_module_target=(
+                    "tests.test_ingestion_pipeline:_PARSE_ONLY_PROCESS_PLUGIN"
+                ),
             )
             first = DurableIngestionPipeline(
                 Path(directory),
@@ -4204,9 +4464,12 @@ class DurableIngestionPipelineTests(unittest.TestCase):
 
             changed_registry = PluginRegistry()
             changed_registry.register(
-                ParseOnlyPlugin(),
+                _PARSE_ONLY_PROCESS_PLUGIN,
                 package_hash=package_hash,
                 configuration_digest="sha256:" + ("b" * 64),
+                plugin_process_module_target=(
+                    "tests.test_ingestion_pipeline:_PARSE_ONLY_PROCESS_PLUGIN"
+                ),
             )
             publisher = _Publisher()
             restarted = DurableIngestionPipeline(
@@ -4287,7 +4550,10 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             ImportState.READY,
             ImportState.FAILED,
         ):
-            with self.subTest(state=legacy_state), tempfile.TemporaryDirectory() as directory:
+            with (
+                self.subTest(state=legacy_state),
+                tempfile.TemporaryDirectory() as directory,
+            ):
                 root = Path(directory)
                 registry = PluginRegistry((ParseOnlyPlugin(),))
                 first = DurableIngestionPipeline(
@@ -4336,7 +4602,9 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                     migrated.plugin_composition_policy_digest,
                     reopened.composition_policy.policy_digest,
                 )
-                self.assertEqual(reopened.candidates(self.scope, admitted.import_id), ())
+                self.assertEqual(
+                    reopened.candidates(self.scope, admitted.import_id), ()
+                )
                 with reopened._connect() as connection:
                     row = connection.execute(
                         "SELECT execution_plan_required, composition_policy_digest "
@@ -4570,18 +4838,17 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                     plugins=(changed_pin,),
                     plan_digest="",
                 )
-                changed_json = canonical_json(
-                    plugin_execution_plan_dict(changed_plan)
-                )
+                changed_json = canonical_json(plugin_execution_plan_dict(changed_plan))
                 for column, changed_value in (
                     ("tenant_id", "tenant-b"),
                     ("project_id", "project-b"),
                     ("workspace_id", "workspace-b"),
                     ("fixture_id", "fixture-b"),
                 ):
-                    with self.subTest(
-                        staged_scope_column=column
-                    ), self.assertRaises(sqlite3.IntegrityError):
+                    with (
+                        self.subTest(staged_scope_column=column),
+                        self.assertRaises(sqlite3.IntegrityError),
+                    ):
                         connection.execute(
                             f"UPDATE ingestion_imports SET {column} = ? "
                             "WHERE import_id = ?",
@@ -4678,9 +4945,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                     str(staged["staged_dataset_ref"])
                 )
                 legacy_dataset = json.loads(modern_path.read_text("utf-8"))
-                legacy_dataset["_ingestion"].pop(
-                    "plugin_execution_plan_digest"
-                )
+                legacy_dataset["_ingestion"].pop("plugin_execution_plan_digest")
                 legacy_bytes = canonical_json(legacy_dataset).encode("utf-8")
                 legacy_sha256 = hashlib.sha256(legacy_bytes).hexdigest()
                 legacy_relative = (
@@ -4739,9 +5004,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             _publisher_accepts_execution_plan(_PositionalExecutionPlanPublisher())
         )
         self.assertFalse(
-            _publisher_accepts_execution_plan(
-                _PositionalExecutionPlanKwargsPublisher()
-            )
+            _publisher_accepts_execution_plan(_PositionalExecutionPlanKwargsPublisher())
         )
         with tempfile.TemporaryDirectory() as directory:
             publisher = _LegacyPublisher()

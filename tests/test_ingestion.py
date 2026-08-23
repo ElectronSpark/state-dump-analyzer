@@ -60,6 +60,7 @@ from router_dump_analyzer.plugin_api import (
     TimelineTimeBasis,
     UnknownField,
 )
+from router_dump_analyzer.plugin_execution_plan import validate_execution_identity
 from router_dump_analyzer.runtime import (
     RuntimeApplicationRequest,
     create_runtime_application,
@@ -237,6 +238,68 @@ class DiagnosticPlugin(ParseOnlyPlugin):
                 ),
             ),
         )
+
+
+class MutatingParserOutputPlugin(ParseOnlyPlugin):
+    """Mutate yielded values after resume to exercise core ownership transfer."""
+
+    def __init__(self) -> None:
+        self.original_snapshot: SnapshotObservation | None = None
+        self.original_source: SourceRecordEmission | None = None
+
+    def parse_status(self, reader, spec):
+        artifact_id = spec.artifact_ids[0]
+        evidence = Evidence(
+            artifact_id=artifact_id,
+            locator="line:1",
+            raw_timestamp_ns=100,
+            clock_domain="utc",
+        )
+        state = {"name": "before", "oper_status": "up"}
+        snapshot = SnapshotObservation(
+            resource=ResourceKey(
+                namespace=self.manifest.plugin_id,
+                node=spec.node,
+                layer=spec.layer,
+                kind="INTERFACE",
+                parts=(("ifindex", 7),),
+            ),
+            observed_at_min_ns=100,
+            observed_at_max_ns=100,
+            state=PropertyPatch(set_values=state, complete=True),
+            provenance=Provenance.OBSERVED,
+            quality=Quality.EXACT,
+            evidence=evidence,
+            condition="up",
+            condition_class=ConditionClass.HEALTHY,
+        )
+        self.original_snapshot = snapshot
+        yield snapshot
+
+        # This runs only when the core asks for the next item. Retained output
+        # must already be a validated, core-owned snapshot at that point.
+        state["name"] = "after"
+        state["undeclared"] = "late"
+        object.__setattr__(snapshot, "condition", "down")
+
+        attributes = {"phase": "before"}
+        source = SourceRecordEmission(
+            timestamp_ns=100,
+            timestamp_uncertainty_ns=0,
+            source_type="status-json",
+            source_name="status.jsonl",
+            record_name="interface",
+            message="before",
+            layer=spec.layer,
+            attributes=attributes,
+            evidence=(evidence,),
+            copy_text="before",
+        )
+        self.original_source = source
+        yield source
+        attributes["phase"] = "after"
+        attributes["undeclared"] = "late"
+        object.__setattr__(source, "message", "after")
 
 
 class AllParserPlugin(ParseOnlyPlugin):
@@ -767,9 +830,7 @@ class DeclaredTimelineEventPlugin(TemporalEventPlugin):
                 elif self.oversize_relative_span:
                     output = replace(
                         output,
-                        timestamp_ns=(
-                            -(1 << 63) if known == 1 else (1 << 63) - 1
-                        ),
+                        timestamp_ns=(-(1 << 63) if known == 1 else (1 << 63) - 1),
                     )
                 elif self.uncertain_tail:
                     output = replace(
@@ -904,6 +965,36 @@ class CoreIngestionTests(unittest.TestCase):
                 with_metadata.revision_id,
             )
 
+    def test_revision_identity_preserves_legacy_and_compacts_long_nodes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self._fixture(directory)
+            normal = IngestionCoordinator().ingest(ParseOnlyPlugin(), fixture)
+            long_node = "n" * 256
+            compact = IngestionCoordinator().ingest(
+                ParseOnlyPlugin(),
+                fixture,
+                node_hint=long_node,
+            )
+
+            self.assertTrue(normal.revision_id.startswith("ingested/router-a/"))
+            self.assertEqual(compact.node_id, long_node)
+            self.assertTrue(compact.revision_id.startswith("ingested-v2/"))
+            self.assertLessEqual(len(compact.revision_id), 256)
+            self.assertEqual(
+                validate_execution_identity(compact.revision_id, "revision_id"),
+                compact.revision_id,
+            )
+
+            with self.assertRaisesRegex(
+                IngestionError,
+                "selected node must be an opaque execution identity",
+            ):
+                IngestionCoordinator().ingest(
+                    ParseOnlyPlugin(),
+                    fixture,
+                    node_hint="router-a\nunsafe",
+                )
+
     def test_invalid_parser_output_and_output_overflow_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = self._fixture(directory)
@@ -941,6 +1032,32 @@ class CoreIngestionTests(unittest.TestCase):
                         InvalidBoundaryPlugin(failure),
                         fixture,
                     )
+
+    def test_parser_outputs_transfer_to_immutable_core_owned_snapshots(self) -> None:
+        plugin = MutatingParserOutputPlugin()
+        with tempfile.TemporaryDirectory() as directory:
+            result = IngestionCoordinator().ingest(
+                plugin,
+                self._fixture(directory),
+            )
+
+        snapshot = result.snapshots[0]
+        source = result.source_records[0]
+        self.assertIsNot(snapshot, plugin.original_snapshot)
+        self.assertIsNot(source, plugin.original_source)
+        self.assertEqual(snapshot.condition, "up")
+        self.assertEqual(
+            dict(snapshot.state.set_values),
+            {"name": "before", "oper_status": "up"},
+        )
+        self.assertEqual(source.message, "before")
+        self.assertEqual(dict(source.attributes), {"phase": "before"})
+        self.assertEqual(result.dataset["resources"][0]["state"]["name"], "before")
+        self.assertNotIn("undeclared", result.dataset["resources"][0]["state"])
+        with self.assertRaises(TypeError):
+            snapshot.state.set_values["name"] = "mutated"
+        with self.assertRaises(TypeError):
+            source.attributes["phase"] = "mutated"
 
     def test_recoverable_discovery_diagnostics_are_retained(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1261,9 +1378,7 @@ class CoreIngestionTests(unittest.TestCase):
             relative.dataset["_ingestion"]["timeline_time_basis"],
             "revision_start_relative_ns",
         )
-        self.assertIsNone(
-            relative.dataset["_ingestion"]["timeline_clock_domain"]
-        )
+        self.assertIsNone(relative.dataset["_ingestion"]["timeline_clock_domain"])
         self.assertEqual(
             source.dataset["_ingestion"]["timeline_clock_domain"],
             "tests.source.clock",
@@ -1277,7 +1392,9 @@ class CoreIngestionTests(unittest.TestCase):
             3,
         )
 
-    def test_timeline_bounds_include_uncertainty_and_reject_invalid_domains(self) -> None:
+    def test_timeline_bounds_include_uncertainty_and_reject_invalid_domains(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self._fixture(directory)

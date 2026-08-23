@@ -32,8 +32,9 @@ from .capability_executor import (
 from .ingestion_pipeline import (
     PluginRegistry,
     RegisteredPlugin,
+    _registered_plugin_is_process_capable,
+    _registered_plugin_is_trusted_inline_capable,
     _require_no_inline_only_plugin_compatibility,
-    _registered_plugin_uses_inline_only_compatibility,
     registered_plugin_matches_execution_pin,
 )
 from .plugin_api import (
@@ -154,6 +155,67 @@ class CapabilityProviderRegistry:
         # still require their own explicit trusted-inline authorization.
         return cls(registry.records())
 
+    @classmethod
+    def _from_frozen_process_execution_plan(
+        cls,
+        records: tuple[RegisteredPlugin, ...],
+        plan: PluginExecutionPlan,
+        required_pins: tuple[PluginExecutionPin, ...],
+    ) -> CapabilityProviderRegistry:
+        """Build a sealed child index without invoking plug-in code.
+
+        ``PluginRegistry`` has already reconstructed these records from
+        parent-frozen PROCESS bootstraps.  The normal provider-admission path
+        deliberately performs live executable and schema checks, so using it
+        here would move those checks ahead of the primary ingestion boundary.
+        This internal constructor instead accepts only exact plan pins and
+        copies their already-frozen schema digests.  The plan-bound router
+        performs the live attestation immediately before each selected hook.
+        """
+
+        if type(records) is not tuple or any(
+            type(record) is not RegisteredPlugin for record in records
+        ):
+            raise TypeError("records must contain exact RegisteredPlugin objects")
+        if type(plan) is not PluginExecutionPlan:
+            raise TypeError("plan must be an exact PluginExecutionPlan")
+        if plan.execution_plan_authority is not PluginExecutionPlanAuthority.PROCESS:
+            raise ValueError("frozen child providers require a PROCESS execution plan")
+        if (
+            type(required_pins) is not tuple
+            or not required_pins
+            or any(type(pin) is not PluginExecutionPin for pin in required_pins)
+        ):
+            raise TypeError("required_pins must contain exact execution-plan pins")
+        if len(required_pins) != len({pin.instance_id for pin in required_pins}):
+            raise ValueError("required child provider pins must use unique instances")
+        if any(pin not in plan.plugins for pin in required_pins):
+            raise ValueError("required child provider pin is not part of the plan")
+
+        snapshot = cls()
+        for pin in required_pins:
+            matches = tuple(
+                record
+                for record in records
+                if registered_plugin_matches_execution_pin(pin, record)
+            )
+            if len(matches) != 1:
+                raise CapabilityRouteStaleError(
+                    "frozen child provider does not match exactly one required pin"
+                )
+            provider = matches[0]
+            if not _registered_plugin_is_process_capable(provider):
+                raise CapabilityRouteStaleError(
+                    "frozen child provider is not PROCESS-capable"
+                )
+            snapshot._providers.setdefault(provider.instance_id, []).append(provider)
+            snapshot._schema_digests[
+                (provider.instance_id, provider.registered_execution_identity)
+            ] = pin.schema_digest
+            snapshot._provider_count += 1
+        snapshot._sealed = True
+        return snapshot
+
     def add_registered(self, provider: RegisteredPlugin) -> str:
         with self._mutation_lock:
             if self._sealed:
@@ -161,14 +223,8 @@ class CapabilityProviderRegistry:
             if type(provider) is not RegisteredPlugin:
                 raise TypeError("provider must be an exact RegisteredPlugin")
             if provider._registered_execution_identity_snapshot is None:
-                raise ValueError("provider must be created by PluginRegistry.register()")
-            if (
-                not provider.verify_package_bytes
-                and not _registered_plugin_uses_inline_only_compatibility(provider)
-            ):
                 raise ValueError(
-                    "capability providers require a revalidatable executable "
-                    "identity or a registry-created INLINE-only identity"
+                    "provider must be created by PluginRegistry.register()"
                 )
             instance_id = _opaque(provider.instance_id, "provider instance_id")
             if self._provider_count >= _MAX_PROVIDERS:
@@ -264,8 +320,7 @@ class CapabilityProviderRegistry:
         matches = tuple(
             provider
             for provider in self._resolve(selected_instance)
-            if provider.registered_execution_identity
-            == registered_execution_identity
+            if provider.registered_execution_identity == registered_execution_identity
         )
         if len(matches) != 1:
             raise CapabilityRouteStaleError(
@@ -524,6 +579,12 @@ class _BoundProvider:
 class PlanBoundCapabilityRouter:
     """Resolve and execute capabilities only through one immutable plan."""
 
+    catalog_revision_id: str
+    member_id: str
+    plan: PluginExecutionPlan
+    limits: PluginCapabilityLimits
+    allow_inline_only: bool
+
     def __init__(
         self,
         providers: CapabilityProviderRegistry,
@@ -533,6 +594,55 @@ class PlanBoundCapabilityRouter:
         member_id: str,
         limits: PluginCapabilityLimits | None = None,
         allow_inline_only: bool = False,
+    ) -> None:
+        self._initialize(
+            providers,
+            plan,
+            catalog_revision_id=catalog_revision_id,
+            member_id=member_id,
+            limits=limits,
+            allow_inline_only=allow_inline_only,
+            required_pins=None,
+        )
+
+    @classmethod
+    def _for_required_pins(
+        cls,
+        providers: CapabilityProviderRegistry,
+        plan: PluginExecutionPlan,
+        *,
+        catalog_revision_id: str,
+        member_id: str,
+        required_pins: tuple[PluginExecutionPin, ...],
+        limits: PluginCapabilityLimits | None = None,
+        allow_inline_only: bool = False,
+    ) -> PlanBoundCapabilityRouter:
+        """Bind only a plan-owned subset for one internal scheduled stage."""
+
+        if cls is not PlanBoundCapabilityRouter:
+            raise TypeError("required-pin routing requires the core router class")
+        router = cls.__new__(cls)
+        router._initialize(
+            providers,
+            plan,
+            catalog_revision_id=catalog_revision_id,
+            member_id=member_id,
+            limits=limits,
+            allow_inline_only=allow_inline_only,
+            required_pins=required_pins,
+        )
+        return router
+
+    def _initialize(
+        self,
+        providers: CapabilityProviderRegistry,
+        plan: PluginExecutionPlan | None,
+        *,
+        catalog_revision_id: str,
+        member_id: str,
+        limits: PluginCapabilityLimits | None,
+        allow_inline_only: bool,
+        required_pins: tuple[PluginExecutionPin, ...] | None,
     ) -> None:
         if type(providers) is not CapabilityProviderRegistry:
             raise TypeError("providers must be a CapabilityProviderRegistry")
@@ -569,7 +679,22 @@ class PlanBoundCapabilityRouter:
         self._providers = providers
         self._bound: dict[str, _BoundProvider] = {}
 
-        for pin in self.plan.plugins:
+        if required_pins is None:
+            pins_to_bind = self.plan.plugins
+        else:
+            if (
+                type(required_pins) is not tuple
+                or not required_pins
+                or any(type(pin) is not PluginExecutionPin for pin in required_pins)
+            ):
+                raise TypeError("required_pins must contain exact execution-plan pins")
+            if len(required_pins) != len({pin.instance_id for pin in required_pins}):
+                raise ValueError("required_pins must use unique provider instances")
+            if any(pin not in self.plan.plugins for pin in required_pins):
+                raise ValueError("required pin is not part of the execution plan")
+            pins_to_bind = required_pins
+
+        for pin in pins_to_bind:
             candidates = providers._resolve(pin.instance_id)
             exact: list[RegisteredPlugin] = []
             for candidate in candidates:
@@ -605,7 +730,7 @@ class PlanBoundCapabilityRouter:
                 )
             registered = exact[0]
             self._bound[pin.instance_id] = _BoundProvider(pin, registered)
-        if primary_pin.instance_id not in self._bound:
+        if required_pins is None and primary_pin.instance_id not in self._bound:
             raise CapabilityPlanUnavailableError(
                 "execution plan primary parser is not bound"
             )
@@ -620,27 +745,25 @@ class PlanBoundCapabilityRouter:
                 PluginExecutionPlanAuthority.TRUSTED_INLINE_ATTESTED,
                 PluginExecutionPlanAuthority.TRUSTED_INLINE_MANIFEST,
             )
-            inline_only_provider = (
-                _registered_plugin_uses_inline_only_compatibility(registered)
-            )
+            process_capable = _registered_plugin_is_process_capable(registered)
             if (
                 trusted_inline_plan
-                and inline_only_provider
+                and not process_capable
                 and not self.allow_inline_only
             ):
                 raise CapabilityRouteStaleError(
-                    "trusted INLINE execution plan requires explicit routing "
-                    "authorization"
+                    "INLINE-only provider requires explicit routing authorization"
                 )
-            if (
-                not trusted_inline_plan and inline_only_provider
+            if not trusted_inline_plan and not process_capable:
+                raise CapabilityRouteStaleError(
+                    "PROCESS or legacy execution plans require PROCESS-capable plug-ins"
+                )
+            if trusted_inline_plan and not _registered_plugin_is_trusted_inline_capable(
+                registered
             ):
-                _require_no_inline_only_plugin_compatibility(
-                    (registered,),
-                    boundary=(
-                        "PROCESS or legacy execution plans require PROCESS-capable "
-                        "plug-ins"
-                    ),
+                raise CapabilityRouteStaleError(
+                    "trusted INLINE execution plan requires a frozen registration "
+                    "identity"
                 )
             PluginRegistry.revalidate_registered_identity(registered)
             matches = registered_plugin_matches_execution_pin(pin, registered)
@@ -706,7 +829,12 @@ class PlanBoundCapabilityRouter:
                 "capability selector matches more than one execution-plan provider"
             )
         pin = matches[0]
-        bound = self._bound[pin.instance_id]
+        try:
+            bound = self._bound[pin.instance_id]
+        except KeyError as error:
+            raise CapabilityRouteMissingError(
+                "capability provider is outside this router's required pin set"
+            ) from error
         return PlanBoundCapabilityRoute(
             _router=self,
             selector=selector,

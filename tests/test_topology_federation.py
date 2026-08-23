@@ -95,7 +95,11 @@ def _policy(
         claim_contract_id=claim_contract_id,
         kind=kind,
         argument_names=argument_names,
-        linker_plugin_id=("gate.federation-linker" if kind is ConnectorMatchPolicyKind.LINKER else None),
+        linker_plugin_id=(
+            "gate.federation-linker"
+            if kind is ConnectorMatchPolicyKind.LINKER
+            else None
+        ),
     )
 
 
@@ -321,6 +325,7 @@ def _pin(registered: RegisteredPlugin, schema: PluginSchema) -> PluginExecutionP
         configuration_digest=registered.configuration_digest,
         schema_digest=plugin_schema_digest(schema),
         registered_execution_identity=registered.registered_execution_identity,
+        process_bootstrap_digest=registered.process_bootstrap_digest,
         schema_versions=registered.schema_versions,
         capabilities=registered.capabilities,
         roles=("primary_parser", "topology_provider"),
@@ -580,16 +585,26 @@ class TopologyFederationAcceptanceGateTests(unittest.TestCase):
         assembly = coordinator.federate(tuple(reversed(invocations)))
 
         self.assertEqual(
-            tuple(item.invocation.provider.pin.plugin_id for item in assembly.invocations),
+            tuple(
+                item.invocation.provider.pin.plugin_id for item in assembly.invocations
+            ),
             ("gate.alpha-platform", "gate.beta-asic"),
         )
         self.assertEqual(
-            tuple(item.invocation.provider.pin.plugin_version for item in assembly.invocations),
+            tuple(
+                item.invocation.provider.pin.plugin_version
+                for item in assembly.invocations
+            ),
             ("1.7", "9.3"),
         )
-        self.assertTrue(all(item.invocation.result.claims == () for item in assembly.invocations))
         self.assertTrue(
-            all(item.invocation.result.match_policies == () for item in assembly.invocations)
+            all(item.invocation.result.claims == () for item in assembly.invocations)
+        )
+        self.assertTrue(
+            all(
+                item.invocation.result.match_policies == ()
+                for item in assembly.invocations
+            )
         )
         self.assertEqual(assembly.claims, ())
         self.assertEqual(assembly.policy_executions, ())
@@ -662,9 +677,7 @@ class TopologyFederationAcceptanceGateTests(unittest.TestCase):
             )
         coordinator, _members, selections, worlds = _coordinator(tuple(plugins))
 
-        assembly = coordinator.federate(
-            _project_all(coordinator, selections, worlds)
-        )
+        assembly = coordinator.federate(_project_all(coordinator, selections, worlds))
 
         self.assertEqual(assembly.inactive_claim_count, 1)
         self.assertEqual(len(assembly.claims), 7)
@@ -677,7 +690,9 @@ class TopologyFederationAcceptanceGateTests(unittest.TestCase):
             FederationExecutionProvenance.CORE_EXACT_TOKEN,
         )
         self.assertIsNone(execution.linker_identity)
-        by_claim = {result.source.claim.claim_id: result for result in execution.results}
+        by_claim = {
+            result.source.claim.claim_id: result for result in execution.results
+        }
         self.assertIs(by_claim["claim-0"].state, FederationMatchState.MATCHED)
         self.assertEqual(
             tuple(item.claim_id for item in by_claim["claim-0"].candidates),
@@ -715,9 +730,7 @@ class TopologyFederationAcceptanceGateTests(unittest.TestCase):
         )
         coordinator, _members, selections, worlds = _coordinator((plugin,))
 
-        boundary = coordinator.federate(
-            _project_all(coordinator, selections, worlds)
-        )
+        boundary = coordinator.federate(_project_all(coordinator, selections, worlds))
         self.assertEqual(boundary.total_claim_count, 1)
         self.assertEqual(boundary.inactive_claim_count, 1)
         self.assertEqual(boundary.temporal_basis_unknown_claim_count, 0)
@@ -726,9 +739,7 @@ class TopologyFederationAcceptanceGateTests(unittest.TestCase):
         self.assertFalse(boundary.truncated)
 
         unknown_selection = (replace(selections[0], basis_time_ns=None),)
-        unknown_worlds = (
-            _World(worlds[0].perspective_ref, basis_time_ns=None),
-        )
+        unknown_worlds = (_World(worlds[0].perspective_ref, basis_time_ns=None),)
         unknown = coordinator.federate(
             _project_all(coordinator, unknown_selection, unknown_worlds)
         )
@@ -763,9 +774,7 @@ class TopologyFederationAcceptanceGateTests(unittest.TestCase):
         coordinator, _members, selections, worlds = _coordinator((plugin,))
         perspective = worlds[0].perspective_ref
 
-        exact = coordinator.federate(
-            _project_all(coordinator, selections, worlds)
-        )
+        exact = coordinator.federate(_project_all(coordinator, selections, worlds))
         self.assertEqual(len(exact.claims), 1)
         self.assertTrue(exact.complete)
 
@@ -1020,17 +1029,13 @@ class TopologyFederationAcceptanceGateTests(unittest.TestCase):
             )
             for index, resource in enumerate(resources)
         )
-        executor = FederationLinkExecutor(
-            limits=FederationLinkerLimits(max_results=1)
-        )
+        executor = FederationLinkExecutor(limits=FederationLinkerLimits(max_results=1))
         coordinator, _members, selections, worlds = _coordinator(
             plugins,
             executor=executor,
         )
 
-        assembly = coordinator.federate(
-            _project_all(coordinator, selections, worlds)
-        )
+        assembly = coordinator.federate(_project_all(coordinator, selections, worlds))
 
         self.assertEqual(assembly.failures, ())
         self.assertEqual(len(assembly.policy_executions), 1)
@@ -1060,8 +1065,7 @@ class TopologyFederationAcceptanceGateTests(unittest.TestCase):
     ) -> None:
         policy = _policy()
         resources = tuple(
-            _resource(f"node-{index}", f"tainted-{index}")
-            for index in range(3)
+            _resource(f"node-{index}", f"tainted-{index}") for index in range(3)
         )
         plugins = tuple(
             _TopologyPlugin(
@@ -1191,12 +1195,8 @@ class TopologyFederationAcceptanceGateTests(unittest.TestCase):
             for index, resource in enumerate(resources)
         )
         coordinator, members, selections, worlds = _coordinator(plugins)
-        assembly = coordinator.federate(
-            _project_all(coordinator, selections, worlds)
-        )
-        service = _rendering_service(
-            tuple(item.node_id for item in members)
-        )
+        assembly = coordinator.federate(_project_all(coordinator, selections, worlds))
+        service = _rendering_service(tuple(item.node_id for item in members))
 
         sliced_links, _resolutions, _unmatched, page_truncated = (
             service._federated_claim_links(
@@ -1338,9 +1338,7 @@ class TopologyFederationAcceptanceGateTests(unittest.TestCase):
             executor=executor,
         )
 
-        assembly = coordinator.federate(
-            _project_all(coordinator, selections, worlds)
-        )
+        assembly = coordinator.federate(_project_all(coordinator, selections, worlds))
 
         self.assertEqual(len(assembly.policy_executions), 1)
         self.assertEqual(
@@ -1395,9 +1393,7 @@ class TopologyFederationAcceptanceGateTests(unittest.TestCase):
                     valid_to_ns=45,
                 ),
                 record(
-                    TopologyResourceRecord(
-                        resource=_resource("node-0", "crossing")
-                    ),
+                    TopologyResourceRecord(resource=_resource("node-0", "crossing")),
                     valid_from_ns=40,
                     valid_to_ns=60,
                 ),
@@ -1532,8 +1528,9 @@ class TopologyFederationAcceptanceGateTests(unittest.TestCase):
                 "member_id": b"member-a",
             },
         ):
-            with self.subTest(malformed=malformed), self.assertRaises(
-                MultiNodeTopologyRequestError
+            with (
+                self.subTest(malformed=malformed),
+                self.assertRaises(MultiNodeTopologyRequestError),
             ):
                 MultiNodeTopologyService._typed_revision_key(malformed)
 
@@ -1557,9 +1554,7 @@ class TopologyFederationAcceptanceGateTests(unittest.TestCase):
             ),
         )
         coordinator, _members, selections, worlds = _coordinator((plugin,))
-        assembly = coordinator.federate(
-            _project_all(coordinator, selections, worlds)
-        )
+        assembly = coordinator.federate(_project_all(coordinator, selections, worlds))
         context = assembly.claim_contexts[0]
         other_context = replace(context, projection_id="gate.other-graph")
         endpoint = assembly.claims[0].endpoint
@@ -1658,14 +1653,12 @@ class TopologyFederationAcceptanceGateTests(unittest.TestCase):
         rendered = []
         for ordered in (invocations, tuple(reversed(invocations))):
             assembly = coordinator.federate(ordered)
-            links, resolutions, unmatched, truncated = (
-                service._federated_claim_links(
-                    assembly,
-                    {},
-                    100,
-                    "gate-context",
-                    {"kind": "absolute_time", "time_ns": "50"},
-                )
+            links, resolutions, unmatched, truncated = service._federated_claim_links(
+                assembly,
+                {},
+                100,
+                "gate-context",
+                {"kind": "absolute_time", "time_ns": "50"},
             )
             self.assertEqual(links, [])
             self.assertFalse(truncated)
@@ -1719,9 +1712,7 @@ class TopologyFederationAcceptanceGateTests(unittest.TestCase):
             for index, resource in enumerate(resources)
         )
         coordinator, members, selections, worlds = _coordinator(plugins)
-        assembly = coordinator.federate(
-            _project_all(coordinator, selections, worlds)
-        )
+        assembly = coordinator.federate(_project_all(coordinator, selections, worlds))
         service = _rendering_service(tuple(item.node_id for item in members))
 
         links, resolutions, _unmatched, _truncated = service._federated_claim_links(
@@ -1810,9 +1801,7 @@ class TopologyFederationAcceptanceGateTests(unittest.TestCase):
             executor=executor,
         )
 
-        assembly = coordinator.federate(
-            _project_all(coordinator, selections, worlds)
-        )
+        assembly = coordinator.federate(_project_all(coordinator, selections, worlds))
 
         self.assertEqual(len(linker.requests), 1)
         self.assertIs(type(linker.requests[0]), FederationLinkRequest)

@@ -57,6 +57,7 @@ def _pin(
         configuration_digest="sha256:" + "c" * 64,
         schema_digest="sha256:" + "d" * 64,
         registered_execution_identity="sha256:" + suffix * 64,
+        process_bootstrap_digest="sha256:" + "e" * 64,
         capabilities=capabilities,
         roles=roles,
     )
@@ -289,6 +290,7 @@ class PrivateAnalysisEvidenceBindingTests(unittest.TestCase):
                 replace(
                     plan.plugins[0],
                     registered_execution_identity="sha256:" + "0" * 64,
+                    process_bootstrap_digest=None,
                 ),
             ),
             decoder=plan.decoder,

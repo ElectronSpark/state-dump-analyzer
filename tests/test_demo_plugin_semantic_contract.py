@@ -33,7 +33,7 @@ from router_dump_analyzer.ingestion_pipeline import (
     PluginExecutionProcessError,
     PluginExecutionTimeoutError,
     PluginRegistry,
-    _execution_plan_for_result,
+    _dataset_with_execution_plan,
     _ingest_plugin_child,
     _run_isolated_child,
 )
@@ -42,12 +42,12 @@ from router_dump_analyzer.plugin_composition_deployment import (
     PluginCompositionDeploymentContext,
     load_plugin_composition_deployment,
 )
+from router_dump_analyzer.plugin_execution_plan import (
+    PluginExecutionPlanAuthority,
+)
 from router_dump_analyzer.plugin_identity import (
     PluginExecutableIdentityError,
     executable_module_target_fingerprint,
-)
-from router_dump_analyzer.plugin_execution_plan import (
-    PluginExecutionPlanAuthority,
 )
 from router_dump_analyzer.plugin_loading import (
     load_plugin_entry_point_with_coordinates,
@@ -127,9 +127,7 @@ class DemoPluginSemanticContractTests(unittest.TestCase):
         self.assertFalse(descriptor["runtime_load"]["parser_replayed"])
 
     def test_real_entry_point_registers_with_strict_executable_identity(self) -> None:
-        loaded = load_plugin_entry_point_with_coordinates(
-            PLUGIN_ENTRY_POINT_NAME
-        )
+        loaded = load_plugin_entry_point_with_coordinates(PLUGIN_ENTRY_POINT_NAME)
         self.assertEqual(
             loaded.process_module_target,
             "rsl_demo_plugin:ExampleRouterPlugin",
@@ -137,9 +135,7 @@ class DemoPluginSemanticContractTests(unittest.TestCase):
         self.assertTrue(loaded.process_construct_class)
         self.assertIn("runtime", vars(loaded.plugin))
         self.assertNotIn("runtime", vars(type(loaded.plugin)()))
-        registered = loaded.register(
-            PluginRegistry(require_executable_identity=True)
-        )
+        registered = loaded.register(PluginRegistry(require_executable_identity=True))
         self.assertEqual(registered.plugin_id, "demo.example-router")
         self.assertEqual(
             registered.process_bootstrap.plugin_loader_kind,
@@ -151,9 +147,7 @@ class DemoPluginSemanticContractTests(unittest.TestCase):
         )
 
     def test_process_child_ingests_without_parent_runtime_attachment(self) -> None:
-        loaded = load_plugin_entry_point_with_coordinates(
-            PLUGIN_ENTRY_POINT_NAME
-        )
+        loaded = load_plugin_entry_point_with_coordinates(PLUGIN_ENTRY_POINT_NAME)
         registry = PluginRegistry(require_executable_identity=True)
         registered = loaded.register(registry)
         fixture_path = Path(self.temporary.name) / STATUS_FILENAME
@@ -164,6 +158,7 @@ class DemoPluginSemanticContractTests(unittest.TestCase):
             _ingest_plugin_child,
             (
                 registered.process_bootstrap,
+                registered.process_bootstrap_digest,
                 str(fixture_path),
                 "node-a",
                 {
@@ -197,20 +192,17 @@ class DemoPluginSemanticContractTests(unittest.TestCase):
         self.assertEqual(records[0].instance_id, "demo.example-router.primary")
         providers = deployment.capability_providers.records()
         self.assertEqual(len(providers), 2)
-        provider_by_instance = {
-            record.instance_id: record for record in providers
-        }
+        provider_by_instance = {record.instance_id: record for record in providers}
         self.assertEqual(
-            provider_by_instance[
-                "demo.example-router.evidence-analysis"
-            ].instance_id,
+            provider_by_instance["demo.example-router.evidence-analysis"].instance_id,
             "demo.example-router.evidence-analysis",
         )
-        self.assertEqual(records[0].capabilities, ("status_parse",))
         self.assertEqual(
-            provider_by_instance[
-                "demo.example-router.evidence-analysis"
-            ].capabilities,
+            records[0].capabilities,
+            ("consistency_check", "status_parse"),
+        )
+        self.assertEqual(
+            provider_by_instance["demo.example-router.evidence-analysis"].capabilities,
             ("evidence_analysis",),
         )
         for record in providers:
@@ -266,13 +258,14 @@ class DemoPluginSemanticContractTests(unittest.TestCase):
             node_hint="node-a",
             metadata=metadata,
         )
-        plan = _execution_plan_for_result(
+        dataset_bytes, plan = _dataset_with_execution_plan(
             primary,
             result,
             capability_providers=deployment.capability_providers,
             composition_policy=deployment.policy,
             execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
         )
+        dataset = json.loads(dataset_bytes)
 
         self.assertEqual(
             tuple(pin.instance_id for pin in plan.plugins),
@@ -282,7 +275,10 @@ class DemoPluginSemanticContractTests(unittest.TestCase):
             ),
         )
         self.assertEqual(plan.plugins[0].roles, ("primary_parser",))
-        self.assertEqual(plan.plugins[0].capabilities, ("status_parse",))
+        self.assertEqual(
+            plan.plugins[0].capabilities,
+            ("consistency_check", "status_parse"),
+        )
         self.assertEqual(
             plan.plugins[1].roles,
             ("private_analysis_evidence",),
@@ -294,6 +290,19 @@ class DemoPluginSemanticContractTests(unittest.TestCase):
         self.assertEqual(
             plan.composition_policy_digest,
             deployment.policy.policy_digest,
+        )
+        self.assertEqual(
+            dataset["consistency_materialization"]["status"],
+            "complete",
+        )
+        self.assertEqual(
+            dataset["consistency_materialization"]["provider_count"],
+            1,
+        )
+        self.assertEqual(len(dataset["findings"]), 1)
+        self.assertEqual(
+            dataset["findings"][0]["rule_id"],
+            "demo.interface-operational-status",
         )
 
     def test_fresh_process_entry_point_registers_with_strict_identity(self) -> None:
@@ -360,9 +369,7 @@ assert registered.process_bootstrap.plugin_loader_kind == "class_constructor"
     def test_final_verification_rejects_process_class_mutation(
         self,
     ) -> None:
-        loaded = load_plugin_entry_point_with_coordinates(
-            PLUGIN_ENTRY_POINT_NAME
-        )
+        loaded = load_plugin_entry_point_with_coordinates(PLUGIN_ENTRY_POINT_NAME)
         implementation = type(loaded.plugin)
         original_describe = implementation.describe
         original_verify = plugin_identity._verify_derived_cache_slots
@@ -389,9 +396,7 @@ assert registered.process_bootstrap.plugin_loader_kind == "class_constructor"
             implementation.describe = original_describe  # type: ignore[method-assign]
 
     def test_runtime_bearing_live_target_remains_inline_only(self) -> None:
-        loaded = load_plugin_entry_point_with_coordinates(
-            PLUGIN_ENTRY_POINT_NAME
-        )
+        loaded = load_plugin_entry_point_with_coordinates(PLUGIN_ENTRY_POINT_NAME)
         require_plugin_runtime(loaded.plugin)
         with self.assertRaises(PluginExecutableIdentityError):
             executable_module_target_fingerprint(
@@ -404,9 +409,7 @@ assert registered.process_bootstrap.plugin_loader_kind == "class_constructor"
         self,
     ) -> None:
         template = _plugin_schema()
-        GENERATED_PROJECTION_POLICY.validate_generated_schema_template(
-            template
-        )
+        GENERATED_PROJECTION_POLICY.validate_generated_schema_template(template)
         self.assertEqual(
             template["projection_capabilities"],
             GENERATED_PROJECTION_POLICY.base_projection_capabilities(),
@@ -418,22 +421,18 @@ assert registered.process_bootstrap.plugin_loader_kind == "class_constructor"
             ValueError,
             "schema body disagrees",
         ):
-            GENERATED_PROJECTION_POLICY.validate_generated_schema_template(
-                drifted
-            )
+            GENERATED_PROJECTION_POLICY.validate_generated_schema_template(drifted)
 
-        materialized = (
-            GENERATED_PROJECTION_POLICY.materialize_generated_schema(
-                template,
-                node_identity={
-                    "node_id": "node-a",
-                    "revision_id": "demo/node-a/revision-0001",
-                },
-            )
+        materialized = GENERATED_PROJECTION_POLICY.materialize_generated_schema(
+            template,
+            node_identity={
+                "node_id": "node-a",
+                "revision_id": "demo/node-a/revision-0001",
+            },
         )
-        materialized["precomputed_projection_capability"]["members"][
-            "topology"
-        ]["path"] = "wrong-topology.json"
+        materialized["precomputed_projection_capability"]["members"]["topology"][
+            "path"
+        ] = "wrong-topology.json"
         with self.assertRaisesRegex(
             ValueError,
             "precomputed_projection_capability",
@@ -465,10 +464,7 @@ assert registered.process_bootstrap.plugin_loader_kind == "class_constructor"
             generated_schema = json.loads(
                 _member_bytes(
                     node_archive,
-                    (
-                        f"{NODE_PACK_ROOT}/normalized-scale/"
-                        "plugin-schema.json"
-                    ),
+                    (f"{NODE_PACK_ROOT}/normalized-scale/plugin-schema.json"),
                 )
             )
             projection_manifest = json.loads(
@@ -482,9 +478,7 @@ assert registered.process_bootstrap.plugin_loader_kind == "class_constructor"
                 )
             )
 
-        entry_contract = (
-            self.installed_plugin.describe_generated_fixture()
-        )
+        entry_contract = self.installed_plugin.describe_generated_fixture()
         self.assertEqual(
             outer_manifest["plugin"],
             GENERATED_PROJECTION_POLICY.archive_plugin_descriptor(),
@@ -499,8 +493,7 @@ assert registered.process_bootstrap.plugin_loader_kind == "class_constructor"
         )
         self.assertEqual(
             generated_schema["projection_capabilities"],
-            GENERATED_PROJECTION_POLICY
-            .materialized_projection_capabilities(),
+            GENERATED_PROJECTION_POLICY.materialized_projection_capabilities(),
         )
         GENERATED_PROJECTION_POLICY.validate_materialized_generated_schema(
             generated_schema,
@@ -508,9 +501,7 @@ assert registered.process_bootstrap.plugin_loader_kind == "class_constructor"
             revision_id="demo/node-a/revision-0001",
         )
 
-        expected_members = (
-            GENERATED_PROJECTION_POLICY.projection_member_registry()
-        )
+        expected_members = GENERATED_PROJECTION_POLICY.projection_member_registry()
         self.assertEqual(
             set(projection_manifest["files"]),
             set(expected_members),

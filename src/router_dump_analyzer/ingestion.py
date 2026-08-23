@@ -9,25 +9,28 @@ needs an ``open(Path)`` hook.
 
 from __future__ import annotations
 
+import unicodedata
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from copy import deepcopy
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import Enum
 from functools import partial
 from hashlib import sha256
-from math import isfinite
+from math import copysign, isfinite
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import Any, cast
 from uuid import UUID
 
 from .artifact_core import (
+    ArtifactBoundaryError,
     ArtifactLimits,
     CoreArtifactReader,
     normalize_artifact_path,
 )
-from .canonical import canonical_json, opaque_value_json
+from .canonical import canonical_json
 from .plugin_api import (
     CORE_PLUGIN_API_VERSION,
     INPUT_PARSER_HOOKS,
@@ -36,6 +39,7 @@ from .plugin_api import (
     MAX_TIMESTAMP_NS,
     MIN_TIMESTAMP_NS,
     AnalyzerPlugin,
+    ArtifactInfo,
     ConditionClass,
     CtfDiscardedEvents,
     CtfDiscardedPackets,
@@ -58,6 +62,7 @@ from .plugin_api import (
     PluginManifest,
     PluginSchema,
     ProbeMatchKind,
+    ProbeReport,
     PropertyPatch,
     Provenance,
     Quality,
@@ -76,6 +81,7 @@ from .plugin_api import (
     validate_probe_report,
     validate_probe_result,
 )
+from .plugin_execution_plan import validate_execution_identity
 from .plugin_schema_identity import (
     PluginSchemaIdentityError,
     plugin_schema_dataset,
@@ -85,6 +91,7 @@ from .revision_store import (
     AssemblyDescriptor,
     RevisionDescriptor,
 )
+from .revision_world import _canonical_resource_identity
 
 CORE_INGESTION_RUNTIME_CAPABILITY_ID = "router_dump_analyzer.runtime.v2"
 MAX_LOCATED_INPUTS = 10_000
@@ -316,9 +323,7 @@ class _IngestionPluginSnapshot:
             self._parser_hooks[hook_name] = hook if callable(hook) else None
         hook = self._parser_hooks[hook_name]
         if hook is None:
-            raise IngestionError(
-                f"InputSpec requires missing hook {hook_name}()"
-            )
+            raise IngestionError(f"InputSpec requires missing hook {hook_name}()")
         return hook
 
     def parse(
@@ -377,6 +382,30 @@ class IngestionLimits:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceRecordOrigin:
+    """Core parser coordinates needed to reproduce one normalized source row."""
+
+    parser_id: str
+    input_ordinal: int
+    output_ordinal: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.parser_id) is not str
+            or not self.parser_id
+            or len(self.parser_id) > 256
+            or "\x00" in self.parser_id
+        ):
+            raise ValueError("parser_id must contain 1 to 256 safe characters")
+        for name in ("input_ordinal", "output_ordinal"):
+            value = getattr(self, name)
+            if type(value) is not int or not 0 <= value <= (1 << 53) - 1:
+                raise ValueError(
+                    f"{name} must be a JSON-safe non-negative integer"
+                )
+
+
+@dataclass(frozen=True, slots=True)
 class IngestionResult:
     """Detached normalized result of one complete parser run."""
 
@@ -394,6 +423,40 @@ class IngestionResult:
     ]
     events: tuple[DomainEvent, ...]
     source_records: tuple[SourceRecordEmission, ...]
+    source_record_origins: tuple[SourceRecordOrigin, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.inventory) is not DumpInventory:
+            raise TypeError("inventory must be an exact DumpInventory")
+        if type(self.schema) is not PluginSchema:
+            raise TypeError("schema must be an exact PluginSchema")
+        validate_execution_identity(self.revision_id, "revision_id")
+        validate_execution_identity(self.node_id, "node_id")
+        if type(self.dataset) is not dict:
+            raise TypeError("dataset must be an exact dictionary")
+        for name, expected in (
+            ("diagnostics", PluginDiagnostic),
+            ("snapshots", SnapshotObservation),
+            ("relationship_observations", RelationshipObservation),
+            (
+                "relationship_collections",
+                RelationshipCollectionObservation,
+            ),
+            ("events", DomainEvent),
+            ("source_records", SourceRecordEmission),
+            ("source_record_origins", SourceRecordOrigin),
+        ):
+            values = getattr(self, name)
+            if type(values) is not tuple or any(
+                type(item) is not expected for item in values
+            ):
+                raise TypeError(
+                    f"{name} must be an exact tuple of {expected.__name__} values"
+                )
+        if len(self.source_records) != len(self.source_record_origins):
+            raise ValueError(
+                "source_records and source_record_origins must have equal lengths"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -509,6 +572,95 @@ def _json_value(
     raise IngestionError(
         f"plug-in output contains unsupported value type {type(value).__name__}"
     )
+
+
+def _snapshot_parser_output_value(
+    value: Any,
+    *,
+    _depth: int = 0,
+    _units: list[int] | None = None,
+    _active: set[int] | None = None,
+) -> Any:
+    """Deeply detach one already-validated parser output graph."""
+
+    units = _units if _units is not None else [0]
+    active = _active if _active is not None else set()
+    if _depth > MAX_OUTPUT_DEPTH:
+        raise IngestionError("plug-in output exceeds the maximum value depth")
+    units[0] += 1
+    if units[0] > MAX_OUTPUT_UNITS:
+        raise IngestionError("plug-in output exceeds the maximum value unit count")
+    value_type = type(value)
+    if value is None or value_type in (bool, int, float, str):
+        return value
+    if isinstance(value, Enum):
+        return value_type(value.value)
+    if value_type is bytes:
+        return bytes(value)
+    if value_type is UUID:
+        return UUID(bytes=value.bytes)
+    if value_type is PurePosixPath:
+        return PurePosixPath(value.as_posix())
+    is_mapping = isinstance(value, Mapping)
+    is_sequence = isinstance(value, (tuple, list))
+    is_record = is_dataclass(value) and not isinstance(value, type)
+    if not (is_mapping or is_sequence or is_record):
+        raise IngestionError(
+            f"plug-in output contains unsupported value type {value_type.__name__}"
+        )
+    identity = id(value)
+    if identity in active:
+        raise IngestionError("plug-in output contains a reference cycle")
+    active.add(identity)
+    try:
+        if is_mapping:
+            detached: dict[str, Any] = {}
+            for index, (key, item) in enumerate(value.items()):
+                if index >= MAX_OUTPUT_CONTAINER_ITEMS:
+                    raise IngestionError(
+                        "plug-in output mapping exceeds the item limit"
+                    )
+                if type(key) is not str:
+                    raise IngestionError("plug-in output mappings require string keys")
+                detached[key] = _snapshot_parser_output_value(
+                    item,
+                    _depth=_depth + 1,
+                    _units=units,
+                    _active=active,
+                )
+            return MappingProxyType(detached)
+        if is_sequence:
+            if len(value) > MAX_OUTPUT_CONTAINER_ITEMS:
+                raise IngestionError("plug-in output sequence exceeds the item limit")
+            return tuple(
+                _snapshot_parser_output_value(
+                    item,
+                    _depth=_depth + 1,
+                    _units=units,
+                    _active=active,
+                )
+                for item in value
+            )
+        if value_type.__module__ != "router_dump_analyzer.plugin_api":
+            raise IngestionError("plug-in output contains an unsupported record type")
+        descriptors = fields(value)
+        if len(descriptors) > MAX_OUTPUT_CONTAINER_ITEMS:
+            raise IngestionError("plug-in output record exceeds the field limit")
+        return replace(
+            value,
+            **{
+                descriptor.name: _snapshot_parser_output_value(
+                    getattr(value, descriptor.name),
+                    _depth=_depth + 1,
+                    _units=units,
+                    _active=active,
+                )
+                for descriptor in descriptors
+                if descriptor.init
+            },
+        )
+    finally:
+        active.remove(identity)
 
 
 def _normalized_value_size(value: Any) -> tuple[int, int]:
@@ -661,26 +813,7 @@ class _IngestionBudget:
 
 
 def _resource_identity(resource: ResourceKey) -> tuple[str, dict[str, Any]]:
-    parts = [
-        {
-            "name": name,
-            "value": opaque_value_json(value, key_atom_type=KeyAtom),
-        }
-        for name, value in resource.parts
-    ]
-    identity = {
-        "namespace": resource.namespace,
-        "node": resource.node,
-        "layer": resource.layer,
-        "kind": resource.kind,
-        "parts": parts,
-    }
-    token = canonical_json(identity)
-    identifier = (
-        f"{resource.namespace}/{resource.node}/{resource.layer}/"
-        f"{resource.kind}/{sha256(token.encode('utf-8')).hexdigest()[:32]}"
-    )
-    return identifier, identity
+    return _canonical_resource_identity(resource)
 
 
 def _resource_label(resource: ResourceKey) -> str:
@@ -1355,7 +1488,11 @@ def _validate_parser_output(
     ):
         raise IngestionError(f"{label}.copy_text exceeds its safe text contract")
     event_links = (
-        *((output.matched_event_uid,) if output.matched_event_uid else ()),
+        *(
+            (output.matched_event_uid,)
+            if output.matched_event_uid is not None
+            else ()
+        ),
         *output.matched_event_uids,
     )
     if any(
@@ -1993,10 +2130,7 @@ def _build_dataset(
     layer_names = sorted({resource.layer for resource in resources_by_key})
     timeline_start = min(time_values) if time_values else 0
     timeline_end = max(time_values) if time_values else timeline_start
-    if (
-        timeline_time_basis is TimelineTimeBasis.ABSOLUTE_UNIX_NS
-        and timeline_start < 0
-    ):
+    if timeline_time_basis is TimelineTimeBasis.ABSOLUTE_UNIX_NS and timeline_start < 0:
         raise IngestionError(
             "absolute-unix plug-in timelines cannot contain negative timestamps"
         )
@@ -2191,6 +2325,540 @@ def _build_dataset(
     }
 
 
+def _snapshot_publication_inventory(
+    value: DumpInventory,
+    *,
+    node_id: str,
+    limits: ArtifactLimits,
+) -> DumpInventory:
+    """Detach and validate the inventory retained by a coordinator result."""
+
+    if type(value) is not DumpInventory:
+        raise IngestionError("inventory must be an exact DumpInventory")
+    captured_node_hint = value.node_hint
+    captured_artifacts = value.artifacts
+    captured_metadata = value.metadata
+    if captured_node_hint is not None:
+        try:
+            node_hint = validate_execution_identity(captured_node_hint, "inventory node")
+        except (TypeError, ValueError) as error:
+            raise IngestionError(
+                "inventory node must be an opaque execution identity"
+            ) from error
+        if node_hint != node_id:
+            raise IngestionError("inventory node does not match the selected node")
+    else:
+        node_hint = None
+    if type(captured_artifacts) is not tuple:
+        raise IngestionError("inventory artifacts must be an exact tuple")
+    if len(captured_artifacts) > limits.max_artifacts:
+        raise IngestionError("inventory artifacts exceed the configured limit")
+
+    artifacts: list[ArtifactInfo] = []
+    artifact_ids: set[UUID] = set()
+    logical_paths: set[PurePosixPath] = set()
+    portable_paths: set[tuple[str, ...]] = set()
+    total_uncompressed = 0
+    for index, raw_artifact in enumerate(captured_artifacts):
+        if type(raw_artifact) is not ArtifactInfo:
+            raise IngestionError(
+                f"inventory.artifacts[{index}] must be an exact ArtifactInfo"
+            )
+        artifact = _snapshot_parser_output_value(raw_artifact)
+        assert type(artifact) is ArtifactInfo
+        if type(artifact.artifact_id) is not UUID:
+            raise IngestionError("inventory artifact identifier must be a UUID")
+        if artifact.artifact_id in artifact_ids:
+            raise IngestionError("inventory artifact identifiers must be unique")
+        artifact_ids.add(artifact.artifact_id)
+        if type(artifact.logical_path) is not PurePosixPath:
+            raise IngestionError("inventory artifact path must be a POSIX path")
+        try:
+            normalized_path = normalize_artifact_path(
+                artifact.logical_path.as_posix()
+            )
+        except ArtifactBoundaryError as error:
+            raise IngestionError("inventory artifact path is invalid") from error
+        if normalized_path != artifact.logical_path:
+            raise IngestionError("inventory artifact path is not canonical")
+        if len(normalized_path.parts) > limits.max_path_depth:
+            raise IngestionError("inventory artifact path exceeds the depth limit")
+        if normalized_path in logical_paths:
+            raise IngestionError("inventory artifact paths must be unique")
+        logical_paths.add(normalized_path)
+        portable_path = tuple(
+            unicodedata.normalize("NFC", part).casefold()
+            for part in normalized_path.parts
+        )
+        if portable_path in portable_paths:
+            raise IngestionError(
+                "inventory artifact paths must be unique on portable filesystems"
+            )
+        portable_paths.add(portable_path)
+        if artifact.parent_artifact_id is not None and type(
+            artifact.parent_artifact_id
+        ) is not UUID:
+            raise IngestionError("inventory parent artifact identifier is invalid")
+        _bounded_text(
+            artifact.media_type,
+            "inventory artifact media_type",
+            maximum=256,
+        )
+        for field_name in ("compressed_size", "uncompressed_size"):
+            size = getattr(artifact, field_name)
+            if size is not None and (type(size) is not int or size < 0):
+                raise IngestionError(
+                    f"inventory artifact {field_name} must be non-negative or null"
+                )
+        if (
+            artifact.compressed_size is not None
+            and artifact.compressed_size > limits.max_total_uncompressed_bytes
+        ):
+            raise IngestionError(
+                "inventory compressed size exceeds the configured byte domain"
+            )
+        if (
+            artifact.uncompressed_size is not None
+            and artifact.uncompressed_size > limits.max_artifact_bytes
+        ):
+            raise IngestionError("inventory artifact exceeds the configured byte limit")
+        total_uncompressed += artifact.uncompressed_size or 0
+        if (
+            artifact.compressed_size is not None
+            and artifact.uncompressed_size is not None
+            and artifact.uncompressed_size
+            > max(1, artifact.compressed_size) * limits.max_compression_ratio
+        ):
+            raise IngestionError(
+                "inventory artifact exceeds the configured compression ratio"
+            )
+        digest = artifact.sha256
+        if digest is not None and (
+            type(digest) is not str
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise IngestionError("inventory artifact sha256 is invalid")
+        artifacts.append(artifact)
+    if total_uncompressed > limits.max_total_uncompressed_bytes:
+        raise IngestionError("inventory exceeds the configured total byte limit")
+    for artifact in artifacts:
+        if (
+            artifact.parent_artifact_id is not None
+            and artifact.parent_artifact_id not in artifact_ids
+        ):
+            raise IngestionError("inventory parent artifact is not in the inventory")
+
+    parents = {
+        artifact.artifact_id: artifact.parent_artifact_id for artifact in artifacts
+    }
+    visit_state: dict[UUID, int] = {}
+    for artifact_id in parents:
+        if visit_state.get(artifact_id) == 2:
+            continue
+        trail: list[UUID] = []
+        current: UUID | None = artifact_id
+        while current is not None and visit_state.get(current, 0) == 0:
+            visit_state[current] = 1
+            trail.append(current)
+            current = parents.get(current)
+        if current is not None and visit_state.get(current) == 1:
+            raise IngestionError("inventory parent artifacts contain a cycle")
+        for visited in trail:
+            visit_state[visited] = 2
+
+    detached_metadata = _snapshot_parser_output_value(captured_metadata)
+    if not isinstance(detached_metadata, Mapping):
+        raise IngestionError("inventory metadata must be a mapping")
+    _json_value(detached_metadata)
+    return DumpInventory(
+        node_hint=node_hint,
+        artifacts=tuple(artifacts),
+        metadata=detached_metadata,
+    )
+
+
+def _require_exact_dataset_projection(
+    supplied: Any,
+    expected: Any,
+    *,
+    label: str = "dataset",
+) -> None:
+    """Compare only the bounded expected graph; never traverse supplied extras."""
+
+    expected_type = type(expected)
+    if type(supplied) is not expected_type:
+        raise IngestionError(
+            "ingestion coordinator dataset is not bound to its typed result"
+        )
+    if expected_type is dict:
+        if len(supplied) != len(expected):
+            raise IngestionError(
+                "ingestion coordinator dataset is not bound to its typed result"
+            )
+        for key, nested_expected in expected.items():
+            if key not in supplied:
+                raise IngestionError(
+                    "ingestion coordinator dataset is not bound to its typed result"
+                )
+            _require_exact_dataset_projection(
+                supplied[key],
+                nested_expected,
+                label=f"{label}.{key}",
+            )
+        return
+    if expected_type is list:
+        if len(supplied) != len(expected):
+            raise IngestionError(
+                "ingestion coordinator dataset is not bound to its typed result"
+            )
+        for index, nested_expected in enumerate(expected):
+            _require_exact_dataset_projection(
+                supplied[index],
+                nested_expected,
+                label=f"{label}[{index}]",
+            )
+        return
+    if expected_type is float:
+        matches = supplied == expected and (
+            supplied != 0.0 or copysign(1.0, supplied) == copysign(1.0, expected)
+        )
+    else:
+        matches = supplied == expected
+    if not matches:
+        raise IngestionError(
+            "ingestion coordinator dataset is not bound to its typed result"
+        )
+
+
+def snapshot_ingestion_result_for_publication(
+    value: object,
+    *,
+    limits: IngestionLimits,
+    plugin_id: str,
+    timeline_time_basis: TimelineTimeBasis,
+    timeline_clock_domain: str | None,
+    expected_node_id: str | None,
+) -> IngestionResult:
+    """Detach, revalidate, and canonically rebuild a coordinator handoff.
+
+    A deployment may supply a custom coordinator, and even an exact stock
+    coordinator instance is mutable Python state.  Therefore publication never
+    trusts either the coordinator's class or its convenient JSON projection.
+    The typed result is admitted again under the same semantic and aggregate
+    parser budgets, and the supplied dataset must equal the closed projection
+    rebuilt from those detached values.
+    """
+
+    if type(limits) is not IngestionLimits:
+        raise TypeError("limits must be an exact IngestionLimits")
+    _bounded_text(plugin_id, "plugin_id", maximum=256)
+    if type(timeline_time_basis) is not TimelineTimeBasis:
+        raise TypeError("timeline_time_basis must be an exact TimelineTimeBasis")
+    if timeline_clock_domain is not None:
+        _bounded_text(
+            timeline_clock_domain,
+            "timeline_clock_domain",
+            maximum=256,
+        )
+    if type(value) is not IngestionResult:
+        raise IngestionError(
+            "ingestion coordinator must return an exact IngestionResult"
+        )
+    # Capture every coordinator-owned top-level reference once. Frozen
+    # dataclasses can still be mutated with low-level operations from another
+    # thread, so rereading fields after admission would create a TOCTOU split.
+    captured_inventory = value.inventory
+    captured_schema = value.schema
+    captured_revision_id = value.revision_id
+    captured_node_id = value.node_id
+    captured_dataset = value.dataset
+    captured_diagnostics = value.diagnostics
+    captured_snapshots = value.snapshots
+    captured_relationship_observations = value.relationship_observations
+    captured_relationship_collections = value.relationship_collections
+    captured_events = value.events
+    captured_source_records = value.source_records
+    captured_source_record_origins = value.source_record_origins
+
+    if type(captured_inventory) is not DumpInventory:
+        raise IngestionError("inventory must be an exact DumpInventory")
+    if type(captured_schema) is not PluginSchema:
+        raise IngestionError("schema must be an exact PluginSchema")
+    if type(captured_dataset) is not dict:
+        raise IngestionError("dataset must be an exact dictionary")
+    try:
+        revision_id = validate_execution_identity(
+            captured_revision_id,
+            "revision_id",
+        )
+        node_id = validate_execution_identity(captured_node_id, "node_id")
+    except (TypeError, ValueError) as error:
+        raise IngestionError(
+            "coordinator result identity is invalid"
+        ) from error
+    tuple_groups: tuple[tuple[str, object, int], ...] = (
+        ("diagnostics", captured_diagnostics, limits.max_diagnostics),
+        ("snapshots", captured_snapshots, limits.max_parsed_outputs),
+        (
+            "relationship_observations",
+            captured_relationship_observations,
+            limits.max_parsed_outputs,
+        ),
+        (
+            "relationship_collections",
+            captured_relationship_collections,
+            limits.max_parsed_outputs,
+        ),
+        ("events", captured_events, limits.max_parsed_outputs),
+        ("source_records", captured_source_records, limits.max_parsed_outputs),
+        (
+            "source_record_origins",
+            captured_source_record_origins,
+            limits.max_parsed_outputs,
+        ),
+    )
+    for label, items, maximum in tuple_groups:
+        if type(items) is not tuple:
+            raise IngestionError(f"{label} must be an exact tuple")
+        if len(items) > maximum:
+            raise IngestionError(f"{label} exceed the configured limit")
+    output_count = sum(
+        len(items)
+        for label, items, _maximum in tuple_groups
+        if label
+        in {
+            "snapshots",
+            "relationship_observations",
+            "relationship_collections",
+            "events",
+            "source_records",
+        }
+    )
+    if output_count > limits.max_parsed_outputs:
+        raise IngestionError("coordinator result exceeds the parsed output limit")
+    if output_count + len(captured_diagnostics) > limits.max_total_outputs:
+        raise IngestionError("coordinator result exceeds the aggregate output limit")
+    if len(captured_source_record_origins) != len(captured_source_records):
+        raise IngestionError(
+            "source_record_origins must align one-for-one with source_records"
+        )
+    if expected_node_id is not None:
+        try:
+            expected_node = validate_execution_identity(
+                expected_node_id,
+                "expected_node_id",
+            )
+        except (TypeError, ValueError) as error:
+            raise IngestionError("expected_node_id is invalid") from error
+        if node_id != expected_node:
+            raise IngestionError(
+                "coordinator result node does not match the requested node_hint"
+            )
+
+    inventory = _snapshot_publication_inventory(
+        captured_inventory,
+        node_id=node_id,
+        limits=limits.artifact_limits,
+    )
+    schema = _snapshot_parser_output_value(captured_schema)
+    if type(schema) is not PluginSchema:
+        raise IngestionError("schema must be an exact PluginSchema")
+    schema_index = _SchemaIndex.build(schema)
+    artifact_ids = {artifact.artifact_id for artifact in inventory.artifacts}
+    budget = _IngestionBudget(limits)
+    budget.consume(schema, label="schema", output=False)
+
+    diagnostics: list[PluginDiagnostic] = []
+    allowed_diagnostic_pairs = frozenset(
+        {
+            (DiagnosticOrigin.PLUGIN, DiagnosticStage.PROBE),
+            (DiagnosticOrigin.PLUGIN, DiagnosticStage.LOCATE),
+            (DiagnosticOrigin.PLUGIN, DiagnosticStage.STATUS_PARSE),
+            (DiagnosticOrigin.PLUGIN, DiagnosticStage.TRACE_MAP),
+            (DiagnosticOrigin.CORE_DECODER, DiagnosticStage.TRACE_DECODE),
+        }
+    )
+    decoder_diagnostic_count = 0
+    for index, item in enumerate(captured_diagnostics):
+        if type(item) is not PluginDiagnostic:
+            raise IngestionError(
+                f"diagnostics[{index}] must be an exact PluginDiagnostic"
+            )
+        detached = _snapshot_parser_output_value(item)
+        _validate_diagnostic(
+            detached,
+            artifact_ids=artifact_ids,
+            label=f"diagnostics[{index}]",
+        )
+        if (
+            (detached.origin, detached.stage) not in allowed_diagnostic_pairs
+            or not detached.recoverable
+        ):
+            raise IngestionError(
+                "coordinator result contains an impossible ingestion diagnostic"
+            )
+        if detached.origin is DiagnosticOrigin.CORE_DECODER:
+            decoder_diagnostic_count += 1
+        budget.consume(detached, label=f"diagnostics[{index}]")
+        diagnostics.append(detached)
+    if decoder_diagnostic_count > limits.max_decoder_outputs:
+        raise IngestionError("coordinator result exceeds the decoder output limit")
+
+    output_groups: tuple[
+        tuple[str, tuple[Any, ...], type[Any]],
+        ...,
+    ] = (
+        ("snapshots", captured_snapshots, SnapshotObservation),
+        (
+            "relationship_observations",
+            captured_relationship_observations,
+            RelationshipObservation,
+        ),
+        (
+            "relationship_collections",
+            captured_relationship_collections,
+            RelationshipCollectionObservation,
+        ),
+        ("events", captured_events, DomainEvent),
+        ("source_records", captured_source_records, SourceRecordEmission),
+    )
+    parser_diagnostic_count = sum(
+        diagnostic.stage
+        in {DiagnosticStage.STATUS_PARSE, DiagnosticStage.TRACE_MAP}
+        for diagnostic in diagnostics
+    )
+    if output_count + parser_diagnostic_count > limits.max_parsed_outputs:
+        raise IngestionError("coordinator result exceeds the parsed output limit")
+    if output_count + len(diagnostics) > limits.max_total_outputs:
+        raise IngestionError("coordinator result exceeds the aggregate output limit")
+
+    detached_groups: dict[str, tuple[Any, ...]] = {}
+    for group_name, items, expected_type in output_groups:
+        detached_items: list[Any] = []
+        for index, item in enumerate(items):
+            if type(item) is not expected_type:
+                raise IngestionError(
+                    f"{group_name}[{index}] must be an exact "
+                    f"{expected_type.__name__}"
+                )
+            detached = _snapshot_parser_output_value(item)
+            _validate_parser_output(
+                detached,
+                schema_index=schema_index,
+                artifact_ids=artifact_ids,
+                expected_node=node_id,
+                expected_diagnostic_stage=DiagnosticStage.STATUS_PARSE,
+                label=f"{group_name}[{index}]",
+            )
+            budget.consume(detached, label=f"{group_name}[{index}]")
+            detached_items.append(detached)
+        detached_groups[group_name] = tuple(detached_items)
+
+    detached_origins: list[SourceRecordOrigin] = []
+    for index, origin in enumerate(captured_source_record_origins):
+        if type(origin) is not SourceRecordOrigin:
+            raise IngestionError(
+                f"source_record_origins[{index}] must be an exact SourceRecordOrigin"
+            )
+        detached_origins.append(
+            SourceRecordOrigin(
+                parser_id=origin.parser_id,
+                input_ordinal=origin.input_ordinal,
+                output_ordinal=origin.output_ordinal,
+            )
+        )
+    origins = tuple(detached_origins)
+    for index, origin in enumerate(origins):
+        if origin.input_ordinal >= limits.max_located_inputs:
+            raise IngestionError(
+                "source record input ordinal exceeds the located-input limit"
+            )
+        if origin.output_ordinal >= limits.max_parsed_outputs:
+            raise IngestionError(
+                "source record output ordinal exceeds the parsed-output limit"
+            )
+        budget.consume(
+            {
+                "parser_id": origin.parser_id,
+                "input_ordinal": origin.input_ordinal,
+                "output_ordinal": origin.output_ordinal,
+            },
+            label=f"source_record_origins[{index}]",
+            output=False,
+        )
+    coordinates = tuple(
+        (origin.parser_id, origin.input_ordinal, origin.output_ordinal)
+        for origin in origins
+    )
+    if len(coordinates) != len(set(coordinates)):
+        raise IngestionError("source record parser coordinates must be unique")
+
+    events = tuple(detached_groups["events"])
+    event_uids = tuple(event.event_uid for event in events)
+    if len(event_uids) != len(set(event_uids)):
+        raise IngestionError("coordinator result contains duplicate event identifiers")
+    known_event_uids = set(event_uids)
+    source_emissions = tuple(detached_groups["source_records"])
+    for emission in source_emissions:
+        linked = {
+            *(
+                (emission.matched_event_uid,)
+                if emission.matched_event_uid is not None
+                else ()
+            ),
+            *emission.matched_event_uids,
+        }
+        if linked - known_event_uids:
+            raise IngestionError(
+                "coordinator source record references an unknown event identifier"
+            )
+    parsed_source_records = tuple(
+        _ParsedSourceRecord(
+            parser_id=origin.parser_id,
+            input_ordinal=origin.input_ordinal,
+            output_ordinal=origin.output_ordinal,
+            emission=emission,
+        )
+        for origin, emission in zip(origins, source_emissions, strict=True)
+    )
+
+    rebuilt_dataset = _build_dataset(
+        plugin_id=plugin_id,
+        inventory=inventory,
+        schema=schema,
+        revision_id=revision_id,
+        node_id=node_id,
+        snapshots=detached_groups["snapshots"],
+        relationship_observations=detached_groups["relationship_observations"],
+        relationship_collections=detached_groups["relationship_collections"],
+        events=events,
+        source_records=parsed_source_records,
+        diagnostics=tuple(diagnostics),
+        timeline_time_basis=timeline_time_basis,
+        timeline_clock_domain=timeline_clock_domain,
+    )
+    _require_exact_dataset_projection(captured_dataset, rebuilt_dataset)
+    return IngestionResult(
+        inventory=inventory,
+        schema=schema,
+        revision_id=revision_id,
+        node_id=node_id,
+        dataset=rebuilt_dataset,
+        diagnostics=tuple(diagnostics),
+        snapshots=tuple(detached_groups["snapshots"]),
+        relationship_observations=tuple(
+            detached_groups["relationship_observations"]
+        ),
+        relationship_collections=tuple(
+            detached_groups["relationship_collections"]
+        ),
+        events=events,
+        source_records=source_emissions,
+        source_record_origins=origins,
+    )
+
+
 def _fingerprint(
     reader: CoreArtifactReader,
     manifest: _IngestionManifestSnapshot,
@@ -2327,11 +2995,12 @@ class IngestionCoordinator:
         budget: _IngestionBudget,
     ) -> tuple[PluginSchema, _SchemaIndex]:
         def process() -> tuple[PluginSchema, _SchemaIndex]:
-            schema = plugin.describe()
+            output = plugin.describe()
+            if type(output) is not PluginSchema:
+                raise IngestionError("describe() must return an exact PluginSchema")
+            schema = _snapshot_parser_output_value(output)
             if type(schema) is not PluginSchema:
-                raise IngestionError(
-                    "describe() must return an exact PluginSchema"
-                )
+                raise IngestionError("describe() must return an exact PluginSchema")
             budget.consume(schema, label="describe", output=False)
             return schema, _SchemaIndex.build(schema)
 
@@ -2348,22 +3017,28 @@ class IngestionCoordinator:
     ) -> tuple[PluginDiagnostic, ...]:
         def process() -> tuple[PluginDiagnostic, ...]:
             raw_report = plugin.probe(inventory)
-            inventory_artifact_ids = {
-                item.artifact_id for item in inventory.artifacts
-            }
+            inventory_artifact_ids = {item.artifact_id for item in inventory.artifacts}
             try:
                 report = validate_probe_report(
                     raw_report,
                     artifact_ids=inventory_artifact_ids,
                     maximum_diagnostics=self.limits.max_diagnostics,
-                    maximum_evidence_items=(
-                        self.limits.max_evidence_per_output
-                    ),
+                    maximum_evidence_items=(self.limits.max_evidence_per_output),
                 )
             except ValueError as error:
-                raise IngestionError(
-                    f"probe report is invalid: {error}"
-                ) from error
+                raise IngestionError(f"probe report is invalid: {error}") from error
+            detached_report = _snapshot_parser_output_value(report)
+            if type(detached_report) is not ProbeReport:
+                raise IngestionError("probe() must return an exact ProbeReport")
+            try:
+                report = validate_probe_report(
+                    detached_report,
+                    artifact_ids=inventory_artifact_ids,
+                    maximum_diagnostics=self.limits.max_diagnostics,
+                    maximum_evidence_items=(self.limits.max_evidence_per_output),
+                )
+            except ValueError as error:
+                raise IngestionError(f"probe report is invalid: {error}") from error
             probe_diagnostics = tuple(report.diagnostics)
             for index, diagnostic in enumerate(probe_diagnostics):
                 budget.consume(
@@ -2372,16 +3047,13 @@ class IngestionCoordinator:
                 )
                 if not diagnostic.recoverable:
                     raise IngestionError(
-                        f"probe() failed: {diagnostic.code}: "
-                        f"{diagnostic.message}"
+                        f"probe() failed: {diagnostic.code}: {diagnostic.message}"
                     )
             if report.result is not None:
                 try:
                     probe_result = validate_probe_result(report.result)
                 except ValueError as error:
-                    raise IngestionError(
-                        f"probe result is invalid: {error}"
-                    ) from error
+                    raise IngestionError(f"probe result is invalid: {error}") from error
                 budget.consume(
                     probe_result,
                     label="probe.result",
@@ -2432,6 +3104,12 @@ class IngestionCoordinator:
                     raise IngestionError(
                         "locate_inputs() exceeded the configured output limit"
                     )
+                if type(output) not in (PluginDiagnostic, InputSpec):
+                    raise IngestionError(
+                        "locate_inputs() outputs must be exact InputSpec or "
+                        "PluginDiagnostic"
+                    )
+                output = _snapshot_parser_output_value(output)
                 budget.consume(
                     output,
                     label=f"locate_inputs[{index}]",
@@ -2450,11 +3128,7 @@ class IngestionCoordinator:
                             f"locate_inputs() failed: {output.code}: {output.message}"
                         )
                     continue
-                if type(output) is not InputSpec:
-                    raise IngestionError(
-                        "locate_inputs() outputs must be exact InputSpec or "
-                        "PluginDiagnostic"
-                    )
+                assert type(output) is InputSpec
                 if output.parser_kind is None:
                     raise IngestionError(
                         "core ingestion requires InputSpec.parser_kind"
@@ -2623,33 +3297,46 @@ class IngestionCoordinator:
                         ),
                         label=(f"{spec.dispatch_hook}[{input_ordinal}:{ordinal}]"),
                     )
-                    if isinstance(output, SnapshotObservation):
-                        snapshots.append(output)
-                    elif isinstance(output, RelationshipObservation):
-                        relationships.append(output)
+                    detached_output = _snapshot_parser_output_value(output)
+                    _validate_parser_output(
+                        detached_output,
+                        schema_index=schema_index,
+                        artifact_ids=set(spec.artifact_ids),
+                        expected_node=spec.node,
+                        expected_diagnostic_stage=(
+                            DiagnosticStage.STATUS_PARSE
+                            if spec.parser_kind is InputParserKind.STATUS
+                            else DiagnosticStage.TRACE_MAP
+                        ),
+                        label=(f"{spec.dispatch_hook}[{input_ordinal}:{ordinal}]"),
+                    )
+                    if isinstance(detached_output, SnapshotObservation):
+                        snapshots.append(detached_output)
+                    elif isinstance(detached_output, RelationshipObservation):
+                        relationships.append(detached_output)
                     elif isinstance(
-                        output,
+                        detached_output,
                         RelationshipCollectionObservation,
                     ):
-                        collections.append(output)
-                    elif isinstance(output, DomainEvent):
-                        events.append(output)
-                    elif isinstance(output, SourceRecordEmission):
+                        collections.append(detached_output)
+                    elif isinstance(detached_output, DomainEvent):
+                        events.append(detached_output)
+                    elif isinstance(detached_output, SourceRecordEmission):
                         source_records.append(
                             _ParsedSourceRecord(
                                 parser_id=spec.parser_id,
                                 input_ordinal=input_ordinal,
                                 output_ordinal=ordinal,
-                                emission=output,
+                                emission=detached_output,
                             )
                         )
                     else:
-                        assert isinstance(output, PluginDiagnostic)
-                        diagnostics.append(output)
-                        if not output.recoverable:
+                        assert isinstance(detached_output, PluginDiagnostic)
+                        diagnostics.append(detached_output)
+                        if not detached_output.recoverable:
                             raise IngestionError(
                                 f"{spec.dispatch_hook}() failed: "
-                                f"{output.code}: {output.message}"
+                                f"{detached_output.code}: {detached_output.message}"
                             )
             finally:
                 close = getattr(iterator, "close", None)
@@ -2814,7 +3501,13 @@ class IngestionCoordinator:
                     raise IngestionError(
                         "one core-ingestion revision must select exactly one node"
                     )
-                return next(iter(nodes))
+                node = next(iter(nodes))
+                try:
+                    return validate_execution_identity(node, "selected node")
+                except (TypeError, ValueError) as error:
+                    raise IngestionError(
+                        "selected node must be an opaque execution identity"
+                    ) from error
 
             node_id = _plugin_execution_boundary(
                 "locate_inputs() result finalization",
@@ -2847,6 +3540,7 @@ class IngestionCoordinator:
                     *locate_diagnostics,
                 ),
             )
+
             def validate_event_links() -> None:
                 event_uids = [event.event_uid for event in events]
                 if len(event_uids) != len(set(event_uids)):
@@ -2877,7 +3571,17 @@ class IngestionCoordinator:
             inventory = reader.inventory
 
         def finalize_dataset() -> tuple[str, dict[str, Any]]:
-            revision_id = f"ingested/{node_id}/{fingerprint[:32]}"
+            # Revision identity must fit the same closed executable-plan domain
+            # for every legal node. Preserve the established node-prefixed ID
+            # whenever it fits; use a visibly versioned, full-digest fallback
+            # only at the long-node boundary rather than silently rekeying
+            # existing revisions.
+            legacy_revision_id = f"ingested/{node_id}/{fingerprint[:32]}"
+            revision_id = (
+                legacy_revision_id
+                if len(legacy_revision_id) <= 256
+                else f"ingested-v2/{fingerprint}"
+            )
             return revision_id, _build_dataset(
                 plugin_id=selected.manifest.plugin_id,
                 inventory=inventory,
@@ -2910,6 +3614,14 @@ class IngestionCoordinator:
             relationship_collections=tuple(collections),
             events=tuple(events),
             source_records=tuple(item.emission for item in source_records),
+            source_record_origins=tuple(
+                SourceRecordOrigin(
+                    parser_id=item.parser_id,
+                    input_ordinal=item.input_ordinal,
+                    output_ordinal=item.output_ordinal,
+                )
+                for item in source_records
+            ),
         )
 
 
@@ -3148,4 +3860,6 @@ __all__ = [
     "IngestionError",
     "IngestionLimits",
     "IngestionResult",
+    "SourceRecordOrigin",
+    "snapshot_ingestion_result_for_publication",
 ]

@@ -2,10 +2,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
-__all__ = ['PLUGIN_EXECUTION_PLAN_VERSION_V1', 'PLUGIN_EXECUTION_PLAN_VERSION_V2', 'PLUGIN_EXECUTION_PLAN_VERSION', 'MAX_PLUGIN_EXECUTION_PLAN_WIRE_BYTES', 'PluginExecutionPlanAuthority', 'PluginArtifactIdentity', 'DecoderIdentity', 'PluginExecutionPin', 'snapshot_plugin_execution_pin', 'plugin_execution_pin_uses_legacy_identity', 'plugin_execution_plan_plugin_ids', 'plugin_execution_pin_dict', 'PluginExecutionPlan', 'snapshot_plugin_execution_plan', 'plugin_execution_plan_is_executable', 'plugin_execution_plan_digest', 'primary_parser_execution_pin', 'plugin_execution_plan_dict', 'plugin_execution_plan_from_dict', 'RevisionExecutionPlanRef']
+__all__ = ['PLUGIN_EXECUTION_PLAN_VERSION_V1', 'PLUGIN_EXECUTION_PLAN_VERSION_V2', 'PLUGIN_EXECUTION_PLAN_VERSION_V3', 'PLUGIN_EXECUTION_PLAN_VERSION', 'MAX_PLUGIN_EXECUTION_PLAN_WIRE_BYTES', 'PluginExecutionPlanAuthority', 'PluginArtifactIdentity', 'DecoderIdentity', 'PluginExecutionPin', 'snapshot_plugin_execution_pin', 'plugin_execution_pin_uses_legacy_identity', 'plugin_execution_plan_plugin_ids', 'plugin_execution_pin_dict', 'PluginExecutionPlan', 'snapshot_plugin_execution_plan', 'plugin_execution_plan_is_executable', 'plugin_execution_plan_digest', 'primary_parser_execution_pin', 'plugin_execution_plan_dict', 'plugin_execution_plan_from_dict', 'RevisionExecutionPlanRef']
 
 PLUGIN_EXECUTION_PLAN_VERSION_V1: Final[str]
 PLUGIN_EXECUTION_PLAN_VERSION_V2: Final[str]
+PLUGIN_EXECUTION_PLAN_VERSION_V3: Final[str]
 PLUGIN_EXECUTION_PLAN_VERSION: Final[str]
 MAX_PLUGIN_EXECUTION_PLAN_WIRE_BYTES: Final[int]
 
@@ -44,6 +45,7 @@ class PluginExecutionPin:
     schema_versions: tuple[str, ...] = ...
     capabilities: tuple[str, ...] = ...
     roles: tuple[str, ...] = ...
+    process_bootstrap_digest: str | None = ...
     def __post_init__(self) -> None: ...
 
 def snapshot_plugin_execution_pin(pin: PluginExecutionPin) -> PluginExecutionPin: ...

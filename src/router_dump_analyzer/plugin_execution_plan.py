@@ -24,12 +24,14 @@ PLUGIN_EXECUTION_PLAN_VERSION_V1: Final = (
 PLUGIN_EXECUTION_PLAN_VERSION_V2: Final = (
     "router_dump_analyzer.plugin_execution_plan.v2"
 )
-PLUGIN_EXECUTION_PLAN_VERSION: Final = (
+PLUGIN_EXECUTION_PLAN_VERSION_V3: Final = (
     "router_dump_analyzer.plugin_execution_plan.v3"
 )
+PLUGIN_EXECUTION_PLAN_VERSION: Final = "router_dump_analyzer.plugin_execution_plan.v4"
 _LEGACY_REGISTERED_EXECUTION_IDENTITY: Final = "sha256:" + "0" * 64
 _LEGACY_COMPOSITION_POLICY_DIGEST: Final = "sha256:" + "0" * 64
 _MAX_PLUGINS = 128
+MAX_EXECUTION_IDENTITY_LENGTH: Final[int] = 256
 MAX_PLUGIN_EXECUTION_PLAN_WIRE_BYTES: Final[int] = 512 * 1024
 _OPAQUE_PATTERN = re.compile(r"^[^\s\x00-\x1f\x7f]+$")
 _SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -42,9 +44,10 @@ class PluginExecutionPlanAuthority(StrEnum):
     """Weakest publication authority bound across one complete plan.
 
     ``PROCESS`` means the primary parser ran behind the child-process boundary
-    and every pin was PROCESS-capable. It does not claim that later capability
-    hooks are subprocess-isolated; those hooks remain synchronous in-process
-    calls under the plan-bound router.
+    and every pin was PROCESS-capable. Scheduled consistency materialization
+    also runs synchronously inside that killable ingestion child. The value
+    does not claim that every later on-demand capability hook is subprocess
+    isolated; those hooks follow their owning coordinator's execution policy.
     """
 
     LEGACY_UNRECORDED = "legacy_unrecorded"
@@ -53,7 +56,14 @@ class PluginExecutionPlanAuthority(StrEnum):
     TRUSTED_INLINE_MANIFEST = "trusted_inline_manifest"
 
 
-def _opaque(value: object, label: str, *, maximum: int = 256) -> str:
+def validate_execution_identity(
+    value: object,
+    label: str,
+    *,
+    maximum: int = MAX_EXECUTION_IDENTITY_LENGTH,
+) -> str:
+    """Validate one opaque identifier used by an executable revision plan."""
+
     if type(value) is not str:
         raise TypeError(f"{label} must be an exact string")
     result = bounded_string(value, label, maximum=maximum)
@@ -65,6 +75,15 @@ def _opaque(value: object, label: str, *, maximum: int = 256) -> str:
     ):
         raise ValueError(f"{label} must be an opaque identifier")
     return result
+
+
+def _opaque(
+    value: object,
+    label: str,
+    *,
+    maximum: int = MAX_EXECUTION_IDENTITY_LENGTH,
+) -> str:
+    return validate_execution_identity(value, label, maximum=maximum)
 
 
 def _digest(value: object, label: str, *, package: bool = False) -> str:
@@ -87,7 +106,9 @@ def _string_tuple(
         raise TypeError(f"{label} must be a tuple")
     if len(value) > maximum_items:
         raise ValueError(f"{label} supports at most {maximum_items} items")
-    result = tuple(_opaque(item, f"{label}[{index}]") for index, item in enumerate(value))
+    result = tuple(
+        _opaque(item, f"{label}[{index}]") for index, item in enumerate(value)
+    )
     if len(result) != len(set(result)):
         raise ValueError(f"{label} must not contain duplicates")
     return result
@@ -164,6 +185,7 @@ class PluginExecutionPin:
     schema_versions: tuple[str, ...] = ()
     capabilities: tuple[str, ...] = ()
     roles: tuple[str, ...] = ()
+    process_bootstrap_digest: str | None = None
 
     def __post_init__(self) -> None:
         _opaque(self.instance_id, "instance_id")
@@ -181,6 +203,8 @@ class PluginExecutionPin:
             self.registered_execution_identity,
             "registered_execution_identity",
         )
+        if self.process_bootstrap_digest is not None:
+            _digest(self.process_bootstrap_digest, "process_bootstrap_digest")
         object.__setattr__(
             self,
             "schema_versions",
@@ -210,6 +234,7 @@ def _snapshot_execution_pin(pin: PluginExecutionPin) -> PluginExecutionPin:
         configuration_digest=pin.configuration_digest,
         schema_digest=pin.schema_digest,
         registered_execution_identity=pin.registered_execution_identity,
+        process_bootstrap_digest=pin.process_bootstrap_digest,
         schema_versions=pin.schema_versions,
         capabilities=pin.capabilities,
         roles=pin.roles,
@@ -225,8 +250,8 @@ def snapshot_plugin_execution_pin(pin: PluginExecutionPin) -> PluginExecutionPin
 def plugin_execution_pin_uses_legacy_identity(pin: PluginExecutionPin) -> bool:
     """Return whether *pin* was decoded from the retained V1 contract.
 
-    Current V2 plans reject the reserved all-zero identity, so skipping the
-    added identity comparison for this sentinel cannot weaken V2 matching.
+    V2-and-later plans reject the reserved all-zero identity, so skipping the
+    added identity comparison for this sentinel cannot weaken their matching.
     """
 
     if type(pin) is not PluginExecutionPin:
@@ -248,6 +273,7 @@ def _plugin_execution_pin_payload(
     pin: PluginExecutionPin,
     *,
     include_registered_execution_identity: bool,
+    include_process_bootstrap_digest: bool,
 ) -> dict[str, Any]:
     pin = _snapshot_execution_pin(pin)
     artifact = pin.artifact
@@ -270,9 +296,9 @@ def _plugin_execution_pin_payload(
         "roles": list(pin.roles),
     }
     if include_registered_execution_identity:
-        result["registered_execution_identity"] = (
-            pin.registered_execution_identity
-        )
+        result["registered_execution_identity"] = pin.registered_execution_identity
+    if include_process_bootstrap_digest:
+        result["process_bootstrap_digest"] = pin.process_bootstrap_digest
     return result
 
 
@@ -280,6 +306,7 @@ def plugin_execution_pin_dict(pin: PluginExecutionPin) -> dict[str, Any]:
     return _plugin_execution_pin_payload(
         pin,
         include_registered_execution_identity=True,
+        include_process_bootstrap_digest=True,
     )
 
 
@@ -293,6 +320,9 @@ def _plan_payload(plan: PluginExecutionPlan) -> dict[str, Any]:
                 pin,
                 include_registered_execution_identity=(
                     plan.contract_version != PLUGIN_EXECUTION_PLAN_VERSION_V1
+                ),
+                include_process_bootstrap_digest=(
+                    plan.contract_version == PLUGIN_EXECUTION_PLAN_VERSION
                 ),
             )
             for pin in plan.plugins
@@ -308,13 +338,12 @@ def _plan_payload(plan: PluginExecutionPlan) -> dict[str, Any]:
         ),
     }
     if plan.contract_version != PLUGIN_EXECUTION_PLAN_VERSION_V1:
-        payload["composition_policy_digest"] = (
-            plan.composition_policy_digest
-        )
-    if plan.contract_version == PLUGIN_EXECUTION_PLAN_VERSION:
-        payload["execution_plan_authority"] = (
-            plan.execution_plan_authority.value
-        )
+        payload["composition_policy_digest"] = plan.composition_policy_digest
+    if plan.contract_version in (
+        PLUGIN_EXECUTION_PLAN_VERSION_V3,
+        PLUGIN_EXECUTION_PLAN_VERSION,
+    ):
+        payload["execution_plan_authority"] = plan.execution_plan_authority.value
     return payload
 
 
@@ -345,18 +374,18 @@ class PluginExecutionPlan:
         if self.contract_version not in (
             PLUGIN_EXECUTION_PLAN_VERSION_V1,
             PLUGIN_EXECUTION_PLAN_VERSION_V2,
+            PLUGIN_EXECUTION_PLAN_VERSION_V3,
             PLUGIN_EXECUTION_PLAN_VERSION,
         ):
             raise ValueError("unsupported plug-in execution-plan version")
-        if (
-            type(self.execution_plan_authority)
-            is not PluginExecutionPlanAuthority
-        ):
+        if type(self.execution_plan_authority) is not PluginExecutionPlanAuthority:
             raise TypeError(
-                "execution_plan_authority must be an exact "
-                "PluginExecutionPlanAuthority"
+                "execution_plan_authority must be an exact PluginExecutionPlanAuthority"
             )
-        if self.contract_version != PLUGIN_EXECUTION_PLAN_VERSION:
+        if self.contract_version not in (
+            PLUGIN_EXECUTION_PLAN_VERSION_V3,
+            PLUGIN_EXECUTION_PLAN_VERSION,
+        ):
             if self.execution_plan_authority not in (
                 PluginExecutionPlanAuthority.PROCESS,
                 PluginExecutionPlanAuthority.LEGACY_UNRECORDED,
@@ -375,12 +404,10 @@ class PluginExecutionPlan:
             is PluginExecutionPlanAuthority.LEGACY_UNRECORDED
         ):
             raise ValueError(
-                "v3 plug-in execution plans require recorded plan authority"
+                "v3-v4 plug-in execution plans require recorded plan authority"
             )
         if type(self.composition_policy_digest) is not str:
-            raise TypeError(
-                "composition_policy_digest must be an exact string"
-            )
+            raise TypeError("composition_policy_digest must be an exact string")
         if self.contract_version == PLUGIN_EXECUTION_PLAN_VERSION_V1:
             if self.composition_policy_digest not in (
                 "",
@@ -421,8 +448,7 @@ class PluginExecutionPlan:
         pins = tuple(_snapshot_execution_pin(pin) for pin in self.plugins)
         object.__setattr__(self, "plugins", pins)
         if self.contract_version != PLUGIN_EXECUTION_PLAN_VERSION_V1 and any(
-            pin.registered_execution_identity
-            == _LEGACY_REGISTERED_EXECUTION_IDENTITY
+            pin.registered_execution_identity == _LEGACY_REGISTERED_EXECUTION_IDENTITY
             for pin in pins
         ):
             raise ValueError(
@@ -430,8 +456,7 @@ class PluginExecutionPlan:
                 "identities"
             )
         if self.contract_version == PLUGIN_EXECUTION_PLAN_VERSION_V1 and any(
-            pin.registered_execution_identity
-            != _LEGACY_REGISTERED_EXECUTION_IDENTITY
+            pin.registered_execution_identity != _LEGACY_REGISTERED_EXECUTION_IDENTITY
             for pin in pins
         ):
             raise ValueError(
@@ -444,7 +469,10 @@ class PluginExecutionPlan:
             raise ValueError(
                 "plug-in execution plan must contain exactly one primary_parser pin"
             )
-        if self.contract_version == PLUGIN_EXECUTION_PLAN_VERSION:
+        if self.contract_version in (
+            PLUGIN_EXECUTION_PLAN_VERSION_V3,
+            PLUGIN_EXECUTION_PLAN_VERSION,
+        ):
             contains_manifest_identity = any(
                 pin.artifact.package_hash.startswith("manifest-sha256:")
                 for pin in self.plugins
@@ -454,9 +482,25 @@ class PluginExecutionPlan:
                 is PluginExecutionPlanAuthority.TRUSTED_INLINE_MANIFEST
             ):
                 raise ValueError(
-                    "v3 plug-in execution-plan authority contradicts its "
+                    "current plug-in execution-plan authority contradicts its "
                     "artifact identities"
                 )
+        if self.contract_version == PLUGIN_EXECUTION_PLAN_VERSION:
+            process_plan = (
+                self.execution_plan_authority is PluginExecutionPlanAuthority.PROCESS
+            )
+            if any(
+                (pin.process_bootstrap_digest is not None) != process_plan
+                for pin in pins
+            ):
+                raise ValueError(
+                    "v4 PROCESS plans require one process bootstrap digest per pin, "
+                    "and trusted-inline plans forbid them"
+                )
+        elif any(pin.process_bootstrap_digest is not None for pin in pins):
+            raise ValueError(
+                "v1-v3 plug-in execution plans cannot carry process bootstrap digests"
+            )
         if self.decoder is not None:
             object.__setattr__(
                 self,
@@ -515,6 +559,7 @@ def plugin_execution_plan_is_executable(plan: PluginExecutionPlan) -> bool:
     detached = _snapshot_execution_plan(plan)
     return detached.contract_version in (
         PLUGIN_EXECUTION_PLAN_VERSION_V2,
+        PLUGIN_EXECUTION_PLAN_VERSION_V3,
         PLUGIN_EXECUTION_PLAN_VERSION,
     )
 
@@ -529,9 +574,7 @@ def primary_parser_execution_pin(
     """Return the unique plan pin assigned the core ``primary_parser`` role."""
 
     detached = _snapshot_execution_plan(plan)
-    matches = tuple(
-        pin for pin in detached.plugins if "primary_parser" in pin.roles
-    )
+    matches = tuple(pin for pin in detached.plugins if "primary_parser" in pin.roles)
     if len(matches) != 1:
         raise ValueError(
             "plug-in execution plan must contain exactly one primary_parser pin"
@@ -550,10 +593,7 @@ def _exact_mapping(value: object, label: str, keys: set[str]) -> dict[str, Any]:
     if type(value) is not dict:
         raise ValueError(f"{label} must contain exactly {sorted(keys)}")
     actual_keys = tuple(value)
-    if (
-        any(type(key) is not str for key in actual_keys)
-        or set(actual_keys) != keys
-    ):
+    if any(type(key) is not str for key in actual_keys) or set(actual_keys) != keys:
         raise ValueError(f"{label} must contain exactly {sorted(keys)}")
     return value
 
@@ -567,6 +607,7 @@ def plugin_execution_plan_from_dict(value: object) -> PluginExecutionPlan:
     if contract_version not in (
         PLUGIN_EXECUTION_PLAN_VERSION_V1,
         PLUGIN_EXECUTION_PLAN_VERSION_V2,
+        PLUGIN_EXECUTION_PLAN_VERSION_V3,
         PLUGIN_EXECUTION_PLAN_VERSION,
     ):
         raise ValueError("unsupported plug-in execution-plan version")
@@ -580,7 +621,10 @@ def plugin_execution_plan_from_dict(value: object) -> PluginExecutionPlan:
     }
     if contract_version != PLUGIN_EXECUTION_PLAN_VERSION_V1:
         plan_keys.add("composition_policy_digest")
-    if contract_version == PLUGIN_EXECUTION_PLAN_VERSION:
+    if contract_version in (
+        PLUGIN_EXECUTION_PLAN_VERSION_V3,
+        PLUGIN_EXECUTION_PLAN_VERSION,
+    ):
         plan_keys.add("execution_plan_authority")
     plan = _exact_mapping(value, "execution plan", plan_keys)
     _digest(plan["plan_digest"], "plan_digest")
@@ -589,17 +633,33 @@ def plugin_execution_plan_from_dict(value: object) -> PluginExecutionPlan:
         raise TypeError("execution plan plugins must be a list")
     pins: list[PluginExecutionPin] = []
     pin_keys = {
-        "instance_id", "plugin_id", "plugin_version", "core_api_version", "artifact",
-        "configuration_digest", "schema_digest", "schema_versions", "capabilities", "roles",
+        "instance_id",
+        "plugin_id",
+        "plugin_version",
+        "core_api_version",
+        "artifact",
+        "configuration_digest",
+        "schema_digest",
+        "schema_versions",
+        "capabilities",
+        "roles",
     }
     if contract_version != PLUGIN_EXECUTION_PLAN_VERSION_V1:
         pin_keys.add("registered_execution_identity")
+    if contract_version == PLUGIN_EXECUTION_PLAN_VERSION:
+        pin_keys.add("process_bootstrap_digest")
     artifact_keys = {
-        "distribution_name", "distribution_version", "package_hash", "entry_point_name", "module_target",
+        "distribution_name",
+        "distribution_version",
+        "package_hash",
+        "entry_point_name",
+        "module_target",
     }
     for index, raw_pin in enumerate(raw_plugins):
         parsed = _exact_mapping(raw_pin, f"plugins[{index}]", pin_keys)
-        artifact = _exact_mapping(parsed["artifact"], f"plugins[{index}].artifact", artifact_keys)
+        artifact = _exact_mapping(
+            parsed["artifact"], f"plugins[{index}].artifact", artifact_keys
+        )
         pins.append(
             PluginExecutionPin(
                 instance_id=parsed["instance_id"],
@@ -614,7 +674,14 @@ def plugin_execution_plan_from_dict(value: object) -> PluginExecutionPlan:
                     if contract_version != PLUGIN_EXECUTION_PLAN_VERSION_V1
                     else _LEGACY_REGISTERED_EXECUTION_IDENTITY
                 ),
-                schema_versions=_wire_tuple(parsed["schema_versions"], "schema_versions"),
+                process_bootstrap_digest=(
+                    parsed["process_bootstrap_digest"]
+                    if contract_version == PLUGIN_EXECUTION_PLAN_VERSION
+                    else None
+                ),
+                schema_versions=_wire_tuple(
+                    parsed["schema_versions"], "schema_versions"
+                ),
                 capabilities=_wire_tuple(parsed["capabilities"], "capabilities"),
                 roles=_wire_tuple(parsed["roles"], "roles"),
             )
@@ -640,10 +707,12 @@ def plugin_execution_plan_from_dict(value: object) -> PluginExecutionPlan:
             else _LEGACY_COMPOSITION_POLICY_DIGEST
         ),
         execution_plan_authority=(
-            PluginExecutionPlanAuthority(
-                plan["execution_plan_authority"]
+            PluginExecutionPlanAuthority(plan["execution_plan_authority"])
+            if contract_version
+            in (
+                PLUGIN_EXECUTION_PLAN_VERSION_V3,
+                PLUGIN_EXECUTION_PLAN_VERSION,
             )
-            if contract_version == PLUGIN_EXECUTION_PLAN_VERSION
             else PluginExecutionPlanAuthority.LEGACY_UNRECORDED
         ),
         plan_digest=plan["plan_digest"],
@@ -675,11 +744,12 @@ __all__ = [
     "PLUGIN_EXECUTION_PLAN_VERSION",
     "PLUGIN_EXECUTION_PLAN_VERSION_V1",
     "PLUGIN_EXECUTION_PLAN_VERSION_V2",
+    "PLUGIN_EXECUTION_PLAN_VERSION_V3",
     "DecoderIdentity",
-    "PluginExecutionPlanAuthority",
     "PluginArtifactIdentity",
     "PluginExecutionPin",
     "PluginExecutionPlan",
+    "PluginExecutionPlanAuthority",
     "RevisionExecutionPlanRef",
     "plugin_execution_pin_dict",
     "plugin_execution_pin_uses_legacy_identity",

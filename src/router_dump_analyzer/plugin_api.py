@@ -43,6 +43,9 @@ FORWARDING_IR_VERSION = "1.0"
 PLUGIN_ENTRY_POINT_GROUP = "router_dump_analyzer.plugins"
 MIN_TIMESTAMP_NS = MIN_TEMPORAL_NS
 MAX_TIMESTAMP_NS = MAX_TEMPORAL_NS
+# Capture scopes are opaque evidence selectors, not resource identifiers.
+# Keep their public text budget aligned with other retained evidence locators.
+MAX_CAPTURE_RANGE_SCOPE_LENGTH = 4_096
 
 
 def _exact_temporal_ns(

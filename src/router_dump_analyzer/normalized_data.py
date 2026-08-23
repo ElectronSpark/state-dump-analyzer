@@ -9,6 +9,7 @@ and supplying presentation/route/source-record policy.
 from __future__ import annotations
 
 import json
+import re
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping
@@ -17,6 +18,7 @@ from functools import lru_cache, partial
 from hashlib import sha256
 from types import TracebackType
 from typing import Any, Protocol, runtime_checkable
+from uuid import UUID
 
 from .cancellation import check_cancellation_probe
 from .dashboard_core import (
@@ -24,12 +26,16 @@ from .dashboard_core import (
     evaluate_dashboards,
     validate_dashboard_descriptors,
 )
+from .plugin_api import MAX_CAPTURE_RANGE_SCOPE_LENGTH
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .source_record_core import project_source_record_for_log
 
 MAX_RESOURCE_TABLE_TRAVERSAL_NODES = 5_000
 MAX_RESOURCE_PAGE_SIZE = 1_000
 MAX_RANGE_DETAILS = 500
+_CLIENT_JSON_SAFE_INTEGER_MAX = (1 << 53) - 1
+_CLIENT_SIGNED_64_MIN = -(1 << 63)
+_CLIENT_SIGNED_64_MAX = (1 << 63) - 1
 _CSS_COLOR_PALETTE = (
     "#52e0c4",
     "#a58bff",
@@ -43,6 +49,7 @@ _CLIENT_DATASET_FIELDS = frozenset(
     {
         "causal_link_descriptors",
         "causal_links",
+        "consistency_materialization",
         "coverage",
         "dashboard_descriptors",
         "demo",
@@ -174,6 +181,7 @@ _CLIENT_RESOURCE_ENVELOPE_FIELDS = frozenset(
 _CLIENT_PLUGIN_DATASET_PAYLOAD_FIELDS = frozenset(
     {
         "causal_links",
+        "consistency_materialization",
         "coverage",
         "findings",
         "gaps",
@@ -197,6 +205,7 @@ _CLIENT_PLUGIN_PROPERTY_CONTAINER_FIELDS = frozenset(
         "after",
         "attributes",
         "before",
+        "details",
         "key",
         "properties",
         "result",
@@ -477,9 +486,7 @@ def resource_id(record: Mapping[str, Any]) -> str:
         ensure_ascii=False,
         separators=(",", ":"),
         default=lambda value: {
-            "python_type": (
-                f"{type(value).__module__}.{type(value).__qualname__}"
-            ),
+            "python_type": (f"{type(value).__module__}.{type(value).__qualname__}"),
             "value": str(value),
         },
     ).encode("utf-8")
@@ -554,10 +561,7 @@ def descriptor_sensitive_condition(
         return False
     condition = str(descriptor["condition_field"])
     rule = descriptor_property_rules(descriptor).get(condition, {})
-    return bool(
-        rule.get("sensitive")
-        or rule.get("client_visible", True) is False
-    )
+    return bool(rule.get("sensitive") or rule.get("client_visible", True) is False)
 
 
 @lru_cache(maxsize=256)
@@ -566,11 +570,7 @@ def _sensitive_path_trie(
 ) -> dict[object, Any]:
     root: dict[object, Any] = {}
     for field in sensitive_fields:
-        parts = tuple(
-            part
-            for part in str(field).split(".")
-            if part
-        )
+        parts = tuple(part for part in str(field).split(".") if part)
         if not parts:
             continue
         branch = root
@@ -585,15 +585,9 @@ def _redact_relative_paths(
     branch: Mapping[object, Any],
 ) -> Any:
     if isinstance(value, list):
-        return [
-            _redact_relative_paths(item, branch)
-            for item in value
-        ]
+        return [_redact_relative_paths(item, branch) for item in value]
     if isinstance(value, tuple):
-        return tuple(
-            _redact_relative_paths(item, branch)
-            for item in value
-        )
+        return tuple(_redact_relative_paths(item, branch) for item in value)
     if not isinstance(value, Mapping):
         return value
     result: dict[Any, Any] = {}
@@ -622,9 +616,7 @@ def _redact_sensitive_tree(
             if name in exact_names:
                 continue
             child = path_trie.get(name)
-            if isinstance(child, Mapping) and child.get(
-                _SENSITIVE_PATH_TERMINAL
-            ):
+            if isinstance(child, Mapping) and child.get(_SENSITIVE_PATH_TERMINAL):
                 continue
             projected = _redact_sensitive_tree(
                 nested,
@@ -681,8 +673,7 @@ def _project_evidence_for_client(value: Any) -> Any:
             key: projected
             for key, nested in value.items()
             if str(key) in _CLIENT_EVIDENCE_FIELDS
-            and (projected := _safe_public_scalar(nested))
-            is not _DROP_CLIENT_FIELD
+            and (projected := _safe_public_scalar(nested)) is not _DROP_CLIENT_FIELD
         }
     if isinstance(value, (list, tuple)):
         result = []
@@ -704,8 +695,7 @@ def _project_provenance_for_client(value: Any) -> Any:
         key: projected
         for key, nested in value.items()
         if str(key) in _CLIENT_PROVENANCE_FIELDS
-        and (projected := _safe_public_scalar(nested))
-        is not _DROP_CLIENT_FIELD
+        and (projected := _safe_public_scalar(nested)) is not _DROP_CLIENT_FIELD
     }
 
 
@@ -823,14 +813,10 @@ def _sanitize_plugin_payload_tree(
                 )
         return result
     if isinstance(value, list):
-        return [
-            _sanitize_plugin_payload_tree(item, sensitive_fields)
-            for item in value
-        ]
+        return [_sanitize_plugin_payload_tree(item, sensitive_fields) for item in value]
     if isinstance(value, tuple):
         return tuple(
-            _sanitize_plugin_payload_tree(item, sensitive_fields)
-            for item in value
+            _sanitize_plugin_payload_tree(item, sensitive_fields) for item in value
         )
     return value
 
@@ -921,14 +907,11 @@ def redact_resource_view(
     sensitive = {
         name
         for name, rule in rules.items()
-        if bool(rule.get("sensitive"))
-        or rule.get("client_visible", True) is False
+        if bool(rule.get("sensitive")) or rule.get("client_visible", True) is False
     }
     visible_properties = _client_visible_property_names(descriptor)
     visible_key_fields = {
-        str(name)
-        for name in descriptor.get("key_fields", ())
-        if isinstance(name, str)
+        str(name) for name in descriptor.get("key_fields", ()) if isinstance(name, str)
     } | visible_properties
     projected = {
         key: nested
@@ -1084,6 +1067,560 @@ def _sanitize_client_presentation(
     return value
 
 
+def _project_consistency_resource_references(value: Any) -> list[dict[str, str]]:
+    """Return only stable public identifiers from one reference collection.
+
+    Materialized findings retain typed keys for trusted offline analysis.  The
+    browser boundary must therefore treat the whole reference container as
+    untrusted: JSON arrays and their in-memory tuple equivalent are accepted,
+    while every other shape is projected to an empty collection.  In
+    particular, arbitrary values are never coerced with ``str()`` because an
+    object's representation may itself contain the private key material this
+    boundary is intended to conceal.
+    """
+
+    if not isinstance(value, (list, tuple)):
+        return []
+    projected: list[dict[str, str]] = []
+    for reference in value:
+        if not isinstance(reference, Mapping):
+            continue
+        identifier = _client_bounded_string(reference.get("resource_id"), maximum=4_096)
+        if identifier is not None:
+            projected.append({"resource_id": identifier})
+    return projected
+
+
+def _project_consistency_resource_ids(value: Any) -> list[str]:
+    """Return only exact stable public identifiers from a resource-id list."""
+
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [
+        item
+        for item in value
+        if _client_bounded_string(item, maximum=4_096) is not None
+    ]
+
+
+_CLIENT_CONSISTENCY_SEVERITIES = frozenset({"info", "warning", "error", "critical"})
+_CLIENT_CONSISTENCY_RESULTS = frozenset({"pass", "fail", "unknown"})
+_CLIENT_CONSISTENCY_PROVENANCE = frozenset(
+    {"observed", "event_derived", "reconstructed", "correlated", "plugin_default"}
+)
+_CLIENT_CONSISTENCY_QUALITY = frozenset(
+    {"exact", "best_effort", "ambiguous", "unknown"}
+)
+_CLIENT_CONSISTENCY_BASIS_KINDS = frozenset(
+    {
+        "observed_capture_vector",
+        "reconstructed_time",
+        "absolute_time",
+        "relative_capture_vector",
+    }
+)
+_CLIENT_CONSISTENCY_SELECTOR_KINDS = frozenset(
+    {"absolute_time", "relative_to_watermark"}
+)
+_CLIENT_CONSISTENCY_CLOCK_POLICIES = frozenset({"strict", "best_effort"})
+_CLIENT_CONSISTENCY_CAPABILITIES = frozenset({"consistency_check"})
+_CLIENT_SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_CLIENT_PACKAGE_DIGEST_PATTERN = re.compile(
+    r"^(?:(?:manifest|module|package)-sha256|sha256):[0-9a-f]{64}$"
+)
+_CLIENT_HEX_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _client_bounded_string(
+    value: Any,
+    *,
+    maximum: int,
+    allow_empty: bool = False,
+) -> str | None:
+    if (
+        type(value) is not str
+        or len(value) > maximum
+        or (not allow_empty and not value)
+        or "\x00" in value
+    ):
+        return None
+    return value
+
+
+def _client_enum_string(value: Any, allowed: frozenset[str]) -> str | None:
+    return value if type(value) is str and value in allowed else None
+
+
+def _client_sha256_digest(value: Any) -> str | None:
+    return (
+        value
+        if type(value) is str and _CLIENT_SHA256_PATTERN.fullmatch(value) is not None
+        else None
+    )
+
+
+def _client_timestamp_string(value: Any) -> str | None:
+    if type(value) is not str:
+        return None
+    try:
+        parsed = int(value, 10)
+    except ValueError:
+        return None
+    if (
+        not _CLIENT_SIGNED_64_MIN <= parsed <= _CLIENT_SIGNED_64_MAX
+        or str(parsed) != value
+    ):
+        return None
+    return value
+
+
+def _client_uuid_string(value: Any) -> str | None:
+    if type(value) is not str:
+        return None
+    try:
+        parsed = UUID(value)
+    except (ValueError, AttributeError):
+        return None
+    return value if str(parsed) == value else None
+
+
+def _project_optional_string(
+    target: dict[str, Any],
+    source: Mapping[str, Any],
+    field: str,
+    projector: Callable[[Any], str | None],
+) -> None:
+    if field not in source:
+        return
+    value = source.get(field)
+    if value is None:
+        target[field] = None
+        return
+    projected = projector(value)
+    if projected is not None:
+        target[field] = projected
+
+
+def _project_consistency_evidence(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    # Artifact locators remain available in the durable/admin representation,
+    # but never cross a generic browser/client projection. A descriptor cannot
+    # reliably classify this core Evidence field for every plug-in.
+    projected: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        artifact_id = _client_uuid_string(item.get("artifact_id"))
+        if artifact_id is None:
+            continue
+        record: dict[str, Any] = {"artifact_id": artifact_id}
+        _project_optional_string(
+            record,
+            item,
+            "raw_timestamp_ns",
+            _client_timestamp_string,
+        )
+        _project_optional_string(
+            record,
+            item,
+            "clock_domain",
+            lambda nested: _client_bounded_string(nested, maximum=256),
+        )
+        _project_optional_string(
+            record,
+            item,
+            "excerpt_sha256",
+            lambda nested: (
+                nested
+                if type(nested) is str
+                and _CLIENT_HEX_SHA256_PATTERN.fullmatch(nested) is not None
+                else None
+            ),
+        )
+        projected.append(record)
+    return projected
+
+
+def _project_consistency_scope(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    for field, maximum in (("node_id", 256), ("status_perspective_id", 128)):
+        nested = _client_bounded_string(value.get(field), maximum=maximum)
+        if nested is not None:
+            projected[field] = nested
+    _project_optional_string(
+        projected,
+        value,
+        "topology_projection_id",
+        lambda nested: _client_bounded_string(nested, maximum=128),
+    )
+    return projected
+
+
+def _project_consistency_basis(value: Any) -> dict[str, Any]:
+    """Project the closed client-safe shape of a materialized WorldBasis."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    for field, allowed in (
+        ("kind", _CLIENT_CONSISTENCY_BASIS_KINDS),
+        ("provenance", _CLIENT_CONSISTENCY_PROVENANCE),
+        ("quality", _CLIENT_CONSISTENCY_QUALITY),
+    ):
+        nested = _client_enum_string(value.get(field), allowed)
+        if nested is not None:
+            projected[field] = nested
+    for field in ("requested_time_ns", "resolved_at_min_ns", "resolved_at_max_ns"):
+        _project_optional_string(
+            projected,
+            value,
+            field,
+            _client_timestamp_string,
+        )
+    _project_optional_string(
+        projected,
+        value,
+        "clock_domain",
+        lambda nested: _client_bounded_string(nested, maximum=256),
+    )
+    _project_optional_string(
+        projected,
+        value,
+        "unresolved_reason",
+        lambda nested: _client_bounded_string(nested, maximum=8_192),
+    )
+
+    ranges: list[dict[str, Any]] = []
+    raw_ranges = value.get("capture_ranges")
+    if isinstance(raw_ranges, (list, tuple)):
+        for item in raw_ranges:
+            if not isinstance(item, Mapping):
+                continue
+            record: dict[str, Any] = {}
+            scope = _client_bounded_string(
+                item.get("scope"),
+                maximum=MAX_CAPTURE_RANGE_SCOPE_LENGTH,
+            )
+            if scope is not None:
+                record["scope"] = scope
+            for field in ("observed_at_min_ns", "observed_at_max_ns"):
+                _project_optional_string(
+                    record,
+                    item,
+                    field,
+                    _client_timestamp_string,
+                )
+            _project_optional_string(
+                record,
+                item,
+                "clock_domain",
+                lambda nested: _client_bounded_string(nested, maximum=256),
+            )
+            record["evidence"] = _project_consistency_evidence(item.get("evidence"))
+            if "scope" in record:
+                ranges.append(record)
+    projected["capture_ranges"] = ranges
+
+    resolutions: list[dict[str, Any]] = []
+    raw_resolutions = value.get("node_resolutions")
+    if isinstance(raw_resolutions, (list, tuple)):
+        for item in raw_resolutions:
+            if not isinstance(item, Mapping):
+                continue
+            record: dict[str, Any] = {}
+            node_id = _client_bounded_string(item.get("node_id"), maximum=256)
+            quality = _client_enum_string(
+                item.get("quality"), _CLIENT_CONSISTENCY_QUALITY
+            )
+            if node_id is not None:
+                record["node_id"] = node_id
+            if quality is not None:
+                record["quality"] = quality
+            for field in (
+                "local_min_ns",
+                "local_max_ns",
+                "absolute_min_ns",
+                "absolute_max_ns",
+            ):
+                _project_optional_string(
+                    record,
+                    item,
+                    field,
+                    _client_timestamp_string,
+                )
+            for field, maximum in (
+                ("local_clock_domain", 256),
+                ("mapping_method", 256),
+                ("reason_code", 128),
+            ):
+                _project_optional_string(
+                    record,
+                    item,
+                    field,
+                    lambda nested, maximum=maximum: _client_bounded_string(
+                        nested, maximum=maximum
+                    ),
+                )
+            record["evidence"] = _project_consistency_evidence(item.get("evidence"))
+            if {"node_id", "quality"} <= record.keys():
+                resolutions.append(record)
+    projected["node_resolutions"] = resolutions
+
+    raw_selector = value.get("selector")
+    if isinstance(raw_selector, Mapping):
+        selector: dict[str, Any] = {}
+        selector_kind = _client_enum_string(
+            raw_selector.get("kind"), _CLIENT_CONSISTENCY_SELECTOR_KINDS
+        )
+        if selector_kind is not None:
+            selector["kind"] = selector_kind
+        clock_policy = _client_enum_string(
+            raw_selector.get("clock_policy"), _CLIENT_CONSISTENCY_CLOCK_POLICIES
+        )
+        if clock_policy is not None:
+            selector["clock_policy"] = clock_policy
+        for field in ("time_ns", "offset_ns"):
+            _project_optional_string(
+                selector,
+                raw_selector,
+                field,
+                _client_timestamp_string,
+            )
+        _project_optional_string(
+            selector,
+            raw_selector,
+            "clock_domain",
+            lambda nested: _client_bounded_string(nested, maximum=256),
+        )
+        if "scope" in raw_selector:
+            selector["scope"] = _project_consistency_scope(raw_selector["scope"])
+        projected["selector"] = selector
+    elif raw_selector is None:
+        projected["selector"] = None
+
+    raw_watermark = value.get("watermark")
+    if isinstance(raw_watermark, Mapping):
+        watermark: dict[str, Any] = {}
+        local_time = _client_timestamp_string(raw_watermark.get("local_time_ns"))
+        clock_domain = _client_bounded_string(
+            raw_watermark.get("clock_domain"), maximum=256
+        )
+        provenance = _client_enum_string(
+            raw_watermark.get("provenance"), _CLIENT_CONSISTENCY_PROVENANCE
+        )
+        quality = _client_enum_string(
+            raw_watermark.get("quality"), _CLIENT_CONSISTENCY_QUALITY
+        )
+        if local_time is not None:
+            watermark["local_time_ns"] = local_time
+        if clock_domain is not None:
+            watermark["clock_domain"] = clock_domain
+        if provenance is not None:
+            watermark["provenance"] = provenance
+        if quality is not None:
+            watermark["quality"] = quality
+        for field in ("absolute_min_ns", "absolute_max_ns"):
+            _project_optional_string(
+                watermark,
+                raw_watermark,
+                field,
+                _client_timestamp_string,
+            )
+        _project_optional_string(
+            watermark,
+            raw_watermark,
+            "mapping_method",
+            lambda nested: _client_bounded_string(nested, maximum=256),
+        )
+        watermark["scope"] = _project_consistency_scope(raw_watermark.get("scope"))
+        watermark["evidence"] = _project_consistency_evidence(
+            raw_watermark.get("evidence")
+        )
+        projected["watermark"] = watermark
+    elif raw_watermark is None:
+        projected["watermark"] = None
+    return projected
+
+
+def _project_consistency_producer(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    for field, maximum in (
+        ("member_id", 256),
+        ("node_id", 256),
+        ("basis_revision_id", 256),
+        ("instance_id", 256),
+        ("plugin_id", 256),
+        ("plugin_version", 128),
+    ):
+        nested = _client_bounded_string(value.get(field), maximum=maximum)
+        if nested is not None:
+            projected[field] = nested
+    for field in (
+        "plan_digest",
+        "registered_execution_identity",
+        "configuration_digest",
+        "schema_digest",
+    ):
+        nested = _client_sha256_digest(value.get(field))
+        if nested is not None:
+            projected[field] = nested
+    package_hash = value.get("package_hash")
+    if (
+        type(package_hash) is str
+        and _CLIENT_PACKAGE_DIGEST_PATTERN.fullmatch(package_hash) is not None
+    ):
+        projected["package_hash"] = package_hash
+    capability = _client_enum_string(
+        value.get("capability"), _CLIENT_CONSISTENCY_CAPABILITIES
+    )
+    if capability is not None:
+        projected["capability"] = capability
+    roles = value.get("roles")
+    projected["roles"] = (
+        [
+            item
+            for item in roles
+            if _client_bounded_string(item, maximum=256) is not None
+        ]
+        if isinstance(roles, (list, tuple))
+        else []
+    )
+    return projected
+
+
+_CLIENT_CONSISTENCY_MATERIALIZATION_NULLABLE_STRINGS = frozenset(
+    {
+        "plan_digest",
+        "basis_digest",
+    }
+)
+_CLIENT_CONSISTENCY_MATERIALIZATION_NULLABLE_COUNTS = frozenset(
+    {
+        "provider_count",
+        "finding_count",
+        "diagnostic_count",
+        "emitted_finding_count",
+        "emitted_diagnostic_count",
+        "duplicate_findings_discarded",
+        "duplicate_diagnostics_discarded",
+        "world_reads",
+    }
+)
+_CLIENT_CONSISTENCY_MATERIALIZATION_SCHEMA = (
+    "router_dump_analyzer.consistency_materialization.v1"
+)
+_CLIENT_CONSISTENCY_MATERIALIZATION_STATUSES = frozenset(
+    {"complete", "not_applicable", "not_materialized"}
+)
+
+
+def _project_consistency_materialization(value: Any) -> dict[str, Any]:
+    """Project the closed public materialization envelope."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    if value.get("schema_version") == _CLIENT_CONSISTENCY_MATERIALIZATION_SCHEMA:
+        projected["schema_version"] = value["schema_version"]
+    status = value.get("status")
+    if type(status) is str and status in _CLIENT_CONSISTENCY_MATERIALIZATION_STATUSES:
+        projected["status"] = status
+    for field in _CLIENT_CONSISTENCY_MATERIALIZATION_NULLABLE_STRINGS:
+        if field not in value:
+            continue
+        nested = value.get(field)
+        if nested is None or _client_sha256_digest(nested) is not None:
+            projected[field] = nested
+    for field in _CLIENT_CONSISTENCY_MATERIALIZATION_NULLABLE_COUNTS:
+        if field not in value:
+            continue
+        nested = value.get(field)
+        if nested is None or (
+            type(nested) is int and 0 <= nested <= _CLIENT_JSON_SAFE_INTEGER_MAX
+        ):
+            projected[field] = nested
+    if "basis" in value:
+        basis = value.get("basis")
+        projected["basis"] = (
+            None if basis is None else _project_consistency_basis(basis)
+        )
+    if "providers" in value:
+        providers = value.get("providers")
+        if providers is None:
+            projected["providers"] = None
+        elif isinstance(providers, (list, tuple)):
+            projected["providers"] = [
+                record
+                for item in providers
+                if (record := _project_consistency_producer(item))
+            ]
+        else:
+            projected["providers"] = []
+    return projected
+
+
+def _project_consistency_findings_with_sensitive_fields(
+    findings: Iterable[Mapping[str, Any]],
+    sensitive_fields: set[str],
+) -> list[dict[str, Any]]:
+    if not isinstance(findings, Iterable):
+        raise TypeError("findings must be iterable")
+    projected: list[dict[str, Any]] = []
+    for finding in findings:
+        if not isinstance(finding, Mapping):
+            raise TypeError("consistency findings must contain mappings")
+        # Build the public record field by field. Core structural records go
+        # straight to their exact allowlist projectors; only plug-in-owned
+        # ``details`` is traversed through descriptor redaction. This keeps an
+        # unknown nested sibling from affecting client cost or behavior.
+        public: dict[str, Any] = {}
+        for field in ("finding_id", "execution_plan_digest"):
+            nested = _client_sha256_digest(finding.get(field))
+            if nested is not None:
+                public[field] = nested
+        for field, maximum in (("rule_id", 256), ("summary", 8_192)):
+            nested = _client_bounded_string(finding.get(field), maximum=maximum)
+            if nested is not None:
+                public[field] = nested
+        for field, allowed in (
+            ("severity", _CLIENT_CONSISTENCY_SEVERITIES),
+            ("result", _CLIENT_CONSISTENCY_RESULTS),
+            ("provenance", _CLIENT_CONSISTENCY_PROVENANCE),
+            ("quality", _CLIENT_CONSISTENCY_QUALITY),
+        ):
+            nested = _client_enum_string(finding.get(field), allowed)
+            if nested is not None:
+                public[field] = nested
+        if "details" in finding:
+            details = finding.get("details")
+            public["details"] = (
+                redact_sensitive_tree(details, sensitive_fields)
+                if isinstance(details, Mapping)
+                else {}
+            )
+        if "resources" in finding:
+            public["resources"] = _project_consistency_resource_ids(
+                finding.get("resources")
+            )
+        if "resource_references" in finding:
+            public["resource_references"] = _project_consistency_resource_references(
+                finding.get("resource_references")
+            )
+        if "evidence" in finding:
+            public["evidence"] = _project_consistency_evidence(finding.get("evidence"))
+        if "basis" in finding:
+            public["basis"] = _project_consistency_basis(finding.get("basis"))
+        if "producer" in finding:
+            public["producer"] = _project_consistency_producer(finding.get("producer"))
+        projected.append(public)
+    return projected
+
+
 def _client_dataset_envelope(
     dataset: Mapping[str, Any],
     sensitive_fields: set[str],
@@ -1102,17 +1639,23 @@ def _client_dataset_envelope(
         name = str(key)
         if name not in _CLIENT_DATASET_FIELDS or name in omit_fields:
             continue
-        client[key] = (
-            _sanitize_plugin_payload_tree(value, sensitive_fields)
-            if name in _CLIENT_PLUGIN_DATASET_PAYLOAD_FIELDS
-            else value
-        )
+        if name == "findings":
+            client[key] = _project_consistency_findings_with_sensitive_fields(
+                value,
+                sensitive_fields,
+            )
+        elif name == "consistency_materialization":
+            client[key] = _project_consistency_materialization(value)
+        else:
+            client[key] = (
+                _sanitize_plugin_payload_tree(value, sensitive_fields)
+                if name in _CLIENT_PLUGIN_DATASET_PAYLOAD_FIELDS
+                else value
+            )
     demo = client.get("demo")
     if isinstance(demo, Mapping):
         client["demo"] = {
-            key: value
-            for key, value in demo.items()
-            if str(key) in _CLIENT_DEMO_FIELDS
+            key: value for key, value in demo.items() if str(key) in _CLIENT_DEMO_FIELDS
         }
     scale = client.get("scale")
     if isinstance(scale, Mapping):
@@ -1142,9 +1685,7 @@ class NormalizedDataCancellationProbeError(NormalizedDataCancellationError):
     """A normalized-data cancellation probe failed or broke its contract."""
 
 
-class NormalizedDataCancellationProbeResultError(
-    NormalizedDataCancellationProbeError
-):
+class NormalizedDataCancellationProbeResultError(NormalizedDataCancellationProbeError):
     """A normalized-data cancellation probe returned a non-boolean value."""
 
 
@@ -1160,6 +1701,42 @@ _check_normalized_data_cancellation = partial(
         "normalized-data cancellation probe returned an invalid value"
     ),
 )
+
+
+def _descriptor_redaction_policy(
+    dataset: Mapping[str, Any],
+    *,
+    cancellation_probe: Callable[[], bool] | None = None,
+) -> tuple[
+    dict[str, frozenset[str]],
+    frozenset[str],
+    dict[str, bool],
+]:
+    """Compile descriptor-only redaction facts without traversing resources."""
+
+    sensitive_by_kind: dict[str, frozenset[str]] = {}
+    sensitive_condition_by_kind: dict[str, bool] = {}
+    all_sensitive: set[str] = set()
+    for ordinal, descriptor in enumerate(dataset.get("kind_descriptors", [])):
+        if ordinal % 256 == 0:
+            _check_normalized_data_cancellation(cancellation_probe)
+        if not isinstance(descriptor, Mapping) or not descriptor.get("kind"):
+            continue
+        sensitive = frozenset(
+            name
+            for name, rule in descriptor_property_rules(descriptor).items()
+            if bool(rule.get("sensitive")) or rule.get("client_visible", True) is False
+        )
+        kind = str(descriptor["kind"])
+        sensitive_by_kind[kind] = sensitive
+        sensitive_condition_by_kind[kind] = descriptor_sensitive_condition(descriptor)
+        all_sensitive.update(sensitive)
+    _check_normalized_data_cancellation(cancellation_probe)
+    return (
+        sensitive_by_kind,
+        frozenset(all_sensitive),
+        sensitive_condition_by_kind,
+    )
 
 
 def event_redaction_policy(
@@ -1178,26 +1755,14 @@ def event_redaction_policy(
     )
     if cached is not None:
         return cached
-    sensitive_by_kind: dict[str, frozenset[str]] = {}
-    sensitive_condition_by_kind: dict[str, bool] = {}
-    all_sensitive: set[str] = set()
-    for ordinal, descriptor in enumerate(dataset.get("kind_descriptors", [])):
-        if ordinal % 256 == 0:
-            _check_normalized_data_cancellation(cancellation_probe)
-        if not isinstance(descriptor, Mapping) or not descriptor.get("kind"):
-            continue
-        sensitive = frozenset(
-            name
-            for name, rule in descriptor_property_rules(descriptor).items()
-            if bool(rule.get("sensitive"))
-            or rule.get("client_visible", True) is False
-        )
-        kind = str(descriptor["kind"])
-        sensitive_by_kind[kind] = sensitive
-        sensitive_condition_by_kind[kind] = descriptor_sensitive_condition(
-            descriptor
-        )
-        all_sensitive.update(sensitive)
+    (
+        sensitive_by_kind,
+        all_sensitive,
+        sensitive_condition_by_kind,
+    ) = _descriptor_redaction_policy(
+        dataset,
+        cancellation_probe=cancellation_probe,
+    )
     records = (
         runtime.resource_by_id.values()
         if runtime is not None
@@ -1219,6 +1784,44 @@ def event_redaction_policy(
     if runtime is not None:
         runtime.event_redaction_policy = compiled
     return compiled
+
+
+def project_consistency_findings_for_client(
+    dataset: Mapping[str, Any],
+    findings: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Project durable plug-in findings through the normal client boundary.
+
+    The durable record retains typed resource keys for exact offline analysis.
+    Browser and HTTP clients receive stable resource identifiers instead: key
+    atoms can contain proprietary opaque values and are not needed to locate a
+    resource through the public revision APIs. Only plug-in-owned ``details``
+    use descriptor-driven property redaction. Core-owned basis, producer, and
+    evidence fields use closed field-and-domain projectors, and evidence
+    locators are omitted unconditionally.
+    """
+
+    if not isinstance(dataset, Mapping):
+        raise TypeError("dataset must be a mapping")
+    if not isinstance(findings, Iterable):
+        raise TypeError("findings must be iterable")
+    _sensitive_by_kind, all_sensitive, _sensitive_conditions = (
+        _descriptor_redaction_policy(dataset)
+    )
+    return _project_consistency_findings_with_sensitive_fields(
+        findings,
+        set(all_sensitive),
+    )
+
+
+def project_consistency_materialization_for_client(
+    materialization: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project one verified materialization envelope through the client boundary."""
+
+    if not isinstance(materialization, Mapping):
+        raise TypeError("materialization must be a mapping")
+    return _project_consistency_materialization(materialization)
 
 
 def _event_resource_kinds(
@@ -1260,8 +1863,7 @@ def _event_resource_kinds(
         if identifier in kind_by_resource_id
     )
     return kinds, any(
-        identifier not in kind_by_resource_id
-        for identifier in identifiers
+        identifier not in kind_by_resource_id for identifier in identifiers
     )
 
 
@@ -1316,9 +1918,7 @@ def redact_event_for_client(
         kind_by_id,
         all_sensitive,
         sensitive_condition_by_kind,
-    ) = (
-        policy or event_redaction_policy(dataset, runtime)
-    )
+    ) = policy or event_redaction_policy(dataset, runtime)
     kinds, unresolved_identifiers = _event_resource_kinds(
         event,
         kind_by_id,
@@ -1333,8 +1933,7 @@ def redact_event_for_client(
     ):
         sensitive.update(all_sensitive)
     sensitive_condition = any(
-        sensitive_condition_by_kind.get(kind, False)
-        for kind in kinds
+        sensitive_condition_by_kind.get(kind, False) for kind in kinds
     )
     result: dict[Any, Any] = {}
     for key, nested in event.items():
@@ -1444,17 +2043,11 @@ def resource_search_text(
     """Build client-safe search text from declared searchable properties."""
 
     rules = descriptor_property_rules(descriptor)
-    sensitive = {
-        name for name, rule in rules.items() if bool(rule.get("sensitive"))
-    }
+    sensitive = {name for name, rule in rules.items() if bool(rule.get("sensitive"))}
     visible = _client_visible_property_names(descriptor or {})
     visible_key_fields = visible | {
         str(name)
-        for name in (
-            descriptor.get("key_fields", ())
-            if descriptor
-            else ()
-        )
+        for name in (descriptor.get("key_fields", ()) if descriptor else ())
         if isinstance(name, str)
     }
     values: list[Any] = [
@@ -1471,8 +2064,7 @@ def resource_search_text(
         values.extend(
             nested
             for name, nested in key.items()
-            if str(name) in visible_key_fields
-            and str(name) not in sensitive
+            if str(name) in visible_key_fields and str(name) not in sensitive
         )
     state = view.get("state") or {}
     if rules:
@@ -1487,11 +2079,7 @@ def resource_search_text(
                 values.append(state[name])
             elif name in record:
                 values.append(record[name])
-        for name in (
-            descriptor.get("display_name_fields", ())
-            if descriptor
-            else ()
-        ):
+        for name in descriptor.get("display_name_fields", ()) if descriptor else ():
             if name in sensitive:
                 continue
             if isinstance(state, Mapping) and name in state:
@@ -1717,7 +2305,7 @@ class NormalizedDataService:
             _invoke_provider(
                 self._policy_route_resolution_capability,
                 "route capability projection",
-                dataset or self.load_dataset()
+                dataset or self.load_dataset(),
             )
         )
 
@@ -1804,9 +2392,7 @@ class NormalizedDataService:
             if isinstance(item, Mapping) and item.get("kind")
         }
         resource_records = (
-            runtime.resources
-            if runtime is not None
-            else dataset.get("resources", [])
+            runtime.resources if runtime is not None else dataset.get("resources", [])
         )
         for record in resource_records:
             if not isinstance(record, Mapping):
@@ -1899,8 +2485,7 @@ class NormalizedDataService:
                         f"/v1/revisions/{selected_revision}/event-log/query"
                     ),
                     "detail_endpoint_template": (
-                        f"/v1/revisions/{selected_revision}/events/"
-                        "{event_uid}"
+                        f"/v1/revisions/{selected_revision}/events/{{event_uid}}"
                     ),
                 },
                 "source_records": {
@@ -1913,8 +2498,7 @@ class NormalizedDataService:
                 "density": {
                     "server_windowed": True,
                     "query_endpoint": (
-                        f"/v1/revisions/{selected_revision}/events/"
-                        "density/query"
+                        f"/v1/revisions/{selected_revision}/events/density/query"
                     ),
                 },
             }
@@ -1949,8 +2533,7 @@ class NormalizedDataService:
             return descriptors[kind]
         except KeyError as error:
             raise RuntimeError(
-                "normalized evidence lacks a resource descriptor for "
-                f"kind {kind!r}"
+                f"normalized evidence lacks a resource descriptor for kind {kind!r}"
             ) from error
 
     def resource_state_at(
@@ -1989,24 +2572,19 @@ class NormalizedDataService:
         lifecycle_interval = active_interval(lifecycle, timestamp_ns)
         exists = lifecycle_interval is not None
         state_interval = active_interval(states, timestamp_ns)
-        state = (
-            dict(state_interval.get("properties", {}))
-            if state_interval
-            else {}
-        )
+        state = dict(state_interval.get("properties", {})) if state_interval else {}
         if not state and record is not None and exists:
             state = dict(record.get("state", {}))
         kind = str(record.get("kind", "UNKNOWN")) if record else "UNKNOWN"
         descriptors = self._descriptors(dataset)
         descriptor = (
-            self._required_descriptor(descriptors, kind)
-            if record is not None
-            else None
+            self._required_descriptor(descriptors, kind) if record is not None else None
         )
         condition_is_sensitive = descriptor_sensitive_condition(descriptor)
         condition = (
             str(descriptor["condition_field"])
-            if descriptor and descriptor.get("condition_field")
+            if descriptor
+            and descriptor.get("condition_field")
             and not condition_is_sensitive
             else None
         )
@@ -2034,11 +2612,7 @@ class NormalizedDataService:
         view = {
             "resource_id": resource_identifier,
             "kind": kind,
-            "layer": (
-                record.get("layer", "unknown")
-                if record
-                else "unknown"
-            ),
+            "layer": (record.get("layer", "unknown") if record else "unknown"),
             "label": resource_label(record, resource_identifier),
             "exists": exists,
             "status": status,
@@ -2046,24 +2620,17 @@ class NormalizedDataService:
             "state": state,
             "key": (
                 dict(record.get("key", {}))
-                if record is not None
-                and isinstance(record.get("key", {}), Mapping)
+                if record is not None and isinstance(record.get("key", {}), Mapping)
                 else {}
             ),
             "valid_from_ns": (
-                state_interval.get("valid_from_ns")
-                if state_interval
-                else None
+                state_interval.get("valid_from_ns") if state_interval else None
             ),
             "valid_to_ns": (
-                state_interval.get("valid_to_ns")
-                if state_interval
-                else None
+                state_interval.get("valid_to_ns") if state_interval else None
             ),
             "source_event_uid": (
-                state_interval.get("start_event_uid")
-                if state_interval
-                else None
+                state_interval.get("start_event_uid") if state_interval else None
             ),
             "quality": (
                 state_interval.get("quality", "unknown")
@@ -2089,13 +2656,18 @@ class NormalizedDataService:
                     item.get("valid_to_ns"),
                 ):
                     continue
-                if active_interval(
-                    runtime.lifecycle_by_resource.get(item["source"], ()),
-                    timestamp_ns,
-                ) is None or active_interval(
-                    runtime.lifecycle_by_resource.get(item["target"], ()),
-                    timestamp_ns,
-                ) is None:
+                if (
+                    active_interval(
+                        runtime.lifecycle_by_resource.get(item["source"], ()),
+                        timestamp_ns,
+                    )
+                    is None
+                    or active_interval(
+                        runtime.lifecycle_by_resource.get(item["target"], ()),
+                        timestamp_ns,
+                    )
+                    is None
+                ):
                     continue
                 result.append(
                     {
@@ -2104,9 +2676,7 @@ class NormalizedDataService:
                             "type",
                             item.get("relation_type", "related_to"),
                         ),
-                        "temporal_note": (
-                            "selected from indexed validity interval"
-                        ),
+                        "temporal_note": ("selected from indexed validity interval"),
                     }
                 )
             return result
@@ -2156,10 +2726,13 @@ class NormalizedDataService:
                 interval.get("valid_to_ns"),
             ):
                 continue
-            if not {
-                interval.get("source"),
-                interval.get("target"),
-            } <= active_ids:
+            if (
+                not {
+                    interval.get("source"),
+                    interval.get("target"),
+                }
+                <= active_ids
+            ):
                 continue
             active = dict(interval)
             active["type"] = active.pop(
@@ -2231,16 +2804,11 @@ class NormalizedDataService:
         limit: int | None,
         offset: int,
     ) -> dict[str, Any]:
-        descriptors = (
-            dataset.get("resource_table_view_descriptors")
-            or dataset.get("schema", {}).get("resource_table_views", [])
-        )
+        descriptors = dataset.get("resource_table_view_descriptors") or dataset.get(
+            "schema", {}
+        ).get("resource_table_views", [])
         descriptor = next(
-            (
-                item
-                for item in descriptors
-                if item.get("view_id") == view_id
-            ),
+            (item for item in descriptors if item.get("view_id") == view_id),
             None,
         )
         if descriptor is None:
@@ -2263,8 +2831,7 @@ class NormalizedDataService:
 
         else:
             resource_by_id = {
-                resource_id(record): record
-                for record in dataset.get("resources", [])
+                resource_id(record): record for record in dataset.get("resources", [])
             }
             root_kinds = set(descriptor.get("root_kinds", []))
             root_records = [
@@ -2284,9 +2851,7 @@ class NormalizedDataService:
             for relationship in self.relationships_at(timestamp_ns):
                 by_endpoint[str(relationship["source"])].append(relationship)
                 if relationship["target"] != relationship["source"]:
-                    by_endpoint[str(relationship["target"])].append(
-                        relationship
-                    )
+                    by_endpoint[str(relationship["target"])].append(relationship)
 
             def endpoint_relationships(
                 identifier: str,
@@ -2451,16 +3016,12 @@ class NormalizedDataService:
             matched = needle is None or needle in resource_search_text(
                 record,
                 temporal_state(identifier),
-                descriptors_by_kind.get(
-                    str(record.get("kind", "UNKNOWN"))
-                ),
+                descriptors_by_kind.get(str(record.get("kind", "UNKNOWN"))),
             )
             if not matched and depth < len(levels):
                 matched = any(
                     branch_matches(target, depth + 1)
-                    for _, target in neighbors(identifier, depth)[
-                        :max_children
-                    ]
+                    for _, target in neighbors(identifier, depth)[:max_children]
                 )
             match_cache[cache_key] = matched
             return matched
@@ -2510,9 +3071,7 @@ class NormalizedDataService:
             if depth < len(levels):
                 candidates = neighbors(identifier, depth)
                 children: list[dict[str, Any]] = []
-                for child_relationship, child_record in candidates[
-                    :max_children
-                ]:
+                for child_relationship, child_record in candidates[:max_children]:
                     child = build_node(
                         child_record,
                         depth + 1,
@@ -2636,9 +3195,7 @@ class NormalizedDataService:
                                 resource_id(record),
                                 timestamp_ns,
                             ),
-                            descriptors.get(
-                                str(record.get("kind", "UNKNOWN"))
-                            ),
+                            descriptors.get(str(record.get("kind", "UNKNOWN"))),
                         )
                         for record in runtime.resources
                     }
@@ -2787,9 +3344,7 @@ class NormalizedDataService:
         if raw_descriptors is None:
             raw_descriptors = ()
         try:
-            descriptors = list(
-                validate_dashboard_descriptors(raw_descriptors)
-            )
+            descriptors = list(validate_dashboard_descriptors(raw_descriptors))
         except DashboardDescriptorValidationError as error:
             return {
                 "revision_id": self.current_revision_id(dataset),
@@ -2801,8 +3356,7 @@ class NormalizedDataService:
         selected = [
             item
             for item in descriptors
-            if selected_ids is None
-            or str(item["dashboard_id"]) in selected_ids
+            if selected_ids is None or str(item["dashboard_id"]) in selected_ids
         ]
         relevant_kinds: set[str] = set()
         unfiltered = False
@@ -2815,18 +3369,14 @@ class NormalizedDataService:
                     continue
                 if str(widget.get("aggregation", "count")) == "precomputed":
                     continue
-                widget_kinds = {
-                    str(item) for item in widget.get("resource_kinds", [])
-                }
+                widget_kinds = {str(item) for item in widget.get("resource_kinds", [])}
                 if widget_kinds:
                     relevant_kinds.update(widget_kinds)
                 else:
                     unfiltered = True
         runtime = self.history_runtime(dataset)
         records = (
-            runtime.resources
-            if runtime is not None
-            else dataset.get("resources", [])
+            runtime.resources if runtime is not None else dataset.get("resources", [])
         )
         rows: list[dict[str, Any]] = []
         if selected and (relevant_kinds or unfiltered):
@@ -2881,9 +3431,7 @@ class NormalizedDataService:
             mutation_right = bisect_right(runtime.mutation_times, end_ns)
             mutations = runtime.mutations[mutation_left:mutation_right]
             for mutation in mutations:
-                affected_ids.update(
-                    (str(mutation["source"]), str(mutation["target"]))
-                )
+                affected_ids.update((str(mutation["source"]), str(mutation["target"])))
             descriptors = {
                 str(item["relation_type"]): item
                 for item in dataset.get("relationship_descriptors", [])
@@ -2933,8 +3481,7 @@ class NormalizedDataService:
                 "end_ns": str(end_ns),
                 "event_count": len(selected),
                 "failure_count": sum(
-                    item.get("outcome") == "failure"
-                    for item in projected_selected
+                    item.get("outcome") == "failure" for item in projected_selected
                 ),
                 "events": projected_selected[:MAX_RANGE_DETAILS],
                 "counts": {
@@ -2946,8 +3493,7 @@ class NormalizedDataService:
                     ),
                     "by_action": dict(
                         Counter(
-                            item.get("action", "unknown")
-                            for item in projected_selected
+                            item.get("action", "unknown") for item in projected_selected
                         )
                     ),
                 },
@@ -2982,14 +3528,10 @@ class NormalizedDataService:
                 ],
                 "truncated": {
                     "events": len(selected) > MAX_RANGE_DETAILS,
-                    "affected_resources": (
-                        len(affected) > MAX_RANGE_DETAILS
-                    ),
+                    "affected_resources": (len(affected) > MAX_RANGE_DETAILS),
                     "status_segments": status_truncated,
                     "endpoint_diff": len(affected) > MAX_RANGE_DETAILS,
-                    "relationship_changes": (
-                        len(mutations) > MAX_RANGE_DETAILS
-                    ),
+                    "relationship_changes": (len(mutations) > MAX_RANGE_DETAILS),
                 },
                 "selection_behavior": (
                     "highlight events and status spans; exact counts use the "
@@ -3015,16 +3557,10 @@ class NormalizedDataService:
         }
         relationship_changes: list[dict[str, Any]] = []
         for mutation in dataset.get("relationship_mutations", []):
-            if not (
-                start_ns
-                <= int(mutation["effective_time_ns"])
-                <= end_ns
-            ):
+            if not (start_ns <= int(mutation["effective_time_ns"]) <= end_ns):
                 continue
             boundary = (
-                "valid_from_ns"
-                if mutation["operation"] == "add"
-                else "valid_to_ns"
+                "valid_from_ns" if mutation["operation"] == "add" else "valid_to_ns"
             )
             interval = next(
                 (
@@ -3032,10 +3568,8 @@ class NormalizedDataService:
                     for item in dataset.get("relationship_intervals", [])
                     if item["source"] == mutation["source"]
                     and item["target"] == mutation["target"]
-                    and item["relation_type"]
-                    == mutation["relation_type"]
-                    and item.get(boundary)
-                    == mutation["effective_time_ns"]
+                    and item["relation_type"] == mutation["relation_type"]
+                    and item.get(boundary) == mutation["effective_time_ns"]
                 ),
                 None,
             )
@@ -3044,9 +3578,7 @@ class NormalizedDataService:
                     {
                         **mutation,
                         "relationship_id": (
-                            interval.get("relationship_id")
-                            if interval
-                            else None
+                            interval.get("relationship_id") if interval else None
                         ),
                         "event_uid": mutation.get("cause_event_uid"),
                         "descriptor": descriptor_by_type.get(
@@ -3056,9 +3588,7 @@ class NormalizedDataService:
                     all_sensitive,
                 )
             )
-            affected_ids.update(
-                (str(mutation["source"]), str(mutation["target"]))
-            )
+            affected_ids.update((str(mutation["source"]), str(mutation["target"])))
         affected = sorted(affected_ids)
         endpoint_diff: list[dict[str, Any]] = []
         for identifier in affected:
@@ -3097,21 +3627,18 @@ class NormalizedDataService:
             "end_ns": str(end_ns),
             "event_count": len(selected),
             "failure_count": sum(
-                item.get("outcome") == "failure"
-                for item in projected_selected
+                item.get("outcome") == "failure" for item in projected_selected
             ),
             "events": projected_selected,
             "counts": {
                 "by_outcome": dict(
                     Counter(
-                        item.get("outcome", "unknown")
-                        for item in projected_selected
+                        item.get("outcome", "unknown") for item in projected_selected
                     )
                 ),
                 "by_action": dict(
                     Counter(
-                        item.get("action", "unknown")
-                        for item in projected_selected
+                        item.get("action", "unknown") for item in projected_selected
                     )
                 ),
             },
@@ -3127,8 +3654,7 @@ class NormalizedDataService:
             "endpoint_diff": endpoint_diff,
             "relationship_changes": relationship_changes,
             "selection_behavior": (
-                "highlight events and status spans; endpoint diff is "
-                "supplemental"
+                "highlight events and status spans; endpoint diff is supplemental"
             ),
         }
 
@@ -3150,6 +3676,8 @@ __all__ = [
     "descriptor_property_rules",
     "event_redaction_policy",
     "overlaps_range",
+    "project_consistency_findings_for_client",
+    "project_consistency_materialization_for_client",
     "redact_event_for_client",
     "redact_resource_for_client",
     "redact_resource_view",

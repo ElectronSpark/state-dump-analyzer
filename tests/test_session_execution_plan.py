@@ -58,6 +58,9 @@ def _pin(
         registered_execution_identity=_qualified_digest(
             f"execution:{plugin_id}:{instance_id}"
         ),
+        process_bootstrap_digest=_qualified_digest(
+            f"bootstrap:{plugin_id}:{instance_id}"
+        ),
         capabilities=("dump.parse",),
         roles=("primary_parser",),
     )
@@ -84,9 +87,7 @@ class SessionExecutionPlanTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.database = Path(self.temporary.name) / "sessions.sqlite3"
         self.store = SqliteSessionStore(self.database)
-        self.store.create_project(
-            "tenant-a", "Project", project_id="project-a"
-        )
+        self.store.create_project("tenant-a", "Project", project_id="project-a")
         self.store.create_workspace(
             "tenant-a",
             "project-a",
@@ -269,7 +270,9 @@ class SessionExecutionPlanTests(unittest.TestCase):
         ):
             _json_value(published)
 
-    def test_duplicate_plugin_instances_derive_distinct_plugin_ids_in_order(self) -> None:
+    def test_duplicate_plugin_instances_derive_distinct_plugin_ids_in_order(
+        self,
+    ) -> None:
         plan = _plan(
             "node-a",
             _pin("vendor.forwarding", "forwarding.0"),
@@ -303,12 +306,8 @@ class SessionExecutionPlanTests(unittest.TestCase):
 
     def test_plan_participates_in_idempotency_identity_and_replay(self) -> None:
         plan = _plan()
-        first = self._publish(
-            "revision-a", plan=plan, idempotency_key="publish-a"
-        )
-        replay = self._publish(
-            "revision-a", plan=plan, idempotency_key="publish-a"
-        )
+        first = self._publish("revision-a", plan=plan, idempotency_key="publish-a")
+        replay = self._publish("revision-a", plan=plan, idempotency_key="publish-a")
         self.assertEqual(replay, first)
 
         changed = _plan(
@@ -316,9 +315,7 @@ class SessionExecutionPlanTests(unittest.TestCase):
             _pin("vendor.forwarding", "forwarding.changed"),
         )
         with self.assertRaises(IdempotencyConflict):
-            self._publish(
-                "revision-a", plan=changed, idempotency_key="publish-a"
-            )
+            self._publish("revision-a", plan=changed, idempotency_key="publish-a")
 
     def test_planless_publish_replays_manually_constructed_legacy_receipt(
         self,
@@ -451,9 +448,7 @@ class SessionExecutionPlanTests(unittest.TestCase):
                 self.store.close()
                 self.database.unlink()
                 self.store = SqliteSessionStore(self.database)
-                self.store.create_project(
-                    "tenant-a", "Project", project_id="project-a"
-                )
+                self.store.create_project("tenant-a", "Project", project_id="project-a")
                 self.store.create_workspace(
                     "tenant-a",
                     "project-a",

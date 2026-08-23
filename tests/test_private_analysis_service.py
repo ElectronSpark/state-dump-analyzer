@@ -101,6 +101,7 @@ def _plan(node_id: str, suffix: str) -> PluginExecutionPlan:
                 configuration_digest="sha256:" + "c" * 64,
                 schema_digest="sha256:" + "d" * 64,
                 registered_execution_identity="sha256:" + suffix * 64,
+                process_bootstrap_digest="sha256:" + "e" * 64,
                 capabilities=("source_record_parser",),
                 roles=("primary_parser",),
             ),
@@ -191,9 +192,7 @@ class PrivateAnalysisServiceTests(unittest.TestCase):
         context: PrivateAnalysisInProcessContext,
         _gateway: PrivateAnalysisInProcessToolGateway,
     ) -> str:
-        return private_analysis_result_json(
-            _unsupported_result(context.request)
-        )
+        return private_analysis_result_json(_unsupported_result(context.request))
 
     @staticmethod
     def _scope(
@@ -338,7 +337,9 @@ class PrivateAnalysisServiceTests(unittest.TestCase):
         self.assertFalse(unavailable.enabled)
         self.assertEqual(unavailable.transports, ())
 
-    def test_capabilities_reject_cross_project_and_missing_workspace_scope(self) -> None:
+    def test_capabilities_reject_cross_project_and_missing_workspace_scope(
+        self,
+    ) -> None:
         with self.assertRaises(PrivateAnalysisServiceInvalidRequest):
             self.service.capabilities(self._scope(project_id="project-other"))
         with self.assertRaises(PrivateAnalysisServiceNotFound):

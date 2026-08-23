@@ -136,9 +136,9 @@ fields identify that unique primary parser. A plan-level decoder belongs to
 the primary parser; a non-primary pin with its own decoder is not representable
 in any plan and MUST fail closed.
 
-New publications use execution-plan v3. Its pins carry the content-addressed
+New publications use execution-plan v4. Its pins carry the content-addressed
 `registered_execution_identity` frozen at registration, as introduced by v2,
-and its closed `PluginExecutionPlanAuthority` wire member
+and the closed `PluginExecutionPlanAuthority` wire member introduced by v3.
 `execution_plan_authority` records the weakest authority across
 the complete plan: `process`, `trusted_inline_attested`, or
 `trusted_inline_manifest`. `process` means primary ingestion used the spawned
@@ -148,19 +148,30 @@ tier has package-byte identity and records that primary ingestion actually ran
 inline; the registered plug-in may or may not also have a usable process
 bootstrap. The manifest inline tier is weaker: core can revalidate only the
 frozen manifest and registered identity, not the implementation bytes, so it is
-not a reproducible-code claim.
+not a reproducible-code claim. Every v4 PROCESS pin MUST also carry
+`process_bootstrap_digest`, the canonical SHA-256 commitment to the complete
+non-recursive child bootstrap excluding only its self-referential expected
+registered identity. A child MUST compare it before importing any plug-in,
+coordinator, or decoder target. A trusted-inline v4 pin MUST carry JSON `null`.
 
-Retained v2 plans remain executable and preserve their original wire shape and
-digest; decoding projects their absent authority as `legacy_unrecorded` rather
-than inventing PROCESS execution. Retained v1 plans remain
+Retained v2 and v3 plans remain executable and preserve their original wire
+shape and digest; decoding projects v2's absent authority as
+`legacy_unrecorded`, while v3 preserves its recorded authority without
+inventing a bootstrap digest. Retained v1 plans remain
 readable/displayable and preserve their original wire shape and digest; they
 cannot carry the v2 identity/policy fields or the v3 authority field. Decoding
 records missing identities with reserved all-zero SHA-256 sentinels internally.
-V2 and v3 MUST carry a non-reserved registered execution identity for every pin
+V2, v3, and v4 MUST carry a non-reserved registered execution identity for every pin
 and a non-reserved composition-policy digest. A retained v1 plan MUST NOT
 authorize capability execution, provider binding, auxiliary composition, or
 private-analysis evidence production. Canonical plan wire payloads are bounded
 before persistence.
+
+`plugin_execution_pin_dict()` is a versionless standalone projection of the
+current v4 pin shape. It always includes `process_bootstrap_digest`: a digest
+for PROCESS authority or `null` for trusted-inline authority. Historical v1-v3
+plan serializers continue to omit that member so their canonical bytes and
+digests do not change.
 
 The current registered-execution identity material is v4. In addition to the
 artifact, configuration, manifest, schema/capability, timeline, instance, and
@@ -505,6 +516,13 @@ plug-in.
 | Topology/status projection | Declare independently selectable status perspectives and named topology projections; materialize plugin-defined topology resources, relationships, and usability state. | Resolve temporal bases, validate projection/perspective combinations, query stored intervals, preserve unknowns, and expose bounded state/topology APIs. |
 | Cross-node federation | Match bounded normalized claims, preserve candidates, and emit matched, ambiguous, unresolved, or conflicting inter-node semantics. | Freeze each member basis, invoke the selected linker with budgets, validate/store its output, and never guess a non-exact match. |
 
+Every value returned or yielded by discovery and parser hooks transfers to
+core ownership immediately. Core MUST take a bounded, typed deep snapshot and
+MUST revalidate that snapshot before advancing or closing the plug-in
+iterator. Later mutation of the original dataclass, mapping, sequence, or
+nested value MUST NOT change normalized output, the immutable revision world,
+the execution plan, or published bytes.
+
 ### Hook selection and input dispatch
 
 Every node/device plug-in implements `describe()`, `probe()`, and
@@ -567,7 +585,11 @@ against the immutable schema and manifest. The default executor ceilings are
 consistency outputs, 100,000 topology outputs, 100,000 forwarding outputs,
 1,000 evidence-analysis outputs, 1 MiB each of aggregate evidence-analysis
 input and output, 1,000 diagnostics, 64 evidence items per output, and 4,096
-resource references.
+resource references. World-basis validation separately permits at most 100,000
+capture ranges, 100,000 node resolutions, and 100,000 basis evidence items.
+Consistency snapshotting permits 1,000,000 value units, 100,000 aggregate
+resource references, 100,000 aggregate evidence references, and eight distinct
+basis variants before exact-basis convergence is required.
 A request's smaller limit still applies; a plug-in cannot enlarge these
 core-owned ceilings.
 
@@ -618,6 +640,67 @@ does not itself publish a temporal, topology, or route provider. The current
 core-owned runtime-v2 session still leaves those providers `None` and exposes
 no route catalog.
 
+Durable ingestion does schedule `CONSISTENCY_CHECK` as a distinct
+pre-publication stage. Core MUST first freeze the complete
+`PluginExecutionPlan`. The primary parser is selected automatically only when
+its exact pin declares the capability. A non-primary provider is selected only
+when its exact pin both declares the capability and carries
+`REVISION_CONSISTENCY_ROLE` (`"revision_consistency"`); capability declaration
+alone MUST NOT opt an auxiliary into automatic execution. A selected-role pin
+without the capability MUST fail closed.
+
+Core MUST reconstruct an immutable point-in-revision `ReadOnlyWorld` from the
+validated snapshot and explicit relationship observations. It MUST retain the
+observed per-artifact/per-clock capture vector as `world.basis`, MUST NOT
+invent a common timestamp, and MUST NOT fabricate state for a resource seen
+only as a relationship endpoint. A returned finding MUST carry the exact same
+`WorldBasis`; every evidence artifact MUST belong to the admitted revision.
+If any state or relationship observation in one artifact/clock group has
+unknown bounds, that capture range MUST remain fully unbounded; bounded sibling
+observations cannot make the unknown observation disappear from the basis.
+The executor gives each provider detached copies of `world.basis` and
+`world.perspective_ref`; even hostile mutation of a frozen dataclass cannot
+alter the caller's world or the view passed to a later provider.
+Core applies both per-provider executor limits and aggregate revision limits,
+retains recoverable diagnostics with exact producer provenance, and gives each
+canonical finding/diagnostic a stable digest identity.
+Before traversing or detaching a returned basis, core bounds capture ranges,
+node resolutions, each nested evidence tuple, and aggregate basis evidence;
+authors must not use a large basis as an unbounded side channel.
+
+For PROCESS-authorized ingestion, every selected implementation executes in
+the existing killable ingestion child under the overall ingestion deadline.
+Trusted inline deployment retains the documented absence of process isolation
+and a killable timeout. Materialization completes before canonical dataset
+serialization, hashing, staging, or catalog publication. Any stale provider,
+hook failure, invalid output, foreign evidence, basis mismatch, limit breach,
+timeout, or fatal diagnostic MUST abort the publication atomically; core MUST
+NOT publish a valid prefix. A successful revision stores a `complete` envelope,
+or `not_applicable` when no provider was selected. Older revisions with no
+envelope are reported as `not_materialized`, never retroactively executed.
+Durable findings retain exact evidence locators for trusted/admin use. The
+shared public projector MUST omit locators and MUST validate the closed
+field/domain vocabulary of finding, basis, evidence, and producer records;
+descriptor-sensitive redaction applies only to plug-in-owned `details`. The
+stored `basis_digest` commits to the richer durable basis, not the reduced
+public projection.
+
+The default revision-wide materializer admits at most 32 providers, 10,000
+findings, 2,000 consistency diagnostics, 100,000 aggregate resource references,
+100,000 aggregate evidence references, 100,000 world reads, 100,000 artifact
+IDs, 100,000 capture ranges, 100,000 node resolutions, 2,000,000 basis value
+units, and 16 MiB of serialized materialization contribution. These are hard
+core ceilings layered on top of each provider's executor limits.
+
+"Selected implementation" in this scheduled stage means the primary when it
+declares `CONSISTENCY_CHECK`, plus auxiliary pins carrying the exact
+`REVISION_CONSISTENCY_ROLE`. Other policy auxiliaries remain in the immutable
+full execution plan but MUST NOT be imported into the PROCESS child merely to
+materialize consistency. Core validates the exact ordered bootstrap-to-pin
+correspondence before loading auxiliary code, retains the full plan digest on
+every result, and uses a scoped internal router that cannot resolve an unbound
+pin. The ordinary public router remains full-plan and fail-closed.
+
 Production composition MUST use `CapabilityProviderRegistry`,
 `CapabilityRouteSelector`, and `PlanBoundCapabilityRouter` rather than selecting
 an installed plug-in or constructing an unbound executor. Provider instance IDs
@@ -635,7 +718,7 @@ configurations together; otherwise perspective identity would be ambiguous.
 Providers may come from separate primary-parser registries.
 A registry-derived `inline_only` record MAY remain in a provider directory for
 trusted local execution. A strict deployment and PROCESS plan MUST reject it.
-It MAY bind a v3 execution-plan pin only when the descriptor, durable pipeline,
+It MAY bind a v3-or-v4 execution-plan pin only when the descriptor, durable pipeline,
 and `PlanBoundCapabilityRouter` all receive the explicit trusted-inline policy;
 the plan authority MUST then be one of the two trusted-inline values and MUST
 reflect the weakest selected pin.
@@ -661,7 +744,7 @@ Ordinary probe/selection always chooses one primary parser. A deployment MAY
 provide an immutable `PluginCompositionPolicy` which matches that parser's
 exact instance ID and content-addressed registered execution identity and adds
 canonically ordered auxiliary provider pins with explicit roles. Core stores
-the policy digest with the import and in every new v3 execution plan, and MUST
+the policy digest with the import and in every new v4 execution plan, and MUST
 refuse to execute queued work or re-admit a child plan under a different
 policy. A plug-in MUST NOT select peers by platform/firmware
 strings, depend on registry order, or publish a synthetic composite plug-in.
@@ -835,6 +918,21 @@ signed `int64`. Public constructors enforce their local contract for authors,
 and the ingestion host revalidates the complete nested output so a forged or
 subsequently mutated dataclass cannot poison a durable revision and fail only
 when a report is read.
+
+A deployment-supplied coordinator MUST return an exact `IngestionResult` and
+does not become a publication authority. Before traversing any coordinator
+item, core MUST validate the frozen registered `IngestionLimits`, exact tuple
+containers, and their O(1) aggregate counts. It MUST capture each top-level
+reference once, bind `node_id` to the requested `node_hint` when present,
+revalidate portable inventory names and the complete parent-artifact graph,
+detach the schema and typed output streams, and apply the frozen limits again.
+Every source emission MUST have one aligned `SourceRecordOrigin`; coordinate
+triples MUST be unique and their input/output ordinals MUST fit the registered
+limits. Core MUST rebuild the closed dataset and require exact semantic and
+byte-stable equality with the supplied projection. A custom coordinator MUST
+NOT inject fields, weaken limits after registration, or use a prebuilt dataset
+to bypass typed validation. `snapshot_ingestion_result_for_publication()` is
+the public conformance helper implementing this same boundary.
 
 When a deployment supplies a core `TraceDecoder`, the coordinator consumes its
 decoder diagnostics and

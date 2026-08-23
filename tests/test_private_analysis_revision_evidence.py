@@ -61,6 +61,7 @@ def _pin(suffix: str) -> PluginExecutionPin:
         configuration_digest="sha256:" + "c" * 64,
         schema_digest="sha256:" + "d" * 64,
         registered_execution_identity="sha256:" + suffix * 64,
+        process_bootstrap_digest="sha256:" + "e" * 64,
         schema_versions=(f"vendor.schema.{suffix}",),
         capabilities=("source_record_parser",),
         roles=("primary_parser",),
@@ -1259,6 +1260,7 @@ class PrivateAnalysisRevisionEvidenceTests(unittest.TestCase):
                 replace(
                     plan.plugins[0],
                     registered_execution_identity=legacy_identity,
+                    process_bootstrap_digest=None,
                 ),
             ),
             decoder=plan.decoder,
@@ -1333,8 +1335,7 @@ class PrivateAnalysisRevisionEvidenceTests(unittest.TestCase):
         dataset = trusted.dataset
         assert isinstance(dataset, dict)
         resource_ids = [
-            f"node-a/INTERFACE/resource-{ordinal:05d}"
-            for ordinal in range(8_193)
+            f"node-a/INTERFACE/resource-{ordinal:05d}" for ordinal in range(8_193)
         ]
         dataset["resources"] = [
             {
@@ -1485,9 +1486,7 @@ class PrivateAnalysisRevisionEvidenceTests(unittest.TestCase):
                 build_private_analysis_revision_evidence_corpus(
                     request,
                     (trusted,),
-                    plugin_evidence_class=(
-                        PrivateAnalysisEvidenceClass.PROPRIETARY
-                    ),
+                    plugin_evidence_class=(PrivateAnalysisEvidenceClass.PROPRIETARY),
                     cancellation_probe=lambda: cancelled,
                 )
             self.assertEqual(source_hashes, 1)
