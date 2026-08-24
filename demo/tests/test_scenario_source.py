@@ -55,7 +55,7 @@ class DemoScenarioSourceTests(unittest.TestCase):
             ),
         )
         self.assertEqual(len(source.links), 8)
-        self.assertEqual(source.defaults.events_per_node, 125_000)
+        self.assertEqual(source.defaults.events_per_node, 1_250_000)
         self.assertEqual(source.defaults.resources_per_node, 7_500)
         self.assertEqual(source.defaults.default_node_id, "node-a")
         self.assertEqual(

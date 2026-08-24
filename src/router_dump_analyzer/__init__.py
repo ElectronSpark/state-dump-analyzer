@@ -141,6 +141,7 @@ from .ingestion_pipeline import (
     inspect_durable_queue,
     validate_import_metadata,
 )
+from .load_progress import AnalysisLoadStage, report_analysis_load
 from .normalized_data import (
     IndexedHistory,
     NormalizedDataPolicy,
@@ -269,6 +270,7 @@ __all__ = [
     "REVISION_CONSISTENCY_ROLE",
     "AnalysisRevisionDescriptor",
     "AnalysisSession",
+    "AnalysisLoadStage",
     "ArtifactBoundaryError",
     "ArtifactLimits",
     "CapabilityInvocation",
@@ -457,6 +459,7 @@ __all__ = [
     "plugin_schema_digest",
     "primary_parser_execution_pin",
     "require_plugin_runtime",
+    "report_analysis_load",
     "snapshot_plugin_execution_pin",
     "snapshot_plugin_execution_plan",
     "validate_import_metadata",

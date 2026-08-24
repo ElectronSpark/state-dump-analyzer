@@ -963,6 +963,22 @@ Mixed prototype semantics remain plug-in policy until their inputs and outputs
 become typed, protocol-neutral core contracts. A reusable-looking algorithm is
 not promoted merely because the demo currently exercises it.
 
+Analysis loading is observable without moving device semantics into core. One
+application-owned `AnalysisLoadTracker` surrounds normalized dataset loads and
+publishes only closed generic stages and bounded counters at
+`GET /v1/analysis-load`. Runtime open and context entry remain synchronous so a
+startup failure still crosses the existing bounded CLI error boundary. For a
+frontend host, the core-built runtime-v2 store defers ordinary parser ingestion
+until the first normalized workspace request; the HTML and progress endpoint
+can therefore render while that request parses the dump. Compatibility
+providers are tracked at their lazy topology/route construction boundaries.
+There is no detached load thread: an API-only host loads and indexes its default
+revision synchronously before serving, preserving fail-fast and native
+process-control semantics. Plug-ins may refine the currently bound operation
+with the exported advisory reporter, but cannot supply tracker instances, UI
+strings, routes, percentages, or identifiers. Unknown totals remain
+indeterminate.
+
 #### Runtime session boundary
 
 The standard parsing contract is the normal hosted path. An ordinary parser
@@ -989,7 +1005,7 @@ properties.
 
 `plugin.runtime` with capability ID `router_dump_analyzer.runtime.v1` is a
 compatibility path only for independently versioned precomputed fixtures, such
-as the bundled 100K-per-node demo. Entering its context yields all six
+as the bundled million-event-per-node demo. Entering its context yields all six
 structural surfaces above. Core validates the protocols, constructs the core
 `NormalizedDataService`, owns the context lifetime, stores the active session
 in application state, binds it request-locally, and closes it at shutdown.
@@ -2163,7 +2179,7 @@ The shipped core frontend is a dependency-free set of HTML pages, CSS, and
 native JavaScript modules under `frontend/`. It uses:
 
 - semantic DOM controls and direct windowing for the timeline, resource tables,
-  and 100K-scale normalized-event log;
+  and million-event-scale normalized-event log;
 - SVG layers plus DOM cards for correlation, topology, and route geometry;
 - core-owned pure view-model helpers for exact `BigInt` time transforms,
   health/status presentation, request supersession, and route/dashboard

@@ -25,6 +25,8 @@ from rsl_demo_plugin.assembly_store import (
 )
 from rsl_demo_plugin.scale_data import ScaleRuntime
 
+from router_dump_analyzer import AnalysisLoadStage
+
 
 def _json_bytes(value: object) -> bytes:
     return (json.dumps(value, sort_keys=True) + "\n").encode("utf-8")
@@ -301,6 +303,30 @@ def _scale_runtime(search: _CloseCountingSearch) -> ScaleRuntime:
 
 
 class DemoAssemblyStoreTests(unittest.TestCase):
+    def test_outer_archive_reports_bounded_node_inventory_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "assembly.tgz"
+            _write_assembly(archive)
+            with patch(
+                "rsl_demo_plugin.assembly_store.report_analysis_load"
+            ) as report, DemoAssemblyStore(archive):
+                pass
+
+            inventory_updates = [
+                call
+                for call in report.call_args_list
+                if call.args == (AnalysisLoadStage.INVENTORYING,)
+            ]
+            self.assertTrue(inventory_updates)
+            self.assertEqual(
+                [
+                    (call.kwargs.get("completed"), call.kwargs.get("total"))
+                    for call in inventory_updates
+                    if "total" in call.kwargs
+                ],
+                [(0, 2), (1, 2), (2, 2)],
+            )
+
     def test_projection_reader_uses_one_streaming_pass(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             node_archive = Path(directory) / "node-a.tgz"

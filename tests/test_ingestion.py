@@ -1506,9 +1506,11 @@ class CoreIngestionTests(unittest.TestCase):
             fixture = self._fixture(directory)
             with runtime.open(fixture) as session:
                 self.assertIs(validate_runtime_session(session), session)
+                self.assertEqual(session.revision_store.loaded_revision_ids(), ())
+                dataset = session.data_source.load_dataset()
                 self.assertEqual(
                     session.revision_store.default_revision_id,
-                    session.data_source.revision_id(session.data_source.load_dataset()),
+                    session.data_source.revision_id(dataset),
                 )
 
             application = create_runtime_application(

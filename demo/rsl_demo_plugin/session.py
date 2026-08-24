@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
-from typing import Any, TypeVar
+from typing import Any, Self, TypeVar
 
 from router_dump_analyzer.multi_node_route import MultiNodeRouteService
 from router_dump_analyzer.multi_node_topology import MultiNodeTopologyService
@@ -38,6 +38,7 @@ from .topology_contract import (
     build_topology_metadata,
     build_topology_profiles,
 )
+
 _Result = TypeVar("_Result")
 
 
@@ -53,6 +54,100 @@ def _load_generated_revision(
         gaps=data.DEMO_GAPS,
         review_prompts=data.REVIEW_PROMPTS,
     )
+
+
+class _LazyDemoAssemblyStore(DemoAssemblyStore):
+    """Defer archive inventory/extraction until a tracked core request.
+
+    Runtime-session validation needs a complete revision-store surface before
+    the server is reachable, but constructing :class:`DemoAssemblyStore`
+    eagerly would extract every nested node archive during lifespan startup.
+    This proxy keeps ``open()`` lightweight and performs that work on the first
+    data/topology access, where the core has bound an analysis-load operation.
+    """
+
+    def __init__(
+        self,
+        archive_path: Path,
+        *,
+        cache_size: int = 2,
+        dataset_loader: Callable[[Path, str], dict[str, Any]] | None = None,
+    ) -> None:
+        # Deliberately do not call the eager parent constructor.
+        self.archive_path = Path(archive_path)
+        self.cache_size = cache_size
+        self._lazy_dataset_loader = dataset_loader
+        self._lazy_lock = RLock()
+        self._lazy_store: DemoAssemblyStore | None = None
+        self._lazy_closed = False
+
+    def _materialized(self) -> DemoAssemblyStore:
+        with self._lazy_lock:
+            if self._lazy_closed:
+                raise RuntimeError("demo assembly store is closed")
+            if self._lazy_store is None:
+                self._lazy_store = DemoAssemblyStore(
+                    self.archive_path,
+                    cache_size=self.cache_size,
+                    dataset_loader=self._lazy_dataset_loader,
+                )
+            return self._lazy_store
+
+    @property
+    def assembly(self) -> Any:
+        return self._materialized().assembly
+
+    @property
+    def default_node_id(self) -> str:
+        return self._materialized().default_node_id
+
+    @property
+    def default_revision_id(self) -> str:
+        return self._materialized().default_revision_id
+
+    @property
+    def manifest(self) -> dict[str, Any]:
+        return self._materialized().manifest
+
+    @property
+    def coverage(self) -> dict[str, Any]:
+        return self._materialized().coverage
+
+    def revision(self, revision_id: str) -> Any:
+        return self._materialized().revision(revision_id)
+
+    def revision_for_node(self, node_id: str) -> Any:
+        return self._materialized().revision_for_node(node_id)
+
+    def dataset_for_node(self, node_id: str) -> Mapping[str, Any]:
+        return self._materialized().dataset_for_node(node_id)
+
+    def dataset_for_revision(self, revision_id: str) -> Mapping[str, Any]:
+        return self._materialized().dataset_for_revision(revision_id)
+
+    def projection_for_node(self, node_id: str) -> Mapping[str, Any]:
+        return self._materialized().projection_for_node(node_id)
+
+    def loaded_revision_ids(self) -> tuple[str, ...]:
+        with self._lazy_lock:
+            if self._lazy_store is None:
+                return ()
+            return self._lazy_store.loaded_revision_ids()
+
+    def close(self) -> None:
+        with self._lazy_lock:
+            if self._lazy_closed:
+                return
+            self._lazy_closed = True
+            store = self._lazy_store
+        if store is not None:
+            store.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        self.close()
 
 
 class DemoDatasetSource:
@@ -332,9 +427,13 @@ class DemoRuntimeCapability:
 
     @contextmanager
     def open(self, input_path: Path) -> Iterator[DemoRuntimeSession]:
-        store = DemoAssemblyStore(
+        store = _LazyDemoAssemblyStore(
             Path(input_path),
-            cache_size=2,
+            # A million-event revision is intentionally large.  Keep only one
+            # materialized node so normal cross-node navigation cannot retain
+            # two multi-gigabyte histories at once; topology projections stay
+            # independently lazy and do not require this dataset cache.
+            cache_size=1,
             dataset_loader=_load_generated_revision,
         )
         data_source = DemoDatasetSource(store)

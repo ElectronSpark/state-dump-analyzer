@@ -359,17 +359,13 @@ async def _drive_lifespan(
 
 
 def _application(runtime: Any, input_path: Path | None = None) -> Any:
-    with patch(
-        "router_dump_analyzer.web.runtime_api.start_runtime_warmup",
-        return_value=None,
-    ):
-        return create_runtime_application(
-            RuntimeApplicationRequest(
-                runtime=runtime,
-                input_path=input_path or Path("unused"),
-                serve_frontend=False,
-            )
+    return create_runtime_application(
+        RuntimeApplicationRequest(
+            runtime=runtime,
+            input_path=input_path or Path("unused"),
+            serve_frontend=False,
         )
+    )
 
 
 class RuntimeExecutionBoundaryTests(unittest.TestCase):
@@ -547,7 +543,7 @@ class RuntimeExecutionBoundaryTests(unittest.TestCase):
                 application = _application(runtime, Path(directory))
                 with self.assertRaises(PluginRuntimeCapabilityError) as raised:
                     asyncio.run(_drive_lifespan(application))
-                self.assertContained(raised.exception, "session enter")
+                self.assertContained(raised.exception, "default revision load")
 
     def test_open_enter_and_exit_failures_are_contained(self) -> None:
         cases = (
@@ -812,10 +808,6 @@ class RuntimeExecutionBoundaryTests(unittest.TestCase):
                     patch(
                         "router_dump_analyzer.cli.run",
                         side_effect=launcher_for(plugin),
-                    ),
-                    patch(
-                        "router_dump_analyzer.web.runtime_api.start_runtime_warmup",
-                        return_value=None,
                     ),
                     redirect_stderr(stderr),
                     self.assertRaises(SystemExit) as stopped,

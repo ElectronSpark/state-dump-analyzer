@@ -23,6 +23,10 @@ from threading import RLock
 from typing import Any, Final
 
 from pydantic_core import from_json
+from router_dump_analyzer import (
+    AnalysisLoadStage,
+    report_analysis_load,
+)
 from router_dump_analyzer.temporal_core import (
     RESOURCE_CREATION_OPERATIONS,
     RESOURCE_DELETION_OPERATIONS,
@@ -63,7 +67,12 @@ from router_dump_analyzer.history_search_core import HistorySearchCorpus
 PACK_ROOT = NODE_PACK_ROOT
 SCALE_PREFIX = NORMALIZED_SCALE_PREFIX
 MAX_SCALE_MEMBER_BYTES: Final[int] = 512 * 1024 * 1024
+MAX_SCALE_EVENT_MEMBER_BYTES: Final[int] = 2 * 1024 * 1024 * 1024
+MAX_HISTORY_SEARCH_DOCUMENTS: Final[int] = 2_000_000
+MAX_HISTORY_SEARCH_CHARACTERS: Final[int] = 3 * 1024 * 1024 * 1024
+MAX_HISTORY_SEARCH_DATABASE_BYTES: Final[int] = 4 * 1024 * 1024 * 1024
 HISTORY_SEARCH_PROJECTION_VERSION = b"redacted-sorted-json-casefold-fts5-v5"
+_LOAD_PROGRESS_RECORD_BATCH: Final[int] = 1024
 
 
 def _history_search_identity(archive_path: Path) -> str:
@@ -593,6 +602,10 @@ def load_scale_dataset(
 ) -> dict[str, Any]:
     """Load the complete packed fixture and build bounded-query indexes."""
 
+    report_analysis_load(
+        AnalysisLoadStage.PARSING,
+        records_processed=0,
+    )
     resources: list[dict[str, Any]] = []
     resource_by_id: dict[str, dict[str, Any]] = {}
     resources_by_kind: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -631,6 +644,29 @@ def load_scale_dataset(
     }
     prefix = f"{SCALE_PREFIX}/"
     pack_manifest_name = NODE_PACK_MANIFEST_MEMBER
+    parse_record_total: int | None = None
+    declared_parse_record_total: int | None = None
+
+    def report_parsed_records(*, force: bool = False) -> None:
+        completed = (
+            len(resources)
+            + len(events)
+            + len(relationship_records)
+            + len(mutation_records)
+        )
+        if not force and completed % _LOAD_PROGRESS_RECORD_BATCH:
+            return
+        determinate_total = (
+            parse_record_total
+            if parse_record_total is not None and completed <= parse_record_total
+            else None
+        )
+        report_analysis_load(
+            AnalysisLoadStage.PARSING,
+            completed=completed if determinate_total is not None else None,
+            total=determinate_total,
+            records_processed=completed,
+        )
 
     # A gzip-compressed tar is sequential. Reading all selected members in one
     # streaming pass avoids repeatedly seeking back through the compressed
@@ -680,7 +716,12 @@ def load_scale_dataset(
             relative_name = member.name[len(prefix) :]
             if relative_name not in wanted:
                 continue
-            if member.size > MAX_SCALE_MEMBER_BYTES:
+            member_limit = (
+                MAX_SCALE_EVENT_MEMBER_BYTES
+                if relative_name == "events.jsonl"
+                else MAX_SCALE_MEMBER_BYTES
+            )
+            if member.size > member_limit:
                 raise RuntimeError(
                     f"packed scale member is unexpectedly large: {member.name}"
                 )
@@ -694,6 +735,35 @@ def load_scale_dataset(
                     scenario = value
                 elif target == "manifest":
                     normalized_manifest = value
+                    descriptors = (
+                        normalized_manifest.get("resources"),
+                        normalized_manifest.get("events"),
+                        normalized_manifest.get("relationships"),
+                        normalized_manifest.get("relationship_mutations"),
+                    )
+                    if all(isinstance(item, Mapping) for item in descriptors):
+                        try:
+                            raw_record_counts = [
+                                item["records"] for item in descriptors
+                            ]
+                        except KeyError:
+                            parse_record_total = None
+                        else:
+                            record_counts = [
+                                value
+                                for value in raw_record_counts
+                                if type(value) is int
+                                and 0 <= value <= (1 << 53) - 1
+                            ]
+                            declared_total = sum(record_counts)
+                            if (
+                                len(record_counts) == len(descriptors)
+                                and declared_total > 0
+                                and declared_total <= (1 << 53) - 1
+                            ):
+                                parse_record_total = declared_total
+                                declared_parse_record_total = declared_total
+                                report_parsed_records(force=True)
                 elif target == "plugin_schema":
                     plugin_schema = value
                 else:
@@ -736,6 +806,7 @@ def load_scale_dataset(
                     resources.append(record)
                     resource_by_id[record["resource_id"]] = record
                     resources_by_kind[record["kind"]].append(record)
+                    report_parsed_records()
                 continue
             if relative_name == "events.jsonl":
                 for line in source:
@@ -757,6 +828,7 @@ def load_scale_dataset(
                     failure_count += event["outcome"] == "failure"
                     for identifier in event["affected_resources"]:
                         events_by_resource[identifier].append(event)
+                    report_parsed_records()
                 continue
             if relative_name == "relationships.jsonl":
                 for line in source:
@@ -775,6 +847,8 @@ def load_scale_dataset(
                     relationships_by_endpoint[relationship["target"]].append(
                         relationship
                     )
+                    if len(relationship_records) % _LOAD_PROGRESS_RECORD_BATCH == 0:
+                        report_parsed_records(force=True)
                 continue
             for line in source:
                 if not line.strip():
@@ -795,6 +869,27 @@ def load_scale_dataset(
                 mutation_records.append(mutation)
                 mutations_by_endpoint[mutation["source"]].append(mutation)
                 mutations_by_endpoint[mutation["target"]].append(mutation)
+                if len(mutation_records) % _LOAD_PROGRESS_RECORD_BATCH == 0:
+                    report_parsed_records(force=True)
+
+    report_parsed_records(force=True)
+    parsed_record_count = (
+        len(resources)
+        + len(events)
+        + len(relationship_records)
+        + len(mutation_records)
+    )
+    if (
+        declared_parse_record_total is not None
+        and parsed_record_count != declared_parse_record_total
+    ):
+        raise RuntimeError(
+            "packed scale manifest record counts do not match parsed members"
+        )
+    report_analysis_load(
+        AnalysisLoadStage.NORMALIZING,
+        records_processed=parsed_record_count,
+    )
 
     if pack_manifest is None:
         raise RuntimeError(f"packed fixture lacks {pack_manifest_name}")
@@ -864,6 +959,15 @@ def load_scale_dataset(
         temporal_index.state_intervals,
     )
 
+    report_analysis_load(
+        AnalysisLoadStage.INDEXING,
+        records_processed=(
+            len(resources)
+            + len(events)
+            + len(relationship_records)
+            + len(mutation_records)
+        ),
+    )
     initial_ids = _initial_resource_ids(walkthrough, resources_by_kind)
     event_times: list[int] = []
     failure_event_times: list[int] = []
@@ -948,7 +1052,7 @@ def load_scale_dataset(
                 {
                     "status": "implemented-demo",
                     "detail": (
-                        "The server loads the full 100K+-event corpus, resource catalog, and "
+                        "The server loads the full 1M+-event corpus, resource catalog, and "
                         "temporal relationship corpus; browser DOM tables and lanes "
                         "remain bounded while counts and density use the full stream."
                     ),
@@ -1026,7 +1130,7 @@ def load_scale_dataset(
             else "Router State Lab node"
         ),
         "fixture": "synthetic-packed-tgz-full-scale",
-        "mode": "full-scale-100k-plus",
+        "mode": "full-scale-1m-plus",
         "scale_mode": True,
         "scenario": (
             f"{len(events):,} matched EVPN events covering single-home to "
@@ -1139,10 +1243,12 @@ def load_scale_dataset(
         sidecar_path=_history_search_cache_path(archive_path, search_identity),
         identity=search_identity,
         expected_documents=len(events),
-        # The web host warms this immutable corpus on its background worker.
-        # Keep node workspace materialization independent of a linear sidecar
-        # integrity scan; exact validation still runs before the worker marks
-        # the corpus ready.
+        max_documents=MAX_HISTORY_SEARCH_DOCUMENTS,
+        max_characters=MAX_HISTORY_SEARCH_CHARACTERS,
+        max_database_bytes=MAX_HISTORY_SEARCH_DATABASE_BYTES,
+        # Frontend hosting defers this immutable corpus until the first indexed
+        # search; API-only startup warms it synchronously.  Keep node workspace
+        # materialization independent of a second linear sidecar scan.
         eager_validate_sidecar=False,
     )
 

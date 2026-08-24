@@ -203,6 +203,121 @@ a {
   box-shadow: 0 0 0 4px rgba(245, 184, 91, 0.1);
 }
 
+.analysis-load-progress {
+  position: sticky;
+  top: 76px;
+  z-index: 45;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(82, 224, 196, 0.42);
+  border-radius: 12px;
+  background: rgba(8, 25, 35, 0.96);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(16px);
+}
+
+.analysis-load-progress[hidden] {
+  display: none;
+}
+
+.analysis-load-progress[data-state="failed"] {
+  border-color: rgba(255, 104, 121, 0.52);
+  background: rgba(45, 18, 27, 0.96);
+}
+
+.analysis-load-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(82, 224, 196, 0.22);
+  border-top-color: var(--cyan);
+  border-radius: 50%;
+  animation: analysis-load-spin 750ms linear infinite;
+}
+
+.analysis-load-progress[data-state="failed"] .analysis-load-spinner {
+  border: 0;
+  background: var(--red);
+  box-shadow: 0 0 0 5px rgba(255, 104, 121, 0.12);
+  animation: none;
+}
+
+.analysis-load-copy {
+  display: grid;
+  grid-template-columns: minmax(180px, auto) minmax(0, 1fr);
+  gap: 2px 14px;
+  align-items: center;
+}
+
+.analysis-load-copy strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.analysis-load-copy span {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analysis-load-copy progress {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 5px;
+  margin-top: 5px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(82, 224, 196, 0.12);
+  color: var(--cyan);
+  accent-color: var(--cyan);
+}
+
+.analysis-load-copy progress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: rgba(82, 224, 196, 0.12);
+}
+
+.analysis-load-copy progress::-webkit-progress-value {
+  border-radius: 999px;
+  background: var(--cyan);
+}
+
+.analysis-load-copy progress::-moz-progress-bar {
+  border-radius: 999px;
+  background: var(--cyan);
+}
+
+@keyframes analysis-load-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 600px) {
+  .analysis-load-progress {
+    top: 68px;
+  }
+
+  .analysis-load-copy {
+    grid-template-columns: 1fr;
+  }
+
+  .analysis-load-copy span {
+    white-space: normal;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .analysis-load-spinner {
+    animation: none;
+  }
+}
+
 .section-wrap {
   width: min(1480px, calc(100% - 48px));
   margin-inline: auto;

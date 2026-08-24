@@ -97,10 +97,10 @@ Both responses contain a `workspace` object:
     },
     "node_id": "node-a",
     "node_label": "PE-A",
-    "event_count": 125000,
-    "matched_event_count": 125000,
-    "resource_count": 7500,
-    "source_record_count": 125000,
+    "event_count": 1250005,
+    "matched_event_count": 1250005,
+    "resource_count": 7504,
+    "source_record_count": 5000,
     "timeline_start_ns": "1759680000000000000",
     "timeline_end_ns": "1759680600000000000",
     "capture_ns": "1759680600000000000",
@@ -199,6 +199,19 @@ lifespan and validates the same six session surfaces. Core constructs
 `NormalizedDataService` from the source and policy; plug-ins do not implement
 generic state, relationship, resource-table, dashboard, range, redaction,
 search, or client-projection queries.
+
+After the runtime session has opened, a frontend-hosted deployment leaves the
+default revision lazy so the page and progress endpoint can become reachable
+before parsing begins. Its first data request materializes the revision, and
+the first indexed search builds the safe-search corpus, synchronously under
+separate tracked load operations. API-only/headless startup performs those
+same steps synchronously before serving so failures remain fail-fast. There is
+no detached warm-up worker. Every core-bound
+`NormalizedDatasetSource.load_dataset()` call owns a thread-safe progress
+operation. A compatibility fixture loader may refine that operation through
+`AnalysisLoadStage` and `report_analysis_load()`; reports are advisory,
+path-free, numeric, and a no-op outside a core-bound load. Unknown work never
+receives an invented percentage.
 
 The default host enters that real application lifespan before handing control
 to Uvicorn and disables Uvicorn's duplicate lifespan driver. Runtime open,
@@ -3998,12 +4011,14 @@ performs the actual clipboard write. Hide/show and review-marker actions in the
 demo are browser-local presentation state; they do not mutate the immutable
 revision. Core never assumes that a source type or group named `ctf` exists.
 
-For immutable full-scale revisions, the core may build the literal-search
-corpus in the background after plug-in descriptors and sensitivity rules are
-final. Each indexed document is the same case-folded, redacted projection used
-for client search; raw plug-in payloads and sensitive values never enter the
-corpus. Bounded result postings are reusable across virtual pages and selected
-ranges. A successful event-only indexed response reports
+For immutable full-scale revisions, the core builds the literal-search corpus
+after plug-in descriptors and sensitivity rules are final. Frontend-hosted
+deployments do this synchronously on the first indexed search, under a visible
+indexing progress operation; API-only startup performs the same bounded build
+before serving. Each indexed document is the same case-folded, redacted
+projection used for client search; raw plug-in payloads and sensitive values
+never enter the corpus. Bounded result postings are reusable across virtual
+pages and selected ranges. A successful event-only indexed response reports
 `indexed_search: true`; if the configured serving bound is exceeded, the core
 retains exact behavior through the compatible streaming fallback rather than
 truncating counts.
@@ -4041,6 +4056,36 @@ can read the payload instead of receiving an unrelated session exception. The
 shared health projection is total: a failing store/provider or malformed
 counter becomes a stable bounded observation error, never private exception
 text or an HTTP 500 from the health serializer.
+
+The core browser uses a separate, non-cacheable load observation:
+
+```http
+GET /v1/analysis-load
+```
+
+Its closed `state` is `waiting`, `running`, `ready`, or `failed`; `stage` is one
+of the generic core load stages. `completed` and `total` are JSON-safe
+non-negative integers only when the active operation has a real total, and
+`determinate` is then true. Otherwise both are null and the browser renders an
+indeterminate progress bar. `records_processed` is an informational monotone
+count, not a denominator. The response also contains a random operation ID,
+bounded sequence/active-operation counts, decimal-string timestamps, and a
+closed path-free `error_code`; it contains no input name, host path, plug-in
+text, resource identity, or dump content. Both the node and multi-node pages
+poll this same core endpoint only while an analysis request may cause a cold
+revision load. Concurrent loads form one observation batch: the endpoint stays
+`running` while any operation remains, and if any member fails the terminal
+batch state is `failed` even when a sibling completes successfully. A later
+non-overlapping load begins a fresh batch.
+
+When the reusable frontend is enabled, ordinary runtime-v2 ingestion is
+deferred to the first workspace request so this endpoint is reachable during
+parsing. Lazy multi-node topology and route-provider construction is bound to
+the same tracker. With `--api-only`, the default revision and safe search index
+are loaded synchronously during lifespan startup; any ordinary failure crosses
+the bounded startup boundary and process-control exceptions propagate
+unchanged. Core does not use a detached warm-up worker or wait on one during
+shutdown.
 
 Service telemetry is not an HTTP response schema. Core emits a closed
 `rda.operational.v1` record on `router_dump_analyzer.operations` for bounded
@@ -4171,7 +4216,7 @@ bounds, total/failure counts, and the most frequent opaque plug-in event types.
 The core caps one request's work and response, while a client may retain an
 arbitrarily large logical zoom by requesting only visible bins plus overscan.
 For full-scale revisions the core answers from timestamp, failure, and
-event-type indexes; it does not rescan or serialize the 100K-event stream.
+event-type indexes; it does not rescan or serialize the million-event stream.
 
 ## 7. Point-in-time resource tables and selected ranges
 

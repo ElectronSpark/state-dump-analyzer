@@ -139,10 +139,10 @@ DEMO_GAPS: list[dict[str, Any]] = [
     {
         "id": "scale",
         "area": "Scale",
-        "title": "100K+-event generated assembly",
+        "title": "1M+-event generated assembly",
         "status": "implemented",
         "detail": (
-            "The single demo generator emits at least 100K events and "
+            "The single demo generator emits at least 1M events and "
             "5K-10K resources per node for the same browser and API paths."
         ),
     },

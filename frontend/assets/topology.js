@@ -1,7 +1,9 @@
 import {
   api,
   byId,
+  createAnalysisLoadProgressController,
   escapeHtml,
+  renderAnalysisLoadProgress,
   safeClass,
   titleCase,
   toBigInt,
@@ -146,6 +148,14 @@ const state = {
     route: { scale: 1, panX: 0, panY: 0, positions: new Map(), viewports: new Map(), initialized: false, dimensions: null, transformFrame: null, dragFrame: null, interactionIdleTimer: null, stage: null, layers: null, readout: null, detailMode: "" },
   },
 };
+
+const analysisLoadProgress = createAnalysisLoadProgressController({
+  fetchSnapshot: () => api("/v1/analysis-load", { cache: "no-store" }),
+  render: (snapshot) => renderAnalysisLoadProgress(
+    byId("analysis-load-progress"),
+    snapshot,
+  ),
+});
 
 function firstArray(...values) {
   return values.find((value) => Array.isArray(value) && value.length) || [];
@@ -9520,6 +9530,7 @@ async function runRouteTrace(event) {
     error.textContent = requestError.message;
     return;
   }
+  const loadProgressLease = analysisLoadProgress.begin();
   const generation = ++state.routeRequestGeneration;
   const controller = replaceAbortController(state.routeAbortController);
   state.routeAbortController = controller;
@@ -9564,6 +9575,7 @@ async function runRouteTrace(event) {
     clearRouteHover();
     error.textContent = traceError.message;
   } finally {
+    analysisLoadProgress.end(loadProgressLease);
     if (generation !== state.routeRequestGeneration) return;
     state.routePending = false;
     state.routeAbortController = null;
@@ -9590,6 +9602,7 @@ async function runQuery(event) {
     error.textContent = requestError.message;
     return;
   }
+  const loadProgressLease = analysisLoadProgress.begin();
   const generation = ++state.topologyRequestGeneration;
   const controller = replaceAbortController(state.topologyAbortController);
   state.topologyAbortController = controller;
@@ -9648,6 +9661,7 @@ async function runQuery(event) {
     state.routeTablePending = false;
     state.routeTableError = "Route tables were not queried because topology reconstruction failed.";
   } finally {
+    analysisLoadProgress.end(loadProgressLease);
     if (generation !== state.topologyRequestGeneration) return;
     state.pending = false;
     state.topologyAbortController = null;
@@ -9925,6 +9939,7 @@ function bootstrapFromCapabilities(capabilities) {
 }
 
 async function initialize() {
+  const loadProgressLease = analysisLoadProgress.begin();
   try {
     state.capabilities = await discoverCapabilities();
     state.bootstrap = bootstrapFromCapabilities(state.capabilities);
@@ -9948,6 +9963,8 @@ async function initialize() {
     byId("mn-query-error").textContent = error.message;
     byId("mn-source-banner").classList.add("is-fallback");
     byId("mn-source-banner").innerHTML = `<span class="mn-spinner" aria-hidden="true"></span><strong>Topology page could not initialize.</strong><span>${escapeHtml(error.message)}</span>`;
+  } finally {
+    analysisLoadProgress.end(loadProgressLease);
   }
 }
 

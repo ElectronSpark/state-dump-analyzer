@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import json
-import threading
 from bisect import bisect_left, bisect_right
 from collections import Counter
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractContextManager
-from contextvars import copy_context
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, NoReturn
@@ -25,6 +23,7 @@ from router_dump_analyzer.control_plane import (
     validate_revision_consistency_dataset,
 )
 from router_dump_analyzer.history_search_core import HistorySearchCapacityError
+from router_dump_analyzer.load_progress import AnalysisLoadStage
 from router_dump_analyzer.multi_node_route import MultiNodeRouteRequestError
 from router_dump_analyzer.multi_node_topology import MultiNodeTopologyRequestError
 from router_dump_analyzer.normalized_data import (
@@ -496,13 +495,22 @@ def _require_revision_store():
 
 def _require_revision(revision_id: str) -> Any:
     store = _require_revision_store()
-    try:
-        return store.revision(revision_id)
-    except KeyError as error:
+    lookup_error: KeyError | None = None
+    descriptor = None
+    # Revision lookup itself may be the first touch of a lazy core store. Keep
+    # that materialization visible, but consume an expected lookup miss inside
+    # the operation so a normal 404 cannot poison global load state.
+    with _data_service()._loading_operation():
+        try:
+            descriptor = store.revision(revision_id)
+        except KeyError as error:
+            lookup_error = error
+    if lookup_error is not None:
         raise _RuntimeHTTPResponse(
             status_code=404,
             detail="unknown node revision",
-        ) from error
+        ) from lookup_error
+    return descriptor
 
 
 def _temporal_topology(revision_id: str | None = None) -> Any:
@@ -548,7 +556,12 @@ def _multi_node_topology() -> Any:
         MultiNodeTopologyService,
     )
 
-    service = provider.get()
+    # A topology provider may lazily parse one or more node dumps while it
+    # constructs its core query service.  Bind that work to the same progress
+    # operation used by ordinary revision loads, even when the provider reads
+    # through its own format-aware source.
+    with _data_service()._loading_operation():
+        service = provider.get()
     if not isinstance(service, MultiNodeTopologyService):
         raise _RuntimeHTTPResponse(
             status_code=500,
@@ -566,7 +579,8 @@ def _multi_node_route() -> Any:
         )
     from router_dump_analyzer.multi_node_route import MultiNodeRouteService
 
-    service = provider.get()
+    with _data_service()._loading_operation():
+        service = provider.get()
     if not isinstance(service, MultiNodeRouteService):
         raise _RuntimeHTTPResponse(
             status_code=500,
@@ -581,12 +595,16 @@ def _multi_node_call(operation: Callable[..., Any], *args: Any) -> Any:
 
 def _require_topology_assembly(assembly_id: str) -> None:
     store = _require_revision_store()
-    if assembly_id != store.assembly.assembly_id:
+    with _data_service()._loading_operation():
+        active_assembly_id = store.assembly.assembly_id
+    if assembly_id != active_assembly_id:
         raise _RuntimeHTTPResponse(status_code=404, detail="unknown topology assembly")
 
 
 def _active_topology_assembly_id() -> str:
-    return _require_revision_store().assembly.assembly_id
+    store = _require_revision_store()
+    with _data_service()._loading_operation():
+        return store.assembly.assembly_id
 
 
 def _resource_id(record: dict[str, Any]) -> str:
@@ -1005,8 +1023,12 @@ def analysis_health_projection() -> dict[str, Any]:
     exception or malformed provider value into a stable degraded response.
     """
 
+    # Load through the normalized-data service before consulting revision-store
+    # properties.  A core ingestion store may still be lazy here; touching its
+    # default revision first would run the parser outside the tracked load
+    # operation and make a health probe invisible to the progress surface.
+    dataset = load_dataset()
     opened_revision_store = revision_store()
-    dataset = load_dataset(opened_revision_store.default_revision_id)
     runtime = history_runtime(dataset)
     search_status: Any = (
         runtime.event_search.status_snapshot()
@@ -1019,7 +1041,10 @@ def analysis_health_projection() -> dict[str, Any]:
         }
     )
     metadata = _analysis_metadata(dataset)
-    revisions = tuple(opened_revision_store.assembly.revisions)
+    with _data_service()._loading_operation():
+        assembly = opened_revision_store.assembly
+        loaded_revision_ids = list(opened_revision_store.loaded_revision_ids())
+    revisions = tuple(assembly.revisions)
     return {
         "analysis_ready": True,
         "revision_id": current_revision_id(dataset),
@@ -1039,26 +1064,23 @@ def analysis_health_projection() -> dict[str, Any]:
         "history_search_storage": search_status["storage"],
         "history_search_backend": search_status["backend"],
         "assembly": {
-            "assembly_id": opened_revision_store.assembly.assembly_id,
+            "assembly_id": assembly.assembly_id,
             "node_count": len(revisions),
-            "coverage_case_count": len(
-                opened_revision_store.assembly.coverage_case_ids
-            ),
+            "coverage_case_count": len(assembly.coverage_case_ids),
             "events_per_node_min": min(item.event_count for item in revisions),
             "resources_per_node_min": min(item.resource_count for item in revisions),
             "resources_per_node_max": max(item.resource_count for item in revisions),
-            "loaded_revision_ids": list(opened_revision_store.loaded_revision_ids()),
+            "loaded_revision_ids": loaded_revision_ids,
         },
     }
 
 
 def _client_workspace_json() -> bytes:
-    store = _require_revision_store()
     session = current_runtime_session()
     return session.cached(
-        ("client-workspace-json", store.default_revision_id),
+        ("client-workspace-json",),
         lambda: json.dumps(
-            client_dataset(store.default_revision_id),
+            client_dataset(),
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode("utf-8"),
@@ -1476,16 +1498,28 @@ def node_workspace_dataset(
     # plug-in source. The separate snapshot adapter remains a generic
     # point-in-time projection used by focused algorithm tests.
     store = _require_revision_store()
-    try:
-        descriptor = store.revision_for_node(node_id)
-        client = client_dataset(node_id=node_id)
-    except KeyError as error:
+    lookup_error: KeyError | None = None
+    descriptor = None
+    assembly_id = None
+    # Descriptor lookup may itself parse the lazy assembly. Consume an expected
+    # unknown-node miss inside the operation so it remains a normal 404 rather
+    # than a global dump-load failure.
+    with _data_service()._loading_operation():
+        try:
+            descriptor = store.revision_for_node(node_id)
+            assembly_id = store.assembly.assembly_id
+        except KeyError as error:
+            lookup_error = error
+    if lookup_error is not None:
         raise _RuntimeHTTPResponse(
             status_code=404,
             detail="unknown topology member",
-        ) from error
+        ) from lookup_error
+    # Once the node has been validated, load its safe client projection through
+    # the ordinary tracked normalized-data boundary.
+    client = client_dataset(node_id=node_id)
     client["node_snapshot"] = {
-        "assembly_id": store.assembly.assembly_id,
+        "assembly_id": assembly_id,
         "node_id": descriptor.node_id,
         "revision_id": descriptor.revision_id,
         "event_count": descriptor.event_count,
@@ -1508,7 +1542,7 @@ def node_workspace_dataset(
     }
     client["workspace"] = {
         **client["workspace"],
-        "assembly_id": store.assembly.assembly_id,
+        "assembly_id": assembly_id,
         "node_id": descriptor.node_id,
         "node_label": descriptor.label,
         "revision_id": descriptor.revision_id,
@@ -2052,20 +2086,49 @@ def _indexed_event_search_documents(
 
 
 def _warm_event_search(dataset: dict[str, Any]) -> None:
-    """Build one immutable revision's safe corpus without delaying startup."""
+    """Build one immutable revision's safe corpus under tracked indexing."""
 
     runtime = history_runtime(dataset)
     if runtime is None:
         return
     policy = _event_redaction_policy(dataset)
-    try:
-        runtime.event_search.ensure(
-            lambda: _indexed_event_search_documents(dataset, runtime, policy)
-        )
-    except HistorySearchCapacityError:
-        # Exact queries retain the compatible streaming fallback when a future
-        # input exceeds the bounded in-memory serving corpus.
-        return
+    with _data_service()._loading_operation(AnalysisLoadStage.INDEXING):
+        try:
+            runtime.event_search.ensure(
+                lambda: _indexed_event_search_documents(dataset, runtime, policy)
+            )
+        except HistorySearchCapacityError:
+            # Exact queries retain the compatible streaming fallback when a
+            # future input exceeds the bounded serving corpus.  Capacity is a
+            # supported outcome, so the progress operation completes rather
+            # than presenting it as a dump-load failure.
+            return
+
+
+def _query_event_search(
+    dataset: dict[str, Any],
+    runtime: Any,
+    policy: Any,
+    search: str,
+):
+    """Run a first-use corpus build and query as one visible core operation."""
+
+    capacity_error: HistorySearchCapacityError | None = None
+    matches = None
+    with _data_service()._loading_operation(AnalysisLoadStage.INDEXING):
+        try:
+            matches = runtime.event_search.query(
+                search,
+                lambda: _indexed_event_search_documents(dataset, runtime, policy),
+            )
+        except HistorySearchCapacityError as error:
+            # Raise only after the operation has completed successfully so
+            # the caller can select its exact streaming fallback without a
+            # stale FAILED progress banner.
+            capacity_error = error
+    if capacity_error is not None:
+        raise capacity_error
+    return matches
 
 
 def _indexed_event_search_log_page(
@@ -2083,10 +2146,7 @@ def _indexed_event_search_log_page(
 ) -> dict[str, Any]:
     """Page one exact indexed scale search without rebuilding a full merge."""
 
-    matches = runtime.event_search.query(
-        search,
-        lambda: _indexed_event_search_documents(dataset, runtime, policy),
-    )
+    matches = _query_event_search(dataset, runtime, policy, search)
     if layers:
         filtered_matches = [
             index
@@ -2665,13 +2725,11 @@ def event_log_query(
         indexed_event_search = False
         if runtime is not None and search:
             try:
-                event_indices = runtime.event_search.query(
+                event_indices = _query_event_search(
+                    dataset,
+                    runtime,
+                    policy,
                     search,
-                    lambda: _indexed_event_search_documents(
-                        dataset,
-                        runtime,
-                        policy,
-                    ),
                 )
                 indexed_event_search = True
             except HistorySearchCapacityError:
@@ -4221,21 +4279,16 @@ def reset_runtime_api_caches() -> None:
         pass
 
 
-def start_runtime_warmup() -> threading.Thread | None:
-    """Warm the core safe-search projection without delaying app startup."""
+def start_runtime_warmup() -> None:
+    """Synchronously load/index a headless runtime before it starts serving.
 
-    dataset = load_dataset()
-    if history_runtime(dataset) is None:
-        return None
-    context = copy_context()
-    worker = threading.Thread(
-        target=context.run,
-        args=(_warm_event_search, dataset),
-        name="analysis-history-search-warmup",
-        daemon=True,
-    )
-    worker.start()
-    return worker
+    Frontend deployments deliberately skip this function: their first
+    revision request performs the lazy load while either browser workspace
+    polls ``/v1/analysis-load``.  API-only deployments retain fail-fast startup
+    and native process-control propagation by warming on the lifespan owner.
+    """
+
+    _warm_event_search(load_dataset())
 
 
 __all__ = [

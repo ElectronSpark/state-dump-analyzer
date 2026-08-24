@@ -17,6 +17,89 @@ const DASHBOARD_EQUALITY_MAX_UNITS = 4_096;
 const DASHBOARD_EQUALITY_MAX_ATOM_UNITS = 65_536;
 const DASHBOARD_EQUALITY_MAX_INTEGER_BITS = 4_096;
 
+function virtualScrollScale(rowCount, rowHeight, maximumHeight, viewportHeight) {
+  exactBoundedInteger(rowCount, "rowCount");
+  exactBoundedInteger(rowHeight, "rowHeight", { minimum: 1 });
+  exactBoundedInteger(maximumHeight, "maximumHeight", { minimum: 1 });
+  exactBoundedInteger(viewportHeight, "viewportHeight");
+  if (rowCount * rowHeight <= maximumHeight) return rowHeight;
+  return Math.max(
+    Number.EPSILON,
+    (maximumHeight - Math.min(viewportHeight, maximumHeight - 1))
+      / Math.max(1, rowCount - 1),
+  );
+}
+
+export function virtualScrollWindow({
+  rowCount,
+  rowHeight,
+  maximumHeight,
+  viewportHeight,
+  scrollTop,
+  overscan = 0,
+}) {
+  exactBoundedInteger(viewportHeight, "viewportHeight");
+  exactBoundedInteger(overscan, "overscan");
+  const scale = virtualScrollScale(
+    rowCount,
+    rowHeight,
+    maximumHeight,
+    viewportHeight,
+  );
+  const totalHeight = Math.min(rowCount * rowHeight, maximumHeight);
+  const visibleRows = Math.max(1, Math.ceil(viewportHeight / rowHeight));
+  const boundedScrollTop = Math.max(
+    0,
+    Math.min(Number(scrollTop) || 0, Math.max(0, totalHeight - viewportHeight)),
+  );
+  const anchor = Math.min(
+    Math.max(0, rowCount - 1),
+    Math.floor(boundedScrollTop / scale),
+  );
+  const windowSize = visibleRows + overscan * 2;
+  const start = Math.max(0, Math.min(
+    Math.max(0, rowCount - windowSize),
+    anchor - overscan,
+  ));
+  const end = Math.min(rowCount, start + windowSize);
+  const rowsBeforeAnchor = Math.max(0, anchor - start);
+  const topHeight = Math.max(
+    0,
+    Math.min(totalHeight, boundedScrollTop - rowsBeforeAnchor * rowHeight),
+  );
+  const renderedHeight = (end - start) * rowHeight;
+  return {
+    start,
+    end,
+    topHeight,
+    bottomHeight: Math.max(0, totalHeight - topHeight - renderedHeight),
+    totalHeight,
+    scale,
+  };
+}
+
+export function virtualScrollTopForIndex({
+  index,
+  rowCount,
+  rowHeight,
+  maximumHeight,
+  viewportHeight,
+}) {
+  exactBoundedInteger(index, "index");
+  exactBoundedInteger(viewportHeight, "viewportHeight");
+  const scale = virtualScrollScale(
+    rowCount,
+    rowHeight,
+    maximumHeight,
+    viewportHeight,
+  );
+  const totalHeight = Math.min(rowCount * rowHeight, maximumHeight);
+  const target = rowCount * rowHeight <= maximumHeight
+    ? index * scale - (viewportHeight - rowHeight) / 2
+    : index * scale;
+  return Math.max(0, Math.min(Math.max(0, totalHeight - viewportHeight), target));
+}
+
 function exactBoundedInteger(value, label, { minimum = 0 } = {}) {
   if (!Number.isSafeInteger(value) || value < minimum) {
     throw new TypeError(`${label} must be a safe integer greater than or equal to ${minimum}`);

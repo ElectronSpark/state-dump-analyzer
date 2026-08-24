@@ -20,6 +20,7 @@ from functools import partial
 from hashlib import sha256
 from math import copysign, isfinite
 from pathlib import Path, PurePosixPath
+from threading import RLock
 from types import MappingProxyType
 from typing import Any, cast
 from uuid import UUID
@@ -31,6 +32,7 @@ from .artifact_core import (
     normalize_artifact_path,
 )
 from .canonical import canonical_json
+from .load_progress import AnalysisLoadStage, report_analysis_load
 from .plugin_api import (
     CORE_PLUGIN_API_VERSION,
     INPUT_PARSER_HOOKS,
@@ -90,6 +92,7 @@ from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .revision_store import (
     AssemblyDescriptor,
     RevisionDescriptor,
+    RevisionStore,
 )
 from .revision_world import _canonical_resource_identity
 
@@ -3272,6 +3275,13 @@ class IngestionCoordinator:
             try:
                 for ordinal, output in enumerate(iterator):
                     output_count += 1
+                    if output_count % 1_024 == 0:
+                        report_analysis_load(
+                            AnalysisLoadStage.PARSING,
+                            completed=input_ordinal,
+                            total=len(specs),
+                            records_processed=output_count,
+                        )
                     if output_count > self.limits.max_parsed_outputs:
                         raise IngestionError(
                             "parser outputs exceeded the configured limit"
@@ -3451,6 +3461,12 @@ class IngestionCoordinator:
                         PluginDiagnostic,
                     ),
                 )
+            report_analysis_load(
+                AnalysisLoadStage.PARSING,
+                completed=input_ordinal + 1,
+                total=len(specs),
+                records_processed=output_count,
+            )
         return (
             snapshots,
             relationships,
@@ -3468,27 +3484,64 @@ class IngestionCoordinator:
         node_hint: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> IngestionResult:
+        report_analysis_load(AnalysisLoadStage.STARTING)
         selected = self._snapshot_plugin(plugin)
         budget = _IngestionBudget(self.limits)
         schema, schema_index = self._schema(selected, budget)
         serialized_metadata = _json_value(metadata or {})
         assert isinstance(serialized_metadata, dict)
         safe_metadata = serialized_metadata
+        report_analysis_load(
+            AnalysisLoadStage.INVENTORYING,
+            completed=0,
+            total=1,
+        )
         with CoreArtifactReader(
             input_path,
             node_hint=node_hint,
             metadata=safe_metadata,
             limits=self.limits.artifact_limits,
         ) as reader:
+            report_analysis_load(
+                AnalysisLoadStage.INVENTORYING,
+                completed=1,
+                total=1,
+            )
+            report_analysis_load(
+                AnalysisLoadStage.PROBING,
+                completed=0,
+                total=1,
+            )
             probe_diagnostics = self._probe(
                 selected,
                 reader.inventory,
                 budget,
             )
+            report_analysis_load(
+                AnalysisLoadStage.PROBING,
+                completed=1,
+                total=1,
+            )
+            report_analysis_load(
+                AnalysisLoadStage.LOCATING_INPUTS,
+                completed=0,
+                total=1,
+            )
             specs, locate_diagnostics = self._located(
                 selected,
                 reader.inventory,
                 budget,
+            )
+            report_analysis_load(
+                AnalysisLoadStage.LOCATING_INPUTS,
+                completed=1,
+                total=1,
+            )
+            report_analysis_load(
+                AnalysisLoadStage.PARSING,
+                completed=0,
+                total=len(specs),
+                records_processed=0,
             )
 
             def selected_node() -> str:
@@ -3570,6 +3623,8 @@ class IngestionCoordinator:
             )
             inventory = reader.inventory
 
+        report_analysis_load(AnalysisLoadStage.NORMALIZING)
+
         def finalize_dataset() -> tuple[str, dict[str, Any]]:
             # Revision identity must fit the same closed executable-plan domain
             # for every legal node. Preserve the established node-prefixed ID
@@ -3601,6 +3656,11 @@ class IngestionCoordinator:
         revision_id, dataset = _plugin_execution_boundary(
             "normalized output finalization",
             finalize_dataset,
+        )
+        report_analysis_load(
+            AnalysisLoadStage.NORMALIZING,
+            completed=1,
+            total=1,
         )
         return IngestionResult(
             inventory=inventory,
@@ -3685,11 +3745,69 @@ class InMemoryRevisionStore:
         return (self._revision.revision_id,)
 
 
+class _LazyInMemoryRevisionStore:
+    """Single-flight wrapper that defers parser work until data is requested.
+
+    The hosted frontend must be reachable before a potentially large dump is
+    parsed so its progress surface can observe that work. Runtime/session
+    validation therefore opens this lightweight store synchronously, while
+    the first normalized-data request performs the actual ingestion under the
+    core service's bound load operation.
+    """
+
+    def __init__(
+        self,
+        loader: Callable[[], IngestionResult],
+        *,
+        plugin_id: str,
+    ) -> None:
+        self._loader = loader
+        self._plugin_id = plugin_id
+        self._lock = RLock()
+        self._store: InMemoryRevisionStore | None = None
+
+    def _loaded(self) -> InMemoryRevisionStore:
+        with self._lock:
+            if self._store is None:
+                result = self._loader()
+                self._store = InMemoryRevisionStore(
+                    result,
+                    plugin_id=self._plugin_id,
+                )
+            return self._store
+
+    @property
+    def assembly(self) -> AssemblyDescriptor:
+        return self._loaded().assembly
+
+    @property
+    def default_revision_id(self) -> str:
+        return self._loaded().default_revision_id
+
+    def revision(self, revision_id: str) -> RevisionDescriptor:
+        return self._loaded().revision(revision_id)
+
+    def revision_for_node(self, node_id: str) -> RevisionDescriptor:
+        return self._loaded().revision_for_node(node_id)
+
+    def dataset_for_revision(self, revision_id: str) -> Mapping[str, Any]:
+        return self._loaded().dataset_for_revision(revision_id)
+
+    def dataset_for_node(self, node_id: str) -> Mapping[str, Any]:
+        return self._loaded().dataset_for_node(node_id)
+
+    def loaded_revision_ids(self) -> Sequence[str]:
+        with self._lock:
+            if self._store is None:
+                return ()
+            return self._store.loaded_revision_ids()
+
+
 class IngestedDatasetSource:
     """Normalized source for one immutable in-memory ingestion result."""
 
-    def __init__(self, store: InMemoryRevisionStore) -> None:
-        self.store: InMemoryRevisionStore = store
+    def __init__(self, store: RevisionStore) -> None:
+        self.store: RevisionStore = store
 
     def revision_scope(self, revision_id: str) -> Any:
         self.store.revision(revision_id)
@@ -3720,17 +3838,28 @@ class IngestedDatasetSource:
 class IngestedDataPolicy:
     """Domain-neutral metadata policy for core-ingested revisions."""
 
-    def __init__(self, store: InMemoryRevisionStore) -> None:
-        dataset = store.dataset_for_revision(store.default_revision_id)
-        self._source_by_event_uid: dict[str, dict[str, Any]] = {}
-        for record in dataset.get("source_records", ()):
-            if not isinstance(record, Mapping):
-                continue
-            for event_uid in record.get("matched_event_uids", ()):
-                self._source_by_event_uid.setdefault(
-                    str(event_uid),
-                    deepcopy(dict(record)),
+    def __init__(self, store: RevisionStore) -> None:
+        self._store = store
+        self._source_lock = RLock()
+        self._source_by_event_uid: dict[str, dict[str, Any]] | None = None
+
+    def _source_records_by_event(self) -> dict[str, dict[str, Any]]:
+        with self._source_lock:
+            if self._source_by_event_uid is None:
+                dataset = self._store.dataset_for_revision(
+                    self._store.default_revision_id
                 )
+                index: dict[str, dict[str, Any]] = {}
+                for record in dataset.get("source_records", ()):
+                    if not isinstance(record, Mapping):
+                        continue
+                    for event_uid in record.get("matched_event_uids", ()):
+                        index.setdefault(
+                            str(event_uid),
+                            deepcopy(dict(record)),
+                        )
+                self._source_by_event_uid = index
+            return self._source_by_event_uid
 
     def analysis_metadata(
         self,
@@ -3795,14 +3924,14 @@ class IngestedDataPolicy:
         event: Mapping[str, Any],
     ) -> Mapping[str, Any]:
         event_uid = str(event.get("event_uid") or "")
-        return deepcopy(self._source_by_event_uid.get(event_uid, {}))
+        return deepcopy(self._source_records_by_event().get(event_uid, {}))
 
 
 @dataclass(slots=True)
 class CoreIngestionSession:
     """Core-built session exposed through the existing application lifetime."""
 
-    revision_store: InMemoryRevisionStore
+    revision_store: RevisionStore
     data_source: IngestedDatasetSource
     data_policy: IngestedDataPolicy
     temporal_provider: None = None
@@ -3836,9 +3965,8 @@ class CoreIngestionRuntime:
 
     @contextmanager
     def _open(self, input_path: Path) -> Iterator[CoreIngestionSession]:
-        result = self.coordinator.ingest(self._plugin_snapshot, input_path)
-        store = InMemoryRevisionStore(
-            result,
+        store = _LazyInMemoryRevisionStore(
+            lambda: self.coordinator.ingest(self._plugin_snapshot, input_path),
             plugin_id=self._plugin_snapshot.manifest.plugin_id,
         )
         source = IngestedDatasetSource(store)

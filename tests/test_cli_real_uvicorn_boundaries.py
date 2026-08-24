@@ -183,8 +183,8 @@ class RealUvicornCliBoundaryTests(unittest.TestCase):
                 "the standard core-ingestion parser contract"
             ),
             "runtime": "plug-in runtime session open failed",
-            "hook": "plug-in runtime session enter failed",
-            "generator": "plug-in runtime session enter failed",
+            "hook": "plug-in runtime default revision load failed",
+            "generator": "plug-in runtime default revision load failed",
         }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

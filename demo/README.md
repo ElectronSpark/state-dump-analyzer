@@ -430,7 +430,7 @@ exported live `plugin` object as `RuntimeAttachedExampleRouterPlugin` and expose
 That attribute exists only on the live exported instance. The no-argument
 `ExampleRouterPlugin` reconstructed for PROCESS probe/ingestion has no runtime
 attribute and needs none.
-The full 125,000-event-per-node demo remains on this v1 path.
+The full 1,250,000-event-per-node demo remains on this v1 path.
 
 Its `open(input_path)` method is a context manager that yields one non-web
 session. The session exposes six core-consumed surfaces:
@@ -458,6 +458,18 @@ and cache hits remain usable while another generation loads. Lease copies
 preserve the caller's current shallow top-level view and keep the shared
 generation alive; core still owns request/session lifecycle and query
 semantics.
+
+The same loader exercises the core-owned analysis progress channel. Outer
+assembly extraction reports a bounded node count; cold scale materialization
+reports the declared resource, event, relationship, and mutation total in
+batches, followed by generic
+normalization and indexing stages. It imports only the root-exported
+`AnalysisLoadStage` and advisory `report_analysis_load()` helper. It does not
+own the tracker, endpoint, labels, progress UI, or application lifecycle. The
+single-node and multi-node pages therefore show the same truthful indicator
+without moving demo vocabulary into core. Those four declared counts are exact
+integers and are checked against the parsed members; a mismatch rejects the
+fixture rather than pinning the indicator at a misleading 100 percent.
 
 The current core-built runtime-v2 session for a standard parser exposes the
 first three surfaces itself. Its optional temporal, topology, and route
@@ -572,12 +584,19 @@ materialization code. Generation also rechecks both immediately before atomic
 publication. Launch preparation regenerates the archive only when the
 destination satisfies the generator's ownership rules.
 
-The outer TGZ contains ten node packs. Each node has a 125,000-event and
+The outer TGZ contains ten node packs. Each node has a 1,250,000-event and
 7,500-resource scalable baseline plus its explicit authored observations and
-final resources, including at least 100,000 real state-changing events, raw
+final resources, including at least 1,000,000 real state-changing events, raw
 CTF/status containers, one normalized history, and mock-provider
 topology/route/forwarding/packet projections. Both browser workspaces select
 those exact revisions through the core revision-store contract. The generated
+archive is intentionally a stress fixture: first generation uses several
+gigabytes of temporary disk, and cold materialization of one node uses several
+gigabytes of memory. The runtime keeps one materialized node revision in its
+LRU, so navigating to another node bounds retained memory at the cost of
+reparsing an evicted node. Event-log scrolling uses a bounded physical surface
+mapped to the million-row logical stream; it never creates a million DOM rows.
+The generated
 projection manifest uses the installed example plug-in's
 `generated_projection_policy`, whose stable provider identity is
 `demo.example-router`. Generation, archive validation, and runtime loading all

@@ -22,8 +22,15 @@ from rsl_demo_plugin.session import (  # noqa: E402
     DemoDataPolicy,
     DemoDatasetSource,
     DemoTemporalProvider,
+    _LazyDemoAssemblyStore,
 )
 
+from router_dump_analyzer.load_progress import (  # noqa: E402
+    AnalysisLoadStage,
+    AnalysisLoadState,
+    AnalysisLoadTracker,
+    report_analysis_load,
+)
 from router_dump_analyzer.normalized_data import (  # noqa: E402
     NormalizedDataService,
 )
@@ -73,6 +80,27 @@ class _FakeStore:
 
 
 class DemoRuntimeTests(unittest.TestCase):
+    def test_lazy_store_never_inherits_an_eager_public_store_operation(self) -> None:
+        public_store_operations = {
+            name
+            for name, value in runtime_module.DemoAssemblyStore.__dict__.items()
+            if not name.startswith("_")
+            and (callable(value) or isinstance(value, property))
+        }
+        required_lazy_surface = public_store_operations | {
+            "assembly",
+            "default_node_id",
+            "default_revision_id",
+            "manifest",
+            "coverage",
+        }
+
+        self.assertLessEqual(
+            required_lazy_surface,
+            set(_LazyDemoAssemblyStore.__dict__),
+            "the lazy proxy must override every public eager-store access",
+        )
+
     def test_installed_plugin_exposes_non_web_runtime_contract(self) -> None:
         capability = require_plugin_runtime(plugin)
 
@@ -95,16 +123,27 @@ class DemoRuntimeTests(unittest.TestCase):
                 return_value=store,
             ) as constructor:
                 with require_plugin_runtime(plugin).open(fixture) as session:
+                    constructor.assert_not_called()
                     self.assertIsInstance(session, PluginRuntimeSession)
                     self.assertIs(validate_runtime_session(session), session)
-                    self.assertIs(session.revision_store, store)
+                    constructor.assert_not_called()
+                    self.assertIsNot(session.revision_store, store)
                     self.assertIs(
                         session.data_source.revision_store,
-                        store,
+                        session.revision_store,
                     )
                     self.assertEqual(
                         session.topology_provider.topology_id,
                         "demo.fabric.multi-node",
+                    )
+                    self.assertEqual(
+                        session.revision_store.revision("revision-a").revision_id,
+                        "revision-a",
+                    )
+                    constructor.assert_called_once_with(
+                        fixture,
+                        cache_size=1,
+                        dataset_loader=runtime_module._load_generated_revision,
                     )
                     self.assertEqual(store.close_count, 0)
 
@@ -112,11 +151,108 @@ class DemoRuntimeTests(unittest.TestCase):
                 session.close()
                 self.assertEqual(store.close_count, 1)
 
-        constructor.assert_called_once_with(
-            fixture,
-            cache_size=2,
-            dataset_loader=runtime_module._load_generated_revision,
-        )
+        self.assertEqual(store.revision_requests, ["revision-a"])
+
+    def test_runtime_close_without_access_never_opens_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = Path(temporary_directory) / "fixture.tgz"
+            fixture.touch()
+            with (
+                patch.object(runtime_module, "DemoAssemblyStore") as constructor,
+                require_plugin_runtime(plugin).open(fixture) as session,
+            ):
+                self.assertIs(validate_runtime_session(session), session)
+                self.assertEqual(session.revision_store.loaded_revision_ids(), ())
+
+        constructor.assert_not_called()
+
+    def test_lazy_store_materializes_once_for_concurrent_first_access(self) -> None:
+        store = _FakeStore()
+        construction_started = Event()
+        allow_construction = Event()
+        results: list[str] = []
+        errors: list[BaseException] = []
+
+        def construct(*_args: object, **_kwargs: object) -> _FakeStore:
+            construction_started.set()
+            if not allow_construction.wait(10):
+                raise TimeoutError("test did not release construction")
+            return store
+
+        def request(lazy: _LazyDemoAssemblyStore) -> None:
+            try:
+                results.append(lazy.revision("revision-a").revision_id)
+            except BaseException as error:  # noqa: BLE001 - asserted below
+                errors.append(error)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = Path(temporary_directory) / "fixture.tgz"
+            fixture.touch()
+            lazy = _LazyDemoAssemblyStore(fixture)
+            with patch.object(
+                runtime_module,
+                "DemoAssemblyStore",
+                side_effect=construct,
+            ) as constructor:
+                first = Thread(target=request, args=(lazy,))
+                second = Thread(target=request, args=(lazy,))
+                first.start()
+                self.assertTrue(construction_started.wait(10))
+                second.start()
+                try:
+                    self.assertEqual(constructor.call_count, 1)
+                finally:
+                    allow_construction.set()
+                    first.join(10)
+                    second.join(10)
+                lazy.close()
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(results, ["revision-a", "revision-a"])
+        self.assertEqual(constructor.call_count, 1)
+        self.assertEqual(store.close_count, 1)
+
+    def test_lazy_inventory_reports_into_core_bound_operation(self) -> None:
+        store = _FakeStore()
+        tracker = AnalysisLoadTracker()
+        observed = []
+
+        def construct(*_args: object, **_kwargs: object) -> _FakeStore:
+            report_analysis_load(
+                AnalysisLoadStage.INVENTORYING,
+                completed=0,
+                total=1,
+            )
+            observed.append(tracker.snapshot())
+            return store
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = Path(temporary_directory) / "fixture.tgz"
+            fixture.touch()
+            lazy = _LazyDemoAssemblyStore(fixture)
+            with patch.object(
+                runtime_module,
+                "DemoAssemblyStore",
+                side_effect=construct,
+            ):
+                operation = tracker.begin(AnalysisLoadStage.LOADING_REVISION)
+                with operation.bind():
+                    self.assertEqual(
+                        lazy.revision("revision-a").revision_id,
+                        "revision-a",
+                    )
+                operation.complete()
+                lazy.close()
+
+        self.assertEqual(len(observed), 1)
+        self.assertIs(observed[0].state, AnalysisLoadState.RUNNING)
+        self.assertIs(observed[0].stage, AnalysisLoadStage.INVENTORYING)
+        self.assertEqual(observed[0].completed, 0)
+        self.assertEqual(observed[0].total, 1)
+        self.assertIs(tracker.snapshot().state, AnalysisLoadState.READY)
+        self.assertEqual(store.close_count, 1)
 
     def test_dataset_source_binds_store_and_revision_by_context(self) -> None:
         store = _FakeStore()

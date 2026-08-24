@@ -106,9 +106,10 @@ class HistorySearchCorpus:
         self._error: Exception | None = None
         self._results: OrderedDict[str, array[int]] = OrderedDict()
         self._cached_ordinals = 0
-        # Hosts that already warm the corpus in a background worker can defer
-        # the linear digest/index validation to that worker.  The default
-        # remains eager for callers that use ``ready`` as a startup contract.
+        # Hosts that explicitly warm the corpus later can defer the linear
+        # digest/index validation to that first-use or startup operation. The
+        # default remains eager for callers that use ``ready`` as a startup
+        # contract.
         if self._sidecar_path is not None and eager_validate_sidecar:
             try:
                 opened = self._open_valid_sidecar(self._sidecar_path)

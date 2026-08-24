@@ -57,6 +57,7 @@ class ScaleGeneratorOptimizationTests(unittest.TestCase):
             (120, 120),
             (25_000, 2_500),
             (125_000, 7_500),
+            (1_250_000, 7_500),
         ):
             with self.subTest(
                 event_count=event_count,
@@ -119,6 +120,24 @@ class ScaleGeneratorOptimizationTests(unittest.TestCase):
                         ),
                         tuple(successful),
                     )
+
+    def test_million_scale_phases_remain_globally_time_ordered(self) -> None:
+        event_count = 1_250_000
+        phase_counts = _scale._phase_event_counts(event_count)
+        for phase, count in phase_counts.items():
+            with self.subTest(phase=phase):
+                self.assertLess(
+                    max(0, count - 1) * _scale.EVENT_STEP_NS,
+                    _scale.PHASE_GAP_NS,
+                )
+        metadata = _scale._scenario_metadata(
+            event_count,
+            _scale._layout(7_500),
+        )
+        self.assertGreaterEqual(
+            metadata["expected_changes"]["state_change_events"],
+            1_000_000,
+        )
 
 
 if __name__ == "__main__":

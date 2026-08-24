@@ -12,7 +12,7 @@ fixtures. No product or customer data is included.
 | Canonical demo authoring source | `demo/router-state-lab-default.scenario.json` | Ordinary independent-tool save containing private topology intent and explicit historical observations; this is the durable source for future mock dumps. |
 | Complete demo input | `demo/fixtures/router-state-lab-demo.tgz` (generated on demand) | One ten-node assembly used by both the fabric and individual-node workspaces. |
 | Per-node raw packets | `nodes/<node-id>.tgz` inside the assembly | Four heterogeneous container TGZs with synthetic CTF 2, retained non-CTF logs, and one- or multi-table status text. |
-| Per-node normalized state | `normalized-scale/` inside each node pack | 125,000 scalable events plus the node's explicit authored observations, at least 100,000 real state-changing events, and a 7,500-resource baseline plus final authored resources, relationships, and mutations. |
+| Per-node normalized state | `normalized-scale/` inside each node pack | 1,250,000 scalable events plus the node's explicit authored observations, at least 1,000,000 real state-changing events, and a 7,500-resource baseline plus final authored resources, relationships, and mutations. |
 | Plug-in projections | `plugin-projection/` inside each node pack | Immutable demo-owned topology, route, forwarding, packet, evidence, and checksum records generated from the same node model. |
 | Checkable behavior registry | `coverage.json` in the outer assembly | Versioned evidence connecting advertised demo behavior to generated records; its current schema is documented in the demo guide. |
 

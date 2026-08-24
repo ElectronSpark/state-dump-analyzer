@@ -281,6 +281,12 @@ ZIP, and owns the artifact-reader lifetime. It then:
 6. assigns canonical resource/source/revision identity; and
 7. publishes the normalized node dataset through the core application.
 
+With the reusable frontend enabled, core performs these runtime-v2 ingestion
+steps lazily in the first normalized workspace request so the node and
+multi-node pages can observe the core progress endpoint. `--api-only` performs
+the same work synchronously before serving and remains fail-fast. Plug-ins do
+not choose this lifecycle and must not start their own background parser.
+
 The plug-in receives logical artifact UUIDs, portable logical names, read-only
 streams, and session-private materializations only. It never receives `PATH`,
 an archive extraction destination, or a host-global path. A private
@@ -295,7 +301,7 @@ does not infer a provider from resource names or plug-in properties.
 
 `plugin.runtime` and `router_dump_analyzer.runtime.v1` remain a compatibility
 path only for independently versioned precomputed fixtures/assemblies, such as
-the bundled 100K-per-node demo. A new live parser must use the standard hooks
+the bundled million-event-per-node demo. A new live parser must use the standard hooks
 above rather than adding its own path-opening adapter. When this compatibility
 surface is present, it is not a `PluginCapability` enum value and does not
 change parser dispatch.
@@ -317,6 +323,18 @@ The session has six structural surfaces:
 | `temporal_provider` | `RuntimeTemporalProvider` or `None`; a supported provider returns core `TemporalTopologyService` from `for_revision()`. |
 | `topology_provider` | `RuntimeTopologyProvider` or `None`; a supported provider exposes `topology_id` and returns core `MultiNodeTopologyService` from `get()`. |
 | `route_provider` | `RuntimeRouteProvider` or `None`; a supported provider returns core `MultiNodeRouteService` from `get()`. |
+
+Dataset loading progress is a core-owned advisory channel, not a seventh
+session surface. `NormalizedDataService` automatically surrounds every
+`data_source.load_dataset()` call with `loading_revision`. A compatibility
+fixture loader MAY refine the current operation by importing
+`AnalysisLoadStage` and `report_analysis_load` from `router_dump_analyzer`.
+It MUST use only the closed generic stages and JSON-safe non-negative counters,
+MUST omit `total` when the denominator is not known, and MUST NOT encode paths,
+resource identities, dump values, or device-specific phase names in progress.
+The reporter is a no-op outside a core-bound load and advisory reporting failure
+does not invalidate otherwise-correct parsing. A plug-in MUST NOT construct or
+retain the core tracker or infer progress by inspecting another provider.
 
 Core validates a compatibility session before serving, enters it for the FastAPI
 application lifespan, binds it request-locally, and closes the context once at
@@ -2694,10 +2712,15 @@ an exception already raised by the core-owned body.
 When the default `router-dump-analyzer` CLI hosts the application, core MUST
 enter the real application lifespan before Uvicorn starts and MUST disable
 Uvicorn's duplicate lifespan driver for that server run. Every ordinary
-plug-in failure during runtime open, context entry, or lazy discovery MUST
-exit with status 1 and exactly one bounded, path-free CLI error line. It MUST
-emit no traceback and MUST NOT convert `KeyboardInterrupt`, `SystemExit`, or
-`GeneratorExit` into a public failure.
+plug-in failure during runtime open or context entry MUST exit with status 1
+and exactly one bounded, path-free CLI error line. In `--api-only` mode this
+also applies to default-revision discovery, parsing, and indexing. A frontend
+host MAY defer runtime-v2 ingestion to the first workspace request solely so
+the core page can observe progress; that request MUST receive a bounded error
+and the progress state MUST become `failed`. Neither mode may emit a traceback
+or convert `KeyboardInterrupt`, `SystemExit`, or `GeneratorExit` into a public
+failure. Core MUST NOT leave a detached parsing worker or unbounded shutdown
+join.
 
 ### Probe and input discovery
 

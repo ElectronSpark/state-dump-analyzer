@@ -1,7 +1,9 @@
 import {
   api,
   byId,
+  createAnalysisLoadProgressController,
   escapeHtml,
+  renderAnalysisLoadProgress,
   safeClass,
   titleCase,
   toBigInt as toNs,
@@ -24,6 +26,8 @@ import {
   stateChipClassName,
   statusClassPresentation,
   statusSegmentClassName,
+  virtualScrollTopForIndex,
+  virtualScrollWindow,
 } from "./view_models.js";
 import {
   eventChangesState,
@@ -75,6 +79,7 @@ const HOVER_OPEN_DELAY_MS = 150;
 const HOVER_CLOSE_GRACE_MS = 380;
 const CLUSTER_DETAIL_PAGE_SIZE = 100;
 const EVENT_LOG_ROW_HEIGHT = 44;
+const EVENT_LOG_MAX_SCROLL_HEIGHT = 8_000_000;
 const EVENT_LOG_OVERSCAN = 10;
 const EVENT_LOG_PAGE_SIZE = 120;
 const EVENT_LOG_PAGE_CACHE_LIMIT = 12;
@@ -273,6 +278,23 @@ const state = {
   densityLocalCache: null,
   densityErrorKey: null,
 };
+
+const analysisLoadProgress = createAnalysisLoadProgressController({
+  fetchSnapshot: () => api("/v1/analysis-load", { cache: "no-store" }),
+  render: (snapshot) => renderAnalysisLoadProgress(
+    byId("analysis-load-progress"),
+    snapshot,
+  ),
+});
+
+async function analysisRuntimeApi(path, options = {}) {
+  const lease = analysisLoadProgress.begin();
+  try {
+    return await api(path, options);
+  } finally {
+    analysisLoadProgress.end(lease);
+  }
+}
 
 function beginLatestRequest(controllerKey) {
   const controller = replaceAbortController(state[controllerKey]);
@@ -2906,7 +2928,7 @@ function scheduleDensityPageRequest(query) {
   state.densityErrorKey = null;
   state.densityRequestTimer = window.setTimeout(async () => {
     try {
-      const payload = await api(revisionPath("events/density/query"), {
+      const payload = await analysisRuntimeApi(revisionPath("events/density/query"), {
         method: "POST",
         body: JSON.stringify({
           start_ns: query.startNs.toString(),
@@ -4774,7 +4796,7 @@ async function requestRangeSummary() {
   }
   const controller = beginLatestRequest("rangeAbortController");
   try {
-    const summary = await api(revisionPath("range/summary"), {
+    const summary = await analysisRuntimeApi(revisionPath("range/summary"), {
       method: "POST",
       signal: controller.signal,
       body: JSON.stringify({ start_ns: bounds[0].toString(), end_ns: bounds[1].toString() }),
@@ -4907,7 +4929,7 @@ async function requestTimeline() {
     ? [selectedRelationshipRoot]
     : undefined;
   try {
-    const payload = await api(revisionPath("timeline/query"), {
+    const payload = await analysisRuntimeApi(revisionPath("timeline/query"), {
       method: "POST",
       signal: controller.signal,
       body: JSON.stringify({
@@ -5054,7 +5076,7 @@ async function requestResources() {
   }
   const controller = beginLatestRequest("resourceAbortController");
   try {
-    const payload = await api(revisionPath("resources/query"), {
+    const payload = await analysisRuntimeApi(revisionPath("resources/query"), {
       method: "POST",
       signal: controller.signal,
       body: JSON.stringify({
@@ -5727,7 +5749,7 @@ async function requestDashboards() {
 
   const controller = beginLatestRequest("dashboardAbortController");
   try {
-    const payload = await api(revisionPath("dashboards/query"), {
+    const payload = await analysisRuntimeApi(revisionPath("dashboards/query"), {
       method: "POST",
       signal: controller.signal,
       body: JSON.stringify({
@@ -6409,7 +6431,7 @@ async function requestGraph() {
     const resourceIds = state.graphShowFull
       ? []
       : state.selectedResourceId ? [state.selectedResourceId] : [];
-    const graph = await api(revisionPath("graph/query"), {
+    const graph = await analysisRuntimeApi(revisionPath("graph/query"), {
       method: "POST",
       signal: controller.signal,
       body: JSON.stringify({
@@ -7582,7 +7604,7 @@ async function requestFailureIncidentPreview() {
     return state.failureIncidentPreview;
   }
   try {
-    const payload = await api(revisionPath("events?outcome=failure&limit=3"));
+    const payload = await analysisRuntimeApi(revisionPath("events?outcome=failure&limit=3"));
     const events = (Array.isArray(payload?.items) ? payload.items : [])
       .slice()
       .sort((left, right) => {
@@ -7750,7 +7772,7 @@ async function requestTopologyCapabilities() {
   };
   if (!isTopologyNodeSnapshot()) {
     try {
-      raw = await api(revisionPath("topology/capabilities"));
+      raw = await analysisRuntimeApi(revisionPath("topology/capabilities"));
     } catch (_error) {
       // A local projection keeps the frontend reviewable while the versioned API is implemented.
     }
@@ -8305,7 +8327,7 @@ async function requestTopology(event) {
   } else {
     const controller = beginLatestRequest("topologyAbortController");
     try {
-      payload = await api(revisionPath("topology/query"), {
+      payload = await analysisRuntimeApi(revisionPath("topology/query"), {
         method: "POST",
         signal: controller.signal,
         body: JSON.stringify(request),
@@ -8529,7 +8551,7 @@ async function resolveRoute(event) {
   result.innerHTML = `<div class="empty-state">Resolving ${escapeHtml(requestContext.routeLabel || "plug-in route")} using ${escapeHtml(titleCase(requestContext.basisKind || "selected basis"))} at ${escapeHtml(formatOffset(requestContext.timeNs))}…</div>`;
   const controller = beginLatestRequest("routeAbortController");
   try {
-    const payload = await api(revisionPath("routes/resolve"), {
+    const payload = await analysisRuntimeApi(revisionPath("routes/resolve"), {
       method: "POST",
       signal: controller.signal,
       body: JSON.stringify({
@@ -9144,7 +9166,7 @@ function requestServerEventLogPage(offset = 0) {
   const queryId = state.eventLogServerQueryId;
   if (state.eventLogServerPages.has(safeOffset)) return Promise.resolve(null);
   if (state.eventLogServerRequests.has(safeOffset)) return state.eventLogServerRequests.get(safeOffset);
-  const request = api(revisionPath("event-log/query"), {
+  const request = analysisRuntimeApi(revisionPath("event-log/query"), {
     method: "POST",
     body: JSON.stringify(serverEventLogRequestBody(safeOffset)),
   }).then((payload) => {
@@ -9547,11 +9569,15 @@ function renderEventTableWindow() {
   if (state.hoverKey?.startsWith("log:") && !state.hoverPinned) closeHover();
   state.eventLogHoverModels.clear();
   const total = state.eventLogRows.length;
-  const visibleRows = Math.max(1, Math.ceil(scroll.clientHeight / EVENT_LOG_ROW_HEIGHT));
-  const start = Math.max(0, Math.floor(scroll.scrollTop / EVENT_LOG_ROW_HEIGHT) - EVENT_LOG_OVERSCAN);
-  const end = Math.min(total, start + visibleRows + EVENT_LOG_OVERSCAN * 2);
-  const topHeight = start * EVENT_LOG_ROW_HEIGHT;
-  const bottomHeight = Math.max(0, (total - end) * EVENT_LOG_ROW_HEIGHT);
+  const windowModel = virtualScrollWindow({
+    rowCount: total,
+    rowHeight: EVENT_LOG_ROW_HEIGHT,
+    maximumHeight: EVENT_LOG_MAX_SCROLL_HEIGHT,
+    viewportHeight: scroll.clientHeight,
+    scrollTop: scroll.scrollTop,
+    overscan: EVENT_LOG_OVERSCAN,
+  });
+  const { start, end, topHeight, bottomHeight } = windowModel;
   if (usesServerWindowedHistory()) ensureServerEventLogPages(start, end);
   const topSpacer = topHeight
     ? `<tr class="event-log-spacer" aria-hidden="true"><td colspan="6" style="height:${topHeight}px"></td></tr>`
@@ -9695,7 +9721,7 @@ async function resolveEventLogSelection() {
     return state.eventLogSelectionCache.payload;
   }
   const requestId = ++state.eventLogSelectionRequestId;
-  const payload = await api(revisionPath("event-log/selection"), {
+  const payload = await analysisRuntimeApi(revisionPath("event-log/selection"), {
     method: "POST",
     body: JSON.stringify(eventLogSelectionRequestBody()),
   });
@@ -10348,10 +10374,13 @@ function syncEventLogIncludeControls() {
 
 function focusServerEventLogTarget(entryId, virtualIndex) {
   const scroll = byId("event-log-scroll");
-  scroll.scrollTop = Math.max(
-    0,
-    virtualIndex * EVENT_LOG_ROW_HEIGHT - (scroll.clientHeight - EVENT_LOG_ROW_HEIGHT) / 2,
-  );
+  scroll.scrollTop = virtualScrollTopForIndex({
+    index: virtualIndex,
+    rowCount: state.eventLogRows.length,
+    rowHeight: EVENT_LOG_ROW_HEIGHT,
+    maximumHeight: EVENT_LOG_MAX_SCROLL_HEIGHT,
+    viewportHeight: scroll.clientHeight,
+  });
   renderEventTableWindow();
   byId("event-log").scrollIntoView({ behavior: "smooth", block: "nearest" });
   window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
@@ -10370,11 +10399,13 @@ function focusEventLogSelectionIndex(selectionIndex) {
   const virtualIndex = usesServerWindowedHistory()
     ? serverEventLogVirtualRowForDataIndex(index)
     : state.eventLogVirtualIndexBySelectionIndex[index] ?? index + 1;
-  scroll.scrollTop = Math.max(
-    0,
-    virtualIndex * EVENT_LOG_ROW_HEIGHT
-      - (scroll.clientHeight - EVENT_LOG_ROW_HEIGHT) / 2,
-  );
+  scroll.scrollTop = virtualScrollTopForIndex({
+    index: virtualIndex,
+    rowCount: state.eventLogRows.length,
+    rowHeight: EVENT_LOG_ROW_HEIGHT,
+    maximumHeight: EVENT_LOG_MAX_SCROLL_HEIGHT,
+    viewportHeight: scroll.clientHeight,
+  });
   renderEventTableWindow();
   window.requestAnimationFrame(() => {
     const row = byId("event-table-body")
@@ -10405,7 +10436,7 @@ async function locateServerEventLogEntry(entryId) {
   const queryId = state.eventLogServerQueryId;
   const locateRequestId = ++state.eventLogLocateRequestId;
   try {
-    const payload = await api(revisionPath("event-log/query"), {
+    const payload = await analysisRuntimeApi(revisionPath("event-log/query"), {
       method: "POST",
       body: JSON.stringify(serverEventLogRequestBody(0, {
         kind: source ? "source" : "event",
@@ -10452,10 +10483,13 @@ function jumpToLogEntry(entryId) {
     return;
   }
   const scroll = byId("event-log-scroll");
-  scroll.scrollTop = Math.max(
-    0,
-    index * EVENT_LOG_ROW_HEIGHT - (scroll.clientHeight - EVENT_LOG_ROW_HEIGHT) / 2,
-  );
+  scroll.scrollTop = virtualScrollTopForIndex({
+    index,
+    rowCount: state.eventLogRows.length,
+    rowHeight: EVENT_LOG_ROW_HEIGHT,
+    maximumHeight: EVENT_LOG_MAX_SCROLL_HEIGHT,
+    viewportHeight: scroll.clientHeight,
+  });
   renderEventTableWindow();
   byId("event-log").scrollIntoView({ behavior: "smooth", block: "nearest" });
   window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
@@ -10806,7 +10840,7 @@ function discoverPresentation() {
 
 async function initialize() {
   try {
-    state.dataset = await api(bootstrapDatasetPath());
+    state.dataset = await analysisRuntimeApi(bootstrapDatasetPath());
     initializeDurableReviewSetup();
     const workspace = workspaceMetadata();
     const timeBounds = workspace.time_bounds && typeof workspace.time_bounds === "object"

@@ -258,6 +258,7 @@ class FrontendBoundaryTests(unittest.TestCase):
             "router-state-lab-generated-demo",
             "synthetic-packed-tgz",
             "full-scale-100k",
+            "full-scale-1m",
         ):
             with self.subTest(demo_convention=demo_convention):
                 self.assertNotIn(demo_convention, executable_sources)

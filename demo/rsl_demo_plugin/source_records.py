@@ -208,7 +208,7 @@ def build_demo_source_records(
 
     This helper does not decode the fixture's synthetic CTF container. A
     bounded, explicitly precomputed projection is enough for interaction
-    review and avoids duplicating every 125K event in browser memory.
+    review and avoids duplicating every 1.25M event in browser memory.
     """
 
     records: list[dict[str, Any]] = []

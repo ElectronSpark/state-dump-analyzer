@@ -20,7 +20,10 @@ from .scenario_source import load_default_scenario_source
 
 _DEFAULT_SCENARIO_SOURCE = load_default_scenario_source()
 BASE_TIME_NS: Final[int] = _DEFAULT_SCENARIO_SOURCE.base_time_ns
-EVENT_STEP_NS = 1_000_000
+# Keep each million-scale phase inside its authored 120-second slot.  The
+# previous millisecond cadence was correct at 125K but made the 1.25M stream
+# overlap later phases and therefore cease to be globally time ordered.
+EVENT_STEP_NS = 100_000
 PHASE_GAP_NS = 120_000_000_000
 SCENARIO_ID = _DEFAULT_SCENARIO_SOURCE.scenario_id
 GENERATOR_VERSION = 8

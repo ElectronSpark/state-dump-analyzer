@@ -12,7 +12,7 @@ example plug-in and supplies only device semantics, a fixture input adapter,
 and the fixture generator.
 
 The repository includes one deterministic ten-node demo assembly. **Every
-node contains a 125,000-event and 7,500-resource scalable baseline plus its
+node contains a 1,250,000-event and 7,500-resource scalable baseline plus its
 explicit authored history and final resources** and can be opened either as an
 individual temporal workspace or as a member of the same multi-node topology
 and route trace. The declared coverage includes IS-IS, IP routing, SR-MPLS,
@@ -199,12 +199,26 @@ development-only `--trust-control-plane-headers` override.
 | `http://127.0.0.1:8765/analysis` | Private workspace analysis lifecycle, evidence report, and explicit human proposal review |
 | `http://127.0.0.1:8765/docs` | Interactive API documentation; available only after a loopback launch with `--expose-api-docs` |
 | `http://127.0.0.1:8765/health` | Server and fixture health |
+| `http://127.0.0.1:8765/v1/analysis-load` | Non-sensitive progress for active dump/revision parsing and indexing |
 | `http://127.0.0.1:8765/v1/control-plane/health` | Session-independent durable worker and queue health |
 | `http://127.0.0.1:8765/v1/control-plane/diagnostics/operational-events` | Protected operational diagnostics; requires `control-plane:instance-operator` |
 | `http://127.0.0.1:8765/v1/control-plane/context` | Durable control-plane context; requires `X-Tenant-ID` and an enabled state directory (the bundled launcher enables one) |
 
 The topology page is the normal entry point. Select a device or endpoint there
 to open its node workspace with the same reconstruction context.
+Both pages display the same sticky parsing indicator while a cold node revision
+is being materialized. It shows a percentage only when the loader supplied a
+real bounded total; otherwise it remains indeterminate and reports the current
+generic phase and processed-record count. The frontend host deliberately starts
+before ordinary runtime-v2 parser ingestion and lets its first workspace request
+perform that tracked load. API-only startup remains synchronous and fail-fast;
+there is no detached parsing worker left running at shutdown.
+The canonical 1.25M-event node currently materializes in roughly 30 seconds and
+uses several gigabytes of RAM on the reference Windows development machine.
+The demo retains only one materialized node at a time; opening another node may
+therefore reparse an evicted history. First generation also needs several
+gigabytes of temporary disk while its bounded node workers assemble the ten
+packs. These are deliberate scale-test costs, not production sizing guidance.
 The analysis application keeps OpenAPI JSON, Swagger UI, and ReDoc disabled by
 default. A loopback launch may opt in with `--expose-api-docs`; the command
 rejects that option for `0.0.0.0`, `::`, and every other non-loopback bind.
@@ -246,7 +260,7 @@ rejects that option for `0.0.0.0`, `::`, and every other non-loopback bind.
    double-click or **Reveal in timeline** to navigate back. Press **Esc** to
    clear the focused selection, event, moment, or range.
 6. **Inspect scale without losing detail.** On any node, browse the virtualized
-   125K-plus-event log, zoom-aware density lane, 7.5K-plus-resource tables,
+   1.25M-plus-event log, zoom-aware density lane, 7.5K-plus-resource tables,
    unmatched-log lanes, route tables, neighbor data, and plug-in-defined
    dashboards. Local inventory rows without a plug-in-declared cross-node
    candidate remain visible but explicitly non-traceable.
@@ -330,7 +344,7 @@ python -X utf8 -m rsl_demo_generator `
 The demo adapter uses only Python's standard library to read the saved file.
 It derives shared domains by matching repeated node-local attachment evidence,
 then adds enough distinct deterministic filler to reach the configured
-125,000-event and 7,500-resource baseline per node; explicit authored events
+1,250,000-event and 7,500-resource baseline per node; explicit authored events
 and final resources are appended. Private medium IDs and global participant
 lists are authoring truth: neither the independent output nor the full demo's
 final node dumps contain them. Each node pack contains only that node's status,
@@ -356,7 +370,7 @@ and verification commands.
 
 | Dimension | Included coverage |
 |---|---|
-| Scale | 10 node revisions; a 125,000-event and 7,500-resource baseline plus node-local authored rows, with at least 100,000 real state-changing events per node |
+| Scale | 10 node revisions; a 1,250,000-event and 7,500-resource baseline plus node-local authored rows, with at least 1,000,000 real state-changing events per node |
 | Protocols | Connected and static routes, IPv4/IPv6 unicast, IS-IS, SR-MPLS, SRv6, MPLS transport/L3VPN, and EVPN types 2 and 5 |
 | Multi-node route model | Ten available assembly members, shared and external subnets, VLAN subinterfaces, LAGs, physical ports, EVPN Ethernet Segments, multipath, dead paths, incomplete paths, and bidirectional endpoint reachability |
 | Resource history | Forwarding Groups, ETGs with ETE paths, standalone DTEs, Virtual Interfaces, Glue, neighbors, IP routing, and hardware objects |
@@ -412,7 +426,7 @@ tests. A production device plug-in depends only on
 a runtime dependency. Ordinary parser plug-ins need no path-opening runtime:
 the core inventories the input, calls their standard discovery/parser hooks,
 validates the results, and serves the basic normalized workspace through
-runtime v2. The bundled 125,000-event-per-node archive is precomputed and keeps
+runtime v2. The bundled 1,250,000-event-per-node archive is generated and keeps
 its runtime-v1 fixture adapter for compatibility.
 
 For advanced reducers, correlation, consistency, topology, or forwarding,

@@ -14,6 +14,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
+from .load_progress import AnalysisLoadTracker
 from .multi_node_route import MultiNodeRouteService
 from .multi_node_topology import MultiNodeTopologyService
 from .normalized_data import (
@@ -546,6 +547,7 @@ def create_runtime_application(
         request.frontend_root,
         enabled=request.serve_frontend,
     )
+    load_tracker = AnalysisLoadTracker()
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -563,20 +565,25 @@ def create_runtime_application(
                     data_service=NormalizedDataService(
                         plugin_session.data_source,
                         plugin_session.data_policy,
+                        load_tracker=load_tracker,
                     ),
                     _provider_snapshot=plugin_session,
                 )
                 application.state.runtime_session = core_session
                 reset_runtime_api_caches()
-                with activate_runtime_session(core_session):
-                    warmup = start_runtime_warmup()
                 try:
+                    if not request.serve_frontend:
+                        try:
+                            with activate_runtime_session(core_session):
+                                start_runtime_warmup()
+                        except PROCESS_CONTROL_EXCEPTIONS:
+                            raise
+                        except BaseException:  # noqa: BLE001 - provider boundary.
+                            raise PluginRuntimeCapabilityError(
+                                "plug-in runtime default revision load failed"
+                            ) from None
                     yield
                 finally:
-                    if warmup is not None:
-                        import asyncio
-
-                        await asyncio.to_thread(warmup.join)
                     reset_runtime_api_caches()
                     application.state.runtime_session = None
         finally:
@@ -609,6 +616,7 @@ def create_runtime_application(
         ControlPlaneAccessDenialReporter()
     )
     application.state.analysis_health_projector = analysis_health_projection
+    application.state.analysis_load_tracker = load_tracker
 
     @application.middleware("http")
     async def bind_runtime_session(

@@ -2,7 +2,7 @@
 
 The assembly is a transport format owned by the example plug-in.  This module
 adapts it to the core ``RevisionStore`` contract without eagerly expanding
-every 100K-event history.  The small outer archive index is read once, nested
+every million-event history.  The small outer archive index is read once, nested
 node archives are copied to a private temporary cache in one pass, and full
 normalized datasets are materialized only when a node workspace requests one.
 """
@@ -21,6 +21,10 @@ from pathlib import Path, PurePosixPath
 from threading import Lock, RLock
 from typing import Any
 
+from router_dump_analyzer import (
+    AnalysisLoadStage,
+    report_analysis_load,
+)
 from router_dump_analyzer.revision_store import (
     AssemblyDescriptor,
     RevisionDescriptor,
@@ -190,6 +194,7 @@ class DemoAssemblyStore:
     def _index_and_materialize_node_archives(self) -> None:
         manifest_name = ASSEMBLY_MANIFEST_MEMBER
         coverage_name = ASSEMBLY_COVERAGE_MEMBER
+        report_analysis_load(AnalysisLoadStage.INVENTORYING)
         with tarfile.open(self.archive_path, mode="r:gz") as archive:
             members: dict[str, tarfile.TarInfo] = {}
             for archive_member in archive.getmembers():
@@ -233,7 +238,12 @@ class DemoAssemblyStore:
                 raise DemoAssemblyError("assembly manifest nodes must be non-empty")
 
             descriptors: list[RevisionDescriptor] = []
-            for raw_node in raw_nodes:
+            report_analysis_load(
+                AnalysisLoadStage.INVENTORYING,
+                completed=0,
+                total=len(raw_nodes),
+            )
+            for node_ordinal, raw_node in enumerate(raw_nodes, start=1):
                 if not isinstance(raw_node, dict):
                     raise DemoAssemblyError(
                         "assembly manifest node entries must be objects"
@@ -328,6 +338,11 @@ class DemoAssemblyStore:
                 self._node_archive_paths[revision_id] = target
                 self._revisions_by_id[revision_id] = descriptor
                 self._revisions_by_node[node_id] = descriptor
+                report_analysis_load(
+                    AnalysisLoadStage.INVENTORYING,
+                    completed=node_ordinal,
+                    total=len(raw_nodes),
+                )
 
         coverage_cases = coverage.get("cases")
         if not isinstance(coverage_cases, list):

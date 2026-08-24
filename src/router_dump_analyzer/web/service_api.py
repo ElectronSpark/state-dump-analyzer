@@ -6,6 +6,8 @@ from typing import Any
 
 from fastapi import APIRouter, Request, Response
 
+from ..load_progress import AnalysisLoadTracker
+from ..process_control import PROCESS_CONTROL_EXCEPTIONS
 from .health import (
     analysis_service_health,
     durable_control_plane_health,
@@ -13,6 +15,44 @@ from .health import (
 )
 
 service_router: APIRouter = APIRouter()
+
+
+def _empty_analysis_load_payload() -> dict[str, Any]:
+    return {
+        "state": "waiting",
+        "stage": "starting",
+        "operation_id": None,
+        "sequence": 0,
+        "active_operations": 0,
+        "completed": None,
+        "total": None,
+        "determinate": False,
+        "records_processed": 0,
+        "started_at_ns": None,
+        "updated_at_ns": "0",
+        "error_code": None,
+    }
+
+
+def analysis_load_payload(application_state: Any) -> dict[str, Any]:
+    """Project the core tracker without leaking provider failures or paths."""
+
+    try:
+        tracker = getattr(application_state, "analysis_load_tracker", None)
+        if tracker is None:
+            return _empty_analysis_load_payload()
+        if type(tracker) is not AnalysisLoadTracker:
+            raise TypeError("analysis load tracker has the wrong type")
+        return tracker.snapshot().as_dict()
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except BaseException:  # noqa: BLE001 - stable total observation boundary.
+        return {
+            **_empty_analysis_load_payload(),
+            "state": "failed",
+            "stage": None,
+            "error_code": "progress_observation_failed",
+        }
 
 
 class _FailedControlPlaneObservation:
@@ -130,7 +170,17 @@ def service_health(request: Request, response: Response) -> dict[str, Any]:
     return service_health_payload(request.app.state)
 
 
+@service_router.get("/v1/analysis-load")
+def analysis_load(request: Request, response: Response) -> dict[str, Any]:
+    """Return one immutable, non-cacheable analysis loading observation."""
+
+    response.headers["Cache-Control"] = "no-store"
+    return analysis_load_payload(request.app.state)
+
+
 __all__ = [
+    "analysis_load",
+    "analysis_load_payload",
     "control_plane_service_health",
     "service_health",
     "service_health_payload",

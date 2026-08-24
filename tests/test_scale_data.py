@@ -6,6 +6,10 @@ import unittest
 from collections import defaultdict
 
 from rsl_demo_plugin.scale_data import (
+    MAX_HISTORY_SEARCH_DATABASE_BYTES,
+    MAX_HISTORY_SEARCH_DOCUMENTS,
+    MAX_SCALE_EVENT_MEMBER_BYTES,
+    MAX_SCALE_MEMBER_BYTES,
     _LazyIntervalMap,
     _ScaleTemporalIndex,
     _add_history_only_resources,
@@ -23,6 +27,19 @@ from rsl_demo_generator._scale import _plugin_schema
 
 RESOURCE_ID = "data-bridge-layer/DTE/blue/dte-000001"
 SNAPSHOT_ID = "control-plane/EVPN_ES/es-00001"
+
+
+class MillionScaleBoundsTests(unittest.TestCase):
+    def test_event_stream_and_search_have_specific_bounded_million_scale_limits(
+        self,
+    ) -> None:
+        self.assertEqual(MAX_SCALE_MEMBER_BYTES, 512 * 1024 * 1024)
+        self.assertEqual(MAX_SCALE_EVENT_MEMBER_BYTES, 2 * 1024 * 1024 * 1024)
+        self.assertGreaterEqual(MAX_HISTORY_SEARCH_DOCUMENTS, 1_250_000)
+        self.assertGreaterEqual(
+            MAX_HISTORY_SEARCH_DATABASE_BYTES,
+            4 * 1024 * 1024 * 1024,
+        )
 
 
 def event(

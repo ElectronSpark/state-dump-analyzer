@@ -87,11 +87,11 @@ DEFAULT_RESOURCE_COUNT: Final[int] = (
     DEFAULT_SCENARIO_SOURCE.defaults.resources_per_node
 )
 DEFAULT_SEED: Final[int] = DEFAULT_SCENARIO_SOURCE.defaults.seed
-MIN_EVENT_COUNT = 100_000
-MIN_STATE_CHANGE_EVENT_COUNT = 100_000
+MIN_EVENT_COUNT = 1_000_000
+MIN_STATE_CHANGE_EVENT_COUNT = 1_000_000
 MIN_RESOURCE_COUNT = 5_000
 MAX_RESOURCE_COUNT = 10_000
-MIN_GENERATOR_EVENT_COUNT = 105_000
+MIN_GENERATOR_EVENT_COUNT = 1_025_000
 MIN_DEVELOPER_RESOURCE_COUNT = 100
 MAX_NODE_BUILD_WORKERS = 4
 MAX_FULL_SCALE_NODE_BUILD_WORKERS = 2
@@ -500,7 +500,7 @@ def _node_build_worker_count(config: AssemblyConfig) -> int:
 
     Full-scale packs spend most of their build time in GIL-held byte rewriting
     and event-to-CTF materialization. More than two concurrent full histories
-    increased contention in representative four-node 125K-event builds.
+    increased contention in representative multi-node 1.25M-event builds.
     Smaller developer fixtures remain cheap enough to benefit from four-way
     overlap of compression and file IO.
     """
@@ -6074,10 +6074,10 @@ def _validate_node_pack(
         raise RuntimeError(f"{node_id} state-change metadata mismatch")
     if require_full_scale:
         if event_records < MIN_EVENT_COUNT:
-            raise RuntimeError(f"{node_id} has fewer than 100K events")
+            raise RuntimeError(f"{node_id} has fewer than 1M events")
         if state_change_records < MIN_STATE_CHANGE_EVENT_COUNT:
             raise RuntimeError(
-                f"{node_id} has fewer than 100K state-changing events"
+                f"{node_id} has fewer than 1M state-changing events"
             )
         if not MIN_RESOURCE_COUNT <= resource_records <= MAX_RESOURCE_COUNT:
             raise RuntimeError(f"{node_id} resource count is outside 5K-10K")

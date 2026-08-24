@@ -10,7 +10,7 @@
       name="description"
       content="Interactive temporal router dump analysis workspace."
     />
-    <link rel="stylesheet" href="/assets/styles.css?v=20260801-round8-v1" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260824-load-progress-v1" />
   </head>
   <body>
     <div class="app-shell">
@@ -43,6 +43,23 @@
         <strong id="workspace-kind-label">Analysis workspace.</strong>
         <span id="disclosure-text">Loading analysis workspace…</span>
       </div>
+
+      <section
+        id="analysis-load-progress"
+        class="analysis-load-progress section-wrap"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        aria-busy="false"
+        hidden
+      >
+        <span class="analysis-load-spinner" aria-hidden="true"></span>
+        <div class="analysis-load-copy">
+          <strong data-analysis-load-title>Preparing analysis</strong>
+          <span data-analysis-load-detail>Waiting for the first progress update</span>
+          <progress aria-label="Preparing analysis" max="1"></progress>
+        </div>
+      </section>
 
       <main>
         <section class="hero section-wrap" id="overview">
@@ -650,6 +667,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="/assets/app.js?v=20260801-round8-v1"></script>
+    <script type="module" src="/assets/app.js?v=20260824-load-progress-v1"></script>
   </body>
 </html>

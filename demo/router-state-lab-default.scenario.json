@@ -1140,7 +1140,7 @@
     "demo_generation": {
       "assembly_id": "router-state-lab-generated-demo-v1",
       "default_node_id": "node-a",
-      "events_per_node": 125000,
+      "events_per_node": 1250000,
       "resources_per_node": 7500,
       "routing_groups_by_node": {
         "node-d": ["red_service_pe"],

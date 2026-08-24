@@ -103,11 +103,14 @@ errors never depend on the plug-in exception's text. Treat structured
 detail.
 
 The default `router-dump-analyzer` host enters the core application lifespan
-before Uvicorn starts logging. An ordinary installed plug-in failure during
-runtime open, context entry, or lazy input discovery therefore exits with
-status 1 and exactly one bounded `router-dump-analyzer: error: ...` line, with
-no traceback or host path. The three process-control exceptions still
-propagate unchanged.
+before Uvicorn starts logging. Runtime open and context-entry failures therefore
+exit with status 1 and one bounded `router-dump-analyzer: error: ...` line. In
+`--api-only` mode, ordinary input discovery/parsing and default indexing also
+run at that fail-fast startup boundary. With the reusable frontend enabled,
+runtime-v2 parsing is intentionally deferred to the first workspace request so
+both browser views can show progress; a failure becomes a bounded API error and
+the shared indicator enters `failed`. No mode prints a traceback or host path,
+and the three process-control exceptions still propagate unchanged.
 
 Durable executable identity fingerprints every ordinary package file. Only an
 actual VCS/cache **directory** named `.git`, `.hg`, `.svn`, `__pycache__`,
@@ -1017,7 +1020,7 @@ corresponding executable, versioned provider contracts.
 
 `plugin.runtime` is a compatibility surface for an independently versioned,
 precomputed fixture or assembly that cannot yet enter through the standard
-parser hooks. The bundled 100K-per-node generated demo uses it. New live
+parser hooks. The bundled million-event-per-node generated demo uses it. New live
 device parsers should not. A compatibility adapter implements
 `PluginRuntimeCapability` and identifies itself as
 `router_dump_analyzer.runtime.v1`:
@@ -1096,6 +1099,35 @@ semantic model. The two route methods above are the correct no-route
 implementation. Core owns all resource/event traversal after these callbacks.
 `open()` must be a context manager so the core application lifespan can close
 stores, indexes, and caches exactly once.
+
+Core already shows an indeterminate `loading_revision` indicator around
+`load_dataset()`. A precomputed-fixture adapter that knows real row/member
+counts may optionally make it determinate without changing the source method:
+
+```python
+from router_dump_analyzer import AnalysisLoadStage, report_analysis_load
+
+report_analysis_load(AnalysisLoadStage.PARSING, records_processed=0)
+for ordinal, record in enumerate(records, start=1):
+    load_record(record)
+    if ordinal % 1_024 == 0 or ordinal == len(records):
+        report_analysis_load(
+            AnalysisLoadStage.PARSING,
+            completed=ordinal,
+            total=len(records),
+            records_processed=ordinal,
+        )
+report_analysis_load(
+    AnalysisLoadStage.INDEXING,
+    records_processed=len(records),
+)
+```
+
+Use `total=None` (or omit it) whenever the complete denominator is unknown.
+Do not invent weighted percentages across unrelated phases. The reporter is a
+safe no-op when this function is run by a conformance test outside the hosted
+runtime, and malformed optional progress cannot fail an otherwise-valid load.
+The generated demo's assembly and scale loaders are the executable reference.
 
 This compatibility adapter supplies precomputed data and device policy, not an
 application. Do not return

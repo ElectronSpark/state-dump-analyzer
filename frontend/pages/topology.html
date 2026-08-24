@@ -10,7 +10,7 @@
       name="description"
       content="Reconstruct a historical topology across router state revisions with heterogeneous device plug-ins."
     />
-    <link rel="stylesheet" href="/assets/styles.css?v=20260721-multi-node-v1" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260824-load-progress-v1" />
     <link rel="stylesheet" href="/assets/topology.css?v=20260823-interaction-performance-v38" />
   </head>
   <body class="mn-body">
@@ -39,6 +39,23 @@
         <strong>Cross-node capture vector.</strong>
         <span>Clock bounds and missing node coverage remain visible; aligned wall clocks are never assumed.</span>
       </div>
+
+      <section
+        id="analysis-load-progress"
+        class="analysis-load-progress section-wrap"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        aria-busy="false"
+        hidden
+      >
+        <span class="analysis-load-spinner" aria-hidden="true"></span>
+        <div class="analysis-load-copy">
+          <strong data-analysis-load-title>Preparing analysis</strong>
+          <span data-analysis-load-detail>Waiting for the first progress update</span>
+          <progress aria-label="Preparing analysis" max="1"></progress>
+        </div>
+      </section>
 
       <main class="mn-main">
         <section class="mn-hero section-wrap">
@@ -604,6 +621,6 @@
     </div>
 
     <div class="toast" id="mn-toast" role="status" aria-live="polite"></div>
-    <script type="module" src="/assets/topology.js?v=20260823-interaction-performance-v38"></script>
+    <script type="module" src="/assets/topology.js?v=20260824-load-progress-v1"></script>
   </body>
 </html>

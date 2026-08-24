@@ -12,8 +12,8 @@ import json
 import re
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Mapping
-from contextlib import AbstractContextManager
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager
 from functools import lru_cache, partial
 from hashlib import sha256
 from types import TracebackType
@@ -26,6 +26,7 @@ from .dashboard_core import (
     evaluate_dashboards,
     validate_dashboard_descriptors,
 )
+from .load_progress import AnalysisLoadStage, AnalysisLoadTracker
 from .plugin_api import MAX_CAPTURE_RANGE_SCOPE_LENGTH
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .source_record_core import project_source_record_for_log
@@ -2185,6 +2186,8 @@ class NormalizedDataService:
         self,
         source: NormalizedDatasetSource,
         policy: NormalizedDataPolicy,
+        *,
+        load_tracker: AnalysisLoadTracker | None = None,
     ) -> None:
         if not isinstance(source, NormalizedDatasetSource):
             raise TypeError("normalized source does not implement its contract")
@@ -2192,6 +2195,9 @@ class NormalizedDataService:
             raise TypeError("normalized policy does not implement its contract")
         self.source: NormalizedDatasetSource = source
         self.policy: NormalizedDataPolicy = policy
+        if load_tracker is not None and type(load_tracker) is not AnalysisLoadTracker:
+            raise TypeError("load_tracker must be an exact AnalysisLoadTracker or None")
+        self._load_tracker = load_tracker
         self._source_revision_scope = _snapshot_provider_member(
             source,
             "revision_scope",
@@ -2249,17 +2255,44 @@ class NormalizedDataService:
         )
         return _ContainedRevisionScope(context)
 
+    @contextmanager
+    def _loading_operation(
+        self,
+        stage: AnalysisLoadStage = AnalysisLoadStage.LOADING_REVISION,
+    ) -> Iterator[None]:
+        """Bind plug-in load telemetry to one core-owned operation.
+
+        Runtime projection providers may lazily materialize the same dump data
+        without calling :meth:`load_dataset` themselves.  Keeping this helper
+        on the core service lets those provider boundaries participate in the
+        same progress lifecycle without exposing the tracker to plug-ins.
+        """
+
+        if self._load_tracker is None:
+            yield
+            return
+        operation = self._load_tracker.begin(stage)
+        try:
+            with operation.bind():
+                yield
+        except BaseException:
+            operation.fail("dataset_load_failed")
+            raise
+        operation.complete()
+
     def load_dataset(
         self,
         revision_id: str | None = None,
         **selection: Any,
     ) -> dict[str, Any]:
-        return _invoke_provider(
-            self._source_load_dataset,
-            "dataset loading",
-            revision_id,
-            **selection,
-        )
+        with self._loading_operation():
+            result = _invoke_provider(
+                self._source_load_dataset,
+                "dataset loading",
+                revision_id,
+                **selection,
+            )
+        return result
 
     def current_revision_id(
         self,

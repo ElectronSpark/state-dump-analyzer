@@ -27,7 +27,55 @@ import {
   statusClassPresentation,
   statusSegmentClassName,
   topologyResolutionLabel,
+  virtualScrollTopForIndex,
+  virtualScrollWindow,
 } from "../assets/view_models.js";
+
+test("million-row virtual scrolling stays inside a bounded physical surface", () => {
+  const rowCount = 1_250_001;
+  const rowHeight = 44;
+  const maximumHeight = 8_000_000;
+  const viewportHeight = 600;
+  const targetIndex = rowCount - 1;
+  const scrollTop = virtualScrollTopForIndex({
+    index: targetIndex,
+    rowCount,
+    rowHeight,
+    maximumHeight,
+    viewportHeight,
+  });
+  const model = virtualScrollWindow({
+    rowCount,
+    rowHeight,
+    maximumHeight,
+    viewportHeight,
+    scrollTop,
+    overscan: 10,
+  });
+
+  assert.ok(model.totalHeight <= maximumHeight);
+  assert.ok(model.scale < rowHeight);
+  assert.equal(model.end, rowCount);
+  assert.ok(model.start <= targetIndex);
+  assert.ok(targetIndex < model.end);
+  assert.ok(model.end - model.start < 100);
+  assert.ok(scrollTop <= maximumHeight - viewportHeight);
+});
+
+test("small virtual logs preserve one physical row per logical row", () => {
+  const model = virtualScrollWindow({
+    rowCount: 1_001,
+    rowHeight: 44,
+    maximumHeight: 8_000_000,
+    viewportHeight: 440,
+    scrollTop: 22_000,
+    overscan: 10,
+  });
+  assert.equal(model.scale, 44);
+  assert.equal(model.totalHeight, 44_044);
+  assert.equal(model.start, 490);
+  assert.equal(model.end, 520);
+});
 
 test("typed topology links require authoritative federation evidence", () => {
   assert.equal(authoritativeTopologyLink({ link_id: "legacy" }), true);

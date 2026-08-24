@@ -77,7 +77,7 @@ from rsl_demo_plugin.scenario_registry import (
     SCENARIO_BY_ID,
 )
 
-from router_dump_analyzer import multi_node_route
+from router_dump_analyzer import AnalysisLoadStage, multi_node_route
 
 NODE_PACK_ROOT = "router-state-lab-100k"
 
@@ -142,6 +142,10 @@ def _write_header_only_tgz(
 
 def _launch_ready_outer_members() -> dict[str, bytes]:
     config = AssemblyConfig()
+    state_change_records = scale_generator._scenario_metadata(
+        config.events_per_node,
+        scale_generator._layout(config.resources_per_node),
+    )["expected_changes"]["state_change_events"]
     coverage = build_coverage(config)
     coverage_content = _json_bytes(coverage)
     members: dict[str, bytes] = {
@@ -160,9 +164,9 @@ def _launch_ready_outer_members() -> dict[str, bytes]:
                 "archive": logical_archive,
                 "sha256": hashlib.sha256(content).hexdigest(),
                 "compressed_size": len(content),
-                "event_records": 125_000,
-                "state_change_event_records": 100_000,
-                "resource_records": 7_500,
+                "event_records": config.events_per_node,
+                "state_change_event_records": state_change_records,
+                "resource_records": config.resources_per_node,
                 "identity_namespace": node.identity_namespace,
             }
         )
@@ -1310,6 +1314,78 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
             )
         )
 
+    def test_scale_loader_reports_real_parse_and_index_stages(self) -> None:
+        with tarfile.open(self.first, mode="r:gz") as outer:
+            node_bytes = _member_bytes(
+                outer,
+                f"{ASSEMBLY_ROOT}/nodes/node-a.tgz",
+            )
+        node_path = self.root / "node-a-progress.tgz"
+        node_path.write_bytes(node_bytes)
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ROUTER_DUMP_SEARCH_CACHE_DIR": str(self.root / "progress-cache")},
+            ),
+            mock.patch("rsl_demo_plugin.scale_data.report_analysis_load") as report,
+        ):
+            dataset = load_scale_dataset(
+                node_path,
+                revision_id="demo/node-a/revision-0001",
+                gaps=[],
+                review_prompts=[],
+            )
+
+        stages = [call.args[0] for call in report.call_args_list]
+        self.assertIn(AnalysisLoadStage.PARSING, stages)
+        self.assertIn(AnalysisLoadStage.NORMALIZING, stages)
+        self.assertIn(AnalysisLoadStage.INDEXING, stages)
+        determinate = [
+            call
+            for call in report.call_args_list
+            if call.args == (AnalysisLoadStage.PARSING,)
+            and call.kwargs.get("total") is not None
+        ]
+        self.assertTrue(determinate)
+        expected_total = (
+            dataset["demo"]["packed_event_count"]
+            + dataset["demo"]["packed_resource_count"]
+            + dataset["demo"]["relationship_count"]
+            + dataset["demo"]["relationship_mutation_count"]
+        )
+        self.assertEqual(determinate[-1].kwargs["completed"], expected_total)
+        self.assertEqual(determinate[-1].kwargs["total"], expected_total)
+
+    def test_scale_loader_rejects_manifest_record_count_mismatch(self) -> None:
+        with tarfile.open(self.first, mode="r:gz") as outer:
+            node_bytes = _member_bytes(
+                outer,
+                f"{ASSEMBLY_ROOT}/nodes/node-a.tgz",
+            )
+        source_path = self.root / "node-a-count-source.tgz"
+        source_path.write_bytes(node_bytes)
+        members = _outer_members(source_path)
+        manifest_name = f"{NODE_PACK_ROOT}/normalized-scale/manifest.json"
+        manifest = json.loads(members[manifest_name])
+        manifest["resources"]["records"] += 1
+        members[manifest_name] = _json_bytes(manifest)
+        mismatched = self.root / "node-a-count-mismatch.tgz"
+        _write_outer_members(mismatched, members)
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"ROUTER_DUMP_SEARCH_CACHE_DIR": str(self.root / "count-cache")},
+            ),
+            self.assertRaisesRegex(RuntimeError, "record counts do not match"),
+        ):
+            load_scale_dataset(
+                mismatched,
+                revision_id="demo/node-a/revision-0001",
+                gaps=[],
+                review_prompts=[],
+            )
+
     def test_full_scale_policy_rejects_developer_counts(self) -> None:
         with self.assertRaisesRegex(ValueError, "state-changing events"):
             AssemblyConfig(
@@ -1318,7 +1394,7 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "between"):
             AssemblyConfig(
-                events_per_node=125_000,
+                events_per_node=1_250_000,
                 resources_per_node=4_999,
             )
 
