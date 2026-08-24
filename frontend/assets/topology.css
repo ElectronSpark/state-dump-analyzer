@@ -1958,6 +1958,31 @@
   transition: opacity 110ms ease, stroke-width 110ms ease, filter 110ms ease;
 }
 
+/* Keep pointer-driven graph updates inside a frame budget.  The normal
+ * presentation returns shortly after interaction stops; while a node or the
+ * viewport is moving, transitions and SVG shadow filters only add paint work
+ * without communicating useful state. */
+.mn-map-stage.is-graph-interacting .mn-map-node,
+.mn-map-stage.is-graph-interacting .mn-network-segment,
+.mn-map-stage.is-graph-interacting .mn-edge-path,
+.mn-map-stage.is-graph-interacting .mn-segment-attachment,
+.mn-map-stage.is-graph-interacting .mn-compact-domain-edge,
+.mn-map-stage.is-graph-interacting .mn-interface-port,
+.mn-map-stage.is-graph-interacting .mn-attachment-component,
+.mn-map-stage.is-graph-interacting .mn-route-node,
+.mn-map-stage.is-graph-interacting .mn-route-edge,
+.mn-map-stage.is-graph-interacting .mn-vpn-envelope {
+  transition: none !important;
+}
+
+.mn-map-stage.is-graph-interacting .mn-edge-path,
+.mn-map-stage.is-graph-interacting .mn-segment-attachment,
+.mn-map-stage.is-graph-interacting .mn-compact-domain-edge,
+.mn-map-stage.is-graph-interacting .mn-interface-port,
+.mn-map-stage.is-graph-interacting .mn-route-edge {
+  filter: none !important;
+}
+
 .mn-topology-edge-hit,
 .mn-compact-domain-hit {
   fill: none;

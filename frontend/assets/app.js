@@ -5402,6 +5402,25 @@ function bindResourcePagination(container) {
   });
 }
 
+function laneVisibilityCheckbox(resourceId, label) {
+  const visible = laneSelectedByMode(resourceId);
+  const action = visible ? "Hide" : "Show";
+  const preposition = visible ? "from" : "in";
+  const accessibleLabel = `${action} ${label || resourceId} ${preposition} Resource timeline`;
+  return `<input class="lane-visibility-toggle" type="checkbox" data-lane-toggle="${escapeHtml(resourceId)}"${visible ? " checked" : ""} aria-label="${escapeHtml(accessibleLabel)}" title="${escapeHtml(accessibleLabel)}">`;
+}
+
+function bindLaneVisibilityCheckboxes(container, { closeHover = false } = {}) {
+  container.querySelectorAll('input[type="checkbox"][data-lane-toggle]').forEach((checkbox) => checkbox.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (closeHover) closeCorrelationHover();
+    const resourceId = checkbox.dataset.laneToggle;
+    if (!setExplicitLaneVisibility(resourceId, checkbox.checked)) {
+      checkbox.checked = laneSelectedByMode(resourceId);
+    }
+  }));
+}
+
 function renderResourceBundleTable(container, descriptor) {
   const payload = state.resourceQuery || {};
   const bundles = payload.view_id === descriptor.view_id ? (payload.bundles || []) : [];
@@ -5465,13 +5484,13 @@ function renderResourceBundleTable(container, descriptor) {
       <td><span class="resource-kind-label">${escapeHtml(humanResourceType(kind))}</span></td>
       <td><span class="${stateChipClassName(item)}">${escapeHtml(item.status || "unknown")}</span></td>
       <td><span class="resource-bundle-validity${interval.temporary ? " temporary" : ""}" title="${escapeHtml(interval.exact)}">${escapeHtml(interval.label)}</span></td>
-      <td><button class="lane-visibility-toggle" type="button" data-lane-toggle="${escapeHtml(resourceId)}" aria-pressed="${laneSelectedByMode(resourceId)}">${laneSelectedByMode(resourceId) ? "Shown" : "Hidden"}</button></td>
+      <td class="resource-timeline-toggle-cell">${laneVisibilityCheckbox(resourceId, item.label || resourceLabel(item, resourceId))}</td>
       ${columns.map((column) => `<td>${resourceBundleColumnApplies(column, node, item) ? formatDashboardCell(item, column) : '<span class="dashboard-empty-value">not applicable</span>'}</td>`).join("")}
     </tr>
     ${detailExpanded ? `<tr class="resource-bundle-detail-row" style="--bundle-depth:${depth}"><td class="resource-bundle-detail-cell" colspan="${5 + columns.length}">${resourceBundleDetailGuides(row)}${resourceBundleDetailMarkup(descriptor, node, item)}</td></tr>` : ""}`;
   }).join("");
   container.innerHTML = `<table class="resource-table resource-bundle-table">
-    <thead><tr><th>Bundled resource</th><th>Type</th><th>Status</th><th>Active interval</th><th>Timeline</th>${columns.map((column) => `<th>${escapeHtml(column.label || titleCase(column.field))}</th>`).join("")}</tr></thead>
+    <thead><tr><th>Bundled resource</th><th>Type</th><th>Status</th><th>Active interval</th><th class="resource-timeline-toggle-heading">Timeline</th>${columns.map((column) => `<th>${escapeHtml(column.label || titleCase(column.field))}</th>`).join("")}</tr></thead>
     <tbody>${body}</tbody>
   </table>${resourcePaginationMarkup(payload)}`;
   container.querySelectorAll("[data-bundle-toggle]").forEach((button) => button.addEventListener("click", (event) => {
@@ -5515,11 +5534,7 @@ function renderResourceBundleTable(container, descriptor) {
       selectResource(row.dataset.resourceId);
     });
   });
-  container.querySelectorAll("[data-lane-toggle]").forEach((button) => button.addEventListener("click", (event) => {
-    event.stopPropagation();
-    closeCorrelationHover();
-    setExplicitLaneVisibility(button.dataset.laneToggle, button.getAttribute("aria-pressed") !== "true");
-  }));
+  bindLaneVisibilityCheckboxes(container, { closeHover: true });
   bindResourcePagination(container);
 }
 
@@ -5590,11 +5605,11 @@ function renderResourceTables() {
     bindResourcePagination(container);
     return;
   }
-  container.innerHTML = `<table class="resource-table"><thead><tr><th>Resource</th><th>Layer</th><th>Exists</th><th>Status</th><th>Timeline</th>${columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}</tr></thead><tbody>${items.map((item) => {
+  container.innerHTML = `<table class="resource-table"><thead><tr><th>Resource</th><th>Layer</th><th>Exists</th><th>Status</th><th class="resource-timeline-toggle-heading">Timeline</th>${columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}</tr></thead><tbody>${items.map((item) => {
     const tags = presentationTags(item);
     const compact = tags.has("compact") || tags.has("connector");
     const current = item.resource_id === state.selectedResourceId;
-    return `<tr data-resource-id="${escapeHtml(item.resource_id)}" class="${current ? "selected " : ""}${compact ? "resource-connector" : ""}" tabindex="0"><td><strong>${escapeHtml(item.label || resourceLabel(item, item.resource_id))}</strong><small>${escapeHtml(item.resource_id)}${compact ? " / connector" : ""}</small></td><td>${escapeHtml(humanLayer(item.layer))}</td><td>${item.exists === false ? "no" : "yes"}</td><td><span class="${stateChipClassName(item)}">${escapeHtml(item.status || "unknown")}</span></td><td><button class="lane-visibility-toggle" type="button" data-lane-toggle="${escapeHtml(item.resource_id)}" aria-pressed="${laneSelectedByMode(item.resource_id)}">${laneSelectedByMode(item.resource_id) ? "Shown" : "Hidden"}</button></td>${columns.map((column) => `<td>${formatResourceTableCell(item, column)}</td>`).join("")}</tr>`;
+    return `<tr data-resource-id="${escapeHtml(item.resource_id)}" class="${current ? "selected " : ""}${compact ? "resource-connector" : ""}" tabindex="0"><td><strong>${escapeHtml(item.label || resourceLabel(item, item.resource_id))}</strong><small>${escapeHtml(item.resource_id)}${compact ? " / connector" : ""}</small></td><td>${escapeHtml(humanLayer(item.layer))}</td><td>${item.exists === false ? "no" : "yes"}</td><td><span class="${stateChipClassName(item)}">${escapeHtml(item.status || "unknown")}</span></td><td class="resource-timeline-toggle-cell">${laneVisibilityCheckbox(item.resource_id, item.label || resourceLabel(item, item.resource_id))}</td>${columns.map((column) => `<td>${formatResourceTableCell(item, column)}</td>`).join("")}</tr>`;
   }).join("")}</tbody></table>${resourcePaginationMarkup(state.resourceQuery)}`;
   container.querySelectorAll("tr[data-resource-id]").forEach((row) => {
     const choose = () => selectResource(row.dataset.resourceId);
@@ -5605,10 +5620,7 @@ function renderResourceTables() {
       choose();
     });
   });
-  container.querySelectorAll("[data-lane-toggle]").forEach((button) => button.addEventListener("click", (event) => {
-    event.stopPropagation();
-    setExplicitLaneVisibility(button.dataset.laneToggle, button.getAttribute("aria-pressed") !== "true");
-  }));
+  bindLaneVisibilityCheckboxes(container);
   bindResourcePagination(container);
 }
 

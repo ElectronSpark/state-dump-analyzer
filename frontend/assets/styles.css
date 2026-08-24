@@ -2313,8 +2313,7 @@ footer button {
   text-anchor: middle;
 }
 
-.graph-scope-toggle,
-.lane-visibility-toggle {
+.graph-scope-toggle {
   min-height: 28px;
   padding: 4px 7px;
   border: 1px solid var(--line);
@@ -2325,10 +2324,23 @@ footer button {
   font-size: 8px;
 }
 
-.lane-visibility-toggle[aria-pressed="true"] {
-  border-color: rgba(82, 224, 196, 0.38);
-  background: var(--cyan-soft);
-  color: var(--cyan);
+.resource-timeline-toggle-heading,
+.resource-timeline-toggle-cell {
+  text-align: center;
+}
+
+.lane-visibility-toggle {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--cyan);
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.lane-visibility-toggle:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 3px;
 }
 
 .range-relationship-changes {
@@ -2658,8 +2670,7 @@ footer button {
 }
 
 .range-editor button,
-.graph-scope-toggle,
-.lane-visibility-toggle {
+.graph-scope-toggle {
   min-height: 31px;
   padding: 5px 9px;
   border: 1px solid var(--line);
@@ -2675,11 +2686,6 @@ footer button {
   min-height: 24px;
   color: var(--red);
   font-size: 9px;
-}
-
-.lane-visibility-toggle[aria-pressed="true"] {
-  border-color: rgba(82, 224, 196, 0.45);
-  color: var(--cyan);
 }
 
 .graph-scope-toggle {

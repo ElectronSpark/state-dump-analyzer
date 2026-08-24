@@ -102,10 +102,23 @@ const state = {
   topologyInspectorPinned: false,
   topologyInspectorTrigger: null,
   topologyInspectorHideTimer: null,
+  topologyInspectorPositionFrame: null,
+  topologyInspectorPositionRequest: null,
+  topologyInspectorMeasure: null,
   topologyInspectorSuppressFocusPreview: false,
   routeHoverTokens: new Set(),
   routeHoverSource: "",
   routeHoverExact: false,
+  routeTokenIndex: new Map(),
+  routeFocusIndex: new Map(),
+  routeTokenElements: new Set(),
+  routeFocusElements: new Set(),
+  routeCorrelatedElements: new Set(),
+  routeDimmedElements: new Set(),
+  topologyRelationshipIndex: null,
+  topologyRelationshipRelated: new Set(),
+  topologyRelationshipPrimary: new Set(),
+  topologyRelationshipMuted: new Set(),
   routePacketPreviewRef: "",
   routePacketPinnedRef: "",
   routePacketPreviewSource: "",
@@ -132,8 +145,8 @@ const state = {
   topologyNetworkView: "underlay",
   topologyElementVisibility: new Set(TOPOLOGY_ELEMENT_PRESETS.compact),
   graphViews: {
-    topology: { scale: 1, panX: 0, panY: 0, positions: new Map(), viewports: new Map(), initialized: false, dimensions: null },
-    route: { scale: 1, panX: 0, panY: 0, positions: new Map(), viewports: new Map(), initialized: false, dimensions: null },
+    topology: { scale: 1, panX: 0, panY: 0, positions: new Map(), viewports: new Map(), initialized: false, dimensions: null, transformFrame: null, dragFrame: null, interactionIdleTimer: null, stage: null, layers: null, readout: null, detailMode: "" },
+    route: { scale: 1, panX: 0, panY: 0, positions: new Map(), viewports: new Map(), initialized: false, dimensions: null, transformFrame: null, dragFrame: null, interactionIdleTimer: null, stage: null, layers: null, readout: null, detailMode: "" },
   },
 };
 
@@ -3391,27 +3404,81 @@ function readRouteFocusTargets(element) {
   }
 }
 
-function tokensOverlap(left, right) {
-  if (!left?.size || !right?.length) return false;
-  return right.some((token) => left.has(token));
+function updateElementClassSet(current, next, className) {
+  current.forEach((element) => {
+    if (!next.has(element) || !element.isConnected) element.classList.remove(className);
+  });
+  next.forEach((element) => {
+    if (element.isConnected && !current.has(element)) element.classList.add(className);
+  });
+  return next;
+}
+
+function addRouteIndexEntry(index, token, element) {
+  if (!token) return;
+  if (!index.has(token)) index.set(token, new Set());
+  index.get(token).add(element);
+}
+
+function indexRouteInteractionElement(element) {
+  if (!state.routeTokenElements.has(element)) {
+    state.routeTokenElements.add(element);
+    readRouteTokens(element).forEach((token) => addRouteIndexEntry(state.routeTokenIndex, token, element));
+  }
+  if (element.closest("#route-trace")
+    && element.hasAttribute("data-route-focus-targets")
+    && !state.routeFocusElements.has(element)) {
+    const focusTargets = readRouteFocusTargets(element);
+    state.routeFocusElements.add(element);
+    focusTargets.forEach((token) => addRouteIndexEntry(state.routeFocusIndex, token, element));
+  }
+}
+
+function pruneRouteInteractionIndex() {
+  const pruneElements = (elements) => elements.forEach((element) => {
+    if (!element.isConnected) elements.delete(element);
+  });
+  const pruneIndex = (index) => index.forEach((elements, token) => {
+    pruneElements(elements);
+    if (!elements.size) index.delete(token);
+  });
+  pruneElements(state.routeTokenElements);
+  pruneElements(state.routeFocusElements);
+  pruneElements(state.routeCorrelatedElements);
+  pruneElements(state.routeDimmedElements);
+  pruneIndex(state.routeTokenIndex);
+  pruneIndex(state.routeFocusIndex);
+}
+
+function indexedRouteElements(tokens, exact) {
+  const index = exact ? state.routeFocusIndex : state.routeTokenIndex;
+  const elements = new Set();
+  tokens.forEach((token) => index.get(token)?.forEach((element) => {
+    if (element.isConnected) elements.add(element);
+  }));
+  return elements;
 }
 
 function applyRouteHighlights() {
+  pruneRouteInteractionIndex();
   const active = state.routeHoverTokens;
-  const allElements = document.querySelectorAll("[data-route-tokens], [data-route-focus-targets]");
-  allElements.forEach((element) => {
-    element.classList.remove("is-route-correlated", "is-route-dimmed");
-  });
-  if (!active.size) return;
-  const selector = state.routeHoverExact
-    ? "#route-trace [data-route-focus-targets]"
-    : "[data-route-tokens]";
-  document.querySelectorAll(selector).forEach((element) => {
-    const values = state.routeHoverExact ? readRouteFocusTargets(element) : readRouteTokens(element);
-    const correlated = tokensOverlap(active, values);
-    element.classList.toggle("is-route-correlated", correlated);
-    element.classList.toggle("is-route-dimmed", !correlated);
-  });
+  const candidates = state.routeHoverExact ? state.routeFocusElements : state.routeTokenElements;
+  const correlated = active.size
+    ? indexedRouteElements(active, state.routeHoverExact)
+    : new Set();
+  const dimmed = active.size
+    ? new Set([...candidates].filter((element) => element.isConnected && !correlated.has(element)))
+    : new Set();
+  state.routeCorrelatedElements = updateElementClassSet(
+    state.routeCorrelatedElements,
+    correlated,
+    "is-route-correlated",
+  );
+  state.routeDimmedElements = updateElementClassSet(
+    state.routeDimmedElements,
+    dimmed,
+    "is-route-dimmed",
+  );
 }
 
 function setRouteHover(tokens, source, exact = false) {
@@ -3430,7 +3497,12 @@ function clearRouteHover(source) {
 }
 
 function bindRouteCorrelationElements(scope = document) {
+  // Rendering replaces several graph/table subtrees.  Retire detached members
+  // before admitting the new generation so indexes never retain old DOM trees
+  // merely because the user has not hovered again yet.
+  pruneRouteInteractionIndex();
   scope.querySelectorAll("[data-route-tokens], [data-route-focus-targets]").forEach((element) => {
+    indexRouteInteractionElement(element);
     if (element.dataset.routeBound === "true") return;
     element.dataset.routeBound = "true";
     const source = `${element.dataset.routeKind || "component"}:${element.dataset.routeId || Math.random().toString(36).slice(2)}`;
@@ -6032,7 +6104,16 @@ function positionTopologyInspector(anchor, point = null) {
   if (!card || card.hidden || !anchor?.getBoundingClientRect) return;
   const rect = anchor.getBoundingClientRect();
   const width = Math.min(card.classList.contains("is-pinned") ? 440 : 340, window.innerWidth - 24);
-  const cardHeight = Math.min(card.scrollHeight || 410, window.innerHeight - 24);
+  const measureKey = `${state.topologyInspectorKey}:${card.classList.contains("is-pinned")}:${width}`;
+  if (state.topologyInspectorMeasure?.key !== measureKey) {
+    card.style.width = `${width}px`;
+    state.topologyInspectorMeasure = {
+      key: measureKey,
+      width,
+      height: Math.min(card.scrollHeight || 410, window.innerHeight - 24),
+    };
+  }
+  const cardHeight = Math.min(state.topologyInspectorMeasure.height, window.innerHeight - 24);
   const anchorLeft = Number.isFinite(point?.clientX) ? point.clientX : rect.left;
   const anchorRight = Number.isFinite(point?.clientX) ? point.clientX : rect.right;
   const anchorTop = Number.isFinite(point?.clientY) ? point.clientY : rect.top;
@@ -6040,9 +6121,28 @@ function positionTopologyInspector(anchor, point = null) {
   if (left + width > window.innerWidth - 12) left = anchorLeft - width - 14;
   left = Math.max(12, Math.min(window.innerWidth - width - 12, left));
   const top = Math.max(12, Math.min(window.innerHeight - cardHeight - 12, anchorTop - 18));
-  card.style.width = `${width}px`;
   card.style.left = `${left}px`;
   card.style.top = `${top}px`;
+}
+
+function scheduleTopologyInspectorPosition(anchor, point = null) {
+  state.topologyInspectorPositionRequest = { anchor, point };
+  if (state.topologyInspectorPositionFrame !== null) return;
+  state.topologyInspectorPositionFrame = requestAnimationFrame(() => {
+    state.topologyInspectorPositionFrame = null;
+    const request = state.topologyInspectorPositionRequest;
+    state.topologyInspectorPositionRequest = null;
+    if (request) positionTopologyInspector(request.anchor, request.point);
+  });
+}
+
+function cancelTopologyInspectorPosition() {
+  if (state.topologyInspectorPositionFrame !== null) {
+    cancelAnimationFrame(state.topologyInspectorPositionFrame);
+  }
+  state.topologyInspectorPositionFrame = null;
+  state.topologyInspectorPositionRequest = null;
+  state.topologyInspectorMeasure = null;
 }
 
 function clearTopologyInspector(options = {}) {
@@ -6052,6 +6152,7 @@ function clearTopologyInspector(options = {}) {
   state.topologyInspectorKey = "";
   state.topologyInspectorPinned = false;
   state.topologyInspectorTrigger = null;
+  cancelTopologyInspectorPosition();
   const card = byId("mn-topology-hover-card");
   if (card) {
     card.hidden = true;
@@ -6084,6 +6185,7 @@ function showTopologyInspector(key, anchor, pinned = false, point = null) {
   card.setAttribute("aria-label", `${item.title} topology details`);
   card.innerHTML = topologyInspectorMarkup(item, state.topologyInspectorPinned);
   card.scrollTop = 0;
+  state.topologyInspectorMeasure = null;
   const keepOpen = () => clearTimeout(state.topologyInspectorHideTimer);
   const release = () => { if (!state.topologyInspectorPinned) scheduleHideTopologyInspector(); };
   card.onpointerenter = keepOpen;
@@ -6140,7 +6242,7 @@ function bindTopologyInspectorElements(scope) {
     element.addEventListener("mouseleave", () => { if (!("PointerEvent" in window)) leave(); });
     element.addEventListener("pointermove", (event) => {
       if (state.topologyInspectorKey === key && !state.topologyInspectorPinned) {
-        positionTopologyInspector(element, { clientX: event.clientX, clientY: event.clientY });
+        scheduleTopologyInspectorPosition(element, { clientX: event.clientX, clientY: event.clientY });
       }
     });
     element.addEventListener("focus", () => {
@@ -6163,10 +6265,32 @@ function bindTopologyInspectorElements(scope) {
   });
 }
 
-function topologyRelationshipItems(stage) {
-  return [...stage.querySelectorAll(
+function addTopologyRelationshipIndexEntry(index, key, element) {
+  if (!key) return;
+  if (!index.has(key)) index.set(key, []);
+  index.get(key).push(element);
+}
+
+function rebuildTopologyRelationshipIndex(stage) {
+  const items = [...stage.querySelectorAll(
     "[data-map-node], [data-network-segment], [data-topology-context-item]",
   )];
+  const byInspectKey = new Map();
+  const byNetworkSegmentId = new Map();
+  const endpointItems = [];
+  items.forEach((element) => {
+    addTopologyRelationshipIndexEntry(byInspectKey, element.dataset.topologyInspectKey, element);
+    addTopologyRelationshipIndexEntry(byNetworkSegmentId, element.dataset.networkSegmentId, element);
+    if (element.dataset.sourceNodeKey || element.dataset.targetNodeKey) endpointItems.push(element);
+  });
+  state.topologyRelationshipIndex = {
+    stage,
+    items,
+    byInspectKey,
+    byNetworkSegmentId,
+    endpointItems,
+  };
+  return state.topologyRelationshipIndex;
 }
 
 function clearTopologyRelationshipContext() {
@@ -6175,13 +6299,21 @@ function clearTopologyRelationshipContext() {
   stage.classList.remove("has-topology-relationship-context");
   delete stage.dataset.topologyRelationshipKind;
   delete stage.dataset.topologyRelationshipScope;
-  topologyRelationshipItems(stage).forEach((element) => {
-    element.classList.remove(
-      "is-topology-context-related",
-      "is-topology-context-primary",
-      "is-topology-context-muted",
-    );
-  });
+  state.topologyRelationshipRelated = updateElementClassSet(
+    state.topologyRelationshipRelated,
+    new Set(),
+    "is-topology-context-related",
+  );
+  state.topologyRelationshipPrimary = updateElementClassSet(
+    state.topologyRelationshipPrimary,
+    new Set(),
+    "is-topology-context-primary",
+  );
+  state.topologyRelationshipMuted = updateElementClassSet(
+    state.topologyRelationshipMuted,
+    new Set(),
+    "is-topology-context-muted",
+  );
 }
 
 function topologyRelationshipFacts(element, facts) {
@@ -6201,6 +6333,9 @@ function applyTopologyRelationshipContext(key, options = {}) {
   const stage = byId("mn-map-stage");
   if (!stage || !key) return;
   clearTopologyRelationshipContext();
+  const relationshipIndex = state.topologyRelationshipIndex?.stage === stage
+    ? state.topologyRelationshipIndex
+    : rebuildTopologyRelationshipIndex(stage);
   const kind = key.startsWith("attachment:") ? "attachment"
     : key.startsWith("domain:") ? "domain"
       : key.startsWith("link:") ? "link"
@@ -6212,14 +6347,11 @@ function applyTopologyRelationshipContext(key, options = {}) {
     linkIds: new Set(),
   };
   const directlyIncidentItems = new Set();
-  const anchors = [...stage.querySelectorAll("[data-topology-inspect-key]")]
-    .filter((element) => element.dataset.topologyInspectKey === key);
+  const anchors = relationshipIndex.byInspectKey.get(key) || [];
   anchors.forEach((element) => topologyRelationshipFacts(element, facts));
   if (kind === "node") {
     const originNodeKeys = new Set(facts.nodeKeys);
-    stage.querySelectorAll(
-      "[data-topology-context-item][data-source-node-key], [data-topology-context-item][data-target-node-key]",
-    ).forEach((element) => {
+    relationshipIndex.endpointItems.forEach((element) => {
       if (originNodeKeys.has(element.dataset.sourceNodeKey) || originNodeKeys.has(element.dataset.targetNodeKey)) {
         directlyIncidentItems.add(element);
         topologyRelationshipFacts(element, facts);
@@ -6228,8 +6360,9 @@ function applyTopologyRelationshipContext(key, options = {}) {
   }
   const expandNodeDomains = kind === "node" && options.expandNodeDomains === true;
   if (kind === "domain" || expandNodeDomains) {
-    stage.querySelectorAll("[data-network-segment-id]").forEach((element) => {
-      if (facts.domainIds.has(element.dataset.networkSegmentId)) topologyRelationshipFacts(element, facts);
+    facts.domainIds.forEach((domainId) => {
+      (relationshipIndex.byNetworkSegmentId.get(domainId) || [])
+        .forEach((element) => topologyRelationshipFacts(element, facts));
     });
   }
   const related = (element) => {
@@ -6251,19 +6384,39 @@ function applyTopologyRelationshipContext(key, options = {}) {
     }
     return element.dataset.topologyInspectKey === key;
   };
-  const items = topologyRelationshipItems(stage);
+  const items = relationshipIndex.items;
   if (!items.some(related)) return;
   stage.classList.add("has-topology-relationship-context");
   stage.dataset.topologyRelationshipKind = kind;
   stage.dataset.topologyRelationshipScope = kind === "node"
     ? (expandNodeDomains ? "expanded" : "incident")
     : "relationship";
+  const nextRelated = new Set();
+  const nextPrimary = new Set();
+  const nextMuted = new Set();
   items.forEach((element) => {
-    const matches = related(element);
-    element.classList.toggle("is-topology-context-related", matches);
-    element.classList.toggle("is-topology-context-primary", matches && element.dataset.topologyInspectKey === key);
-    element.classList.toggle("is-topology-context-muted", !matches);
+    if (related(element)) {
+      nextRelated.add(element);
+      if (element.dataset.topologyInspectKey === key) nextPrimary.add(element);
+    } else {
+      nextMuted.add(element);
+    }
   });
+  state.topologyRelationshipRelated = updateElementClassSet(
+    state.topologyRelationshipRelated,
+    nextRelated,
+    "is-topology-context-related",
+  );
+  state.topologyRelationshipPrimary = updateElementClassSet(
+    state.topologyRelationshipPrimary,
+    nextPrimary,
+    "is-topology-context-primary",
+  );
+  state.topologyRelationshipMuted = updateElementClassSet(
+    state.topologyRelationshipMuted,
+    nextMuted,
+    "is-topology-context-muted",
+  );
 }
 
 function stableLayoutHash(value) {
@@ -6678,23 +6831,60 @@ function graphWorldLayers(stage) {
   return [...stage.children].filter((element) => element.matches("svg, #mn-node-layer, #mn-route-node-layer"));
 }
 
+function graphViewportElements(stage, view) {
+  if (view.stage !== stage) {
+    view.stage = stage;
+    view.layers = graphWorldLayers(stage);
+    view.readout = stage.querySelector("[data-graph-zoom-readout]");
+    view.detailMode = "";
+  }
+  return { layers: view.layers, readout: view.readout };
+}
+
 function applyGraphTransform(stageId, viewKey) {
   const stage = byId(stageId);
   const view = state.graphViews[viewKey];
   if (!stage || !view) return;
   const transform = `translate(${view.panX}px, ${view.panY}px) scale(${view.scale})`;
-  graphWorldLayers(stage).forEach((layer) => {
+  const viewport = graphViewportElements(stage, view);
+  viewport.layers.forEach((layer) => {
     layer.style.transformOrigin = "0 0";
     layer.style.transform = transform;
   });
-  const readout = stage.querySelector("[data-graph-zoom-readout]");
-  if (readout) readout.textContent = `${Math.round(view.scale * 100)}%`;
+  if (viewport.readout) viewport.readout.textContent = `${Math.round(view.scale * 100)}%`;
   stage.style.setProperty("--mn-graph-grid-scale", String(view.scale));
   stage.style.setProperty("--mn-graph-grid-x", `${view.panX}px`);
   stage.style.setProperty("--mn-graph-grid-y", `${view.panY}px`);
   // Layer toggles grant permission to display detail; semantic zoom decides
   // when dense labels remain legible enough to paint them.
-  stage.dataset.graphDetail = view.scale < 0.9 ? "overview" : view.scale > 1.35 ? "detail" : "normal";
+  const detailMode = view.scale < 0.9 ? "overview" : view.scale > 1.35 ? "detail" : "normal";
+  if (view.detailMode !== detailMode) {
+    stage.dataset.graphDetail = detailMode;
+    view.detailMode = detailMode;
+  }
+}
+
+function scheduleGraphTransform(stageId, viewKey) {
+  const view = state.graphViews[viewKey];
+  if (!view || view.transformFrame !== null) return;
+  view.transformFrame = requestAnimationFrame(() => {
+    view.transformFrame = null;
+    applyGraphTransform(stageId, viewKey);
+  });
+}
+
+function beginGraphInteraction(stage, view) {
+  clearTimeout(view.interactionIdleTimer);
+  view.interactionIdleTimer = null;
+  stage.classList.add("is-graph-interacting");
+}
+
+function endGraphInteraction(stage, view, delay = 90) {
+  clearTimeout(view.interactionIdleTimer);
+  view.interactionIdleTimer = setTimeout(() => {
+    stage.classList.remove("is-graph-interacting");
+    view.interactionIdleTimer = null;
+  }, delay);
 }
 
 function graphBounds(positions, boxes = new Map()) {
@@ -6725,7 +6915,7 @@ function zoomGraphAt(stageId, viewKey, nextScale, clientX, clientY) {
   view.scale = nextScale;
   view.panX = localX - worldX * nextScale;
   view.panY = localY - worldY * nextScale;
-  applyGraphTransform(stageId, viewKey);
+  scheduleGraphTransform(stageId, viewKey);
 }
 
 function fitGraphViewport(stageId, viewKey) {
@@ -6745,10 +6935,14 @@ function fitGraphViewport(stageId, viewKey) {
   applyGraphTransform(stageId, viewKey);
 }
 
-function setupGraphViewport({ stageId, viewKey, layoutKey, modelPositions, storageKeys, boxes, redraw, defaultPositions = null }) {
+function setupGraphViewport({ stageId, viewKey, layoutKey, modelPositions, storageKeys, boxes, redraw, updatePosition = null, defaultPositions = null }) {
   const stage = byId(stageId);
   const view = state.graphViews[viewKey];
   if (!stage || !view) return;
+  if (view.dragFrame !== null) {
+    cancelAnimationFrame(view.dragFrame);
+    view.dragFrame = null;
+  }
   if (view.activeLayoutKey !== layoutKey) {
     if (view.activeLayoutKey) view.viewports.set(view.activeLayoutKey, {
       scale: view.scale, panX: view.panX, panY: view.panY, initialized: view.initialized,
@@ -6774,6 +6968,7 @@ function setupGraphViewport({ stageId, viewKey, layoutKey, modelPositions, stora
     stage.focus({ preventScroll: true });
     pan = { id: event.pointerId, x: event.clientX, y: event.clientY, panX: view.panX, panY: view.panY };
     stage.setPointerCapture(event.pointerId);
+    beginGraphInteraction(stage, view);
     stage.classList.add("is-graph-panning");
     event.preventDefault();
   };
@@ -6781,15 +6976,17 @@ function setupGraphViewport({ stageId, viewKey, layoutKey, modelPositions, stora
     if (!pan || pan.id !== event.pointerId) return;
     view.panX = pan.panX + event.clientX - pan.x;
     view.panY = pan.panY + event.clientY - pan.y;
-    applyGraphTransform(stageId, viewKey);
+    scheduleGraphTransform(stageId, viewKey);
   };
   const finishPan = (event) => {
     if (!pan || (event?.pointerId !== undefined && pan.id !== event.pointerId)) return;
     pan = null;
     stage.classList.remove("is-graph-panning");
+    endGraphInteraction(stage, view);
   };
   stage.onpointerup = finishPan;
   stage.onpointercancel = finishPan;
+  stage.onlostpointercapture = finishPan;
   stage.onwheel = (event) => {
     const deltaUnit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
       : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? Math.max(1, stage.clientHeight) : 1;
@@ -6802,6 +6999,8 @@ function setupGraphViewport({ stageId, viewKey, layoutKey, modelPositions, stora
     // page. Click/focus the graph first to pan vertically with a trackpad.
     if (!pinchZoom && !horizontalPan && !engaged) return;
     event.preventDefault();
+    beginGraphInteraction(stage, view);
+    endGraphInteraction(stage, view, 120);
     if (!state.topologyInspectorPinned) clearTopologyInspector();
     if (pinchZoom) {
       const factor = Math.exp(-deltaY * 0.0025);
@@ -6812,7 +7011,7 @@ function setupGraphViewport({ stageId, viewKey, layoutKey, modelPositions, stora
     // remains a horizontal pan for conventional mouse wheels.
     view.panX -= deltaX || (event.shiftKey ? deltaY : 0);
     view.panY -= event.shiftKey ? 0 : deltaY;
-    applyGraphTransform(stageId, viewKey);
+    scheduleGraphTransform(stageId, viewKey);
   };
   stage.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown ArrowLeft ArrowRight + - 0 F");
   stage.onkeydown = (event) => {
@@ -6824,7 +7023,7 @@ function setupGraphViewport({ stageId, viewKey, layoutKey, modelPositions, stora
       if (event.key === "ArrowUp") view.panY += panStep;
       if (event.key === "ArrowDown") view.panY -= panStep;
       event.preventDefault();
-      applyGraphTransform(stageId, viewKey);
+      scheduleGraphTransform(stageId, viewKey);
       return;
     }
     if (["+", "=", "-", "_"].includes(event.key)) {
@@ -6878,12 +7077,25 @@ function setupGraphViewport({ stageId, viewKey, layoutKey, modelPositions, stora
   stage.querySelectorAll("[data-graph-position-key]").forEach((element) => {
     const positionKey = element.dataset.graphPositionKey;
     let drag = null;
+    const paintDragFrame = () => {
+      view.dragFrame = null;
+      const point = drag?.pendingPoint;
+      if (!point) return;
+      drag.pendingPoint = null;
+      modelPositions.set(positionKey, point);
+      const storageKey = storageKeys.get(positionKey);
+      if (storageKey) view.positions.set(storageKey, { ...point });
+      element.style.left = `${point.x}px`;
+      element.style.top = `${point.y}px`;
+      updatePosition?.(positionKey);
+    };
     element.onpointerdown = (event) => {
       if (event.button !== 0 || event.target.closest("a, select, .mn-route-node-paths")) return;
       const point = modelPositions.get(positionKey);
       if (!point) return;
-      drag = { id: event.pointerId, x: event.clientX, y: event.clientY, point: { ...point }, moved: false };
+      drag = { id: event.pointerId, x: event.clientX, y: event.clientY, point: { ...point }, pendingPoint: null, moved: false };
       element.setPointerCapture(event.pointerId);
+      beginGraphInteraction(stage, view);
       element.classList.add("is-graph-dragging");
       event.stopPropagation();
     };
@@ -6892,27 +7104,32 @@ function setupGraphViewport({ stageId, viewKey, layoutKey, modelPositions, stora
       const dx = (event.clientX - drag.x) / view.scale;
       const dy = (event.clientY - drag.y) / view.scale;
       if (Math.hypot(dx, dy) > 3 / view.scale) drag.moved = true;
-      const point = { x: drag.point.x + dx, y: drag.point.y + dy };
-      modelPositions.set(positionKey, point);
-      const storageKey = storageKeys.get(positionKey);
-      if (storageKey) view.positions.set(storageKey, { ...point });
-      element.style.left = `${point.x}px`;
-      element.style.top = `${point.y}px`;
-      view.bounds = graphBounds(modelPositions, boxes);
-      cancelAnimationFrame(view.dragFrame);
-      view.dragFrame = requestAnimationFrame(redraw);
+      drag.pendingPoint = { x: drag.point.x + dx, y: drag.point.y + dy };
+      if (view.dragFrame === null) view.dragFrame = requestAnimationFrame(paintDragFrame);
       event.preventDefault();
       event.stopPropagation();
     };
     const finishDrag = (event) => {
       if (!drag || (event?.pointerId !== undefined && drag.id !== event.pointerId)) return;
+      if (view.dragFrame !== null) {
+        cancelAnimationFrame(view.dragFrame);
+        paintDragFrame();
+      }
       element.dataset.graphDragMoved = drag.moved ? "true" : "";
       drag = null;
+      view.bounds = graphBounds(modelPositions, boxes);
+      view.dimensions = {
+        width: view.bounds.maxX - view.bounds.minX,
+        height: view.bounds.maxY - view.bounds.minY,
+      };
+      if (!updatePosition) redraw();
       element.classList.remove("is-graph-dragging");
+      endGraphInteraction(stage, view);
       requestAnimationFrame(() => { delete element.dataset.graphDragMoved; });
     };
     element.onpointerup = finishDrag;
     element.onpointercancel = finishDrag;
+    element.onlostpointercapture = finishDrag;
   });
   applyGraphTransform(stageId, viewKey);
   if (!view.initialized) requestAnimationFrame(() => fitGraphViewport(stageId, viewKey));
@@ -6968,6 +7185,7 @@ function renderNodeGraph({ nodes, routePath = null, stageId, nodeLayerId, edgeLa
   if (!nodes.length) {
     layer.innerHTML = "";
     byId(edgeLayerId).innerHTML = "";
+    applyRouteHighlights();
     return;
   }
   const dimensions = showTopology && !showRoute
@@ -7087,6 +7305,77 @@ function quadraticEdgePoint(geometry, position) {
   };
 }
 
+function graphEdgeGeometryAttributes({
+  edgeKey,
+  sourcePositionKey,
+  targetPositionKey,
+  sourceCurveKey,
+  targetCurveKey,
+  lane,
+}) {
+  return `data-graph-edge-key="${escapeHtml(edgeKey)}" data-graph-edge-source="${escapeHtml(sourcePositionKey)}" data-graph-edge-target="${escapeHtml(targetPositionKey)}" data-graph-edge-source-curve-key="${escapeHtml(sourceCurveKey)}" data-graph-edge-target-curve-key="${escapeHtml(targetCurveKey)}" data-graph-edge-lane="${escapeHtml(lane)}"`;
+}
+
+function buildGraphEdgeDomIndex(svg) {
+  const edges = new Map();
+  const byPosition = new Map();
+  svg.querySelectorAll("[data-graph-edge-key]").forEach((element) => {
+    const edgeKey = element.dataset.graphEdgeKey;
+    if (!edges.has(edgeKey)) {
+      edges.set(edgeKey, {
+        sourcePositionKey: element.dataset.graphEdgeSource,
+        targetPositionKey: element.dataset.graphEdgeTarget,
+        sourceCurveKey: element.dataset.graphEdgeSourceCurveKey,
+        targetCurveKey: element.dataset.graphEdgeTargetCurveKey,
+        lane: Number(element.dataset.graphEdgeLane),
+        elements: [],
+      });
+      [element.dataset.graphEdgeSource, element.dataset.graphEdgeTarget].forEach((positionKey) => {
+        if (!byPosition.has(positionKey)) byPosition.set(positionKey, new Set());
+        byPosition.get(positionKey).add(edgeKey);
+      });
+    }
+    edges.get(edgeKey).elements.push(element);
+  });
+  return { edges, byPosition };
+}
+
+function updateGraphEdgeDomIndex(index, positionKey, modelPositions, boxes) {
+  (index?.byPosition.get(positionKey) || []).forEach((edgeKey) => {
+    const edge = index.edges.get(edgeKey);
+    const source = modelPositions.get(edge.sourcePositionKey);
+    const target = modelPositions.get(edge.targetPositionKey);
+    if (!source || !target) return;
+    const geometry = curvedEdgeGeometry(
+      source,
+      target,
+      Number.isFinite(edge.lane) ? edge.lane : 1,
+      boxes.get(edge.sourcePositionKey),
+      boxes.get(edge.targetPositionKey),
+      edge.sourceCurveKey,
+      edge.targetCurveKey,
+    );
+    edge.elements.forEach((element) => {
+      const tagName = element.tagName.toLowerCase();
+      if (tagName === "path") element.setAttribute("d", geometry.d);
+      if (tagName === "circle") {
+        const point = element.dataset.graphEdgePort === "target" ? geometry.target : geometry.source;
+        element.setAttribute("cx", point.x);
+        element.setAttribute("cy", point.y);
+      }
+      const pathPosition = Number(element.dataset.graphEdgePosition);
+      if (Number.isFinite(pathPosition)) {
+        const point = quadraticEdgePoint(geometry, pathPosition);
+        if (tagName === "g") element.setAttribute("transform", `translate(${point.x} ${point.y})`);
+        if (tagName === "text") {
+          element.setAttribute("x", point.x);
+          element.setAttribute("y", point.y + Number(element.dataset.graphEdgeOffsetY || 0));
+        }
+      }
+    });
+  });
+}
+
 function renderAttachmentComponents(attachment, geometry, attrs, options = {}) {
   const components = topologyAttachmentComponents(attachment);
   const health = safeClass(options.health || "unknown");
@@ -7111,7 +7400,7 @@ function renderAttachmentComponents(attachment, geometry, attrs, options = {}) {
     const point = quadraticEdgePoint(geometry, pathPosition);
     const width = Math.min(122, Math.max(40, component.label.length * 5.1 + 14));
     const label = `${component.full}${attachment.address ? `; address ${attachment.address}` : ""}`;
-    return `<g data-topology-context-item class="mn-attachment-component is-${component.kind} is-${health}${vpn ? " is-vpn" : ""}" tabindex="-1" role="button" aria-label="${escapeHtml(`${label}; show calculated topology details`)}" ${attrs} transform="translate(${point.x} ${point.y})">
+    return `<g data-topology-context-item data-graph-edge-position="${pathPosition}" class="mn-attachment-component is-${component.kind} is-${health}${vpn ? " is-vpn" : ""}" tabindex="-1" role="button" aria-label="${escapeHtml(`${label}; show calculated topology details`)}" ${attrs} transform="translate(${point.x} ${point.y})">
       <rect x="${-width / 2}" y="-8" width="${width}" height="16" rx="5"></rect>
       <text text-anchor="middle" dominant-baseline="central">${escapeHtml(component.label)}</text>
     </g>`;
@@ -7165,15 +7454,24 @@ function renderConnectivityEdges(nodes, hubDomains, compactDecisions, positions,
   for (const { domain, member, node, key } of memberships) {
     const nodePoint = positions.get(node.key);
     const domainPoint = domainPositions.get(domain.network_id);
+    const lane = nextEdgeLane(key, pairTotals, pairOrdinals);
     const geometry = curvedEdgeGeometry(
       nodePoint,
       domainPoint,
-      nextEdgeLane(key, pairTotals, pairOrdinals),
+      lane,
       nodeBoxes.get(node.key),
       domainBoxes.get(domain.network_id),
       node.key,
       `network:${domain.network_id}`,
     );
+    const geometryAttrs = graphEdgeGeometryAttributes({
+      edgeKey: `attachment:${domain.network_id}:${member.member_id}`,
+      sourcePositionKey: `node:${node.key}`,
+      targetPositionKey: `network:${domain.network_id}`,
+      sourceCurveKey: node.key,
+      targetCurveKey: `network:${domain.network_id}`,
+      lane,
+    });
     const link = member.links?.[0] || null;
     const health = linkHealth({
       condition_class: firstDeclaredString(member.condition_class, link?.condition_class, domain.condition_class),
@@ -7191,12 +7489,12 @@ function renderConnectivityEdges(nodes, hubDomains, compactDecisions, positions,
       sourceKey: node.key,
     });
     const label = `${node.label}; ${fullTopologyAttachmentLabel(member.attachment)}; to ${connectivityDomainLabel(domain)}`;
-    markup.push(`<path tabindex="0" role="button" aria-label="${escapeHtml(`${label}; show calculated topology details`)}" ${attrs} class="mn-topology-edge-hit" d="${geometry.d}"></path>`);
-    markup.push(`<path aria-hidden="true" ${contextAttrs} class="mn-segment-attachment is-${health}${focused ? " is-focused" : ""}${muted ? " is-muted" : ""}${filterMuted ? " is-filter-muted" : ""}${vpn ? " is-vpn" : ""}" d="${geometry.d}"></path>`);
+    markup.push(`<path tabindex="0" role="button" aria-label="${escapeHtml(`${label}; show calculated topology details`)}" ${attrs} ${geometryAttrs} class="mn-topology-edge-hit" d="${geometry.d}"></path>`);
+    markup.push(`<path aria-hidden="true" ${contextAttrs} ${geometryAttrs} class="mn-segment-attachment is-${health}${focused ? " is-focused" : ""}${muted ? " is-muted" : ""}${filterMuted ? " is-filter-muted" : ""}${vpn ? " is-vpn" : ""}" d="${geometry.d}"></path>`);
     if (topologyElementVisible("interfaces")) {
-      markup.push(`<circle aria-hidden="true" ${contextAttrs} class="mn-interface-port is-${health}${vpn ? " is-vpn" : ""}" cx="${geometry.source.x}" cy="${geometry.source.y}" r="4"></circle>`);
+      markup.push(`<circle aria-hidden="true" ${contextAttrs} ${geometryAttrs} data-graph-edge-port="source" class="mn-interface-port is-${health}${vpn ? " is-vpn" : ""}" cx="${geometry.source.x}" cy="${geometry.source.y}" r="4"></circle>`);
     }
-    markup.push(renderAttachmentComponents(member.attachment, geometry, attrs, { health, vpn }));
+    markup.push(renderAttachmentComponents(member.attachment, geometry, `${attrs} ${geometryAttrs}`, { health, vpn }));
   }
 
   // Compact domains retain their stable domain identity; legacy links do not.
@@ -7223,15 +7521,24 @@ function renderConnectivityEdges(nodes, hubDomains, compactDecisions, positions,
     if (participants.length !== 2) continue;
     const [left, right] = participants;
     const key = edgePairKey(left.node, right.node);
+    const lane = nextEdgeLane(key, directTotals, directOrdinals);
     const geometry = curvedEdgeGeometry(
       positions.get(left.node.key),
       positions.get(right.node.key),
-      nextEdgeLane(key, directTotals, directOrdinals),
+      lane,
       nodeBoxes.get(left.node.key),
       nodeBoxes.get(right.node.key),
       left.node.key,
       right.node.key,
     );
+    const geometryAttrs = graphEdgeGeometryAttributes({
+      edgeKey: `compact:${domain.network_id}`,
+      sourcePositionKey: `node:${left.node.key}`,
+      targetPositionKey: `node:${right.node.key}`,
+      sourceCurveKey: left.node.key,
+      targetCurveKey: right.node.key,
+      lane,
+    });
     const health = linkHealth(domain);
     const focused = focusKey && [left.node.key, right.node.key].includes(focusKey);
     const muted = focusKey && !focused;
@@ -7257,21 +7564,21 @@ function renderConnectivityEdges(nodes, hubDomains, compactDecisions, positions,
     });
     const label = `${left.node.label}; ${fullTopologyAttachmentLabel(mergedParticipantAttachment(left.members))}; through ${connectivityDomainLabel(domain)}; to ${right.node.label}; ${fullTopologyAttachmentLabel(mergedParticipantAttachment(right.members))}`;
     const attrs = `data-route-kind="topology-link" data-route-id="${escapeHtml(domain.network_id)}" data-network-segment-id="${escapeHtml(domain.network_id)}" data-network-attachment-ids="${escapeHtml(JSON.stringify(attachmentIds))}" data-topology-inspect-key="domain:${escapeHtml(domain.network_id)}" data-route-tokens="${routeTokensAttribute(tokens)}" data-route-focus-targets="${routeFocusTargetsAttribute(targets)}" data-source-node-key="${escapeHtml(left.node.key)}" data-target-node-key="${escapeHtml(right.node.key)}" aria-haspopup="dialog" aria-controls="mn-topology-hover-card"`;
-    markup.push(`<path tabindex="0" role="button" aria-label="${escapeHtml(`${label}; show calculated topology details`)}" ${attrs} class="mn-compact-domain-hit" d="${geometry.d}"></path>`);
-    markup.push(`<path aria-hidden="true" ${contextAttrs} class="mn-compact-domain-edge is-${health}${focused ? " is-focused" : ""}${muted ? " is-muted" : ""}${filterMuted ? " is-filter-muted" : ""}" d="${geometry.d}"></path>`);
+    markup.push(`<path tabindex="0" role="button" aria-label="${escapeHtml(`${label}; show calculated topology details`)}" ${attrs} ${geometryAttrs} class="mn-compact-domain-hit" d="${geometry.d}"></path>`);
+    markup.push(`<path aria-hidden="true" ${contextAttrs} ${geometryAttrs} class="mn-compact-domain-edge is-${health}${focused ? " is-focused" : ""}${muted ? " is-muted" : ""}${filterMuted ? " is-filter-muted" : ""}" d="${geometry.d}"></path>`);
     if (topologyElementVisible("subnets")) {
       const midpoint = quadraticEdgePoint(geometry, 0.5);
-      markup.push(`<text aria-hidden="true" ${contextAttrs} class="mn-compact-domain-label is-${health}" x="${midpoint.x}" y="${midpoint.y - 9}" text-anchor="middle">${escapeHtml(connectivityDomainLabel(domain))}</text>`);
+      markup.push(`<text aria-hidden="true" ${contextAttrs} ${geometryAttrs} data-graph-edge-position="0.5" data-graph-edge-offset-y="-9" class="mn-compact-domain-label is-${health}" x="${midpoint.x}" y="${midpoint.y - 9}" text-anchor="middle">${escapeHtml(connectivityDomainLabel(domain))}</text>`);
     }
     if (topologyElementVisible("interfaces")) {
-      markup.push(`<circle aria-hidden="true" ${contextAttrs} class="mn-interface-port is-${health}" cx="${geometry.source.x}" cy="${geometry.source.y}" r="4"></circle><circle aria-hidden="true" ${contextAttrs} class="mn-interface-port is-${health}" cx="${geometry.target.x}" cy="${geometry.target.y}" r="4"></circle>`);
+      markup.push(`<circle aria-hidden="true" ${contextAttrs} ${geometryAttrs} data-graph-edge-port="source" class="mn-interface-port is-${health}" cx="${geometry.source.x}" cy="${geometry.source.y}" r="4"></circle><circle aria-hidden="true" ${contextAttrs} ${geometryAttrs} data-graph-edge-port="target" class="mn-interface-port is-${health}" cx="${geometry.target.x}" cy="${geometry.target.y}" r="4"></circle>`);
     }
     for (const [memberIndex, member] of [...left.members]
       .sort((first, second) => compareLayoutIds(first.member_id, second.member_id)).entries()) {
       markup.push(renderAttachmentComponents(
         member.attachment || {},
         geometry,
-        attachmentEdgeAttributes(member.links?.[0] || null, left.node, domain, member),
+        `${attachmentEdgeAttributes(member.links?.[0] || null, left.node, domain, member)} ${geometryAttrs}`,
         { health, groupOrdinal: memberIndex, groupCount: left.members.length },
       ));
     }
@@ -7280,7 +7587,7 @@ function renderConnectivityEdges(nodes, hubDomains, compactDecisions, positions,
       markup.push(renderAttachmentComponents(
         member.attachment || {},
         geometry,
-        attachmentEdgeAttributes(member.links?.[0] || null, right.node, domain, member),
+        `${attachmentEdgeAttributes(member.links?.[0] || null, right.node, domain, member)} ${geometryAttrs}`,
         { health, reverse: true, groupOrdinal: memberIndex, groupCount: right.members.length },
       ));
     }
@@ -7290,15 +7597,24 @@ function renderConnectivityEdges(nodes, hubDomains, compactDecisions, positions,
     if (!source || !target || source.key === target.key) continue;
     state.topologyInspectorItems.set(`link:${link.link_id}`, topologyDirectLinkInspectorItem(link, source, target));
     const key = edgePairKey(source, target);
+    const lane = nextEdgeLane(key, directTotals, directOrdinals);
     const geometry = curvedEdgeGeometry(
       positions.get(source.key),
       positions.get(target.key),
-      nextEdgeLane(key, directTotals, directOrdinals),
+      lane,
       nodeBoxes.get(source.key),
       nodeBoxes.get(target.key),
       source.key,
       target.key,
     );
+    const geometryAttrs = graphEdgeGeometryAttributes({
+      edgeKey: `direct:${link.link_id}`,
+      sourcePositionKey: `node:${source.key}`,
+      targetPositionKey: `node:${target.key}`,
+      sourceCurveKey: source.key,
+      targetCurveKey: target.key,
+      lane,
+    });
     const health = linkHealth(link);
     const focused = focusKey && [source.key, target.key].includes(focusKey);
     const muted = focusKey && !focused;
@@ -7311,13 +7627,13 @@ function renderConnectivityEdges(nodes, hubDomains, compactDecisions, positions,
     });
     const label = `${source.label}; ${fullTopologyAttachmentLabel(link.source_attachment)}; to ${target.label}; ${fullTopologyAttachmentLabel(link.target_attachment)}; direct pairwise adjacency; no segment identity supplied`;
     const attrs = `data-route-kind="topology-link" data-route-id="${escapeHtml(link.link_id)}" data-topology-inspect-key="link:${escapeHtml(link.link_id)}" data-route-tokens="${routeTokensAttribute(tokens)}" data-route-focus-targets="${routeFocusTargetsAttribute(interactionFocusTargetsForLink(link))}" data-source-node-key="${escapeHtml(source.key)}" data-target-node-key="${escapeHtml(target.key)}" aria-haspopup="dialog" aria-controls="mn-topology-hover-card"`;
-    markup.push(`<path tabindex="0" role="button" aria-label="${escapeHtml(`${label}; show calculated topology details`)}" ${attrs} class="mn-topology-edge-hit" d="${geometry.d}"></path>`);
-    markup.push(`<path aria-hidden="true" ${contextAttrs} class="mn-edge-path mn-direct-adjacency is-${health}${focused ? " is-focused" : ""}${muted ? " is-muted" : ""}${filterMuted ? " is-filter-muted" : ""}" d="${geometry.d}"></path>`);
+    markup.push(`<path tabindex="0" role="button" aria-label="${escapeHtml(`${label}; show calculated topology details`)}" ${attrs} ${geometryAttrs} class="mn-topology-edge-hit" d="${geometry.d}"></path>`);
+    markup.push(`<path aria-hidden="true" ${contextAttrs} ${geometryAttrs} class="mn-edge-path mn-direct-adjacency is-${health}${focused ? " is-focused" : ""}${muted ? " is-muted" : ""}${filterMuted ? " is-filter-muted" : ""}" d="${geometry.d}"></path>`);
     if (topologyElementVisible("interfaces")) {
-      markup.push(`<circle aria-hidden="true" ${contextAttrs} class="mn-interface-port is-${health}" cx="${geometry.source.x}" cy="${geometry.source.y}" r="4"></circle><circle aria-hidden="true" ${contextAttrs} class="mn-interface-port is-${health}" cx="${geometry.target.x}" cy="${geometry.target.y}" r="4"></circle>`);
+      markup.push(`<circle aria-hidden="true" ${contextAttrs} ${geometryAttrs} data-graph-edge-port="source" class="mn-interface-port is-${health}" cx="${geometry.source.x}" cy="${geometry.source.y}" r="4"></circle><circle aria-hidden="true" ${contextAttrs} ${geometryAttrs} data-graph-edge-port="target" class="mn-interface-port is-${health}" cx="${geometry.target.x}" cy="${geometry.target.y}" r="4"></circle>`);
     }
-    markup.push(renderAttachmentComponents(link.source_attachment, geometry, attrs, { health }));
-    markup.push(renderAttachmentComponents(link.target_attachment, geometry, attrs, { health, reverse: true }));
+    markup.push(renderAttachmentComponents(link.source_attachment, geometry, `${attrs} ${geometryAttrs}`, { health }));
+    markup.push(renderAttachmentComponents(link.target_attachment, geometry, `${attrs} ${geometryAttrs}`, { health, reverse: true }));
   }
   svg.innerHTML = markup.join("");
   bindRouteCorrelationElements(svg);
@@ -7363,6 +7679,7 @@ function renderLinkStatusMap() {
   const domains = topologyElementVisible("external") ? allPlaneDomains
     : allPlaneDomains.filter((domain) => domain.plugin_asserted_external !== true);
   clearTopologyInspector();
+  state.topologyRelationshipIndex = null;
   state.topologyInspectorItems.clear();
   byId("mn-map-title").textContent = state.topologyNetworkView === "vpn" ? "VPN and overlay segments" : "Subnet and interface connectivity";
   const note = document.querySelector(".mn-link-map-panel .mn-map-note");
@@ -7419,6 +7736,7 @@ function renderLinkStatusMap() {
         ? "<strong>No underlay connectivity to draw.</strong><span>Run a reconstruction with at least one plug-in topology projection.</span>"
         : "<strong>No devices selected.</strong><span>Select one or more devices above, then reconstruct the topology.</span>";
     }
+    applyRouteHighlights();
     return;
   }
   const dimensions = mapConnectivityLayout(
@@ -7468,10 +7786,17 @@ function renderLinkStatusMap() {
   });
   const nodeBoxes = new Map([...layer.querySelectorAll("[data-map-node]")].map((element) => [element.dataset.mapNode, { width: element.offsetWidth, height: element.offsetHeight }]));
   const domainBoxes = new Map([...layer.querySelectorAll("[data-network-segment]")].map((element) => [element.dataset.networkSegment, { width: element.offsetWidth, height: element.offsetHeight }]));
+  const topologyBoxes = new Map([
+    ...nodes.map((node) => [`node:${node.key}`, nodeBoxes.get(node.key)]),
+    ...hubDomains.map((domain) => [`network:${domain.network_id}`, domainBoxes.get(domain.network_id)]),
+  ]);
+  let edgeDomIndex = null;
   const redraw = () => {
     nodes.forEach((node) => positions.set(node.key, stored.positions.get(`node:${node.key}`)));
     hubDomains.forEach((domain) => domainPositions.set(domain.network_id, stored.positions.get(`network:${domain.network_id}`)));
     renderConnectivityEdges(nodes, hubDomains, compactDecisions, positions, domainPositions, dimensions, nodeBoxes, domainBoxes, { focusKey, emphasized, directLinks });
+    edgeDomIndex = buildGraphEdgeDomIndex(byId("mn-link-layer"));
+    rebuildTopologyRelationshipIndex(byId("mn-map-stage"));
   };
   redraw();
   bindRouteCorrelationElements(byId("mn-map-stage"));
@@ -7482,11 +7807,14 @@ function renderLinkStatusMap() {
     layoutKey,
     modelPositions: stored.positions,
     storageKeys: stored.storageKeys,
-    boxes: new Map([
-      ...nodes.map((node) => [`node:${node.key}`, nodeBoxes.get(node.key)]),
-      ...hubDomains.map((domain) => [`network:${domain.network_id}`, domainBoxes.get(domain.network_id)]),
-    ]),
+    boxes: topologyBoxes,
     redraw,
+    updatePosition: (positionKey) => updateGraphEdgeDomIndex(
+      edgeDomIndex,
+      positionKey,
+      stored.positions,
+      topologyBoxes,
+    ),
     defaultPositions: defaults,
   });
   restorePinnedTopologyInspector(pinnedInspector);
@@ -8085,6 +8413,7 @@ function renderAllPathEdges(paths, nodes, positions, dimensions, nodeBoxes) {
   svg.innerHTML = markup.join("");
   bindRoutePresentationElements(svg);
   bindOverviewPathElements(svg);
+  bindRouteCorrelationElements(svg);
 }
 
 function renderAllPathsRouteMap() {
@@ -8103,6 +8432,7 @@ function renderAllPathsRouteMap() {
     byId("mn-route-map-note").textContent = paths.length
       ? "The resolver returned path evidence, but no route node can be placed safely in the current topology context."
       : "No graph can be drawn for this direction.";
+    applyRouteHighlights();
     return;
   }
   const dimensions = mapAllPathsLayout(paths, nodes, { minHeight: 410 });
@@ -8241,6 +8571,9 @@ function renderMap() {
   renderLinkStatusMap();
   renderFocusedRouteMap();
   renderDirectionTabs();
+  // Empty render branches intentionally skip binding.  A final highlight
+  // reconciliation still retires every detached element from the indexes.
+  applyRouteHighlights();
 }
 
 function findNodeForRef(ref, nodes) {

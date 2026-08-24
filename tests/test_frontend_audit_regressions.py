@@ -179,6 +179,7 @@ class SingleNodeAuditRegressionContractTests(unittest.TestCase):
         jump_resource = javascript_function(self.script, "jumpToTimelineResource")
         reset = javascript_function(self.script, "resetTimelineView")
         picker = javascript_function(self.script, "renderLanePicker")
+        checkbox = javascript_function(self.script, "laneVisibilityCheckbox")
         bundle = javascript_function(self.script, "renderResourceBundleTable")
         generic = javascript_function(self.script, "renderResourceTables")
 
@@ -230,8 +231,9 @@ class SingleNodeAuditRegressionContractTests(unittest.TestCase):
         self.assertIn("state.hiddenTimelineResourceIds.delete(resourceId)", jump_event)
         self.assertIn("state.hiddenTimelineResourceIds.delete(resourceId)", jump_resource)
         self.assertIn("state.hiddenTimelineResourceIds.clear()", reset)
-        self.assertIn("laneSelectedByMode(resourceId)", bundle)
-        self.assertIn("laneSelectedByMode(item.resource_id)", generic)
+        self.assertIn("laneSelectedByMode(resourceId)", checkbox)
+        self.assertIn("laneVisibilityCheckbox(resourceId", bundle)
+        self.assertIn("laneVisibilityCheckbox(item.resource_id", generic)
         self.assertNotIn('resourceId.includes("ETG")', selected)
         self.assertNotIn('resourceId.includes("DTE")', selected)
 
@@ -239,6 +241,35 @@ class SingleNodeAuditRegressionContractTests(unittest.TestCase):
         self.assertIn("grid-template-columns: 28px minmax(0, 1fr)", self.styles)
         self.assertIn(".lane-close:focus-visible", self.styles)
         self.assertIn("outline: 2px solid var(--cyan)", self.styles)
+
+    def test_resource_table_timeline_visibility_uses_accessible_checkboxes(self) -> None:
+        checkbox = javascript_function(self.script, "laneVisibilityCheckbox")
+        bindings = javascript_function(self.script, "bindLaneVisibilityCheckboxes")
+        bundle = javascript_function(self.script, "renderResourceBundleTable")
+        generic = javascript_function(self.script, "renderResourceTables")
+
+        self.assertIn('type="checkbox"', checkbox)
+        self.assertIn('${visible ? " checked" : ""}', checkbox)
+        self.assertIn('aria-label="${escapeHtml(accessibleLabel)}"', checkbox)
+        self.assertIn('title="${escapeHtml(accessibleLabel)}"', checkbox)
+        self.assertNotIn("Shown", checkbox)
+        self.assertNotIn("Hidden", checkbox)
+        self.assertNotIn("aria-pressed", checkbox)
+
+        self.assertIn("laneVisibilityCheckbox(resourceId", bundle)
+        self.assertIn("laneVisibilityCheckbox(item.resource_id", generic)
+        self.assertIn("bindLaneVisibilityCheckboxes(container, { closeHover: true })", bundle)
+        self.assertIn("bindLaneVisibilityCheckboxes(container)", generic)
+        self.assertIn('input[type="checkbox"][data-lane-toggle]', bindings)
+        self.assertIn("event.stopPropagation()", bindings)
+        self.assertIn("checkbox.checked", bindings)
+        self.assertIn("setExplicitLaneVisibility(resourceId, checkbox.checked)", bindings)
+        self.assertIn("checkbox.checked = laneSelectedByMode(resourceId)", bindings)
+
+        self.assertIn(".resource-timeline-toggle-cell", self.styles)
+        self.assertIn(".lane-visibility-toggle:focus-visible", self.styles)
+        self.assertIn("accent-color: var(--cyan)", self.styles)
+        self.assertNotIn('.lane-visibility-toggle[aria-pressed="true"]', self.styles)
 
     def test_large_correlation_canvas_is_bounded_while_index_is_pageable(self) -> None:
         bounded = javascript_function(self.script, "boundedCorrelationGraph")
@@ -902,9 +933,139 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
         self.assertIn("quadraticEdgePoint(geometry, pathPosition)", attachments)
         self.assertIn("quadraticEdgePoint(geometry, 0.5)", topology)
         self.assertIn("quadraticEdgePoint(geometry, 0.5)", boundary_tag)
-        self.assertIn("requestAnimationFrame(redraw)", viewport)
-        self.assertIn("graphWorldLayers(stage).forEach", transform)
+        self.assertIn("requestAnimationFrame(paintDragFrame)", viewport)
+        self.assertIn("updatePosition?.(positionKey)", viewport)
+        self.assertIn("graphViewportElements(stage, view)", transform)
+        self.assertIn("viewport.layers.forEach", transform)
         self.assertIn('layer.style.transform = transform', transform)
+
+    def test_topology_interactions_coalesce_frames_and_update_incident_edges(self) -> None:
+        cache = javascript_function(self.script, "graphViewportElements")
+        schedule = javascript_function(self.script, "scheduleGraphTransform")
+        transform = javascript_function(self.script, "applyGraphTransform")
+        viewport = javascript_function(self.script, "setupGraphViewport")
+        edge_index = javascript_function(self.script, "buildGraphEdgeDomIndex")
+        edge_update = javascript_function(self.script, "updateGraphEdgeDomIndex")
+        topology_render = javascript_function(self.script, "renderLinkStatusMap")
+
+        self.assertIn("if (view.stage !== stage)", cache)
+        self.assertIn("view.layers = graphWorldLayers(stage)", cache)
+        self.assertIn('stage.querySelector("[data-graph-zoom-readout]")', cache)
+        self.assertIn("view.transformFrame !== null", schedule)
+        self.assertIn("view.transformFrame = requestAnimationFrame", schedule)
+        self.assertIn("view.transformFrame = null", schedule)
+        self.assertIn("applyGraphTransform(stageId, viewKey)", schedule)
+        self.assertIn("if (view.detailMode !== detailMode)", transform)
+
+        pan_move = viewport[
+            viewport.index("stage.onpointermove") : viewport.index("const finishPan")
+        ]
+        wheel_move = viewport[
+            viewport.index("stage.onwheel") : viewport.index("stage.setAttribute")
+        ]
+        for handler in (pan_move, wheel_move):
+            self.assertIn("scheduleGraphTransform(stageId, viewKey)", handler)
+            self.assertNotIn("applyGraphTransform(", handler)
+
+        drag_move = viewport[viewport.rindex("element.onpointermove") : viewport.index("const finishDrag", viewport.rindex("element.onpointermove"))]
+        drag_finish = viewport[viewport.index("const finishDrag", viewport.rindex("element.onpointermove")) :]
+        self.assertIn("pendingPoint", drag_move)
+        self.assertIn("requestAnimationFrame(paintDragFrame)", drag_move)
+        self.assertNotIn("graphBounds(", drag_move)
+        self.assertNotIn("redraw()", drag_move)
+        self.assertIn("updatePosition?.(positionKey)", viewport)
+        self.assertIn("view.bounds = graphBounds(modelPositions, boxes)", drag_finish)
+        self.assertIn("if (!updatePosition) redraw()", drag_finish)
+        self.assertIn("cancelAnimationFrame(view.dragFrame)", viewport)
+        self.assertIn("element.onlostpointercapture = finishDrag", viewport)
+        self.assertIn("stage.onlostpointercapture = finishPan", viewport)
+
+        self.assertIn('svg.querySelectorAll("[data-graph-edge-key]")', edge_index)
+        self.assertIn("byPosition", edge_index)
+        self.assertIn("index?.byPosition.get(positionKey)", edge_update)
+        self.assertIn('element.setAttribute("d", geometry.d)', edge_update)
+        self.assertNotIn("innerHTML", edge_update)
+        self.assertIn("updatePosition: (positionKey) => updateGraphEdgeDomIndex(", topology_render)
+        self.assertIn("edgeDomIndex = buildGraphEdgeDomIndex(", topology_render)
+
+    def test_topology_hover_uses_indexes_and_one_scheduled_inspector_frame(self) -> None:
+        route = javascript_function(self.script, "applyRouteHighlights")
+        route_index = javascript_function(self.script, "indexRouteInteractionElement")
+        route_prune = javascript_function(self.script, "pruneRouteInteractionIndex")
+        route_bind = javascript_function(self.script, "bindRouteCorrelationElements")
+        render_map = javascript_function(self.script, "renderMap")
+        topology_renderer = javascript_function(self.script, "renderLinkStatusMap")
+        node_renderer = javascript_function(self.script, "renderNodeGraph")
+        all_path_renderer = javascript_function(self.script, "renderAllPathsRouteMap")
+        topology = javascript_function(self.script, "applyTopologyRelationshipContext")
+        relationship_index = javascript_function(
+            self.script,
+            "rebuildTopologyRelationshipIndex",
+        )
+        inspector_schedule = javascript_function(
+            self.script,
+            "scheduleTopologyInspectorPosition",
+        )
+        inspector_clear = javascript_function(
+            self.script,
+            "cancelTopologyInspectorPosition",
+        )
+        inspector_bind = javascript_function(
+            self.script,
+            "bindTopologyInspectorElements",
+        )
+
+        self.assertIn("pruneRouteInteractionIndex()", route)
+        self.assertIn("indexedRouteElements(", route)
+        self.assertIn("updateElementClassSet(", route)
+        self.assertNotIn("querySelectorAll", route)
+        self.assertNotIn("JSON.parse", route)
+        self.assertIn("state.routeFocusElements.add(element)", route_index)
+        self.assertIn('element.hasAttribute("data-route-focus-targets")', route_index)
+        self.assertNotIn("if (focusTargets.length)", route_index)
+        self.assertIn("pruneElements(state.routeCorrelatedElements)", route_prune)
+        self.assertIn("pruneElements(state.routeDimmedElements)", route_prune)
+        self.assertLess(
+            route_bind.index("pruneRouteInteractionIndex()"),
+            route_bind.index("scope.querySelectorAll"),
+        )
+        self.assertIn("applyRouteHighlights()", render_map)
+        topology_empty = topology_renderer[
+            topology_renderer.index("if (!nodes.length)") : topology_renderer.index("const dimensions")
+        ]
+        node_empty = node_renderer[
+            node_renderer.index("if (!nodes.length)") : node_renderer.index("const dimensions")
+        ]
+        all_path_empty = all_path_renderer[
+            all_path_renderer.index("if (!paths.length || !nodes.length)") : all_path_renderer.index("const dimensions")
+        ]
+        for empty_branch in (topology_empty, node_empty, all_path_empty):
+            self.assertIn("applyRouteHighlights()", empty_branch)
+
+        self.assertIn("state.topologyRelationshipIndex", topology)
+        self.assertIn("relationshipIndex.byInspectKey.get(key)", topology)
+        self.assertIn("relationshipIndex.endpointItems.forEach", topology)
+        self.assertNotIn("querySelectorAll", topology)
+        self.assertIn("byNetworkSegmentId", relationship_index)
+
+        self.assertIn("topologyInspectorPositionRequest", inspector_schedule)
+        self.assertIn("topologyInspectorPositionFrame !== null", inspector_schedule)
+        self.assertIn("requestAnimationFrame", inspector_schedule)
+        self.assertIn("cancelAnimationFrame", inspector_clear)
+        self.assertIn("scheduleTopologyInspectorPosition(element", inspector_bind)
+
+    def test_topology_active_interaction_temporarily_reduces_paint_cost(self) -> None:
+        begin = javascript_function(self.script, "beginGraphInteraction")
+        end = javascript_function(self.script, "endGraphInteraction")
+        viewport = javascript_function(self.script, "setupGraphViewport")
+
+        self.assertIn('stage.classList.add("is-graph-interacting")', begin)
+        self.assertIn('stage.classList.remove("is-graph-interacting")', end)
+        self.assertGreaterEqual(viewport.count("beginGraphInteraction(stage, view)"), 3)
+        self.assertGreaterEqual(viewport.count("endGraphInteraction(stage, view"), 3)
+        self.assertIn(".mn-map-stage.is-graph-interacting .mn-route-edge", self.styles)
+        self.assertIn("transition: none !important", self.styles)
+        self.assertIn("filter: none !important", self.styles)
 
     def test_all_path_layout_orders_rows_by_stable_candidate_lanes(self) -> None:
         normalize = javascript_function(self.script, "normalizeRouteTrace")
