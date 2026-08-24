@@ -602,8 +602,12 @@ def _static_import_target(module: ModuleType, attribute: str) -> object:
             return missing
         if candidate is missing:
             return missing
-        if isinstance(candidate, (classmethod, staticmethod)):
+        if type(candidate) in {classmethod, staticmethod}:
             candidate = candidate.__func__
+        elif isinstance(candidate, (classmethod, staticmethod)):
+            raise PluginExecutableIdentityError(
+                "module target method-wrapper subclass is unsupported"
+            )
         selected = candidate
     return selected
 
@@ -1620,14 +1624,14 @@ def _class_runtime_identity(
                 "__weakref__",
             } and _is_executable_authority(value):
                 _update_exact_object_token(digest, value, budget=budget)
-            functions: tuple[tuple[str, FunctionType], ...]
+            functions: tuple[tuple[str, object], ...]
             if type(value) is FunctionType:
                 functions = (("method", value),)
-            elif isinstance(value, staticmethod):
+            elif type(value) is staticmethod:
                 functions = (("static-method", value.__func__),)
-            elif isinstance(value, classmethod):
+            elif type(value) is classmethod:
                 functions = (("class-method", value.__func__),)
-            elif isinstance(value, property):
+            elif type(value) is property:
                 functions = tuple(
                     (label, function)
                     for label, function in (
@@ -1636,6 +1640,10 @@ def _class_runtime_identity(
                         ("property-delete", value.fdel),
                     )
                     if function is not None
+                )
+            elif isinstance(value, (staticmethod, classmethod, property)):
+                raise PluginExecutableIdentityError(
+                    "module target descriptor-wrapper subclass is unsupported"
                 )
             else:
                 functions = ()
@@ -2547,14 +2555,30 @@ def _update_enum_metaclass_dependency(
                 budget=budget,
                 depth=depth + 1,
             )
-        elif isinstance(value, (classmethod, staticmethod)) and type(
-            value.__func__
-        ) is FunctionType:
-            _update_code_object(
-                digest,
-                value.__func__.__code__,
-                budget=budget,
-                depth=depth + 1,
+        elif type(value) in {classmethod, staticmethod}:
+            wrapped = value.__func__
+            _digest_field(digest, type(value).__name__.encode("ascii"))
+            if type(wrapped) is FunctionType:
+                _update_code_object(
+                    digest,
+                    wrapped.__code__,
+                    budget=budget,
+                    depth=depth + 1,
+                )
+            else:
+                _update_global_reference(
+                    digest,
+                    wrapped,
+                    budget=budget,
+                    scope_cache=scope_cache,
+                    callable_cache=callable_cache,
+                    active_callables=active_callables,
+                    identity_root=identity_root,
+                    depth=depth + 1,
+                )
+        elif isinstance(value, (classmethod, staticmethod)):
+            raise PluginExecutableIdentityError(
+                "module target method-wrapper subclass is unsupported"
             )
         else:
             value_type = type(value)
@@ -3307,8 +3331,12 @@ def _resolve_static_attribute_path(
             retains_receiver or _is_executable_authority(candidate)
         ):
             authorities.append(candidate)
-        if isinstance(candidate, (classmethod, staticmethod)):
+        if type(candidate) in {classmethod, staticmethod}:
             candidate = candidate.__func__
+        elif isinstance(candidate, (classmethod, staticmethod)):
+            raise PluginExecutableIdentityError(
+                "module target method-wrapper subclass is unsupported"
+            )
         selected = candidate
     return _StaticAttributeResolution(selected, owner, name, descriptor)
 
@@ -3406,6 +3434,8 @@ def _update_contextmanager_function_dependency(
 ) -> bool:
     """Bind a canonical ``contextmanager`` wrapper and its declared generator."""
 
+    if type(function) is not FunctionType:
+        return False
     wrapped = function.__dict__.get("__wrapped__")
     if type(wrapped) is not FunctionType:
         return False
@@ -3648,7 +3678,7 @@ def _update_source_dependency_leaf(
         if (
             type(function) is FunctionType
             and inspect.isclass(receiver)
-            and isinstance(descriptor, classmethod)
+            and type(descriptor) is classmethod
             and descriptor.__func__ is function
         ):
             _digest_field(digest, b"dependency-bound-class-method")
@@ -4597,14 +4627,14 @@ def _update_dependency_class_shape_uncached(
                 "__weakref__",
             } or name in generated_dataclass_methods:
                 continue
-            functions: tuple[tuple[str, FunctionType], ...]
+            functions: tuple[tuple[str, object], ...]
             if type(member) is FunctionType:
                 functions = (("method", member),)
-            elif isinstance(member, staticmethod):
+            elif type(member) is staticmethod:
                 functions = (("static-method", member.__func__),)
-            elif isinstance(member, classmethod):
+            elif type(member) is classmethod:
                 functions = (("class-method", member.__func__),)
-            elif isinstance(member, property):
+            elif type(member) is property:
                 functions = tuple(
                     (label, selected)
                     for label, selected in (
@@ -4614,12 +4644,28 @@ def _update_dependency_class_shape_uncached(
                     )
                     if type(selected) is FunctionType
                 )
+            elif isinstance(member, (staticmethod, classmethod, property)):
+                raise PluginExecutableIdentityError(
+                    "module target dependency descriptor-wrapper subclass is unsupported"
+                )
             else:
                 functions = ()
             if functions:
                 _digest_field(digest, b"dependency-class-member")
                 _digest_field(digest, name.encode("utf-8"))
                 for label, function in functions:
+                    if type(function) is not FunctionType:
+                        _digest_field(digest, label.encode("ascii"))
+                        _update_source_dependency_leaf(
+                            digest,
+                            function,
+                            budget=budget,
+                            scope_cache=scope_cache,
+                            identity_root=identity_root,
+                            expand_same_root=expand_dependencies,
+                            depth=depth + 1,
+                        )
+                        continue
                     if _update_contextmanager_function_dependency(
                         digest,
                         function,
@@ -4826,14 +4872,14 @@ def _source_singleton_class_shape_identity(
             "__weakref__",
         }:
             continue
-        functions: tuple[tuple[str, FunctionType], ...]
+        functions: tuple[tuple[str, object], ...]
         if type(member) is FunctionType:
             functions = (("method", member),)
-        elif isinstance(member, staticmethod):
+        elif type(member) is staticmethod:
             functions = (("static-method", member.__func__),)
-        elif isinstance(member, classmethod):
+        elif type(member) is classmethod:
             functions = (("class-method", member.__func__),)
-        elif isinstance(member, property):
+        elif type(member) is property:
             functions = tuple(
                 (label, selected)
                 for label, selected in (
@@ -4843,12 +4889,28 @@ def _source_singleton_class_shape_identity(
                 )
                 if type(selected) is FunctionType
             )
+        elif isinstance(member, (staticmethod, classmethod, property)):
+            raise PluginExecutableIdentityError(
+                "module target singleton descriptor-wrapper subclass is unsupported"
+            )
         else:
             functions = ()
         if functions:
             _digest_field(digest, b"class-member")
             _digest_field(digest, name.encode("utf-8"))
             for label, function in functions:
+                if type(function) is not FunctionType:
+                    _digest_field(digest, label.encode("ascii"))
+                    _update_source_dependency_leaf(
+                        digest,
+                        function,
+                        budget=budget,
+                        scope_cache=scope_cache,
+                        identity_root=module_name.split(".", maxsplit=1)[0],
+                        expand_same_root=False,
+                        depth=depth + 1,
+                    )
+                    continue
                 expected_name = f"{qualified_name}.{name}"
                 function_source = _object_source_path(function, budget=budget)
                 wrapped = function.__dict__.get("__wrapped__")
@@ -7231,6 +7293,10 @@ def _external_function_leaf_identity(
 ) -> str:
     """Attest an external callable as a retained executable authority leaf."""
 
+    if type(function) is not FunctionType:
+        raise PluginExecutableIdentityError(
+            "module target external function is not an exact Python function"
+        )
     _consume_target_budget(budget, depth=depth)
     function_key = id(function)
     cached = callable_cache.get(function_key)
@@ -7736,14 +7802,14 @@ def _external_class_leaf_identity(
             if inspect.ismemberdescriptor(value) or inspect.isgetsetdescriptor(value):
                 continue
             _digest_field(digest, name.encode("utf-8"))
-            selected_functions: tuple[tuple[str, FunctionType], ...]
+            selected_functions: tuple[tuple[str, object], ...]
             if type(value) is FunctionType:
                 selected_functions = (("method", value),)
-            elif isinstance(value, staticmethod):
+            elif type(value) is staticmethod:
                 selected_functions = (("static-method", value.__func__),)
-            elif isinstance(value, classmethod):
+            elif type(value) is classmethod:
                 selected_functions = (("class-method", value.__func__),)
-            elif isinstance(value, property):
+            elif type(value) is property:
                 selected_functions = tuple(
                     (label, selected)
                     for label, selected in (
@@ -7760,10 +7826,27 @@ def _external_class_leaf_identity(
                     and type(getattr(wrapped, "__wrapped__", None)) is FunctionType
                 ):
                     selected_functions = (("property-wrapped", wrapped.__wrapped__),)
+            elif isinstance(value, (staticmethod, classmethod, property)):
+                raise PluginExecutableIdentityError(
+                    "module target external descriptor-wrapper subclass is unsupported"
+                )
             else:
                 selected_functions = ()
             if selected_functions:
                 for label, selected in selected_functions:
+                    if type(selected) is not FunctionType:
+                        _digest_field(digest, label.encode("ascii"))
+                        _update_global_reference(
+                            digest,
+                            selected,
+                            budget=budget,
+                            scope_cache=scope_cache,
+                            callable_cache=callable_cache,
+                            active_callables=active_callables,
+                            identity_root=identity_root,
+                            depth=depth + 1,
+                        )
+                        continue
                     if name in generated_dataclass_methods:
                         _digest_field(digest, label.encode("ascii"))
                         _update_dataclass_generated_method(
@@ -7918,6 +8001,10 @@ def _update_external_class_member_function(
 ) -> None:
     """Bind a class member through the complete function-runtime traversal."""
 
+    if type(function) is not FunctionType:
+        raise PluginExecutableIdentityError(
+            "module target external class member is not an exact Python function"
+        )
     module_name = getattr(function, "__module__", None)
     qualified_name = getattr(function, "__qualname__", None)
     module = sys.modules.get(module_name)

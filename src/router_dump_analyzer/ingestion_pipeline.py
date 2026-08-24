@@ -212,6 +212,28 @@ class IngestionPipelineError(RuntimeError):
     """Base class for durable pipeline failures."""
 
 
+class _ProcessTargetKind(StrEnum):
+    """Closed process-target vocabulary used by identity diagnostics."""
+
+    PLUGIN = "plug-in"
+    COORDINATOR = "coordinator"
+    DECODER = "decoder"
+
+
+class _ProcessTargetIdentityUnavailable(IngestionPipelineError):
+    """A classified, compatibility-eligible target-attestation failure."""
+
+    reason_code: Final = "process_target_executable_identity_unavailable"
+
+    def __init__(self, target_kind: _ProcessTargetKind) -> None:
+        if type(target_kind) is not _ProcessTargetKind:
+            raise TypeError("target_kind must be an exact _ProcessTargetKind")
+        self.target_kind: _ProcessTargetKind = target_kind
+        super().__init__(
+            f"{target_kind.value} process target executable identity is unavailable"
+        )
+
+
 class IngestionStateRootPathError(IngestionPipelineError):
     """The durable state root cannot fit core-owned Windows paths."""
 
@@ -2004,13 +2026,18 @@ def _process_target_executable_identity(
     target: str,
     subject: object,
     *,
-    label: str,
+    target_kind: _ProcessTargetKind,
     declared_code_cache: dict[tuple[str, Path, str], tuple[CodeType, ...]]
     | None = None,
 ) -> str:
     """Snapshot one exact module target and its executable implementation."""
 
-    normalized = _normalized_explicit_bootstrap_target(target, f"{label}_target")
+    if type(target_kind) is not _ProcessTargetKind:
+        raise TypeError("target_kind must be an exact _ProcessTargetKind")
+    normalized = _normalized_explicit_bootstrap_target(
+        target,
+        f"{target_kind.value}_target",
+    )
     module_name, _, attribute = normalized.partition(":")
     try:
         identity = executable_module_target_fingerprint(
@@ -2021,16 +2048,18 @@ def _process_target_executable_identity(
         )
     except PROCESS_CONTROL_EXCEPTIONS:
         raise
+    except PluginExecutableIdentityError as error:
+        raise _ProcessTargetIdentityUnavailable(target_kind) from error
     except BaseException as error:
         raise IngestionPipelineError(
-            f"{label} process target executable identity is unavailable"
+            f"{target_kind.value} process target executable identity is unavailable"
         ) from error
     if (
         type(identity) is not str
         or re.fullmatch(r"target-sha256:[0-9a-f]{64}", identity) is None
     ):
         raise IngestionPipelineError(
-            f"{label} process target executable identity is invalid"
+            f"{target_kind.value} process target executable identity is invalid"
         )
     return identity
 
@@ -2060,7 +2089,7 @@ def _current_process_target_executable_identities(
             record.plugin,
             label="plug-in",
         ),
-        label="plug-in",
+        target_kind=_ProcessTargetKind.PLUGIN,
         declared_code_cache=declared_code_cache,
     )
     if bootstrap.coordinator_loader_kind == "core_default":
@@ -2078,7 +2107,7 @@ def _current_process_target_executable_identities(
                 record.coordinator,
                 label="coordinator",
             ),
-            label="coordinator",
+            target_kind=_ProcessTargetKind.COORDINATOR,
             declared_code_cache=declared_code_cache,
         )
     if bootstrap.decoder_loader_kind == "none":
@@ -2097,7 +2126,7 @@ def _current_process_target_executable_identities(
                 decoder_implementation,
                 label="decoder",
             ),
-            label="decoder",
+            target_kind=_ProcessTargetKind.DECODER,
             declared_code_cache=declared_code_cache,
         )
     return plugin_identity, coordinator_identity, decoder_identity
@@ -2548,7 +2577,7 @@ class PluginRegistry:
                         plugin,
                         label="plug-in",
                     ),
-                    label="plug-in",
+                    target_kind=_ProcessTargetKind.PLUGIN,
                     declared_code_cache=declared_code_cache,
                 )
                 coordinator_target_executable_identity = (
@@ -2561,7 +2590,7 @@ class PluginRegistry:
                             active_coordinator,
                             label="coordinator",
                         ),
-                        label="coordinator",
+                        target_kind=_ProcessTargetKind.COORDINATOR,
                         declared_code_cache=declared_code_cache,
                     )
                 )
@@ -2575,13 +2604,13 @@ class PluginRegistry:
                             decoder_implementation,
                             label="decoder",
                         ),
-                        label="decoder",
+                        target_kind=_ProcessTargetKind.DECODER,
                         declared_code_cache=declared_code_cache,
                     )
                 )
             except PROCESS_CONTROL_EXCEPTIONS:
                 raise
-            except IngestionPipelineError as error:
+            except _ProcessTargetIdentityUnavailable:
                 # A registry-derived package digest remains useful for trusted
                 # inline compatibility, but it cannot authorize a child target
                 # that was not separately attested. Explicit loader-supplied
@@ -2591,10 +2620,6 @@ class PluginRegistry:
                     self._require_executable_identity
                     or selected_package_hash is not None
                     or not verify_package_bytes
-                    or not isinstance(
-                        error.__cause__,
-                        PluginExecutableIdentityError,
-                    )
                 ):
                     raise
                 plugin_target_executable_identity = None

@@ -604,6 +604,229 @@ class PluginIdentityRuntimeImportTests(unittest.TestCase):
         self.assertNotEqual(method_replaced, classmethod_replaced)
         self.assertNotEqual(classmethod_replaced, descriptor_replaced)
 
+    def test_external_class_wrappers_bound_non_function_callable_payloads(
+        self,
+    ) -> None:
+        helper_name = "_rda_identity_external_wrapper_payloads"
+        callback_name = "_rda_identity_external_wrapper_callback"
+        temporary, (helper, callback_module) = self._import_modules(
+            {
+                helper_name: (
+                    "import types\n\n"
+                    "class Dependency:\n"
+                    "    plain_alias = list[str]\n"
+                    "    alias_type = types.GenericAlias\n"
+                    "    static_alias = staticmethod(types.GenericAlias)\n"
+                    "    class_alias = classmethod(types.GenericAlias)\n"
+                ),
+                callback_name: (
+                    f"from {helper_name} import Dependency\n\n"
+                    "def callback(value):\n"
+                    "    return (\n"
+                    "        Dependency.plain_alias(value),\n"
+                    "        Dependency.alias_type(list, str)(value),\n"
+                    "        Dependency.static_alias(list, str)(value),\n"
+                    "        Dependency.class_alias(str)(value),\n"
+                    "    )\n"
+                ),
+            },
+            helper_name,
+            callback_name,
+        )
+        helper = cast(ModuleType, helper)
+        callback_module = cast(ModuleType, callback_module)
+
+        def fingerprints() -> tuple[str, str]:
+            return (
+                executable_callable_fingerprint(callback_module.callback),
+                executable_module_target_fingerprint(
+                    callback_name,
+                    "callback",
+                    callback_module.callback,
+                ),
+            )
+
+        try:
+            first = fingerprints()
+            self.assertEqual(first, fingerprints())
+            helper.Dependency.static_alias = staticmethod(list[str])
+            payload_replaced = fingerprints()
+        finally:
+            self._cleanup_modules(temporary, helper_name, callback_name)
+        self.assertNotEqual(first[0], payload_replaced[0])
+        self.assertNotEqual(first[1], payload_replaced[1])
+
+    def test_dependency_class_wrappers_bound_non_function_callable_payloads(
+        self,
+    ) -> None:
+        module_name = "_rda_identity_dependency_wrapper_payloads"
+        temporary, (module,) = self._import_modules(
+            {
+                module_name: (
+                    f"import {module_name} as own\n"
+                    "import types\n\n"
+                    "class Dependency:\n"
+                    "    static_alias = staticmethod(types.GenericAlias)\n"
+                    "    class_alias = classmethod(types.GenericAlias)\n\n"
+                    "class Capability:\n"
+                    "    static_alias = staticmethod(types.GenericAlias)\n"
+                    "    class_alias = classmethod(types.GenericAlias)\n\n"
+                    "    def apply(self):\n"
+                    "        return Dependency\n\n"
+                    "capability = Capability()\n\n"
+                    "def callback():\n"
+                    "    return own.capability\n"
+                )
+            },
+            module_name,
+        )
+        module = cast(ModuleType, module)
+
+        def fingerprints() -> tuple[str, str]:
+            return (
+                executable_callable_fingerprint(module.callback),
+                executable_module_target_fingerprint(
+                    module_name,
+                    "callback",
+                    module.callback,
+                ),
+            )
+
+        try:
+            first = fingerprints()
+            self.assertEqual(first, fingerprints())
+            module.Dependency.class_alias = classmethod(cast(FunctionType, list[str]))
+            payload_replaced = fingerprints()
+        finally:
+            self._cleanup_modules(temporary, module_name)
+        self.assertNotEqual(first[0], payload_replaced[0])
+        self.assertNotEqual(first[1], payload_replaced[1])
+
+    def test_singleton_class_wrappers_reject_unsupported_payloads_cleanly(
+        self,
+    ) -> None:
+        for wrapper in ("staticmethod", "classmethod"):
+            module_name = f"_rda_identity_singleton_{wrapper}_payload"
+            temporary, (module,) = self._import_modules(
+                {
+                    module_name: (
+                        f"import {module_name} as own\n\n"
+                        "class Capability:\n"
+                        f"    unsupported = {wrapper}(object())\n\n"
+                        "    def apply(self):\n"
+                        "        return None\n\n"
+                        "capability = Capability()\n\n"
+                        "def callback():\n"
+                        "    return own.capability\n"
+                    )
+                },
+                module_name,
+            )
+            module = cast(ModuleType, module)
+            try:
+                for api in ("callable", "module-target"):
+                    with (
+                        self.subTest(wrapper=wrapper, api=api),
+                        self.assertRaises(PluginExecutableIdentityError),
+                    ):
+                        if api == "callable":
+                            executable_callable_fingerprint(module.callback)
+                        else:
+                            executable_module_target_fingerprint(
+                                module_name,
+                                "callback",
+                                module.callback,
+                            )
+            finally:
+                self._cleanup_modules(temporary, module_name)
+
+    def test_singleton_class_wrapper_subclasses_cannot_run_attribute_traps(
+        self,
+    ) -> None:
+        wrappers = {
+            "staticmethod": ("__func__", "lambda: None"),
+            "classmethod": ("__func__", "lambda cls: None"),
+            "property": ("fget", "lambda self: None"),
+        }
+        for wrapper, (trapped_attribute, payload) in wrappers.items():
+            module_name = f"_rda_identity_hostile_{wrapper}_subclass"
+            temporary, (module,) = self._import_modules(
+                {
+                    module_name: (
+                        f"import {module_name} as own\n\n"
+                        f"class Hostile({wrapper}):\n"
+                        "    def __getattribute__(self, name):\n"
+                        f"        if name == {trapped_attribute!r}:\n"
+                        "            raise RuntimeError('descriptor trap')\n"
+                        "        return super().__getattribute__(name)\n\n"
+                        "class Capability:\n"
+                        f"    trapped = Hostile({payload})\n\n"
+                        "    def apply(self):\n"
+                        "        return None\n\n"
+                        "capability = Capability()\n\n"
+                        "def callback():\n"
+                        "    return own.capability\n"
+                    )
+                },
+                module_name,
+            )
+            module = cast(ModuleType, module)
+            try:
+                for api in ("callable", "module-target"):
+                    with (
+                        self.subTest(wrapper=wrapper, api=api),
+                        self.assertRaisesRegex(
+                            PluginExecutableIdentityError,
+                            "descriptor-wrapper subclass is unsupported",
+                        ),
+                    ):
+                        if api == "callable":
+                            executable_callable_fingerprint(module.callback)
+                        else:
+                            executable_module_target_fingerprint(
+                                module_name,
+                                "callback",
+                                module.callback,
+                            )
+            finally:
+                self._cleanup_modules(temporary, module_name)
+
+    def test_external_function_walkers_reject_non_function_payloads(self) -> None:
+        payload = cast(FunctionType, plugin_identity.GenericAlias)
+        budget = plugin_identity._TargetIdentityBudget()
+        with self.assertRaisesRegex(
+            PluginExecutableIdentityError,
+            "external function is not an exact Python function",
+        ):
+            plugin_identity._external_function_leaf_identity(
+                payload,
+                module=cast(ModuleType, sys.modules["types"]),
+                module_name="types",
+                qualified_name="GenericAlias",
+                source_path=Path(__file__),
+                budget=budget,
+                scope_cache={},
+                callable_cache={},
+                active_callables=set(),
+                identity_root=__name__,
+                depth=0,
+            )
+        with self.assertRaisesRegex(
+            PluginExecutableIdentityError,
+            "external class member is not an exact Python function",
+        ):
+            plugin_identity._update_external_class_member_function(
+                hashlib.sha256(),
+                payload,
+                label="static-method",
+                budget=budget,
+                scope_cache={},
+                callable_cache={},
+                active_callables=set(),
+                identity_root=__name__,
+                depth=0,
+            )
+
     def test_module_target_clone_rebinding_is_token_free_and_deterministic(
         self,
     ) -> None:

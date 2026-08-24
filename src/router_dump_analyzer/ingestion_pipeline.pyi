@@ -8,13 +8,24 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol, Self
+from typing import Any, Final, Protocol, Self
 
 __all__ = ['IngestionPipelineError', 'IngestionStateRootPathError', 'validate_ingestion_state_root', 'PluginExecutionTimeoutError', 'PluginExecutionProcessError', 'CatalogExecutionTimeoutError', 'CatalogExecutionProcessError', 'ImportNotFoundError', 'ImportConflictError', 'ImportQuotaExceededError', 'ImportState', 'RetentionHostInventoryCoverage', 'PluginExecutionMode', 'ImportScope', 'PipelineLimits', 'RetentionPolicy', 'RetentionReport', 'RetentionAuditRecord', 'WorkerHealthSnapshot', 'QueueHealthSnapshot', 'inspect_durable_queue', 'PluginCandidate', 'ImportDescriptor', 'ImportEvent', 'PublisherCallContext', 'RevisionCatalogPublisher', 'NullRevisionCatalogPublisher', 'RegisteredPlugin', 'PluginRegistry', 'DurableIngestionPipeline', 'validate_import_metadata']
 
 MAX_NODE_HINT_LENGTH = MAX_EXECUTION_IDENTITY_LENGTH
 
 class IngestionPipelineError(RuntimeError): ...
+
+class _ProcessTargetKind(StrEnum):
+    PLUGIN = 'plug-in'
+    COORDINATOR = 'coordinator'
+    DECODER = 'decoder'
+
+class _ProcessTargetIdentityUnavailable(IngestionPipelineError):
+    reason_code: Final[str]
+    target_kind: _ProcessTargetKind
+    def __init__(self, target_kind: _ProcessTargetKind) -> None: ...
+
 class IngestionStateRootPathError(IngestionPipelineError): ...
 
 def validate_ingestion_state_root(root: str | Path) -> Path: ...

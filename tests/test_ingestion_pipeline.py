@@ -63,6 +63,9 @@ from router_dump_analyzer.ingestion_pipeline import (
     _ingest_registered_plugin,
     _path_for_containment_comparison,
     _probe_plugin_child,
+    _process_target_executable_identity,
+    _ProcessTargetIdentityUnavailable,
+    _ProcessTargetKind,
     _publisher_execution_plan_support,
     _PublisherExecutionPlanSupport,
     _register_process_bootstrap,
@@ -3474,9 +3477,11 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             self.assertRaisesRegex(
                 IngestionPipelineError,
                 "process target executable identity is unavailable",
-            ),
+            ) as caught,
         ):
             PluginRegistry(allow_manifest_identity=True).register(ParseOnlyPlugin())
+        self.assertIs(type(caught.exception), IngestionPipelineError)
+        self.assertIs(type(caught.exception.__cause__), RuntimeError)
 
         with (
             patch(
@@ -3499,6 +3504,98 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                 package_hash="sha256:" + ("7" * 64),
             )
         package_attestation.assert_not_called()
+
+    def test_process_target_identity_unavailability_is_typed_and_bounded(
+        self,
+    ) -> None:
+        for target_kind in _ProcessTargetKind:
+            with (
+                self.subTest(target_kind=target_kind),
+                patch(
+                    "router_dump_analyzer.ingestion_pipeline."
+                    "executable_module_target_fingerprint",
+                    side_effect=PluginExecutableIdentityError(
+                        "private evaluator detail"
+                    ),
+                ),
+                self.assertRaises(_ProcessTargetIdentityUnavailable) as caught,
+            ):
+                _process_target_executable_identity(
+                    "tests.test_ingestion_pipeline:ParseOnlyPlugin",
+                    ParseOnlyPlugin,
+                    target_kind=target_kind,
+                )
+            self.assertIs(caught.exception.target_kind, target_kind)
+            self.assertEqual(
+                caught.exception.reason_code,
+                "process_target_executable_identity_unavailable",
+            )
+            self.assertEqual(
+                str(caught.exception),
+                f"{target_kind.value} process target executable identity is unavailable",
+            )
+            self.assertIs(
+                type(caught.exception.__cause__),
+                PluginExecutableIdentityError,
+            )
+            self.assertNotIn("private evaluator detail", str(caught.exception))
+
+    def test_nested_identity_error_does_not_enable_manifest_compatibility(
+        self,
+    ) -> None:
+        package_identity = "package-sha256:" + ("9" * 64)
+        evaluator_failure = RuntimeError("unexpected evaluator failure")
+        evaluator_failure.__cause__ = PluginExecutableIdentityError(
+            "nested target attestation detail"
+        )
+        with (
+            patch(
+                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                return_value=package_identity,
+            ),
+            patch(
+                "router_dump_analyzer.ingestion_pipeline."
+                "executable_module_target_fingerprint",
+                side_effect=evaluator_failure,
+            ),
+            self.assertRaisesRegex(
+                IngestionPipelineError,
+                "process target executable identity is unavailable",
+            ) as caught,
+        ):
+            PluginRegistry(allow_manifest_identity=True).register(ParseOnlyPlugin())
+        self.assertIs(type(caught.exception), IngestionPipelineError)
+        self.assertIs(caught.exception.__cause__, evaluator_failure)
+
+    def test_identity_error_subclass_enables_only_inline_compatibility(self) -> None:
+        class DerivedIdentityUnavailable(PluginExecutableIdentityError):
+            pass
+
+        with (
+            patch(
+                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                return_value="package-sha256:" + ("a" * 64),
+            ),
+            patch(
+                "router_dump_analyzer.ingestion_pipeline."
+                "executable_module_target_fingerprint",
+                side_effect=DerivedIdentityUnavailable("unavailable"),
+            ),
+        ):
+            registry = PluginRegistry(allow_manifest_identity=True)
+            registered = registry.register(ParseOnlyPlugin())
+        self.assertIsNone(registered._process_bootstrap)
+        self.assertEqual(
+            registered.execution_identity_material()[
+                "process_bootstrap_compatibility"
+            ],
+            "inline_only",
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "cannot authorize PROCESS execution",
+        ):
+            registry.process_bootstraps()
 
     def test_inline_only_target_compatibility_is_rejected_for_process_and_durable_use(
         self,

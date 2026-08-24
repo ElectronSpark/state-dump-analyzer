@@ -6,7 +6,7 @@ from .private_analysis_tool_service import PrivateAnalysisToolBudgetState, Priva
 from dataclasses import dataclass
 from enum import StrEnum
 from threading import Lock
-from typing import Final
+from typing import Final, TypeAlias
 
 __all__ = ['MAX_PRIVATE_ANALYSIS_IN_PROCESS_TRANSCRIPT_BYTES', 'PRIVATE_ANALYSIS_IN_PROCESS_CONTEXT_VERSION', 'PRIVATE_ANALYSIS_IN_PROCESS_TRANSCRIPT_VERSION', 'PrivateAnalysisInProcessToolResponseKind', 'PrivateAnalysisInProcessGatewayAbort', 'PrivateAnalysisInProcessContext', 'PrivateAnalysisInProcessToolResponse', 'PrivateAnalysisInProcessTranscript', 'PrivateAnalysisInProcessExecutionReceipt', 'PrivateAnalysisInProcessModelCallback', 'PrivateAnalysisInProcessToolGateway', 'ConfiguredPrivateAnalysisInProcessRunner']
 
