@@ -13,9 +13,9 @@ import urllib.request
 from pathlib import Path
 
 try:
-    from .ctf_fixture import BASE_URL, COMMIT, FILES, validate_blob
+    from .ctf_fixture import BASE_URL, FILES, validate_blob
 except ImportError:  # Direct ``python scripts/fetch_babeltrace_sample.py`` use.
-    from ctf_fixture import BASE_URL, COMMIT, FILES, validate_blob
+    from ctf_fixture import BASE_URL, FILES, validate_blob
 
 
 def fetch(destination: Path) -> None:

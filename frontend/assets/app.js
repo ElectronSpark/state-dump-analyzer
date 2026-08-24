@@ -254,7 +254,6 @@ const state = {
   topologyAbortController: null,
   topologyQueryPending: false,
   topologyUsingFallback: false,
-  topologyFollowCursor: true,
   topologyTimer: null,
   temporalTimer: null,
   routeRequestId: 0,
@@ -483,7 +482,7 @@ function topologyNodeSnapshotLabel() {
 }
 
 function nodeSnapshotUnavailableMarkup(title, detail) {
-  return `<div class="empty-state node-snapshot-unavailable">
+  return `<div class="empty-state">
     <span class="inspector-kicker">NOT SUPPLIED BY THE MEMBER PLUG-IN</span>
     <strong>${escapeHtml(title)}</strong>
     <p>${escapeHtml(detail)}</p>
@@ -2009,10 +2008,6 @@ function normalizedLogEntryId(eventUid) {
 
 function sourceLogEntryId(recordUid) {
   return "source:" + String(recordUid);
-}
-
-function sourceRecordMatchesEvent(record) {
-  return Boolean(record?.matched_event_uid);
 }
 
 function eventStatus(event, resourceId = null) {
@@ -7244,10 +7239,6 @@ function selectResource(resourceId) {
   updateFabricNavigationLink();
 }
 
-function selectGraphNode(nodeId) {
-  selectResource(nodeId);
-}
-
 function renderLayerToggles() {
   const container = byId("layer-toggles");
   container.innerHTML = [...state.layerMeta.keys()].map((layer) => `<button class="layer-toggle" type="button" data-layer="${escapeHtml(layer)}" aria-pressed="${state.activeLayers.has(layer)}" style="--layer-color:${layerColor(layer)}">${escapeHtml(humanLayer(layer))}</button>`).join("");
@@ -8535,7 +8526,7 @@ async function resolveRoute(event) {
     return;
   }
   result.setAttribute("aria-busy", "true");
-  result.innerHTML = `<div class="empty-state route-request-state">Resolving ${escapeHtml(requestContext.routeLabel || "plug-in route")} using ${escapeHtml(titleCase(requestContext.basisKind || "selected basis"))} at ${escapeHtml(formatOffset(requestContext.timeNs))}…</div>`;
+  result.innerHTML = `<div class="empty-state">Resolving ${escapeHtml(requestContext.routeLabel || "plug-in route")} using ${escapeHtml(titleCase(requestContext.basisKind || "selected basis"))} at ${escapeHtml(formatOffset(requestContext.timeNs))}…</div>`;
   const controller = beginLatestRequest("routeAbortController");
   try {
     const payload = await api(revisionPath("routes/resolve"), {
@@ -10700,7 +10691,6 @@ function bindControls() {
     requestTopology();
   });
   byId("topology-follow-cursor").addEventListener("change", (event) => {
-    state.topologyFollowCursor = event.target.checked;
     if (event.target.checked) scheduleTopologyRefreshFromCursor();
   });
   byId("route-form").addEventListener("submit", resolveRoute);

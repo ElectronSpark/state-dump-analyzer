@@ -26,7 +26,6 @@ from rsl_demo_plugin.archive import (
 from ._archive import (
     directory_members as _directory_members,
     json_bytes as _json_bytes,
-    write_deterministic_tgz,
 )
 from ._synthetic_ctf import (
     synthetic_router_ctf2_archive as _synthetic_router_ctf2_archive,

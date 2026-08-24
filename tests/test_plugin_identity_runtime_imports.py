@@ -1799,12 +1799,6 @@ class PluginIdentityRuntimeImportTests(unittest.TestCase):
         )
         module = sys.modules[__name__]
         operations = {
-            "stable": lambda: plugin_identity._update_stable_mapping(
-                hashlib.sha256(),
-                mapping,
-                budget=plugin_identity._TargetIdentityBudget(),
-                label="stable mapping",
-            ),
             "runtime": lambda: plugin_identity._update_runtime_mapping(
                 hashlib.sha256(),
                 mapping,

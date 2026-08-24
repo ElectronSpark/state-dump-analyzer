@@ -123,7 +123,6 @@ GENERATED_ROUTE_IDENTIFIER_BUDGET = {
     "_generated_candidate_for_path": 2,
     "_generated_coverage_by_id": 7,
     "_generated_coverage_registry_id": 5,
-    "_generated_destination_attachment_node_ids": 1,
     "_generated_destination_attachment_specs": 3,
     "_generated_directional_decision": 4,
     "_generated_directional_pairs": 2,

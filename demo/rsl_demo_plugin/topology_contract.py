@@ -160,7 +160,6 @@ def build_topology_contract(
     _install_generated_node_projections(
         contract,
         projection_reader,
-        revision_store,
     )
     return contract
 
@@ -168,7 +167,6 @@ def build_topology_contract(
 def _install_generated_node_projections(
     contract: dict[str, Any],
     projection_reader: Any,
-    revision_store: DemoAssemblyStore,
 ) -> None:
     """Install bounded generated plug-in evidence on descriptor-built nodes."""
 

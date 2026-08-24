@@ -3847,44 +3847,6 @@ class ControlPlane:
         return supplied
 
     @staticmethod
-    def _all_annotations(
-        store: ReviewOverlayStore,
-        scope: ReviewScope,
-    ) -> tuple[ReviewAnnotation, ...]:
-        first = store.list_annotations(scope, limit=5_000)
-        if len(first) < 5_000:
-            return first
-        second = store.list_annotations(scope, limit=5_000, offset=5_000)
-        if len(second) == 5_000 and store.list_annotations(
-            scope,
-            limit=1,
-            offset=10_000,
-        ):
-            raise ControlPlaneError(
-                "review annotations exceed the report collection limit"
-            )
-        return (*first, *second)
-
-    @staticmethod
-    def _all_correlations(
-        store: ReviewOverlayStore,
-        scope: ReviewScope,
-    ) -> tuple[ManualEventCorrelation, ...]:
-        first = store.list_correlations(scope, limit=5_000)
-        if len(first) < 5_000:
-            return first
-        second = store.list_correlations(scope, limit=5_000, offset=5_000)
-        if len(second) == 5_000 and store.list_correlations(
-            scope,
-            limit=1,
-            offset=10_000,
-        ):
-            raise ControlPlaneError(
-                "manual correlations exceed the report collection limit"
-            )
-        return (*first, *second)
-
-    @staticmethod
     def _event_time(event: Mapping[str, Any]) -> tuple[int | None, int | None]:
         raw = event.get("timestamp_ns")
         if raw is None:

@@ -3148,19 +3148,6 @@ class MultiNodeRouteService:
             return resource_ids[0]
         return self._router(node_id)["loopback_resource_id"]
 
-    def _generated_destination_attachment_node_ids(
-        self,
-        scenario_id: str,
-    ) -> list[str]:
-        """Return every declared destination attachment node."""
-
-        return [
-            str(item["node_id"])
-            for item in self._generated_destination_attachment_specs(
-                scenario_id
-            )
-        ]
-
     def _generated_destination_attachment_specs(
         self,
         scenario_id: str,

@@ -2722,14 +2722,6 @@ def _loaded_global_dependencies(
     return tuple(sorted(names)), tuple(sorted(paths)), has_runtime_imports
 
 
-def _loaded_global_names(root: CodeType) -> tuple[str, ...]:
-    return _loaded_global_dependencies(root)[0]
-
-
-def _loaded_global_attribute_paths(root: CodeType) -> tuple[tuple[str, ...], ...]:
-    return _loaded_global_dependencies(root)[1]
-
-
 def _function_dependency_analysis(
     function: FunctionType,
     *,
@@ -5490,39 +5482,6 @@ def _snapshot_runtime_dict(
             f"{label} changed while fingerprinting"
         ) from error
     return tuple(retained)
-
-
-def _update_stable_mapping(
-    digest: Any,
-    value: dict[str, Any] | None,
-    *,
-    budget: _TargetIdentityBudget,
-    label: str,
-) -> None:
-    if value is None:
-        _digest_field(digest, f"{label}:none".encode())
-        return
-    if type(value) is not dict:
-        raise PluginExecutableIdentityError(
-            f"module target {label} are not immutable canonical values"
-        )
-    snapshot = _snapshot_runtime_dict(
-        value,
-        budget=budget,
-        depth=1,
-        label=f"module target {label}",
-    )
-    if any(type(key) is not str for key, _item in snapshot):
-        raise PluginExecutableIdentityError(
-            f"module target {label} are not immutable canonical values"
-        )
-    _digest_field(digest, label.encode("utf-8"))
-    for key, item in sorted(snapshot):
-        encoded = key.encode("utf-8")
-        _consume_target_bytes(budget, len(encoded))
-        _digest_field(digest, encoded)
-        _update_stable_value(digest, item, budget=budget, depth=1)
-    _verify_dict_snapshot(value, snapshot)
 
 
 def _update_runtime_defaults(

@@ -63,7 +63,8 @@ from router_dump_analyzer.ingestion_pipeline import (
     _ingest_registered_plugin,
     _path_for_containment_comparison,
     _probe_plugin_child,
-    _publisher_accepts_execution_plan,
+    _publisher_execution_plan_support,
+    _PublisherExecutionPlanSupport,
     _register_process_bootstrap,
     _registry_from_process_bootstraps,
     _RetentionWorkItem,
@@ -5000,11 +5001,15 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             )
 
     def test_planful_publication_rejects_a_legacy_publisher_before_call(self) -> None:
-        self.assertFalse(
-            _publisher_accepts_execution_plan(_PositionalExecutionPlanPublisher())
+        self.assertIs(
+            _publisher_execution_plan_support(_PositionalExecutionPlanPublisher()),
+            _PublisherExecutionPlanSupport.ABSENT,
         )
-        self.assertFalse(
-            _publisher_accepts_execution_plan(_PositionalExecutionPlanKwargsPublisher())
+        self.assertIs(
+            _publisher_execution_plan_support(
+                _PositionalExecutionPlanKwargsPublisher()
+            ),
+            _PublisherExecutionPlanSupport.ABSENT,
         )
         with tempfile.TemporaryDirectory() as directory:
             publisher = _LegacyPublisher()

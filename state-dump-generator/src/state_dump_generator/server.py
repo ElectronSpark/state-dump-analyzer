@@ -201,22 +201,6 @@ def validate_document(document: Any) -> dict[str, Any]:
     raise ScenarioRequestError("scenario validator returned an unsupported result")
 
 
-def _validated_document(payload: Any) -> tuple[Any, dict[str, Any]]:
-    document = _document_from_mapping(_unwrap_scenario(payload))
-    report = validate_document(document)
-    if not report["ok"]:
-        raise ScenarioRequestError(
-            "scenario validation failed: "
-            + "; ".join(
-                str(item.get("message", item))
-                if isinstance(item, Mapping)
-                else str(item)
-                for item in report["errors"]
-            )
-        )
-    return document, report
-
-
 def _counts_by(
     records: Sequence[Mapping[str, Any]],
     field: str,

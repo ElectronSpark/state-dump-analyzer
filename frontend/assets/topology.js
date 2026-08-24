@@ -76,7 +76,6 @@ const state = {
   routeAbortController: null,
   queryControlsDirty: false,
   reconstructionTimelineCommitTimer: null,
-  urlStateApplied: false,
   resizeFrame: null,
   resizeTargets: new Set(),
   routeCapabilities: null,
@@ -96,7 +95,6 @@ const state = {
   routePresentationTrigger: null,
   routePresentationSuppressFocusPreview: false,
   routePreviewHideTimer: null,
-  routePreviewAnchor: null,
   topologyInspectorItems: new Map(),
   topologyInspectorKey: "",
   topologyInspectorPinned: false,
@@ -128,7 +126,6 @@ const state = {
   routeTableSnapshot: null,
   routeTablePending: false,
   routeTableError: "",
-  routeTableSource: "",
   routeTableFilters: {
     search: "",
     node: "",
@@ -2579,7 +2576,6 @@ async function loadRouteTables(query, generation, signal) {
   state.routeTablePending = true;
   state.routeTableError = "";
   state.routeTableSnapshot = null;
-  state.routeTableSource = "";
   state.routeTablesInitialized = false;
   state.routeTableOpenNodes.clear();
   state.focusedRouteEntryId = "";
@@ -2589,7 +2585,6 @@ async function loadRouteTables(query, generation, signal) {
     const snapshot = await queryRouteTables(query, signal);
     if (generation !== state.topologyRequestGeneration) return;
     state.routeTableSnapshot = snapshot;
-    state.routeTableSource = state.routeTableSnapshot.source;
   } catch (error) {
     if (isAbortError(error) || generation !== state.topologyRequestGeneration) return;
     state.routeTableError = error.message;
@@ -4348,17 +4343,6 @@ function routeBadge(label, className = "") {
   return `<span class="mn-route-badge ${className}">${escapeHtml(label)}</span>`;
 }
 
-function routeEndpointLabel(trace, side) {
-  const endpoint = trace?.request?.[side] || trace?.[side] || {};
-  const id = String(endpoint?.[`${side}_id`] ?? endpoint?.source_id ?? endpoint?.destination_id ?? trace?.request?.[`${side}_id`] ?? "");
-  const capabilities = side === "source" ? state.routeCapabilities?.sources || [] : state.routeCapabilities?.destinations || [];
-  const idField = side === "source" ? "source_id" : "destination_id";
-  const capability = capabilities.find((item) => item[idField] === id || item.value === id)
-    || capabilities.find((item) => item.node_id && item.node_id === endpoint?.node_id);
-  const node = selectedResultNodes().find((item) => item.node_id === endpoint?.node_id || item.member_id === endpoint?.member_id);
-  return capability?.label || node?.label || endpoint?.label || endpoint?.value || endpoint?.node_id || id || (side === "source" ? "Source" : "Destination");
-}
-
 function traceIsInconsistent(trace) {
   return routeConsistencyIsInconsistent(trace)
     || Boolean((trace?.paths || []).some(pathIsInconsistent));
@@ -5088,7 +5072,7 @@ function renderRouteTrace() {
     usedBoundarySegments.add(boundary.segment_id);
     const linkLabel = `${nodeLabelForRef(ref)} to ${nodeLabelForRef(nextRef)} link`;
     return `${nodeMarkup}<button type="button" class="mn-route-hop-link" aria-label="${escapeHtml(linkLabel)}" title="${escapeHtml(linkLabel)}" data-route-kind="hop-link" data-route-id="${escapeHtml(boundary.segment_id)}" data-route-focus-targets="${routeFocusTargetsAttribute(boundary.highlight_target_ids)}" data-route-packet-refs="${packetRefsAttribute(boundary.packet_refs)}"><span aria-hidden="true">→</span></button>`;
-  }).join("") || '<span class="mn-route-hop-missing">No node sequence resolved</span>';
+  }).join("") || "<span>No node sequence resolved</span>";
   renderRoutePacketEvolution(selected);
   const resolutionItems = [
     ...selected.steps,
@@ -5715,10 +5699,6 @@ function mapTopologyLayout(nodes, options = {}) {
   };
 }
 
-function normalizedNetworkRole(domain) {
-  return firstDeclaredString(domain?.role, domain?.network_role, domain?.connectivity_role).toLowerCase();
-}
-
 function isSuppressedConnectivityDomain(domain) {
   return domain?.connectivity_enabled === false || domain?.participates_in_connectivity === false;
 }
@@ -6095,7 +6075,7 @@ function topologyInspectorMarkup(item, interactive = false) {
     : "<p>No additional evidence excerpts were returned.</p>";
   const steps = item.coreSteps.map((value, index) => `<li><span>${index + 1}</span><p>${escapeHtml(value)}</p></li>`).join("");
   return `<header><div><span>${escapeHtml(item.kind)}</span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.summary)}</small></div>${close}</header>
-    <section class="mn-topology-inspector-section is-plugin"><h4>PLUGIN · declared or inferred meaning</h4><dl>${topologyInspectorFactsMarkup(item.pluginFacts)}</dl><h5>Evidence</h5>${evidence}</section>
+    <section class="mn-topology-inspector-section"><h4>PLUGIN · declared or inferred meaning</h4><dl>${topologyInspectorFactsMarkup(item.pluginFacts)}</dl><h5>Evidence</h5>${evidence}</section>
     <section class="mn-topology-inspector-section is-core"><h4>CORE · presentation calculation</h4><p class="mn-topology-inspector-matcher">${escapeHtml(item.matcher)}</p><ol>${steps}</ol></section>`;
 }
 
@@ -8244,7 +8224,6 @@ function showRoutePathPreview(pathId, anchor, point = null) {
   if (state.previewRoutePresentationId) clearRoutePresentationPreview();
   clearTimeout(state.routePreviewHideTimer);
   state.previewRoutePathId = pathId;
-  state.routePreviewAnchor = anchor;
   const card = byId("mn-route-hover-card");
   if (card.parentElement !== document.body) document.body.append(card);
   card.hidden = false;
@@ -8273,7 +8252,6 @@ function clearRoutePathPreview() {
   clearTimeout(state.routePreviewHideTimer);
   state.routePreviewHideTimer = null;
   state.previewRoutePathId = "";
-  state.routePreviewAnchor = null;
   const card = byId("mn-route-hover-card");
   if (card) {
     card.hidden = true;

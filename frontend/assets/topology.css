@@ -2465,9 +2465,7 @@
 }
 
 #mn-route-dead path,
-#mn-route-drop path,
-[id^="mn-route-dead-"] path,
-[id^="mn-route-drop-"] path {
+[id^="mn-route-dead-"] path {
   fill: #08141e;
   stroke: var(--red);
   stroke-width: 2;

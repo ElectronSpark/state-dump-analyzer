@@ -10,7 +10,6 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from router_dump_analyzer.web import runtime_api as demo_app
-from rsl_demo_plugin import data as demo_data
 from rsl_demo_plugin.data import REVISION_ID
 from router_dump_analyzer.history_search_core import HistorySearchCorpus
 from rsl_demo_plugin.scale_data import ScaleRuntime

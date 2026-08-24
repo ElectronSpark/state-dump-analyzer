@@ -1233,15 +1233,6 @@ def _publisher_execution_plan_support(
     return _PublisherExecutionPlanSupport.ABSENT
 
 
-def _publisher_accepts_execution_plan(publisher: Any) -> bool:
-    """Return whether planful publication can bind ``execution_plan``."""
-
-    return (
-        _publisher_execution_plan_support(publisher)
-        is not _PublisherExecutionPlanSupport.ABSENT
-    )
-
-
 class NullRevisionCatalogPublisher:
     """No-op publisher useful for isolated queue tests."""
 
@@ -6864,26 +6855,6 @@ class DurableIngestionPipeline:
     ) -> None:
         if prepared is not None:
             self._remove_fixture_view(prepared.staging_directory)
-
-    def _materialize_fixture_view(
-        self,
-        blob_path: Path,
-        *,
-        fixture_id: str,
-        safe_name: str,
-    ) -> tuple[Path, Path]:
-        """Build and publish a fixture without a catalog transaction."""
-
-        prepared: _PreparedFixtureView | None = None
-        try:
-            prepared = self._prepare_fixture_view(
-                blob_path,
-                fixture_id=fixture_id,
-                safe_name=safe_name,
-            )
-            return self._publish_prepared_fixture_view(prepared)
-        finally:
-            self._discard_prepared_fixture_view(prepared)
 
     @staticmethod
     def _validate_idempotent_upload(

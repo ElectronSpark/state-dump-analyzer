@@ -73,9 +73,7 @@ from rsl_demo_plugin.route_policy import DEMO_ROUTE_POLICY
 from rsl_demo_plugin.scale_data import load_scale_dataset
 from rsl_demo_plugin.scenario_registry import (
     PACKET_TRACE_SCENARIOS,
-    ROUTE_INVENTORY_CONTEXTS,
     ROUTE_PROTOCOL_BY_TYPE,
-    ROUTE_TRACE_SCENARIOS,
     SCENARIO_BY_ID,
 )
 

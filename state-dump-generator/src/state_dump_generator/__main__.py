@@ -178,7 +178,6 @@ def main(argv: list[str] | None = None) -> int:
     ) as error:
         parser.error(str(error))
     parser.error(f"unknown command: {args.command}")
-    return 2
 
 
 if __name__ == "__main__":

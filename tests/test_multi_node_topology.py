@@ -26,15 +26,15 @@ from router_dump_analyzer.multi_node_topology import (
     MultiNodeTopologyRequestError,
     MultiNodeTopologyService,
     _integer_ns,
-    _status_at,
+    _status_view_at,
     _status_window_at,
 )
 from router_dump_analyzer.plugin_api import FederationMatchState, WorldBasisKind
-from router_dump_analyzer.topology_federation import (
-    TopologyProjectionBasisSnapshot,
-)
 from router_dump_analyzer.topology_core import (
     resolve_connectivity_domain_reference,
+)
+from router_dump_analyzer.topology_federation import (
+    TopologyProjectionBasisSnapshot,
 )
 
 _RUNTIME_SESSION = None
@@ -122,25 +122,20 @@ class TopologyStatusReplayTests(unittest.TestCase):
             ],
         }
 
+        before = _status_view_at(resource, 99)
+        active = _status_view_at(resource, 250)
+        after = _status_view_at(resource, 500)
         self.assertEqual(
-            _status_at(resource, 99),
+            (before["exists"], before["status"], before["state"]),
             (False, "absent", {"generation": 1}),
         )
         self.assertEqual(
-            _status_at(resource, 250),
-            (
-                True,
-                "down",
-                {"generation": 1, "reason": "carrier-loss"},
-            ),
+            (active["exists"], active["status"], active["state"]),
+            (True, "down", {"generation": 1, "reason": "carrier-loss"}),
         )
         self.assertEqual(
-            _status_at(resource, 500),
-            (
-                False,
-                "absent",
-                {"generation": 1, "reason": "carrier-loss"},
-            ),
+            (after["exists"], after["status"], after["state"]),
+            (False, "absent", {"generation": 1, "reason": "carrier-loss"}),
         )
 
     def test_delete_creates_gap_and_add_recreates_resource(self) -> None:
@@ -163,21 +158,15 @@ class TopologyStatusReplayTests(unittest.TestCase):
             ],
         }
 
+        deleted = _status_view_at(resource, 250)
+        recreated = _status_view_at(resource, 350)
         self.assertEqual(
-            _status_at(resource, 250),
-            (
-                False,
-                "absent",
-                {"generation": 1, "reason": "withdraw"},
-            ),
+            (deleted["exists"], deleted["status"], deleted["state"]),
+            (False, "absent", {"generation": 1, "reason": "withdraw"}),
         )
         self.assertEqual(
-            _status_at(resource, 350),
-            (
-                True,
-                "up",
-                {"generation": 2, "reason": "withdraw"},
-            ),
+            (recreated["exists"], recreated["status"], recreated["state"]),
+            (True, "up", {"generation": 2, "reason": "withdraw"}),
         )
 
     def test_insert_recreates_a_deleted_resource(self) -> None:
@@ -193,8 +182,10 @@ class TopologyStatusReplayTests(unittest.TestCase):
             ],
         }
 
-        self.assertEqual(_status_at(resource, 150)[:2], (False, "absent"))
-        self.assertEqual(_status_at(resource, 250)[:2], (True, "restored"))
+        deleted = _status_view_at(resource, 150)
+        restored = _status_view_at(resource, 250)
+        self.assertEqual((deleted["exists"], deleted["status"]), (False, "absent"))
+        self.assertEqual((restored["exists"], restored["status"]), (True, "restored"))
 
     def test_same_timestamp_changes_follow_source_sequence(self) -> None:
         resource = {
@@ -215,7 +206,7 @@ class TopologyStatusReplayTests(unittest.TestCase):
             ],
         }
 
-        self.assertEqual(_status_at(resource, 100)[1], "down")
+        self.assertEqual(_status_view_at(resource, 100)["status"], "down")
 
     def test_explicit_exists_takes_precedence_over_operation_inference(self) -> None:
         resource = {
@@ -235,8 +226,10 @@ class TopologyStatusReplayTests(unittest.TestCase):
             ],
         }
 
-        self.assertEqual(_status_at(resource, 250)[:2], (False, "absent"))
-        self.assertEqual(_status_at(resource, 350)[:2], (True, "restored"))
+        deleted = _status_view_at(resource, 250)
+        restored = _status_view_at(resource, 350)
+        self.assertEqual((deleted["exists"], deleted["status"]), (False, "absent"))
+        self.assertEqual((restored["exists"], restored["status"]), (True, "restored"))
 
     def test_failed_no_op_change_does_not_mutate_lifecycle_or_state(self) -> None:
         resource = {
@@ -255,8 +248,9 @@ class TopologyStatusReplayTests(unittest.TestCase):
             ],
         }
 
+        current = _status_view_at(resource, 250)
         self.assertEqual(
-            _status_at(resource, 250),
+            (current["exists"], current["status"], current["state"]),
             (True, "up", {"generation": 1}),
         )
 

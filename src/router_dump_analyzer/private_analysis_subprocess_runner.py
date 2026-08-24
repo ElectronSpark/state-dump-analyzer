@@ -115,7 +115,6 @@ PRIVATE_ANALYSIS_SUBPROCESS_CANCELLATION_POLL_MS: Final = 50
 
 _ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
 _STOP_PUMP: Final = object()
-_FINISH_PUMP: Final = object()
 _EXECUTABLE_ATTESTATION_SCHEMA: Final = (
     b"router_dump_analyzer.private_analysis.subprocess_artifacts.v1\0"
 )

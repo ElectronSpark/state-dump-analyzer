@@ -1283,7 +1283,7 @@ def _namespace_scale_fixture(
         **source_descriptor
     }
     (scale_dir / "scenario.json").write_bytes(_json_bytes(scenario))
-    walkthrough = _rewrite_json_file(
+    _rewrite_json_file(
         source_dir / "walkthrough.json",
         node,
         additions={"node_identity": identity},
@@ -2748,10 +2748,6 @@ def _topology_projection(
     }
 
 
-def _route_labels(case: CoverageCaseSpec, case_index: int) -> dict[str, Any]:
-    return _route_label_payload(case.route_type, case_index)
-
-
 def _route_label_payload(
     route_type: str,
     ordinal: int,
@@ -3757,11 +3753,6 @@ def _inactive_candidate_inventory_rows(
                 counterpart_direction,
                 semantics,
             )
-            source_node_id = (
-                case.source_node
-                if direction == "forward"
-                else case.destination_node
-            )
             destination_node_id = (
                 case.destination_node
                 if direction == "forward"
@@ -4203,11 +4194,6 @@ def _projection_rows(
             forward_context
             if route_direction == "forward"
             else reverse_context
-        )
-        route_source_node_id = (
-            case.source_node
-            if route_direction == "forward"
-            else case.destination_node
         )
         route_destination_node_id = (
             case.destination_node

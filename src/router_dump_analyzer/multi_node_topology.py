@@ -478,14 +478,6 @@ def _status_view_at(
     }
 
 
-def _status_at(
-    resource: dict[str, Any],
-    timestamp_ns: int,
-) -> tuple[bool, str, Any]:
-    view = _status_view_at(resource, timestamp_ns)
-    return view["exists"], view["status"], view["state"]
-
-
 def _status_window_at(
     resource: dict[str, Any],
     *,

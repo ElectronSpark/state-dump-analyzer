@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass
@@ -544,7 +543,6 @@ def _initial_state(
         for attachment in medium.get("attachments", []):
             if str(attachment["node_id"]) != node_id:
                 continue
-            port_id = str(attachment["port_id"])
             resource_id = _attachment_resource_id(attachment)
             local_observation = attachment.get(
                 "node_local_observation",
