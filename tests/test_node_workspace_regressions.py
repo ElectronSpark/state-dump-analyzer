@@ -245,15 +245,18 @@ class NodeWorkspaceRegressionTests(unittest.TestCase):
             function,
         )
 
-    def test_event_clustering_and_density_resolution_follow_unbounded_zoom(self) -> None:
+    def test_event_clustering_and_density_resolution_follow_zoom_to_timestamp_resolution(self) -> None:
         clustering = javascript_function(self.script, "buildClientGlyphs")
         density = javascript_function(self.script, "eventDensityLane")
         windowing = javascript_function(self.script, "densityRenderWindow")
 
         self.assertIn("13 / Math.max(1, state.trackWidth) * 100", clustering)
         self.assertNotIn("Math.max(7", clustering)
-        self.assertIn("Math.round(180 * state.zoom)", density)
-        self.assertNotRegex(density, r"Math\.min\([^\n]*180 \* state\.zoom")
+        self.assertIn("const requestedBins = 180 * state.zoom", density)
+        self.assertIn("Number.isFinite(requestedBins) ? Math.round(requestedBins)", density)
+        self.assertIn("maximumUsefulBins", density)
+        self.assertIn("captureSlots", density)
+        self.assertNotRegex(density, r"Math\.min\(\s*\d[\d_]*\s*,\s*requestedBins")
         self.assertIn("const bins = new Map();", density)
         self.assertIn("densityRenderWindow(binCount, trackWidth)", density)
         self.assertIn("if (index < renderWindow.start || index >= renderWindow.end) continue;", density)
@@ -384,7 +387,10 @@ class NodeWorkspaceRegressionTests(unittest.TestCase):
         self.assertIn('return "/v1/workspace"', bootstrap)
         self.assertIn('/v1/nodes/${encodeURIComponent(navigationContext.nodeId)}/workspace', bootstrap)
         initialize = self.script[self.script.index("async function initialize()") :]
-        self.assertIn("state.dataset = await api(bootstrapDatasetPath());", initialize)
+        self.assertIn(
+            "state.dataset = await analysisRuntimeApi(bootstrapDatasetPath());",
+            initialize,
+        )
 
     def test_node_history_workspace_uses_runtime_identity_and_counts(self) -> None:
         detection = javascript_function(self.script, "isTopologyNodeSnapshot")
@@ -523,12 +529,14 @@ class NodeWorkspaceRegressionTests(unittest.TestCase):
             apply_zoom,
             r"!Number\.isFinite\(zoom\)\s*\|\|\s*zoom < 1",
         )
-        self.assertIn("control.value = String(normalized)", apply_zoom)
+        self.assertIn("control.value = timelineZoomControlValue(normalized)", apply_zoom)
         self.assertIn('control.setAttribute("aria-invalid", "true")', apply_zoom)
-        self.assertIn("state.zoom = zoom", apply_zoom)
-        self.assertNotRegex(apply_zoom, r"Math\.min\(")
+        self.assertIn("state.zoom = viewport.zoom", apply_zoom)
+        self.assertNotIn("MAX_ZOOM", apply_zoom)
+        self.assertNotRegex(apply_zoom, r"zoom\s*=\s*Math\.min\(")
         self.assertIn("applyTimelineZoom(event.target.value", controls)
-        self.assertIn("applyTimelineZoom(Number(nextZoom.toPrecision(12)))", controls)
+        self.assertIn('zoomTimelineBy("out")', controls)
+        self.assertIn('zoomTimelineBy("in")', controls)
 
     def test_incident_arrows_only_follow_explicit_plugin_causal_links(self) -> None:
         path = javascript_function(self.script, "incidentCausalPath")

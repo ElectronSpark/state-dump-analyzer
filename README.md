@@ -253,7 +253,15 @@ rejects that option for `0.0.0.0`, `::`, and every other non-loopback bind.
 4. **Travel through one node's history.** Open a node, click a moment, or drag
    horizontally across the timeline to select a range. The resource state,
    relationships, findings, and normalized event list follow the selected
-   time.
+   time. Use **Zoom range** (or `Z`/`Enter`) to fit that duration without
+   changing its endpoints. The timeline toolbar also provides pointer-centered
+   zoom, centering, capture fit, previous/next viewport history, and horizontal
+   trackpad or Shift+wheel panning. Right-click
+   a lane or event—or open **Actions** for touch and keyboard use—to inspect or
+   reveal an item, set either range boundary, select the visible duration, copy
+   time coordinates, focus or hide a resource, and clear the current selection.
+   `+`, `-`, `0`, `C`, `Alt+Left`, `Alt+Right`, and `Shift+F10` provide the same
+   common viewport operations without requiring a drag gesture.
 5. **Follow causality.** Expand temporal correlations to see dependencies and
    dependents. Ctrl-click a timeline mark to find its normalized log row; in the
    log, use ordinary click/Ctrl-click/Shift-click/drag selection and

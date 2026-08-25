@@ -10,7 +10,7 @@
       name="description"
       content="Interactive temporal router dump analysis workspace."
     />
-    <link rel="stylesheet" href="/assets/styles.css?v=20260824-load-progress-v1" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260825-timeline-viewport-v5" />
   </head>
   <body>
     <div class="app-shell">
@@ -175,12 +175,22 @@
                 <button type="button" data-correlation-view="combined" aria-pressed="false">Combined</button>
                 <button type="button" data-correlation-view="separate" aria-pressed="true">Separate</button>
               </div>
-              <label class="zoom-control">
-                Zoom
-                <input id="timeline-zoom" type="number" min="1" step="0.25" value="1" inputmode="decimal" aria-label="Timeline zoom scale" />
-              </label>
+              <div class="timeline-viewport-controls" id="timeline-viewport-controls" role="toolbar" aria-label="Timeline viewport controls">
+                <button id="timeline-view-back" type="button" disabled aria-label="Previous timeline view" title="Previous view (Alt+Left)">&#8592;</button>
+                <button id="timeline-view-forward" type="button" disabled aria-label="Next timeline view" title="Next view (Alt+Right)">&#8594;</button>
+                <button id="timeline-zoom-out" type="button" aria-label="Zoom timeline out" title="Zoom out (-)">&#8722;</button>
+                <label class="zoom-control">
+                  Zoom
+                  <input id="timeline-zoom" type="number" min="1" step="0.25" value="1" inputmode="decimal" aria-label="Timeline zoom scale" />
+                </label>
+                <button id="timeline-zoom-in" type="button" aria-label="Zoom timeline in" title="Zoom in (+)">+</button>
+                <button id="timeline-zoom-selection" type="button" disabled title="Fill the viewport with the selected duration">Zoom range</button>
+                <button id="timeline-center" type="button" disabled title="Center the selected time or range (C)">Center</button>
+                <button id="timeline-fit" type="button" title="Fit the complete capture without changing lanes or selections (0)">Fit</button>
+              </div>
               <button id="range-mode" type="button" aria-pressed="false">Range brush</button>
               <button id="clear-range" type="button" hidden>Clear range</button>
+              <button id="timeline-actions" type="button" aria-haspopup="menu" aria-controls="timeline-context-menu" aria-expanded="false">Actions</button>
               <button id="reset-view" type="button">Reset</button>
             </div>
           </div>
@@ -190,13 +200,46 @@
               <div class="lane-spacer">Resource lane</div>
               <div class="ruler" id="timeline-ruler"></div>
             </div>
-            <div class="timeline-scroll" id="timeline-scroll" tabindex="0" aria-label="Scrollable event timeline">
+            <div class="timeline-scroll" id="timeline-scroll" tabindex="0" aria-label="Scrollable event timeline" aria-keyshortcuts="+ - 0 Z C Enter Shift+F10">
               <div class="timeline-content" id="timeline-content"></div>
             </div>
             <div class="cursor-readout">
               <label for="time-cursor">Selected time</label>
               <input id="time-cursor" type="range" min="0" max="1000000" value="1000000" />
               <output id="cursor-time">capture</output>
+            </div>
+          </div>
+
+          <div class="timeline-context-menu" id="timeline-context-menu" role="menu" aria-label="Timeline actions" tabindex="-1" hidden>
+            <div class="timeline-context-heading" role="presentation">
+              <span id="timeline-context-time">Timeline position</span>
+              <small id="timeline-context-resource"></small>
+            </div>
+            <div class="timeline-context-group" role="group" aria-label="Item actions" data-label="Item">
+              <button type="button" role="menuitem" data-timeline-action="inspect">Inspect item</button>
+              <button type="button" role="menuitem" data-timeline-action="reveal-log">Reveal in normalized log</button>
+              <button type="button" role="menuitem" data-timeline-action="focus-resource">Focus resource</button>
+              <button type="button" role="menuitem" data-timeline-action="hide-lane">Hide resource lane</button>
+            </div>
+            <div class="timeline-context-group" role="group" aria-label="Time selection actions" data-label="Time selection">
+              <button type="button" role="menuitem" data-timeline-action="select-moment">Select this moment</button>
+              <button type="button" role="menuitem" data-timeline-action="range-start">Set range start here</button>
+              <button type="button" role="menuitem" data-timeline-action="range-end">Set range end here</button>
+              <button type="button" role="menuitem" data-timeline-action="select-visible">Select visible duration</button>
+            </div>
+            <div class="timeline-context-group" role="group" aria-label="Zoom and navigation actions" data-label="Viewport">
+              <button type="button" role="menuitem" data-timeline-action="zoom-in">Zoom in here</button>
+              <button type="button" role="menuitem" data-timeline-action="zoom-out">Zoom out here</button>
+              <button type="button" role="menuitem" data-timeline-action="center">Center here</button>
+              <button type="button" role="menuitem" data-timeline-action="zoom-selection">Zoom to selected range</button>
+              <button type="button" role="menuitem" data-timeline-action="previous-view">Previous view</button>
+              <button type="button" role="menuitem" data-timeline-action="next-view">Next view</button>
+              <button type="button" role="menuitem" data-timeline-action="fit">Fit complete capture</button>
+            </div>
+            <div class="timeline-context-group" role="group" aria-label="Copy and clear actions" data-label="Copy and clear">
+              <button type="button" role="menuitem" data-timeline-action="copy-time">Copy timestamp</button>
+              <button type="button" role="menuitem" data-timeline-action="copy-range">Copy selected range</button>
+              <button type="button" role="menuitem" data-timeline-action="clear-selection">Clear timeline selection</button>
             </div>
           </div>
 
@@ -217,6 +260,7 @@
                 <input id="range-end-input" inputmode="decimal" autocomplete="off" placeholder="6.000000000" />
               </label>
               <button type="submit">Apply range</button>
+              <button id="range-zoom" type="button">Apply and zoom</button>
               <span id="range-error" role="alert"></span>
             </form>
           </div>
@@ -667,6 +711,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="/assets/app.js?v=20260824-load-progress-v1"></script>
+    <script type="module" src="/assets/app.js?v=20260825-timeline-viewport-v5"></script>
   </body>
 </html>

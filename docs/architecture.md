@@ -2243,16 +2243,67 @@ control, labels, JavaScript, or coordinate transform.
 Interaction mapping:
 
 - Wheel: vertical lane scroll.
-- Horizontal trackpad gesture or Shift+wheel: time pan.
-- Ctrl/Cmd+wheel and pinch: zoom about pointer.
-- Drag empty timeline: pan.
-- Shift+drag: highlight range; explicit action zooms to it.
+- Horizontal trackpad gesture or Shift+wheel: pan the exact logical time
+  window. The physical DOM surface stays at an ordinary, bounded CSS width
+  (with a usable horizontally scrollable minimum on narrow screens), so deep
+  zoom does not depend on a browser's maximum scroll width.
+- Ctrl/Cmd+wheel and pinch: frame-coalesced zoom about the pointer. The
+  ordinary wheel remains available to the page and timeline scroller.
+- Horizontal drag on a timeline track: highlight a range; the explicit brush
+  mode makes the same intent persistent across gestures. Handles and numeric
+  start/end inputs provide non-drag adjustment. Holding a drag at either
+  visible edge pans the logical window; pointer cancellation restores both the
+  original range and viewport, while completion records one history entry.
+  Native wheel scrolling is suppressed while the pointer brush owns the
+  gesture, preventing the time beneath the captured pointer from drifting.
+- **Zoom range**, `Z`, or Enter fits the selected duration with padding while
+  preserving the fixed global time domain and the selected endpoints.
+- `+`/`-` zoom around the selected time or viewport center; `0` fits the full
+  capture; `C` centers the selected moment or range; Left/Right pans a focused
+  timeline by one tenth of the visible span.
+- Viewport-only changes are kept in a bounded, coalesced previous/next history,
+  available from the toolbar or `Alt+Left`/`Alt+Right`. Fit preserves lanes and
+  selections; the separate Reset action restores lane, layer, range, and zoom
+  defaults.
+- Right-click uses one delegated listener on the stable timeline surface.
+  **Actions** exposes the same menu for touch and keyboard users; `Shift+F10`
+  or the Context Menu key opens it from the focused timeline. Menu commands
+  cover item inspection/log reveal, resource focus/visibility, moment and range
+  selection, zoom/navigation, copy, and clear operations. Escape closes this
+  menu before it is allowed to clear deeper timeline state.
 - Click empty track: select an arbitrary exact time.
 - Click event: select the event and move the exact-time cursor without disabling
   empty-track clicks or range brushing; Enter opens the source context.
 - Event inspection, exact-time cursor, and selected range are independent UI
   state. Selecting one does not silently clear or lock the others.
 - Sticky ruler remains at the top only while the timeline viewport is active.
+
+The core represents the visible interval as exact integer-nanosecond start and
+end coordinates and projects only that window onto a bounded physical track.
+Finite zoom values are converted to exact decimal rational factors before the
+window duration is rounded upward with `BigInt`; zoom and pan therefore retain
+distinctions beyond JavaScript's safe-integer range without asking the browser
+to lay out a track millions of pixels wide. Resource lifecycle, status, and
+relationship spans keep their half-open semantics at virtual-window edges,
+while point clusters, density bins, and selected moments retain inclusive
+endpoint semantics.
+Window changes are frame-coalesced for gestures and debounce the server-windowed
+timeline query; a wheel or trackpad burst becomes one previous/next-history
+entry rather than one entry per input event. Every logical-window mutation
+invalidates the older in-flight query before it can commit. Cross-view reveal
+operations center the same logical window first and ask the bounded cluster
+preview to retain the selected event, so a jump remains exact even when its
+target was outside the prior viewport or in the middle of a large cluster.
+Density pages retain the full capture's bin origin, total resolution, and
+global half-open index slice. This keeps bin boundaries and counts identical
+across adjacent or overlapping cached pages even when the inclusive capture
+span is not divisible by its logical resolution. Boundaries use one exact
+floor partition of the inclusive integer-nanosecond domain, and timestamp
+assignment uses its exact inverse, so every event falls inside the interval
+shown for its bin. Optional failure/type secondary indexes accelerate this
+aggregation without becoming requirements of the core `IndexedHistory`
+protocol; compatible adapters that omit them use one derivation and are not
+mutated.
 
 Hover cards use a short open delay and a grace interval while the pointer moves
 between the glyph and card. The card remains interactive for scrolling, fades

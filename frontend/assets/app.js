@@ -30,6 +30,17 @@ import {
   virtualScrollWindow,
 } from "./view_models.js";
 import {
+  timelineDensityBinBounds,
+  timelineDensityBinIndex,
+  timelineHalfOpenIntervalVisible,
+  timelineInclusiveIntervalVisible,
+  timelineRatioForTime,
+  timelineTimeAtRatio,
+  timelineWindowForRange,
+  timelineWindowForZoom,
+  timelineZoomStep,
+} from "./timeline_viewport.js";
+import {
   eventChangesState,
   eventEffects,
   eventFailed,
@@ -74,7 +85,9 @@ const REVIEW_STORAGE_KEY = "router-state-lab-review-v2";
 const DURABLE_REVIEW_STORAGE_KEY = "router-state-lab-durable-review-scope-v1";
 const DURABLE_REVIEW_PENDING_STORAGE_KEY = "router-state-lab-durable-review-pending-v1";
 const DASHBOARD_LAYOUT_STORAGE_KEY_PREFIX = "router-state-lab-plugin-dashboards-v2";
-const LANE_WIDTH = 280;
+const TIMELINE_LANE_WIDTH = 280;
+const COMPACT_TIMELINE_LANE_WIDTH = 210;
+const MIN_TIMELINE_TRACK_WIDTH = 700;
 const HOVER_OPEN_DELAY_MS = 150;
 const HOVER_CLOSE_GRACE_MS = 380;
 const CLUSTER_DETAIL_PAGE_SIZE = 100;
@@ -107,6 +120,9 @@ const MAX_TOPOLOGY_CHANGE_ROWS = 100;
 const MAX_TOPOLOGY_NODE_ROWS = 48;
 const MAX_TIMELINE_TREE_DEPTH = 6;
 const MAX_CORRELATION_RENDER_NODES = 31;
+const TIMELINE_BASE_TRACK_WIDTH = 900;
+const TIMELINE_VIEW_HISTORY_LIMIT = 50;
+const TIMELINE_WHEEL_HISTORY_DELAY_MS = 180;
 const CORRELATION_LIST_PAGE_SIZE = 30;
 const TOPOLOGY_HISTORY_WINDOW_NS = 120_000_000_000n;
 const state = {
@@ -202,6 +218,25 @@ const state = {
   rangeAbortController: null,
   zoom: 1,
   trackWidth: 900,
+  timelineWindowStartNs: 0n,
+  timelineWindowEndNs: 1n,
+  timelineContext: null,
+  timelineContextReturnFocus: null,
+  timelineContextOriginWasTimeline: false,
+  timelineWheelFrameId: null,
+  timelineWheelTargetZoom: null,
+  timelineWheelAnchorNs: null,
+  timelineWheelAnchorClientX: null,
+  timelineWheelBurstActive: false,
+  timelineWheelMode: null,
+  timelineWheelHistoryTimer: null,
+  timelinePanFrameId: null,
+  timelinePanDeltaPx: 0,
+  timelineWindowRequestTimer: null,
+  timelineViewHistory: [],
+  timelineViewHistoryIndex: -1,
+  timelineViewHistoryTimer: null,
+  timelineViewRestoring: false,
   selectedEventUid: null,
   selectedEventResourceId: null,
   selectedResourceId: null,
@@ -559,19 +594,88 @@ function clampNs(value) {
 }
 
 function ratioBetween(value, start = state.viewStartNs, end = state.viewEndNs) {
-  const span = end - start;
-  if (span <= 0n) return 0;
-  const scaled = ((toNs(value) - start) * 1_000_000n) / span;
-  return Math.max(0, Math.min(1, Number(scaled) / 1_000_000));
+  if (end <= start) return 0;
+  return timelineRatioForTime({ timeNs: toNs(value), startNs: start, endNs: end });
 }
 
 function nsAtRatio(ratio) {
-  const scaled = BigInt(Math.round(Math.max(0, Math.min(1, ratio)) * 1_000_000));
-  return state.viewStartNs + ((state.viewEndNs - state.viewStartNs) * scaled) / 1_000_000n;
+  return timelineTimeAtRatio({
+    ratio: Math.max(0, Math.min(1, ratio)),
+    startNs: state.viewStartNs,
+    endNs: state.viewEndNs,
+  });
+}
+
+function timelineWindowBounds() {
+  const start = state.timelineWindowStartNs < state.viewStartNs
+    ? state.viewStartNs
+    : state.timelineWindowStartNs;
+  const end = state.timelineWindowEndNs > state.viewEndNs
+    ? state.viewEndNs
+    : state.timelineWindowEndNs;
+  return end > start ? [start, end] : [state.viewStartNs, state.viewEndNs];
+}
+
+function timelineNsAtLocalRatio(ratio) {
+  const [startNs, endNs] = timelineWindowBounds();
+  return timelineTimeAtRatio({
+    ratio: Math.max(0, Math.min(1, ratio)),
+    startNs,
+    endNs,
+  });
 }
 
 function timelinePercent(value) {
-  return ratioBetween(value) * 100;
+  const [startNs, endNs] = timelineWindowBounds();
+  return timelineRatioForTime({
+    timeNs: toNs(value),
+    startNs,
+    endNs,
+    clamp: false,
+  }) * 100;
+}
+
+function timelinePointVisible(value) {
+  const [startNs, endNs] = timelineWindowBounds();
+  const candidate = toNs(value);
+  return candidate >= startNs && candidate <= endNs;
+}
+
+function timelineIntervalVisible(start, end) {
+  const [startNs, endNs] = timelineWindowBounds();
+  // Resource state, lifecycle, and relationship intervals are half-open.
+  // An interval ending exactly at the viewport start must not leave a false
+  // minimum-width sliver beside the interval that begins there.
+  return timelineHalfOpenIntervalVisible({
+    intervalStartNs: toNs(start),
+    intervalEndNs: toNs(end),
+    startNs,
+    endNs,
+  });
+}
+
+function timelinePointIntervalVisible(start, end) {
+  const [startNs, endNs] = timelineWindowBounds();
+  return timelineInclusiveIntervalVisible({
+    intervalStartNs: toNs(start),
+    intervalEndNs: toNs(end),
+    startNs,
+    endNs,
+  });
+}
+
+function timelinePhysicalTrackWidth() {
+  const width = (byId("timeline-scroll")?.clientWidth || 0) - timelineLaneWidth();
+  return Math.max(
+    MIN_TIMELINE_TRACK_WIDTH,
+    Math.round(width > 0 ? width : TIMELINE_BASE_TRACK_WIDTH),
+  );
+}
+
+function timelineLaneWidth() {
+  return window.matchMedia?.("(max-width: 760px)").matches
+    ? COMPACT_TIMELINE_LANE_WIDTH
+    : TIMELINE_LANE_WIDTH;
 }
 
 function formatDuration(value) {
@@ -596,6 +700,24 @@ function formatOffset(value, precision = 3) {
   const seconds = abs / 1_000_000_000n;
   const fraction = String(abs % 1_000_000_000n).padStart(9, "0").slice(0, precision);
   return `${sign}${seconds}${precision ? `.${fraction}` : ""} s`;
+}
+
+function offsetPrecisionForSpan(value) {
+  let span = toNs(value);
+  if (span < 0n) span = -span;
+  let precision = 1;
+  let thresholdNs = 100_000_000n;
+  while (precision < 9 && span < thresholdNs) {
+    precision += 1;
+    thresholdNs /= 10n;
+  }
+  return precision;
+}
+
+function visibleTimelineOffsetPrecision() {
+  const [startNs, endNs] = timelineWindowBounds();
+  const tickSpan = (endNs - startNs) / 6n;
+  return offsetPrecisionForSpan(tickSpan > 0n ? tickSpan : 1n);
 }
 
 function canonicalResourceId(value) {
@@ -2432,7 +2554,7 @@ function timelineExpansionNoticeHtml(trackWidth = state.trackWidth) {
   const omittedCopy = droppedIds.size
     ? `${droppedIds.size.toLocaleString()} related resources were omitted`
     : "additional related resources were omitted";
-  return `<div class="timeline-expansion-notice" style="grid-template-columns:${LANE_WIDTH}px ${trackWidth}px" role="status">
+  return `<div class="timeline-expansion-notice" style="grid-template-columns:${timelineLaneWidth()}px ${trackWidth}px" role="status">
     <strong>Relationship expansion is bounded</strong>
     <span>${Math.min(state.lanes.length, laneLimit).toLocaleString()} lanes are loaded; ${omittedCopy}. Refine the focused resource or lane search to inspect them.</span>
   </div>`;
@@ -2488,19 +2610,54 @@ function adjustedTimelineCluster(cluster, lane) {
 
 function buildClientGlyphs(lane) {
   const visibleMarks = lane.marks.filter(
-    (mark) => !state.hiddenTimelineEntryIds.has(normalizedLogEntryId(mark.eventUid)),
+    (mark) => timelinePointVisible(mark.timeNs)
+      && !state.hiddenTimelineEntryIds.has(normalizedLogEntryId(mark.eventUid)),
   );
   if (lane.clusters.length) {
-    const collapsed = new Set(lane.clusters.flatMap((cluster) => cluster.eventUids));
+    const [windowStartNs, windowEndNs] = timelineWindowBounds();
+    // Server clusters belong to the window that produced them. During the
+    // debounced refresh after zoom/pan, exact clusters are valid only when
+    // wholly contained by the current window. Preserve any visible preview
+    // events from partially overlapping clusters and draw a clipped, dashed
+    // placeholder so a slow or failed replacement query never leaves a blank
+    // region or renders the old midpoint off-screen.
+    const containedClusters = lane.clusters.filter(
+      (cluster) => cluster.startNs >= windowStartNs && cluster.endNs <= windowEndNs,
+    );
+    const staleClusters = lane.clusters.filter(
+      (cluster) => cluster.endNs >= windowStartNs
+        && cluster.startNs <= windowEndNs
+        && (cluster.startNs < windowStartNs || cluster.endNs > windowEndNs),
+    );
+    const stalePreviewMarks = staleClusters.flatMap((cluster) => cluster.items)
+      .filter((mark) => timelinePointVisible(mark.timeNs)
+        && !state.hiddenTimelineEntryIds.has(normalizedLogEntryId(mark.eventUid)));
+    const marksByUid = new Map();
+    [...visibleMarks, ...stalePreviewMarks].forEach((mark) => marksByUid.set(mark.eventUid, mark));
+    const collapsed = new Set(containedClusters.flatMap((cluster) => cluster.eventUids));
+    const stalePlaceholders = staleClusters.map((cluster) => adjustedTimelineCluster({
+      ...cluster,
+      clusterId: `${cluster.clusterId}:stale:${windowStartNs}:${windowEndNs}`,
+      startNs: cluster.startNs < windowStartNs ? windowStartNs : cluster.startNs,
+      endNs: cluster.endNs > windowEndNs ? windowEndNs : cluster.endNs,
+      eventUids: cluster.eventUids.filter((uid) => marksByUid.has(uid)),
+      items: cluster.items.filter((mark) => timelinePointVisible(mark.timeNs)),
+      staleWindow: true,
+      serverBacked: false,
+      detailTruncated: false,
+    }, lane)).filter((cluster) => cluster.count > 0);
     return [
-      ...lane.clusters.map((cluster) => adjustedTimelineCluster(cluster, lane))
+      ...containedClusters.map((cluster) => adjustedTimelineCluster(cluster, lane))
         .filter((cluster) => cluster.count > 0),
-      ...visibleMarks.filter((mark) => !collapsed.has(mark.eventUid)),
-    ]
-      .sort((a, b) => ((a.timeNs || a.startNs) < (b.timeNs || b.startNs) ? -1 : 1));
+      ...stalePlaceholders,
+      ...[...marksByUid.values()].filter((mark) => !collapsed.has(mark.eventUid)),
+    ].sort((a, b) => {
+      const left = a.timeNs ?? a.startNs;
+      const right = b.timeNs ?? b.startNs;
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
   }
-  // Cluster by a stable screen-space distance. Because trackWidth grows with
-  // zoom, the temporal threshold shrinks and dense dots naturally de-cluster.
+  // Cluster the exact logical window by a stable screen-space distance.
   const threshold = Math.max(0.000001, 13 / Math.max(1, state.trackWidth) * 100);
   const result = [];
   let group = [];
@@ -2549,6 +2706,12 @@ function intersectsRange(start, end) {
   // A record ending exactly at the selected start must not be highlighted
   // alongside the record that begins at that transition.
   return toNs(start) < bounds[1] && toNs(end) > bounds[0];
+}
+
+function inclusiveIntervalIntersectsRange(start, end) {
+  const bounds = rangeBounds();
+  if (!bounds) return false;
+  return toNs(start) <= bounds[1] && toNs(end) >= bounds[0];
 }
 
 function resourceHiddenFromTimeline(resourceId) {
@@ -2692,7 +2855,7 @@ function relationshipRibbonsForLane(lane, instance) {
     .map((edge, index) => {
       const start = edge.startNs < state.viewStartNs ? state.viewStartNs : edge.startNs;
       const end = edge.endNs > state.viewEndNs ? state.viewEndNs : edge.endNs;
-      if (end < state.viewStartNs || start > state.viewEndNs || end <= start) return "";
+      if (end <= start || !timelineIntervalVisible(start, end)) return "";
       const active = state.cursorNs >= start && (state.cursorNs < end || (edge.openEnd && state.cursorNs === end));
       const key = `relationship:${edge.id}:${instance?.key || lane.resourceId}`;
       state.hoverModels.set(key, {
@@ -2703,7 +2866,7 @@ function relationshipRibbonsForLane(lane, instance) {
         relativeToId: parentId,
       });
       const direction = edge.source === parentId ? "outgoing" : "incoming";
-      return `<div class="relationship-ribbon ${direction} quality-${safeClass(edge.quality)}${active ? " active" : ""}${edge.temporalNote?.includes("without") ? " uncertain" : ""}${intersectsRange(start, end) ? " in-range" : ""}" data-hover-key="${escapeHtml(key)}" data-range-start-ns="${start}" data-range-end-ns="${end}" style="${barStyle({ startNs: start, endNs: end })};--ribbon-row:${index % 3}" title="${escapeHtml(`${relationshipDisplayLabel(edge.type)} / ${parentId} / ${edge.quality}`)}"><span>${escapeHtml(relationshipDisplayLabel(edge.type))}</span></div>`;
+      return `<button type="button" class="relationship-ribbon ${direction} quality-${safeClass(edge.quality)}${active ? " active" : ""}${edge.temporalNote?.includes("without") ? " uncertain" : ""}${intersectsRange(start, end) ? " in-range" : ""}" data-hover-key="${escapeHtml(key)}" data-range-start-ns="${start}" data-range-end-ns="${end}" style="${barStyle({ startNs: start, endNs: end })};--ribbon-row:${index % 3}" aria-label="${escapeHtml(`${relationshipDisplayLabel(edge.type)} / ${parentId} / ${edge.quality}`)}"><span>${escapeHtml(relationshipDisplayLabel(edge.type))}</span></button>`;
     }).join("");
 }
 
@@ -2725,13 +2888,12 @@ function combinedAssociationLane(trackWidth = state.trackWidth) {
     }))
     .filter((edge) => (
       edge.endNs > edge.startNs
+      && timelineIntervalVisible(edge.startNs, edge.endNs)
       && !resourceHiddenFromTimeline(edge.otherId)
     ))
     .sort((a, b) => a.startNs < b.startNs ? -1 : a.startNs > b.startNs ? 1 : a.otherId.localeCompare(b.otherId));
   const bounds = rangeBounds();
-  const rangeBand = bounds
-    ? `<div class="range-band" style="left:${timelinePercent(bounds[0])}%;width:${Math.max(0, timelinePercent(bounds[1]) - timelinePercent(bounds[0]))}%"></div>`
-    : '<div class="range-band" hidden></div>';
+  const rangeBand = timelineRangeBandHtml(bounds);
   const segments = spans.map((edge, index) => {
     const key = `relationship:${edge.id}:combined`;
     const other = state.resourceById.get(edge.otherId) || {};
@@ -2742,24 +2904,53 @@ function combinedAssociationLane(trackWidth = state.trackWidth) {
       otherId: edge.otherId,
       relativeToId: state.selectedResourceId,
     });
-    const startBoundary = edge.openStart || edge.startNs === state.viewStartNs
+    const startBoundary = edge.openStart || edge.startNs === state.viewStartNs || !timelinePointVisible(edge.startNs)
       ? ""
       : `<span class="association-boundary add" style="left:${timelinePercent(edge.startNs)}%"></span>`;
-    const endBoundary = edge.openEnd || edge.endNs === state.viewEndNs
+    const endBoundary = edge.openEnd || edge.endNs === state.viewEndNs || !timelinePointVisible(edge.endNs)
       ? ""
       : `<span class="association-boundary remove" style="left:${timelinePercent(edge.endNs)}%"></span>`;
     return `<button class="association-segment ${edge.direction} quality-${safeClass(edge.quality)}${intersectsRange(edge.startNs, edge.endNs) ? " in-range" : ""}" type="button" data-hover-key="${escapeHtml(key)}" data-range-start-ns="${edge.startNs}" data-range-end-ns="${edge.endNs}" style="${barStyle(edge)};--association-row:${index % 3};--association-color:${layerColor(resourceLayer(other, edge.otherId))}"><span>${escapeHtml(resourceLabel(other, edge.otherId))}</span><small>${escapeHtml(relationshipDisplayLabel(edge.type))}</small></button>${startBoundary}${endBoundary}`;
   }).join("");
-  return `<div class="timeline-row correlation-combined-row" style="grid-template-columns:${LANE_WIDTH}px ${trackWidth}px;--layer-color:var(--violet)">
+  return `<div class="timeline-row correlation-combined-row" style="grid-template-columns:${timelineLaneWidth()}px ${trackWidth}px;--layer-color:var(--violet)">
     <div class="lane-label association-lane-label"><span class="lane-dot" aria-hidden="true"></span><span class="lane-copy"><strong>Correlations</strong><span class="lane-meta"><span class="lane-type">${spans.length} intervals</span></span></span></div>
     <div class="lane-track association-track" data-resource-id="${escapeHtml(state.selectedResourceId)}">${rangeBand}${segments}</div>
   </div>`;
 }
 
-function barStyle(interval) {
+function barStyle(interval, { inclusiveEndpoints = false } = {}) {
   const left = timelinePercent(interval.startNs);
   const right = timelinePercent(interval.endNs);
-  return `left:${left}%;width:${Math.max(0.15, right - left)}%`;
+  if (inclusiveEndpoints ? (right < 0 || left > 100) : (right <= 0 || left >= 100)) {
+    return "display:none";
+  }
+  const clippedLeft = Math.max(0, left);
+  const clippedRight = Math.min(100, right);
+  const width = Math.max(0.15, clippedRight - clippedLeft);
+  const renderedLeft = inclusiveEndpoints ? Math.min(clippedLeft, 100 - width) : clippedLeft;
+  return `left:${renderedLeft}%;width:${width}%`;
+}
+
+function timelineIntervalPercentGeometry(start, end) {
+  const [windowStartNs, windowEndNs] = timelineWindowBounds();
+  const rawStart = toNs(start);
+  const rawEnd = toNs(end);
+  const intervalStart = rawStart <= rawEnd ? rawStart : rawEnd;
+  const intervalEnd = rawStart <= rawEnd ? rawEnd : rawStart;
+  if (intervalEnd < windowStartNs || intervalStart > windowEndNs) return null;
+  const clippedStart = intervalStart < windowStartNs ? windowStartNs : intervalStart;
+  const clippedEnd = intervalEnd > windowEndNs ? windowEndNs : intervalEnd;
+  const left = Math.max(0, Math.min(100, timelinePercent(clippedStart)));
+  const right = Math.max(left, Math.min(100, timelinePercent(clippedEnd)));
+  return { left, width: right - left };
+}
+
+function timelineRangeBandHtml(bounds) {
+  if (!bounds) return '<div class="range-band" hidden></div>';
+  const geometry = timelineIntervalPercentGeometry(bounds[0], bounds[1]);
+  return geometry
+    ? `<div class="range-band" style="left:${geometry.left}%;width:${geometry.width}%"></div>`
+    : '<div class="range-band" hidden></div>';
 }
 
 function hoverKey(kind, lane, id) {
@@ -2770,22 +2961,33 @@ function renderRuler() {
   const ruler = byId("timeline-ruler");
   ruler.style.width = `${state.trackWidth}px`;
   ruler.style.minWidth = `${state.trackWidth}px`;
+  const precision = visibleTimelineOffsetPrecision();
   const ticks = Array.from({ length: 7 }, (_, index) => {
     const ratio = index / 6;
-    const timestamp = nsAtRatio(ratio);
-    return `<div class="ruler-tick" style="left:${ratio * 100}%"><span>${escapeHtml(formatOffset(timestamp, 1))}</span></div>`;
+    const timestamp = timelineNsAtLocalRatio(ratio);
+    return `<div class="ruler-tick" style="left:${ratio * 100}%"><span>${escapeHtml(formatOffset(timestamp, precision))}</span></div>`;
   }).join("");
   ruler.innerHTML = `${ticks}<span class="timeline-hover-time" hidden aria-hidden="true"></span>`;
 }
 
 function densityRenderWindow(binCount, trackWidth) {
-  const scroll = byId("timeline-scroll");
-  const scrollLeft = scroll?.scrollLeft || 0;
-  const viewportWidth = Math.max(1, scroll?.clientWidth || trackWidth);
-  const visibleStartPx = Math.max(0, scrollLeft - LANE_WIDTH);
-  const visibleEndPx = Math.min(trackWidth, scrollLeft + viewportWidth - LANE_WIDTH);
-  const visibleStart = Math.max(0, Math.floor((visibleStartPx / Math.max(1, trackWidth)) * binCount));
-  const visibleEnd = Math.min(binCount, Math.ceil((visibleEndPx / Math.max(1, trackWidth)) * binCount));
+  const [windowStartNs, windowEndNs] = timelineWindowBounds();
+  // Event timestamps and histogram bins both use the inclusive capture domain
+  // [viewStartNs, viewEndNs]. Map the containing bin for each visible endpoint,
+  // then make the end index exclusive. Mixing this with a half-open duration
+  // drops the bin that owns an exact visible endpoint in tiny/deep windows.
+  const visibleStart = timelineDensityBinIndex({
+    timeNs: windowStartNs,
+    startNs: state.viewStartNs,
+    endNs: state.viewEndNs,
+    binCount,
+  });
+  const visibleEnd = Math.min(binCount, timelineDensityBinIndex({
+    timeNs: windowEndNs,
+    startNs: state.viewStartNs,
+    endNs: state.viewEndNs,
+    binCount,
+  }) + 1);
   const visibleCount = Math.max(1, visibleEnd - visibleStart);
   const overscan = Math.max(12, Math.ceil(visibleCount * 0.75));
   return {
@@ -2814,14 +3016,16 @@ function densityBinHeight(count) {
 function localDensityHistogram(binCount) {
   const key = `${state.viewStartNs}:${state.viewEndNs}:${binCount}:${state.eventByUid.size}`;
   if (state.densityLocalCache?.key === key) return state.densityLocalCache.bins;
-  const span = state.viewEndNs - state.viewStartNs + 1n;
-  const binCountBigInt = BigInt(binCount);
   const bins = new Map();
   for (const event of state.eventByUid.values()) {
     const time = eventTime(event);
     if (time < state.viewStartNs || time > state.viewEndNs) continue;
-    const rawIndex = Number(((time - state.viewStartNs) * binCountBigInt) / span);
-    const index = Math.max(0, Math.min(binCount - 1, rawIndex));
+    const index = timelineDensityBinIndex({
+      timeNs: time,
+      startNs: state.viewStartNs,
+      endNs: state.viewEndNs,
+      binCount,
+    });
     if (!bins.has(index)) bins.set(index, {
       index,
       count: 0,
@@ -2839,30 +3043,13 @@ function localDensityHistogram(binCount) {
 }
 
 function densityServerQuery(binCount, renderWindow) {
-  const span = state.viewEndNs - state.viewStartNs + 1n;
-  const startNs = state.viewStartNs
-    + (span * BigInt(renderWindow.start)) / BigInt(binCount);
-  const endBoundary = state.viewStartNs
-    + (span * BigInt(renderWindow.end)) / BigInt(binCount);
-  // Density API bounds are inclusive. Stop one nanosecond before the next
-  // global bin so adjacent cached pages cannot double-count a boundary event.
-  const candidateEndNs = renderWindow.end >= binCount
-    ? state.viewEndNs
-    : endBoundary - 1n;
-  const endNs = candidateEndNs < startNs ? startNs : candidateEndNs;
-  const temporalSlots = endNs - startNs + 1n;
-  const pageBinCount = Math.max(1, Math.min(
-    renderWindow.end - renderWindow.start,
-    Number(temporalSlots > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : temporalSlots),
-  ));
   return {
     key: `${state.viewStartNs}:${state.viewEndNs}:${binCount}:${renderWindow.start}:${renderWindow.end}`,
     binCount,
     globalStart: renderWindow.start,
     globalEnd: renderWindow.end,
-    startNs,
-    endNs,
-    pageBinCount,
+    startNs: state.viewStartNs,
+    endNs: state.viewEndNs,
   };
 }
 
@@ -2882,13 +3069,12 @@ function normalizeDensityPage(payload, query) {
   const bins = (payload?.bins || []).map((raw) => {
     const startNs = toNs(raw.start_ns, query.startNs);
     const endNs = toNs(raw.end_ns, query.endNs);
-    // The server index is relative to the requested page.  Re-inverting a
-    // floored nanosecond boundary shifts nonzero pages when the full span is
-    // not evenly divisible by the logical resolution.
-    const pageIndex = Math.max(0, Number(raw.index || 0));
+    // Paged responses retain the immutable global bin index. Adjacent and
+    // overlapping pages therefore use identical boundaries even when the
+    // inclusive capture span is not evenly divisible by the resolution.
     const index = Math.max(0, Math.min(
       query.binCount - 1,
-      query.globalStart + pageIndex,
+      Number(raw.index || 0),
     ));
     return {
       index,
@@ -2933,7 +3119,9 @@ function scheduleDensityPageRequest(query) {
         body: JSON.stringify({
           start_ns: query.startNs.toString(),
           end_ns: query.endNs.toString(),
-          bin_count: query.pageBinCount,
+          bin_count: query.binCount,
+          bin_start_index: query.globalStart,
+          bin_end_index: query.globalEnd,
         }),
       });
       if (requestId !== state.densityRequestId) return;
@@ -2956,9 +3144,17 @@ function eventDensityLane(trackWidth = state.trackWidth) {
   for (const key of state.hoverModels.keys()) {
     if (String(key).startsWith("density:")) state.hoverModels.delete(key);
   }
-  const binCount = Math.max(1, Math.round(180 * state.zoom));
-  const binCountBigInt = BigInt(binCount);
-  const span = state.viewEndNs - state.viewStartNs + 1n;
+  const captureSlots = state.viewEndNs - state.viewStartNs + 1n;
+  const maximumUsefulBins = Number(
+    captureSlots > BigInt(Number.MAX_SAFE_INTEGER)
+      ? BigInt(Number.MAX_SAFE_INTEGER)
+      : captureSlots,
+  );
+  const requestedBins = 180 * state.zoom;
+  const binCount = Math.max(1, Math.min(
+    maximumUsefulBins,
+    Number.isFinite(requestedBins) ? Math.round(requestedBins) : maximumUsefulBins,
+  ));
   const renderWindow = densityRenderWindow(binCount, trackWidth);
   const bins = new Map();
   let loading = false;
@@ -2980,21 +3176,30 @@ function eventDensityLane(trackWidth = state.trackWidth) {
     bins.set(index, bin);
   }
   const populatedBins = [...bins.values()];
-  const binSpan = span / binCountBigInt;
   const bars = populatedBins.map((bin) => {
-    const startNs = bin.startNs ?? state.viewStartNs + (span * BigInt(bin.index)) / binCountBigInt;
-    const endNs = bin.endNs ?? (bin.index === binCount - 1
-      ? state.viewEndNs
-      : state.viewStartNs + (span * BigInt(bin.index + 1)) / binCountBigInt);
+    const fallbackBounds = timelineDensityBinBounds({
+      index: bin.index,
+      startNs: state.viewStartNs,
+      endNs: state.viewEndNs,
+      binCount,
+    });
+    const startNs = bin.startNs ?? fallbackBounds.startNs;
+    const endNs = bin.endNs ?? fallbackBounds.endNs;
+    // Density intervals describe inclusive point populations. Overscan may
+    // include the bin immediately before the exact logical viewport; reject
+    // it using its real inclusive end before projecting end+1 for width.
+    if (!timelinePointIntervalVisible(startNs, endNs)) return "";
+    const endExclusiveNs = endNs + 1n;
     const key = `density:${bin.index}:${binCount}`;
     const topTypes = bin.topTypes instanceof Map ? bin.topTypes : new Map();
-    state.hoverModels.set(key, { type: "density", bin: { ...bin, startNs, endNs, binSpan, topTypes } });
-    return `<button class="density-bin${bin.failures ? " has-failures" : ""}${intersectsRange(startNs, endNs) ? " in-range" : ""}" type="button" data-hover-key="${escapeHtml(key)}" data-range-start-ns="${startNs}" data-range-end-ns="${endNs}" style="left:${(bin.index / binCount) * 100}%;width:${100 / binCount}%;--density-height:${densityBinHeight(bin.count)}px;--failure-height:${bin.count ? (bin.failures / bin.count) * 100 : 0}%" aria-label="${bin.count} events from ${escapeHtml(formatOffset(startNs))} to ${escapeHtml(formatOffset(endNs))}"></button>`;
+    state.hoverModels.set(key, { type: "density", bin: { ...bin, startNs, endNs, topTypes } });
+    const precision = offsetPrecisionForSpan(endExclusiveNs - startNs);
+    return `<button class="density-bin${bin.failures ? " has-failures" : ""}${inclusiveIntervalIntersectsRange(startNs, endNs) ? " in-range" : ""}" type="button" data-hover-key="${escapeHtml(key)}" data-range-start-ns="${startNs}" data-range-end-ns="${endNs}" data-range-semantics="inclusive" style="${barStyle({ startNs, endNs: endExclusiveNs }, { inclusiveEndpoints: true })};--density-height:${densityBinHeight(bin.count)}px;--failure-height:${bin.count ? (bin.failures / bin.count) * 100 : 0}%" aria-label="${bin.count} events from ${escapeHtml(formatOffset(startNs, precision))} to ${escapeHtml(formatOffset(endNs, precision))}"></button>`;
   }).join("");
   const transportState = loading ? " · loading visible bins"
     : failed ? " · density unavailable"
       : usesServerWindowedHistory() ? " · server-windowed" : "";
-  return `<div class="timeline-row density-row" data-density-bin-count="${binCount}" data-density-window-start="${renderWindow.start}" data-density-window-end="${renderWindow.end}" style="grid-template-columns:${LANE_WIDTH}px ${trackWidth}px;--layer-color:var(--cyan)">
+  return `<div class="timeline-row density-row" data-density-bin-count="${binCount}" data-density-window-start="${renderWindow.start}" data-density-window-end="${renderWindow.end}" style="grid-template-columns:${timelineLaneWidth()}px ${trackWidth}px;--layer-color:var(--cyan)">
     <div class="lane-label density-lane-label"><span class="density-icon" aria-hidden="true"></span><span class="lane-copy"><strong>Event density</strong><span class="lane-meta"><span class="lane-type">${displayedHistoryEventCount().toLocaleString()} events · ${binCount.toLocaleString()} logical bins${transportState}</span></span></span></div>
     <div class="lane-track density-track">${bars}</div>
   </div>`;
@@ -3003,12 +3208,14 @@ function eventDensityLane(trackWidth = state.trackWidth) {
 function refreshDensityLaneForScroll() {
   const current = byId("timeline-content")?.querySelector(".density-row");
   if (!current) return;
+  const focusDescriptor = timelineFocusDescriptor();
   const template = document.createElement("template");
   template.innerHTML = eventDensityLane(state.trackWidth).trim();
   const replacement = template.content.firstElementChild;
   if (!replacement) return;
   current.replaceWith(replacement);
   replacement.querySelectorAll("[data-hover-key]").forEach(bindHoverTarget);
+  restoreTimelineFocusDescriptor(focusDescriptor);
 }
 
 function buildSourceGlyphs(lane) {
@@ -3032,11 +3239,12 @@ function buildSourceGlyphs(lane) {
     group = [];
   };
   for (const mark of lane.marks.filter(
-    (item) => !state.hiddenTimelineEntryIds.has(sourceLogEntryId(item.sourceRecordUid)),
+    (item) => timelinePointVisible(item.timeNs)
+      && !state.hiddenTimelineEntryIds.has(sourceLogEntryId(item.sourceRecordUid)),
   )) {
     const prior = group.at(-1);
     const pixelGap = prior
-      ? Math.abs(ratioBetween(mark.timeNs) - ratioBetween(prior.timeNs)) * state.trackWidth
+      ? Math.abs(timelinePercent(mark.timeNs) - timelinePercent(prior.timeNs)) / 100 * state.trackWidth
       : Number.POSITIVE_INFINITY;
     if (!group.length || (pixelGap <= 10 && group.length < 36)) group.push(mark);
     else {
@@ -3062,9 +3270,7 @@ function pointClusterRangeState(items, bounds = rangeBounds()) {
 
 function sourceRecordLanesHtml(trackWidth = state.trackWidth) {
   const bounds = rangeBounds();
-  const rangeBand = bounds
-    ? `<div class="range-band" style="left:${timelinePercent(bounds[0])}%;width:${Math.max(0, timelinePercent(bounds[1]) - timelinePercent(bounds[0]))}%"></div>`
-    : '<div class="range-band" hidden></div>';
+  const rangeBand = timelineRangeBandHtml(bounds);
   return state.recordLanes.map((lane) => {
     const sourceTypes = lane.sourceTypes.length
       ? lane.sourceTypes.map((sourceType) => sourceTypeDescriptor(sourceType).label).join(", ")
@@ -3086,12 +3292,12 @@ function sourceRecordLanesHtml(trackWidth = state.trackWidth) {
       }
       const key = "source-record:" + lane.laneId + ":" + glyph.sourceRecordUid;
       state.hoverModels.set(key, { type: "source-record", mark: glyph, lane });
-      return `<button class="source-record-mark${glyph.matchedEventUid ? " matched" : " unmatched"}${glyph.sourceRecordUid === state.selectedSourceRecordUid ? " selected" : ""}${inSelectedRange(glyph.timeNs) ? " in-range" : ""}" data-source-record-uid="${escapeHtml(glyph.sourceRecordUid)}" data-hover-key="${escapeHtml(key)}" data-time-ns="${glyph.timeNs}" style="left:${timelinePercent(glyph.timeNs)}%;--source-color:${escapeHtml(color)}" type="button" aria-label="${escapeHtml(glyph.recordName + " at " + formatOffset(glyph.timeNs))}"></button>`;
+      return `<button class="source-record-mark${glyph.matchedEventUid ? " matched" : " unmatched"}${glyph.sourceRecordUid === state.selectedSourceRecordUid ? " selected" : ""}${inSelectedRange(glyph.timeNs) ? " in-range" : ""}" data-source-record-uid="${escapeHtml(glyph.sourceRecordUid)}" data-hover-key="${escapeHtml(key)}" data-time-ns="${glyph.timeNs}" style="left:${timelinePercent(glyph.timeNs)}%;--source-color:${escapeHtml(color)}" type="button" aria-label="${escapeHtml(glyph.recordName + " at " + formatOffset(glyph.timeNs, visibleTimelineOffsetPrecision()))}"></button>`;
     }).join("");
     const countCopy = lane.truncated
       ? lane.marks.length.toLocaleString() + " of " + lane.recordCount.toLocaleString()
       : lane.recordCount.toLocaleString();
-    return `<div class="timeline-row source-record-row" style="grid-template-columns:${LANE_WIDTH}px ${trackWidth}px;--layer-color:${escapeHtml(color)}" data-source-lane-id="${escapeHtml(lane.laneId)}">
+    return `<div class="timeline-row source-record-row" style="grid-template-columns:${timelineLaneWidth()}px ${trackWidth}px;--layer-color:${escapeHtml(color)}" data-source-lane-id="${escapeHtml(lane.laneId)}">
       <div class="lane-label source-record-lane-label">
         <span class="source-record-icon" aria-hidden="true"></span>
         <span class="lane-copy" title="${escapeHtml(lane.description || lane.pattern)}"><strong>${escapeHtml(lane.label)}</strong><span class="lane-meta"><span class="lane-type">${escapeHtml(sourceTypes)}</span><span class="lane-separator" aria-hidden="true">·</span><span class="lane-layer">${escapeHtml(countCopy)} records</span></span></span>
@@ -3127,7 +3333,7 @@ function buildAnnotationGlyphs(projections) {
   projections.forEach((projection) => {
     const prior = group.at(-1);
     const pixelGap = prior
-      ? Math.abs(ratioBetween(projection.timeNs) - ratioBetween(prior.timeNs))
+      ? Math.abs(timelinePercent(projection.timeNs) - timelinePercent(prior.timeNs)) / 100
         * state.trackWidth
       : Number.POSITIVE_INFINITY;
     if (!group.length || (pixelGap <= 10 && group.length < 64)) group.push(projection);
@@ -3142,17 +3348,18 @@ function buildAnnotationGlyphs(projections) {
 
 function annotationClusterHoverHtml(items) {
   return `<div class="hover-heading"><div><span>REVIEW MARKERS</span><strong>${items.length.toLocaleString()} marked items</strong></div><button class="hover-close" type="button" aria-label="Close">x</button></div>
-    <div class="cluster-window">${items.slice(0, 200).map((projection) => `<button type="button" class="cluster-event${state.hiddenTimelineEntryIds.has(projection.entryId) ? " timeline-hidden" : ""}" data-annotation-entry-id="${escapeHtml(projection.entryId)}"><span>${escapeHtml(formatOffset(projection.timeNs))}</span><strong>${escapeHtml(annotationProjectionLabel(projection))}</strong><small>${escapeHtml(projection.entryId)}${state.hiddenTimelineEntryIds.has(projection.entryId) ? " / underlying mark hidden" : ""}</small></button>`).join("")}${items.length > 200 ? `<p class="cluster-detail-state">${(items.length - 200).toLocaleString()} additional markers are collapsed.</p>` : ""}</div>`;
+    <div class="cluster-window">${items.slice(0, 200).map((projection) => `<button type="button" class="cluster-event${state.hiddenTimelineEntryIds.has(projection.entryId) ? " timeline-hidden" : ""}" data-annotation-entry-id="${escapeHtml(projection.entryId)}"><span>${escapeHtml(formatOffset(projection.timeNs, visibleTimelineOffsetPrecision()))}</span><strong>${escapeHtml(annotationProjectionLabel(projection))}</strong><small>${escapeHtml(projection.entryId)}${state.hiddenTimelineEntryIds.has(projection.entryId) ? " / underlying mark hidden" : ""}</small></button>`).join("")}${items.length > 200 ? `<p class="cluster-detail-state">${(items.length - 200).toLocaleString()} additional markers are collapsed.</p>` : ""}</div>`;
 }
 
 function reviewMarkerLaneHtml(trackWidth = state.trackWidth) {
-  const marked = [...state.markedTimelineEntryIds]
+  const allMarked = [...state.markedTimelineEntryIds]
     .map((entryId) => state.timelineEntryProjections.get(entryId))
     .filter(Boolean)
     .sort((left, right) => (
       left.timeNs < right.timeNs ? -1 : left.timeNs > right.timeNs ? 1 : left.entryId.localeCompare(right.entryId)
     ));
-  if (!marked.length) return "";
+  if (!allMarked.length) return "";
+  const marked = allMarked.filter((projection) => timelinePointVisible(projection.timeNs));
   const glyphs = buildAnnotationGlyphs(marked).map((glyph, index) => {
     if (glyph.kind === "annotation-cluster") {
       const key = `annotation-cluster:${index}:${glyph.startNs}`;
@@ -3170,7 +3377,7 @@ function reviewMarkerLaneHtml(trackWidth = state.trackWidth) {
         items: glyph.items,
       });
       const time = glyph.startNs + (glyph.endNs - glyph.startNs) / 2n;
-      return `<button class="review-marker cluster${hiddenInCluster ? " has-hidden" : ""}" type="button" data-hover-key="${escapeHtml(key)}" ${lastJump} style="left:${timelinePercent(time)}%" aria-label="${glyph.items.length} review markers${hiddenInCluster ? `; ${hiddenInCluster} underlying marks hidden` : ""}"><span>${glyph.items.length}</span></button>`;
+      return `<button class="review-marker cluster${hiddenInCluster ? " has-hidden" : ""}" type="button" data-hover-key="${escapeHtml(key)}" data-range-start-ns="${glyph.startNs}" data-range-end-ns="${glyph.endNs}" data-range-semantics="inclusive" ${lastJump} style="left:${timelinePercent(time)}%" aria-label="${glyph.items.length} review markers${hiddenInCluster ? `; ${hiddenInCluster} underlying marks hidden` : ""}"><span>${glyph.items.length}</span></button>`;
     }
     const key = `review-marker:${glyph.entryId}`;
     const jump = glyph.streamKind === "source"
@@ -3180,22 +3387,69 @@ function reviewMarkerLaneHtml(trackWidth = state.trackWidth) {
     const hiddenClass = state.hiddenTimelineEntryIds.has(glyph.entryId)
       ? " underlying-hidden"
       : "";
-    return `<button class="review-marker ${glyph.streamKind}${hiddenClass}" type="button" data-hover-key="${escapeHtml(key)}" data-log-entry-id="${escapeHtml(glyph.entryId)}" ${jump} style="left:${timelinePercent(glyph.timeNs)}%" aria-label="${escapeHtml(`Marked ${annotationProjectionLabel(glyph)} at ${formatOffset(glyph.timeNs)}${hiddenClass ? "; underlying mark hidden" : ""}`)}"><span aria-hidden="true">&#9733;</span></button>`;
+    return `<button class="review-marker ${glyph.streamKind}${hiddenClass}" type="button" data-hover-key="${escapeHtml(key)}" data-log-entry-id="${escapeHtml(glyph.entryId)}" data-time-ns="${glyph.timeNs}" ${jump} style="left:${timelinePercent(glyph.timeNs)}%" aria-label="${escapeHtml(`Marked ${annotationProjectionLabel(glyph)} at ${formatOffset(glyph.timeNs, visibleTimelineOffsetPrecision())}${hiddenClass ? "; underlying mark hidden" : ""}`)}"><span aria-hidden="true">&#9733;</span></button>`;
   }).join("");
-  const hiddenCount = marked.filter(
+  const hiddenCount = allMarked.filter(
     (projection) => state.hiddenTimelineEntryIds.has(projection.entryId),
   ).length;
-  const markerCountCopy = `${marked.length.toLocaleString()} marked`
+  const markerCountCopy = `${marked.length.toLocaleString()} visible / ${allMarked.length.toLocaleString()} marked`
     + (hiddenCount ? ` / ${hiddenCount.toLocaleString()} hidden` : "");
-  return `<div class="timeline-row review-marker-row" style="grid-template-columns:${LANE_WIDTH}px ${trackWidth}px;--layer-color:var(--amber)">
+  return `<div class="timeline-row review-marker-row" style="grid-template-columns:${timelineLaneWidth()}px ${trackWidth}px;--layer-color:var(--amber)">
     <div class="lane-label review-marker-lane-label"><span class="review-marker-icon" aria-hidden="true">&#9733;</span><span class="lane-copy"><strong>Review markers</strong><span class="lane-meta"><span class="lane-type">${markerCountCopy}</span></span></span></div>
     <div class="lane-track review-marker-track">${glyphs}</div>
   </div>`;
 }
 
+function timelineFocusDescriptor(element = document.activeElement) {
+  const content = byId("timeline-content");
+  if (!(element instanceof HTMLElement) || !content?.contains(element)) return null;
+  const row = element.closest(".timeline-row");
+  const identity = [
+    "logEntryId",
+    "clusterId",
+    "sourceClusterId",
+    "eventUid",
+    "sourceRecordUid",
+    "hoverKey",
+    "treeKey",
+    "rangeHandle",
+    "laneCloseResourceId",
+  ].find((property) => element.dataset[property]);
+  if (!identity) return null;
+  return {
+    property: identity,
+    value: element.dataset[identity],
+    resourceId: row?.dataset.resourceId || null,
+    sourceLaneId: row?.dataset.sourceLaneId || null,
+  };
+}
+
+function timelineElementForFocusDescriptor(descriptor) {
+  const content = byId("timeline-content");
+  if (!content || !descriptor) return null;
+  const candidates = [...content.querySelectorAll("button, [tabindex]")];
+  return candidates.find((element) => (
+    element.dataset[descriptor.property] === descriptor.value
+    && (!descriptor.resourceId || element.closest(".timeline-row")?.dataset.resourceId === descriptor.resourceId)
+    && (!descriptor.sourceLaneId || element.closest(".timeline-row")?.dataset.sourceLaneId === descriptor.sourceLaneId)
+  )) || null;
+}
+
+function restoreTimelineFocusDescriptor(descriptor) {
+  if (!descriptor) return;
+  window.requestAnimationFrame(() => {
+    // A user-initiated focus move after the render wins over this repair.
+    if (document.activeElement && document.activeElement !== document.body
+      && document.activeElement !== document.documentElement) return;
+    (timelineElementForFocusDescriptor(descriptor) || byId("timeline-scroll"))
+      ?.focus({ preventScroll: true });
+  });
+}
+
 function renderTimeline() {
   const content = byId("timeline-content");
   if (!content) return;
+  const focusDescriptor = timelineFocusDescriptor();
   const regularVisible = visibleTimelineLanes();
   const selectedLane = resourceHiddenFromTimeline(state.selectedResourceId)
     ? null
@@ -3205,11 +3459,15 @@ function renderTimeline() {
       ? [{ lane: selectedLane, key: `root:${selectedLane.resourceId}`, depth: 0, parentResourceId: null, relationship: null, hasChildren: relationshipGroupsForResource(selectedLane.resourceId, new Set([selectedLane.resourceId])).length > 0 }]
       : []
     : timelineTreeInstances(regularVisible);
-  const trackWidth = Math.round(900 * state.zoom);
+  // Logical zoom changes the exact visible time window. The physical track
+  // stays viewport-sized so Chromium never clamps a multi-billion-pixel CSS
+  // surface and corrupts pointer anchoring at deep zoom.
+  const trackWidth = timelinePhysicalTrackWidth();
+  const laneWidth = timelineLaneWidth();
   state.trackWidth = trackWidth;
-  content.style.width = `${LANE_WIDTH + trackWidth}px`;
-  content.style.minWidth = `${LANE_WIDTH + trackWidth}px`;
-  byId("timeline-frame").querySelector(".timeline-sticky").style.gridTemplateColumns = `${LANE_WIDTH}px ${trackWidth}px`;
+  content.style.width = `${laneWidth + trackWidth}px`;
+  content.style.minWidth = `${laneWidth + trackWidth}px`;
+  byId("timeline-frame").querySelector(".timeline-sticky").style.gridTemplateColumns = `${laneWidth}px ${trackWidth}px`;
   renderRuler();
   state.hoverModels.clear();
   rebuildHiddenEventProjectionIndex();
@@ -3224,17 +3482,25 @@ function renderTimeline() {
     const kindLabel = humanResourceType(lane.kind);
     const layerLabel = humanLayer(lane.layer);
     const bounds = rangeBounds();
-    const lifecycle = lane.lifecycle.map((interval, index) => {
+    const lifecycle = lane.lifecycle.map((interval, index) => ({ interval, index })).filter(
+      ({ interval }) => timelineIntervalVisible(interval.startNs, interval.endNs),
+    ).map(({ interval, index }) => {
       const key = hoverKey("life", lane, index);
       state.hoverModels.set(key, { type: "interval", interval, lane });
-      return `<button class="lifecycle-bar${interval.openStart ? " open-start" : ""}${interval.openEnd ? " open-end" : ""}${intersectsRange(interval.startNs, interval.endNs) ? " in-range" : ""}" data-hover-key="${escapeHtml(key)}" data-range-start-ns="${interval.startNs}" data-range-end-ns="${interval.endNs}" style="${barStyle(interval)}" type="button" aria-label="Lifecycle ${escapeHtml(formatOffset(interval.startNs))} to ${escapeHtml(formatOffset(interval.endNs))}"></button>`;
+      return `<button class="lifecycle-bar${interval.openStart ? " open-start" : ""}${interval.openEnd ? " open-end" : ""}${intersectsRange(interval.startNs, interval.endNs) ? " in-range" : ""}" data-hover-key="${escapeHtml(key)}" data-range-start-ns="${interval.startNs}" data-range-end-ns="${interval.endNs}" style="${barStyle(interval)}" type="button" aria-label="Lifecycle ${escapeHtml(formatOffset(interval.startNs, visibleTimelineOffsetPrecision()))} to ${escapeHtml(formatOffset(interval.endNs, visibleTimelineOffsetPrecision()))}"></button>`;
     }).join("");
-    const statuses = lane.statuses.map((interval, index) => {
+    const statuses = lane.statuses.map((interval, index) => ({ interval, index })).filter(
+      ({ interval }) => timelineIntervalVisible(interval.startNs, interval.endNs),
+    ).map(({ interval, index }) => {
       const key = hoverKey("status", lane, index);
       state.hoverModels.set(key, { type: "interval", interval, lane });
       return `<button class="${statusSegmentClassName({ status_class: interval.statusClass })}${intersectsRange(interval.startNs, interval.endNs) ? " in-range" : ""}" data-hover-key="${escapeHtml(key)}" data-start-ns="${interval.startNs}" data-end-ns="${interval.endNs}" data-range-start-ns="${interval.startNs}" data-range-end-ns="${interval.endNs}" data-open-end="${interval.openEnd}" style="${barStyle(interval)};--segment-color:${escapeHtml(layerColor(lane.layer))}" type="button"><span>${escapeHtml(interval.status)}</span></button>`;
     }).join("");
-    const glyphs = buildClientGlyphs(lane).map((glyph) => {
+    const glyphs = buildClientGlyphs(lane).filter((glyph) => (
+      glyph.kind === "cluster"
+        ? timelinePointIntervalVisible(glyph.startNs, glyph.endNs)
+        : timelinePointVisible(glyph.timeNs)
+    )).map((glyph) => {
       if (glyph.kind === "cluster") {
         const key = hoverKey("cluster", lane, glyph.clusterId);
         state.hoverModels.set(key, { type: "cluster", cluster: glyph, lane });
@@ -3249,16 +3515,17 @@ function renderTimeline() {
         const rangeDescription = rangeState.count
           ? `; ${rangeState.count} of ${rangeState.total} events are in the selected range`
           : "";
-        return `<button class="event-mark cluster${glyph.failureCount ? " has-failure" : ""}${selected ? " selected" : ""}${rangeState.className}" data-hover-key="${escapeHtml(key)}" data-cluster-id="${escapeHtml(glyph.clusterId)}" data-last-event-uid="${escapeHtml(lastEventUid)}" data-range-start-ns="${glyph.startNs}" data-range-end-ns="${glyph.endNs}" style="left:${timelinePercent(time)}%;--event-color:${glyph.failureCount ? "#ff6879" : layerColor(lane.layer)}" type="button" aria-label="${glyph.count} collapsed events${rangeDescription}"><span>${glyph.count}</span></button>`;
+        const staleCopy = glyph.staleWindow
+          ? "; previous viewport overlap shown while exact events refresh"
+          : "";
+        return `<button class="event-mark cluster${glyph.staleWindow ? " stale-window" : ""}${glyph.failureCount ? " has-failure" : ""}${selected ? " selected" : ""}${rangeState.className}" data-hover-key="${escapeHtml(key)}" data-cluster-id="${escapeHtml(glyph.clusterId)}" data-last-event-uid="${escapeHtml(lastEventUid)}" data-range-start-ns="${glyph.startNs}" data-range-end-ns="${glyph.endNs}" style="left:${timelinePercent(time)}%;--event-color:${glyph.failureCount ? "#ff6879" : layerColor(lane.layer)}" type="button" aria-label="${glyph.count} collapsed events${rangeDescription}${staleCopy}"><span>${glyph.staleWindow ? "~" : ""}${glyph.count}</span></button>`;
       }
       const key = hoverKey("event", lane, glyph.eventUid);
       state.hoverModels.set(key, { type: "event", mark: glyph, lane });
-      return `<button class="event-mark ${eventMarkClass(glyph)}${glyph.eventUid === state.selectedEventUid ? " selected" : ""}${inSelectedRange(glyph.timeNs) ? " in-range" : ""}" data-event-uid="${escapeHtml(glyph.eventUid)}" data-hover-key="${escapeHtml(key)}" data-time-ns="${glyph.timeNs}" style="left:${timelinePercent(glyph.timeNs)}%;--event-color:${glyph.failure ? "#ff6879" : layerColor(lane.layer)}" type="button" aria-label="${escapeHtml(`${glyph.label} at ${formatOffset(glyph.timeNs)}`)}"></button>`;
+      return `<button class="event-mark ${eventMarkClass(glyph)}${glyph.eventUid === state.selectedEventUid ? " selected" : ""}${inSelectedRange(glyph.timeNs) ? " in-range" : ""}" data-event-uid="${escapeHtml(glyph.eventUid)}" data-hover-key="${escapeHtml(key)}" data-time-ns="${glyph.timeNs}" style="left:${timelinePercent(glyph.timeNs)}%;--event-color:${glyph.failure ? "#ff6879" : layerColor(lane.layer)}" type="button" aria-label="${escapeHtml(`${glyph.label} at ${formatOffset(glyph.timeNs, visibleTimelineOffsetPrecision())}`)}"></button>`;
     }).join("");
     const relationshipRibbons = relationshipRibbonsForLane(lane, instance);
-    const rangeBand = bounds
-      ? `<div class="range-band" style="left:${timelinePercent(bounds[0])}%;width:${Math.max(0, timelinePercent(bounds[1]) - timelinePercent(bounds[0]))}%"></div>`
-      : '<div class="range-band" hidden></div>';
+    const rangeBand = timelineRangeBandHtml(bounds);
     const selectedResource = lane.resourceId === state.selectedResourceId;
     const correlatedResource = instance.depth > 0 || (!selectedResource && state.correlatedResourceIds.has(lane.resourceId));
     const expanded = state.correlationTimelineView === "combined"
@@ -3271,7 +3538,7 @@ function renderTimeline() {
       ? `<span class="lane-tree-guides" aria-hidden="true">${Array.from({ length: instance.depth }, (_, index) => `<i style="left:${17 + index * 14}px"></i>`).join("")}</span>`
       : "";
     const customIcon = resourceIconMarkup(lane.resource, lane.kind, "lane-resource-icon");
-    return `<div class="timeline-row${compact ? " compact" : ""}${selectedResource ? " selected-resource" : ""}${correlatedResource ? " correlated-resource" : ""}${instance.depth ? " tree-child" : " tree-root"}" style="grid-template-columns:${LANE_WIDTH}px ${trackWidth}px;--layer-color:${layerColor(lane.layer)};--tree-indent:${instance.depth * 14}px;--tree-branch:${Math.max(0, instance.depth - 1) * 14 + 17}px" data-resource-id="${escapeHtml(lane.resourceId)}" data-tree-key="${escapeHtml(instance.key)}"${instance.parentResourceId ? ` data-parent-resource-id="${escapeHtml(instance.parentResourceId)}"` : ""}${instance.relationship ? ` data-relationship-type="${escapeHtml(instance.relationship.type)}"` : ""}>
+    return `<div class="timeline-row${compact ? " compact" : ""}${selectedResource ? " selected-resource" : ""}${correlatedResource ? " correlated-resource" : ""}${instance.depth ? " tree-child" : " tree-root"}" style="grid-template-columns:${laneWidth}px ${trackWidth}px;--layer-color:${layerColor(lane.layer)};--tree-indent:${instance.depth * 14}px;--tree-branch:${Math.max(0, instance.depth - 1) * 14 + 17}px" data-resource-id="${escapeHtml(lane.resourceId)}" data-tree-key="${escapeHtml(instance.key)}"${instance.parentResourceId ? ` data-parent-resource-id="${escapeHtml(instance.parentResourceId)}"` : ""}${instance.relationship ? ` data-relationship-type="${escapeHtml(instance.relationship.type)}"` : ""}>
       <div class="resource-lane-label-shell">
         <button class="lane-close" type="button" data-lane-close-resource-id="${escapeHtml(lane.resourceId)}" aria-label="${escapeHtml(`Hide ${lane.label} from Resource timeline`)}" title="Hide from Resource timeline"><span aria-hidden="true">&times;</span></button>
         <button class="lane-label" type="button" data-resource-id="${escapeHtml(lane.resourceId)}" data-tree-key="${escapeHtml(instance.key)}" ${instance.hasChildren ? `data-tree-expandable aria-expanded="${expanded}"` : ""}>
@@ -3288,12 +3555,12 @@ function renderTimeline() {
   }).join("") + combinedAssociationLane(trackWidth);
 
   if (!visible.length) {
-    content.innerHTML = `${densityLane}${reviewMarkers}${sourceLanes}<div class="timeline-empty" style="width:${LANE_WIDTH + trackWidth}px"><strong>No resource lanes selected</strong><span>Source-record and review-marker lanes remain visible. Open Lanes to add resource timelines.</span></div>`;
+    content.innerHTML = `${densityLane}${reviewMarkers}${sourceLanes}<div class="timeline-empty" style="width:${laneWidth + trackWidth}px"><strong>No resource lanes selected</strong><span>Source-record and review-marker lanes remain visible. Open Lanes to add resource timelines.</span></div>`;
   }
 
   const cursor = document.createElement("div");
   cursor.className = "timeline-cursor-line";
-  cursor.style.left = `${LANE_WIDTH + ratioBetween(state.cursorNs) * state.trackWidth}px`;
+  cursor.style.left = `${laneWidth + Math.max(0, Math.min(100, timelinePercent(state.cursorNs))) / 100 * state.trackWidth}px`;
   content.appendChild(cursor);
   const hoverLine = document.createElement("div");
   hoverLine.className = "timeline-hover-line";
@@ -3307,12 +3574,14 @@ function renderTimeline() {
     showTimelineHoverAt(state.hoverGuideNs, state.hoverGuideClientX);
   }
   renderLanePicker();
+  updateTimelineCommandAvailability();
+  restoreTimelineFocusDescriptor(focusDescriptor);
   window.requestAnimationFrame(drawTimelineCorrelationOverlay);
 }
 
 function pointNsFromClientX(clientX, track) {
   const rect = track.getBoundingClientRect();
-  return nsAtRatio((clientX - rect.left) / Math.max(1, rect.width));
+  return timelineNsAtLocalRatio((clientX - rect.left) / Math.max(1, rect.width));
 }
 
 function hideTimelineHoverLine() {
@@ -3330,19 +3599,19 @@ function showTimelineHoverAt(timeNs, clientX) {
   const content = byId("timeline-content");
   const line = content.querySelector(".timeline-hover-line");
   if (!line) return;
-  line.style.left = `${LANE_WIDTH + ratioBetween(timeNs) * state.trackWidth}px`;
+  line.style.left = `${timelineLaneWidth() + timelinePercent(timeNs) / 100 * state.trackWidth}px`;
   line.dataset.timeNs = timeNs.toString();
-  line.dataset.timeLabel = formatOffset(timeNs);
+  line.dataset.timeLabel = formatOffset(timeNs, visibleTimelineOffsetPrecision());
   const timeLabel = byId("timeline-ruler")?.querySelector(".timeline-hover-time");
   const scroll = byId("timeline-scroll");
   if (timeLabel) {
     timeLabel.textContent = line.dataset.timeLabel;
-    timeLabel.style.left = `${ratioBetween(timeNs) * state.trackWidth}px`;
+    timeLabel.style.left = `${timelinePercent(timeNs) / 100 * state.trackWidth}px`;
     timeLabel.dataset.labelAlign = "center";
     timeLabel.hidden = false;
   }
   const scrollRect = scroll.getBoundingClientRect();
-  const visibleTrackLeft = Math.min(scrollRect.right, scrollRect.left + LANE_WIDTH);
+  const visibleTrackLeft = Math.min(scrollRect.right, scrollRect.left + timelineLaneWidth());
   const labelAlign = scrollRect.right - clientX < 58
     ? "left"
     : clientX - visibleTrackLeft < 58 ? "right" : "center";
@@ -3499,7 +3768,6 @@ function timelinePointerDown(event) {
     : pointNsFromClientX(event.clientX, track);
   state.brush = {
     pointerId: event.pointerId,
-    track,
     mode: handle ? "handle" : wantsRange ? "range" : "pending",
     boundary: handle?.dataset.rangeHandle || null,
     anchorNs,
@@ -3509,7 +3777,8 @@ function timelinePointerDown(event) {
     frameId: null,
     autoScrollFrameId: null,
     autoScrollVelocity: 0,
-    startScrollLeft: byId("timeline-scroll").scrollLeft,
+    priorViewport: timelineViewportSnapshot(),
+    viewportChanged: false,
     priorRange: state.rangeStartNs === null ? null : [state.rangeStartNs, state.rangeEndNs],
     priorSummary: state.rangeSummary,
     target: mark ? {
@@ -3532,7 +3801,8 @@ function timelinePointerDown(event) {
 }
 
 function rangeMinimumNs() {
-  const pixel = (state.viewEndNs - state.viewStartNs) / BigInt(Math.max(1, state.trackWidth));
+  const [windowStartNs, windowEndNs] = timelineWindowBounds();
+  const pixel = (windowEndNs - windowStartNs) / BigInt(Math.max(1, state.trackWidth));
   return pixel > 0n ? pixel : 1n;
 }
 
@@ -3569,15 +3839,12 @@ function scheduleBrushFrame() {
 }
 
 function brushNsFromClientX(brush, clientX) {
-  if (brush.mode === "handle") {
-    const scrollDelta = byId("timeline-scroll").scrollLeft - brush.startScrollLeft;
-    const pixelDelta = clientX - brush.startX + scrollDelta;
-    const scaledDelta = BigInt(Math.round(pixelDelta / Math.max(1, state.trackWidth) * 1_000_000));
-    return clampNs(brush.anchorNs + ((state.viewEndNs - state.viewStartNs) * scaledDelta) / 1_000_000n);
-  }
-  return brush.track
-    ? pointNsFromClientX(clientX, brush.track)
-    : nsAtRatio((clientX - (byId("timeline-content").getBoundingClientRect().left + LANE_WIDTH)) / Math.max(1, state.trackWidth));
+  const scroll = byId("timeline-scroll");
+  const scrollRect = scroll.getBoundingClientRect();
+  const trackLeft = scrollRect.left + timelineLaneWidth() - scroll.scrollLeft;
+  return timelineNsAtLocalRatio(
+    (clientX - trackLeft) / Math.max(1, state.trackWidth),
+  );
 }
 
 function stopBrushAutoScroll(brush) {
@@ -3591,13 +3858,16 @@ function stopBrushAutoScroll(brush) {
 function runBrushAutoScroll() {
   const brush = state.brush;
   if (!brush || !brush.autoScrollVelocity || !["range", "handle"].includes(brush.mode)) return;
-  const scroll = byId("timeline-scroll");
-  const before = scroll.scrollLeft;
-  scroll.scrollLeft = Math.max(0, Math.min(scroll.scrollWidth - scroll.clientWidth, before + brush.autoScrollVelocity));
-  if (scroll.scrollLeft === before) {
+  if (!brush.viewportChanged) rememberTimelineView();
+  const moved = panTimelineViewportByPixels(brush.autoScrollVelocity, {
+    recordHistory: false,
+    fromWheel: true,
+  });
+  if (!moved) {
     stopBrushAutoScroll(brush);
     return;
   }
+  brush.viewportChanged = true;
   brush.latestNs = brushNsFromClientX(brush, brush.latestX);
   scheduleBrushFrame();
   brush.autoScrollFrameId = window.requestAnimationFrame(runBrushAutoScroll);
@@ -3606,8 +3876,10 @@ function runBrushAutoScroll() {
 function updateBrushAutoScroll(brush) {
   const scroll = byId("timeline-scroll");
   const rect = scroll.getBoundingClientRect();
-  const edge = Math.min(32, rect.width / 4);
-  const leftDepth = Math.max(0, rect.left + edge - brush.latestX);
+  const visibleTrackLeft = Math.min(rect.right, rect.left + timelineLaneWidth());
+  const visibleTrackWidth = Math.max(1, rect.right - visibleTrackLeft);
+  const edge = Math.min(32, visibleTrackWidth / 4);
+  const leftDepth = Math.max(0, visibleTrackLeft + edge - brush.latestX);
   const rightDepth = Math.max(0, brush.latestX - (rect.right - edge));
   const direction = leftDepth > 0 ? -1 : rightDepth > 0 ? 1 : 0;
   const depth = Math.max(leftDepth, rightDepth);
@@ -3643,6 +3915,22 @@ function timelinePointerMove(event) {
   }
 }
 
+function finishBrushViewportNavigation(brush, cancelled) {
+  if (!brush.viewportChanged) return;
+  if (cancelled) {
+    invalidatePendingTimelineWindowRequest();
+    state.zoom = brush.priorViewport.zoom;
+    state.timelineWindowStartNs = brush.priorViewport.startNs;
+    state.timelineWindowEndNs = brush.priorViewport.endNs;
+    byId("timeline-zoom").value = timelineZoomControlValue(state.zoom);
+    renderTimeline();
+    updateTimelineCommandAvailability();
+  } else {
+    rememberTimelineView();
+  }
+  scheduleTimelineWindowRefresh();
+}
+
 function activateShortGestureTarget(target) {
   if (!target) return false;
   state.suppressTimelineClickUntil = performance.now() + 400;
@@ -3672,6 +3960,10 @@ function activateShortGestureTarget(target) {
     showHover(target.hoverKey, replacement || target.element, true);
     return true;
   }
+  if (target.hoverKey) {
+    showHover(target.hoverKey, target.element, true);
+    return true;
+  }
   return false;
 }
 
@@ -3696,6 +3988,7 @@ function finishTimelinePointer(event, cancelled = false) {
     if (brush.priorRange) [state.rangeStartNs, state.rangeEndNs] = brush.priorRange;
     else state.rangeStartNs = state.rangeEndNs = null;
     state.rangeSummary = brush.priorSummary;
+    finishBrushViewportNavigation(brush, true);
     updateRangeBands();
     syncRangeInputs();
     renderRangeSummary();
@@ -3712,6 +4005,7 @@ function finishTimelinePointer(event, cancelled = false) {
   if (brush.mode === "handle" && moved < 1) {
     [state.rangeStartNs, state.rangeEndNs] = brush.priorRange;
     state.rangeSummary = brush.priorSummary;
+    finishBrushViewportNavigation(brush, true);
     updateRangeBands();
     syncRangeInputs();
     renderRangeSummary();
@@ -3735,6 +4029,7 @@ function finishTimelinePointer(event, cancelled = false) {
   byId("clear-range").hidden = false;
   updateRangeBands();
   syncRangeInputs();
+  finishBrushViewportNavigation(brush, false);
   requestRangeSummary();
 }
 
@@ -3769,7 +4064,11 @@ function applyRangeHighlight(bounds) {
     element.setAttribute("aria-label", `${rangeState.total} collapsed ${noun}${rangeCopy}`);
   });
   document.querySelectorAll("[data-range-start-ns][data-range-end-ns]:not(.event-mark.cluster):not(.source-record-mark.cluster)").forEach((element) => {
-    const hit = Boolean(bounds) && intersectsRange(element.dataset.rangeStartNs, element.dataset.rangeEndNs);
+    const hit = Boolean(bounds) && (
+      element.dataset.rangeSemantics === "inclusive"
+        ? inclusiveIntervalIntersectsRange(element.dataset.rangeStartNs, element.dataset.rangeEndNs)
+        : intersectsRange(element.dataset.rangeStartNs, element.dataset.rangeEndNs)
+    );
     element.classList.toggle("in-range", hit);
     element.classList.toggle("out-of-range", Boolean(bounds) && !hit);
   });
@@ -3797,7 +4096,9 @@ function updateRangeHandles(bounds) {
       handle.innerHTML = `<span>${boundary === "start" ? "Start" : "End"}</span>`;
       content.appendChild(handle);
     }
-    handle.style.left = `${LANE_WIDTH + ratioBetween(value) * state.trackWidth}px`;
+    const percent = timelinePercent(value);
+    handle.hidden = percent < 0 || percent > 100;
+    handle.style.left = `${timelineLaneWidth() + Math.max(0, Math.min(100, percent)) / 100 * state.trackWidth}px`;
     handle.setAttribute("role", "slider");
     handle.setAttribute("aria-label", label);
     handle.setAttribute("aria-valuemin", "0");
@@ -3841,23 +4142,26 @@ function timelineHandleKeyDown(event) {
 
 function updateRangeBands(bounds = rangeBounds(), refreshEventLog = true) {
   document.querySelectorAll(".range-band").forEach((band) => {
-    band.hidden = !bounds;
-    if (!bounds) return;
-    band.style.left = `${timelinePercent(bounds[0])}%`;
-    band.style.width = `${Math.max(0, timelinePercent(bounds[1]) - timelinePercent(bounds[0]))}%`;
+    const geometry = bounds ? timelineIntervalPercentGeometry(bounds[0], bounds[1]) : null;
+    band.hidden = !geometry;
+    if (!geometry) return;
+    band.style.left = `${geometry.left}%`;
+    band.style.width = `${geometry.width}%`;
   });
   applyRangeHighlight(bounds);
   updateRangeHandles(bounds);
   if (refreshEventLog && !state.brush && state.dataset && byId("event-table-body")) {
     renderEventTable({ resetScroll: Boolean(bounds) });
   }
+  updateTimelineCommandAvailability();
 }
 
 function updateCursorVisual() {
   const line = document.querySelector(".timeline-cursor-line");
   if (line) {
-    line.style.left = `${LANE_WIDTH + ratioBetween(state.cursorNs) * state.trackWidth}px`;
-    line.hidden = !state.cursorSelected;
+    const percent = timelinePercent(state.cursorNs);
+    line.style.left = `${timelineLaneWidth() + Math.max(0, Math.min(100, percent)) / 100 * state.trackWidth}px`;
+    line.hidden = !state.cursorSelected || percent < 0 || percent > 100;
   }
   const slider = byId("time-cursor");
   if (slider) slider.value = String(Math.round(ratioBetween(state.cursorNs) * 1_000_000));
@@ -3880,6 +4184,7 @@ function setCursor(value, schedule = true, selected = true) {
   markResourcesPending(state.cursorNs);
   markDashboardsPending(state.cursorNs);
   scheduleTopologyRefreshFromCursor();
+  updateTimelineCommandAvailability();
   if (schedule) scheduleTemporalRefresh();
 }
 
@@ -4060,11 +4365,36 @@ function jumpToSourceLog(recordUid) {
 }
 
 function sourceRecordLaneFor(recordUid) {
-  return state.recordLanes.find((lane) => lane.marks.some((mark) => mark.sourceRecordUid === String(recordUid))) || null;
+  const uid = String(recordUid);
+  return state.recordLanes.find((lane) => (
+    lane.marks.some((mark) => mark.sourceRecordUid === uid)
+      || lane.clusters.some((cluster) => cluster.recordUids.includes(uid))
+  )) || null;
 }
 
 function regexEscape(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function moveTimelineWindowToReveal(timeNs) {
+  const targetNs = clampNs(timeNs);
+  const [startNs, endNs] = timelineWindowBounds();
+  const duration = endNs - startNs;
+  const margin = duration > 20n ? duration / 20n : 0n;
+  if (targetNs >= startNs + margin && targetNs <= endNs - margin) return false;
+  return applyTimelineZoom(state.zoom, {
+    anchorNs: targetNs,
+    announce: false,
+  });
+}
+
+async function refreshTimelineForNavigation() {
+  window.clearTimeout(state.timelineWindowRequestTimer);
+  state.timelineWindowRequestTimer = null;
+  const updated = await requestTimeline();
+  if (!updated) return false;
+  renderTimeline();
+  return true;
 }
 
 async function ensureSourceRecordLane(record) {
@@ -4100,6 +4430,8 @@ async function jumpSourceRecordToTimeline(recordUid) {
     await jumpToTimelineEvent(String(record.matched_event_uid));
     return;
   }
+  const movedViewport = moveTimelineWindowToReveal(sourceRecordTime(record));
+  if (movedViewport) await refreshTimelineForNavigation();
   const lane = await ensureSourceRecordLane(record);
   if (!lane) return;
   selectSourceRecord(recordUid, true);
@@ -4115,14 +4447,17 @@ async function jumpSourceRecordToTimeline(recordUid) {
     const laneRow = document.querySelector('.timeline-row[data-source-lane-id="' + CSS.escape(lane.laneId) + '"]');
     const destination = target || clusterTarget || laneRow;
     if (!destination) return;
-    destination.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    (laneRow || destination).scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
     if (target || clusterTarget) destination.focus({ preventScroll: true });
     navigationPulse(destination);
   });
 }
 
 function eventLaneFor(eventUid) {
-  return state.lanes.find((lane) => lane.marks.some((mark) => mark.eventUid === eventUid)) || null;
+  return state.lanes.find((lane) => (
+    lane.marks.some((mark) => mark.eventUid === eventUid)
+      || lane.clusters.some((cluster) => cluster.eventUids.includes(eventUid))
+  )) || null;
 }
 
 async function jumpToTimelineEvent(eventUid) {
@@ -4131,11 +4466,22 @@ async function jumpToTimelineEvent(eventUid) {
   let lane = eventLaneFor(eventUid);
   const resourceId = lane?.resourceId || eventResourceRefs(event)[0] || null;
   if (resourceId) state.hiddenTimelineResourceIds.delete(resourceId);
+  let addedScaleLane = false;
   if (isScaleMode() && resourceId && !lane) {
     state.laneMode = "custom";
     if (state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) state.explicitLaneIds.delete(state.explicitLaneIds.values().next().value);
     state.explicitLaneIds.add(resourceId);
-    await refreshScaleTimeline();
+    addedScaleLane = true;
+  }
+  const movedViewport = moveTimelineWindowToReveal(eventTime(event));
+  // The server's bounded cluster preview guarantees the selected event. Pin
+  // the target before the navigation query so a middle event in a million-row
+  // cluster remains focusable after the exact logical window is returned.
+  state.selectedEventUid = eventUid;
+  state.selectedSourceRecordUid = null;
+  state.selectedEventResourceId = resourceId;
+  if (movedViewport || addedScaleLane || !lane) {
+    await refreshTimelineForNavigation();
     lane = eventLaneFor(eventUid) || state.laneByResource.get(resourceId);
   }
   if (lane) {
@@ -4166,7 +4512,7 @@ async function jumpToTimelineEvent(eventUid) {
       : null;
     const target = eventTarget || row;
     if (!target) return;
-    target.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    (row || target).scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
     if (eventTarget) eventTarget.focus({ preventScroll: true });
     navigationPulse(eventTarget || row);
   });
@@ -4376,8 +4722,11 @@ function clusterHoverHtml(cluster, lane) {
   } else if (cluster.detailTruncated && cluster.serverBacked && !isTopologyNodeSnapshot()) {
     detailControl = '<button class="cluster-load-more" type="button" data-cluster-detail-offset="0">Load exact events</button>';
   }
+  const staleNotice = cluster.staleWindow
+    ? '<p class="cluster-detail-state">This clipped marker overlaps the previous viewport. Visible preview events are retained while the exact window refreshes.</p>'
+    : "";
   return `<div class="hover-heading"><div><span>COLLAPSED EVENTS</span><strong>${total} events${cluster.failureCount ? ` / ${cluster.failureCount} failed` : ""}${cluster.hiddenCount ? ` / ${cluster.hiddenCount} hidden` : ""}</strong>${progress}</div><button class="hover-close" type="button" aria-label="Close">x</button></div>
-    <div class="cluster-window">${items.map((mark) => `<button type="button" class="cluster-event${mark.failure ? " failed" : ""}${inSelectedRange(mark.timeNs) ? " in-range" : ""}" data-cluster-event-uid="${escapeHtml(mark.eventUid)}"><span>${escapeHtml(formatOffset(mark.timeNs))}</span><strong>${escapeHtml(mark.label)}</strong><small>${escapeHtml(`${mark.action} / ${mark.failure ? "failed" : mark.outcome}${rangeBounds() ? (inSelectedRange(mark.timeNs) ? " / in selected range" : " / outside selected range") : ""}`)}</small></button>`).join("") || '<p class="empty-cluster">No event detail was returned for this cluster.</p>'}${detailControl}</div>`;
+    ${staleNotice}<div class="cluster-window">${items.map((mark) => `<button type="button" class="cluster-event${mark.failure ? " failed" : ""}${inSelectedRange(mark.timeNs) ? " in-range" : ""}" data-cluster-event-uid="${escapeHtml(mark.eventUid)}"><span>${escapeHtml(formatOffset(mark.timeNs))}</span><strong>${escapeHtml(mark.label)}</strong><small>${escapeHtml(`${mark.action} / ${mark.failure ? "failed" : mark.outcome}${rangeBounds() ? (inSelectedRange(mark.timeNs) ? " / in selected range" : " / outside selected range") : ""}`)}</small></button>`).join("") || '<p class="empty-cluster">No event detail was returned for this cluster.</p>'}${detailControl}</div>`;
 }
 
 function clusterDetailRequestAvailable(cluster) {
@@ -4496,11 +4845,13 @@ function intervalHoverHtml(interval, lane) {
 
 function densityHoverHtml(bin) {
   const types = [...bin.topTypes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4);
+  const inclusiveDurationNs = bin.endNs - bin.startNs + 1n;
+  const precision = offsetPrecisionForSpan(inclusiveDurationNs);
   return `<div class="hover-heading"><div><span>EVENT DENSITY</span><strong>${bin.count} events${bin.failures ? ` / ${bin.failures} failed` : ""}</strong></div><button class="hover-close" type="button" aria-label="Close">x</button></div>
     <dl class="hover-facts">
-      <dt>Start</dt><dd>${escapeHtml(formatOffset(bin.startNs))}</dd>
-      <dt>End</dt><dd>${escapeHtml(formatOffset(bin.endNs))}</dd>
-      <dt>Window</dt><dd>${escapeHtml(formatDuration(bin.endNs - bin.startNs))}</dd>
+      <dt>Start</dt><dd>${escapeHtml(formatOffset(bin.startNs, precision))}</dd>
+      <dt>End</dt><dd>${escapeHtml(formatOffset(bin.endNs, precision))}</dd>
+      <dt>Window</dt><dd>${escapeHtml(formatDuration(inclusiveDurationNs))}</dd>
       <dt>Events</dt><dd>${bin.count}</dd>
       <dt>Failures</dt><dd class="${bin.failures ? "failure-text" : "success-text"}">${bin.failures}</dd>
       <dt>Top types</dt><dd>${types.length ? types.map(([type, count]) => `${escapeHtml(titleCase(type))} (${count})`).join("<br>") : "none"}</dd>
@@ -4715,8 +5066,10 @@ function applyRangeEditor(event) {
     updateRangeBands();
     syncRangeInputs();
     requestRangeSummary();
+    return true;
   } catch (rangeError) {
     error.textContent = rangeError.message;
+    return false;
   }
 }
 
@@ -4823,6 +5176,7 @@ function clearRangeSelection({ refreshEventLog = true } = {}) {
   byId("range-error").textContent = "";
   updateRangeBands(null, refreshEventLog);
   renderRangeSummary();
+  updateTimelineCommandAvailability();
   return hadRange;
 }
 
@@ -4849,8 +5203,12 @@ function clearTimelineSelection({ announce = true } = {}) {
 }
 
 function handleEscapeKey(event) {
-  if (event.key !== "Escape" || event.repeat || event.isComposing) return;
+  if (event.defaultPrevented || event.key !== "Escape" || event.repeat || event.isComposing) return;
   closeCorrelationHover();
+  if (closeTimelineContextMenu({ restoreFocus: true })) {
+    event.preventDefault();
+    return;
+  }
   const correlationDialog = byId("correlation-dialog");
   if (correlationDialog?.open) {
     event.preventDefault();
@@ -4897,6 +5255,9 @@ function handleEscapeKey(event) {
     event.preventDefault();
     return;
   }
+  if (byId("timeline-content")?.contains(document.activeElement)) {
+    byId("timeline-scroll")?.focus({ preventScroll: true });
+  }
   if (clearTimelineSelection()) event.preventDefault();
 }
 
@@ -4920,6 +5281,7 @@ async function requestTimeline() {
     return requestId === state.timelineRequestId;
   }
   const controller = beginLatestRequest("timelineAbortController");
+  const [windowStartNs, windowEndNs] = timelineWindowBounds();
   const selectedRange = rangeBounds();
   const scaleResourceIds = scaleTimelineResourceIds();
   const selectedRelationshipRoot = canonicalResourceId(state.selectedResourceId);
@@ -4933,9 +5295,9 @@ async function requestTimeline() {
       method: "POST",
       signal: controller.signal,
       body: JSON.stringify({
-        start_ns: state.viewStartNs.toString(),
-        end_ns: state.viewEndNs.toString(),
-        viewport_pixels: Math.round(window.innerWidth),
+        start_ns: windowStartNs.toString(),
+        end_ns: windowEndNs.toString(),
+        viewport_pixels: timelinePhysicalTrackWidth(),
         max_glyphs: 3000,
         max_record_marks: 5000,
         record_lane_rules: state.recordLaneRules.map((rule) => ({
@@ -4970,6 +5332,27 @@ async function requestTimeline() {
   finishLatestRequest("timelineAbortController", controller);
   normalizeTimeline(state.timelinePayload);
   return true;
+}
+
+function invalidatePendingTimelineWindowRequest() {
+  // A response is valid only for the exact logical window that requested it.
+  // Invalidate immediately on every mutation rather than waiting for the
+  // debounced replacement request, which could let an older response commit.
+  state.timelineRequestId += 1;
+  abortLatestRequests("timelineAbortController");
+}
+
+function scheduleTimelineWindowRefresh(delayMs = 140) {
+  if (!state.dataset || isTopologyNodeSnapshot()) return;
+  window.clearTimeout(state.timelineWindowRequestTimer);
+  state.timelineWindowRequestTimer = window.setTimeout(async () => {
+    state.timelineWindowRequestTimer = null;
+    if (isScaleMode()) {
+      await refreshScaleTimeline();
+      return;
+    }
+    if (await requestTimeline()) renderTimeline();
+  }, delayMs);
 }
 
 function fallbackResourceItems() {
@@ -7204,7 +7587,9 @@ function drawTimelineCorrelationOverlay() {
     if (!rowsById.has(row.dataset.resourceId)) rowsById.set(row.dataset.resourceId, []);
     rowsById.get(row.dataset.resourceId).push(row);
   });
-  const cursorX = LANE_WIDTH + ratioBetween(state.cursorNs) * state.trackWidth;
+  const cursorPercent = timelinePercent(state.cursorNs);
+  if (cursorPercent < 0 || cursorPercent > 100) return;
+  const cursorX = timelineLaneWidth() + cursorPercent / 100 * state.trackWidth;
   const paths = [];
   const labels = [];
   let visibleIndex = 0;
@@ -10576,34 +10961,900 @@ function initializeDurableReviewSetup() {
   );
 }
 
-function applyTimelineZoom(rawValue, { announce = false } = {}) {
+function timelineZoomControlValue(zoom) {
+  if (!Number.isFinite(zoom)) return "1";
+  return zoom >= 1_000_000
+    ? zoom.toExponential(5)
+    : Number(zoom.toPrecision(6)).toString();
+}
+
+function timelineViewportSnapshot() {
+  return {
+    zoom: state.zoom,
+    startNs: state.timelineWindowStartNs,
+    endNs: state.timelineWindowEndNs,
+  };
+}
+
+function timelineViewSnapshotsEqual(left, right) {
+  return Boolean(left && right)
+    && Math.abs(left.zoom - right.zoom) <= Number.EPSILON * Math.max(1, left.zoom, right.zoom)
+    && left.startNs === right.startNs
+    && left.endNs === right.endNs;
+}
+
+function updateTimelineCommandAvailability() {
+  const priorFocus = document.activeElement;
+  const bounds = rangeBounds();
+  const hasCenter = Boolean(bounds) || state.cursorSelected;
+  const back = byId("timeline-view-back");
+  const forward = byId("timeline-view-forward");
+  const zoomOut = byId("timeline-zoom-out");
+  const zoomSelection = byId("timeline-zoom-selection");
+  const center = byId("timeline-center");
+  if (back) back.disabled = state.timelineViewHistoryIndex <= 0;
+  if (forward) forward.disabled = state.timelineViewHistoryIndex < 0
+    || state.timelineViewHistoryIndex >= state.timelineViewHistory.length - 1;
+  if (zoomOut) zoomOut.disabled = state.zoom <= 1;
+  if (zoomSelection) zoomSelection.disabled = !bounds;
+  if (center) center.disabled = !hasCenter;
+  syncTimelineToolbarTabStop();
+  if (
+    priorFocus instanceof HTMLButtonElement
+    && priorFocus.closest("#timeline-viewport-controls")
+    && priorFocus.disabled
+  ) {
+    timelineToolbarItems().find((item) => item.tabIndex === 0 && !item.disabled)
+      ?.focus({ preventScroll: true });
+  }
+}
+
+function timelineToolbarItems() {
+  // Keep the editable zoom input in the ordinary Tab sequence. The buttons
+  // form the roving-focus subset; otherwise the input's native arrow editing
+  // and the toolbar's arrow navigation make each other unreachable.
+  return [...(byId("timeline-viewport-controls")?.querySelectorAll("button") || [])];
+}
+
+function syncTimelineToolbarTabStop(preferred = null) {
+  const items = timelineToolbarItems();
+  if (!items.length) return;
+  const current = preferred && items.includes(preferred) && !preferred.disabled
+    ? preferred
+    : items.find((item) => item.tabIndex === 0 && !item.disabled)
+      || items.find((item) => !item.disabled);
+  items.forEach((item) => { item.tabIndex = item === current ? 0 : -1; });
+}
+
+function timelineToolbarKeyDown(event) {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  // Let number/text controls keep their native caret, increment, Home, and
+  // End behavior. Tab exits the composite toolbar from the editable control.
+  if (event.target.matches?.("input, textarea, [contenteditable='true']")) return;
+  const items = timelineToolbarItems().filter((item) => !item.disabled);
+  if (!items.length) return;
+  const currentIndex = Math.max(0, items.indexOf(event.target));
+  const nextIndex = event.key === "Home" ? 0
+    : event.key === "End" ? items.length - 1
+      : event.key === "ArrowLeft"
+        ? (currentIndex - 1 + items.length) % items.length
+        : (currentIndex + 1) % items.length;
+  event.preventDefault();
+  const nextItem = items[nextIndex];
+  syncTimelineToolbarTabStop(nextItem);
+  nextItem.focus({ preventScroll: true });
+  const toolbar = byId("timeline-viewport-controls");
+  const toolbarRect = toolbar.getBoundingClientRect();
+  const itemRect = nextItem.getBoundingClientRect();
+  if (itemRect.left < toolbarRect.left) toolbar.scrollLeft -= toolbarRect.left - itemRect.left;
+  else if (itemRect.right > toolbarRect.right) toolbar.scrollLeft += itemRect.right - toolbarRect.right;
+}
+
+function rememberTimelineView({ replace = false } = {}) {
+  if (state.timelineViewRestoring) return;
+  const snapshot = timelineViewportSnapshot();
+  const current = state.timelineViewHistory[state.timelineViewHistoryIndex];
+  if (timelineViewSnapshotsEqual(current, snapshot)) {
+    updateTimelineCommandAvailability();
+    return;
+  }
+  if (replace && state.timelineViewHistoryIndex >= 0) {
+    state.timelineViewHistory[state.timelineViewHistoryIndex] = snapshot;
+  } else {
+    if (state.timelineViewHistoryIndex < state.timelineViewHistory.length - 1) {
+      state.timelineViewHistory.splice(state.timelineViewHistoryIndex + 1);
+    }
+    state.timelineViewHistory.push(snapshot);
+    if (state.timelineViewHistory.length > TIMELINE_VIEW_HISTORY_LIMIT) {
+      state.timelineViewHistory.shift();
+    }
+    state.timelineViewHistoryIndex = state.timelineViewHistory.length - 1;
+  }
+  updateTimelineCommandAvailability();
+}
+
+function scheduleTimelineViewHistory() {
+  window.clearTimeout(state.timelineViewHistoryTimer);
+  state.timelineViewHistoryTimer = window.setTimeout(
+    () => rememberTimelineView(),
+    TIMELINE_WHEEL_HISTORY_DELAY_MS,
+  );
+}
+
+function cancelScheduledTimelineZoom({ commitHistory = false } = {}) {
+  const hadBurst = state.timelineWheelBurstActive;
+  if (state.timelineWheelFrameId !== null) {
+    window.cancelAnimationFrame(state.timelineWheelFrameId);
+  }
+  if (state.timelinePanFrameId !== null) {
+    window.cancelAnimationFrame(state.timelinePanFrameId);
+  }
+  window.clearTimeout(state.timelineWheelHistoryTimer);
+  state.timelineWheelFrameId = null;
+  state.timelineWheelTargetZoom = null;
+  state.timelineWheelAnchorNs = null;
+  state.timelineWheelAnchorClientX = null;
+  state.timelinePanFrameId = null;
+  state.timelinePanDeltaPx = 0;
+  state.timelineWheelBurstActive = false;
+  state.timelineWheelMode = null;
+  state.timelineWheelHistoryTimer = null;
+  if (commitHistory && hadBurst) rememberTimelineView();
+}
+
+function beginTimelineWheelBurst(mode) {
+  if (state.timelineWheelBurstActive && state.timelineWheelMode !== mode) {
+    finishTimelineWheelBurst();
+  }
+  if (!state.timelineWheelBurstActive) {
+    state.timelineWheelBurstActive = true;
+    rememberTimelineView();
+  }
+  state.timelineWheelMode = mode;
+}
+
+function scheduleTimelineWheelBurstFinish() {
+  window.clearTimeout(state.timelineWheelHistoryTimer);
+  state.timelineWheelHistoryTimer = window.setTimeout(
+    finishTimelineWheelBurst,
+    TIMELINE_WHEEL_HISTORY_DELAY_MS,
+  );
+}
+
+function settlePendingTimelineWheelFrames() {
+  const targetZoom = state.timelineWheelTargetZoom;
+  const anchorNs = state.timelineWheelAnchorNs;
+  const anchorClientX = state.timelineWheelAnchorClientX;
+  const panDeltaPx = state.timelinePanDeltaPx;
+  if (state.timelineWheelFrameId !== null) {
+    window.cancelAnimationFrame(state.timelineWheelFrameId);
+  }
+  if (state.timelinePanFrameId !== null) {
+    window.cancelAnimationFrame(state.timelinePanFrameId);
+  }
+  state.timelineWheelFrameId = null;
+  state.timelineWheelTargetZoom = null;
+  state.timelinePanFrameId = null;
+  state.timelinePanDeltaPx = 0;
+  if (targetZoom !== null) {
+    applyTimelineZoom(targetZoom, {
+      anchorNs,
+      anchorClientX,
+      recordHistory: false,
+      fromWheel: true,
+    });
+  }
+  if (panDeltaPx !== 0) {
+    panTimelineViewportByPixels(panDeltaPx, {
+      recordHistory: false,
+      fromWheel: true,
+    });
+  }
+}
+
+function finishTimelineWheelBurst() {
+  window.clearTimeout(state.timelineWheelHistoryTimer);
+  state.timelineWheelHistoryTimer = null;
+  if (!state.timelineWheelBurstActive) return;
+  // Timers may run while requestAnimationFrame is throttled in a background
+  // tab. Settle queued work before committing the burst's final history view.
+  settlePendingTimelineWheelFrames();
+  state.timelineWheelBurstActive = false;
+  state.timelineWheelMode = null;
+  state.timelineWheelAnchorNs = null;
+  state.timelineWheelAnchorClientX = null;
+  rememberTimelineView();
+  scheduleTimelineWindowRefresh();
+}
+
+function restoreTimelineView(index) {
+  const relativeOffset = index - state.timelineViewHistoryIndex;
+  cancelScheduledTimelineZoom({ commitHistory: true });
+  index = state.timelineViewHistoryIndex + relativeOffset;
+  if (index < 0 || index >= state.timelineViewHistory.length) return false;
+  const snapshot = state.timelineViewHistory[index];
+  state.timelineViewRestoring = true;
+  state.timelineViewHistoryIndex = index;
+  invalidatePendingTimelineWindowRequest();
+  state.zoom = snapshot.zoom;
+  state.timelineWindowStartNs = snapshot.startNs;
+  state.timelineWindowEndNs = snapshot.endNs;
+  byId("timeline-zoom").value = timelineZoomControlValue(snapshot.zoom);
+  renderTimeline();
+  byId("timeline-scroll").scrollLeft = 0;
+  byId("timeline-ruler").style.transform = "translateX(0)";
+  state.timelineViewRestoring = false;
+  scheduleTimelineWindowRefresh();
+  updateTimelineCommandAvailability();
+  return true;
+}
+
+function visibleTimelineCenterNs() {
+  const [startNs, endNs] = timelineWindowBounds();
+  return startNs + (endNs - startNs) / 2n;
+}
+
+function selectedTimelineCenterNs() {
+  const bounds = rangeBounds();
+  if (bounds) return bounds[0] + (bounds[1] - bounds[0]) / 2n;
+  return state.cursorSelected ? state.cursorNs : visibleTimelineCenterNs();
+}
+
+function applyTimelineZoom(rawValue, {
+  announce = false,
+  anchorNs = null,
+  anchorClientX = null,
+  anchorOffsetPx = null,
+  recordHistory = true,
+  fromWheel = false,
+  windowOverride = null,
+} = {}) {
   const control = byId("timeline-zoom");
   const zoom = Number(rawValue);
-  const derivedTrackWidth = Math.round(900 * zoom);
-  const derivedDensityBins = Math.round(180 * zoom);
   if (
     !Number.isFinite(zoom)
     || zoom < 1
-    || !Number.isFinite(derivedTrackWidth)
-    || !Number.isFinite(derivedDensityBins)
   ) {
     const normalized = Number.isFinite(state.zoom) && state.zoom >= 1 ? state.zoom : 1;
     state.zoom = normalized;
-    control.value = String(normalized);
+    control.value = timelineZoomControlValue(normalized);
     control.setAttribute("aria-invalid", "true");
     if (announce) showToast("Zoom must be 1 or greater and remain representable by this browser.");
     return false;
   }
+  if (!fromWheel) cancelScheduledTimelineZoom({ commitHistory: recordHistory });
   if (state.brush) finishTimelinePointer(null, true);
-  state.zoom = zoom;
-  control.value = String(zoom);
+  const scroll = byId("timeline-scroll");
+  const scrollRect = scroll.getBoundingClientRect();
+  const temporalViewportWidth = timelinePhysicalTrackWidth();
+  const effectiveAnchorNs = anchorNs === null ? visibleTimelineCenterNs() : clampNs(anchorNs);
+  const effectiveAnchorOffset = anchorOffsetPx === null
+    ? anchorClientX === null
+      ? temporalViewportWidth / 2
+      : Math.max(0, Math.min(
+        temporalViewportWidth,
+        anchorClientX - scrollRect.left - timelineLaneWidth() + scroll.scrollLeft,
+      ))
+    : Math.max(0, Math.min(temporalViewportWidth, anchorOffsetPx));
+  let viewport;
+  try {
+    viewport = windowOverride || timelineWindowForZoom({
+      zoom,
+      anchorNs: effectiveAnchorNs,
+      anchorOffsetRatio: effectiveAnchorOffset / temporalViewportWidth,
+      startNs: state.viewStartNs,
+      endNs: state.viewEndNs,
+    });
+  } catch (_error) {
+    control.setAttribute("aria-invalid", "true");
+    if (announce) showToast("That zoom cannot be represented by this browser viewport.");
+    return false;
+  }
+  if (
+    Math.abs(state.zoom - viewport.zoom) <= Number.EPSILON * Math.max(1, state.zoom, viewport.zoom)
+    && state.timelineWindowStartNs === viewport.startNs
+    && state.timelineWindowEndNs === viewport.endNs
+  ) {
+    control.value = timelineZoomControlValue(viewport.zoom);
+    control.setAttribute("aria-invalid", "false");
+    updateTimelineCommandAvailability();
+    return true;
+  }
+  if (recordHistory) rememberTimelineView();
+  if (!fromWheel) scheduleTimelineWindowRefresh();
+  invalidatePendingTimelineWindowRequest();
+  state.zoom = viewport.zoom;
+  state.timelineWindowStartNs = viewport.startNs;
+  state.timelineWindowEndNs = viewport.endNs;
+  control.value = timelineZoomControlValue(viewport.zoom);
   control.setAttribute("aria-invalid", "false");
+  const retainedScrollLeft = scroll.scrollLeft;
   renderTimeline();
+  scroll.scrollLeft = Math.min(
+    retainedScrollLeft,
+    Math.max(0, scroll.scrollWidth - scroll.clientWidth),
+  );
+  byId("timeline-ruler").style.transform = `translateX(${-scroll.scrollLeft}px)`;
+  if (recordHistory) rememberTimelineView();
+  updateTimelineCommandAvailability();
+  return true;
+}
+
+function zoomTimelineBy(direction, {
+  anchorNs = null,
+  anchorClientX = null,
+  announce = true,
+  recordHistory = true,
+} = {}) {
+  try {
+    return applyTimelineZoom(timelineZoomStep(state.zoom, direction), {
+      announce,
+      anchorNs: anchorNs ?? selectedTimelineCenterNs(),
+      anchorClientX,
+      recordHistory,
+    });
+  } catch (_error) {
+    if (announce) showToast("That zoom step cannot be represented by this browser.");
+    return false;
+  }
+}
+
+function fitTimelineCapture({ announce = true } = {}) {
+  const changed = applyTimelineZoom(1, {
+    announce,
+    anchorNs: state.viewStartNs,
+    anchorOffsetPx: 0,
+  });
+  if (changed && announce) showToast("Complete capture fitted; selections and lanes were preserved.");
+  return changed;
+}
+
+function centerTimelineAt(timeNs = selectedTimelineCenterNs(), { announce = true } = {}) {
+  const changed = applyTimelineZoom(state.zoom, {
+    announce,
+    anchorNs: timeNs,
+  });
+  if (changed && announce) showToast(`Centered ${formatOffset(timeNs)}.`);
+  return changed;
+}
+
+function zoomToSelectedRange({ announce = true } = {}) {
+  const bounds = rangeBounds();
+  if (!bounds) {
+    if (announce) showToast("Select a duration before zooming to it.");
+    return false;
+  }
+  let viewport;
+  try {
+    viewport = timelineWindowForRange({
+      rangeStartNs: bounds[0],
+      rangeEndNs: bounds[1],
+      startNs: state.viewStartNs,
+      endNs: state.viewEndNs,
+    });
+  } catch (_error) {
+    if (announce) showToast("The selected duration cannot be represented by this browser viewport.");
+    return false;
+  }
+  const centerNs = bounds[0] + (bounds[1] - bounds[0]) / 2n;
+  const changed = applyTimelineZoom(viewport.zoom, {
+    announce,
+    anchorNs: centerNs,
+    windowOverride: viewport,
+  });
+  if (changed && announce) showToast(`Selected duration fitted at ${formatDuration(bounds[1] - bounds[0])}.`);
+  return changed;
+}
+
+function selectVisibleTimelineRange() {
+  const [startNs, endNs] = timelineWindowBounds();
+  state.rangeStartNs = startNs;
+  state.rangeEndNs = endNs;
+  state.rangeSummary = null;
+  byId("clear-range").hidden = false;
+  updateRangeBands();
+  syncRangeInputs();
+  requestRangeSummary();
+}
+
+function setTimelineRangeBoundary(boundary, timeNs) {
+  const value = clampNs(timeNs);
+  const bounds = rangeBounds();
+  const minimum = rangeMinimumNs();
+  if (boundary === "start") {
+    const candidateEnd = bounds?.[1]
+      ?? (state.cursorSelected && state.cursorNs > value ? state.cursorNs : value + minimum);
+    state.rangeStartNs = value;
+    state.rangeEndNs = candidateEnd <= value ? value + minimum : candidateEnd;
+  } else {
+    const candidateStart = bounds?.[0]
+      ?? (state.cursorSelected && state.cursorNs < value ? state.cursorNs : value - minimum);
+    state.rangeStartNs = candidateStart >= value ? value - minimum : candidateStart;
+    state.rangeEndNs = value;
+  }
+  state.rangeStartNs = clampNs(state.rangeStartNs);
+  state.rangeEndNs = clampNs(state.rangeEndNs);
+  if (state.rangeStartNs === state.rangeEndNs) {
+    if (state.rangeEndNs + minimum <= state.viewEndNs) state.rangeEndNs += minimum;
+    else if (state.rangeStartNs - minimum >= state.viewStartNs) state.rangeStartNs -= minimum;
+  }
+  [state.rangeStartNs, state.rangeEndNs] = rangeBounds();
+  state.rangeSummary = null;
+  byId("clear-range").hidden = false;
+  updateRangeBands();
+  syncRangeInputs();
+  requestRangeSummary();
+}
+
+function panTimelineViewport(direction) {
+  return panTimelineViewportByPixels(
+    Number(direction) * timelinePhysicalTrackWidth() / 10,
+  );
+}
+
+function panTimelineViewportByPixels(deltaPx, {
+  recordHistory = true,
+  fromWheel = false,
+} = {}) {
+  if (!Number.isFinite(deltaPx) || deltaPx === 0) return false;
+  if (!fromWheel) cancelScheduledTimelineZoom({ commitHistory: recordHistory });
+  const [startNs, endNs] = timelineWindowBounds();
+  const duration = endNs - startNs;
+  const ratio = Math.min(1, Math.abs(deltaPx) / timelinePhysicalTrackWidth());
+  let step = timelineTimeAtRatio({ ratio, startNs: 0n, endNs: duration });
+  if (step <= 0n) step = 1n;
+  const requestedStart = startNs + (deltaPx < 0 ? -step : step);
+  const maximumStart = state.viewEndNs - duration;
+  const nextStart = requestedStart < state.viewStartNs
+    ? state.viewStartNs
+    : requestedStart > maximumStart ? maximumStart : requestedStart;
+  if (nextStart === startNs) return false;
+  if (recordHistory) rememberTimelineView();
+  invalidatePendingTimelineWindowRequest();
+  state.timelineWindowStartNs = nextStart;
+  state.timelineWindowEndNs = nextStart + duration;
+  renderTimeline();
+  if (recordHistory) rememberTimelineView();
+  if (!fromWheel) scheduleTimelineWindowRefresh();
+  return true;
+}
+
+function timelineInteractionTarget(element) {
+  const mark = element?.closest?.("[data-hover-key]");
+  if (!mark) return null;
+  const resourceId = mark.closest(".lane-track")?.dataset.resourceId || null;
+  const entryId = mark.dataset.logEntryId || null;
+  const projection = entryId ? state.timelineEntryProjections.get(entryId) : null;
+  const isEventCluster = mark.classList.contains("event-mark") && mark.classList.contains("cluster");
+  const isSourceCluster = mark.classList.contains("source-record-mark") && mark.classList.contains("cluster");
+  return {
+    eventUid: isEventCluster ? null : mark.dataset.eventUid || (projection?.streamKind === "event" ? projection.uid : null),
+    clusterId: isEventCluster ? mark.dataset.clusterId || null : null,
+    sourceRecordUid: isSourceCluster ? null : mark.dataset.sourceRecordUid || (projection?.streamKind === "source" ? projection.uid : null),
+    sourceClusterId: isSourceCluster ? mark.dataset.sourceClusterId || null : null,
+    revealEventUid: mark.dataset.eventUid || mark.dataset.lastEventUid || (projection?.streamKind === "event" ? projection.uid : null),
+    revealSourceRecordUid: mark.dataset.sourceRecordUid || mark.dataset.lastSourceRecordUid || (projection?.streamKind === "source" ? projection.uid : null),
+    hoverKey: mark.dataset.hoverKey || null,
+    resourceId,
+    element: mark,
+  };
+}
+
+function timelineContextFromTarget(element, clientX = null) {
+  const content = byId("timeline-content");
+  if (!element || !content.contains(element)) return null;
+  const track = element.closest?.(".lane-track");
+  const row = element.closest?.(".timeline-row");
+  const resourceId = track?.dataset.resourceId
+    || row?.dataset.resourceId
+    || element.closest?.("[data-resource-id]")?.dataset.resourceId
+    || null;
+  if (!track && !row) return null;
+  const timedElement = element.closest?.("[data-time-ns], [data-range-start-ns][data-range-end-ns]");
+  const exactTime = timedElement?.dataset.timeNs !== undefined
+    ? clampNs(timedElement.dataset.timeNs)
+    : timedElement?.dataset.rangeStartNs !== undefined
+      ? clampNs(
+        toNs(timedElement.dataset.rangeStartNs)
+        + (toNs(timedElement.dataset.rangeEndNs) - toNs(timedElement.dataset.rangeStartNs)) / 2n,
+      )
+      : null;
+  const timeNs = track && Number.isFinite(clientX)
+    ? pointNsFromClientX(clientX, track)
+    : exactTime ?? selectedTimelineCenterNs();
+  return {
+    timeNs,
+    clientX: Number.isFinite(clientX) ? clientX : null,
+    resourceId,
+    target: timelineInteractionTarget(element),
+  };
+}
+
+function timelineContextMenuItems() {
+  return [...byId("timeline-context-menu").querySelectorAll("[data-timeline-action]")]
+    .filter((button) => !button.hidden && !button.disabled);
+}
+
+function syncTimelineContextMenu(context = state.timelineContext) {
+  const menu = byId("timeline-context-menu");
+  if (!menu || !context) return;
+  byId("timeline-context-time").textContent = formatOffset(
+    context.timeNs,
+    visibleTimelineOffsetPrecision(),
+  );
+  const resource = context.resourceId ? state.resourceById.get(context.resourceId) : null;
+  byId("timeline-context-resource").textContent = context.resourceId
+    ? resourceLabel(resource, context.resourceId)
+    : "All timeline lanes";
+  const resourceActions = new Set(["focus-resource", "hide-lane"]);
+  menu.querySelectorAll("[data-timeline-action]").forEach((button) => {
+    const action = button.dataset.timelineAction;
+    if (action === "inspect") button.hidden = !context.target?.hoverKey;
+    if (action === "reveal-log") button.hidden = !(
+      context.target?.revealEventUid || context.target?.revealSourceRecordUid
+    );
+    if (resourceActions.has(action)) button.hidden = !context.resourceId;
+    if (action === "zoom-selection" || action === "copy-range") button.disabled = !rangeBounds();
+    if (action === "previous-view") button.disabled = state.timelineViewHistoryIndex <= 0;
+    if (action === "next-view") button.disabled = state.timelineViewHistoryIndex < 0
+      || state.timelineViewHistoryIndex >= state.timelineViewHistory.length - 1;
+    if (action === "zoom-out") button.disabled = state.zoom <= 1;
+  });
+}
+
+function closeTimelineContextMenu({ restoreFocus = false } = {}) {
+  const menu = byId("timeline-context-menu");
+  if (!menu || menu.hidden) return false;
+  menu.hidden = true;
+  byId("timeline-actions")?.setAttribute("aria-expanded", "false");
+  const returnFocus = state.timelineContextReturnFocus;
+  const originWasTimeline = state.timelineContextOriginWasTimeline;
+  state.timelineContext = null;
+  state.timelineContextReturnFocus = null;
+  state.timelineContextOriginWasTimeline = false;
+  if (restoreFocus) {
+    const target = returnFocus?.isConnected
+      ? returnFocus
+      : originWasTimeline
+        ? byId("timeline-scroll")
+        : byId("timeline-actions") || byId("timeline-scroll");
+    target?.focus({ preventScroll: true });
+  }
+  return true;
+}
+
+function restoreTimelineContextActionFocus(returnFocus, originWasTimeline) {
+  window.requestAnimationFrame(() => {
+    const target = originWasTimeline
+      ? byId("timeline-scroll")
+      : returnFocus?.isConnected
+      ? returnFocus
+      : byId("timeline-actions") || byId("timeline-scroll");
+    target?.focus({ preventScroll: true });
+  });
+}
+
+function positionTimelineContextMenu(clientX, clientY) {
+  const menu = byId("timeline-context-menu");
+  const margin = 8;
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(margin, Math.min(clientX, window.innerWidth - rect.width - margin))}px`;
+  menu.style.top = `${Math.max(margin, Math.min(clientY, window.innerHeight - rect.height - margin))}px`;
+}
+
+function openTimelineContextMenu({
+  element = null,
+  clientX = null,
+  clientY = null,
+  context = null,
+  keyboard = false,
+} = {}) {
+  const menu = byId("timeline-context-menu");
+  const resolved = context || timelineContextFromTarget(element, clientX);
+  if (!menu || !resolved) return false;
+  closeHover();
+  closeCorrelationHover();
+  state.timelineContext = resolved;
+  state.timelineContextOriginWasTimeline = Boolean(element?.closest?.("#timeline-content"));
+  const focusableElement = element?.closest?.(
+    "button, input, select, textarea, a[href], [tabindex]:not([tabindex='-1'])",
+  );
+  state.timelineContextReturnFocus = focusableElement instanceof HTMLElement
+    ? focusableElement
+    : document.activeElement instanceof HTMLElement
+      && document.activeElement !== document.body
+      && !menu.contains(document.activeElement)
+      ? document.activeElement
+      : byId("timeline-scroll");
+  syncTimelineContextMenu(resolved);
+  menu.hidden = false;
+  menu.scrollTop = 0;
+  byId("timeline-actions")?.setAttribute("aria-expanded", "true");
+  const anchorRect = element?.getBoundingClientRect?.();
+  const x = Number.isFinite(clientX) ? clientX : anchorRect ? anchorRect.left + Math.min(anchorRect.width / 2, 24) : window.innerWidth / 2;
+  const y = Number.isFinite(clientY) ? clientY : anchorRect ? anchorRect.bottom + 4 : window.innerHeight / 2;
+  positionTimelineContextMenu(x, y);
+  const firstItem = timelineContextMenuItems()[0];
+  firstItem?.focus({ preventScroll: true });
+  firstItem?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  return true;
+}
+
+async function activateTimelineContextAction(action) {
+  const context = state.timelineContext;
+  if (!context) return;
+  const target = context.target;
+  const returnFocus = state.timelineContextReturnFocus;
+  const originWasTimeline = state.timelineContextOriginWasTimeline;
+  closeTimelineContextMenu();
+  if (action === "inspect") {
+    activateShortGestureTarget(target);
+  } else if (action === "reveal-log") {
+    if (target?.revealEventUid) jumpToNormalizedLog(target.revealEventUid, target.resourceId);
+    else if (target?.revealSourceRecordUid) jumpToSourceLog(target.revealSourceRecordUid);
+  } else if (action === "focus-resource" && context.resourceId) {
+    selectResource(context.resourceId);
+  } else if (action === "hide-lane" && context.resourceId) {
+    setExplicitLaneVisibility(context.resourceId, false);
+  } else if (action === "select-moment") {
+    setCursor(context.timeNs);
+  } else if (action === "range-start") {
+    setTimelineRangeBoundary("start", context.timeNs);
+  } else if (action === "range-end") {
+    setTimelineRangeBoundary("end", context.timeNs);
+  } else if (action === "select-visible") {
+    selectVisibleTimelineRange();
+  } else if (action === "zoom-in") {
+    zoomTimelineBy("in", { anchorNs: context.timeNs, anchorClientX: context.clientX });
+  } else if (action === "zoom-out") {
+    zoomTimelineBy("out", { anchorNs: context.timeNs, anchorClientX: context.clientX });
+  } else if (action === "center") {
+    centerTimelineAt(context.timeNs);
+  } else if (action === "zoom-selection") {
+    zoomToSelectedRange();
+  } else if (action === "previous-view") {
+    restoreTimelineView(state.timelineViewHistoryIndex - 1);
+  } else if (action === "next-view") {
+    restoreTimelineView(state.timelineViewHistoryIndex + 1);
+  } else if (action === "fit") {
+    fitTimelineCapture();
+  } else if (action === "copy-time") {
+    await writeClipboardText(`${formatOffset(context.timeNs, visibleTimelineOffsetPrecision())}\t${context.timeNs} ns`);
+    showToast("Timeline timestamp copied.");
+  } else if (action === "copy-range") {
+    const bounds = rangeBounds();
+    if (bounds) {
+      await writeClipboardText(`${formatOffset(bounds[0])}\t${formatOffset(bounds[1])}\t${formatDuration(bounds[1] - bounds[0])}`);
+      showToast("Selected timeline range copied.");
+    }
+  } else if (action === "clear-selection") {
+    clearTimelineSelection();
+  }
+  // Reveal intentionally transfers focus to the normalized log. Every other
+  // action restores either the live origin or a stable timeline control after
+  // any synchronous innerHTML replacement performed by renderTimeline().
+  if (action !== "reveal-log") restoreTimelineContextActionFocus(returnFocus, originWasTimeline);
+}
+
+function timelineContextTabDestination(returnFocus, originWasTimeline, backwards) {
+  const origin = returnFocus?.isConnected
+    ? returnFocus
+    : originWasTimeline
+      ? byId("timeline-scroll")
+      : byId("timeline-actions") || byId("timeline-scroll");
+  const focusable = [...document.querySelectorAll(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  )].filter((element) => (
+    element instanceof HTMLElement
+    && !element.closest("[hidden]")
+    && element.getClientRects().length > 0
+  ));
+  const originIndex = focusable.indexOf(origin);
+  if (originIndex < 0) return origin;
+  return focusable[originIndex + (backwards ? -1 : 1)] || origin;
+}
+
+function timelineContextMenuKeyDown(event) {
+  const menu = byId("timeline-context-menu");
+  if (menu.hidden) return;
+  const items = timelineContextMenuItems();
+  const currentIndex = items.indexOf(document.activeElement);
+  let nextIndex = null;
+  if (event.key === "ArrowDown") nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % items.length;
+  else if (event.key === "ArrowUp") nextIndex = currentIndex < 0 ? items.length - 1 : (currentIndex - 1 + items.length) % items.length;
+  else if (event.key === "Home") nextIndex = 0;
+  else if (event.key === "End") nextIndex = items.length - 1;
+  else if (event.key === "Escape") {
+    event.preventDefault();
+    closeTimelineContextMenu({ restoreFocus: true });
+    return;
+  } else if (["Enter", " "].includes(event.key) && document.activeElement?.matches?.("[data-timeline-action]")) {
+    event.preventDefault();
+    document.activeElement.click();
+    return;
+  } else if (event.key === "Tab") {
+    event.preventDefault();
+    const returnFocus = state.timelineContextReturnFocus;
+    const originWasTimeline = state.timelineContextOriginWasTimeline;
+    closeTimelineContextMenu();
+    timelineContextTabDestination(returnFocus, originWasTimeline, event.shiftKey)
+      ?.focus({ preventScroll: true });
+    return;
+  } else return;
+  event.preventDefault();
+  const nextItem = items[nextIndex];
+  nextItem?.focus({ preventScroll: true });
+  nextItem?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function timelineViewportKeyDown(event) {
+  if (event.defaultPrevented || event.repeat || event.isComposing) return;
+  if (event.target.closest?.("input, textarea, select, [contenteditable='true']")) return;
+  if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+    event.preventDefault();
+    const element = event.target === byId("timeline-scroll")
+      ? byId("timeline-content").querySelector(".lane-track") || byId("timeline-content")
+      : event.target;
+    openTimelineContextMenu({ element, keyboard: true });
+    return;
+  }
+  const retainStableFocus = () => {
+    if (byId("timeline-content")?.contains(event.target)) {
+      byId("timeline-scroll")?.focus({ preventScroll: true });
+    }
+  };
+  if (event.altKey && event.key === "ArrowLeft") {
+    event.preventDefault();
+    retainStableFocus();
+    restoreTimelineView(state.timelineViewHistoryIndex - 1);
+    return;
+  }
+  if (event.altKey && event.key === "ArrowRight") {
+    event.preventDefault();
+    retainStableFocus();
+    restoreTimelineView(state.timelineViewHistoryIndex + 1);
+    return;
+  }
+  if (["+", "="].includes(event.key)) {
+    event.preventDefault();
+    retainStableFocus();
+    zoomTimelineBy("in");
+  } else if (["-", "_"].includes(event.key)) {
+    event.preventDefault();
+    retainStableFocus();
+    zoomTimelineBy("out");
+  } else if (event.key === "0") {
+    event.preventDefault();
+    retainStableFocus();
+    fitTimelineCapture();
+  } else if (event.key.toLowerCase() === "z" || (event.key === "Enter" && event.target === byId("timeline-scroll"))) {
+    if (!rangeBounds()) return;
+    event.preventDefault();
+    retainStableFocus();
+    zoomToSelectedRange();
+  } else if (event.key.toLowerCase() === "c") {
+    if (!state.cursorSelected && !rangeBounds()) return;
+    event.preventDefault();
+    retainStableFocus();
+    centerTimelineAt();
+  } else if (event.target === byId("timeline-scroll") && event.key === "ArrowLeft") {
+    event.preventDefault();
+    retainStableFocus();
+    panTimelineViewport(-1);
+  } else if (event.target === byId("timeline-scroll") && event.key === "ArrowRight") {
+    event.preventDefault();
+    retainStableFocus();
+    panTimelineViewport(1);
+  }
+}
+
+function timelineContextMenuRequested(event) {
+  if (!event.target.closest?.("#timeline-content")) return;
+  const context = timelineContextFromTarget(event.target, event.clientX);
+  if (!context) return;
+  event.preventDefault();
+  event.stopPropagation();
+  openTimelineContextMenu({
+    element: event.target,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    context,
+  });
+}
+
+function timelineWheel(event) {
+  // Pointer brushing owns horizontal navigation until it completes. Native
+  // wheel input during pointer capture otherwise races the brush's exact
+  // BigInt anchor and can detach the selected endpoint from the pointer.
+  if (state.brush) {
+    event.preventDefault();
+    return;
+  }
+  if (event.ctrlKey || event.metaKey) {
+    const track = event.target.closest?.(".lane-track")
+      || byId("timeline-content").querySelector(".lane-track");
+    const anchorNs = track
+      ? pointNsFromClientX(event.clientX, track)
+      : visibleTimelineCenterNs();
+    event.preventDefault();
+    scheduleTimelineZoom(event, { anchorNs });
+    return;
+  }
+  const deltaUnit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
+    : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? byId("timeline-scroll").clientWidth
+      : 1;
+  const horizontalDelta = Math.abs(event.deltaX) > Math.abs(event.deltaY)
+    ? event.deltaX * deltaUnit
+    : event.shiftKey ? event.deltaY * deltaUnit : 0;
+  if (!Number.isFinite(horizontalDelta) || horizontalDelta === 0) return;
+  event.preventDefault();
+  scheduleTimelinePan(horizontalDelta);
+}
+
+function scheduleTimelinePan(deltaPx) {
+  closeTimelineContextMenu();
+  beginTimelineWheelBurst("pan");
+  state.timelinePanDeltaPx += deltaPx;
+  if (state.timelinePanFrameId === null) {
+    state.timelinePanFrameId = window.requestAnimationFrame(() => {
+      state.timelinePanFrameId = null;
+      const pendingDeltaPx = state.timelinePanDeltaPx;
+      state.timelinePanDeltaPx = 0;
+      panTimelineViewportByPixels(pendingDeltaPx, {
+        recordHistory: false,
+        fromWheel: true,
+      });
+    });
+  }
+  scheduleTimelineWheelBurstFinish();
+}
+
+function scheduleTimelineZoom(event, { anchorNs = null } = {}) {
+  if (!(event.ctrlKey || event.metaKey)) return false;
+  const deltaUnit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
+    : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? byId("timeline-scroll").clientHeight
+      : 1;
+  const delta = event.deltaY * deltaUnit;
+  if (!Number.isFinite(delta) || delta === 0) return false;
+  event.preventDefault();
+  closeTimelineContextMenu();
+  beginTimelineWheelBurst("zoom");
+  const baseZoom = state.timelineWheelTargetZoom ?? state.zoom;
+  const factor = Math.exp(Math.min(1.2, Math.max(0.0001, Math.abs(delta) * 0.002)));
+  try {
+    state.timelineWheelTargetZoom = timelineZoomStep(baseZoom, delta < 0 ? "in" : "out", factor);
+  } catch (_error) {
+    finishTimelineWheelBurst();
+    showToast("That zoom step cannot be represented by this browser.");
+    return true;
+  }
+  state.timelineWheelAnchorNs = anchorNs ?? visibleTimelineCenterNs();
+  state.timelineWheelAnchorClientX = event.clientX;
+  if (state.timelineWheelFrameId === null) {
+    state.timelineWheelFrameId = window.requestAnimationFrame(() => {
+      state.timelineWheelFrameId = null;
+      const targetZoom = state.timelineWheelTargetZoom;
+      state.timelineWheelTargetZoom = null;
+      applyTimelineZoom(targetZoom, {
+        anchorNs: state.timelineWheelAnchorNs,
+        anchorClientX: state.timelineWheelAnchorClientX,
+        recordHistory: false,
+        fromWheel: true,
+      });
+    });
+  }
+  scheduleTimelineWheelBurstFinish();
   return true;
 }
 
 function resetTimelineView() {
+  cancelScheduledTimelineZoom({ commitHistory: true });
+  rememberTimelineView();
+  closeTimelineContextMenu();
+  invalidatePendingTimelineWindowRequest();
   state.zoom = 1;
+  state.timelineWindowStartNs = state.viewStartNs;
+  state.timelineWindowEndNs = state.viewEndNs;
   clearRangeSelection({ refreshEventLog: false });
   state.laneMode = isScaleMode() ? "custom" : "all";
   state.correlationTimelineExpanded = true;
@@ -10618,31 +11869,52 @@ function resetTimelineView() {
   renderRangeSummary();
   renderEventTable({ resetScroll: true });
   if (isScaleMode()) refreshScaleTimeline();
-  else renderTimeline();
+  else {
+    renderTimeline();
+    scheduleTimelineWindowRefresh();
+  }
   setCursor(state.viewEndNs, true, false);
+  rememberTimelineView();
 }
 
 function bindControls() {
   bindCorrelationPanelControls();
   bindGraphStageInspectionClear();
+  const timelineScroll = byId("timeline-scroll");
+  const timelineContent = byId("timeline-content");
+  const timelineMenu = byId("timeline-context-menu");
+  const timelineToolbar = byId("timeline-viewport-controls");
+  syncTimelineToolbarTabStop();
+  timelineToolbar.addEventListener("keydown", timelineToolbarKeyDown);
+  timelineToolbar.addEventListener("focusin", (event) => {
+    if (event.target.matches?.("button")) syncTimelineToolbarTabStop(event.target);
+  });
   byId("timeline-zoom").addEventListener("input", (event) => {
     applyTimelineZoom(event.target.value, { announce: true });
   });
+  byId("timeline-view-back").addEventListener("click", () => {
+    restoreTimelineView(state.timelineViewHistoryIndex - 1);
+  });
+  byId("timeline-view-forward").addEventListener("click", () => {
+    restoreTimelineView(state.timelineViewHistoryIndex + 1);
+  });
+  byId("timeline-zoom-out").addEventListener("click", () => zoomTimelineBy("out"));
+  byId("timeline-zoom-in").addEventListener("click", () => zoomTimelineBy("in"));
+  byId("timeline-zoom-selection").addEventListener("click", () => zoomToSelectedRange());
+  byId("timeline-center").addEventListener("click", () => centerTimelineAt());
+  byId("timeline-fit").addEventListener("click", () => fitTimelineCapture());
   byId("range-mode").addEventListener("click", () => { state.rangeMode = !state.rangeMode; byId("range-mode").setAttribute("aria-pressed", String(state.rangeMode)); byId("range-mode").textContent = state.rangeMode ? "Range brush on" : "Range brush"; byId("timeline-frame").classList.toggle("range-mode", state.rangeMode); });
   byId("clear-range").addEventListener("click", clearRangeSelection);
   byId("reset-view").addEventListener("click", resetTimelineView);
   byId("time-cursor").addEventListener("input", (event) => setCursor(nsAtRatio(Number(event.target.value) / 1_000_000)));
-  byId("timeline-scroll").addEventListener("wheel", (event) => {
-    if (!(event.ctrlKey || event.metaKey)) return;
-    event.preventDefault();
-    const nextZoom = Math.max(1, event.deltaY > 0 ? state.zoom / 1.25 : state.zoom * 1.25);
-    applyTimelineZoom(Number(nextZoom.toPrecision(12)));
-  }, { passive: false });
-  byId("timeline-scroll").addEventListener("scroll", () => {
+  byId("timeline-scroll").addEventListener("wheel", timelineWheel, { passive: false });
+  timelineScroll.addEventListener("scroll", () => {
     hideTimelineHoverLine();
-    byId("timeline-ruler").style.transform = `translateX(${-byId("timeline-scroll").scrollLeft}px)`;
+    closeTimelineContextMenu();
+    byId("timeline-ruler").style.transform = `translateX(${-timelineScroll.scrollLeft}px)`;
     window.clearTimeout(state.densityRenderTimer);
     state.densityRenderTimer = window.setTimeout(refreshDensityLaneForScroll, 80);
+    scheduleTimelineViewHistory();
   }, { passive: true });
   byId("resource-search").addEventListener("input", () => {
     state.resourceOffset = 0;
@@ -10652,19 +11924,61 @@ function bindControls() {
   });
   byId("reset-dashboard-layout").addEventListener("click", resetDashboardLayout);
   byId("range-editor").addEventListener("submit", applyRangeEditor);
-  const timelineContent = byId("timeline-content");
+  byId("range-zoom").addEventListener("click", (event) => {
+    if (applyRangeEditor(event)) zoomToSelectedRange();
+  });
   timelineContent.addEventListener("pointerdown", timelinePointerDown);
   timelineContent.addEventListener("pointermove", timelinePointerMove);
   timelineContent.addEventListener("pointerleave", hideTimelineHoverLine);
   timelineContent.addEventListener("pointerup", (event) => finishTimelinePointer(event, false));
   timelineContent.addEventListener("pointercancel", (event) => finishTimelinePointer(event, true));
   timelineContent.addEventListener("lostpointercapture", (event) => finishTimelinePointer(event, true));
+  timelineContent.addEventListener("keydown", timelineViewportKeyDown);
   timelineContent.addEventListener("keydown", timelineHandleKeyDown);
+  timelineContent.addEventListener("contextmenu", timelineContextMenuRequested);
+  timelineScroll.addEventListener("keydown", timelineViewportKeyDown);
+  byId("timeline-context-menu").addEventListener("keydown", timelineContextMenuKeyDown);
+  timelineMenu.addEventListener("click", (event) => {
+    const actionButton = event.target.closest?.("[data-timeline-action]");
+    if (!actionButton || actionButton.disabled) return;
+    event.preventDefault();
+    event.stopPropagation();
+    activateTimelineContextAction(actionButton.dataset.timelineAction).catch((error) => {
+      showToast(`Timeline action failed: ${error.message}`);
+    });
+  });
+  byId("timeline-actions").addEventListener("click", (event) => {
+    if (!timelineMenu.hidden) {
+      closeTimelineContextMenu({ restoreFocus: true });
+      return;
+    }
+    const button = event.currentTarget;
+    openTimelineContextMenu({
+      element: button,
+      keyboard: true,
+      context: {
+        timeNs: selectedTimelineCenterNs(),
+        clientX: null,
+        resourceId: state.selectedResourceId,
+        target: null,
+      },
+    });
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (timelineMenu.hidden || timelineMenu.contains(event.target) || byId("timeline-actions").contains(event.target)) return;
+    closeTimelineContextMenu();
+  });
   window.addEventListener("blur", () => {
     finishTimelinePointer(null, true);
     finishEventLogDrag(null, true);
+    closeTimelineContextMenu();
   });
   window.addEventListener("resize", () => {
+    closeTimelineContextMenu();
+    window.clearTimeout(bindControls.timelineResizeTimer);
+    bindControls.timelineResizeTimer = window.setTimeout(() => {
+      if (state.dataset && timelinePhysicalTrackWidth() !== state.trackWidth) renderTimeline();
+    }, 120);
     window.clearTimeout(bindControls.graphResizeTimer);
     bindControls.graphResizeTimer = window.setTimeout(() => {
       if (state.graph) renderGraph();
@@ -10803,6 +12117,7 @@ function bindControls() {
   hover.addEventListener("pointerenter", () => window.clearTimeout(state.hoverCloseTimer));
   hover.addEventListener("pointerleave", scheduleHoverClose);
   document.addEventListener("keydown", handleEscapeKey);
+  rememberTimelineView();
 }
 
 function discoverPresentation() {
@@ -10878,6 +12193,9 @@ async function initialize() {
     state.viewStartNs = toNs(declaredStartNs, times.length ? times.reduce((a, b) => a < b ? a : b) : 0n);
     state.viewEndNs = toNs(declaredEndNs ?? declaredCaptureNs, times.length ? times.reduce((a, b) => a > b ? a : b) : state.viewStartNs + 1n);
     if (state.viewEndNs <= state.viewStartNs) state.viewEndNs = state.viewStartNs + 1n;
+    state.timelineWindowStartNs = state.viewStartNs;
+    state.timelineWindowEndNs = state.viewEndNs;
+    state.zoom = 1;
     state.cursorNs = clampNs(toNs(navigationContext.timeNs || declaredCaptureNs, state.viewEndNs));
     state.cursorSelected = Boolean(navigationContext.timeNs);
     if (isScaleMode()) {

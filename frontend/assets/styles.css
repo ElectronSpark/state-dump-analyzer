@@ -646,6 +646,47 @@ button.chain-node:hover {
   accent-color: var(--cyan);
 }
 
+.timeline-viewport-controls {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(7, 16, 25, 0.42);
+  scrollbar-width: thin;
+}
+
+.timeline-toolbar .timeline-viewport-controls > button {
+  min-width: 32px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+}
+
+.timeline-toolbar .timeline-viewport-controls > button:last-child {
+  border-right: 0;
+}
+
+.timeline-viewport-controls .zoom-control {
+  min-height: 32px;
+  padding: 0 9px;
+  border-right: 1px solid var(--line);
+}
+
+.timeline-viewport-controls button:disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+
+.timeline-viewport-controls button:not(:disabled):hover,
+.timeline-viewport-controls button:not(:disabled):focus-visible {
+  background: var(--cyan-soft);
+  color: var(--cyan);
+}
+
 .timeline-frame {
   overflow: hidden;
   border: 1px solid var(--line);
@@ -706,6 +747,102 @@ button.chain-node:hover {
 .timeline-content {
   position: relative;
   min-width: 950px;
+}
+
+.timeline-context-menu {
+  position: fixed;
+  z-index: 90;
+  width: min(286px, calc(100vw - 16px));
+  max-height: min(620px, calc(100vh - 16px));
+  overflow: auto;
+  padding: 7px;
+  border: 1px solid rgba(102, 184, 255, 0.42);
+  border-radius: 12px;
+  background: rgba(7, 18, 27, 0.98);
+  box-shadow: 0 22px 65px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(18px);
+}
+
+.timeline-context-menu[hidden],
+.timeline-context-menu [hidden] {
+  display: none;
+}
+
+.timeline-context-heading {
+  display: grid;
+  gap: 3px;
+  padding: 8px 9px 9px;
+}
+
+.timeline-context-heading span {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 760;
+}
+
+.timeline-context-heading small {
+  overflow: hidden;
+  color: var(--muted-2);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-context-group {
+  display: grid;
+  gap: 2px;
+  padding: 5px 0;
+  border-top: 1px solid var(--line-soft);
+}
+
+.timeline-context-group::before {
+  padding: 4px 9px 2px;
+  color: var(--muted-2);
+  content: attr(data-label);
+  font-family: var(--mono);
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.timeline-context-group button {
+  width: 100%;
+  min-height: 30px;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.timeline-context-group button:hover,
+.timeline-context-group button:focus-visible {
+  background: rgba(82, 224, 196, 0.1);
+  color: var(--text);
+}
+
+.timeline-context-group button:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: -2px;
+}
+
+@media (forced-colors: active) {
+  .timeline-context-group button:focus-visible {
+    background: Highlight;
+    color: HighlightText;
+    outline: 2px solid Highlight;
+  }
+}
+
+.timeline-context-group button:disabled {
+  cursor: default;
+  opacity: 0.34;
 }
 
 .timeline-row {
@@ -2768,7 +2905,7 @@ footer button {
 .range-editor {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: minmax(145px, 1fr) minmax(145px, 1fr) auto minmax(160px, 1fr);
+  grid-template-columns: minmax(145px, 1fr) minmax(145px, 1fr) auto auto minmax(160px, 1fr);
   gap: 9px;
   align-items: end;
   padding-top: 10px;
@@ -4554,7 +4691,9 @@ footer button {
 
 /* Keep direct lane dragging under application control after legacy rules. */
 .timeline-frame .lane-track {
+  min-width: 0;
   touch-action: none;
+  overflow: hidden;
 }
 
 .timeline-frame.is-brushing .event-mark,
@@ -4726,6 +4865,15 @@ footer button {
 
 .event-mark.cluster span {
   font-size: 9px;
+}
+
+.event-mark.cluster.stale-window {
+  border-style: dashed;
+  opacity: 0.76;
+}
+
+.event-mark.cluster.stale-window span {
+  font-size: 8px;
 }
 
 .relationship-ribbon {
@@ -4978,6 +5126,15 @@ footer button {
   background: rgba(165, 139, 255, 0.11);
   box-shadow: none;
   pointer-events: auto;
+  padding: 0;
+  color: inherit;
+  cursor: help;
+  font: inherit;
+}
+
+.timeline-row .relationship-ribbon:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
 }
 
 .timeline-row .relationship-ribbon.active {

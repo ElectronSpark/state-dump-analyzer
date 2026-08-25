@@ -4207,16 +4207,34 @@ POST /v1/revisions/rev-01/events/density/query
 {
   "start_ns": "1759680240000000000",
   "end_ns": "1759680250000000000",
-  "bin_count": 240
+  "bin_count": 240,
+  "bin_start_index": 80,
+  "bin_end_index": 160
 }
 ```
 
 The response contains only populated exact bins with inclusive nanosecond
 bounds, total/failure counts, and the most frequent opaque plug-in event types.
-The core caps one request's work and response, while a client may retain an
-arbitrarily large logical zoom by requesting only visible bins plus overscan.
-For full-scale revisions the core answers from timestamp, failure, and
-event-type indexes; it does not rescan or serialize the million-event stream.
+`start_ns`, `end_ns`, and `bin_count` define one immutable global partition.
+For inclusive span `S = end_ns - start_ns + 1` and effective resolution `k`,
+bin `i` covers `start_ns + floor(S*i/k)` through
+`start_ns + floor(S*(i+1)/k) - 1`, inclusive; every event is assigned to the
+unique bin whose reported bounds contain its timestamp.
+The optional `bin_start_index`/`bin_end_index` pair selects a half-open slice of
+those global bin indices; both fields must be present together, the end must be
+greater than the start, and one page may span at most 4,096 bins. Returned
+`bins[].index` values remain global rather than page-relative, so adjacent or
+overlapping pages have identical boundaries and counts even when the inclusive
+time span is not evenly divisible by `bin_count`. When the pair is omitted, the
+endpoint retains its compatible single-page form and caps the complete
+partition to 4,096 bins. The core therefore caps one request's work and
+response, while a client may retain an arbitrarily large logical zoom by
+requesting only visible bins plus overscan.
+For full-scale revisions the core answers from the normalized timestamp index
+and may consume optional failure and event-type secondary indexes. Those
+secondary indexes are accelerators, not additions to the public
+`IndexedHistory` contract: an older conforming adapter without them receives a
+one-pass derivation from its normalized indexed events and is never mutated.
 
 ## 7. Point-in-time resource tables and selected ranges
 

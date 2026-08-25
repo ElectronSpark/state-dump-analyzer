@@ -2400,6 +2400,114 @@ def _indexed_event_only_log_page(
     }
 
 
+def _density_secondary_indexes(
+    runtime: Any,
+) -> tuple[list[int], Mapping[str, list[int]]]:
+    """Resolve optional density indexes without extending IndexedHistory.
+
+    ``failure_event_times`` and ``event_times_by_type`` are an optimization
+    supplied by some history implementations, not part of the public
+    ``IndexedHistory`` contract.  A conforming older implementation therefore
+    falls back to one pass over its normalized events and is never mutated.
+    """
+
+    failure_event_times = getattr(runtime, "failure_event_times", None)
+    event_times_by_type = getattr(runtime, "event_times_by_type", None)
+    if (
+        failure_event_times is not None
+        and isinstance(event_times_by_type, Mapping)
+        and (event_times_by_type or not runtime.events)
+    ):
+        return failure_event_times, event_times_by_type
+
+    fallback_failure_times: list[int] = []
+    fallback_times_by_type: dict[str, list[int]] = {}
+    for event in runtime.events:
+        timestamp_ns = int(event.get("timestamp_ns", 0))
+        if str(event.get("outcome", "")) == "failure":
+            fallback_failure_times.append(timestamp_ns)
+        event_type = str(
+            event.get("event_type") or event.get("event_name") or "unknown"
+        )
+        fallback_times_by_type.setdefault(event_type, []).append(timestamp_ns)
+    # Sorting the derived secondary lists also keeps this compatibility path
+    # safe for simple structural adapters that only guarantee event_times
+    # ordering.
+    fallback_failure_times.sort()
+    for timestamps in fallback_times_by_type.values():
+        timestamps.sort()
+    return fallback_failure_times, fallback_times_by_type
+
+
+def _density_bin_bounds(
+    start_ns: int,
+    integer_span: int,
+    bin_count: int,
+    index: int,
+) -> tuple[int, int]:
+    """Return one bin's inclusive bounds in the canonical density partition."""
+
+    bin_start_ns = start_ns + (integer_span * index) // bin_count
+    bin_end_ns = start_ns + (integer_span * (index + 1)) // bin_count - 1
+    return bin_start_ns, bin_end_ns
+
+
+def _density_bin_index(
+    timestamp_ns: int,
+    start_ns: int,
+    integer_span: int,
+    bin_count: int,
+) -> int:
+    """Invert ``_density_bin_bounds`` exactly for a timestamp in the span."""
+
+    offset = timestamp_ns - start_ns
+    return min(
+        bin_count - 1,
+        (((offset + 1) * bin_count) - 1) // integer_span,
+    )
+
+
+def _density_type_counts_by_bin(
+    event_times_by_type: Mapping[str, list[int]],
+    *,
+    page_start_ns: int,
+    page_end_exclusive: int,
+    start_ns: int,
+    integer_span: int,
+    bin_count: int,
+    bin_start_index: int,
+    bin_end_index: int,
+) -> dict[int, Counter[str]]:
+    """Sweep each event-type index once for one bounded density page.
+
+    The previous nested loop bisected every event-type list for every populated
+    bin, making work proportional to ``bins * distinct_types``.  This sweep is
+    proportional to the number of distinct types plus matching event points.
+    """
+
+    counts_by_bin: dict[int, Counter[str]] = {}
+    for raw_event_type, timestamps in event_times_by_type.items():
+        event_type = str(raw_event_type)
+        type_left = bisect_left(timestamps, page_start_ns)
+        type_right = bisect_left(
+            timestamps,
+            page_end_exclusive,
+            type_left,
+        )
+        for position in range(type_left, type_right):
+            timestamp_ns = timestamps[position]
+            index = _density_bin_index(
+                timestamp_ns,
+                start_ns,
+                integer_span,
+                bin_count,
+            )
+            if index < bin_start_index or index >= bin_end_index:
+                continue
+            counts_by_bin.setdefault(index, Counter())[event_type] += 1
+    return counts_by_bin
+
+
 @api_router.post("/v1/revisions/{revision_id:path}/events/density/query")
 def event_density_query(
     revision_id: str,
@@ -2430,34 +2538,84 @@ def event_density_query(
         maximum=MAX_JSON_SAFE_INTEGER,
     )
     integer_span = end_ns - start_ns + 1
-    bin_count = min(requested_bin_count, MAX_DENSITY_BINS, integer_span)
+    paged_request = "bin_start_index" in body or "bin_end_index" in body
+    if paged_request and not {
+        "bin_start_index",
+        "bin_end_index",
+    }.issubset(body):
+        raise _RuntimeHTTPResponse(
+            status_code=422,
+            detail="bin_start_index and bin_end_index must be supplied together",
+        )
+    # A paged request describes bins in one immutable global coordinate
+    # system. Only the requested bounded slice is materialized, so deep zoom
+    # does not require a huge response and adjacent pages cannot repartition
+    # the same timestamps differently.
+    bin_count = min(requested_bin_count, integer_span)
+    if paged_request:
+        bin_start_index = _body_integer(
+            body,
+            "bin_start_index",
+            0,
+            minimum=0,
+            maximum=bin_count - 1,
+        )
+        bin_end_index = _body_integer(
+            body,
+            "bin_end_index",
+            bin_count,
+            minimum=1,
+            maximum=bin_count,
+        )
+        if bin_end_index <= bin_start_index:
+            raise _RuntimeHTTPResponse(
+                status_code=422,
+                detail="bin_end_index must be greater than bin_start_index",
+            )
+        if bin_end_index - bin_start_index > MAX_DENSITY_BINS:
+            raise _RuntimeHTTPResponse(
+                status_code=422,
+                detail=f"density page must contain at most {MAX_DENSITY_BINS} bins",
+            )
+    else:
+        bin_count = min(bin_count, MAX_DENSITY_BINS)
+        bin_start_index = 0
+        bin_end_index = bin_count
 
     dataset = load_dataset()
     runtime = history_runtime(dataset)
     if runtime is not None:
-        # Runtime constructors predating the density indexes remain compatible.
-        # Packed scale fixtures populate these during ingestion; an adapter that
-        # supplies only the older timestamp index pays this one-time fallback.
-        if runtime.events and not runtime.event_times_by_type:
-            failure_times: list[int] = []
-            times_by_type: dict[str, list[int]] = {}
-            for event in runtime.events:
-                timestamp_ns = int(event.get("timestamp_ns", 0))
-                if str(event.get("outcome", "")) == "failure":
-                    failure_times.append(timestamp_ns)
-                event_type = str(
-                    event.get("event_type") or event.get("event_name") or "unknown"
-                )
-                times_by_type.setdefault(event_type, []).append(timestamp_ns)
-            runtime.failure_event_times = failure_times
-            runtime.event_times_by_type = times_by_type
+        failure_event_times, event_times_by_type = _density_secondary_indexes(
+            runtime
+        )
         left = bisect_left(runtime.event_times, start_ns)
         right = bisect_right(runtime.event_times, end_ns)
         total_count = right - left
+        page_start_ns = start_ns + (
+            integer_span * bin_start_index
+        ) // bin_count
+        page_end_exclusive = start_ns + (
+            integer_span * bin_end_index
+        ) // bin_count
+        type_counts_by_bin = _density_type_counts_by_bin(
+            event_times_by_type,
+            page_start_ns=page_start_ns,
+            page_end_exclusive=page_end_exclusive,
+            start_ns=start_ns,
+            integer_span=integer_span,
+            bin_count=bin_count,
+            bin_start_index=bin_start_index,
+            bin_end_index=bin_end_index,
+        )
         response_bins: list[dict[str, Any]] = []
-        for index in range(bin_count):
-            bin_start_ns = start_ns + (integer_span * index) // bin_count
-            bin_end_exclusive = start_ns + (integer_span * (index + 1)) // bin_count
+        for index in range(bin_start_index, bin_end_index):
+            bin_start_ns, bin_end_ns = _density_bin_bounds(
+                start_ns,
+                integer_span,
+                bin_count,
+                index,
+            )
+            bin_end_exclusive = bin_end_ns + 1
             bin_left = bisect_left(
                 runtime.event_times,
                 bin_start_ns,
@@ -2474,28 +2632,20 @@ def event_density_query(
             if not count:
                 continue
             failure_count = bisect_left(
-                runtime.failure_event_times,
+                failure_event_times,
                 bin_end_exclusive,
-            ) - bisect_left(runtime.failure_event_times, bin_start_ns)
-            type_counts: list[tuple[str, int]] = []
-            for event_type, timestamps in runtime.event_times_by_type.items():
-                type_count = bisect_left(
-                    timestamps,
-                    bin_end_exclusive,
-                ) - bisect_left(timestamps, bin_start_ns)
-                if type_count:
-                    type_counts.append((event_type, type_count))
+            ) - bisect_left(failure_event_times, bin_start_ns)
             response_bins.append(
                 {
                     "index": index,
                     "start_ns": str(bin_start_ns),
-                    "end_ns": str(bin_end_exclusive - 1),
+                    "end_ns": str(bin_end_ns),
                     "count": count,
                     "failure_count": failure_count,
                     "top_types": [
                         {"event_type": event_type, "count": type_count}
                         for event_type, type_count in sorted(
-                            type_counts,
+                            type_counts_by_bin.get(index, {}).items(),
                             key=lambda item: (-item[1], item[0]),
                         )[:4]
                     ],
@@ -2514,10 +2664,14 @@ def event_density_query(
         bins: dict[int, dict[str, Any]] = {}
         for event in selected_events:
             timestamp_ns = int(event.get("timestamp_ns", 0))
-            index = min(
-                bin_count - 1,
-                ((timestamp_ns - start_ns) * bin_count) // integer_span,
+            index = _density_bin_index(
+                timestamp_ns,
+                start_ns,
+                integer_span,
+                bin_count,
             )
+            if index < bin_start_index or index >= bin_end_index:
+                continue
             aggregate = bins.setdefault(
                 index,
                 {
@@ -2536,11 +2690,11 @@ def event_density_query(
 
         response_bins = []
         for index, aggregate in sorted(bins.items()):
-            bin_start_ns = start_ns + (integer_span * index) // bin_count
-            bin_end_ns = (
-                end_ns
-                if index == bin_count - 1
-                else start_ns + (integer_span * (index + 1)) // bin_count - 1
+            bin_start_ns, bin_end_ns = _density_bin_bounds(
+                start_ns,
+                integer_span,
+                bin_count,
+                index,
             )
             response_bins.append(
                 {
@@ -2564,6 +2718,8 @@ def event_density_query(
         "end_ns": str(end_ns),
         "requested_bin_count": requested_bin_count,
         "bin_count": bin_count,
+        "bin_start_index": bin_start_index,
+        "bin_end_index": bin_end_index,
         "total_count": total_count,
         "indexed": runtime is not None,
         "bins": response_bins,

@@ -8,11 +8,12 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-
-from router_dump_analyzer.web import runtime_api as demo_app
 from rsl_demo_plugin.data import REVISION_ID
-from router_dump_analyzer.history_search_core import HistorySearchCorpus
 from rsl_demo_plugin.scale_data import ScaleRuntime
+
+from router_dump_analyzer.history_search_core import HistorySearchCorpus
+from router_dump_analyzer.normalized_data import IndexedHistory
+from router_dump_analyzer.web import runtime_api as demo_app
 from tests.support.generated_demo import generated_demo_application
 from tests.support.normalized_data import static_data_service
 
@@ -293,6 +294,104 @@ class ScaleHistoryApiTests(unittest.TestCase):
         self.assertTrue(payload["indexed"])
         self.assertLessEqual(len(payload["bins"]), 3)
 
+    def test_density_pages_keep_one_global_partition_for_nondivisible_spans(self) -> None:
+        events = [
+            {
+                "event_uid": f"event-{timestamp_ns}",
+                "timestamp_ns": str(timestamp_ns),
+                "event_type": "plugin.even" if timestamp_ns % 2 == 0 else "plugin.odd",
+                "outcome": "failure" if timestamp_ns == 5 else "success",
+                "resource_id": "test/RESOURCE/one",
+            }
+            for timestamp_ns in range(10)
+        ]
+        expected_boundaries = {
+            1: ("1", "2"),
+            2: ("3", "4"),
+            3: ("5", "5"),
+            4: ("6", "7"),
+        }
+        observed_partitions: list[list[dict]] = []
+        for scale in (False, True):
+            with self.subTest(scale=scale):
+                dataset = _dataset(scale=False)
+                dataset["events"] = events
+                if scale:
+                    dataset["_scale_runtime"] = _runtime(dataset["resources"], events)
+                with patch.object(demo_app, "load_dataset", return_value=dataset):
+                    middle = self.client.post(
+                        f"/v1/revisions/{REVISION_ID}/events/density/query",
+                        json={
+                            "start_ns": "0",
+                            "end_ns": "9",
+                            "bin_count": 6,
+                            "bin_start_index": 1,
+                            "bin_end_index": 5,
+                        },
+                    )
+                    left = self.client.post(
+                        f"/v1/revisions/{REVISION_ID}/events/density/query",
+                        json={
+                            "start_ns": "0",
+                            "end_ns": "9",
+                            "bin_count": 6,
+                            "bin_start_index": 0,
+                            "bin_end_index": 3,
+                        },
+                    )
+                    right = self.client.post(
+                        f"/v1/revisions/{REVISION_ID}/events/density/query",
+                        json={
+                            "start_ns": "0",
+                            "end_ns": "9",
+                            "bin_count": 6,
+                            "bin_start_index": 2,
+                            "bin_end_index": 6,
+                        },
+                    )
+
+                self.assertEqual(middle.status_code, 200, middle.text)
+                payload = middle.json()
+                self.assertEqual(payload["indexed"], scale)
+                self.assertEqual(payload["total_count"], 10)
+                self.assertEqual(payload["bin_count"], 6)
+                self.assertEqual(payload["bin_start_index"], 1)
+                self.assertEqual(payload["bin_end_index"], 5)
+                observed_partitions.append(payload["bins"])
+                self.assertEqual(
+                    {
+                        item["index"]: (item["start_ns"], item["end_ns"])
+                        for item in payload["bins"]
+                    },
+                    expected_boundaries,
+                )
+                timestamp_three_bin = next(
+                    item for item in payload["bins"] if item["index"] == 2
+                )
+                self.assertEqual(
+                    (
+                        timestamp_three_bin["start_ns"],
+                        timestamp_three_bin["end_ns"],
+                        timestamp_three_bin["count"],
+                    ),
+                    ("3", "4", 2),
+                )
+                self.assertEqual(
+                    timestamp_three_bin["top_types"],
+                    [
+                        {"event_type": "plugin.even", "count": 1},
+                        {"event_type": "plugin.odd", "count": 1},
+                    ],
+                )
+                left_bin = next(item for item in left.json()["bins"] if item["index"] == 2)
+                right_bin = next(item for item in right.json()["bins"] if item["index"] == 2)
+                self.assertEqual(left_bin, right_bin)
+                self.assertEqual(
+                    (right.json()["bins"][-1]["start_ns"], right.json()["bins"][-1]["end_ns"]),
+                    ("8", "9"),
+                )
+        self.assertEqual(observed_partitions[0], observed_partitions[1])
+
     def test_density_index_does_not_scan_scale_event_payloads(self) -> None:
         class NoIterationEvents(list):
             def __iter__(self):
@@ -316,11 +415,122 @@ class ScaleHistoryApiTests(unittest.TestCase):
             [0, 1, 1],
         )
 
+    def test_density_accepts_public_indexed_history_without_demo_indexes(self) -> None:
+        class LegacyIndexedHistory:
+            __slots__ = tuple(IndexedHistory.__annotations__)
+
+            def __init__(self, source: ScaleRuntime) -> None:
+                for name in self.__slots__:
+                    setattr(self, name, getattr(source, name))
+
+        dataset = _dataset(scale=True)
+        runtime = LegacyIndexedHistory(dataset["_scale_runtime"])
+        self.assertIsInstance(runtime, IndexedHistory)
+        self.assertFalse(hasattr(runtime, "failure_event_times"))
+        self.assertFalse(hasattr(runtime, "event_times_by_type"))
+        dataset["_scale_runtime"] = runtime
+
+        with (
+            patch.object(demo_app, "load_dataset", return_value=dataset),
+            patch.object(demo_app, "history_runtime", return_value=runtime),
+        ):
+            response = self.client.post(
+                f"/v1/revisions/{REVISION_ID}/events/density/query",
+                json={"start_ns": "100", "end_ns": "399", "bin_count": 3},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertTrue(payload["indexed"])
+        self.assertEqual(payload["total_count"], 3)
+        self.assertEqual(
+            [item["failure_count"] for item in payload["bins"]],
+            [0, 1, 1],
+        )
+        self.assertEqual(
+            [item["top_types"] for item in payload["bins"]],
+            [
+                [{"event_type": "plugin.alpha", "count": 1}],
+                [{"event_type": "plugin.alpha", "count": 1}],
+                [{"event_type": "plugin.beta", "count": 1}],
+            ],
+        )
+
+    def test_density_sweeps_high_cardinality_type_index_once(self) -> None:
+        class CountingTypeIndex(dict[str, list[int]]):
+            items_calls = 0
+
+            def items(self):
+                self.items_calls += 1
+                return super().items()
+
+        event_count = 2_048
+        bin_count = 128
+        events = [
+            {
+                "event_uid": f"event-{index:04d}",
+                "timestamp_ns": str(index % bin_count),
+                "event_type": f"plugin.type-{index:04d}",
+                "outcome": "failure" if index % 257 == 0 else "success",
+                "resource_id": "test/RESOURCE/one",
+            }
+            for index in range(event_count)
+        ]
+        dataset = _dataset(scale=False)
+        dataset["events"] = events
+        runtime = _runtime(dataset["resources"], events)
+        type_index = CountingTypeIndex(runtime.event_times_by_type)
+        runtime.event_times_by_type = type_index
+        dataset["_scale_runtime"] = runtime
+
+        with patch.object(demo_app, "load_dataset", return_value=dataset):
+            response = self.client.post(
+                f"/v1/revisions/{REVISION_ID}/events/density/query",
+                json={
+                    "start_ns": "0",
+                    "end_ns": str(bin_count - 1),
+                    "bin_count": bin_count,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["total_count"], event_count)
+        self.assertEqual(len(payload["bins"]), bin_count)
+        self.assertTrue(all(item["count"] == 16 for item in payload["bins"]))
+        self.assertEqual(
+            payload["bins"][0]["top_types"],
+            [
+                {"event_type": "plugin.type-0000", "count": 1},
+                {"event_type": "plugin.type-0128", "count": 1},
+                {"event_type": "plugin.type-0256", "count": 1},
+                {"event_type": "plugin.type-0384", "count": 1},
+            ],
+        )
+        self.assertEqual(
+            type_index.items_calls,
+            1,
+            "type index must be swept once, not once per populated bin",
+        )
+
     def test_density_rejects_missing_or_reversed_bounds(self) -> None:
         for body in (
             {"start_ns": 0},
             {"start_ns": 2, "end_ns": 1},
             {"start_ns": 0, "end_ns": 1, "bin_count": 0},
+            {
+                "start_ns": 0,
+                "end_ns": 9,
+                "bin_count": 6,
+                "bin_start_index": 1,
+            },
+            {
+                "start_ns": 0,
+                "end_ns": 10_000,
+                "bin_count": 10_001,
+                "bin_start_index": 0,
+                "bin_end_index": demo_app.MAX_DENSITY_BINS + 1,
+            },
         ):
             with self.subTest(body=body):
                 self.assertEqual(

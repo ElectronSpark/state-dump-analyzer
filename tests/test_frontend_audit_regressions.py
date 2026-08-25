@@ -315,16 +315,19 @@ class SingleNodeAuditRegressionContractTests(unittest.TestCase):
             initialize.index("renderPluginDashboards()"),
         )
 
-    def test_zoom_rejects_unrepresentable_derived_dimensions_without_capping(self) -> None:
+    def test_zoom_uses_a_bounded_physical_surface_without_capping_logical_scale(self) -> None:
         zoom = javascript_function(self.script, "applyTimelineZoom")
+        render = javascript_function(self.script, "renderTimeline")
 
-        self.assertIn("const derivedTrackWidth = Math.round(900 * zoom)", zoom)
-        self.assertIn("const derivedDensityBins = Math.round(180 * zoom)", zoom)
-        self.assertIn("!Number.isFinite(derivedTrackWidth)", zoom)
-        self.assertIn("!Number.isFinite(derivedDensityBins)", zoom)
+        self.assertIn("const TIMELINE_BASE_TRACK_WIDTH = 900", self.script)
+        self.assertIn("timelineWindowForZoom", zoom)
+        self.assertIn("timelinePhysicalTrackWidth()", render)
+        self.assertNotIn("TIMELINE_BASE_TRACK_WIDTH * state.zoom", render)
+        self.assertIn("!Number.isFinite(zoom)", zoom)
         self.assertIn('control.setAttribute("aria-invalid", "true")', zoom)
         self.assertIn("remain representable by this browser", zoom)
-        self.assertNotRegex(zoom, r"Math\.min\(")
+        self.assertNotRegex(zoom, r"(?:const\s+zoom|state\.zoom)\s*=.*Math\.min\(")
+        self.assertNotIn("MAX_ZOOM", zoom)
 
     def test_server_health_and_failure_semantics_remain_visible(self) -> None:
         normalize_graph = javascript_function(self.script, "normalizedGraph")
