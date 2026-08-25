@@ -15,6 +15,7 @@ from router_dump_analyzer.plugin_api import (
     Quality,
     RelationDirection,
     RelationshipObservation,
+    RelationshipView,
     ResourceKey,
     SnapshotObservation,
     StatusPerspectiveRef,
@@ -86,6 +87,7 @@ def _relationship(
     *,
     locator: str,
     quality: Quality = Quality.EXACT,
+    perspective_ref: StatusPerspectiveRef | None = PERSPECTIVE,
 ) -> RelationshipObservation:
     return RelationshipObservation(
         source=source,
@@ -98,7 +100,7 @@ def _relationship(
         provenance=Provenance.OBSERVED,
         quality=quality,
         evidence=_evidence(locator, timestamp_ns),
-        perspective_ref=PERSPECTIVE,
+        perspective_ref=perspective_ref,
     )
 
 
@@ -419,6 +421,230 @@ class IngestionRevisionWorldTests(unittest.TestCase):
                 )
             ],
             ["depends_on"],
+        )
+
+    def test_revision_scoped_projection_augments_without_inventing_time(self) -> None:
+        resource_a = _resource("projected-a")
+        resource_b = _resource("projected-b")
+        projected = RelationshipView(
+            source=resource_a,
+            target=resource_b,
+            relation_type="same_object",
+            attributes={"match": {"method": "exact-key"}},
+            provenance=Provenance.CORRELATED,
+            quality=Quality.EXACT,
+            valid_from_ns=None,
+            valid_to_ns=None,
+            evidence=(_evidence("projection", 20),),
+            perspective_ref=PERSPECTIVE,
+        )
+        world = IngestionRevisionWorld(
+            basis=_basis(),
+            snapshots=(
+                _snapshot(
+                    resource_a,
+                    10,
+                    PropertyPatch(set_values={"name": "a"}, complete=True),
+                    locator="a",
+                ),
+                _snapshot(
+                    resource_b,
+                    11,
+                    PropertyPatch(set_values={"name": "b"}, complete=True),
+                    locator="b",
+                ),
+            ),
+            relationship_observations=(),
+            projected_relationships=(projected,),
+        )
+
+        retained = tuple(world.iter_relationships())
+        self.assertEqual(len(retained), 1)
+        self.assertIsNone(retained[0].valid_from_ns)
+        self.assertIsNone(retained[0].valid_to_ns)
+        self.assertEqual(retained[0].relation_type, "same_object")
+        self.assertEqual(
+            dict(cast(Mapping[str, Value], retained[0].attributes["match"])),
+            {"method": "exact-key"},
+        )
+        with self.assertRaises(TypeError):
+            cast(Mapping[str, Value], retained[0].attributes["match"])[
+                "method"
+            ] = "changed"  # type: ignore[index]
+
+    def test_observed_edge_wins_over_same_revision_projection(self) -> None:
+        resource_a = _resource("observed-a")
+        resource_b = _resource("observed-b")
+        observed = _relationship(
+            resource_a,
+            resource_b,
+            "same_object",
+            20,
+            True,
+            PropertyPatch(set_values={"authority": "parser"}, complete=True),
+            locator="observed",
+        )
+        projected = RelationshipView(
+            source=resource_a,
+            target=resource_b,
+            relation_type="same_object",
+            attributes={"authority": "projector"},
+            provenance=Provenance.CORRELATED,
+            quality=Quality.BEST_EFFORT,
+            valid_from_ns=None,
+            valid_to_ns=None,
+            evidence=(_evidence("projection", 21),),
+            perspective_ref=PERSPECTIVE,
+        )
+        world = IngestionRevisionWorld(
+            basis=_basis(),
+            snapshots=(),
+            relationship_observations=(observed,),
+            projected_relationships=(projected,),
+        )
+        retained = tuple(world.iter_relationships())
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(retained[0].attributes["authority"], "parser")
+        self.assertEqual(retained[0].valid_from_ns, 20)
+
+        for present in (False, None):
+            with self.subTest(parser_present=present):
+                suppressed = replace(
+                    observed,
+                    present=present,
+                    attributes=PropertyPatch(
+                        set_values={"authority": "parser-tombstone"},
+                        complete=True,
+                    ),
+                )
+                suppressed_world = IngestionRevisionWorld(
+                    basis=_basis(),
+                    snapshots=(),
+                    relationship_observations=(suppressed,),
+                    projected_relationships=(projected,),
+                )
+                self.assertEqual(tuple(suppressed_world.iter_relationships()), ())
+
+        with self.assertRaisesRegex(ValueError, "temporal validity"):
+            IngestionRevisionWorld(
+                basis=_basis(),
+                snapshots=(),
+                relationship_observations=(),
+                projected_relationships=(replace(projected, valid_from_ns=20),),
+            )
+        with self.assertRaisesRegex(ValueError, "duplicate endpoint/type"):
+            IngestionRevisionWorld(
+                basis=_basis(),
+                snapshots=(),
+                relationship_observations=(),
+                projected_relationships=(projected, projected),
+            )
+
+    def test_primary_authority_joins_local_observation_with_qualified_projection(
+        self,
+    ) -> None:
+        resource_a = _resource("authority-a")
+        resource_b = _resource("authority-b")
+        schema_digest = "sha256:" + "a" * 64
+        observed = _relationship(
+            resource_a,
+            resource_b,
+            "same_object",
+            20,
+            True,
+            PropertyPatch(set_values={"authority": "parser"}, complete=True),
+            locator="observed-local-perspective",
+            perspective_ref=StatusPerspectiveRef("test.observed"),
+        )
+        projected = RelationshipView(
+            source=resource_a,
+            target=resource_b,
+            relation_type="same_object",
+            attributes={"authority": "projector"},
+            provenance=Provenance.CORRELATED,
+            quality=Quality.BEST_EFFORT,
+            valid_from_ns=None,
+            valid_to_ns=None,
+            perspective_ref=StatusPerspectiveRef(
+                "test.observed",
+                plugin_instance_id="primary.instance",
+                schema_digest=schema_digest,
+            ),
+        )
+
+        world = IngestionRevisionWorld(
+            basis=_basis(),
+            snapshots=(),
+            relationship_observations=(observed,),
+            projected_relationships=(projected,),
+            primary_plugin_instance_id="primary.instance",
+            primary_schema_digest=schema_digest,
+        )
+
+        retained = tuple(world.iter_relationships())
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(retained[0].attributes["authority"], "parser")
+        self.assertEqual(retained[0].perspective_ref, projected.perspective_ref)
+
+    def test_relationship_identity_retains_perspectives_and_canonicalizes_undirected_edges(
+        self,
+    ) -> None:
+        resource_a = _resource("perspective-a")
+        resource_b = _resource("perspective-b")
+        second_perspective = StatusPerspectiveRef("test.programmed")
+        projected_observed = RelationshipView(
+            source=resource_b,
+            target=resource_a,
+            relation_type="same_object",
+            attributes={"source": "projection-observed"},
+            provenance=Provenance.CORRELATED,
+            quality=Quality.EXACT,
+            valid_from_ns=None,
+            valid_to_ns=None,
+            perspective_ref=PERSPECTIVE,
+        )
+        projected_programmed = replace(
+            projected_observed,
+            attributes={"source": "projection-programmed"},
+            perspective_ref=second_perspective,
+        )
+        observed = _relationship(
+            resource_b,
+            resource_a,
+            "same_object",
+            20,
+            True,
+            PropertyPatch(set_values={"source": "parser"}, complete=True),
+            locator="observed-reverse",
+            perspective_ref=PERSPECTIVE,
+        )
+
+        world = IngestionRevisionWorld(
+            basis=_basis(),
+            snapshots=(),
+            relationship_observations=(observed,),
+            projected_relationships=(projected_observed, projected_programmed),
+            undirected_relationship_types=frozenset({"same_object"}),
+        )
+
+        retained = tuple(world.iter_relationships())
+        self.assertEqual(len(retained), 2)
+        by_perspective = {item.perspective_ref: item for item in retained}
+        self.assertEqual(by_perspective[PERSPECTIVE].attributes["source"], "parser")
+        self.assertEqual(
+            by_perspective[second_perspective].attributes["source"],
+            "projection-programmed",
+        )
+        self.assertEqual(
+            {
+                (item.source, item.target)
+                for item in retained
+            },
+            {(retained[0].source, retained[0].target)},
+        )
+        self.assertEqual(
+            {retained[0].source, retained[0].target},
+            {resource_a, resource_b},
         )
 
     def test_values_are_detached_and_deeply_immutable(self) -> None:

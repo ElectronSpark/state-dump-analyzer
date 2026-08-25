@@ -10,10 +10,14 @@ semantics.
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 from typing import Any, Final
 
-from pydantic_core import from_json
+try:
+    from pydantic_core import from_json as _accelerated_from_json
+except ModuleNotFoundError:  # The fixture generator is stdlib-importable.
+    _accelerated_from_json = None
 
 
 RESOURCE_TABLE_COLUMNS: Final[tuple[str, ...]] = (
@@ -61,6 +65,12 @@ _CONDITION_CLASSES = {
 }
 
 
+def _from_json(value: bytes | bytearray | str) -> Any:
+    if _accelerated_from_json is not None:
+        return _accelerated_from_json(value)
+    return json.loads(value)
+
+
 @lru_cache(maxsize=64)
 def _scale_condition_class_cached(normalized: str) -> str:
     return _CONDITION_CLASSES.get(normalized, "unknown")
@@ -92,7 +102,7 @@ def _resource_json_object(raw: str, column: str) -> dict[str, Any]:
     if not raw:
         return {}
     try:
-        value = from_json(raw)
+        value = _from_json(raw)
     except (TypeError, ValueError) as error:
         raise RuntimeError(
             f"packed resource table {column} must contain valid JSON"

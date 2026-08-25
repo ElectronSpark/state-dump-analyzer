@@ -1181,6 +1181,9 @@ class MultiNodeTopologyTests(unittest.TestCase):
     def test_absolute_query_federates_generated_projections_and_deep_links(self) -> None:
         capabilities = self.client.get("/v1/topologies/capabilities").json()
         nodes = {item["node_id"]: item for item in capabilities["nodes"]}
+        node_a_selection = nodes["node-a"][
+            "default_projection_selections"
+        ][0]
 
         def node_query(node_id: str) -> dict[str, object]:
             node = nodes[node_id]
@@ -1251,11 +1254,12 @@ class MultiNodeTopologyTests(unittest.TestCase):
         self.assertEqual(resource["deep_link"]["route"], "/node")
         self.assertEqual(parameters["plugin_set_id"], ["node-a.generated.v1"])
         self.assertEqual(
-            parameters["projection_id"], ["node-a.generated-topology"]
+            parameters["projection_id"],
+            [node_a_selection["projection_id"]],
         )
         self.assertEqual(
             parameters["status_perspective_id"],
-            ["node-a.generated-observed"],
+            [node_a_selection["status_perspective_id"]],
         )
         self.assertEqual(parameters["context_id"], [payload["context_id"]])
 
@@ -1805,6 +1809,10 @@ class MultiNodeTopologyTests(unittest.TestCase):
         )
 
     def test_context_member_and_node_query_preserve_navigation_context(self) -> None:
+        capabilities = self.client.get("/v1/topologies/capabilities").json()
+        nodes = {item["node_id"]: item for item in capabilities["nodes"]}
+        node_b = nodes["node-b"]
+        selection = node_b["default_projection_selections"][0]
         reconstruction = self.client.post(
             "/v1/topologies/query",
             json={
@@ -1828,17 +1836,23 @@ class MultiNodeTopologyTests(unittest.TestCase):
                     "kind": "absolute_time",
                     "time_ns": "1759680005000000000",
                 },
-                "plugin_set_id": "node-b.generated.v1",
-                "plugin_id": "demo.example-router",
-                "projection_id": "node-b.generated-topology",
-                "status_perspective_id": "node-b.generated-observed",
+                "plugin_set_id": node_b["active_plugin_set_id"],
+                "plugin_id": selection["plugin_id"],
+                "projection_id": selection["projection_id"],
+                "status_perspective_id": selection[
+                    "status_perspective_id"
+                ],
             },
         )
         self.assertEqual(node.status_code, 200)
         self.assertEqual(node.json()["node"]["node_id"], "node-b")
         href = node.json()["navigation"]["individual_node"]["href"]
-        self.assertIn("plugin_set_id=node-b.generated.v1", href)
-        self.assertIn("projection_id=node-b.generated-topology", href)
+        self.assertIn(
+            f"plugin_set_id={node_b['active_plugin_set_id']}", href
+        )
+        self.assertIn(
+            f"projection_id={selection['projection_id']}", href
+        )
 
     def test_relative_node_deep_link_round_trips_without_absolute_time(self) -> None:
         offset_ns = "-1000000"
@@ -2076,7 +2090,7 @@ class MultiNodeTopologyTests(unittest.TestCase):
         self.assertGreater(payload["counts"]["network_segments"], 0)
         self.assertEqual(
             payload["nodes"][0]["node_query"]["projection_id"],
-            "node-a.generated-topology",
+            plans[0][3],
         )
 
     def test_topology_page_is_primary_and_former_route_remains_an_alias(self) -> None:
@@ -2090,7 +2104,7 @@ class MultiNodeTopologyTests(unittest.TestCase):
         self.assertIn("Multi-node topology", primary.text)
         self.assertEqual(primary.text, alias.text)
         self.assertIn("single-node analysis workspace", node.text)
-        self.assertIn("20260728-reconstruction-selector-v37", primary.text)
+        self.assertIn("20260823-interaction-performance-v38", primary.text)
         self.assertIn("control-plane only / not installed", primary.text)
         topology_script = self.client.get("/assets/topology.js")
         topology_styles = self.client.get("/assets/topology.css")

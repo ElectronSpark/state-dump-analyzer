@@ -246,8 +246,9 @@ budget.
 Optional semantic hooks have an executable Python caller but no plug-in-owned
 HTTP surface. Host code imports `PluginCapabilityExecutor` from
 `router_dump_analyzer` and uses its `apply`, `revert`, `correlate`,
-`check_consistency`, `project_topology`, `project_forwarding`, and
-`resolve_forwarding_step`, and `analyze_evidence` methods. The executor gates each call by the manifest,
+`project_relationships`, `check_consistency`, `project_topology`,
+`project_forwarding`, `resolve_forwarding_step`, and `analyze_evidence`
+methods. The executor gates each call by the manifest,
 bounds world reads and output iterators, validates requests and results against
 the immutable schema, preserves recoverable diagnostics in typed result
 envelopes, and raises a typed execution error for fatal or invalid output.
@@ -256,12 +257,45 @@ Caller-owned request validation instead raises the root-exported
 plug-in output remains `PluginCapabilityOutputError`.
 This makes the hook contract executable without implying temporal, topology,
 or route providers; those runtime-v2 providers remain `None`. Durable
-ingestion now schedules `CONSISTENCY_CHECK` after the execution plan is frozen
-and before normalized bytes are hashed. Its canonical dataset contains
+ingestion now schedules `RELATIONSHIP_PROJECTION` and then
+`CONSISTENCY_CHECK` after the execution plan is frozen and before normalized
+bytes are hashed. The primary participates when it declares the corresponding
+capability. Auxiliaries require the exact `revision_relationship_projection`
+or `revision_consistency` role in addition to the capability.
+
+Every relationship projector receives the same immutable base revision world.
+Its `RelationshipDeclaration` values have no timestamp, presence, basis, or
+producer fields: core attaches the basis digest, plan digest, and exact
+provider. Both endpoints must exist in the base world, the relation and
+perspective must belong to the primary schema, attributes must be complete
+with no removals, and evidence must belong to the revision. Canonically
+identical declarations collapse with their contributions retained. Conflicting
+claims remain distinct under a stable ambiguity group and produce one
+conservative ambiguous edge containing only common attributes. The augmented
+world, not the base world, is passed to consistency providers. Durable records
+retain the complete declared attributes; public projections apply the primary
+schema's descriptor-sensitive redaction rules to those plug-in-owned values.
+
+For ordinary direct execution, a provider is validated against its own
+schema. Scheduled materialization uses a private coordinator authority to
+validate primary and auxiliary declarations against the primary revision
+schema; there is no public schema-override parameter. Projection diagnostics
+must be recoverable and use the exact `relationship_projection` stage.
+Perspective qualification is part of edge identity, so equal endpoint/type
+claims in different perspectives remain independent. An explicit parser edge
+is authoritative over a projected edge only at the same fully qualified
+perspective.
+
+The canonical dataset contains `relationship_declarations`,
+`relationship_projection_edges`, producer-qualified
+`relationship_projection_diagnostics`, and a
+`relationship_projection_materialization` envelope. It then contains
 `findings`, producer-qualified `consistency_diagnostics`, summary counts, and
 a `consistency_materialization` envelope whose status is `complete` or
-`not_applicable`. Legacy revisions lacking that envelope are surfaced as
-`not_materialized`; they are not recomputed during a read.
+`not_applicable`. Legacy revisions lacking the consistency envelope are
+surfaced as `not_materialized`. A legacy revision predating relationship
+projection simply lacks that projection envelope. Neither hook is recomputed
+during a read.
 `PluginCapabilityLimits` independently bounds basis capture ranges, node
 resolutions, per-container evidence, and aggregate basis evidence before the
 executor snapshots plug-in output; revision materialization applies its own
@@ -281,12 +315,34 @@ same list/value/byte domains before projection. A noncanonical or unsafe stored
 record is a dataset-integrity failure, never a partially projected finding.
 
 For PROCESS ingestion the complete plan still records every composed
-auxiliary, while the child loads only the primary and the exact auxiliaries
-selected for this stage by `REVISION_CONSISTENCY_ROLE`. A scalar pre-load check
-rejects any extra, missing, duplicated, reordered, or mismatched auxiliary
-bootstrap. The stage-specific router retains the full plan digest but cannot
-route a pin outside that selected set; ordinary router construction continues
-to validate the whole plan.
+auxiliary, while the child loads only the primary and exact auxiliaries
+selected for scheduled materialization by
+`REVISION_RELATIONSHIP_PROJECTION_ROLE` or `REVISION_CONSISTENCY_ROLE`. A
+scalar pre-load check rejects any extra, missing, duplicated, reordered, or
+mismatched auxiliary bootstrap. Each stage-specific router retains the full
+plan digest but cannot route a pin outside its selected set; ordinary router
+construction continues to validate the whole plan.
+
+The relationship materialization envelope is a closed revision-scoped object
+containing `schema_version`, `status`, `scope`, `plan_digest`, `basis`,
+`basis_digest`,
+`providers`, `provider_count`, `declaration_count`, `resolved_edge_count`,
+`diagnostic_count`, `emitted_declaration_count`,
+`emitted_diagnostic_count`, `duplicate_emissions_collapsed`,
+`semantic_conflict_groups`, `world_reads`, and `base_resource_count`. Stored
+declarations retain every canonical semantic claim and provider/evidence contribution;
+stored resolved edges are the conservative relationships used to augment the
+world. `valid_from_ns` and `valid_to_ns` remain absent because core does not
+invent a comparable capture timestamp. As with consistency, a malformed or
+over-budget stage aborts publication atomically rather than persisting a valid
+prefix. Reload validates the complete basis and derives its digest instead of
+trusting the digest field alone. It also reconstructs evidence, occurrence,
+and serialized-byte charges before duplicate elimination, so deduplicated
+storage cannot bypass ingestion limits.
+
+The base world folds snapshot observations sharing one `ResourceKey`; it
+retains the final ordered observation's evidence for the resulting state. The
+projection API does not expose the raw observations hidden by that fold.
 
 Runtime-v2 ingestion also validates and retains scoped
 `RelationshipCollectionObservation` markers as private normalized metadata.

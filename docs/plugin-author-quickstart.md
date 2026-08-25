@@ -19,10 +19,12 @@ The example plug-in:
 6. supplies a safe, optional plain-text copy projection for that source
    record;
 7. runs through the core-owned runtime-v2 ingestion/workspace test independently
-   of the large demo's compatibility adapter; and
-8. implements one bounded revision-consistency rule whose findings are
+   of the large demo's compatibility adapter;
+8. projects one bounded revision-level relationship after all snapshot inputs
+   have been assembled;
+9. implements one bounded revision-consistency rule whose findings are
    materialized durably with the frozen execution plan; and
-9. passes the generic author validator and its own golden test.
+10. passes the generic author validator and its own golden test.
 
 The validator proves the plug-in-facing package and protocol shape. The core
 owns both the web command and the durable headless ingestion command. For an
@@ -38,22 +40,22 @@ through normal entry-point discovery and contains no application entry point.
 From the repository root, using Python 3.12 in the analyzer environment:
 
 ```text
-python -m pip install -e ".[web]"
+python -m pip install -e ".[test,web]"
 python -m pip install -e demo
 router-dump-plugin-validate --list
 python -X utf8 -m rsl_demo_generator --verify-conformance-fixture demo/fixtures/minimal-status.jsonl
 router-dump-plugin-validate demo_router --artifact demo/fixtures/minimal-status.jsonl --node-hint router-1 --metadata platform=demo-router-os --metadata software_version=1
 python -m unittest discover -s demo/tests -v
-python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_consistency_materialization tests.test_consistency_ingestion tests.test_revision_world -v
+python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_relationship_projection_materialization tests.test_relationship_projection_ingestion tests.test_consistency_materialization tests.test_consistency_ingestion tests.test_revision_world -v
 python -m unittest discover -s state-dump-generator/tests -p "test_runtime_v2_vectors.py" -v
 python -X utf8 -m router_dump_analyzer.pipeline_cli --plugin demo_router --state-dir .runtime/plugin-author-state --tenant author-smoke --project example --workspace first-run --input demo/fixtures/minimal-status.jsonl --node-hint router-1 --pretty
 ```
 
-The first command installs `router-dump-analyzer-core` with the optional web
-host needed by the workspace smoke test. The second installs the single demo
-distribution so its `demo_router` entry point is discoverable. Your own device
-plug-in depends only on the core distribution; it does not depend on either
-repository example package.
+The first command installs `router-dump-analyzer-core` with the test and web
+extras needed by this repository's complete smoke path. The second installs
+the single demo distribution so its `demo_router` entry point is discoverable.
+Your own device plug-in depends only on the core distribution; it does not
+depend on either repository example package.
 
 The installed core also exposes a complete PEP 561 typing surface. Every
 `router_dump_analyzer` Python module has a sibling `.pyi`, and the package ships
@@ -333,7 +335,7 @@ demo/
     `-- test_plugin.py
 ```
 
-Copy the parser/schema/revision-consistency portion of
+Copy the parser/schema/relationship-projection/revision-consistency portion of
 `rsl_demo_plugin/__init__.py`, its
 `CONFORMANCE_STATUS_RECORDS` plus renderer, its golden test, and the entry-point
 declaration into a new independently installable `src/`-layout distribution.
@@ -368,10 +370,11 @@ plugin: AnalyzerPlugin = MyRouterPlugin()
 Do not target `MyRouterPlugin` or a factory function. Do not load Python code
 from a router dump.
 
-## 3. Implement the parser and one revision rule
+## 3. Implement the parser and revision analysis
 
 Subclass `AnalyzerPluginBase`. The teaching plug-in implements one status
-parser and one bounded revision-consistency rule through these members:
+parser, one bounded revision relationship projector, and one bounded
+consistency rule through these members:
 
 ### A. Manifest
 
@@ -385,6 +388,7 @@ manifest = PluginManifest(
     capabilities=frozenset(
         {
             PluginCapability.STATUS_PARSE,
+            PluginCapability.RELATIONSHIP_PROJECTION,
             PluginCapability.CONSISTENCY_CHECK,
         }
     ),
@@ -425,11 +429,25 @@ interpretation and `exact`/`compatible` decision.
 resource kind, relationship type, source-record type, dashboard, topology
 projection, and other semantic type that the plug-in may emit.
 
-For a first plug-in, declare one resource kind and no relationships. The example
-declares `INTERFACE`, its typed key field, safe properties, display fields, and
-normalized condition field. It also declares one source-record group and one
+For a first plug-in, declare one resource kind and only the relationship types
+that its parser or projector can actually emit. The example declares
+`INTERFACE`, its typed key field, safe properties, display fields, normalized
+condition field, and one generic
+`RelationshipTypeDescriptor(relation_type="corresponds_to", ...)`. It also
+declares one source-record group and one
 `SourceRecordTypeDescriptor(source_type="status-json")`; every emitted source
 type must appear in this static schema.
+
+```python
+relationship_types=(
+    RelationshipTypeDescriptor(
+        relation_type="corresponds_to",
+        label="Corresponds to",
+        directed=False,
+        structural=False,
+    ),
+)
+```
 
 Every browser-visible state/key field must have a `PropertyDescriptor`.
 Undeclared fields are server-side only and are removed from resource
@@ -618,7 +636,109 @@ relationship intervals or completeness query semantics. Emit honest scoped
 markers now, but do not write a test that assumes the current runtime-v2
 workspace has already applied their absence inference.
 
-### F. Revision consistency rule
+### F. Revision relationship projection
+
+Use `project_relationships(world)` when a relationship can be derived only
+after all independently parsed snapshot sources have been assembled into one
+revision. This is different from `parse_status()`, whose view is one selected
+`InputSpec`, and from event-window `correlate()`. The hook reads an immutable,
+bounded base `ReadOnlyWorld` and yields `RelationshipDeclaration` values:
+
+```python
+def project_relationships(self, world: ReadOnlyWorld):
+    scan_limit = 10_000
+    interfaces = tuple(
+        world.iter_states(
+            kinds=frozenset({"INTERFACE"}),
+            limit=scan_limit + 1,
+        )
+    )
+    if len(interfaces) > scan_limit:
+        return  # never claim completeness from a bounded prefix
+    by_name = {}
+    for state in interfaces:
+        name = state.properties.get("name")
+        if state.exists is True and type(name) is str and name and state.evidence:
+            by_name.setdefault(name, []).append(state)
+
+    for name in sorted(by_name):
+        matches = sorted(
+            by_name[name],
+            key=lambda state: (
+                state.resource.node,
+                state.resource.layer,
+                repr(state.resource.parts),
+            ),
+        )
+        if len(matches) != 2 or matches[0].resource == matches[1].resource:
+            continue
+        left, right = matches
+        yield RelationshipDeclaration(
+            source=left.resource,
+            target=right.resource,
+            relation_type="corresponds_to",
+            attributes=PropertyPatch(
+                set_values={"match_basis": "shared-interface-name"},
+                remove_fields=(),
+                complete=True,
+            ),
+            evidence=(left.evidence[0], right.evidence[0]),
+            provenance=Provenance.CORRELATED,
+            quality=Quality.EXACT,
+            perspective_ref=world.perspective_ref,
+        )
+```
+
+Import `RelationshipDeclaration` and declare `corresponds_to` with a
+`RelationshipTypeDescriptor`. A declaration asserts presence only for the
+exact revision basis; it has no timestamp, `present` flag, producer, or basis
+field. Core attaches the authoritative basis digest and exact plan-bound
+provider. Attributes must be a complete `PropertyPatch` with no removals.
+Both endpoints must already exist in the base world, the relation type and
+optional perspective must belong to the primary revision schema, and all
+evidence must belong to the admitted revision inventory. The hook never merges
+the two resource identities. Durable/admin records retain the complete
+attributes, while browser and public HTTP projections apply the declared
+resource-kind sensitivity rules to those plug-in-owned attributes.
+
+Every selected projector sees the same base world, never another projector's
+same-phase output. Core collapses identical emissions while retaining their
+provider/evidence contributions. Different semantic claims for the same edge
+remain separate and produce one conservative ambiguous edge containing only
+common attributes. Per-provider executor limits and revision-wide provider,
+declaration, diagnostic, evidence, world-read, resource, and byte limits all
+apply.
+
+The primary parser participates automatically when it declares
+`RELATIONSHIP_PROJECTION`. An auxiliary projector must be explicitly composed
+with `REVISION_RELATIONSHIP_PROJECTION_ROLE`; capability declaration alone does
+not schedule it. Auxiliary declarations still use the primary revision's
+resource kinds, relationship types, and perspectives. An auxiliary may have a
+different schema for its own direct calls; the durable coordinator alone binds
+its scheduled call to the primary schema. Do not call the private coordinator
+helper or add a schema argument to `project_relationships()`.
+
+A recoverable diagnostic yielded by this hook must use
+`DiagnosticStage.RELATIONSHIP_PROJECTION`. Core attaches the selected provider
+identity and persists it separately from declarations. A fatal diagnostic, a
+diagnostic for another stage, or malformed output aborts publication rather
+than publishing a prefix.
+
+Local perspective references in parser observations and projected
+declarations are qualified by core with the primary plug-in instance and
+schema digest. The perspective is part of edge identity: the same endpoints
+and relation type in two perspectives are two independent edges, not a
+conflict. If an explicit parser observation and a projected edge address the
+same fully qualified edge, the explicit observation remains authoritative in
+the augmented world.
+
+This hook sees folded `ResourceStateView` values. If two raw observations use
+the same `ResourceKey`, the revision world merges them before projection and
+retains only the final ordered observation's state evidence. Use distinct
+resource identities when the comparison must survive that fold; raw
+observation/source access is not part of this hook.
+
+### G. Revision consistency rule
 
 The runnable example also implements `check_consistency(world)`. Keep this
 rule device-specific: the plug-in interprets `oper_status`, while core supplies
@@ -713,6 +833,7 @@ Everything else is capability-gated:
 | `EVENT_REDUCTION` | `apply()` | atomic `ChangeSet` |
 | `EVENT_REVERSION` | `revert()` | inverse/unknown `ChangeSet` |
 | `CORRELATION` | `correlate()` | causal links, relationship changes, clock anchors |
+| `RELATIONSHIP_PROJECTION` | `project_relationships()` | revision-scoped relationship declarations |
 | `CONSISTENCY_CHECK` | `check_consistency()` | PASS/FAIL/UNKNOWN findings |
 | `TOPOLOGY_PROJECTION` | `project_topology()` | bounded topology records, local connector claims, diagnostics |
 | `FORWARDING_PROJECTION` | `project_forwarding()` | bounded forwarding IR mutations |
@@ -732,6 +853,7 @@ from router_dump_analyzer import PluginCapabilityExecutor
 executor = PluginCapabilityExecutor(plugin)
 changes = executor.apply(event, world)
 correlation = executor.correlate(reader, window)
+projection = executor.project_relationships(world)
 ```
 
 The executor checks the manifest before calling a hook, gives world-reading
@@ -748,17 +870,22 @@ the one exception to the world wrapper: the caller supplies the already
 bounded/indexed `CorrelationReader`, and the executor validates its exact
 bounded `CorrelationWindow` and outputs.
 
-The durable ingestion pipeline additionally schedules one optional hook:
-`CONSISTENCY_CHECK`. It freezes the execution plan, builds the immutable
-revision world, invokes the primary parser automatically when that capability
-is declared, and stores findings before canonical dataset bytes are hashed and
-published. An auxiliary provider participates only when the deployment gives
-its exact plan pin the root-exported `REVISION_CONSISTENCY_ROLE`; merely
-declaring the capability is not enough. A malformed finding, foreign evidence,
-basis mismatch, stale provider, quota failure, timeout, or fatal diagnostic
-aborts publication rather than producing a partial findings list. Revisions
-without a selected provider store `not_applicable`, distinct from legacy
-revisions whose status is `not_materialized`.
+The durable ingestion pipeline additionally schedules two optional hooks. It
+freezes the execution plan, builds the immutable base revision world, executes
+all selected `RELATIONSHIP_PROJECTION` providers against that same world,
+augments the world with the conservatively resolved edges, and only then runs
+selected `CONSISTENCY_CHECK` providers. It stores both stages before canonical
+dataset bytes are hashed and published. The primary parser participates in
+each stage when it declares that capability. An auxiliary participates only
+when its exact plan pin carries the corresponding root-exported
+`REVISION_RELATIONSHIP_PROJECTION_ROLE` or `REVISION_CONSISTENCY_ROLE`; merely
+declaring a capability is not enough. Malformed output, a foreign endpoint or
+evidence item, stale provider, schema/basis mismatch, quota failure, timeout,
+or fatal diagnostic aborts publication rather than producing a partial
+revision. A newly published stage without a selected provider stores
+`not_applicable`. Legacy consistency revisions are projected as
+`not_materialized`; a legacy revision predating relationship projection has no
+relationship-projection envelope and is never executed during a read.
 Capture ranges, per-node resolutions, nested evidence, and aggregate basis
 evidence are bounded before core traverses or snapshots them.
 
@@ -1787,7 +1914,7 @@ standalone normative vector synchronized:
 ```text
 python -X utf8 -m rsl_demo_generator --write-ingestion-conformance-corpus path/to/runtime-v2-ingestion-conformance.tgz
 python -X utf8 -m rsl_demo_generator --verify-ingestion-conformance-corpus path/to/runtime-v2-ingestion-conformance.tgz
-python -m unittest tests.test_ingestion tests.test_capability_executor tests.test_plugin_composition tests.test_capability_router tests.test_consistency_materialization tests.test_consistency_ingestion tests.test_revision_world -v
+python -m unittest tests.test_ingestion tests.test_capability_executor tests.test_plugin_composition tests.test_capability_router tests.test_relationship_projection_materialization tests.test_relationship_projection_ingestion tests.test_consistency_materialization tests.test_consistency_ingestion tests.test_revision_world -v
 python scripts/run_topology_federation_gate.py
 python -m unittest discover -s state-dump-generator/tests -p "test_runtime_v2_vectors.py" -v
 ```
@@ -1863,6 +1990,9 @@ A first plug-in is ready for review only when:
 - [ ] every advertised optional capability passes through
   `PluginCapabilityExecutor` in a golden test, including its over-budget or
   malformed-output case;
+- [ ] every revision relationship declaration uses existing base-world
+  endpoints, a primary-schema relationship type, a complete no-removal patch,
+  and evidence from the admitted revision;
 - [ ] every emitted connector claim names a declared policy, points to an
   emitted or world-visible local resource, preserves typed arguments, and has
   matched/unresolved/ambiguous plus budget-completeness coverage;

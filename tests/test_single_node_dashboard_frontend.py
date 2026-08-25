@@ -66,7 +66,7 @@ class SingleNodeDashboardFrontendTests(unittest.TestCase):
         self.assertIn("dashboard_ids: dashboardIds", request)
         self.assertLess(
             request.index("if (isTopologyNodeSnapshot())"),
-            request.index('api(revisionPath("dashboards/query")'),
+            request.index('analysisRuntimeApi(revisionPath("dashboards/query")'),
         )
         self.assertIn("state.openDashboardIds.has", ids)
         self.assertIn("dashboardNeedsPointInTimeQuery", ids)

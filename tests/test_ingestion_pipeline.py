@@ -1172,12 +1172,23 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                         "_plugin_process_bootstrap_digest",
                         return_value="sha256:" + "a" * 64,
                     ),
+                    patch(
+                        "router_dump_analyzer.ingestion_pipeline."
+                        "_validated_child_composition_authority",
+                        return_value=(PluginCompositionPolicy(), ()),
+                    ),
+                    patch(
+                        "router_dump_analyzer.ingestion_pipeline."
+                        "_validated_materialization_process_bootstraps",
+                        return_value=(),
+                    ),
                     self.assertRaises(exception_type),
                 ):
                     _ingest_plugin_child(
                         connection,
                         object(),  # type: ignore[arg-type]
                         "sha256:" + "a" * 64,
+                        (),
                         "unused",
                         None,
                         {},

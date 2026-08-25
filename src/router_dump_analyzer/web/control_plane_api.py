@@ -91,6 +91,7 @@ from router_dump_analyzer.ingestion_pipeline import (
     IngestionStateRootPathError,
     PluginExecutionProcessError,
     PluginExecutionTimeoutError,
+    _ProcessTargetIdentityUnavailable,
     validate_import_metadata,
 )
 from router_dump_analyzer.ingestion_pipeline import (
@@ -2463,6 +2464,10 @@ _API_ERROR_POLICY_BY_CLASS: Mapping[type[Exception], _ApiErrorPolicy] = (
             IngestionStateRootPathError: _ApiErrorPolicy(
                 500,
                 "durable control-plane storage failed",
+            ),
+            _ProcessTargetIdentityUnavailable: _ApiErrorPolicy(
+                422,
+                "ingestion request was rejected",
             ),
             IngestionPipelineError: _ApiErrorPolicy(
                 422,

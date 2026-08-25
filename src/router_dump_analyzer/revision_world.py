@@ -33,6 +33,13 @@ from .plugin_api import (
     WorldBasis,
 )
 
+type _RelationshipIdentityKey = tuple[
+    ResourceKey,
+    ResourceKey,
+    str,
+    StatusPerspectiveRef | None,
+]
+
 
 def _observation_time_key(
     observed_at_min_ns: int | None,
@@ -59,6 +66,64 @@ def _resource_order_key(resource: ResourceKey) -> tuple[Any, ...]:
 
     identifier, _identity = _canonical_resource_identity(resource)
     return (identifier,)
+
+
+def _perspective_order_key(
+    perspective: StatusPerspectiveRef | None,
+) -> tuple[str, str, str]:
+    if perspective is None:
+        return ("", "", "")
+    return (
+        perspective.perspective_id,
+        perspective.plugin_instance_id or "",
+        perspective.schema_digest or "",
+    )
+
+
+def _bind_primary_perspective(
+    perspective: StatusPerspectiveRef | None,
+    *,
+    plugin_instance_id: str | None,
+    schema_digest: str | None,
+) -> StatusPerspectiveRef | None:
+    """Qualify local parser perspectives with primary-plan authority."""
+
+    if perspective is None or plugin_instance_id is None or schema_digest is None:
+        return perspective
+    if perspective.plugin_instance_id not in (None, plugin_instance_id):
+        raise ValueError("perspective belongs to a different plug-in instance")
+    if perspective.schema_digest not in (None, schema_digest):
+        raise ValueError("perspective belongs to a different schema")
+    return StatusPerspectiveRef(
+        perspective_id=perspective.perspective_id,
+        plugin_instance_id=plugin_instance_id,
+        schema_digest=schema_digest,
+    )
+
+
+def _relationship_identity_key(
+    relationship: RelationshipView,
+) -> tuple[ResourceKey, ResourceKey, str, StatusPerspectiveRef | None]:
+    return (
+        relationship.source,
+        relationship.target,
+        relationship.relation_type,
+        relationship.perspective_ref,
+    )
+
+
+def _canonical_relationship_endpoints(
+    source: ResourceKey,
+    target: ResourceKey,
+    relation_type: str,
+    undirected_relationship_types: frozenset[str],
+) -> tuple[ResourceKey, ResourceKey]:
+    if (
+        relation_type in undirected_relationship_types
+        and _resource_order_key(target) < _resource_order_key(source)
+    ):
+        return target, source
+    return source, target
 
 
 def _canonical_resource_identity(
@@ -187,7 +252,9 @@ def _filter_take[Item](
 def _merge_relationship_indexes(
     first: tuple[RelationshipView, ...],
     second: tuple[RelationshipView, ...],
-    ranks: Mapping[tuple[ResourceKey, ResourceKey, str], int],
+    ranks: Mapping[
+        tuple[ResourceKey, ResourceKey, str, StatusPerspectiveRef | None], int
+    ],
 ) -> Iterable[RelationshipView]:
     """Merge two global-order subsequences and retain self-loops once."""
 
@@ -203,16 +270,8 @@ def _merge_relationship_indexes(
         else:
             first_item = first[first_index]
             second_item = second[second_index]
-            first_key = (
-                first_item.source,
-                first_item.target,
-                first_item.relation_type,
-            )
-            second_key = (
-                second_item.source,
-                second_item.target,
-                second_item.relation_type,
-            )
+            first_key = _relationship_identity_key(first_item)
+            second_key = _relationship_identity_key(second_item)
             first_rank = ranks[first_key]
             second_rank = ranks[second_key]
             if first_rank <= second_rank:
@@ -260,7 +319,11 @@ class IngestionRevisionWorld(ReadOnlyWorld):
         basis: WorldBasis,
         snapshots: Sequence[SnapshotObservation],
         relationship_observations: Sequence[RelationshipObservation],
+        projected_relationships: Sequence[RelationshipView] = (),
+        undirected_relationship_types: frozenset[str] = frozenset(),
         perspective_ref: StatusPerspectiveRef | None = None,
+        primary_plugin_instance_id: str | None = None,
+        primary_schema_digest: str | None = None,
     ) -> None:
         if type(basis) is not WorldBasis:
             raise TypeError("basis must be an exact WorldBasis")
@@ -271,9 +334,29 @@ class IngestionRevisionWorld(ReadOnlyWorld):
             raise TypeError(
                 "perspective_ref must be an exact StatusPerspectiveRef or None"
             )
+        if type(undirected_relationship_types) is not frozenset or any(
+            type(item) is not str or not item or len(item) > 256
+            for item in undirected_relationship_types
+        ):
+            raise TypeError(
+                "undirected_relationship_types must be an exact frozenset of "
+                "bounded strings"
+            )
+        if (primary_plugin_instance_id is None) != (primary_schema_digest is None):
+            raise TypeError(
+                "primary perspective authority requires both instance and schema"
+            )
+        if primary_plugin_instance_id is not None and (
+            type(primary_plugin_instance_id) is not str
+            or not primary_plugin_instance_id
+            or type(primary_schema_digest) is not str
+            or not primary_schema_digest
+        ):
+            raise TypeError("primary perspective authority is invalid")
 
         detached_snapshots = tuple(snapshots)
         detached_relationships = tuple(relationship_observations)
+        detached_projected_relationships = tuple(projected_relationships)
         if any(type(item) is not SnapshotObservation for item in detached_snapshots):
             raise TypeError("snapshots must contain exact SnapshotObservation values")
         if any(
@@ -283,9 +366,33 @@ class IngestionRevisionWorld(ReadOnlyWorld):
                 "relationship_observations must contain exact "
                 "RelationshipObservation values"
             )
+        if any(
+            type(item) is not RelationshipView
+            for item in detached_projected_relationships
+        ):
+            raise TypeError(
+                "projected_relationships must contain exact RelationshipView values"
+            )
 
-        states = self._build_states(detached_snapshots)
-        relationships = self._build_relationships(detached_relationships)
+        states = self._build_states(
+            detached_snapshots,
+            primary_plugin_instance_id=primary_plugin_instance_id,
+            primary_schema_digest=primary_schema_digest,
+        )
+        observed_relationships, observed_relationship_keys = self._build_relationships(
+            detached_relationships,
+            undirected_relationship_types,
+            primary_plugin_instance_id=primary_plugin_instance_id,
+            primary_schema_digest=primary_schema_digest,
+        )
+        relationships = self._merge_projected_relationships(
+            observed_relationships,
+            detached_projected_relationships,
+            undirected_relationship_types,
+            observed_authority_keys=observed_relationship_keys,
+            primary_plugin_instance_id=primary_plugin_instance_id,
+            primary_schema_digest=primary_schema_digest,
+        )
 
         states_by_resource = {state.resource: state for state in states}
         states_by_layer: dict[str, list[ResourceStateView]] = defaultdict(list)
@@ -303,7 +410,11 @@ class IngestionRevisionWorld(ReadOnlyWorld):
             relationships_by_type[relationship.relation_type].append(relationship)
 
         self._basis = basis
-        self._perspective_ref = perspective_ref
+        self._perspective_ref = _bind_primary_perspective(
+            perspective_ref,
+            plugin_instance_id=primary_plugin_instance_id,
+            schema_digest=primary_schema_digest,
+        )
         self._states = states
         self._relationships = relationships
         self._states_by_resource = MappingProxyType(states_by_resource)
@@ -324,14 +435,92 @@ class IngestionRevisionWorld(ReadOnlyWorld):
         )
         self._relationship_ranks = MappingProxyType(
             {
-                (item.source, item.target, item.relation_type): ordinal
+                _relationship_identity_key(item): ordinal
                 for ordinal, item in enumerate(relationships)
             }
         )
 
     @staticmethod
+    def _merge_projected_relationships(
+        observed: tuple[RelationshipView, ...],
+        projected: tuple[RelationshipView, ...],
+        undirected_relationship_types: frozenset[str],
+        *,
+        observed_authority_keys: frozenset[_RelationshipIdentityKey],
+        primary_plugin_instance_id: str | None,
+        primary_schema_digest: str | None,
+    ) -> tuple[RelationshipView, ...]:
+        """Overlay revision-scoped declarations without inventing time.
+
+        A materializer supplies at most one conservative projected view for
+        each endpoint/type key. Explicit parser observations remain the
+        authoritative world view when the same edge was also observed. Raw
+        projector claims and their ambiguity metadata remain in the dedicated
+        materialization records rather than being flattened here.
+        """
+
+        by_key = {_relationship_identity_key(item): item for item in observed}
+        projected_keys: set[_RelationshipIdentityKey] = set()
+        for item in projected:
+            if item.valid_from_ns is not None or item.valid_to_ns is not None:
+                raise ValueError(
+                    "revision-scoped projected relationships must not carry "
+                    "temporal validity bounds"
+                )
+            source, target = _canonical_relationship_endpoints(
+                item.source,
+                item.target,
+                item.relation_type,
+                undirected_relationship_types,
+            )
+            perspective = _bind_primary_perspective(
+                item.perspective_ref,
+                plugin_instance_id=primary_plugin_instance_id,
+                schema_digest=primary_schema_digest,
+            )
+            key = (source, target, item.relation_type, perspective)
+            if key in projected_keys:
+                raise ValueError(
+                    "projected relationships contain a duplicate endpoint/type key"
+                )
+            projected_keys.add(key)
+            # The latest parser observation remains authoritative even when it
+            # is an explicit tombstone or an unknown-presence record. Those
+            # records are intentionally absent from ``observed`` but must still
+            # suppress a projector from resurrecting the same edge.
+            if key in observed_authority_keys:
+                continue
+            by_key[key] = RelationshipView(
+                source=source,
+                target=target,
+                relation_type=item.relation_type,
+                attributes=_freeze_properties(item.attributes),
+                provenance=item.provenance,
+                quality=item.quality,
+                valid_from_ns=None,
+                valid_to_ns=None,
+                evidence=tuple(item.evidence),
+                perspective_ref=perspective,
+            )
+        return tuple(
+            by_key[key]
+            for key in sorted(
+                by_key,
+                key=lambda item: (
+                    _resource_order_key(item[0]),
+                    _resource_order_key(item[1]),
+                    item[2],
+                    _perspective_order_key(item[3]),
+                ),
+            )
+        )
+
+    @staticmethod
     def _build_states(
         snapshots: tuple[SnapshotObservation, ...],
+        *,
+        primary_plugin_instance_id: str | None,
+        primary_schema_digest: str | None,
     ) -> tuple[ResourceStateView, ...]:
         grouped: dict[
             ResourceKey,
@@ -378,7 +567,11 @@ class IngestionRevisionWorld(ReadOnlyWorld):
                     field_quality=MappingProxyType(dict(field_quality)),
                     unknown_fields=tuple(unknown_fields.values()),
                     evidence=(latest.evidence,),
-                    perspective_ref=latest.perspective_ref,
+                    perspective_ref=_bind_primary_perspective(
+                        latest.perspective_ref,
+                        plugin_instance_id=primary_plugin_instance_id,
+                        schema_digest=primary_schema_digest,
+                    ),
                 )
             )
         return tuple(result)
@@ -386,17 +579,37 @@ class IngestionRevisionWorld(ReadOnlyWorld):
     @staticmethod
     def _build_relationships(
         observations: tuple[RelationshipObservation, ...],
-    ) -> tuple[RelationshipView, ...]:
+        undirected_relationship_types: frozenset[str],
+        *,
+        primary_plugin_instance_id: str | None,
+        primary_schema_digest: str | None,
+    ) -> tuple[tuple[RelationshipView, ...], frozenset[_RelationshipIdentityKey]]:
         grouped: dict[
-            tuple[ResourceKey, ResourceKey, str],
+            tuple[
+                ResourceKey,
+                ResourceKey,
+                str,
+                StatusPerspectiveRef | None,
+            ],
             list[tuple[int, RelationshipObservation]],
         ] = defaultdict(list)
         for ordinal, observation in enumerate(observations):
+            source, target = _canonical_relationship_endpoints(
+                observation.source,
+                observation.target,
+                observation.relation_type,
+                undirected_relationship_types,
+            )
             grouped[
                 (
-                    observation.source,
-                    observation.target,
+                    source,
+                    target,
                     observation.relation_type,
+                    _bind_primary_perspective(
+                        observation.perspective_ref,
+                        plugin_instance_id=primary_plugin_instance_id,
+                        schema_digest=primary_schema_digest,
+                    ),
                 )
             ].append((ordinal, observation))
 
@@ -406,6 +619,7 @@ class IngestionRevisionWorld(ReadOnlyWorld):
                 _resource_order_key(item[0]),
                 _resource_order_key(item[1]),
                 item[2],
+                _perspective_order_key(item[3]),
             ),
         )
         result: list[RelationshipView] = []
@@ -434,7 +648,7 @@ class IngestionRevisionWorld(ReadOnlyWorld):
             latest = ordered[-1][1]
             if latest.present is not True:
                 continue
-            source, target, relation_type = group_key
+            source, target, relation_type, perspective = group_key
             result.append(
                 RelationshipView(
                     source=source,
@@ -446,10 +660,10 @@ class IngestionRevisionWorld(ReadOnlyWorld):
                     valid_from_ns=latest.observed_at_min_ns,
                     valid_to_ns=None,
                     evidence=(latest.evidence,),
-                    perspective_ref=latest.perspective_ref,
+                    perspective_ref=perspective,
                 )
             )
-        return tuple(result)
+        return tuple(result), frozenset(grouped)
 
     @property
     def basis(self) -> WorldBasis:

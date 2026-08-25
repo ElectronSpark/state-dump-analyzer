@@ -72,6 +72,7 @@ from .plugin_execution_plan import (
 )
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .revision_world import _canonical_resource_identity
+from .value_core import parse_canonical_decimal_integer
 
 CONSISTENCY_MATERIALIZATION_SCHEMA_VERSION: Final[str] = (
     "router_dump_analyzer.consistency_materialization.v1"
@@ -278,13 +279,16 @@ def _storage_timestamp(value: object, label: str, *, optional: bool = True) -> i
     if type(value) is not str:
         raise ValueError(f"{label} must be a canonical signed-64 string or null")
     try:
-        parsed = int(value, 10)
+        parsed = parse_canonical_decimal_integer(
+            value,
+            label,
+            minimum=MIN_TIMESTAMP_NS,
+            maximum=MAX_TIMESTAMP_NS,
+        )
     except ValueError as error:
         raise ValueError(
             f"{label} must be a canonical signed-64 string or null"
         ) from error
-    if not MIN_TIMESTAMP_NS <= parsed <= MAX_TIMESTAMP_NS or str(parsed) != value:
-        raise ValueError(f"{label} must be a canonical signed-64 string or null")
     return parsed
 
 

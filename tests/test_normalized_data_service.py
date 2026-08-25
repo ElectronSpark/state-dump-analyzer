@@ -511,6 +511,205 @@ class NormalizedDataServiceTests(unittest.TestCase):
             ),
         )
 
+    def test_revision_relationship_projection_uses_closed_client_shape(self) -> None:
+        dataset = self.dataset()
+        dataset["kind_descriptors"][0]["properties"].append(
+            {"name": "credentials.token", "sensitive": True}
+        )
+        source_id = dataset["resources"][0]["resource_id"]
+        target_id = "node-x/INTERFACE/2"
+        dataset["resources"].append(
+            {
+                **dataset["resources"][0],
+                "resource_id": target_id,
+                "label": "Ethernet2",
+                "state": {"oper_status": "up", "secret": "target-hidden"},
+            }
+        )
+        dataset["lifecycle_intervals"].append(
+            {"resource": target_id, "valid_from_ns": "10", "valid_to_ns": None}
+        )
+        digest = "sha256:" + ("a" * 64)
+        other_digest = "sha256:" + ("b" * 64)
+        artifact_id = "12345678-1234-5678-1234-567812345678"
+        provider = {
+            "catalog_revision_id": "revision-x",
+            "member_id": "revision-x",
+            "node_id": "node-x",
+            "basis_revision_id": "revision-x",
+            "plan_digest": digest,
+            "instance_id": "plugin-instance",
+            "plugin_id": "plugin-a",
+            "plugin_version": "1.0",
+            "registered_execution_identity": other_digest,
+            "configuration_digest": digest,
+            "schema_digest": other_digest,
+            "package_hash": "manifest-sha256:" + ("c" * 64),
+            "capability": "relationship_projection",
+            "roles": ["primary_parser"],
+            "private_provider_field": "must-not-cross",
+        }
+        evidence = {
+            "artifact_id": artifact_id,
+            "locator": "C:/private/router/status.dump:19",
+            "raw_timestamp_ns": "10",
+            "clock_domain": "device-clock",
+            "excerpt_sha256": "d" * 64,
+            "private_evidence_field": "must-not-cross",
+        }
+        endpoint = lambda identifier: {
+            "resource_id": identifier,
+            "typed_resource_key": {
+                "namespace": "private-driver",
+                "parts": [{"name": "opaque", "value": "private-key"}],
+            },
+            "private_endpoint_field": "must-not-cross",
+        }
+        declaration = {
+            "scope": "revision",
+            "source": endpoint(source_id),
+            "target": endpoint(target_id),
+            "relation_type": "backs",
+            "attributes": {
+                "set_values": {
+                    "metric": {"type": "integer", "value": "7"},
+                    "secret": {"type": "string", "value": "hidden"},
+                    "credentials": {
+                        "type": "mapping",
+                        "entries": {
+                            "token": {
+                                "type": "string",
+                                "value": "nested-projection-token",
+                            },
+                            "public": {"type": "string", "value": "retained"},
+                        },
+                    },
+                },
+                "remove_fields": [],
+                "unknown_fields": [
+                    {
+                        "name": "metric_state",
+                        "reason_code": "unavailable",
+                        "message": "not captured",
+                        "evidence": [evidence],
+                        "private_unknown_field": "must-not-cross",
+                    }
+                ],
+                "field_quality": {"metric": "exact"},
+                "field_provenance": {"metric": "observed"},
+                "complete": True,
+                "private_patch_field": "must-not-cross",
+            },
+            "provenance": "correlated",
+            "quality": "exact",
+            "effective_quality": "exact",
+            "perspective_ref": None,
+            "basis_digest": other_digest,
+            "execution_plan_digest": digest,
+            "semantic_claim_id": digest,
+            "ambiguity_group_id": None,
+            "contributions": [
+                {
+                    "producer": provider,
+                    "evidence": [evidence],
+                    "occurrence_count": 1,
+                    "private_contribution_field": "must-not-cross",
+                }
+            ],
+            "declaration_id": other_digest,
+            "private_declaration_field": "must-not-cross",
+        }
+        edge = {
+            "scope": "revision",
+            "source": endpoint(source_id),
+            "target": endpoint(target_id),
+            "relation_type": "backs",
+            "attributes": {
+                "metric": {"type": "integer", "value": "7"},
+                "secret": {"type": "string", "value": "hidden"},
+                "credentials": {
+                    "type": "mapping",
+                    "entries": {
+                        "token": {
+                            "type": "string",
+                            "value": "nested-projection-token",
+                        },
+                        "public": {"type": "string", "value": "retained"},
+                    },
+                },
+            },
+            "provenance": "correlated",
+            "quality": "exact",
+            "perspective_ref": None,
+            "basis_digest": other_digest,
+            "execution_plan_digest": digest,
+            "ambiguity_group_id": None,
+            "declaration_ids": [other_digest],
+            "evidence": [evidence],
+            "relationship_id": digest,
+            "private_edge_field": "must-not-cross",
+        }
+        dataset["relationship_declarations"] = [declaration]
+        dataset["relationship_projection_edges"] = [edge]
+        dataset["relationship_projection_materialization"] = {
+            "schema_version": (
+                "router_dump_analyzer.relationship_projection_materialization.v1"
+            ),
+            "status": "complete",
+            "scope": "revision",
+            "plan_digest": digest,
+            "basis_digest": other_digest,
+            "providers": [provider],
+            "provider_count": 1,
+            "declaration_count": 1,
+            "resolved_edge_count": 1,
+            "diagnostic_count": 0,
+            "emitted_declaration_count": 1,
+            "emitted_diagnostic_count": 0,
+            "duplicate_emissions_collapsed": 0,
+            "semantic_conflict_groups": 0,
+            "world_reads": 2,
+            "base_resource_count": 2,
+            "private_materialization_field": "must-not-cross",
+        }
+        dataset["relationship_projection_diagnostics"] = [
+            {"message": "private diagnostic"}
+        ]
+
+        service = static_data_service(dataset)
+        client = service.client_dataset()
+        serialized = json.dumps(client, sort_keys=True)
+
+        self.assertNotIn("typed_resource_key", serialized)
+        self.assertNotIn("locator", serialized)
+        self.assertNotIn("must-not-cross", serialized)
+        self.assertNotIn("private diagnostic", serialized)
+        self.assertNotIn("nested-projection-token", serialized)
+        self.assertNotIn("secret", client["relationship_declarations"][0]["attributes"]["set_values"])
+        self.assertNotIn("secret", client["relationship_projection_edges"][0]["attributes"])
+        self.assertEqual(
+            client["relationship_projection_edges"][0]["attributes"][
+                "credentials"
+            ]["entries"],
+            {"public": {"type": "string", "value": "retained"}},
+        )
+        self.assertEqual(
+            client["relationship_projection_edges"][0]["source"],
+            {"resource_id": source_id},
+        )
+        self.assertEqual(
+            client["relationship_projection_edges"][0]["evidence"],
+            [
+                {
+                    "artifact_id": artifact_id,
+                    "raw_timestamp_ns": "10",
+                    "clock_domain": "device-clock",
+                    "excerpt_sha256": "d" * 64,
+                }
+            ],
+        )
+        self.assertEqual(service.relationships_at(10), [])
+
     def dataset(self) -> dict:
         resource_id = "node-x/INTERFACE/1"
         return {

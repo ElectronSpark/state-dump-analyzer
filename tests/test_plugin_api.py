@@ -387,6 +387,20 @@ class PluginApiTests(unittest.TestCase):
             ("analyze_evidence",),
         )
         self.assertEqual(
+            PLUGIN_CAPABILITY_HOOKS[
+                PluginCapability.RELATIONSHIP_PROJECTION
+            ],
+            ("project_relationships",),
+        )
+        self.assertEqual(
+            tuple(
+                inspect.signature(
+                    AnalyzerPlugin.project_relationships
+                ).parameters
+            ),
+            ("self", "world"),
+        )
+        self.assertEqual(
             tuple(inspect.signature(AnalyzerPlugin.analyze_evidence).parameters),
             ("self", "request"),
         )
@@ -526,6 +540,11 @@ class PluginApiTests(unittest.TestCase):
         class IncompleteStatusPlugin(AnalyzerPluginBase):
             manifest = manifest_with(PluginCapability.STATUS_PARSE)
 
+        class IncompleteRelationshipProjectionPlugin(AnalyzerPluginBase):
+            manifest = manifest_with(
+                PluginCapability.RELATIONSHIP_PROJECTION
+            )
+
         spec = InputSpec(
             artifact_ids=(UUID(int=1),),
             role="status",
@@ -538,12 +557,22 @@ class PluginApiTests(unittest.TestCase):
 
         self.assertEqual(tuple(passive.parse_status(None, spec)), ())  # type: ignore[arg-type]
         self.assertEqual(passive.apply(None, None), ChangeSet())  # type: ignore[arg-type]
+        self.assertEqual(tuple(passive.project_relationships(None)), ())  # type: ignore[arg-type]
         self.assertEqual(tuple(passive.check_consistency(None)), ())  # type: ignore[arg-type]
         with self.assertRaisesRegex(NotImplementedError, "describe"):
             passive.describe()
         with self.assertRaisesRegex(NotImplementedError, "status_parse"):
             tuple(
                 IncompleteStatusPlugin().parse_status(None, spec)  # type: ignore[arg-type]
+            )
+        with self.assertRaisesRegex(
+            NotImplementedError,
+            "relationship_projection",
+        ):
+            tuple(
+                IncompleteRelationshipProjectionPlugin().project_relationships(  # type: ignore[arg-type]
+                    None
+                )
             )
 
     def test_forwarding_projection_uses_a_typed_bounded_request(self) -> None:

@@ -44,6 +44,7 @@ from router_dump_analyzer.plugin_api import (  # noqa: E402
     ArtifactInfo,
     DiagnosticSeverity,
     DumpInventory,
+    Evidence,
     EvidenceAnalysisFact,
     EvidenceAnalysisKind,
     EvidenceAnalysisRequest,
@@ -111,6 +112,114 @@ def fixture_inventory(
 
 
 class DemoPluginTests(unittest.TestCase):
+    def test_relationship_projection_runs_through_the_core_executor(self) -> None:
+        basis = WorldBasis(
+            kind=WorldBasisKind.OBSERVED_CAPTURE_VECTOR,
+            requested_time_ns=None,
+            resolved_at_min_ns=None,
+            resolved_at_max_ns=None,
+            capture_ranges=(),
+            provenance=Provenance.OBSERVED,
+            quality=Quality.EXACT,
+        )
+        peer_artifact_id = UUID("6964fa24-d66d-4ddd-bc5f-f257859dd408")
+
+        class ProjectionWorld:
+            def __init__(self, peer_exists: bool | None = True) -> None:
+                self.peer_exists = peer_exists
+
+            @property
+            def basis(self) -> WorldBasis:
+                return basis
+
+            @property
+            def perspective_ref(self):
+                return None
+
+            def iter_states(self, *, layers=None, kinds=None, limit=None):
+                del layers, kinds
+                states = (
+                    ResourceStateView(
+                        resource=ResourceKey(
+                            namespace="demo.test",
+                            node="router-1",
+                            layer="control-plane",
+                            kind="INTERFACE",
+                            parts=(("ifindex", 7),),
+                        ),
+                        exists=True,
+                        properties={"name": "xe-0/0/0"},
+                        provenance=Provenance.OBSERVED,
+                        quality=Quality.EXACT,
+                        valid_from_ns=None,
+                        valid_to_ns=None,
+                        evidence=(
+                            Evidence(
+                                artifact_id=ARTIFACT_ID,
+                                locator="control/interfaces[7]",
+                                raw_timestamp_ns=None,
+                                clock_domain=None,
+                            ),
+                        ),
+                    ),
+                    ResourceStateView(
+                        resource=ResourceKey(
+                            namespace="demo.test",
+                            node="router-1",
+                            layer="hardware",
+                            kind="INTERFACE",
+                            parts=(("ifindex", 70),),
+                        ),
+                        exists=self.peer_exists,
+                        properties={"name": "xe-0/0/0"},
+                        provenance=Provenance.OBSERVED,
+                        quality=Quality.EXACT,
+                        valid_from_ns=None,
+                        valid_to_ns=None,
+                        evidence=(
+                            Evidence(
+                                artifact_id=peer_artifact_id,
+                                locator="asic/ports[70]",
+                                raw_timestamp_ns=None,
+                                clock_domain=None,
+                            ),
+                        ),
+                    ),
+                )
+                return states if limit is None else states[:limit]
+
+        result = PluginCapabilityExecutor(plugin).project_relationships(
+            ProjectionWorld()
+        )
+        self.assertEqual(len(result.declarations), 1)
+        declaration = result.declarations[0]
+        self.assertEqual(declaration.relation_type, "corresponds_to")
+        self.assertTrue(declaration.attributes.complete)
+        self.assertEqual(declaration.attributes.remove_fields, ())
+        self.assertEqual(
+            declaration.attributes.set_values,
+            {"match_basis": "shared-interface-name"},
+        )
+        self.assertEqual(
+            declaration.attributes.field_quality,
+            {"match_basis": Quality.EXACT},
+        )
+        self.assertEqual(
+            declaration.attributes.field_provenance,
+            {"match_basis": Provenance.CORRELATED},
+        )
+        self.assertEqual(len(declaration.evidence), 2)
+        self.assertEqual(
+            {item.artifact_id for item in declaration.evidence},
+            {ARTIFACT_ID, peer_artifact_id},
+        )
+        for peer_exists in (False, None):
+            with self.subTest(peer_exists=peer_exists):
+                absent_result = PluginCapabilityExecutor(
+                    plugin
+                ).project_relationships(ProjectionWorld(peer_exists))
+                self.assertEqual(absent_result.declarations, ())
+
     def test_consistency_scan_never_reports_pass_from_a_bounded_prefix(self) -> None:
         basis = WorldBasis(
             kind=WorldBasisKind.OBSERVED_CAPTURE_VECTOR,
@@ -167,6 +276,7 @@ class DemoPluginTests(unittest.TestCase):
             frozenset(
                 {
                     PluginCapability.STATUS_PARSE,
+                    PluginCapability.RELATIONSHIP_PROJECTION,
                     PluginCapability.CONSISTENCY_CHECK,
                 }
             ),
@@ -180,7 +290,10 @@ class DemoPluginTests(unittest.TestCase):
         schema = plugin.describe()
         self.assertEqual([item.kind for item in schema.resource_kinds], ["INTERFACE"])
         self.assertEqual(schema.resource_kinds[0].key_fields, ("ifindex",))
-        self.assertEqual(schema.relationship_types, ())
+        self.assertEqual(
+            [item.relation_type for item in schema.relationship_types],
+            ["corresponds_to"],
+        )
         self.assertEqual(
             schema.source_record_groups[0].copy_action_label,
             "Copy status rows",

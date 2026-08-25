@@ -32,9 +32,10 @@ from router_dump_analyzer.ingestion_pipeline import (
     _frozen_auxiliary_execution_pins,
     _frozen_auxiliary_process_bootstraps,
     _ingest_plugin_child,
+    _plugin_process_bootstrap_digest,
     _revision_world_basis,
     _run_isolated_child,
-    _validated_consistency_process_bootstraps,
+    _validated_materialization_process_bootstraps,
 )
 from router_dump_analyzer.normalized_data import (
     project_consistency_materialization_for_client,
@@ -415,13 +416,17 @@ class ConsistencyIngestionTests(unittest.TestCase):
             providers,
             selections,
         )
+        child_bootstrap_digests = tuple(
+            _plugin_process_bootstrap_digest(value) for value in child_bootstraps
+        )
         frozen_pins = _frozen_auxiliary_execution_pins(providers, selections)
         self.assertEqual(len(child_bootstraps), 1)
         self.assertEqual(child_bootstraps[0].instance_id, auxiliary.instance_id)
         self.assertEqual(
-            _validated_consistency_process_bootstraps(
+            _validated_materialization_process_bootstraps(
                 frozen_pins,
                 child_bootstraps,
+                child_bootstrap_digests,
             ),
             child_bootstraps,
         )
@@ -429,12 +434,16 @@ class ConsistencyIngestionTests(unittest.TestCase):
             IngestionPipelineError,
             "do not match the frozen plan pins",
         ):
-            _validated_consistency_process_bootstraps(frozen_pins, ())
+            _validated_materialization_process_bootstraps(
+                frozen_pins,
+                (),
+                (),
+            )
         with self.assertRaisesRegex(
             IngestionPipelineError,
             "does not match its frozen plan pin",
         ):
-            _validated_consistency_process_bootstraps(
+            _validated_materialization_process_bootstraps(
                 frozen_pins,
                 (
                     replace(
@@ -442,6 +451,7 @@ class ConsistencyIngestionTests(unittest.TestCase):
                         configuration_digest="sha256:" + ("0" * 64),
                     ),
                 ),
+                child_bootstrap_digests,
             )
         tampered_bootstrap = replace(
             child_bootstraps[0],
@@ -454,9 +464,10 @@ class ConsistencyIngestionTests(unittest.TestCase):
             IngestionPipelineError,
             "does not match its frozen plan pin",
         ):
-            _validated_consistency_process_bootstraps(
+            _validated_materialization_process_bootstraps(
                 frozen_pins,
                 (tampered_bootstrap,),
+                child_bootstrap_digests,
             )
         invalid_role_pin = replace(
             frozen_pins[1],
@@ -467,9 +478,10 @@ class ConsistencyIngestionTests(unittest.TestCase):
             IngestionPipelineError,
             "does not declare CONSISTENCY_CHECK",
         ):
-            _validated_consistency_process_bootstraps(
+            _validated_materialization_process_bootstraps(
                 (frozen_pins[0], invalid_role_pin),
                 child_bootstraps,
+                child_bootstrap_digests,
             )
 
         tampered_primary = replace(
@@ -487,6 +499,7 @@ class ConsistencyIngestionTests(unittest.TestCase):
                 primary_connection,
                 tampered_primary,
                 primary.process_bootstrap_digest,
+                child_bootstrap_digests,
                 "unused",
                 None,
                 {},
@@ -507,6 +520,7 @@ class ConsistencyIngestionTests(unittest.TestCase):
                 connection,
                 primary.process_bootstrap,
                 primary.process_bootstrap_digest,
+                child_bootstrap_digests,
                 "unused",
                 None,
                 {},
@@ -528,6 +542,7 @@ class ConsistencyIngestionTests(unittest.TestCase):
                 tampered_connection,
                 primary.process_bootstrap,
                 primary.process_bootstrap_digest,
+                child_bootstrap_digests,
                 "unused",
                 None,
                 {},
@@ -540,6 +555,45 @@ class ConsistencyIngestionTests(unittest.TestCase):
         self.assertTrue(tampered_connection.closed)
         self.assertFalse(json.loads(tampered_connection.sent[0])["ok"])
 
+        # A child bootstrap and its plan pin can be made mutually consistent by
+        # recomputing the pin's digest.  The independent parent-owned digest
+        # vector must still reject that pair before the child loader runs.
+        mutually_forged_bootstrap = replace(
+            child_bootstraps[0],
+            plugin_target=primary.process_bootstrap.plugin_target,
+            plugin_target_executable_identity=(
+                primary.process_bootstrap.plugin_target_executable_identity
+            ),
+        )
+        mutually_forged_pin = replace(
+            frozen_pins[0],
+            process_bootstrap_digest=_plugin_process_bootstrap_digest(
+                mutually_forged_bootstrap
+            ),
+        )
+        mutually_forged_connection = _RecordingChildConnection()
+        with patch(
+            "router_dump_analyzer.ingestion_pipeline._registry_from_process_bootstraps"
+        ) as child_loader:
+            _ingest_plugin_child(
+                mutually_forged_connection,
+                primary.process_bootstrap,
+                primary.process_bootstrap_digest,
+                child_bootstrap_digests,
+                "unused",
+                None,
+                {},
+                "unused",
+                (mutually_forged_pin, frozen_pins[1]),
+                policy,
+                (mutually_forged_bootstrap,),
+            )
+        child_loader.assert_not_called()
+        self.assertTrue(mutually_forged_connection.closed)
+        self.assertFalse(
+            json.loads(mutually_forged_connection.sent[0])["ok"]
+        )
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             fixture = root / "status.jsonl"
@@ -550,6 +604,7 @@ class ConsistencyIngestionTests(unittest.TestCase):
                 (
                     primary.process_bootstrap,
                     primary.process_bootstrap_digest,
+                    child_bootstrap_digests,
                     str(fixture),
                     "node-a",
                     {},

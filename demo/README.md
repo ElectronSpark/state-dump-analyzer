@@ -486,12 +486,18 @@ does not yet apply their completeness inference to public relationship
 intervals. Likewise, optional semantic hooks are executable and testable
 through core's root-exported `PluginCapabilityExecutor`, but that caller does
 not install the missing temporal, topology, or route providers. Durable
-ingestion does schedule the example's `CONSISTENCY_CHECK`: the interface-status
-rule runs against the immutable final revision world before publication and
-its finding is stored with the exact plan and capture-vector basis. The stored
-record keeps its source locator for trusted offline review, while the browser
-and public consistency endpoints expose only the evidence artifact/time/hash
-allowlist and omit the locator.
+ingestion schedules the example's `RELATIONSHIP_PROJECTION` before its
+`CONSISTENCY_CHECK`. The projector demonstrates how two independently keyed
+`INTERFACE` states with one plug-in-defined name can declare a revision-scoped
+`corresponds_to` edge with evidence from both inputs. Each projector sees the
+same immutable base world; core attaches basis/provider identity and augments
+the world before the interface-status rule runs. Projection diagnostics use
+the dedicated `relationship_projection` stage and must be recoverable. The
+stored materialization retains the complete canonical basis and derives its
+digest again on reload; pre-deduplication limits are also reconstructed. The
+stored records retain
+source locators for trusted offline review, while public projections use the
+closed evidence allowlist and omit locators.
 
 ## Generated mock dumps
 
@@ -513,7 +519,7 @@ python -X utf8 -m rsl_demo_generator `
   --write-ingestion-conformance-corpus .\demo\fixtures\runtime-v2-ingestion-conformance.tgz
 python -X utf8 -m rsl_demo_generator `
   --verify-ingestion-conformance-corpus .\demo\fixtures\runtime-v2-ingestion-conformance.tgz
-python -m unittest tests.test_ingestion tests.test_consistency_ingestion -v
+python -m unittest tests.test_ingestion tests.test_relationship_projection_ingestion tests.test_consistency_ingestion -v
 python -m unittest discover -s state-dump-generator/tests `
   -p "test_runtime_v2_vectors.py" -v
 ```
@@ -695,9 +701,10 @@ must not turn one into a cross-node trace by inventing a candidate path.
 
 ## Advanced forwarding boundary
 
-This small plug-in intentionally stops at status parsing plus one bounded
-revision-consistency teaching rule; it does not implement forwarding. A plug-in
-that adds forwarding supplies typed `ForwardingCandidateConstraint` and
+This small plug-in intentionally stops at status parsing, one revision-level
+relationship projector, and one bounded consistency teaching rule; it does not
+implement forwarding. A plug-in that adds forwarding supplies typed
+`ForwardingCandidateConstraint` and
 `ForwardingTraversalStateKey` values, exact packet transitions, local endpoint
 attachments, terminal evidence, and device-owned policy or disposition
 semantics. Core evaluates bounded traversal, exact repeated states, endpoint
@@ -709,9 +716,10 @@ versus fatal diagnostics exercise the same core boundary as a future host
 integration. Do not call those hooks directly in an author golden test.
 
 The demo deployment deliberately composes two separately identified plug-ins.
-`rsl_demo_plugin:plugin` is the primary parser and advertises `STATUS_PARSE`
-plus `CONSISTENCY_CHECK`; `rsl_demo_plugin:evidence_plugin` advertises only
-`EVIDENCE_ANALYSIS`. The durable scheduler automatically uses the primary's
+`rsl_demo_plugin:plugin` is the primary parser and advertises `STATUS_PARSE`,
+`RELATIONSHIP_PROJECTION`, and `CONSISTENCY_CHECK`;
+`rsl_demo_plugin:evidence_plugin` advertises only `EVIDENCE_ANALYSIS`. The
+durable scheduler automatically uses the primary's projector and then its
 consistency rule. The deployment policy attaches the second instance with
 the `private_analysis_evidence` role to the exact primary executable identity.
 It lives in the capability-provider registry, not the primary parser registry.

@@ -528,6 +528,7 @@ plug-in.
 | Reduce | Convert one event into all direct/derived state and edge changes. | Deterministic ordering, interval materialization, checkpointing. |
 | Revert | Invert an event when information permits. | Mark non-invertible state unknown and measure reconstruction coverage. |
 | Correlate | Query a bounded indexed reader and emit cross-layer edges, event causal links, and clock anchors. | Clamp windows/budgets, persist evidence/quality, and reject invalid references. |
+| Revision relationship projection | Compare the complete immutable base revision and declare evidence-backed relationships between existing resources. | Schedule selected projectors on one shared base world, bind basis/provider authority, resolve duplicate or conflicting claims without merging identities, and augment the revision before consistency checks. |
 | Check | Return PASS/FAIL/UNKNOWN findings. | Execute rules at selected time/revision and aggregate dashboard results. |
 | Forwarding | Project bootstrap or bounded `ChangeSet` deltas into a negotiated typed forwarding IR. | Validate/version/store deltas; own LPM, recursive resolution, cycle/limit handling, and explanation API. |
 | Evidence analysis | Interpret already-authorized route/LTTng/correlation evidence and return citation-scoped advisory observations. | Select the exact plan-bound provider, disclose bounded immutable facts, validate/cap outputs, and retain derived evidence with complete provenance. |
@@ -555,6 +556,7 @@ Every node/device plug-in implements `describe()`, `probe()`, and
 | `EVENT_REDUCTION` | `apply()` |
 | `EVENT_REVERSION` | `revert()` |
 | `CORRELATION` | `correlate()` |
+| `RELATIONSHIP_PROJECTION` | `project_relationships()` |
 | `CONSISTENCY_CHECK` | `check_consistency()` |
 | `TOPOLOGY_PROJECTION` | `project_topology()` |
 | `FORWARDING_PROJECTION` | `project_forwarding()` |
@@ -579,6 +581,7 @@ directly. The constructor takes the plug-in, an optional already-validated
 | `apply(event, world)` | `ChangeSet` |
 | `revert(event, world_after)` | `ChangeSet` |
 | `correlate(reader, window)` | `CorrelationExecutionResult` |
+| `project_relationships(world)` | `RelationshipProjectionExecutionResult` |
 | `check_consistency(world)` | `ConsistencyExecutionResult` |
 | `project_topology(request, world)` | `TopologyExecutionResult` |
 | `project_forwarding(request, world)` | `ForwardingProjectionExecutionResult` |
@@ -599,12 +602,15 @@ All requests, outputs, resource keys, property roots, relationships, causal
 types, status perspectives, topology projection/perspective pairs, forwarding
 IR versions, references, evidence, and diagnostic envelopes are validated
 against the immutable schema and manifest. The default executor ceilings are
-50,000 world reads, 50,000 change items, 50,000 correlation outputs, 10,000
-consistency outputs, 100,000 topology outputs, 100,000 forwarding outputs,
+50,000 world reads, 50,000 change items, 50,000 correlation outputs, 50,000
+relationship-projection outputs, 10,000 consistency outputs, 100,000 topology
+outputs, 100,000 forwarding outputs,
 1,000 evidence-analysis outputs, 1 MiB each of aggregate evidence-analysis
 input and output, 1,000 diagnostics, 64 evidence items per output, and 4,096
 resource references. World-basis validation separately permits at most 100,000
 capture ranges, 100,000 node resolutions, and 100,000 basis evidence items.
+Relationship-projection snapshotting permits 1,000,000 aggregate value units
+and 100,000 aggregate evidence references.
 Consistency snapshotting permits 1,000,000 value units, 100,000 aggregate
 resource references, 100,000 aggregate evidence references, and eight distinct
 basis variants before exact-basis convergence is required.
@@ -658,18 +664,76 @@ does not itself publish a temporal, topology, or route provider. The current
 core-owned runtime-v2 session still leaves those providers `None` and exposes
 no route catalog.
 
-Durable ingestion does schedule `CONSISTENCY_CHECK` as a distinct
-pre-publication stage. Core MUST first freeze the complete
-`PluginExecutionPlan`. The primary parser is selected automatically only when
-its exact pin declares the capability. A non-primary provider is selected only
-when its exact pin both declares the capability and carries
-`REVISION_CONSISTENCY_ROLE` (`"revision_consistency"`); capability declaration
-alone MUST NOT opt an auxiliary into automatic execution. A selected-role pin
-without the capability MUST fail closed.
+Durable ingestion schedules `RELATIONSHIP_PROJECTION` and
+`CONSISTENCY_CHECK` as ordered pre-publication stages. Core MUST first freeze
+the complete `PluginExecutionPlan`. For each stage, the primary parser is
+selected automatically only when its exact pin declares that capability. A
+non-primary relationship projector is selected only when its exact pin carries
+`REVISION_RELATIONSHIP_PROJECTION_ROLE`
+(`"revision_relationship_projection"`) and declares
+`RELATIONSHIP_PROJECTION`; a consistency provider follows the equivalent
+`REVISION_CONSISTENCY_ROLE` (`"revision_consistency"`) rule. Capability
+declaration alone MUST NOT opt an auxiliary into scheduled execution, and a
+selected-role pin without its capability MUST fail closed.
 
-Core MUST reconstruct an immutable point-in-revision `ReadOnlyWorld` from the
-validated snapshot and explicit relationship observations. It MUST retain the
-observed per-artifact/per-clock capture vector as `world.basis`, MUST NOT
+Core MUST build one immutable base `ReadOnlyWorld` from validated snapshots
+and explicit parser relationship observations. Every selected relationship
+projector MUST read that same base world; declarations produced by one
+projector MUST NOT be visible to another projector in the same phase. The
+order of provider execution therefore cannot change the semantic result and
+the stage requires no plug-in-controlled fixed-point computation.
+
+`RelationshipDeclaration` is a revision-scoped assertion, not a temporal
+mutation or parser observation. It MUST contain exact source and target
+`ResourceKey` values, a relationship type declared by the primary schema, a
+complete `PropertyPatch` with no `remove_fields`, a bounded tuple of admitted
+`Evidence`, exact provenance and quality, and an optional perspective from the
+primary schema. It MUST NOT carry a timestamp, presence flag, world basis, or
+producer identity. Core MUST attach the authoritative basis digest, execution
+plan digest, and complete plan-bound provider pin. Omission never proves
+absence, and a declaration MUST NOT merge or replace either endpoint identity.
+Both endpoints MUST exist in the base world.
+
+The public executor and router MUST retain the one-argument
+`project_relationships(world)` contract and validate an ordinary direct call
+against the selected provider's own schema. During scheduled revision
+materialization only, a private coordinator authority MUST validate every
+primary and auxiliary declaration against the primary revision schema. An
+auxiliary provider MUST NOT be required to duplicate the primary schema, and
+the coordinator authority MUST NOT be exposed as a public schema-override
+argument.
+
+Every projection diagnostic MUST have exact stage
+`DiagnosticStage.RELATIONSHIP_PROJECTION`, MUST be recoverable, and MUST be
+bound by core to the selected provider. A wrong-stage or fatal diagnostic MUST
+fail the stage atomically.
+
+Core MUST canonicalize undirected endpoints before identity derivation.
+The fully qualified perspective MUST participate in relationship identity, so
+otherwise identical claims in two perspectives MUST remain independent rather
+than becoming one conflict group. Core MUST qualify local parser and projector
+perspective references with the primary instance ID and schema digest and MUST
+reject foreign qualifiers. When an explicit parser observation and a projected
+edge have the same canonical identity, the parser observation MUST remain the
+authoritative relationship in the augmented world.
+Identical semantic declarations MUST be collapsed while retaining every
+distinct provider/evidence contribution and an occurrence count. Different
+attribute/provenance/quality claims for the same basis-qualified edge MUST be
+preserved as separate declarations in one stable ambiguity group. The
+augmented world receives one conservative `RelationshipView` with
+`Quality.AMBIGUOUS`, correlated provenance, and only attributes common with an
+identical value across every claim; provider order MUST NOT select a winner.
+The stage applies both executor limits and revision-wide provider,
+declaration, diagnostic, evidence, base-resource, world-read, and serialized
+byte limits before duplicate elimination.
+
+After successful relationship materialization, core MUST construct the
+augmented world from the base world and conservative resolved edges. Only then
+may it invoke consistency providers. Consistency therefore observes projected
+relationships, while projectors never observe same-phase output.
+
+Core MUST retain the observed per-artifact/per-clock capture vector as
+`world.basis`, MUST NOT
 invent a common timestamp, and MUST NOT fabricate state for a resource seen
 only as a relationship endpoint. A returned finding MUST carry the exact same
 `WorldBasis`; every evidence artifact MUST belong to the admitted revision.
@@ -686,38 +750,59 @@ Before traversing or detaching a returned basis, core bounds capture ranges,
 node resolutions, each nested evidence tuple, and aggregate basis evidence;
 authors must not use a large basis as an unbounded side channel.
 
-For PROCESS-authorized ingestion, every selected implementation executes in
+For PROCESS-authorized ingestion, every selected projector or consistency
+implementation executes in
 the existing killable ingestion child under the overall ingestion deadline.
 Trusted inline deployment retains the documented absence of process isolation
 and a killable timeout. Materialization completes before canonical dataset
 serialization, hashing, staging, or catalog publication. Any stale provider,
 hook failure, invalid output, foreign evidence, basis mismatch, limit breach,
 timeout, or fatal diagnostic MUST abort the publication atomically; core MUST
-NOT publish a valid prefix. A successful revision stores a `complete` envelope,
-or `not_applicable` when no provider was selected. Older revisions with no
-envelope are reported as `not_materialized`, never retroactively executed.
+NOT publish a valid prefix. A successful new revision stores `complete`, or
+`not_applicable` when no provider was selected, for each stage. Older
+consistency revisions with no envelope are reported as `not_materialized`.
+Older revisions predating relationship projection have no relationship
+projection envelope. Neither stage is ever executed retroactively.
 Durable findings retain exact evidence locators for trusted/admin use. The
 shared public projector MUST omit locators and MUST validate the closed
 field/domain vocabulary of finding, basis, evidence, and producer records;
-descriptor-sensitive redaction applies only to plug-in-owned `details`. The
-stored `basis_digest` commits to the richer durable basis, not the reduced
-public projection.
+descriptor-sensitive redaction applies to plug-in-owned finding `details` and
+projected relationship `attributes`. The
+relationship envelope MUST store the complete canonical validated `basis` and
+its `basis_digest`; reload MUST derive the digest from the basis instead of
+trusting the digest field by itself. The digest commits to the richer durable
+basis, not the reduced public projection.
 
-The default revision-wide materializer admits at most 32 providers, 10,000
-findings, 2,000 consistency diagnostics, 100,000 aggregate resource references,
-100,000 aggregate evidence references, 100,000 world reads, 100,000 artifact
-IDs, 100,000 capture ranges, 100,000 node resolutions, 2,000,000 basis value
-units, and 16 MiB of serialized materialization contribution. These are hard
-core ceilings layered on top of each provider's executor limits.
+Reload MUST also reconstruct pre-deduplication occurrence, evidence, and byte
+charges from retained contribution counts. A compact duplicate record MUST NOT
+evade the limits that applied before duplicate elimination during ingestion.
 
-"Selected implementation" in this scheduled stage means the primary when it
-declares `CONSISTENCY_CHECK`, plus auxiliary pins carrying the exact
-`REVISION_CONSISTENCY_ROLE`. Other policy auxiliaries remain in the immutable
-full execution plan but MUST NOT be imported into the PROCESS child merely to
-materialize consistency. Core validates the exact ordered bootstrap-to-pin
+The default relationship materializer admits at most 32 providers, 10,000
+declarations, 2,000 diagnostics, 100,000 evidence references, 200,000 world
+reads, 100,000 base resources and artifact IDs, and 16 MiB of serialized
+materialization. The consistency materializer independently admits at most 32
+providers, 10,000 findings, 2,000 diagnostics, 100,000 aggregate resource and
+evidence references, 100,000 world reads and artifact IDs, 100,000 capture
+ranges and node resolutions, 2,000,000 basis value units, and 16 MiB of
+serialized materialization. These are hard core ceilings layered on top of
+each provider's executor limits.
+
+"Selected implementation" in these scheduled stages means the primary when it
+declares the corresponding capability, plus auxiliary pins carrying the exact
+stage role. Other policy auxiliaries remain in the immutable full execution
+plan but MUST NOT be imported into the PROCESS child merely to materialize a
+stage they do not serve. Core validates the exact ordered bootstrap-to-pin
 correspondence before loading auxiliary code, retains the full plan digest on
 every result, and uses a scoped internal router that cannot resolve an unbound
 pin. The ordinary public router remains full-plan and fail-closed.
+
+`IngestionRevisionWorld` folds snapshot observations sharing one
+`ResourceKey` into a single `ResourceStateView` before projectors run. That
+view retains the final ordered observation's evidence for the resulting state,
+not an independently addressable raw observation stream. A projector needing
+to compare two raw observations that collapse to one key cannot recover them
+through this hook; a future bounded observation/source reader would be a
+separate contract.
 
 Production composition MUST use `CapabilityProviderRegistry`,
 `CapabilityRouteSelector`, and `PlanBoundCapabilityRouter` rather than selecting
@@ -2882,6 +2967,9 @@ Every ordinary parser plug-in additionally proves:
   integer/boolean fields, time bounds, and output types are validated;
 - cycles, non-finite values, oversized atoms/containers/streams, and
   non-recoverable diagnostics fail without partial publication;
+- a relationship projector proves same-base-world isolation, existing
+  endpoints, primary-schema compatibility, deterministic duplicate/conflict
+  handling, and that consistency observes the augmented world;
 - repeated ingestion of identical content has stable revision/resource/source
   identity; and
 - the core-owned runtime-v2 session serves its normalized `/v1/workspace` while
@@ -2900,7 +2988,7 @@ The repository example owns a compact heterogeneous corpus:
 ```text
 python -X utf8 -m rsl_demo_generator --write-ingestion-conformance-corpus path/to/runtime-v2-ingestion-conformance.tgz
 python -X utf8 -m rsl_demo_generator --verify-ingestion-conformance-corpus path/to/runtime-v2-ingestion-conformance.tgz
-python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_capability_executor tests.test_capability_router -v
+python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_capability_executor tests.test_capability_router tests.test_relationship_projection_materialization tests.test_relationship_projection_ingestion tests.test_consistency_materialization tests.test_consistency_ingestion tests.test_revision_world -v
 python -m unittest discover -s state-dump-generator/tests -p "test_runtime_v2_vectors.py" -v
 ```
 

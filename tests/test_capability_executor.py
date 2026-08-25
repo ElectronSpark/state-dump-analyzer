@@ -62,6 +62,7 @@ from router_dump_analyzer.plugin_api import (
     Provenance,
     Quality,
     ReconstructionSupport,
+    RelationshipDeclaration,
     RelationshipMutation,
     RelationshipOperation,
     RelationshipTypeDescriptor,
@@ -97,6 +98,7 @@ CAPABILITIES = frozenset(
         PluginCapability.EVENT_REDUCTION,
         PluginCapability.EVENT_REVERSION,
         PluginCapability.CORRELATION,
+        PluginCapability.RELATIONSHIP_PROJECTION,
         PluginCapability.CONSISTENCY_CHECK,
         PluginCapability.TOPOLOGY_PROJECTION,
         PluginCapability.FORWARDING_PROJECTION,
@@ -334,6 +336,7 @@ class _Plugin(AnalyzerPluginBase):
         self.apply_output: Any = ChangeSet()
         self.revert_output: Any = ChangeSet()
         self.correlation_output: Iterable[Any] = ()
+        self.relationship_projection_output: Iterable[Any] = ()
         self.consistency_output: Iterable[Any] = ()
         self.topology_output: Iterable[Any] = ()
         self.forwarding_output: Iterable[Any] = ()
@@ -342,6 +345,7 @@ class _Plugin(AnalyzerPluginBase):
         self.apply_called = False
         self.revert_called = False
         self.correlate_called = False
+        self.project_relationships_called = False
         self.topology_called = False
         self.forwarding_called = False
         self.forwarding_step_called = False
@@ -368,6 +372,10 @@ class _Plugin(AnalyzerPluginBase):
     def correlate(self, reader: Any, window: Any) -> Iterable[Any]:
         self.correlate_called = True
         return self.correlation_output
+
+    def project_relationships(self, world: Any) -> Iterable[Any]:
+        self.project_relationships_called = True
+        return self.relationship_projection_output
 
     def check_consistency(self, world: Any) -> Iterable[Any]:
         return self.consistency_output
@@ -544,9 +552,13 @@ class _ExplodingTuple(tuple[Any, ...]):
         raise self.failure
 
 
-def _diagnostic(*, recoverable: bool = True) -> PluginDiagnostic:
+def _diagnostic(
+    *,
+    recoverable: bool = True,
+    stage: DiagnosticStage = DiagnosticStage.CONSISTENCY,
+) -> PluginDiagnostic:
     return PluginDiagnostic(
-        stage=DiagnosticStage.CONSISTENCY,
+        stage=stage,
         severity=DiagnosticSeverity.WARNING,
         code="opaque.warning",
         message="Opaque warning",
@@ -585,6 +597,23 @@ def _relationship_mutation(
         provenance=Provenance.CORRELATED,
         quality=Quality.EXACT,
         evidence=(EVIDENCE,),
+        perspective_ref=PERSPECTIVE,
+    )
+
+
+def _relationship_declaration(
+    relation_type: str = "opaque.relation",
+    *,
+    attributes: PropertyPatch | None = None,
+) -> RelationshipDeclaration:
+    return RelationshipDeclaration(
+        source=RESOURCE,
+        target=OTHER_RESOURCE,
+        relation_type=relation_type,
+        attributes=attributes or PropertyPatch(complete=True),
+        evidence=(EVIDENCE,),
+        provenance=Provenance.CORRELATED,
+        quality=Quality.EXACT,
         perspective_ref=PERSPECTIVE,
     )
 
@@ -962,6 +991,21 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
                 foreign_schema,
                 _World(),  # type: ignore[arg-type]
             )
+        plugin.relationship_projection_output = (
+            replace(
+                _relationship_declaration(),
+                perspective_ref=StatusPerspectiveRef(
+                    "opaque.status",
+                    plugin_instance_id="other.instance",
+                    schema_digest=pin.schema_digest,
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "different plug-in instance",
+        ):
+            executor.project_relationships(_World())  # type: ignore[arg-type]
         with self.assertRaisesRegex(
             PluginCapabilityInputError,
             "revision-set member",
@@ -1350,6 +1394,245 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
                 ),
             )
         self.assertTrue(closed)
+
+    def test_relationship_projection_validates_detaches_and_groups_outputs(
+        self,
+    ) -> None:
+        plugin = _Plugin()
+        nested = {"status": "matched"}
+        declaration = _relationship_declaration(
+            attributes=PropertyPatch(
+                set_values={"metadata": nested},
+                field_quality={"metadata": Quality.EXACT},
+                field_provenance={"metadata": Provenance.CORRELATED},
+                complete=True,
+            )
+        )
+
+        def outputs() -> Iterable[Any]:
+            yield declaration
+            nested["late"] = "must-not-cross-boundary"
+            yield _diagnostic(stage=DiagnosticStage.RELATIONSHIP_PROJECTION)
+
+        plugin.relationship_projection_output = outputs()
+        result = PluginCapabilityExecutor(plugin).project_relationships(
+            _World()  # type: ignore[arg-type]
+        )
+
+        self.assertTrue(plugin.project_relationships_called)
+        self.assertEqual(
+            result.diagnostics,
+            (_diagnostic(stage=DiagnosticStage.RELATIONSHIP_PROJECTION),),
+        )
+        self.assertEqual(len(result.declarations), 1)
+        detached = result.declarations[0]
+        self.assertIsNot(detached, declaration)
+        self.assertIsNot(detached.source, declaration.source)
+        self.assertIsNot(detached.evidence[0], declaration.evidence[0])
+        self.assertEqual(detached.attributes.set_values["metadata"], {"status": "matched"})
+        with self.assertRaises(TypeError):
+            detached.attributes.set_values["new"] = "forbidden"  # type: ignore[index]
+
+    def test_relationship_projection_enforces_schema_and_exact_output_shapes(
+        self,
+    ) -> None:
+        plugin = _Plugin()
+        executor = PluginCapabilityExecutor(plugin)
+        invalid_kind = replace(
+            RESOURCE,
+            kind="opaque.undeclared",
+        )
+        invalid_perspective = StatusPerspectiveRef("opaque.undeclared")
+        cases: tuple[tuple[str, RelationshipDeclaration, str], ...] = (
+            (
+                "relation",
+                _relationship_declaration("opaque.undeclared"),
+                "undeclared relationship type",
+            ),
+            (
+                "resource",
+                replace(_relationship_declaration(), source=invalid_kind),
+                "undeclared resource kind",
+            ),
+            (
+                "perspective",
+                replace(
+                    _relationship_declaration(),
+                    perspective_ref=invalid_perspective,
+                ),
+                "undeclared perspective",
+            ),
+        )
+        for label, declaration, message in cases:
+            with self.subTest(label=label):
+                plugin.relationship_projection_output = (declaration,)
+                with self.assertRaisesRegex(PluginCapabilityOutputError, message):
+                    executor.project_relationships(_World())  # type: ignore[arg-type]
+
+        invalid_evidence = _relationship_declaration()
+        object.__setattr__(invalid_evidence, "evidence", [EVIDENCE])
+        plugin.relationship_projection_output = (invalid_evidence,)
+        with self.assertRaisesRegex(PluginCapabilityOutputError, "exact tuple"):
+            executor.project_relationships(_World())  # type: ignore[arg-type]
+
+        plugin.relationship_projection_output = (object(),)
+        with self.assertRaisesRegex(PluginCapabilityOutputError, "unsupported object"):
+            executor.project_relationships(_World())  # type: ignore[arg-type]
+
+        plugin.relationship_projection_output = (_diagnostic(),)
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "relationship_projection stage",
+        ):
+            executor.project_relationships(_World())  # type: ignore[arg-type]
+
+        for label, attributes, message in (
+            (
+                "incomplete",
+                PropertyPatch(),
+                "complete relationship assertion",
+            ),
+            (
+                "removal",
+                PropertyPatch(remove_fields=("obsolete",), complete=True),
+                "cannot remove fields",
+            ),
+        ):
+            with self.subTest(label=label):
+                plugin.relationship_projection_output = (
+                    _relationship_declaration(attributes=attributes),
+                )
+                with self.assertRaisesRegex(PluginCapabilityOutputError, message):
+                    executor.project_relationships(_World())  # type: ignore[arg-type]
+
+    def test_relationship_projection_can_use_coordinator_authoritative_schema(
+        self,
+    ) -> None:
+        plugin = _Plugin()
+        plugin.relationship_projection_output = (_relationship_declaration(),)
+        executor = PluginCapabilityExecutor(
+            plugin,
+            schema=PluginSchema(resource_kinds=(), relationship_types=()),
+        )
+
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "undeclared resource kind",
+        ):
+            executor.project_relationships(  # type: ignore[arg-type]
+                _World(perspective_ref=None)
+            )
+
+        result = executor._project_relationships_for_revision(
+            _World(),  # type: ignore[arg-type]
+            declaration_schema=_schema(),
+        )
+        self.assertEqual(result.declarations, (_relationship_declaration(),))
+
+        fresh = _Plugin()
+        fresh.relationship_projection_output = (_relationship_declaration(),)
+        with self.assertRaisesRegex(
+            PluginCapabilityInputError,
+            "declaration_schema must be an exact PluginSchema",
+        ):
+            PluginCapabilityExecutor(fresh)._project_relationships_for_revision(
+                _World(),  # type: ignore[arg-type]
+                declaration_schema=object(),  # type: ignore[arg-type]
+            )
+        self.assertFalse(fresh.project_relationships_called)
+
+    def test_relationship_projection_bounds_world_and_output_iterators(self) -> None:
+        plugin = _Plugin()
+        world = _World(
+            (_resource_state(RESOURCE), _resource_state(OTHER_RESOURCE)),
+            honor_limit=True,
+        )
+
+        def scan(bounded_world: Any) -> Iterable[Any]:
+            tuple(bounded_world.iter_states())
+            return ()
+
+        plugin.project_relationships = scan  # type: ignore[method-assign]
+        executor = PluginCapabilityExecutor(
+            plugin,
+            limits=PluginCapabilityLimits(max_world_reads=1),
+        )
+        with self.assertRaisesRegex(PluginCapabilityOutputError, "world-read limit"):
+            executor.project_relationships(world)  # type: ignore[arg-type]
+        self.assertEqual(world.last_limit, 2)
+
+        closed = False
+
+        def declarations() -> Iterable[Any]:
+            nonlocal closed
+            try:
+                yield _relationship_declaration()
+                yield _relationship_declaration()
+            finally:
+                closed = True
+
+        plugin = _Plugin()
+        plugin.relationship_projection_output = declarations()
+        executor = PluginCapabilityExecutor(
+            plugin,
+            limits=PluginCapabilityLimits(max_relationship_projection_outputs=1),
+        )
+        with self.assertRaisesRegex(PluginCapabilityOutputError, "exceeded"):
+            executor.project_relationships(_World())  # type: ignore[arg-type]
+        self.assertTrue(closed)
+
+        plugin = _Plugin()
+        plugin.relationship_projection_output = (
+            _relationship_declaration(),
+            _relationship_declaration(),
+        )
+        executor = PluginCapabilityExecutor(
+            plugin,
+            limits=PluginCapabilityLimits(
+                max_relationship_projection_evidence_references=1
+            ),
+        )
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "aggregate evidence-reference limit",
+        ):
+            executor.project_relationships(_World())  # type: ignore[arg-type]
+
+        plugin.relationship_projection_output = (
+            _relationship_declaration(
+                attributes=PropertyPatch(
+                    set_values={"payload": "x" * 100},
+                    complete=True,
+                )
+            ),
+        )
+        executor = PluginCapabilityExecutor(
+            plugin,
+            limits=PluginCapabilityLimits(
+                max_relationship_projection_snapshot_units=50
+            ),
+        )
+        with self.assertRaisesRegex(
+            PluginCapabilityOutputError,
+            "aggregate snapshot-unit limit",
+        ):
+            executor.project_relationships(_World())  # type: ignore[arg-type]
+
+    def test_relationship_projection_preserves_process_control_exceptions(
+        self,
+    ) -> None:
+        for exception_type in (KeyboardInterrupt, SystemExit, GeneratorExit):
+            with self.subTest(exception_type=exception_type.__name__):
+                plugin = _Plugin()
+
+                def fail(_world: Any, *, error_type: type[BaseException] = exception_type):
+                    raise error_type("process control")
+
+                plugin.project_relationships = fail  # type: ignore[method-assign]
+                with self.assertRaises(exception_type):
+                    PluginCapabilityExecutor(plugin).project_relationships(  # type: ignore[arg-type]
+                        _World()
+                    )
 
     def test_consistency_bounds_world_reads_and_typed_findings(self) -> None:
         plugin = _Plugin()

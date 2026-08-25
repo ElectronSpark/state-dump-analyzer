@@ -1322,14 +1322,31 @@ class GeneratedAssemblyApiIntegrationTests(unittest.TestCase):
                                 )
                                 if binding is None:
                                     continue
-                                self.assertEqual(
-                                    segment["topology_link_id"],
-                                    None,
-                                )
                                 if scenario_id == "recursive-resolution-cycle":
+                                    self.assertIsNone(
+                                        segment["topology_link_id"]
+                                    )
                                     self.assertEqual(
                                         binding["state"],
                                         "unresolved",
+                                    )
+                                    self.assertIsNone(
+                                        segment["network_segment_id"]
+                                    )
+                                    self.assertEqual(
+                                        segment[
+                                            "network_segment_attachment_ids"
+                                        ],
+                                        [],
+                                    )
+                                elif segment["topology_link_id"] is not None:
+                                    self.assertEqual(
+                                        binding["binding_kind"],
+                                        "typed_inter_node_link",
+                                    )
+                                    self.assertEqual(
+                                        binding["topology_link_id"],
+                                        segment["topology_link_id"],
                                     )
                                     self.assertIsNone(
                                         segment["network_segment_id"]

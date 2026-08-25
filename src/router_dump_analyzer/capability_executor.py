@@ -73,6 +73,7 @@ from .plugin_api import (
     ReadOnlyWorld,
     ReconstructionCoverage,
     ReconstructionWatermark,
+    RelationshipDeclaration,
     RelationshipMutation,
     RelationshipOperation,
     RelationshipView,
@@ -147,6 +148,7 @@ class PluginCapabilityLimits:
     max_world_reads: int = 50_000
     max_change_items: int = 50_000
     max_correlation_outputs: int = 50_000
+    max_relationship_projection_outputs: int = 50_000
     max_consistency_outputs: int = 10_000
     max_topology_outputs: int = 100_000
     max_forwarding_outputs: int = 100_000
@@ -160,6 +162,8 @@ class PluginCapabilityLimits:
     max_world_basis_capture_ranges: int = 100_000
     max_world_basis_node_resolutions: int = 100_000
     max_world_basis_evidence: int = 100_000
+    max_relationship_projection_snapshot_units: int = 1_000_000
+    max_relationship_projection_evidence_references: int = 100_000
     max_consistency_snapshot_units: int = 1_000_000
     max_consistency_resource_references: int = 100_000
     max_consistency_evidence_references: int = 100_000
@@ -170,6 +174,10 @@ class PluginCapabilityLimits:
             ("max_world_reads", self.max_world_reads),
             ("max_change_items", self.max_change_items),
             ("max_correlation_outputs", self.max_correlation_outputs),
+            (
+                "max_relationship_projection_outputs",
+                self.max_relationship_projection_outputs,
+            ),
             ("max_consistency_outputs", self.max_consistency_outputs),
             ("max_topology_outputs", self.max_topology_outputs),
             ("max_topology_claims", self.max_topology_claims),
@@ -199,6 +207,14 @@ class PluginCapabilityLimits:
             ),
             ("max_world_basis_evidence", self.max_world_basis_evidence),
             (
+                "max_relationship_projection_snapshot_units",
+                self.max_relationship_projection_snapshot_units,
+            ),
+            (
+                "max_relationship_projection_evidence_references",
+                self.max_relationship_projection_evidence_references,
+            ),
+            (
                 "max_consistency_snapshot_units",
                 self.max_consistency_snapshot_units,
             ),
@@ -224,6 +240,12 @@ class CorrelationExecutionResult:
     causal_links: tuple[CausalLink, ...]
     relationship_mutations: tuple[RelationshipMutation, ...]
     clock_anchors: tuple[ClockAnchor, ...]
+    diagnostics: tuple[PluginDiagnostic, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RelationshipProjectionExecutionResult:
+    declarations: tuple[RelationshipDeclaration, ...]
     diagnostics: tuple[PluginDiagnostic, ...]
 
 
@@ -1172,6 +1194,145 @@ def _snapshot_status_perspective(
     )
 
 
+def _snapshot_property_patch(
+    value: PropertyPatch,
+    label: str,
+    *,
+    maximum_evidence: int,
+    aggregate_budget: _AggregateValueBudget | None = None,
+) -> PropertyPatch:
+    """Detach one plug-in-owned patch before it crosses the capability boundary."""
+
+    if type(value) is not PropertyPatch:
+        raise ValueError(f"{label} must be an exact PropertyPatch")
+    if not isinstance(value.set_values, Mapping) or len(value.set_values) > 1_024:
+        raise ValueError(f"{label}.set_values must be a bounded mapping")
+    if type(value.remove_fields) is not tuple or len(value.remove_fields) > 1_024:
+        raise ValueError(f"{label}.remove_fields must be a bounded exact tuple")
+    for index, name in enumerate(value.remove_fields):
+        if type(name) is not str or not name or len(name) > 256 or "\x00" in name:
+            raise ValueError(f"{label}.remove_fields[{index}] is invalid")
+        if aggregate_budget is not None:
+            aggregate_budget.charge(len(name), f"{label}.remove_fields")
+    if type(value.unknown_fields) is not tuple:
+        raise ValueError(f"{label}.unknown_fields must be an exact tuple")
+    unknown_fields = _snapshot_world_unknown_fields(
+        value.unknown_fields,
+        f"{label}.unknown_fields",
+        maximum_evidence=maximum_evidence,
+    )
+    if aggregate_budget is not None:
+        for item in unknown_fields:
+            aggregate_budget.charge(
+                len(item.name) + len(item.reason_code) + len(item.message),
+                f"{label}.unknown_fields",
+            )
+            for evidence in item.evidence:
+                aggregate_budget.charge(
+                    _evidence_snapshot_units(evidence),
+                    f"{label}.unknown_fields.evidence",
+                )
+
+    def snapshot_metadata(
+        metadata: object,
+        enum_type: type[Provenance] | type[Quality],
+        field_label: str,
+    ) -> Mapping[str, Provenance] | Mapping[str, Quality]:
+        if not isinstance(metadata, Mapping) or len(metadata) > 1_024:
+            raise ValueError(f"{field_label} must be a bounded mapping")
+        detached: dict[str, Provenance | Quality] = {}
+        for index, (name, item) in enumerate(metadata.items()):
+            if index >= 1_024:
+                raise ValueError(f"{field_label} must be a bounded mapping")
+            if (
+                type(name) is not str
+                or not name
+                or len(name) > 256
+                or "\x00" in name
+            ):
+                raise ValueError(f"{field_label} contains an invalid field name")
+            if type(item) is not enum_type:
+                raise ValueError(f"{field_label}[{name!r}] is invalid")
+            detached[name] = enum_type(item)
+            if aggregate_budget is not None:
+                aggregate_budget.charge(len(name), field_label)
+        return MappingProxyType(detached)
+
+    if type(value.complete) is not bool:
+        raise ValueError(f"{label}.complete must be an exact boolean")
+    return PropertyPatch(
+        set_values=cast(
+            Mapping[str, Any],
+            _snapshot_property_value(
+                value.set_values,
+                f"{label}.set_values",
+                aggregate_budget=aggregate_budget,
+            ),
+        ),
+        remove_fields=tuple(value.remove_fields),
+        unknown_fields=unknown_fields,
+        field_quality=cast(
+            Mapping[str, Quality],
+            snapshot_metadata(
+                value.field_quality,
+                Quality,
+                f"{label}.field_quality",
+            ),
+        ),
+        field_provenance=cast(
+            Mapping[str, Provenance],
+            snapshot_metadata(
+                value.field_provenance,
+                Provenance,
+                f"{label}.field_provenance",
+            ),
+        ),
+        complete=value.complete,
+    )
+
+
+def _snapshot_relationship_declaration(
+    value: RelationshipDeclaration,
+    label: str,
+    *,
+    maximum_evidence: int,
+    aggregate_budget: _AggregateValueBudget | None = None,
+) -> RelationshipDeclaration:
+    if type(value) is not RelationshipDeclaration:
+        raise ValueError(f"{label} must be an exact RelationshipDeclaration")
+    source = _snapshot_resource_key(value.source, f"{label}.source")
+    target = _snapshot_resource_key(value.target, f"{label}.target")
+    evidence = _snapshot_world_evidence(
+        value.evidence,
+        f"{label}.evidence",
+        maximum=maximum_evidence,
+    )
+    if aggregate_budget is not None:
+        aggregate_budget.charge(
+            len(value.relation_type)
+            + _resource_key_snapshot_units(source)
+            + _resource_key_snapshot_units(target),
+            label,
+        )
+        for item in evidence:
+            aggregate_budget.charge(_evidence_snapshot_units(item), label)
+    return RelationshipDeclaration(
+        source=source,
+        target=target,
+        relation_type=value.relation_type,
+        attributes=_snapshot_property_patch(
+            value.attributes,
+            f"{label}.attributes",
+            maximum_evidence=maximum_evidence,
+            aggregate_budget=aggregate_budget,
+        ),
+        evidence=evidence,
+        provenance=Provenance(value.provenance),
+        quality=Quality(value.quality),
+        perspective_ref=_snapshot_status_perspective(value.perspective_ref),
+    )
+
+
 def _snapshot_world_time(value: object, label: str) -> int | None:
     if value is None:
         return None
@@ -1214,6 +1375,7 @@ def _snapshot_world_unknown_fields(
                 type(field_value) is not str
                 or not field_value
                 or len(field_value) > maximum
+                or "\x00" in field_value
             ):
                 raise ValueError(f"{item_label}.{field_name} is invalid")
         detached.append(
@@ -1914,14 +2076,21 @@ class PluginCapabilityExecutor:
             )
         return hook
 
-    def _resource(self, value: Any, label: str) -> ResourceKey:
+    def _resource(
+        self,
+        value: Any,
+        label: str,
+        *,
+        schema_index: _SchemaIndex | None = None,
+    ) -> ResourceKey:
         if type(value) is not ResourceKey:
             raise ValueError(f"{label} must be an exact ResourceKey")
         # Validate exact/bounded nested identity before any comprehension over
         # plug-in-controlled containers.  Frozen dataclasses remain mutable via
         # object.__setattr__, so constructor-time validation is insufficient.
         detached = _snapshot_resource_key(value, label)
-        expected = self._schema.key_fields_by_kind.get(detached.kind)
+        selected_schema = self._schema if schema_index is None else schema_index
+        expected = selected_schema.key_fields_by_kind.get(detached.kind)
         if expected is None:
             raise ValueError(
                 f"{label} references undeclared resource kind {detached.kind!r}"
@@ -2058,35 +2227,42 @@ class PluginCapabilityExecutor:
         label: str,
         *,
         require_bound_qualifiers: bool = False,
+        schema_index: _SchemaIndex | None = None,
+        enforce_bound_identity: bool = True,
     ) -> None:
         if value is None:
             return
         if type(value) is not StatusPerspectiveRef:
             raise ValueError(f"{label} must be an exact StatusPerspectiveRef")
-        if value.perspective_id not in self._schema.perspectives:
+        selected_schema = self._schema if schema_index is None else schema_index
+        if value.perspective_id not in selected_schema.perspectives:
             raise ValueError(
                 f"{label} references undeclared perspective {value.perspective_id!r}"
             )
         if (
-            value.plugin_instance_id is not None
+            enforce_bound_identity
+            and value.plugin_instance_id is not None
             and self._bound_instance_id is not None
             and value.plugin_instance_id != self._bound_instance_id
         ):
             raise ValueError(f"{label} references a different plug-in instance")
         if (
-            require_bound_qualifiers
+            enforce_bound_identity
+            and require_bound_qualifiers
             and self._bound_instance_id is not None
             and value.plugin_instance_id != self._bound_instance_id
         ):
             raise ValueError(f"{label} must identify the bound plug-in instance")
         if (
-            value.schema_digest is not None
+            enforce_bound_identity
+            and value.schema_digest is not None
             and self._bound_schema_digest is not None
             and value.schema_digest != self._bound_schema_digest
         ):
             raise ValueError(f"{label} references a different schema")
         if (
-            require_bound_qualifiers
+            enforce_bound_identity
+            and require_bound_qualifiers
             and self._bound_schema_digest is not None
             and value.schema_digest != self._bound_schema_digest
         ):
@@ -2099,6 +2275,7 @@ class PluginCapabilityExecutor:
         maximum_reads: int,
         *,
         expected_perspective_id: str | None = None,
+        authority_schema_index: _SchemaIndex | None = None,
     ) -> ReadOnlyWorld:
         """Validate and snapshot a core-owned world before a plug-in sees it."""
 
@@ -2116,6 +2293,8 @@ class PluginCapabilityExecutor:
                 perspective_ref,
                 "world.perspective_ref",
                 require_bound_qualifiers=expected_perspective_id is not None,
+                schema_index=authority_schema_index,
+                enforce_bound_identity=authority_schema_index is None,
             )
             if (
                 expected_perspective_id is not None
@@ -2259,6 +2438,66 @@ class PluginCapabilityExecutor:
             label=label,
         )
         self._perspective(value.perspective_ref, f"{label}.perspective_ref")
+        return value
+
+    def _relationship_declaration(
+        self,
+        value: Any,
+        label: str,
+        *,
+        schema_index: _SchemaIndex | None = None,
+    ) -> RelationshipDeclaration:
+        if type(value) is not RelationshipDeclaration:
+            raise ValueError(
+                f"{label} must be an exact RelationshipDeclaration"
+            )
+        selected_schema = self._schema if schema_index is None else schema_index
+        self._resource(
+            value.source,
+            f"{label}.source",
+            schema_index=selected_schema,
+        )
+        self._resource(
+            value.target,
+            f"{label}.target",
+            schema_index=selected_schema,
+        )
+        if type(value.relation_type) is not str:
+            raise ValueError(f"{label}.relation_type must be an exact string")
+        if value.relation_type not in selected_schema.relationship_types:
+            raise ValueError(
+                f"{label} references undeclared relationship type "
+                f"{value.relation_type!r}"
+            )
+        _snapshot_property_patch(
+            value.attributes,
+            f"{label}.attributes",
+            maximum_evidence=self.limits.max_evidence_per_output,
+        )
+        if not value.attributes.complete:
+            raise ValueError(
+                f"{label}.attributes must be a complete relationship assertion"
+            )
+        if value.attributes.remove_fields:
+            raise ValueError(
+                f"{label}.attributes cannot remove fields from a revision assertion"
+            )
+        self._common_fact(
+            provenance=value.provenance,
+            quality=value.quality,
+            evidence=value.evidence,
+            label=label,
+        )
+        self._perspective(
+            value.perspective_ref,
+            f"{label}.perspective_ref",
+            schema_index=selected_schema,
+            # A revision coordinator may validate auxiliary output against the
+            # primary schema.  Provider qualifiers belong to that primary
+            # schema and are authoritatively bound by the materializer after
+            # this executor-level vocabulary check.
+            enforce_bound_identity=schema_index is None,
+        )
         return value
 
     @staticmethod
@@ -2709,6 +2948,140 @@ class PluginCapabilityExecutor:
             self._relationship_mutation(value, label)
         else:
             self._clock_anchor(value, label)
+
+    def project_relationships(
+        self,
+        world: ReadOnlyWorld,
+    ) -> RelationshipProjectionExecutionResult:
+        return self._execute_relationship_projection(
+            world,
+            declaration_schema=None,
+        )
+
+    def _project_relationships_for_revision(
+        self,
+        world: ReadOnlyWorld,
+        *,
+        declaration_schema: PluginSchema,
+    ) -> RelationshipProjectionExecutionResult:
+        """Run a projector under coordinator-owned revision schema authority."""
+
+        return self._execute_relationship_projection(
+            world,
+            declaration_schema=declaration_schema,
+        )
+
+    def _execute_relationship_projection(
+        self,
+        world: ReadOnlyWorld,
+        *,
+        declaration_schema: PluginSchema | None,
+    ) -> RelationshipProjectionExecutionResult:
+        capability = PluginCapability.RELATIONSHIP_PROJECTION
+        declaration_schema_index: _SchemaIndex | None = None
+        if declaration_schema is not None:
+            def build_declaration_schema_index() -> _SchemaIndex:
+                if type(declaration_schema) is not PluginSchema:
+                    raise TypeError(
+                        "declaration_schema must be an exact PluginSchema or None"
+                    )
+                # The digest walker performs the full bounded schema contract
+                # validation before the index traverses descriptor tuples.
+                plugin_schema_digest(declaration_schema)
+                return _SchemaIndex.build(declaration_schema)
+
+            declaration_schema_index = self._snapshot_caller_input(
+                capability,
+                build_declaration_schema_index,
+                unreadable_message="declaration schema could not be validated",
+            )
+        bounded_world = self._bounded_world(
+            world,
+            capability,
+            self.limits.max_world_reads,
+            authority_schema_index=declaration_schema_index,
+        )
+        hook = self._require(capability, "project_relationships")
+        aggregate_budget = _AggregateValueBudget(
+            self.limits.max_relationship_projection_snapshot_units
+        )
+        evidence_references = 0
+
+        def detach(value: RelationshipDeclaration) -> RelationshipDeclaration:
+            nonlocal evidence_references
+            evidence_references += len(value.evidence) + sum(
+                len(item.evidence) for item in value.attributes.unknown_fields
+            )
+            if (
+                evidence_references
+                > self.limits.max_relationship_projection_evidence_references
+            ):
+                raise ValueError(
+                    "relationship projections exceeded the aggregate "
+                    "evidence-reference limit"
+                )
+            return _snapshot_relationship_declaration(
+                value,
+                "relationship projection declaration",
+                maximum_evidence=self.limits.max_evidence_per_output,
+                aggregate_budget=aggregate_budget,
+            )
+
+        def detach_diagnostic(value: Any, label: str) -> PluginDiagnostic:
+            nonlocal evidence_references
+            diagnostic = self._diagnostic(
+                value,
+                label,
+                aggregate_budget=aggregate_budget,
+            )
+            if diagnostic.stage is not DiagnosticStage.RELATIONSHIP_PROJECTION:
+                raise ValueError(
+                    "relationship projection diagnostics must use the "
+                    "relationship_projection stage"
+                )
+            evidence_references += len(diagnostic.evidence)
+            if (
+                evidence_references
+                > self.limits.max_relationship_projection_evidence_references
+            ):
+                raise ValueError(
+                    "relationship projection outputs exceeded the aggregate "
+                    "evidence-reference limit"
+                )
+            return diagnostic
+
+        def validate_declaration(value: Any, label: str) -> None:
+            self._relationship_declaration(
+                value,
+                label,
+                schema_index=declaration_schema_index,
+            )
+
+        try:
+            outputs = hook(bounded_world)
+            values, diagnostics = self._consume(
+                capability,
+                outputs,
+                maximum=self.limits.max_relationship_projection_outputs,
+                allowed=(RelationshipDeclaration,),
+                validator=validate_declaration,
+                detacher=detach,
+                detached_validator=validate_declaration,
+                diagnostic_handler=detach_diagnostic,
+            )
+        except PluginCapabilityExecutionError:
+            raise
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise self._error(
+                capability,
+                "project_relationships() failed inside plug-in",
+            ) from error
+        return RelationshipProjectionExecutionResult(
+            declarations=cast(tuple[RelationshipDeclaration, ...], values),
+            diagnostics=diagnostics,
+        )
 
     def _validate_evidence_analysis_observation(
         self,
@@ -3440,11 +3813,11 @@ class PluginCapabilityExecutor:
 
         def verify_cached_inputs() -> None:
             try:
-                for original, initial, _units in basis_cache.values():
-                    self._world_basis(original, "consistency finding basis")
+                for basis_original, initial, _units in basis_cache.values():
+                    self._world_basis(basis_original, "consistency finding basis")
                     if (
                         _snapshot_world_basis(
-                            original,
+                            basis_original,
                             "consistency finding basis",
                         )
                         != initial
@@ -3452,11 +3825,11 @@ class PluginCapabilityExecutor:
                         raise ValueError(
                             "consistency finding basis changed after it was yielded"
                         )
-                for original, detached, _units in resource_cache.values():
-                    self._resource(original, "consistency finding resource")
+                for resource_original, detached, _units in resource_cache.values():
+                    self._resource(resource_original, "consistency finding resource")
                     if (
                         _snapshot_resource_key(
-                            original,
+                            resource_original,
                             "consistency finding resource",
                         )
                         != detached
@@ -4307,5 +4680,6 @@ __all__ = [
     "PluginCapabilityLimits",
     "PluginCapabilityOutputError",
     "PluginCapabilityUnavailableError",
+    "RelationshipProjectionExecutionResult",
     "TopologyExecutionResult",
 ]

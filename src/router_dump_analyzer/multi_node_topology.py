@@ -71,6 +71,9 @@ from router_dump_analyzer.plugin_api import (
     WorldBasis,
     WorldBasisKind,
 )
+from router_dump_analyzer.process_control import (
+    PROCESS_CONTROL_EXCEPTIONS as _PROCESS_CONTROL_EXCEPTIONS,
+)
 from router_dump_analyzer.temporal_core import (
     RESOURCE_CREATION_OPERATIONS,
     RESOURCE_DELETION_OPERATIONS,
@@ -93,6 +96,27 @@ from router_dump_analyzer.topology_federation import (
 
 class MultiNodeTopologyRequestError(ValueError):
     """A multi-node request cannot be executed by the advertised providers."""
+
+
+def _invoke_topology_projection_state_provider(
+    operation: Callable[
+        [CapabilityProviderRef, str, Mapping[str, Any]],
+        Mapping[ResourceKey, ResourceStateView],
+    ],
+    provider: CapabilityProviderRef,
+    perspective_id: str,
+    resolved_time: Mapping[str, Any],
+) -> Mapping[ResourceKey, ResourceStateView]:
+    """Fence one plug-in-owned state-provider callback."""
+
+    try:
+        return operation(provider, perspective_id, resolved_time)
+    except _PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except BaseException as error:
+        raise MultiNodeTopologyRequestError(
+            "topology projection state provider failed"
+        ) from error
 
 
 type _TypedResourceScopeKey = tuple[GlobalResourceRef, str, str]
@@ -2397,7 +2421,8 @@ class MultiNodeTopologyService:
                                 perspective_id,
                                 resolved_time,
                                 (
-                                    self._topology_projection_state_provider(
+                                    _invoke_topology_projection_state_provider(
+                                        self._topology_projection_state_provider,
                                         provider,
                                         perspective_id,
                                         resolved_time,

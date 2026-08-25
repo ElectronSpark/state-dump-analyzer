@@ -44,10 +44,11 @@ class PluginExecutionPlanAuthority(StrEnum):
     """Weakest publication authority bound across one complete plan.
 
     ``PROCESS`` means the primary parser ran behind the child-process boundary
-    and every pin was PROCESS-capable. Scheduled consistency materialization
-    also runs synchronously inside that killable ingestion child. The value
-    does not claim that every later on-demand capability hook is subprocess
-    isolated; those hooks follow their owning coordinator's execution policy.
+    and every pin was PROCESS-capable. Scheduled revision relationship
+    projection and consistency materialization also run synchronously inside
+    that killable ingestion child. The value does not claim that every later
+    on-demand capability hook is subprocess isolated; those hooks follow their
+    owning coordinator's execution policy.
     """
 
     LEGACY_UNRECORDED = "legacy_unrecorded"
@@ -277,7 +278,7 @@ def _plugin_execution_pin_payload(
 ) -> dict[str, Any]:
     pin = _snapshot_execution_pin(pin)
     artifact = pin.artifact
-    result = {
+    result: dict[str, Any] = {
         "instance_id": pin.instance_id,
         "plugin_id": pin.plugin_id,
         "plugin_version": pin.plugin_version,
@@ -740,6 +741,7 @@ class RevisionExecutionPlanRef:
 
 
 __all__ = [
+    "MAX_EXECUTION_IDENTITY_LENGTH",
     "MAX_PLUGIN_EXECUTION_PLAN_WIRE_BYTES",
     "PLUGIN_EXECUTION_PLAN_VERSION",
     "PLUGIN_EXECUTION_PLAN_VERSION_V1",

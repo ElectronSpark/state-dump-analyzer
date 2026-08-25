@@ -8,6 +8,7 @@ plug-in-owned indexes for bounded timeline, graph, and range queries.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tarfile
@@ -22,7 +23,10 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Final
 
-from pydantic_core import from_json
+try:
+    from pydantic_core import from_json as _accelerated_from_json
+except ModuleNotFoundError:  # The fixture generator is stdlib-importable.
+    _accelerated_from_json = None
 from router_dump_analyzer import (
     AnalysisLoadStage,
     report_analysis_load,
@@ -73,6 +77,14 @@ MAX_HISTORY_SEARCH_CHARACTERS: Final[int] = 3 * 1024 * 1024 * 1024
 MAX_HISTORY_SEARCH_DATABASE_BYTES: Final[int] = 4 * 1024 * 1024 * 1024
 HISTORY_SEARCH_PROJECTION_VERSION = b"redacted-sorted-json-casefold-fts5-v5"
 _LOAD_PROGRESS_RECORD_BATCH: Final[int] = 1024
+
+
+def _from_json(value: bytes | bytearray | str) -> Any:
+    """Use the optional fast decoder without making it an import-time dependency."""
+
+    if _accelerated_from_json is not None:
+        return _accelerated_from_json(value)
+    return json.loads(value)
 
 
 def _history_search_identity(archive_path: Path) -> str:
@@ -708,7 +720,7 @@ def load_scale_dataset(
                     raise RuntimeError(
                         f"cannot read packed fixture member: {member.name}"
                     )
-                pack_manifest = from_json(source.read())
+                pack_manifest = _from_json(source.read())
                 continue
 
             if not member.name.startswith(prefix):
@@ -729,7 +741,7 @@ def load_scale_dataset(
             if source is None:
                 raise RuntimeError(f"cannot read packed scale member: {member.name}")
             if relative_name in metadata_targets:
-                value = from_json(source.read())
+                value = _from_json(source.read())
                 target = metadata_targets[relative_name]
                 if target == "scenario":
                     scenario = value
@@ -812,7 +824,7 @@ def load_scale_dataset(
                 for line in source:
                     if not line.strip():
                         continue
-                    raw = from_json(line)
+                    raw = _from_json(line)
                     event = _compact_event(raw)
                     event_key = temporal_order_key(
                         event,
@@ -834,7 +846,7 @@ def load_scale_dataset(
                 for line in source:
                     if not line.strip():
                         continue
-                    relationship = from_json(line)
+                    relationship = _from_json(line)
                     relationship.setdefault(
                         "relation_type",
                         relationship.get("type", "related_to"),
@@ -853,7 +865,7 @@ def load_scale_dataset(
             for line in source:
                 if not line.strip():
                     continue
-                mutation = from_json(line)
+                mutation = _from_json(line)
                 mutation.setdefault(
                     "relation_type",
                     mutation.get("type", "related_to"),

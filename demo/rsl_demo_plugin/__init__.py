@@ -48,6 +48,8 @@ from router_dump_analyzer.plugin_api import (
     Quality,
     ReadOnlyWorld,
     ReconstructionSupport,
+    RelationshipDeclaration,
+    RelationshipTypeDescriptor,
     ResourceKey,
     ResourceKindDescriptor,
     SnapshotObservation,
@@ -1377,7 +1379,14 @@ def _interface_schema() -> PluginSchema:
                 presentation_tags=("interface",),
             ),
         ),
-        relationship_types=(),
+        relationship_types=(
+            RelationshipTypeDescriptor(
+                relation_type="corresponds_to",
+                label="Corresponds to",
+                directed=False,
+                structural=False,
+            ),
+        ),
         source_record_groups=(
             SourceRecordGroupDescriptor(
                 group_id="status-input",
@@ -1424,6 +1433,7 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
         capabilities=frozenset(
             {
                 PluginCapability.STATUS_PARSE,
+                PluginCapability.RELATIONSHIP_PROJECTION,
                 PluginCapability.CONSISTENCY_CHECK,
             }
         ),
@@ -1436,6 +1446,75 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
 
     def describe(self) -> PluginSchema:
         return SCHEMA
+
+    def project_relationships(
+        self,
+        world: ReadOnlyWorld,
+    ) -> Iterable[RelationshipDeclaration | PluginDiagnostic]:
+        """Relate independently keyed interface views with the same name.
+
+        The example deliberately compares the immutable revision world rather
+        than parser-local rows.  Core supplies a bounded world and later binds
+        the accepted declaration to the exact revision basis and provider.
+        """
+
+        scan_limit = 10_000
+        scanned = tuple(
+            world.iter_states(
+                kinds=frozenset({"INTERFACE"}),
+                limit=scan_limit + 1,
+            )
+        )
+        if len(scanned) > scan_limit:
+            return
+        states = scanned
+        by_name: dict[str, list[Any]] = {}
+        for state in states:
+            name = state.properties.get("name")
+            if (
+                state.exists is not True
+                or type(name) is not str
+                or not name
+                or not state.evidence
+            ):
+                continue
+            by_name.setdefault(name, []).append(state)
+
+        for name in sorted(by_name):
+            matching = sorted(
+                by_name[name],
+                key=lambda state: (
+                    state.resource.namespace,
+                    state.resource.node,
+                    state.resource.layer,
+                    state.resource.kind,
+                    repr(state.resource.parts),
+                ),
+            )
+            if len(matching) != 2:
+                continue
+            left, right = matching
+            if left.resource == right.resource:
+                continue
+            yield RelationshipDeclaration(
+                source=left.resource,
+                target=right.resource,
+                relation_type="corresponds_to",
+                attributes=PropertyPatch(
+                    set_values={"match_basis": "shared-interface-name"},
+                    remove_fields=(),
+                    unknown_fields=(),
+                    field_quality={"match_basis": Quality.EXACT},
+                    field_provenance={
+                        "match_basis": Provenance.CORRELATED,
+                    },
+                    complete=True,
+                ),
+                evidence=(left.evidence[0], right.evidence[0]),
+                provenance=Provenance.CORRELATED,
+                quality=Quality.EXACT,
+                perspective_ref=world.perspective_ref,
+            )
 
     def check_consistency(
         self,

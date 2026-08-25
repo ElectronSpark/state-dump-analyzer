@@ -30,6 +30,7 @@ from .load_progress import AnalysisLoadStage, AnalysisLoadTracker
 from .plugin_api import MAX_CAPTURE_RANGE_SCOPE_LENGTH
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .source_record_core import project_source_record_for_log
+from .value_core import parse_canonical_decimal_integer
 
 MAX_RESOURCE_TABLE_TRAVERSAL_NODES = 5_000
 MAX_RESOURCE_PAGE_SIZE = 1_000
@@ -68,8 +69,11 @@ _CLIENT_DATASET_FIELDS = frozenset(
         "presentation",
         "record_lane_presets",
         "relationship_descriptors",
+        "relationship_declarations",
         "relationship_intervals",
         "relationship_mutations",
+        "relationship_projection_edges",
+        "relationship_projection_materialization",
         "relationship_type_descriptors",
         "relationships",
         "resource_table_view_descriptors",
@@ -192,6 +196,9 @@ _CLIENT_PLUGIN_DATASET_PAYLOAD_FIELDS = frozenset(
         "nodes",
         "relationship_intervals",
         "relationship_mutations",
+        "relationship_declarations",
+        "relationship_projection_edges",
+        "relationship_projection_materialization",
         "relationships",
         "review_prompts",
         "summary",
@@ -1125,6 +1132,9 @@ _CLIENT_CONSISTENCY_SELECTOR_KINDS = frozenset(
 )
 _CLIENT_CONSISTENCY_CLOCK_POLICIES = frozenset({"strict", "best_effort"})
 _CLIENT_CONSISTENCY_CAPABILITIES = frozenset({"consistency_check"})
+_CLIENT_RELATIONSHIP_PROJECTION_CAPABILITIES = frozenset(
+    {"relationship_projection"}
+)
 _CLIENT_SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CLIENT_PACKAGE_DIGEST_PATTERN = re.compile(
     r"^(?:(?:manifest|module|package)-sha256|sha256):[0-9a-f]{64}$"
@@ -1164,13 +1174,13 @@ def _client_timestamp_string(value: Any) -> str | None:
     if type(value) is not str:
         return None
     try:
-        parsed = int(value, 10)
+        parse_canonical_decimal_integer(
+            value,
+            "timestamp",
+            minimum=_CLIENT_SIGNED_64_MIN,
+            maximum=_CLIENT_SIGNED_64_MAX,
+        )
     except ValueError:
-        return None
-    if (
-        not _CLIENT_SIGNED_64_MIN <= parsed <= _CLIENT_SIGNED_64_MAX
-        or str(parsed) != value
-    ):
         return None
     return value
 
@@ -1494,6 +1504,441 @@ def _project_consistency_producer(value: Any) -> dict[str, Any]:
     return projected
 
 
+def _project_relationship_projection_producer(value: Any) -> dict[str, Any]:
+    """Project a plan-bound relationship provider through a closed shape."""
+
+    projected = _project_consistency_producer(value)
+    capability = _client_enum_string(
+        value.get("capability") if isinstance(value, Mapping) else None,
+        _CLIENT_RELATIONSHIP_PROJECTION_CAPABILITIES,
+    )
+    if capability is not None:
+        projected["capability"] = capability
+    return projected
+
+
+def _project_relationship_resource_reference(value: Any) -> dict[str, str]:
+    """Expose the stable resource ID while withholding the typed opaque key."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    resource_identifier = _client_bounded_string(
+        value.get("resource_id"),
+        maximum=4_096,
+    )
+    return (
+        {"resource_id": resource_identifier}
+        if resource_identifier is not None
+        else {}
+    )
+
+
+def _project_relationship_perspective(value: Any) -> dict[str, str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        return None
+    projected: dict[str, str] = {}
+    perspective_id = _client_bounded_string(
+        value.get("perspective_id"), maximum=128
+    )
+    plugin_instance_id = _client_bounded_string(
+        value.get("plugin_instance_id"), maximum=256
+    )
+    schema_digest = _client_sha256_digest(value.get("schema_digest"))
+    if perspective_id is not None:
+        projected["perspective_id"] = perspective_id
+    if plugin_instance_id is not None:
+        projected["plugin_instance_id"] = plugin_instance_id
+    if schema_digest is not None:
+        projected["schema_digest"] = schema_digest
+    return projected or None
+
+
+def _project_relationship_property_value(
+    value: Any,
+    sensitive_fields: set[str],
+    *,
+    root_property: str,
+) -> Any:
+    """Project a tagged Property value while redacting logical mapping keys.
+
+    The transport envelope has structural fields such as ``type`` and
+    ``value`` that must not be confused with plug-in property names.  Only
+    keys inside a tagged mapping's ``entries`` object are plug-in-owned names;
+    dotted descriptor paths are followed through those keys and through tuple
+    elements.
+    """
+
+    exact_names = frozenset(str(field) for field in sensitive_fields)
+    path_trie = _sensitive_path_trie(exact_names)
+    initial = path_trie.get(root_property)
+    initial_branches = (
+        (initial,)
+        if isinstance(initial, Mapping)
+        and not initial.get(_SENSITIVE_PATH_TERMINAL)
+        else ()
+    )
+
+    def project(nested: Any, branches: tuple[Mapping[object, Any], ...]) -> Any:
+        if not isinstance(nested, Mapping) or type(nested.get("type")) is not str:
+            return _DROP_CLIENT_FIELD
+        value_type = nested["type"]
+        if value_type in {"null", "boolean", "integer", "string"}:
+            if frozenset(nested) != frozenset({"type", "value"}):
+                return _DROP_CLIENT_FIELD
+            payload = nested.get("value")
+            valid = (
+                (value_type == "null" and payload is None)
+                or (value_type == "boolean" and type(payload) is bool)
+                or (value_type in {"integer", "string"} and type(payload) is str)
+            )
+            return dict(nested) if valid else _DROP_CLIENT_FIELD
+        if value_type in {"number", "bytes", "uuid"}:
+            if frozenset(nested) != frozenset({"type", "encoding", "value"}):
+                return _DROP_CLIENT_FIELD
+            if type(nested.get("encoding")) is not str or type(nested.get("value")) is not str:
+                return _DROP_CLIENT_FIELD
+            return dict(nested)
+        if value_type == "tuple":
+            if frozenset(nested) != frozenset({"type", "items"}):
+                return _DROP_CLIENT_FIELD
+            items = nested.get("items")
+            if not isinstance(items, (list, tuple)):
+                return _DROP_CLIENT_FIELD
+            projected_items: list[Any] = []
+            for item in items:
+                projected_item = project(item, branches)
+                if projected_item is _DROP_CLIENT_FIELD:
+                    return _DROP_CLIENT_FIELD
+                projected_items.append(projected_item)
+            return {"type": "tuple", "items": projected_items}
+        if value_type != "mapping" or frozenset(nested) != frozenset(
+            {"type", "entries"}
+        ):
+            return _DROP_CLIENT_FIELD
+        entries = nested.get("entries")
+        if not isinstance(entries, Mapping):
+            return _DROP_CLIENT_FIELD
+        projected_entries: dict[str, Any] = {}
+        for raw_name, item in entries.items():
+            name = str(raw_name)
+            if name in exact_names:
+                continue
+            next_branches: list[Mapping[object, Any]] = []
+            candidates = (path_trie, *branches)
+            hidden = False
+            for branch in candidates:
+                child = branch.get(name)
+                if not isinstance(child, Mapping):
+                    continue
+                if child.get(_SENSITIVE_PATH_TERMINAL):
+                    hidden = True
+                    break
+                next_branches.append(child)
+            if hidden:
+                continue
+            projected_item = project(item, tuple(next_branches))
+            if projected_item is not _DROP_CLIENT_FIELD:
+                projected_entries[name] = projected_item
+        return {"type": "mapping", "entries": projected_entries}
+
+    return project(value, initial_branches)
+
+
+def _project_relationship_attribute_patch(
+    value: Any,
+    sensitive_fields: set[str],
+) -> dict[str, Any]:
+    """Project the declared complete patch without leaking evidence locators."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    set_values = value.get("set_values")
+    if isinstance(set_values, Mapping):
+        projected_values: dict[str, Any] = {}
+        for name, item in set_values.items():
+            property_name = str(name)
+            if property_name in sensitive_fields:
+                continue
+            nested = _project_relationship_property_value(
+                item,
+                sensitive_fields,
+                root_property=property_name,
+            )
+            if nested is not _DROP_CLIENT_FIELD:
+                projected_values[property_name] = nested
+        projected["set_values"] = projected_values
+    unknown_fields: list[dict[str, Any]] = []
+    raw_unknown_fields = value.get("unknown_fields")
+    if isinstance(raw_unknown_fields, (list, tuple)):
+        for item in raw_unknown_fields:
+            if not isinstance(item, Mapping):
+                continue
+            name = _client_bounded_string(item.get("name"), maximum=256)
+            reason_code = _client_bounded_string(
+                item.get("reason_code"), maximum=256
+            )
+            message = _client_bounded_string(
+                item.get("message"), maximum=8_192, allow_empty=True
+            )
+            if name is None or name in sensitive_fields:
+                continue
+            record: dict[str, Any] = {"name": name}
+            if reason_code is not None:
+                record["reason_code"] = reason_code
+            if message is not None:
+                record["message"] = message
+            record["evidence"] = _project_consistency_evidence(item.get("evidence"))
+            unknown_fields.append(record)
+    projected["unknown_fields"] = unknown_fields
+    for field, allowed in (
+        ("field_quality", _CLIENT_CONSISTENCY_QUALITY),
+        ("field_provenance", _CLIENT_CONSISTENCY_PROVENANCE),
+    ):
+        raw_metadata = value.get(field)
+        projected[field] = (
+            {
+                str(name): item
+                for name, item in raw_metadata.items()
+                if str(name) not in sensitive_fields
+                and _client_enum_string(item, allowed) is not None
+            }
+            if isinstance(raw_metadata, Mapping)
+            else {}
+        )
+    if type(value.get("complete")) is bool:
+        projected["complete"] = value["complete"]
+    return projected
+
+
+def _project_relationship_contributions(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    projected: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        record: dict[str, Any] = {
+            "producer": _project_relationship_projection_producer(
+                item.get("producer")
+            ),
+            "evidence": _project_consistency_evidence(item.get("evidence")),
+        }
+        occurrence_count = item.get("occurrence_count")
+        if (
+            type(occurrence_count) is int
+            and 1 <= occurrence_count <= _CLIENT_JSON_SAFE_INTEGER_MAX
+        ):
+            record["occurrence_count"] = occurrence_count
+        projected.append(record)
+    return projected
+
+
+_CLIENT_RELATIONSHIP_PROJECTION_SCOPES = frozenset({"revision"})
+
+
+def _project_relationship_declarations(
+    value: Any,
+    sensitive_fields: set[str],
+) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    projected: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        record: dict[str, Any] = {}
+        scope = _client_enum_string(
+            item.get("scope"), _CLIENT_RELATIONSHIP_PROJECTION_SCOPES
+        )
+        if scope is not None:
+            record["scope"] = scope
+        for field in (
+            "basis_digest",
+            "execution_plan_digest",
+            "semantic_claim_id",
+            "ambiguity_group_id",
+            "declaration_id",
+        ):
+            nested = item.get(field)
+            if nested is None and field == "ambiguity_group_id":
+                record[field] = None
+            elif _client_sha256_digest(nested) is not None:
+                record[field] = nested
+        for field in ("source", "target"):
+            nested = _project_relationship_resource_reference(item.get(field))
+            if nested:
+                record[field] = nested
+        relation_type = _client_bounded_string(
+            item.get("relation_type"), maximum=256
+        )
+        if relation_type is not None:
+            record["relation_type"] = relation_type
+        for field, allowed in (
+            ("provenance", _CLIENT_CONSISTENCY_PROVENANCE),
+            ("quality", _CLIENT_CONSISTENCY_QUALITY),
+            ("effective_quality", _CLIENT_CONSISTENCY_QUALITY),
+        ):
+            nested = _client_enum_string(item.get(field), allowed)
+            if nested is not None:
+                record[field] = nested
+        record["attributes"] = _project_relationship_attribute_patch(
+            item.get("attributes"), sensitive_fields
+        )
+        record["perspective_ref"] = _project_relationship_perspective(
+            item.get("perspective_ref")
+        )
+        record["contributions"] = _project_relationship_contributions(
+            item.get("contributions")
+        )
+        projected.append(record)
+    return projected
+
+
+def _project_relationship_projection_edges(
+    value: Any,
+    sensitive_fields: set[str],
+) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    projected: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        record: dict[str, Any] = {}
+        scope = _client_enum_string(
+            item.get("scope"), _CLIENT_RELATIONSHIP_PROJECTION_SCOPES
+        )
+        if scope is not None:
+            record["scope"] = scope
+        for field in (
+            "basis_digest",
+            "execution_plan_digest",
+            "ambiguity_group_id",
+            "relationship_id",
+        ):
+            nested = item.get(field)
+            if nested is None and field == "ambiguity_group_id":
+                record[field] = None
+            elif _client_sha256_digest(nested) is not None:
+                record[field] = nested
+        for field in ("source", "target"):
+            nested = _project_relationship_resource_reference(item.get(field))
+            if nested:
+                record[field] = nested
+        relation_type = _client_bounded_string(
+            item.get("relation_type"), maximum=256
+        )
+        if relation_type is not None:
+            record["relation_type"] = relation_type
+        for field, allowed in (
+            ("provenance", _CLIENT_CONSISTENCY_PROVENANCE),
+            ("quality", _CLIENT_CONSISTENCY_QUALITY),
+        ):
+            nested = _client_enum_string(item.get(field), allowed)
+            if nested is not None:
+                record[field] = nested
+        attributes = item.get("attributes")
+        projected_attributes: dict[str, Any] = {}
+        if isinstance(attributes, Mapping):
+            for name, nested in attributes.items():
+                property_name = str(name)
+                if property_name in sensitive_fields:
+                    continue
+                projected_value = _project_relationship_property_value(
+                    nested,
+                    sensitive_fields,
+                    root_property=property_name,
+                )
+                if projected_value is not _DROP_CLIENT_FIELD:
+                    projected_attributes[property_name] = projected_value
+        record["attributes"] = projected_attributes
+        record["perspective_ref"] = _project_relationship_perspective(
+            item.get("perspective_ref")
+        )
+        declaration_ids = item.get("declaration_ids")
+        record["declaration_ids"] = (
+            [
+                nested
+                for nested in declaration_ids
+                if _client_sha256_digest(nested) is not None
+            ]
+            if isinstance(declaration_ids, (list, tuple))
+            else []
+        )
+        record["evidence"] = _project_consistency_evidence(item.get("evidence"))
+        projected.append(record)
+    return projected
+
+
+_CLIENT_RELATIONSHIP_PROJECTION_MATERIALIZATION_SCHEMA = (
+    "router_dump_analyzer.relationship_projection_materialization.v1"
+)
+_CLIENT_RELATIONSHIP_PROJECTION_STATUSES = frozenset(
+    {"complete", "not_applicable"}
+)
+_CLIENT_RELATIONSHIP_PROJECTION_COUNT_FIELDS = frozenset(
+    {
+        "provider_count",
+        "declaration_count",
+        "resolved_edge_count",
+        "diagnostic_count",
+        "emitted_declaration_count",
+        "emitted_diagnostic_count",
+        "duplicate_emissions_collapsed",
+        "semantic_conflict_groups",
+        "world_reads",
+        "base_resource_count",
+    }
+)
+
+
+def _project_relationship_projection_materialization(value: Any) -> dict[str, Any]:
+    """Project only the closed revision-materialization metadata contract."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    projected: dict[str, Any] = {}
+    if (
+        value.get("schema_version")
+        == _CLIENT_RELATIONSHIP_PROJECTION_MATERIALIZATION_SCHEMA
+    ):
+        projected["schema_version"] = value["schema_version"]
+    scope = _client_enum_string(
+        value.get("scope"), _CLIENT_RELATIONSHIP_PROJECTION_SCOPES
+    )
+    if scope is not None:
+        projected["scope"] = scope
+    status = _client_enum_string(
+        value.get("status"), _CLIENT_RELATIONSHIP_PROJECTION_STATUSES
+    )
+    if status is not None:
+        projected["status"] = status
+    for field in ("plan_digest", "basis_digest"):
+        nested = value.get(field)
+        if nested is None and field == "basis_digest":
+            projected[field] = None
+        elif _client_sha256_digest(nested) is not None:
+            projected[field] = nested
+    for field in _CLIENT_RELATIONSHIP_PROJECTION_COUNT_FIELDS:
+        nested = value.get(field)
+        if type(nested) is int and 0 <= nested <= _CLIENT_JSON_SAFE_INTEGER_MAX:
+            projected[field] = nested
+    providers = value.get("providers")
+    projected["providers"] = (
+        [
+            record
+            for item in providers
+            if (record := _project_relationship_projection_producer(item))
+        ]
+        if isinstance(providers, (list, tuple))
+        else []
+    )
+    return projected
+
+
 _CLIENT_CONSISTENCY_MATERIALIZATION_NULLABLE_STRINGS = frozenset(
     {
         "plan_digest",
@@ -1647,6 +2092,18 @@ def _client_dataset_envelope(
             )
         elif name == "consistency_materialization":
             client[key] = _project_consistency_materialization(value)
+        elif name == "relationship_declarations":
+            client[key] = _project_relationship_declarations(
+                value,
+                sensitive_fields,
+            )
+        elif name == "relationship_projection_edges":
+            client[key] = _project_relationship_projection_edges(
+                value,
+                sensitive_fields,
+            )
+        elif name == "relationship_projection_materialization":
+            client[key] = _project_relationship_projection_materialization(value)
         else:
             client[key] = (
                 _sanitize_plugin_payload_tree(value, sensitive_fields)

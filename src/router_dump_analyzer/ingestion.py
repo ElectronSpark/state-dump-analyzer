@@ -617,8 +617,13 @@ def _snapshot_parser_output_value(
     active.add(identity)
     try:
         if is_mapping:
+            mapping_value = cast(Mapping[Any, Any], value)
+            if len(mapping_value) > MAX_OUTPUT_CONTAINER_ITEMS:
+                raise IngestionError(
+                    "plug-in output mapping exceeds the item limit"
+                )
             detached: dict[str, Any] = {}
-            for index, (key, item) in enumerate(value.items()):
+            for index, (key, item) in enumerate(mapping_value.items()):
                 if index >= MAX_OUTPUT_CONTAINER_ITEMS:
                     raise IngestionError(
                         "plug-in output mapping exceeds the item limit"
@@ -633,7 +638,8 @@ def _snapshot_parser_output_value(
                 )
             return MappingProxyType(detached)
         if is_sequence:
-            if len(value) > MAX_OUTPUT_CONTAINER_ITEMS:
+            sequence_value = cast(Sequence[Any], value)
+            if len(sequence_value) > MAX_OUTPUT_CONTAINER_ITEMS:
                 raise IngestionError("plug-in output sequence exceeds the item limit")
             return tuple(
                 _snapshot_parser_output_value(
@@ -642,7 +648,7 @@ def _snapshot_parser_output_value(
                     _units=units,
                     _active=active,
                 )
-                for item in value
+                for item in sequence_value
             )
         if value_type.__module__ != "router_dump_analyzer.plugin_api":
             raise IngestionError("plug-in output contains an unsupported record type")
@@ -2600,7 +2606,7 @@ def snapshot_ingestion_result_for_publication(
         raise IngestionError(
             "coordinator result identity is invalid"
         ) from error
-    tuple_groups: tuple[tuple[str, object, int], ...] = (
+    tuple_groups: tuple[tuple[str, tuple[Any, ...], int], ...] = (
         ("diagnostics", captured_diagnostics, limits.max_diagnostics),
         ("snapshots", captured_snapshots, limits.max_parsed_outputs),
         (

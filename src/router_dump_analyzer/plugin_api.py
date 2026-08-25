@@ -15,7 +15,7 @@ from enum import StrEnum
 from hashlib import sha256
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import BinaryIO, Protocol
+from typing import Any, BinaryIO, Protocol, cast
 from uuid import UUID
 
 from .canonical import (
@@ -223,6 +223,7 @@ class PluginCapability(StrEnum):
     EVENT_REDUCTION = "event_reduction"
     EVENT_REVERSION = "event_reversion"
     CORRELATION = "correlation"
+    RELATIONSHIP_PROJECTION = "relationship_projection"
     CONSISTENCY_CHECK = "consistency_check"
     TOPOLOGY_PROJECTION = "topology_projection"
     FORWARDING_PROJECTION = "forwarding_projection"
@@ -252,6 +253,7 @@ PLUGIN_CAPABILITY_HOOKS: Mapping[PluginCapability, tuple[str, ...]] = MappingPro
         PluginCapability.EVENT_REDUCTION: ("apply",),
         PluginCapability.EVENT_REVERSION: ("revert",),
         PluginCapability.CORRELATION: ("correlate",),
+        PluginCapability.RELATIONSHIP_PROJECTION: ("project_relationships",),
         PluginCapability.CONSISTENCY_CHECK: ("check_consistency",),
         PluginCapability.TOPOLOGY_PROJECTION: ("project_topology",),
         PluginCapability.FORWARDING_PROJECTION: ("project_forwarding",),
@@ -498,6 +500,7 @@ class DiagnosticStage(StrEnum):
     APPLY = "apply"
     REVERT = "revert"
     CORRELATE = "correlate"
+    RELATIONSHIP_PROJECTION = "relationship_projection"
     CONSISTENCY = "consistency"
     FORWARDING = "forwarding"
 
@@ -2239,6 +2242,30 @@ class RelationshipObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class RelationshipDeclaration:
+    """One revision-scoped relationship derived from an immutable world.
+
+    A declaration asserts that the edge is present for the exact revision
+    basis supplied by the core to ``project_relationships()``. ``attributes``
+    is a complete assertion and therefore cannot contain field removals;
+    unknown fields may still carry explicitly bounded uncertainty. It deliberately
+    carries neither a timestamp nor producer/basis identity: the core binds
+    both the authoritative world basis and the selected execution-plan
+    provider when it materializes the declaration.  Omission never proves
+    absence and declarations never merge their endpoint resource identities.
+    """
+
+    source: ResourceKey
+    target: ResourceKey
+    relation_type: str
+    attributes: PropertyPatch
+    evidence: tuple[Evidence, ...]
+    provenance: Provenance
+    quality: Quality
+    perspective_ref: StatusPerspectiveRef | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RelationshipCollectionObservation:
     """Completeness marker for a streamed relationship collection.
 
@@ -3571,7 +3598,7 @@ def _freeze_evidence_analysis_json(value: object) -> object:
     return value
 
 
-_EVIDENCE_ANALYSIS_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
+_EVIDENCE_ANALYSIS_MAPPING_PROXY_TYPE: type[Any] = type(MappingProxyType({}))
 
 
 class _EvidenceAnalysisThawBudget:
@@ -3616,7 +3643,7 @@ def _thaw_frozen_evidence_analysis_json(
                     budget=current,
                     depth=depth + 1,
                 )
-                for key, item in value.items()  # type: ignore[union-attr]
+                for key, item in cast(Mapping[str, object], value).items()
             }
         return [
             _thaw_frozen_evidence_analysis_json(
@@ -3624,7 +3651,7 @@ def _thaw_frozen_evidence_analysis_json(
                 budget=current,
                 depth=depth + 1,
             )
-            for item in value  # type: ignore[union-attr]
+            for item in cast(Iterable[object], value)
         ]
     finally:
         current.active.remove(identity)
@@ -3670,7 +3697,7 @@ class EvidenceAnalysisFact:
             _validate_opaque_id(value, label)
         if (self.time_start_ns is None) != (self.time_end_ns is None):
             raise ValueError("evidence fact time bounds must be supplied together")
-        if self.time_start_ns is not None:
+        if self.time_start_ns is not None and self.time_end_ns is not None:
             _exact_temporal_ns(self.time_start_ns, "evidence fact time_start_ns")
             _exact_temporal_ns(self.time_end_ns, "evidence fact time_end_ns")
             if self.time_start_ns > self.time_end_ns:
@@ -5324,6 +5351,16 @@ class AnalyzerPluginBase:
         )
         return ()
 
+    def project_relationships(
+        self,
+        world: ReadOnlyWorld,
+    ) -> Iterable[RelationshipDeclaration | PluginDiagnostic]:
+        self._require_capability_override(
+            PluginCapability.RELATIONSHIP_PROJECTION,
+            "project_relationships",
+        )
+        return ()
+
     def check_consistency(
         self,
         world: ReadOnlyWorld,
@@ -5427,6 +5464,11 @@ class AnalyzerPlugin(Protocol):
     ) -> Iterable[
         CausalLink | RelationshipMutation | ClockAnchor | PluginDiagnostic
     ]: ...
+
+    def project_relationships(
+        self,
+        world: ReadOnlyWorld,
+    ) -> Iterable[RelationshipDeclaration | PluginDiagnostic]: ...
 
     def check_consistency(
         self,

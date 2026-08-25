@@ -44,7 +44,10 @@ _CENSUS_FLOOR_BY_MODULE = {
     "src/router_dump_analyzer/server_cli.py": 2,
     "src/router_dump_analyzer/temporal_topology.py": 1,
     "src/router_dump_analyzer/web/control_plane_api.py": 1,
-    "src/router_dump_analyzer/web/runtime_api.py": 4,
+    # Temporal/topology/route providers now all delegate through the one
+    # shared runtime boundary instead of calling three provider methods
+    # directly.  The lower count records that deliberate centralization.
+    "src/router_dump_analyzer/web/runtime_api.py": 1,
 }
 
 

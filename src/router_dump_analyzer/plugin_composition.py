@@ -20,6 +20,7 @@ PLUGIN_COMPOSITION_POLICY_VERSION: Final = (
     "router_dump_analyzer.plugin_composition_policy.v1"
 )
 REVISION_CONSISTENCY_ROLE: Final = "revision_consistency"
+REVISION_RELATIONSHIP_PROJECTION_ROLE: Final = "revision_relationship_projection"
 MAX_PLUGIN_COMPOSITION_RULES: Final = 256
 MAX_PLUGIN_COMPOSITION_AUXILIARIES: Final = 127
 
@@ -259,6 +260,7 @@ __all__ = [
     "MAX_PLUGIN_COMPOSITION_RULES",
     "PLUGIN_COMPOSITION_POLICY_VERSION",
     "REVISION_CONSISTENCY_ROLE",
+    "REVISION_RELATIONSHIP_PROJECTION_ROLE",
     "PluginCompositionPolicy",
     "PluginCompositionRule",
     "PluginParticipationSelection",

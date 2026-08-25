@@ -159,6 +159,7 @@ class DemoPluginSemanticContractTests(unittest.TestCase):
             (
                 registered.process_bootstrap,
                 registered.process_bootstrap_digest,
+                (),
                 str(fixture_path),
                 "node-a",
                 {
@@ -199,7 +200,11 @@ class DemoPluginSemanticContractTests(unittest.TestCase):
         )
         self.assertEqual(
             records[0].capabilities,
-            ("consistency_check", "status_parse"),
+            (
+                "consistency_check",
+                "relationship_projection",
+                "status_parse",
+            ),
         )
         self.assertEqual(
             provider_by_instance["demo.example-router.evidence-analysis"].capabilities,
@@ -277,7 +282,11 @@ class DemoPluginSemanticContractTests(unittest.TestCase):
         self.assertEqual(plan.plugins[0].roles, ("primary_parser",))
         self.assertEqual(
             plan.plugins[0].capabilities,
-            ("consistency_check", "status_parse"),
+            (
+                "consistency_check",
+                "relationship_projection",
+                "status_parse",
+            ),
         )
         self.assertEqual(
             plan.plugins[1].roles,

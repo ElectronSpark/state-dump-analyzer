@@ -526,7 +526,11 @@ def _temporal_topology(revision_id: str | None = None) -> Any:
         TemporalTopologyService,
     )
 
-    service = provider.for_revision(revision_id, _data_service())
+    service = _runtime_api_call(
+        provider.for_revision,
+        revision_id,
+        _data_service(),
+    )
     if not isinstance(service, TemporalTopologyService):
         raise _RuntimeHTTPResponse(
             status_code=500,
@@ -561,7 +565,7 @@ def _multi_node_topology() -> Any:
     # operation used by ordinary revision loads, even when the provider reads
     # through its own format-aware source.
     with _data_service()._loading_operation():
-        service = provider.get()
+        service = _runtime_api_call(provider.get)
     if not isinstance(service, MultiNodeTopologyService):
         raise _RuntimeHTTPResponse(
             status_code=500,
@@ -580,7 +584,7 @@ def _multi_node_route() -> Any:
     from router_dump_analyzer.multi_node_route import MultiNodeRouteService
 
     with _data_service()._loading_operation():
-        service = provider.get()
+        service = _runtime_api_call(provider.get)
     if not isinstance(service, MultiNodeRouteService):
         raise _RuntimeHTTPResponse(
             status_code=500,

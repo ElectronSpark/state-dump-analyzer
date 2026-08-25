@@ -437,8 +437,9 @@ validates the results, and serves the basic normalized workspace through
 runtime v2. The bundled 1,250,000-event-per-node archive is generated and keeps
 its runtime-v1 fixture adapter for compatibility.
 
-For advanced reducers, correlation, consistency, topology, or forwarding,
-host-side tests call the root-exported `PluginCapabilityExecutor`. It is the
+For advanced reducers, event correlation, revision relationship projection,
+consistency, topology, or forwarding, host-side tests call the root-exported
+`PluginCapabilityExecutor`. It is the
 bounded, schema-validating caller for optional hooks. Production coordinators
 route those calls through `PlanBoundCapabilityRouter`, so heterogeneous nodes
 and multiple configured instances retain exact revision provenance instead of
@@ -446,22 +447,33 @@ using install order. Historical releases may retain one logical instance ID;
 a configuration change receives a new ID. Neither facility makes the currently unavailable
 runtime-v2 temporal, topology, or route HTTP providers appear.
 
-Durable ingestion now materializes declared revision consistency checks before
-it hashes or publishes a dataset. The primary parser participates when it
-declares `CONSISTENCY_CHECK`; explicitly composed auxiliaries participate only
-with `REVISION_CONSISTENCY_ROLE`. Results are immutable, plan-bound, bounded,
-and queryable through both the single-revision API and the workspace-scoped
-control plane. A failed rule invocation cannot publish a partial revision, and
-older revisions are labeled `not_materialized` rather than silently analyzed
-with today's plug-in code. Durable/admin records retain exact evidence
-locators for offline review; browser and public HTTP projections use a closed
-core evidence shape and omit every raw locator. Only plug-in-owned finding
-`details` pass through descriptor-sensitive property redaction.
+Durable ingestion now materializes declared revision-scoped relationships and
+then consistency checks before it hashes or publishes a dataset. The primary
+parser participates when it declares `RELATIONSHIP_PROJECTION` or
+`CONSISTENCY_CHECK`; explicitly composed auxiliaries require the corresponding
+`REVISION_RELATIONSHIP_PROJECTION_ROLE` or `REVISION_CONSISTENCY_ROLE`.
+Every projector sees the same immutable base world, while consistency sees the
+augmented world. Core binds declarations to the exact basis and provider,
+keeps endpoint identities distinct, deduplicates identical claims, and
+preserves conflicts as ambiguity rather than choosing by provider order.
+Auxiliaries may keep their own schemas; a private coordinator boundary validates
+their scheduled declarations under the primary revision schema without adding
+a public schema-override API. Perspective-qualified edges remain distinct, and
+explicit parser relationships stay authoritative over projections at the same
+qualified edge.
+Results are immutable, plan-bound, bounded, and queryable in the stored
+revision. A failed projector or rule cannot publish a partial revision.
+Legacy consistency revisions are labeled `not_materialized`, while revisions
+predating relationship projection have no projection envelope; neither is
+silently analyzed with today's plug-in code. Durable/admin records retain exact evidence
+locators for offline review; browser and public HTTP projections use closed
+core evidence shapes and omit every raw locator. Only plug-in-owned property
+payloads pass through descriptor-sensitive redaction.
 
 The maintained author smoke path is:
 
 ```powershell
-python -m pip install -e ".[web]"
+python -m pip install -e ".[test,web]"
 python -m pip install -e demo
 python -X utf8 -m rsl_demo_generator `
   --verify-conformance-fixture demo/fixtures/minimal-status.jsonl
@@ -470,7 +482,7 @@ router-dump-plugin-validate demo_router `
   --node-hint router-1 `
   --metadata platform=demo-router-os `
   --metadata software_version=1
-python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_capability_executor tests.test_capability_router tests.test_consistency_materialization tests.test_consistency_ingestion tests.test_revision_world -v
+python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_capability_executor tests.test_capability_router tests.test_relationship_projection_materialization tests.test_relationship_projection_ingestion tests.test_consistency_materialization tests.test_consistency_ingestion tests.test_revision_world -v
 python -m unittest discover -s demo/tests -v
 python -m unittest discover -s state-dump-generator/tests `
   -p "test_runtime_v2_vectors.py" -v

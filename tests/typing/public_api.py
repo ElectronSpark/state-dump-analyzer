@@ -18,6 +18,7 @@ from rsl_demo_plugin import (
 from router_dump_analyzer import (
     PLUGIN_PROCESS_BOOTSTRAP_DESCRIPTOR_ATTRIBUTE,
     REVISION_CONSISTENCY_ROLE,
+    REVISION_RELATIONSHIP_PROJECTION_ROLE,
     CapabilityProviderRegistry,
     ControlPlaneApplicationFactory,
     ControlPlaneApplicationRequest,
@@ -32,6 +33,8 @@ from router_dump_analyzer import (
     PluginExecutionPlanAuthority,
     PluginProcessBootstrapDescriptor,
     PluginRegistry,
+    RelationshipDeclaration,
+    RelationshipProjectionExecutionResult,
     RevisionConsistencyFindingsPage,
     RevisionSetCapabilityRouter,
     SourceRecordOrigin,
@@ -54,6 +57,13 @@ from router_dump_analyzer.plugin_api import (
     ArtifactReader,
     PluginDiagnostic,
     WorldBasisKind,
+)
+from router_dump_analyzer.relationship_projection_materialization import (
+    RelationshipProjectionMaterializationLimits,
+    RelationshipProjectionMaterializationResult,
+    materialize_revision_relationship_projection,
+    validate_relationship_projection_dataset_fragment,
+    validate_relationship_projection_storage_fragment,
 )
 
 
@@ -157,10 +167,28 @@ def exercise_public_surface(document: Mapping[str, Any]) -> None:
     )
     process_bootstrap_attribute: str = PLUGIN_PROCESS_BOOTSTRAP_DESCRIPTOR_ATTRIBUTE
     consistency_role: str = REVISION_CONSISTENCY_ROLE
+    relationship_projection_role: str = REVISION_RELATIONSHIP_PROJECTION_ROLE
     consistency_page_type: type[RevisionConsistencyFindingsPage] = (
         RevisionConsistencyFindingsPage
     )
     consistency_limits = ConsistencyMaterializationLimits()
+    relationship_projection_limits = RelationshipProjectionMaterializationLimits()
+    relationship_declaration_type: type[RelationshipDeclaration] = (
+        RelationshipDeclaration
+    )
+    relationship_execution_result_type: type[RelationshipProjectionExecutionResult] = (
+        RelationshipProjectionExecutionResult
+    )
+    relationship_materialization_result_type: type[
+        RelationshipProjectionMaterializationResult
+    ] = RelationshipProjectionMaterializationResult
+    relationship_materializer = materialize_revision_relationship_projection
+    relationship_dataset_validator = (
+        validate_relationship_projection_dataset_fragment
+    )
+    relationship_storage_validator = (
+        validate_relationship_projection_storage_fragment
+    )
     consistency_projection = project_consistency_findings_for_client
     consistency_materialization_projection = (
         project_consistency_materialization_for_client
@@ -188,8 +216,16 @@ def exercise_public_surface(document: Mapping[str, Any]) -> None:
         process_bootstrap,
         process_bootstrap_attribute,
         consistency_role,
+        relationship_projection_role,
         consistency_page_type,
         consistency_limits,
+        relationship_projection_limits,
+        relationship_declaration_type,
+        relationship_execution_result_type,
+        relationship_materialization_result_type,
+        relationship_materializer,
+        relationship_dataset_validator,
+        relationship_storage_validator,
         consistency_projection,
         consistency_materialization_projection,
         source_record_origin_type,

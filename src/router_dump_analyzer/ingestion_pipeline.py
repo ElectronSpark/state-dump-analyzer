@@ -81,6 +81,7 @@ from .plugin_api import (
 from .plugin_composition import (
     DEFAULT_PLUGIN_COMPOSITION_POLICY_DIGEST,
     REVISION_CONSISTENCY_ROLE,
+    REVISION_RELATIONSHIP_PROJECTION_ROLE,
     PluginCompositionPolicy,
     PluginCompositionRule,
     PluginParticipationSelection,
@@ -3374,30 +3375,48 @@ def _frozen_auxiliary_process_bootstraps(
     """Freeze child-safe executable descriptors for selected auxiliaries.
 
     The existing execution pins remain the parent-owned authority recorded in
-    the immutable plan.  A consistency materialization hook also needs the
-    selected auxiliary implementation inside the killable ingestion child.
-    Only core-owned scalar bootstrap descriptors cross the spawn boundary;
-    plug-in objects and bound methods never do.
+    the immutable plan.  Scheduled post-parse materialization hooks also need
+    each selected auxiliary implementation inside the killable ingestion
+    child. Only core-owned scalar bootstrap descriptors cross the spawn
+    boundary; plug-in objects and bound methods never do. An auxiliary carrying
+    both scheduled roles is loaded exactly once.
     """
 
     bootstraps: list[_PluginProcessBootstrap] = []
     for selection in selections:
-        if REVISION_CONSISTENCY_ROLE not in selection.roles:
+        consistency_selected = REVISION_CONSISTENCY_ROLE in selection.roles
+        relationship_projection_selected = (
+            REVISION_RELATIONSHIP_PROJECTION_ROLE in selection.roles
+        )
+        if not consistency_selected and not relationship_projection_selected:
             continue
         try:
             registered = capability_providers.get_by_execution_identity(
                 selection.instance_id,
                 selection.registered_execution_identity,
             )
-            if PluginCapability.CONSISTENCY_CHECK.value not in registered.capabilities:
+            if (
+                consistency_selected
+                and PluginCapability.CONSISTENCY_CHECK.value
+                not in registered.capabilities
+            ):
                 raise IngestionPipelineError(
                     "a revision consistency auxiliary does not declare "
                     "CONSISTENCY_CHECK"
                 )
+            if (
+                relationship_projection_selected
+                and PluginCapability.RELATIONSHIP_PROJECTION.value
+                not in registered.capabilities
+            ):
+                raise IngestionPipelineError(
+                    "a revision relationship-projection auxiliary does not "
+                    "declare RELATIONSHIP_PROJECTION"
+                )
             _require_no_inline_only_plugin_compatibility(
                 (registered,),
                 boundary=(
-                    "PROCESS consistency materialization requires "
+                    "PROCESS post-parse materialization requires "
                     "PROCESS-capable auxiliary plug-ins"
                 ),
             )
@@ -3407,8 +3426,8 @@ def _frozen_auxiliary_process_bootstraps(
                 or registered.decoder_identity is not None
             ):
                 raise IngestionPipelineError(
-                    "an auxiliary consistency provider is not eligible for "
-                    "PROCESS execution"
+                    "an auxiliary materialization provider is not eligible "
+                    "for PROCESS execution"
                 )
             bootstrap = registered.process_bootstrap
             PluginRegistry.revalidate_registered_identity(registered)
@@ -3418,24 +3437,25 @@ def _frozen_auxiliary_process_bootstraps(
             raise
         except BaseException as error:
             raise IngestionPipelineError(
-                "auxiliary consistency provider bootstrap could not be frozen"
+                "auxiliary materialization provider bootstrap could not be frozen"
             ) from error
         bootstraps.append(bootstrap)
     return tuple(bootstraps)
 
 
-def _validated_consistency_process_bootstraps(
+def _validated_materialization_process_bootstraps(
     frozen_auxiliary_pins: tuple[PluginExecutionPin, ...],
     auxiliary_bootstraps: tuple[_PluginProcessBootstrap, ...],
+    expected_parent_bootstrap_digests: tuple[str, ...],
 ) -> tuple[_PluginProcessBootstrap, ...]:
     """Validate the exact materialization-only child load set.
 
     The parent freezes all policy-selected auxiliary pins because the complete
-    composition remains part of the revision plan.  The ingestion child needs
-    executable implementations only for pins carrying the reserved consistency
-    role.  Validate that filtered set entirely from scalar coordinates before
-    importing any auxiliary target, so injected, duplicated, or stale spawn
-    payloads cannot make the child load unrelated plug-in code.
+    composition remains part of the revision plan. The ingestion child needs
+    executable implementations only for pins carrying a reserved scheduled
+    materialization role. Validate that union entirely from scalar coordinates
+    before importing any auxiliary target, so injected, duplicated, or stale
+    spawn payloads cannot make the child load unrelated plug-in code.
     """
 
     if type(frozen_auxiliary_pins) is not tuple or any(
@@ -3447,41 +3467,75 @@ def _validated_consistency_process_bootstraps(
         for bootstrap in auxiliary_bootstraps
     ):
         raise IngestionPipelineError(
-            "consistency auxiliary process bootstraps are invalid"
+            "materialization auxiliary process bootstraps are invalid"
+        )
+    if type(expected_parent_bootstrap_digests) is not tuple or any(
+        type(digest) is not str
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+        for digest in expected_parent_bootstrap_digests
+    ):
+        raise IngestionPipelineError(
+            "materialization auxiliary parent bootstrap authority is invalid"
+        )
+    if len(expected_parent_bootstrap_digests) != len(auxiliary_bootstraps):
+        raise IngestionPipelineError(
+            "materialization auxiliary parent bootstrap authority does not "
+            "match the child bootstrap vector"
         )
 
     expected: list[PluginExecutionPin] = []
     for pin in frozen_auxiliary_pins:
-        if REVISION_CONSISTENCY_ROLE not in pin.roles:
+        consistency_selected = REVISION_CONSISTENCY_ROLE in pin.roles
+        relationship_projection_selected = (
+            REVISION_RELATIONSHIP_PROJECTION_ROLE in pin.roles
+        )
+        if not consistency_selected and not relationship_projection_selected:
             continue
-        if PluginCapability.CONSISTENCY_CHECK.value not in pin.capabilities:
+        if (
+            consistency_selected
+            and PluginCapability.CONSISTENCY_CHECK.value not in pin.capabilities
+        ):
             raise IngestionPipelineError(
                 "a revision consistency auxiliary does not declare CONSISTENCY_CHECK"
+            )
+        if (
+            relationship_projection_selected
+            and PluginCapability.RELATIONSHIP_PROJECTION.value not in pin.capabilities
+        ):
+            raise IngestionPipelineError(
+                "a revision relationship-projection auxiliary does not declare "
+                "RELATIONSHIP_PROJECTION"
             )
         expected.append(pin)
     if len(expected) != len(auxiliary_bootstraps):
         raise IngestionPipelineError(
-            "consistency auxiliary bootstraps do not match the frozen plan pins"
+            "materialization auxiliary bootstraps do not match the frozen plan pins"
         )
     if len(expected) != len({pin.instance_id for pin in expected}):
         raise IngestionPipelineError(
-            "consistency auxiliary plan pins contain duplicate instances"
+            "materialization auxiliary plan pins contain duplicate instances"
         )
 
-    for pin, bootstrap in zip(expected, auxiliary_bootstraps, strict=True):
+    for pin, bootstrap, parent_digest in zip(
+        expected,
+        auxiliary_bootstraps,
+        expected_parent_bootstrap_digests,
+        strict=True,
+    ):
         try:
             bootstrap_digest = _plugin_process_bootstrap_digest(bootstrap)
         except PROCESS_CONTROL_EXCEPTIONS:
             raise
         except BaseException as error:
             raise IngestionPipelineError(
-                "consistency auxiliary process bootstrap is invalid"
+                "materialization auxiliary process bootstrap is invalid"
             ) from error
         artifact = pin.artifact
         if (
             bootstrap.decoder_identity_values is not None
             or pin.process_bootstrap_digest is None
             or bootstrap_digest != pin.process_bootstrap_digest
+            or bootstrap_digest != parent_digest
             or bootstrap.instance_id != pin.instance_id
             or bootstrap.expected_registered_execution_identity
             != pin.registered_execution_identity
@@ -3493,9 +3547,69 @@ def _validated_consistency_process_bootstraps(
             or bootstrap.configuration_digest != pin.configuration_digest
         ):
             raise IngestionPipelineError(
-                "consistency auxiliary bootstrap does not match its frozen plan pin"
+                "materialization auxiliary bootstrap does not match its frozen plan pin"
             )
     return auxiliary_bootstraps
+
+
+def _validated_child_composition_authority(
+    primary_bootstrap: _PluginProcessBootstrap,
+    frozen_auxiliary_pins: tuple[PluginExecutionPin, ...],
+    composition_policy: PluginCompositionPolicy | None,
+) -> tuple[PluginCompositionPolicy, tuple[PluginExecutionPin, ...]]:
+    """Bind a child auxiliary vector to policy before importing its code."""
+
+    if type(primary_bootstrap) is not _PluginProcessBootstrap:
+        raise IngestionPipelineError("primary process bootstrap is invalid")
+    if type(frozen_auxiliary_pins) is not tuple or any(
+        type(pin) is not PluginExecutionPin for pin in frozen_auxiliary_pins
+    ):
+        raise IngestionPipelineError("frozen auxiliary execution pins are invalid")
+    if composition_policy is None:
+        selected_policy = PluginCompositionPolicy()
+    else:
+        if type(composition_policy) is not PluginCompositionPolicy:
+            raise IngestionPipelineError("plug-in composition policy is invalid")
+        try:
+            selected_policy = PluginCompositionPolicy(
+                rules=composition_policy.rules,
+                contract_version=composition_policy.contract_version,
+                policy_digest=composition_policy.policy_digest,
+            )
+        except PROCESS_CONTROL_EXCEPTIONS:
+            raise
+        except BaseException as error:
+            raise IngestionPipelineError(
+                "plug-in composition policy is invalid"
+            ) from error
+    try:
+        selections = selected_policy.auxiliaries_for(
+            primary_instance_id=primary_bootstrap.instance_id,
+            primary_registered_execution_identity=(
+                primary_bootstrap.expected_registered_execution_identity
+            ),
+        )
+    except PROCESS_CONTROL_EXCEPTIONS:
+        raise
+    except BaseException as error:
+        raise IngestionPipelineError(
+            "plug-in composition policy could not be resolved"
+        ) from error
+    if len(frozen_auxiliary_pins) != len(selections) or any(
+        pin.instance_id != selection.instance_id
+        or pin.registered_execution_identity
+        != selection.registered_execution_identity
+        or pin.roles != selection.roles
+        for pin, selection in zip(
+            frozen_auxiliary_pins,
+            selections,
+            strict=True,
+        )
+    ):
+        raise IngestionPipelineError(
+            "frozen auxiliary pins do not match the composition policy"
+        )
+    return selected_policy, frozen_auxiliary_pins
 
 
 def _execution_plan_for_result(
@@ -3714,6 +3828,7 @@ def _dataset_with_execution_plan(
         allow_inline_only=allow_inline_only,
         execution_plan_authority=execution_plan_authority,
     )
+    primary_pin = primary_parser_execution_pin(plan)
     # Import lazily: the capability router binds RegisteredPlugin from this
     # module, while materialization itself is intentionally a later pipeline
     # stage rather than part of parser normalization.
@@ -3722,15 +3837,26 @@ def _dataset_with_execution_plan(
         not_applicable_consistency_materialization,
         revision_consistency_selected_pins,
     )
+    from .relationship_projection_materialization import (
+        materialize_revision_relationship_projection,
+        not_applicable_relationship_projection_materialization,
+        revision_relationship_projection_selected_pins,
+        validate_relationship_projection_dataset_fragment,
+    )
 
+    projection_pins = revision_relationship_projection_selected_pins(plan)
     consistency_pins = revision_consistency_selected_pins(plan)
-    if not consistency_pins:
-        consistency = not_applicable_consistency_materialization(plan)
-    else:
+    required_instance_ids = {
+        pin.instance_id for pin in (*projection_pins, *consistency_pins)
+    }
+    required_pins = tuple(
+        pin for pin in plan.plugins if pin.instance_id in required_instance_ids
+    )
+    if required_pins:
         if capability_providers is None:
             if frozen_process_providers is None:
                 raise IngestionPipelineError(
-                    "consistency materialization requires the exact plan-bound "
+                    "scheduled materialization requires the exact plan-bound "
                     "capability provider registry"
                 )
             from .capability_router import (
@@ -3740,20 +3866,80 @@ def _dataset_with_execution_plan(
             capability_providers = ProviderRegistry._from_frozen_process_execution_plan(
                 frozen_process_providers,
                 plan,
-                consistency_pins,
+                required_pins,
             )
         elif frozen_process_providers is not None:
             raise IngestionPipelineError(
-                "consistency materialization received conflicting provider sources"
+                "scheduled materialization received conflicting provider sources"
             )
+    base_world = IngestionRevisionWorld(
+        basis=_revision_world_basis(result),
+        snapshots=result.snapshots,
+        relationship_observations=result.relationship_observations,
+        undirected_relationship_types=frozenset(
+            item.relation_type
+            for item in result.schema.relationship_types
+            if not item.directed
+        ),
+        primary_plugin_instance_id=primary_pin.instance_id,
+        primary_schema_digest=primary_pin.schema_digest,
+    )
+    if not projection_pins:
+        relationship_projection = (
+            not_applicable_relationship_projection_materialization(plan)
+        )
+    else:
+        assert capability_providers is not None
         from .capability_router import PlanBoundCapabilityRouter
 
-        world = IngestionRevisionWorld(
-            basis=_revision_world_basis(result),
-            snapshots=result.snapshots,
-            relationship_observations=result.relationship_observations,
+        projection_router = PlanBoundCapabilityRouter._for_required_pins(
+            capability_providers,
+            plan,
+            catalog_revision_id=result.revision_id,
+            member_id=result.revision_id,
+            required_pins=projection_pins,
+            allow_inline_only=allow_inline_only,
         )
-        router = PlanBoundCapabilityRouter._for_required_pins(
+        relationship_projection = materialize_revision_relationship_projection(
+            plan=plan,
+            router=projection_router,
+            world=base_world,
+            primary_schema=result.schema,
+            artifact_ids=tuple(
+                artifact.artifact_id for artifact in result.inventory.artifacts
+            ),
+        )
+    projection_fragment = relationship_projection.dataset_fragment()
+    validate_relationship_projection_dataset_fragment(
+        projection_fragment,
+        plan=plan,
+        world=base_world,
+        primary_schema=result.schema,
+        artifact_ids=tuple(
+            artifact.artifact_id for artifact in result.inventory.artifacts
+        ),
+    )
+
+    augmented_world = IngestionRevisionWorld(
+        basis=base_world.basis,
+        snapshots=result.snapshots,
+        relationship_observations=result.relationship_observations,
+        projected_relationships=relationship_projection.augmented_relationships,
+        undirected_relationship_types=frozenset(
+            item.relation_type
+            for item in result.schema.relationship_types
+            if not item.directed
+        ),
+        primary_plugin_instance_id=primary_pin.instance_id,
+        primary_schema_digest=primary_pin.schema_digest,
+    )
+    if not consistency_pins:
+        consistency = not_applicable_consistency_materialization(plan)
+    else:
+        assert capability_providers is not None
+        from .capability_router import PlanBoundCapabilityRouter
+
+        consistency_router = PlanBoundCapabilityRouter._for_required_pins(
             capability_providers,
             plan,
             catalog_revision_id=result.revision_id,
@@ -3763,8 +3949,8 @@ def _dataset_with_execution_plan(
         )
         consistency = materialize_revision_consistency(
             plan=plan,
-            router=router,
-            world=world,
+            router=consistency_router,
+            world=augmented_world,
             artifact_ids=tuple(
                 artifact.artifact_id for artifact in result.inventory.artifacts
             ),
@@ -3777,6 +3963,9 @@ def _dataset_with_execution_plan(
     ingestion_metadata = dict(raw_ingestion)
     ingestion_metadata["mode"] = "core-ingestion-v3"
     ingestion_metadata["plugin_execution_plan_digest"] = plan.plan_digest
+    ingestion_metadata["relationship_projection_materialization_status"] = (
+        relationship_projection.status.value
+    )
     ingestion_metadata["consistency_materialization_status"] = consistency.status.value
     dataset["_ingestion"] = ingestion_metadata
     inventory = dataset.get("inventory")
@@ -3785,6 +3974,7 @@ def _dataset_with_execution_plan(
     detached_inventory = dict(inventory)
     detached_inventory["mode"] = "core-ingestion-v3"
     dataset["inventory"] = detached_inventory
+    dataset.update(projection_fragment)
     fragment = consistency.dataset_fragment()
     dataset["findings"] = fragment["findings"]
     consistency_diagnostics = fragment["consistency_diagnostics"]
@@ -3793,11 +3983,27 @@ def _dataset_with_execution_plan(
     raw_diagnostics = dataset.get("diagnostics")
     if not isinstance(raw_diagnostics, list):
         raise IngestionPipelineError("normalized dataset diagnostics are invalid")
-    dataset["diagnostics"] = [*raw_diagnostics, *consistency_diagnostics]
+    projection_diagnostics = projection_fragment[
+        "relationship_projection_diagnostics"
+    ]
+    dataset["diagnostics"] = [
+        *raw_diagnostics,
+        *projection_diagnostics,
+        *consistency_diagnostics,
+    ]
     raw_summary = dataset.get("summary")
     if not isinstance(raw_summary, Mapping):
         raise IngestionPipelineError("normalized dataset summary is invalid")
     summary = dict(raw_summary)
+    summary["relationship_projection"] = {
+        "status": relationship_projection.status.value,
+        "declaration_count": len(relationship_projection.declarations),
+        "resolved_edge_count": len(relationship_projection.resolved_relationships),
+        "diagnostic_count": len(relationship_projection.diagnostics),
+        "semantic_conflict_groups": (
+            relationship_projection.semantic_conflict_groups
+        ),
+    }
     summary["consistency"] = fragment["consistency_summary"]
     dataset["summary"] = summary
     return canonical_json(dataset).encode("utf-8"), plan
@@ -4045,7 +4251,7 @@ def _ingest_registered_plugin(
             raise IngestionPipelineError(
                 "frozen auxiliary pins are valid only for PROCESS execution"
             )
-        selected_records = (registered,)
+        selected_records: tuple[RegisteredPlugin, ...] = (registered,)
     else:
         selected_records = _selected_composition_records(
             registered,
@@ -4346,6 +4552,7 @@ def _ingest_plugin_child(
     connection: Any,
     bootstrap: _PluginProcessBootstrap,
     expected_primary_process_bootstrap_digest: str,
+    expected_auxiliary_process_bootstrap_digests: tuple[str, ...],
     input_path: str,
     node_hint: str | None,
     metadata: dict[str, Any],
@@ -4368,9 +4575,17 @@ def _ingest_plugin_child(
             raise IngestionPipelineError(
                 "primary process bootstrap does not match its parent authority"
             )
-        selected_auxiliary_bootstraps = _validated_consistency_process_bootstraps(
-            frozen_auxiliary_pins,
+        selected_policy, authorized_auxiliary_pins = (
+            _validated_child_composition_authority(
+                bootstrap,
+                frozen_auxiliary_pins,
+                composition_policy,
+            )
+        )
+        selected_auxiliary_bootstraps = _validated_materialization_process_bootstraps(
+            authorized_auxiliary_pins,
             auxiliary_bootstraps,
+            expected_auxiliary_process_bootstrap_digests,
         )
         if any(
             auxiliary.instance_id == bootstrap.instance_id
@@ -4391,9 +4606,9 @@ def _ingest_plugin_child(
         result, dataset_json, execution_plan = _ingest_registered_plugin(
             registered,
             Path(input_path),
-            frozen_auxiliary_pins=frozen_auxiliary_pins,
+            frozen_auxiliary_pins=authorized_auxiliary_pins,
             frozen_process_providers=registry.records(),
-            composition_policy=composition_policy,
+            composition_policy=selected_policy,
             execution_mode=PluginExecutionMode.PROCESS,
             node_hint=node_hint,
             metadata=metadata,
@@ -11443,6 +11658,10 @@ class DurableIngestionPipeline:
                     self.capability_providers,
                     auxiliary_selections,
                 )
+                child_auxiliary_bootstrap_digests = tuple(
+                    _plugin_process_bootstrap_digest(value)
+                    for value in child_auxiliary_bootstraps
+                )
                 process_bootstrap = registered.process_bootstrap
                 primary_bootstrap_digest = registered.process_bootstrap_digest
                 if primary_bootstrap_digest is None:
@@ -11455,6 +11674,7 @@ class DurableIngestionPipeline:
                     (
                         process_bootstrap,
                         primary_bootstrap_digest,
+                        child_auxiliary_bootstrap_digests,
                         str(input_path),
                         node_hint,
                         upload_metadata,

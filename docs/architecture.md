@@ -1121,8 +1121,9 @@ operating-system CPU/memory/output quotas in
 addition to the wall-clock fault boundary.
 
 The executable `PluginCapabilityExecutor` is the matching core boundary for
-optional semantic hooks. It gates `apply`, `revert`, `correlate`,
-consistency, topology, forwarding projection, and forwarding-step calls;
+optional semantic hooks. It gates `apply`, `revert`, `correlate`, revision
+relationship projection, consistency, topology, forwarding projection, and
+forwarding-step calls;
 wraps world access in one bounded read-only facade; closes output iterators;
 and validates every exact request, result, schema reference, and diagnostic.
 Capability authority comes from a one-time exact snapshot of the manifest set,
@@ -1133,17 +1134,21 @@ non-recoverable or invalid output fails the call without a partial result.
 This executor makes the hook protocol testable but does not install runtime-v2
 temporal, topology, or route providers.
 
-The durable ingestion coordinator does use that boundary for one scheduled
-stage: revision consistency materialization. After normalization and complete
-execution-plan freeze, core constructs an immutable indexed
+The durable ingestion coordinator uses that boundary for two ordered scheduled
+stages: revision relationship projection followed by consistency
+materialization. After normalization and complete execution-plan freeze, core
+constructs an immutable indexed
 `IngestionRevisionWorld` by replaying validated snapshots and explicit
 relationship observations with the same order/patch semantics as dataset
 normalization. Its `WorldBasis` is an observed capture vector with independent
 artifact/clock ranges; no latest-event timestamp is promoted to common truth.
 One unknown-time observation makes its complete artifact/clock range unbounded,
 even when sibling observations carry exact bounds.
-The primary pin participates when it declares `CONSISTENCY_CHECK`; an auxiliary
-participates only through the explicit `revision_consistency` role.
+The primary pin participates in either stage when it declares the corresponding
+capability. An auxiliary relationship projector participates only through the
+explicit `revision_relationship_projection` role; consistency uses
+`revision_consistency`. Merely declaring a capability never schedules an
+auxiliary.
 Parser/discovery yields are detached through a bounded typed deep snapshot
 before iterator advancement, so later plug-in mutation cannot alter either the
 normalized dataset or this immutable revision world.
@@ -1151,23 +1156,58 @@ Each capability invocation also receives detached basis and perspective
 objects, preventing one provider from changing the revision coordinates seen
 by the next provider through `object.__setattr__`.
 
+All projectors read the same base world. A projector cannot observe another
+projector's same-phase output, so provider order does not become semantic and
+there is no plug-in-controlled fixed point. Each `RelationshipDeclaration`
+asserts one basis-scoped edge between resources that already exist in the base
+world. It has no timestamp, presence field, basis, or producer: core attaches
+the authoritative basis and complete selected pin. Its relation type and
+optional perspective must belong to the primary schema; attributes are one
+complete patch with no removals; evidence must belong to the revision.
+
+The ordinary public executor validates a provider against its own schema. The
+durable coordinator uses a private revision-only authority path so a selected
+auxiliary can read the primary revision world and declare primary-schema
+relationships without pretending that it owns that schema. This override is
+not part of the public hook, executor, router, or stub API. Projection
+diagnostics are accepted only as recoverable
+`DiagnosticStage.RELATIONSHIP_PROJECTION` records and are rebound to the exact
+selected provider.
+
+Core qualifies local perspective references with the primary instance and
+schema digest before world construction. Perspective is part of canonical
+edge identity, and undirected endpoints are canonicalized, so different
+perspectives remain independent while reversed undirected declarations join.
+An explicit parser observation wins over a projected relationship only when
+both address the same fully qualified edge.
+
+Canonical identical claims collapse while retaining distinct provider and
+evidence contributions. Conflicting semantic claims for the same edge remain
+inspectable in a stable ambiguity group. The augmented world receives one
+conservative ambiguous relationship containing only attributes common to all
+claims; core never merges endpoint identities or lets provider order choose a
+winner. Consistency is then evaluated against this augmented world.
+
 `PlanBoundCapabilityRouter` executes those exact pins inside the same killable
-child as PROCESS ingestion (or the explicitly trusted inline boundary), and a
-revision-wide materializer layers aggregate provider/output/reference/read/
-byte limits over each executor's limits. It canonicalizes findings and
-recoverable diagnostics with producer and plan provenance, validates admitted
-evidence and exact basis equality, and writes a complete/not-applicable
-envelope. This happens before dataset serialization and hashing, so any failure
+child as PROCESS ingestion (or the explicitly trusted inline boundary), and
+each revision-wide materializer layers aggregate
+provider/output/reference/read/byte limits over executor limits. It
+canonicalizes relationship claims, findings, and recoverable diagnostics with
+producer and plan provenance, validates admitted evidence, endpoints, schema,
+and basis, and writes complete/not-applicable envelopes. This happens before
+dataset serialization and hashing, so any failure
 prevents staging/publication and a policy/provider/output change changes the
 published revision identity. Reads never execute a hook retroactively.
 Both boundaries reject oversized capture-range and node-resolution vectors
 before traversal or ownership snapshot, and cap nested plus aggregate basis
 evidence.
 The durable form retains evidence locators and the complete canonical basis;
-its digest commits to that richer basis. Public HTTP/browser projection is a
+reload derives the recorded digest from that validated basis and reconstructs
+pre-deduplication occurrence, evidence, and byte charges. Its digest commits
+to that richer basis. Public HTTP/browser projection is a
 separate closed boundary: it omits locators, validates exact structural
 domains, and applies descriptor-sensitive redaction only to plug-in-owned
-finding details.
+finding details and projected relationship attributes.
 The read side repeats the v3 storage checks: envelope fields and counts are
 exact, evidence artifacts must be in the revision inventory, typed resource
 keys are reconstructed and their canonical IDs rederived, and bounded
@@ -1176,14 +1216,22 @@ partly displayed.
 
 The parent freezes every policy-selected auxiliary pin into the complete plan,
 but transfers executable child bootstraps only for the primary and auxiliaries
-carrying `revision_consistency`. Before importing an auxiliary target, the
+carrying `revision_relationship_projection` or `revision_consistency`. Before
+importing an auxiliary target, the
 child compares its scalar bootstrap coordinates and order with those frozen
 role-selected pins and rejects extras, omissions, duplicates, or mismatches.
 An internal pin-scoped router retains the complete plan and plan digest while
-binding only the selected consistency pins; the public/default router continues
-to bind and validate the complete plan. Consequently an unrelated topology or
-evidence auxiliary is recorded in revision provenance without being loaded for
-this scheduled stage.
+binding only the pins selected for each stage; the public/default router
+continues to bind and validate the complete plan. Consequently an unrelated
+topology or evidence auxiliary is recorded in revision provenance without
+being loaded for either scheduled stage.
+
+`IngestionRevisionWorld` folds snapshot observations sharing a `ResourceKey`
+before relationship projection. The resulting state retains the final ordered
+observation's evidence rather than a raw per-observation stream. Projectors
+that need to compare observations collapsed under one key therefore require a
+future, separately bounded observation/source reader; the world-scoped hook
+does not pretend to preserve them.
 
 `PlanBoundCapabilityRouter` is the production composition layer above that
 executor. It digest-verifies and detaches a revision plan, resolves an exact

@@ -65,6 +65,7 @@ from .consistency_materialization import (
     CONSISTENCY_MATERIALIZATION_SCHEMA_VERSION,
     ConsistencyMaterializationError,
     ConsistencyMaterializationLimits,
+    ConsistencyMaterializationStatus,
     _validate_materialized_artifact_ids,
     _validate_materialized_consistency_basis,
     _validate_materialized_consistency_diagnostic,
@@ -125,6 +126,7 @@ from .plugin_execution_plan import (
     primary_parser_execution_pin,
     snapshot_plugin_execution_plan,
 )
+from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .private_analysis import (
     DEFAULT_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_PAYLOAD_BYTES,
     MAX_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_ENTRIES,
@@ -179,6 +181,12 @@ from .private_analysis_tool_service import (
     PrivateAnalysisAuthorizationDecision,
     PrivateAnalysisToolService,
     PrivateAnalysisWorkspacePolicySnapshot,
+)
+from .relationship_projection_materialization import (
+    RelationshipProjectionMaterializationError,
+    RelationshipProjectionMaterializationLimits,
+    RelationshipProjectionMaterializationStatus,
+    validate_relationship_projection_storage_fragment,
 )
 from .session_store import (
     AnalysisRevisionDescriptor,
@@ -1985,7 +1993,16 @@ class ControlPlane:
                 raise PrivateAnalysisEvidenceBindingError(
                     "evidence analysis provider does not match the target revision"
                 )
-            invocation = route.analyze_evidence(capability_request)
+            try:
+                invocation = route.analyze_evidence(capability_request)
+            except PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except PrivateAnalysisEvidenceBindingError:
+                raise
+            except BaseException as error:
+                raise PrivateAnalysisEvidenceBindingError(
+                    "evidence analysis capability invocation failed"
+                ) from error
             if invocation.provider != provider:
                 raise PrivateAnalysisEvidenceBindingError(
                     "evidence analysis provider changed during invocation"
@@ -2587,6 +2604,350 @@ class ControlPlane:
                     f"dataset {field} must be an array of objects"
                 )
         return value
+
+    @classmethod
+    def _relationship_projection_index(
+        cls,
+        dataset: Mapping[str, Any],
+        ingestion: Mapping[str, Any],
+        *,
+        execution_plan: PluginExecutionPlan | None,
+        resources_by_id: Mapping[str, Mapping[str, Any]],
+        construction_checkpoint: Callable[[], None] | None = None,
+    ) -> tuple[tuple[Mapping[str, Any], ...], Mapping[str, Any]]:
+        """Validate one revision-scoped projection without temporalizing it.
+
+        Durable reload has no executable plug-in and deliberately does not
+        reconstruct raw parser observations.  The storage validator therefore
+        receives only independently checked plan, inventory, schema and base
+        resource facts.  Projected edges are returned solely for revision
+        subject indexing; callers must not append them to temporal
+        ``relationships`` or ``relationship_intervals``.
+        """
+
+        fragment_fields = (
+            "relationship_declarations",
+            "relationship_projection_diagnostics",
+            "relationship_projection_edges",
+            "relationship_projection_materialization",
+        )
+        present = frozenset(field for field in fragment_fields if field in dataset)
+        status_marker_present = (
+            "relationship_projection_materialization_status" in ingestion
+        )
+        if not present and not status_marker_present:
+            return (), {}
+        if present != frozenset(fragment_fields) or not status_marker_present:
+            raise DatasetIntegrityError(
+                "dataset has partial relationship projection materialization metadata"
+            )
+        if execution_plan is None:
+            raise DatasetIntegrityError(
+                "relationship projection materialization lacks an execution plan"
+            )
+
+        limits = RelationshipProjectionMaterializationLimits()
+        raw_declarations = dataset.get("relationship_declarations")
+        raw_diagnostics = dataset.get("relationship_projection_diagnostics")
+        raw_edges = dataset.get("relationship_projection_edges")
+        raw_materialization = dataset.get(
+            "relationship_projection_materialization"
+        )
+        if any(
+            type(value) is not list
+            for value in (raw_declarations, raw_diagnostics, raw_edges)
+        ) or type(raw_materialization) is not dict:
+            raise DatasetIntegrityError(
+                "relationship projection materialization has invalid containers"
+            )
+        assert type(raw_declarations) is list
+        assert type(raw_diagnostics) is list
+        assert type(raw_edges) is list
+        assert type(raw_materialization) is dict
+        if (
+            len(raw_declarations) > limits.max_declarations
+            or len(raw_diagnostics) > limits.max_diagnostics
+            or len(raw_edges) > limits.max_declarations
+        ):
+            raise DatasetIntegrityError(
+                "relationship projection materialization exceeds durable limits"
+            )
+
+        raw_status = raw_materialization.get("status")
+        try:
+            if type(raw_status) is not str:
+                raise TypeError("status must be a string")
+            status = RelationshipProjectionMaterializationStatus(raw_status)
+        except (TypeError, ValueError) as error:
+            raise DatasetIntegrityError(
+                "relationship projection materialization status is invalid"
+            ) from error
+        if (
+            ingestion.get("relationship_projection_materialization_status")
+            != status.value
+        ):
+            raise DatasetIntegrityError(
+                "ingestion relationship projection status does not match its materialization"
+            )
+        providers = raw_materialization.get("providers")
+        if type(providers) is not list or len(providers) > limits.max_providers:
+            raise DatasetIntegrityError(
+                "relationship projection providers are invalid"
+            )
+        for provider in providers:
+            if (
+                not isinstance(provider, Mapping)
+                or provider.get("catalog_revision_id")
+                != execution_plan.basis_revision_id
+                or provider.get("member_id") != execution_plan.basis_revision_id
+                or provider.get("basis_revision_id")
+                != execution_plan.basis_revision_id
+                or provider.get("node_id") != execution_plan.node_id
+                or provider.get("plan_digest") != execution_plan.plan_digest
+                or provider.get("capability")
+                != PluginCapability.RELATIONSHIP_PROJECTION.value
+            ):
+                raise DatasetIntegrityError(
+                    "relationship projection provider is not bound to its revision"
+                )
+
+        inventory = dataset.get("inventory")
+        members = inventory.get("members") if isinstance(inventory, Mapping) else None
+        if type(members) is not list or len(members) > limits.max_artifact_ids:
+            raise DatasetIntegrityError(
+                "relationship projection inventory is invalid"
+            )
+        artifact_ids: set[UUID] = set()
+        for member in members:
+            artifact_text = member.get("artifact_id") if type(member) is dict else None
+            try:
+                artifact_id = UUID(artifact_text)
+            except (AttributeError, TypeError, ValueError) as error:
+                raise DatasetIntegrityError(
+                    "relationship projection inventory artifact is invalid"
+                ) from error
+            if str(artifact_id) != artifact_text or artifact_id in artifact_ids:
+                raise DatasetIntegrityError(
+                    "relationship projection inventory artifact is invalid"
+                )
+            artifact_ids.add(artifact_id)
+
+        base_resource_ids: set[str] = set()
+        resource_keys: dict[str, Mapping[str, Any]] = {}
+        for identifier, resource in resources_by_id.items():
+            key = resource.get("key")
+            if not isinstance(key, Mapping):
+                raise DatasetIntegrityError(
+                    "relationship projection base resource lacks its typed key"
+                )
+            resource_keys[identifier] = key
+            if resource.get("placeholder") is not True:
+                base_resource_ids.add(identifier)
+        if len(base_resource_ids) > limits.max_base_resources:
+            raise DatasetIntegrityError(
+                "relationship projection base resources exceed durable limits"
+            )
+
+        # Bind every projected opaque key to the independently indexed base
+        # resource record.  A digest-valid claim must not be able to reuse a
+        # real resource ID with a different typed key.
+        for collection_name, values in (
+            ("declaration", raw_declarations),
+            ("resolved edge", raw_edges),
+        ):
+            for ordinal, value in enumerate(values):
+                if ordinal % 256 == 0 and construction_checkpoint is not None:
+                    construction_checkpoint()
+                if not isinstance(value, Mapping):
+                    raise DatasetIntegrityError(
+                        f"relationship projection {collection_name} is invalid"
+                    )
+                for endpoint_name in ("source", "target"):
+                    endpoint = value.get(endpoint_name)
+                    if not isinstance(endpoint, Mapping):
+                        raise DatasetIntegrityError(
+                            f"relationship projection {collection_name} endpoint is invalid"
+                        )
+                    endpoint_identifier = endpoint.get("resource_id")
+                    if (
+                        type(endpoint_identifier) is not str
+                        or endpoint_identifier not in resource_keys
+                        or endpoint.get("typed_resource_key")
+                        != resource_keys[endpoint_identifier]
+                    ):
+                        raise DatasetIntegrityError(
+                            "relationship projection endpoint does not match its base resource"
+                        )
+
+        raw_relationship_types = dataset.get("relationship_descriptors")
+        if (
+            type(raw_relationship_types) is not list
+            or len(raw_relationship_types) > 10_000
+        ):
+            raise DatasetIntegrityError(
+                "relationship projection schema descriptors are invalid"
+            )
+        relationship_type_directions: dict[str, bool] = {}
+        for descriptor in raw_relationship_types:
+            if not isinstance(descriptor, Mapping):
+                raise DatasetIntegrityError(
+                    "relationship projection schema descriptors are invalid"
+                )
+            relation_type = descriptor.get("relation_type")
+            directed = descriptor.get("directed")
+            if (
+                type(relation_type) is not str
+                or not relation_type
+                or len(relation_type) > 256
+                or type(directed) is not bool
+                or relation_type in relationship_type_directions
+            ):
+                raise DatasetIntegrityError(
+                    "relationship projection schema descriptors are invalid"
+                )
+            relationship_type_directions[relation_type] = directed
+
+        schema = dataset.get("schema")
+        raw_perspectives = (
+            schema.get("status_perspectives") if isinstance(schema, Mapping) else None
+        )
+        if type(raw_perspectives) is not list or len(raw_perspectives) > 10_000:
+            raise DatasetIntegrityError(
+                "relationship projection perspective schema is invalid"
+            )
+        perspective_ids: set[str] = set()
+        for descriptor in raw_perspectives:
+            perspective_id = (
+                descriptor.get("perspective_id")
+                if isinstance(descriptor, Mapping)
+                else None
+            )
+            if (
+                type(perspective_id) is not str
+                or not perspective_id
+                or len(perspective_id) > 128
+                or perspective_id in perspective_ids
+            ):
+                raise DatasetIntegrityError(
+                    "relationship projection perspective schema is invalid"
+                )
+            perspective_ids.add(perspective_id)
+
+        if status is RelationshipProjectionMaterializationStatus.COMPLETE:
+            basis = raw_materialization.get("basis")
+            if not isinstance(basis, Mapping):
+                raise DatasetIntegrityError(
+                    "complete relationship projection lacks a basis"
+                )
+            try:
+                canonical_projection_basis = _validate_materialized_consistency_basis(
+                    basis,
+                    artifact_ids=frozenset(artifact_ids),
+                    limits=ConsistencyMaterializationLimits(),
+                )
+            except (ConsistencyMaterializationError, TypeError, ValueError) as error:
+                raise DatasetIntegrityError(
+                    "relationship projection basis is not canonical"
+                ) from error
+            expected_basis_digest = (
+                "sha256:"
+                + hashlib.sha256(
+                    canonical_projection_basis.encode("utf-8")
+                ).hexdigest()
+            )
+        else:
+            expected_basis_digest = None
+        consistency_materialization = dataset.get("consistency_materialization")
+        consistency_status: ConsistencyMaterializationStatus | None = None
+        if isinstance(consistency_materialization, Mapping):
+            raw_consistency_status = consistency_materialization.get("status")
+            try:
+                if type(raw_consistency_status) is not str:
+                    raise TypeError("status must be a string")
+                consistency_status = ConsistencyMaterializationStatus(
+                    raw_consistency_status
+                )
+            except (TypeError, ValueError):
+                pass
+        if (
+            status is RelationshipProjectionMaterializationStatus.COMPLETE
+            and isinstance(consistency_materialization, Mapping)
+            and consistency_status is ConsistencyMaterializationStatus.COMPLETE
+            and consistency_materialization.get("basis_digest")
+            != expected_basis_digest
+        ):
+            raise DatasetIntegrityError(
+                "relationship projection and consistency bases disagree"
+            )
+        fragment = {field: dataset[field] for field in fragment_fields}
+        try:
+            detached = validate_relationship_projection_storage_fragment(
+                fragment,
+                plan=execution_plan,
+                expected_basis_digest=expected_basis_digest,
+                base_resource_ids=frozenset(base_resource_ids),
+                relationship_type_directions=relationship_type_directions,
+                perspective_ids=frozenset(perspective_ids),
+                artifact_ids=frozenset(artifact_ids),
+                limits=limits,
+            )
+        except (
+            RelationshipProjectionMaterializationError,
+            TypeError,
+            ValueError,
+        ) as error:
+            raise DatasetIntegrityError(
+                "relationship projection materialization is not canonical"
+            ) from error
+
+        generic_diagnostics = dataset.get("diagnostics")
+        consistency_diagnostics = dataset.get("consistency_diagnostics", [])
+        if (
+            type(generic_diagnostics) is not list
+            or type(consistency_diagnostics) is not list
+        ):
+            raise DatasetIntegrityError(
+                "relationship projection diagnostics are not retained canonically"
+            )
+        expected_suffix = [*raw_diagnostics, *consistency_diagnostics]
+        actual_suffix = (
+            generic_diagnostics[-len(expected_suffix) :] if expected_suffix else []
+        )
+        try:
+            diagnostics_match = strict_canonical_json(
+                actual_suffix
+            ) == strict_canonical_json(expected_suffix)
+        except (TypeError, ValueError) as error:
+            raise DatasetIntegrityError(
+                "relationship projection diagnostics are not canonical"
+            ) from error
+        if len(generic_diagnostics) < len(expected_suffix) or not diagnostics_match:
+            raise DatasetIntegrityError(
+                "generic diagnostics do not retain the relationship projection suffix"
+            )
+
+        summary = dataset.get("summary")
+        published_summary = (
+            summary.get("relationship_projection")
+            if isinstance(summary, Mapping)
+            else None
+        )
+        expected_summary = {
+            "status": status.value,
+            "declaration_count": len(raw_declarations),
+            "resolved_edge_count": len(raw_edges),
+            "diagnostic_count": len(raw_diagnostics),
+            "semantic_conflict_groups": raw_materialization.get(
+                "semantic_conflict_groups"
+            ),
+        }
+        if type(published_summary) is not dict or published_summary != expected_summary:
+            raise DatasetIntegrityError(
+                "dataset relationship projection summary does not match materialization"
+            )
+        return tuple(detached["relationship_projection_edges"]), deepcopy(
+            dict(detached["relationship_projection_materialization"])
+        )
 
     @classmethod
     def _consistency_index(
@@ -3194,6 +3555,7 @@ class ControlPlane:
             source_records[identifier] = record
 
         resources: set[str] = set()
+        resources_by_id: dict[str, Mapping[str, Any]] = {}
         for ordinal, record in enumerate(
             cls._mapping_list(
                 dataset,
@@ -3209,6 +3571,7 @@ class ControlPlane:
                     f"dataset contains duplicate resource identifier {identifier!r}"
                 )
             resources.add(identifier)
+            resources_by_id[identifier] = record
 
         for field, actual in (
             ("event_count", len(events)),
@@ -3240,6 +3603,17 @@ class ControlPlane:
             execution_plan=execution_plan,
             construction_checkpoint=construction_checkpoint,
         )
+        projected_relationships, _relationship_projection_materialization = (
+            cls._relationship_projection_index(
+                dataset,
+                ingestion,
+                execution_plan=execution_plan,
+                resources_by_id=resources_by_id,
+                construction_checkpoint=construction_checkpoint,
+            )
+        )
+        for relationship in projected_relationships:
+            relationships.add(relationship_subject_id(relationship))
         if construction_checkpoint is not None:
             construction_checkpoint()
         return _DatasetIndex(

@@ -56,6 +56,7 @@ from router_dump_analyzer.plugin_schema_identity import plugin_schema_digest
 from router_dump_analyzer.topology_federation import (
     TopologyFederationCoordinator,
 )
+from router_dump_analyzer.value_core import parse_canonical_decimal_integer
 
 from .assembly_store import DemoAssemblyStore
 
@@ -82,24 +83,12 @@ def _exact_coordinate(value: Any, label: str) -> str:
 def _optional_temporal_ns(value: Any, label: str) -> int | None:
     if value is None:
         return None
-    if type(value) is int:
-        parsed = value
-    elif type(value) is str:
-        digits = value[1:] if value.startswith("-") else value
-        if (
-            not digits
-            or not digits.isascii()
-            or not digits.isdecimal()
-            or (len(digits) > 1 and digits.startswith("0"))
-            or value == "-0"
-        ):
-            raise ValueError(f"{label} must be a canonical decimal integer")
-        parsed = int(value)
-    else:
-        raise ValueError(f"{label} must be an exact integer or decimal string")
-    if parsed < -(1 << 63) or parsed > (1 << 63) - 1:
-        raise ValueError(f"{label} exceeds the signed 64-bit range")
-    return parsed
+    return parse_canonical_decimal_integer(
+        value,
+        label,
+        minimum=-(1 << 63),
+        maximum=(1 << 63) - 1,
+    )
 
 
 def _resource(node_id: str, raw_resource_id: str) -> ResourceKey:

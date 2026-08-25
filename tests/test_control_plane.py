@@ -49,6 +49,7 @@ from router_dump_analyzer.ingestion_pipeline import (
     _windows_path_units,
 )
 from router_dump_analyzer.plugin_api import (
+    ConditionClass,
     CorrelationWindow,
     DomainEvent,
     Evidence,
@@ -56,9 +57,14 @@ from router_dump_analyzer.plugin_api import (
     InputSpec,
     Outcome,
     PluginCapability,
+    PluginSchema,
+    PropertyPatch,
     Provenance,
     Quality,
+    RelationshipDeclaration,
+    RelationshipTypeDescriptor,
     ResourceKey,
+    SnapshotObservation,
     SourceRecordEmission,
     SourceRecordRef,
     derive_event_uid,
@@ -203,6 +209,79 @@ class _RoutableEventPlugin(_EventPlugin):
         return ()
 
 
+class _RelationshipProjectionPlugin(ParseOnlyPlugin):
+    manifest = replace(
+        ParseOnlyPlugin.manifest,
+        plugin_id="tests.control-plane-relationship-projection",
+        capabilities=frozenset(
+            {
+                PluginCapability.STATUS_PARSE,
+                PluginCapability.RELATIONSHIP_PROJECTION,
+            }
+        ),
+    )
+
+    def describe(self) -> PluginSchema:
+        schema = super().describe()
+        return replace(
+            schema,
+            relationship_types=(
+                RelationshipTypeDescriptor(
+                    relation_type="paired-interface",
+                    label="Paired interface",
+                    directed=False,
+                    structural=True,
+                ),
+            ),
+        )
+
+    def parse_status(self, reader: Any, spec: Any):
+        for output in super().parse_status(reader, spec):
+            yield output
+            if type(output) is not SnapshotObservation:
+                continue
+            peer_resource = replace(
+                output.resource,
+                parts=(("ifindex", int(output.resource.parts[0][1]) + 1),),
+            )
+            yield replace(
+                output,
+                resource=peer_resource,
+                state=PropertyPatch(
+                    set_values={
+                        **output.state.set_values,
+                        "name": f"{output.state.set_values['name']}-peer",
+                    },
+                    complete=True,
+                ),
+                evidence=replace(
+                    output.evidence,
+                    locator=f"{output.evidence.locator}:peer",
+                ),
+                condition_class=ConditionClass.HEALTHY,
+            )
+
+    def project_relationships(self, world: Any):
+        states = tuple(world.iter_states())
+        if len(states) != 2:
+            return ()
+        ordered = sorted(states, key=lambda item: item.resource.parts)
+        return (
+            RelationshipDeclaration(
+                source=ordered[0].resource,
+                target=ordered[1].resource,
+                relation_type="paired-interface",
+                attributes=PropertyPatch(
+                    set_values={"method": "snapshot-key-adjacency"},
+                    complete=True,
+                ),
+                evidence=(ordered[0].evidence[0], ordered[1].evidence[0]),
+                provenance=Provenance.CORRELATED,
+                quality=Quality.EXACT,
+            ),
+        )
+
+
 class ControlPlaneTests(unittest.TestCase):
     @staticmethod
     def _materialized_consistency_dataset(
@@ -243,6 +322,11 @@ class ControlPlaneTests(unittest.TestCase):
         )
         plan_digest = plan.plan_digest
         value["_ingestion"]["plugin_execution_plan_digest"] = plan_digest
+        projection_materialization = value.get(
+            "relationship_projection_materialization"
+        )
+        if isinstance(projection_materialization, dict):
+            projection_materialization["plan_digest"] = plan_digest
         basis = {
             "kind": "observed_capture_vector",
             "requested_time_ns": None,
@@ -661,10 +745,11 @@ class ControlPlaneTests(unittest.TestCase):
         root: Path,
         *,
         retention_policy: RetentionPolicy | None = None,
+        plugin: Any | None = None,
     ) -> ControlPlane:
         control = ControlPlane(
             root,
-            registry=PluginRegistry((_EventPlugin(),)),
+            registry=PluginRegistry((plugin or _EventPlugin(),)),
             pipeline_limits=self._pipeline_limits(),
             retention_policy=retention_policy,
             limits=ControlPlaneLimits(
@@ -829,6 +914,82 @@ class ControlPlaneTests(unittest.TestCase):
             revision.revision_id,
         )
         self.assertEqual(len(reloaded["events"]), 2)
+
+    def test_revision_relationship_projection_is_verified_and_revision_indexed(
+        self,
+    ) -> None:
+        control = self._control_plane(
+            self._root(),
+            plugin=_RelationshipProjectionPlugin(),
+        )
+        completed = self._ingest(control)
+        scope = control.scope("tenant-a", "project-a", "workspace-a")
+
+        loaded = control._load_revision(scope, completed.revision_id)
+        dataset = loaded.dataset
+        self.assertEqual(
+            dataset["relationship_projection_materialization"]["status"],
+            "complete",
+        )
+        self.assertEqual(len(dataset["relationship_declarations"]), 1)
+        self.assertEqual(len(dataset["relationship_projection_edges"]), 1)
+        edge = dataset["relationship_projection_edges"][0]
+        self.assertIn(edge["relationship_id"], loaded.index.relationships)
+        self.assertNotIn(edge, dataset["relationships"])
+        self.assertNotIn(edge, dataset["relationship_intervals"])
+
+        wrong_key = json.loads(json.dumps(dataset))
+        wrong_key["relationship_projection_edges"][0]["source"][
+            "typed_resource_key"
+        ]["node"] = "forged-node"
+        with self.assertRaisesRegex(
+            DatasetIntegrityError,
+            "endpoint does not match its base resource",
+        ):
+            control._index_dataset(loaded.descriptor, wrong_key)
+
+        wrong_digest = json.loads(json.dumps(dataset))
+        wrong_digest["relationship_projection_edges"][0]["quality"] = "ambiguous"
+        with self.assertRaisesRegex(
+            DatasetIntegrityError,
+            "materialization is not canonical",
+        ):
+            control._index_dataset(loaded.descriptor, wrong_digest)
+
+        malformed_artifact_id = json.loads(json.dumps(dataset))
+        malformed_artifact_id["relationship_declarations"][0]["contributions"][
+            0
+        ]["evidence"][0]["artifact_id"] = []
+        with self.assertRaisesRegex(DatasetIntegrityError, "not canonical"):
+            control._index_dataset(loaded.descriptor, malformed_artifact_id)
+
+        wrong_provider_revision = json.loads(json.dumps(dataset))
+        wrong_provider_revision["relationship_projection_materialization"][
+            "providers"
+        ][0]["catalog_revision_id"] = "different-revision"
+        with self.assertRaisesRegex(
+            DatasetIntegrityError,
+            "provider is not bound",
+        ):
+            control._index_dataset(loaded.descriptor, wrong_provider_revision)
+
+        partial = json.loads(json.dumps(dataset))
+        partial.pop("relationship_declarations")
+        with self.assertRaisesRegex(
+            DatasetIntegrityError,
+            "partial relationship projection",
+        ):
+            control._index_dataset(loaded.descriptor, partial)
+
+        wrong_summary = json.loads(json.dumps(dataset))
+        wrong_summary["summary"]["relationship_projection"][
+            "resolved_edge_count"
+        ] = 0
+        with self.assertRaisesRegex(
+            DatasetIntegrityError,
+            "summary does not match",
+        ):
+            control._index_dataset(loaded.descriptor, wrong_summary)
 
     def test_consistency_findings_page_is_indexed_paginated_and_detached(self) -> None:
         control = self._control_plane(self._root())
@@ -1409,6 +1570,9 @@ class ControlPlaneTests(unittest.TestCase):
         multi_provider_dataset["consistency_materialization"]["plan_digest"] = (
             multi_provider_plan.plan_digest
         )
+        multi_provider_dataset["relationship_projection_materialization"][
+            "plan_digest"
+        ] = multi_provider_plan.plan_digest
         control._index_dataset(
             replace(
                 revision,
@@ -1427,9 +1591,21 @@ class ControlPlaneTests(unittest.TestCase):
             "consistency_materialization_status",
             None,
         )
+        planless_dataset["_ingestion"].pop(
+            "relationship_projection_materialization_status",
+            None,
+        )
         planless_dataset["inventory"]["mode"] = "core-ingestion-v2"
         planless_dataset.pop("consistency_materialization")
         planless_dataset.pop("consistency_diagnostics")
+        for field in (
+            "relationship_declarations",
+            "relationship_projection_diagnostics",
+            "relationship_projection_edges",
+            "relationship_projection_materialization",
+        ):
+            planless_dataset.pop(field)
+        planless_dataset["summary"].pop("relationship_projection")
         planless_revision = replace(
             revision,
             execution_plan=None,

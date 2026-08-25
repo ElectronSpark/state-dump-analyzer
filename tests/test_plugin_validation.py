@@ -92,6 +92,10 @@ class MissingOverridePlugin(MinimalPlugin):
     manifest = manifest(PluginCapability.CTF_PARSE)
 
 
+class MissingRelationshipProjectionOverridePlugin(MinimalPlugin):
+    manifest = manifest(PluginCapability.RELATIONSHIP_PROJECTION)
+
+
 class LegacyDispatchPlugin(MinimalPlugin):
     def probe(self, inventory: DumpInventory) -> ProbeReport:
         if not inventory.artifacts:
@@ -503,6 +507,17 @@ class PluginValidationTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertTrue(
             any("requires an override of parse_ctf" in error for error in result.errors)
+        )
+
+        projection = validate_plugin(
+            MissingRelationshipProjectionOverridePlugin()
+        )
+        self.assertFalse(projection.ok)
+        self.assertTrue(
+            any(
+                "requires an override of project_relationships" in error
+                for error in projection.errors
+            )
         )
 
     def test_new_plugins_must_select_parser_kind(self) -> None:

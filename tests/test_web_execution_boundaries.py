@@ -7,7 +7,9 @@ import socket
 import threading
 import time
 import unittest
+from contextlib import nullcontext
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -327,7 +329,13 @@ class WebExecutionBoundaryTests(unittest.TestCase):
                         "current_runtime_session",
                         return_value=session,
                     ),
-                    patch.object(runtime_api, "_data_service", return_value=object()),
+                    patch.object(
+                        runtime_api,
+                        "_data_service",
+                        return_value=SimpleNamespace(
+                            _loading_operation=lambda *_args: nullcontext()
+                        ),
+                    ),
                 )
                 with patches[0], patches[1]:
                     result = asyncio.run(_asgi_get(application, path))

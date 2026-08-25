@@ -27,6 +27,7 @@ from .capability_executor import (
     PluginCapabilityLimits,
     PluginCapabilityOutputError,
     PluginCapabilityUnavailableError,
+    RelationshipProjectionExecutionResult,
     TopologyExecutionResult,
 )
 from .ingestion_pipeline import (
@@ -46,6 +47,7 @@ from .plugin_api import (
     ForwardingProjectionRequest,
     ForwardingStepRequest,
     PluginCapability,
+    PluginSchema,
     ReadOnlyWorld,
     TopologyProjectionRequest,
 )
@@ -70,6 +72,7 @@ _ROUTABLE_CAPABILITIES = frozenset(
         PluginCapability.EVENT_REDUCTION,
         PluginCapability.EVENT_REVERSION,
         PluginCapability.CORRELATION,
+        PluginCapability.RELATIONSHIP_PROJECTION,
         PluginCapability.CONSISTENCY_CHECK,
         PluginCapability.TOPOLOGY_PROJECTION,
         PluginCapability.FORWARDING_PROJECTION,
@@ -973,6 +976,37 @@ class PlanBoundCapabilityRoute:
             capability,
             self._pin,
             lambda executor: executor.correlate(reader, window),
+        )
+
+    def project_relationships(
+        self,
+        world: ReadOnlyWorld,
+    ) -> CapabilityInvocation[RelationshipProjectionExecutionResult]:
+        capability = PluginCapability.RELATIONSHIP_PROJECTION
+        self._require(capability)
+        return self._router._invoke(
+            capability,
+            self._pin,
+            lambda executor: executor.project_relationships(world),
+        )
+
+    def _project_relationships_for_revision(
+        self,
+        world: ReadOnlyWorld,
+        *,
+        declaration_schema: PluginSchema,
+    ) -> CapabilityInvocation[RelationshipProjectionExecutionResult]:
+        """Invoke using primary-schema authority owned by revision materialization."""
+
+        capability = PluginCapability.RELATIONSHIP_PROJECTION
+        self._require(capability)
+        return self._router._invoke(
+            capability,
+            self._pin,
+            lambda executor: executor._project_relationships_for_revision(
+                world,
+                declaration_schema=declaration_schema,
+            ),
         )
 
     def check_consistency(

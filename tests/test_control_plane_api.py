@@ -38,6 +38,8 @@ from router_dump_analyzer.ingestion_pipeline import (
     PluginExecutionMode,
     PluginRegistry,
     RetentionPolicy,
+    _ProcessTargetIdentityUnavailable,
+    _ProcessTargetKind,
 )
 from router_dump_analyzer.operational_logging import (
     MAX_OPERATIONAL_COUNTER,
@@ -2689,6 +2691,7 @@ class ControlPlaneApiTests(unittest.TestCase):
             "TimeoutError": 504,
             "TypeError": 500,
             "ValueError": 500,
+            "_ProcessTargetIdentityUnavailable": 422,
         }
         actual_status_by_class_name = {
             exception_type.__name__: policy.status_code
@@ -2738,7 +2741,12 @@ class ControlPlaneApiTests(unittest.TestCase):
 
         for exception_type, declared_policy in _API_ERROR_POLICY_BY_CLASS.items():
             with self.subTest(exception_type=exception_type.__name__):
-                error = exception_type(PRIVATE_API_FAILURE_MARKER)
+                if exception_type is _ProcessTargetIdentityUnavailable:
+                    error = _ProcessTargetIdentityUnavailable(
+                        _ProcessTargetKind.PLUGIN
+                    )
+                else:
+                    error = exception_type(PRIVATE_API_FAILURE_MARKER)
                 resolved_policy = _api_error_policy(error)
                 self.assertEqual(resolved_policy, declared_policy)
                 with self.assertRaises(HTTPException) as raised:

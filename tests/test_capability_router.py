@@ -34,9 +34,13 @@ from router_dump_analyzer.plugin_api import (
     PluginCapability,
     PluginManifest,
     PluginSchema,
+    Provenance,
     Quality,
+    ReadOnlyWorld,
     ReconstructionSupport,
     ResourceKindDescriptor,
+    WorldBasis,
+    WorldBasisKind,
 )
 from router_dump_analyzer.plugin_execution_plan import (
     PLUGIN_EXECUTION_PLAN_VERSION,
@@ -103,6 +107,7 @@ class _RoutingPlugin(AnalyzerPluginBase):
         )
         self.schema = schema or _schema()
         self.correlate_calls = 0
+        self.project_relationships_calls = 0
         self.mutate_schema_during_correlation = False
         self.analyze_calls = 0
 
@@ -114,6 +119,11 @@ class _RoutingPlugin(AnalyzerPluginBase):
         self.correlate_calls += 1
         if self.mutate_schema_during_correlation:
             self.schema = _schema("opaque.changed")
+        return ()
+
+    def project_relationships(self, world: ReadOnlyWorld):
+        del world
+        self.project_relationships_calls += 1
         return ()
 
     def analyze_evidence(self, request: EvidenceAnalysisRequest):
@@ -213,7 +223,74 @@ def _router(
     )
 
 
+class _World:
+    @property
+    def basis(self) -> WorldBasis:
+        return WorldBasis(
+            kind=WorldBasisKind.OBSERVED_CAPTURE_VECTOR,
+            requested_time_ns=None,
+            resolved_at_min_ns=None,
+            resolved_at_max_ns=None,
+            capture_ranges=(),
+            provenance=Provenance.RECONSTRUCTED,
+            quality=Quality.EXACT,
+        )
+
+    @property
+    def perspective_ref(self) -> None:
+        return None
+
+    def state_of(self, resource: Any) -> None:
+        del resource
+        return None
+
+    def iter_states(self, **_kwargs: Any) -> tuple[()]:
+        return ()
+
+    def related(self, resource: Any, **_kwargs: Any) -> tuple[()]:
+        del resource
+        return ()
+
+    def iter_relationships(self, **_kwargs: Any) -> tuple[()]:
+        return ()
+
+
 class CapabilityRouterTests(unittest.TestCase):
+    def test_relationship_projection_routes_to_the_selected_plan_provider(
+        self,
+    ) -> None:
+        capabilities = frozenset({PluginCapability.RELATIONSHIP_PROJECTION})
+        first = _RoutingPlugin("test.project.first", capabilities=capabilities)
+        second = _RoutingPlugin("test.project.second", capabilities=capabilities)
+        first_registered = _registered(first, "project.first")
+        second_registered = _registered(second, "project.second")
+        router = _router(
+            CapabilityProviderRegistry((first_registered, second_registered)),
+            _plan(
+                "node-a",
+                "basis-a",
+                _pin(first_registered, first.schema, "primary_parser"),
+                _pin(
+                    second_registered,
+                    second.schema,
+                    "revision_relationship_projection",
+                ),
+            ),
+        )
+        route = router.resolve(
+            CapabilityRouteSelector(
+                PluginCapability.RELATIONSHIP_PROJECTION,
+                role="revision_relationship_projection",
+            )
+        )
+
+        invocation = route.project_relationships(_World())  # type: ignore[arg-type]
+
+        self.assertEqual(invocation.provider.pin.instance_id, "project.second")
+        self.assertEqual(invocation.result.declarations, ())
+        self.assertEqual(first.project_relationships_calls, 0)
+        self.assertEqual(second.project_relationships_calls, 1)
+
     def test_evidence_analysis_routes_to_one_exact_plan_instance(self) -> None:
         capabilities = frozenset({PluginCapability.EVIDENCE_ANALYSIS})
         first = _RoutingPlugin("test.analysis", capabilities=capabilities)
