@@ -83,6 +83,20 @@ def _semantic_projection(value: object) -> object:
     return value
 
 
+def _semantic_transport_projection(value: object) -> object:
+    """Remove plan identity and canonically compare top-level record sets."""
+
+    projection = _semantic_projection(value)
+    if type(projection) is list:
+        return tuple(
+            sorted(
+                json.dumps(item, sort_keys=True, separators=(",", ":"))
+                for item in projection
+            )
+        )
+    return projection
+
+
 class RelationshipProjectionIngestionTests(unittest.TestCase):
     def _ingest(self, plugin: ParseOnlyPlugin):
         coordinator = IngestionCoordinator()
@@ -230,21 +244,10 @@ class RelationshipProjectionIngestionTests(unittest.TestCase):
             "summary",
         ):
             with self.subTest(field=field):
-                process_semantics = _semantic_projection(process[field])
-                inline_semantics = _semantic_projection(trusted_inline[field])
-                if type(process_semantics) is list:
-                    self.assertEqual(
-                        sorted(
-                            json.dumps(item, sort_keys=True, separators=(",", ":"))
-                            for item in process_semantics
-                        ),
-                        sorted(
-                            json.dumps(item, sort_keys=True, separators=(",", ":"))
-                            for item in inline_semantics  # type: ignore[union-attr]
-                        ),
-                    )
-                else:
-                    self.assertEqual(process_semantics, inline_semantics)
+                self.assertEqual(
+                    _semantic_transport_projection(process[field]),
+                    _semantic_transport_projection(trusted_inline[field]),
+                )
         self.assertEqual(
             process["relationship_projection_materialization"]["status"],  # type: ignore[index]
             "complete",
@@ -482,6 +485,15 @@ class RelationshipProjectionIngestionTests(unittest.TestCase):
             process_dataset["consistency_materialization"]["status"],
             "complete",
         )
+        for transport, dataset in (
+            ("process", process_dataset),
+            ("trusted-inline", inline_dataset),
+        ):
+            with self.subTest(canonical_finding_order=transport):
+                finding_ids = tuple(
+                    item["finding_id"] for item in dataset["findings"]
+                )
+                self.assertEqual(finding_ids, tuple(sorted(finding_ids)))
         for field in (
             "relationship_declarations",
             "relationship_projection_edges",
@@ -491,8 +503,8 @@ class RelationshipProjectionIngestionTests(unittest.TestCase):
         ):
             with self.subTest(transport_parity_field=field):
                 self.assertEqual(
-                    _semantic_projection(process_dataset[field]),
-                    _semantic_projection(inline_dataset[field]),
+                    _semantic_transport_projection(process_dataset[field]),
+                    _semantic_transport_projection(inline_dataset[field]),
                 )
 
 
