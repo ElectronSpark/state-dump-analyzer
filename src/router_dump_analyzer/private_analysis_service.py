@@ -14,6 +14,7 @@ from enum import StrEnum
 from typing import Final, cast
 
 from .canonical import validate_prefixed_lowercase_sha256
+from .value_core import require_bounded_integer as _bounded_integer
 from .private_analysis import (
     MAX_PRIVATE_ANALYSIS_QUERY_BYTES,
     MAX_PRIVATE_ANALYSIS_QUERY_CHARACTERS,
@@ -163,18 +164,6 @@ def _detached_limits(value: object) -> PrivateAnalysisLimits:
     if type(value) is not PrivateAnalysisLimits:
         raise TypeError("limits must be PrivateAnalysisLimits")
     return replace(cast(PrivateAnalysisLimits, value))
-
-
-def _bounded_integer(
-    value: object,
-    label: str,
-    *,
-    minimum: int,
-    maximum: int,
-) -> int:
-    if type(value) is not int or not minimum <= value <= maximum:
-        raise ValueError(f"{label} must be between {minimum} and {maximum}")
-    return value
 
 
 def _bare_digest(value: object, label: str) -> str:
@@ -604,8 +593,7 @@ def _outcome_citation_digests(
     if result is None:
         return ()
     digests = {
-        citation.evidence_reference_digest
-        for citation in result.summary.citations
+        citation.evidence_reference_digest for citation in result.summary.citations
     }
     digests.update(
         citation.evidence_reference_digest

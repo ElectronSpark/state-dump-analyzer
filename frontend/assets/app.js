@@ -25,6 +25,8 @@ import {
   routePayloadForwardingPresentation,
   stateChipClassName,
   statusClassPresentation,
+  resourceExistenceLabel,
+  relationshipPresencePresentation,
   statusSegmentClassName,
   virtualScrollTopForIndex,
   virtualScrollWindow,
@@ -2739,6 +2741,8 @@ function visibleTimelineLanes() {
 }
 
 function normalizedRelationshipSpan(raw) {
+  const presence = relationshipPresencePresentation(raw || {});
+  if (presence.present === false) return null;
   const source = canonicalResourceId(raw?.source) || canonicalResourceId(raw?.source_resource_id);
   const target = canonicalResourceId(raw?.target) || canonicalResourceId(raw?.target_resource_id);
   if (!source || !target) return null;
@@ -2759,7 +2763,7 @@ function normalizedRelationshipSpan(raw) {
     relationshipKnown: presentation.known,
     directed: presentation.directed,
     structural: presentation.structural,
-    quality: String(raw?.quality || "unknown"),
+    ...presence,
     temporalNote: raw?.temporal_note || null,
     startNs: startRaw === null || startRaw === undefined ? state.viewStartNs : toNs(startRaw, state.viewStartNs),
     endNs: endRaw === null || endRaw === undefined ? state.viewEndNs : toNs(endRaw, state.viewEndNs),
@@ -6009,7 +6013,7 @@ function renderResourceTables() {
     const tags = presentationTags(item);
     const compact = tags.has("compact") || tags.has("connector");
     const current = item.resource_id === state.selectedResourceId;
-    return `<tr data-resource-id="${escapeHtml(item.resource_id)}" class="${current ? "selected " : ""}${compact ? "resource-connector" : ""}" tabindex="0"><td><strong>${escapeHtml(item.label || resourceLabel(item, item.resource_id))}</strong><small>${escapeHtml(item.resource_id)}${compact ? " / connector" : ""}</small></td><td>${escapeHtml(humanLayer(item.layer))}</td><td>${item.exists === false ? "no" : "yes"}</td><td><span class="${stateChipClassName(item)}">${escapeHtml(item.status || "unknown")}</span></td><td class="resource-timeline-toggle-cell">${laneVisibilityCheckbox(item.resource_id, item.label || resourceLabel(item, item.resource_id))}</td>${columns.map((column) => `<td>${formatResourceTableCell(item, column)}</td>`).join("")}</tr>`;
+    return `<tr data-resource-id="${escapeHtml(item.resource_id)}" class="${current ? "selected " : ""}${compact ? "resource-connector" : ""}" tabindex="0"><td><strong>${escapeHtml(item.label || resourceLabel(item, item.resource_id))}</strong><small>${escapeHtml(item.resource_id)}${compact ? " / connector" : ""}</small></td><td>${escapeHtml(humanLayer(item.layer))}</td><td>${resourceExistenceLabel(item.exists, { brief: true })}</td><td><span class="${stateChipClassName(item)}">${escapeHtml(item.status || "unknown")}</span></td><td class="resource-timeline-toggle-cell">${laneVisibilityCheckbox(item.resource_id, item.label || resourceLabel(item, item.resource_id))}</td>${columns.map((column) => `<td>${formatResourceTableCell(item, column)}</td>`).join("")}</tr>`;
   }).join("")}</tbody></table>${resourcePaginationMarkup(state.resourceQuery)}`;
   container.querySelectorAll("tr[data-resource-id]").forEach((row) => {
     const choose = () => selectResource(row.dataset.resourceId);
@@ -6676,7 +6680,8 @@ function localGraphAt(time) {
   const relationships = [...carriedRelationships, ...intervalRelations].filter((item) => {
     const source = item.source || item.source_resource_id;
     const target = item.target || item.target_resource_id;
-    return activeResourceIds.has(source) && activeResourceIds.has(target);
+    return relationshipPresencePresentation(item).present !== false
+      && activeResourceIds.has(source) && activeResourceIds.has(target);
   });
   const ids = new Set(relationships.flatMap((item) => [
     canonicalResourceId(item.source) || canonicalResourceId(item.source_resource_id),
@@ -6701,7 +6706,7 @@ function localGraphAt(time) {
         relationship_known: presentation.known,
         directed: presentation.directed,
         structural: presentation.structural,
-        quality: item.quality || "unknown",
+        ...relationshipPresencePresentation(item),
       };
     }).filter((edge) => edge.source && edge.target),
     incomplete_node_count: nodes.filter((node) => !node.complete_record).length,
@@ -6863,6 +6868,8 @@ function normalizedGraph() {
     };
   }).filter(Boolean);
   const edges = (graph.edges || graph.relationships || []).map((edge, index) => {
+    const presence = relationshipPresencePresentation(edge);
+    if (presence.present === false) return null;
     const source = canonicalResourceId(edge.source) || canonicalResourceId(edge.source_resource_id);
     const target = canonicalResourceId(edge.target) || canonicalResourceId(edge.target_resource_id);
     if (!source || !target) return null;
@@ -6870,6 +6877,7 @@ function normalizedGraph() {
     const presentation = relationshipPresentation(type);
     return {
       ...edge,
+      ...presence,
       id: typeof (edge.id ?? edge.relationship_id) === "string" ? (edge.id ?? edge.relationship_id) : `edge-${index}`,
       source,
       target,
@@ -7624,9 +7632,16 @@ function selectResource(resourceId) {
   resourceId = canonicalResourceId(resourceId);
   if (!resourceId) return;
   const focusChanged = state.selectedResourceId !== resourceId;
+  const previousKind = state.selectedResourceKind;
   state.selectedResourceId = resourceId;
   const record = state.resourceQuery?.items?.find((item) => item.resource_id === resourceId) || state.resourceById.get(resourceId);
   if (record) state.selectedResourceKind = record.kind || resourceKind(record, resourceId);
+  if (!state.selectedResourceViewId && previousKind !== state.selectedResourceKind) {
+    state.resourceOffset = 0;
+    // The generic query is kind-scoped. Invalidate/reissue it through the
+    // existing abort/latest-response controller; bundle selections stay put.
+    requestResources();
+  }
   if (focusChanged) {
     state.activeCorrelationEdges = [];
     state.correlatedResourceIds.clear();
@@ -8605,7 +8620,7 @@ function renderTopologyResources() {
     const id = topologyReferenceId(reference);
     const displayId = topologyReferenceLabel(reference);
     const statusValue = item.status?.value ?? item.status ?? item.operational_status ?? item.state?.status ?? "unknown";
-    const exists = item.exists === true ? "exists" : item.exists === false ? "absent" : "existence unknown";
+    const exists = resourceExistenceLabel(item.exists);
     const properties = item.properties ?? item.status?.properties ?? item.state;
     return `<tr>
       <td>${id ? `<button class="topology-resource-button" type="button" data-topology-resource="${escapeHtml(id)}"><strong>${escapeHtml(item.label || item.display_name || displayId)}</strong><code title="${escapeHtml(id)}">${escapeHtml(id)}</code></button>` : `<span class="topology-resource-button"><strong>${escapeHtml(item.label || item.display_name || "Unidentified resource")}</strong><code>${escapeHtml(displayId)}</code></span>`}</td>

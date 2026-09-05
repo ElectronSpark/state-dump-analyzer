@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from base64 import b64decode
-from collections.abc import Callable, Collection, Iterable, Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import Enum, StrEnum
 from hashlib import sha256
@@ -36,6 +36,10 @@ from .consistency_materialization import (
     ConsistencyMaterializationLimits,
     validate_materialized_consistency_basis,
 )
+from .materialization_contract import (
+    RELATIONSHIP_PROJECTION_MATERIALIZATION_SCHEMA_VERSION,
+)
+from .materialization_support import materialization_provider_projection
 from .plugin_api import (
     MAX_DIAGNOSTIC_CODE_LENGTH,
     MAX_DIAGNOSTIC_MESSAGE_LENGTH,
@@ -53,7 +57,6 @@ from .plugin_api import (
     Provenance,
     Quality,
     ReadOnlyWorld,
-    RelationDirection,
     RelationshipDeclaration,
     RelationshipView,
     ResourceKey,
@@ -73,10 +76,8 @@ from .plugin_schema_identity import plugin_schema_digest
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .revision_world import _canonical_resource_identity
 from .value_core import parse_canonical_decimal_integer
+from .world_read_budget import AggregateReadWorld
 
-RELATIONSHIP_PROJECTION_MATERIALIZATION_SCHEMA_VERSION: Final[str] = (
-    "router_dump_analyzer.relationship_projection_materialization.v1"
-)
 _JSON_SAFE_INTEGER_MAX: Final[int] = (1 << 53) - 1
 _PROPERTY_VALUE_MAX_DEPTH: Final[int] = 16
 _PROPERTY_VALUE_MAX_UNITS: Final[int] = 4_096
@@ -566,22 +567,9 @@ def _contract_projection(
 
 
 def _provider_projection(provider: CapabilityProviderRef) -> dict[str, Any]:
-    pin = provider.pin
     return {
         "catalog_revision_id": provider.catalog_revision_id,
-        "member_id": provider.member_id,
-        "node_id": provider.node_id,
-        "basis_revision_id": provider.basis_revision_id,
-        "plan_digest": provider.plan_digest,
-        "instance_id": pin.instance_id,
-        "plugin_id": pin.plugin_id,
-        "plugin_version": pin.plugin_version,
-        "registered_execution_identity": pin.registered_execution_identity,
-        "configuration_digest": pin.configuration_digest,
-        "schema_digest": pin.schema_digest,
-        "package_hash": pin.artifact.package_hash,
-        "capability": provider.capability.value,
-        "roles": list(pin.roles),
+        **materialization_provider_projection(provider),
     }
 
 
@@ -896,7 +884,7 @@ def _perspective_projection(
     }
 
 
-class _AggregateWorld:
+class _AggregateWorld(AggregateReadWorld):
     """One shared base world with a revision-wide read budget."""
 
     def __init__(
@@ -906,107 +894,19 @@ class _AggregateWorld:
         *,
         perspective_ref: StatusPerspectiveRef | None,
     ) -> None:
-        self._world = world
-        self._basis = world.basis
-        self._perspective_ref = perspective_ref
-        self._remaining = maximum_reads
-        self._maximum = maximum_reads
-
-    @property
-    def basis(self) -> WorldBasis:
-        return self._basis
-
-    @property
-    def perspective_ref(self) -> StatusPerspectiveRef | None:
-        return self._perspective_ref
-
-    @property
-    def reads_used(self) -> int:
-        return self._maximum - self._remaining
-
-    def _charge(self) -> None:
-        if self._remaining <= 0:
-            raise RelationshipProjectionMaterializationError(
-                "relationship projectors exceeded the aggregate world-read limit"
-            )
-        self._remaining -= 1
-
-    def state_of(self, resource: ResourceKey) -> ResourceStateView | None:
-        self._charge()
-        return self._world.state_of(resource)
-
-    def _bounded_iter[Item](
-        self,
-        producer: Callable[[int], Iterable[Item]],
-        requested: int | None,
-    ) -> Iterable[Item]:
-        if requested is not None and (type(requested) is not int or requested < 0):
-            raise ValueError("world read limit must be a non-negative integer")
-        allowed = self._remaining if requested is None else min(requested, self._remaining)
-        # An explicit request equal to the remaining budget is already bounded
-        # by the caller and needs no sentinel read. Only an unbounded request or
-        # one larger than the aggregate remainder needs the +1 overflow probe.
-        aggregate_limited = requested is None or requested > self._remaining
-        producer_limit = allowed + 1 if aggregate_limited and requested != 0 else allowed
-        iterator = iter(producer(producer_limit))
-        count = 0
-        try:
-            for item in iterator:
-                if count >= allowed:
-                    raise RelationshipProjectionMaterializationError(
-                        "relationship projectors exceeded the aggregate world-read limit"
-                    )
-                self._charge()
-                count += 1
-                yield item
-        finally:
-            close = getattr(iterator, "close", None)
-            if callable(close):
-                close()
-
-    def iter_states(
-        self,
-        layers: frozenset[str] | None = None,
-        kinds: frozenset[str] | None = None,
-        limit: int | None = None,
-    ) -> Iterable[ResourceStateView]:
-        return self._bounded_iter(
-            lambda bounded: self._world.iter_states(
-                layers=layers, kinds=kinds, limit=bounded
-            ),
-            limit,
+        super().__init__(
+            world,
+            basis=world.basis,
+            perspective_ref=perspective_ref,
+            maximum_reads=maximum_reads,
+            error=self._read_limit_error,
         )
 
-    def related(
-        self,
-        resource: ResourceKey,
-        direction: RelationDirection = RelationDirection.OUTGOING,
-        relation_types: frozenset[str] | None = None,
-        limit: int | None = None,
-    ) -> Iterable[RelationshipView]:
-        return self._bounded_iter(
-            lambda bounded: self._world.related(
-                resource,
-                direction=direction,
-                relation_types=relation_types,
-                limit=bounded,
-            ),
-            limit,
+    @staticmethod
+    def _read_limit_error(_aggregate_limited: bool) -> Exception:
+        return RelationshipProjectionMaterializationError(
+            "relationship projectors exceeded the aggregate world-read limit"
         )
-
-    def iter_relationships(
-        self,
-        relation_types: frozenset[str] | None = None,
-        layers: frozenset[str] | None = None,
-        limit: int | None = None,
-    ) -> Iterable[RelationshipView]:
-        return self._bounded_iter(
-            lambda bounded: self._world.iter_relationships(
-                relation_types=relation_types, layers=layers, limit=bounded
-            ),
-            limit,
-        )
-
 
 def _selected_pins(plan: PluginExecutionPlan) -> tuple[PluginExecutionPin, ...]:
     primary = primary_parser_execution_pin(plan)

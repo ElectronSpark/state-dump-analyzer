@@ -8,6 +8,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
+from unittest.mock import patch
 
 from router_dump_analyzer.canonical import (
     canonical_json,
@@ -113,6 +114,108 @@ class SqliteSessionStoreTests(unittest.TestCase):
             holder.join(1)
         self.assertLess(time.monotonic() - started, 0.5)
         self.assertFalse(holder.is_alive())
+
+    def test_deadline_after_begin_recovers_transaction_and_busy_timeout(self) -> None:
+        self._workspace()
+        with (
+            patch(
+                "router_dump_analyzer.session_store.time.monotonic_ns",
+                side_effect=[0, 0, 0, 2],
+            ),
+            self.assertRaises(SessionStoreDeadlineExceeded),
+        ):
+            self.store.attach_fixture(
+                "tenant-a",
+                "workspace-a",
+                "deadline-fixture",
+                label="Deadline fixture",
+                content_digest=_digest("deadline-fixture"),
+                deadline_ns=1,
+            )
+        self.assertFalse(self.store._connection.in_transaction)
+        self.assertEqual(
+            self.store._connection.execute("PRAGMA busy_timeout").fetchone()[0],
+            30_000,
+        )
+        created = self.store.create_project(
+            "tenant-a", "After deadline", project_id="after-deadline"
+        )
+        self.assertEqual(created.project_id, "after-deadline")
+
+    def test_multi_statement_session_read_uses_one_wal_snapshot(self) -> None:
+        self._workspace()
+        self._fixture_revision(
+            fixture="fixture-a", revision="revision-a", node="node-a"
+        )
+        self.store.create_session(
+            "tenant-a", "workspace-a", "Session A", session_id="session-a"
+        )
+        prior = self.store.put_member(
+            "tenant-a",
+            "session-a",
+            "member-a",
+            fixture_id="fixture-a",
+            revision_id="revision-a",
+            expected_version=0,
+        )
+        with SqliteSessionStore(self.database) as writer:
+            committed = []
+
+            def delete_before_members_read(statement: str) -> None:
+                if "FROM session_members" in statement and not committed:
+                    committed.append(
+                        writer.delete_member(
+                            "tenant-a", "session-a", "member-a", expected_version=1
+                        )
+                    )
+
+            self.store._connection.set_trace_callback(delete_before_members_read)
+            try:
+                observed = self.store.get_session("tenant-a", "session-a")
+            finally:
+                self.store._connection.set_trace_callback(None)
+        self.assertEqual(len(committed), 1)
+        self.assertEqual(observed, prior)
+        self.assertEqual(
+            self.store.get_session("tenant-a", "session-a"), committed[0]
+        )
+
+    def test_multi_statement_policy_read_uses_one_wal_snapshot(self) -> None:
+        self._workspace()
+        prior = self.store.get_workspace_disclosure_policy(
+            "tenant-a", "workspace-a"
+        )
+        with SqliteSessionStore(self.database) as writer:
+            committed = []
+
+            def update_before_policy_head_read(statement: str) -> None:
+                if (
+                    "FROM workspace_disclosure_policy_heads" in statement
+                    and not committed
+                ):
+                    committed.append(
+                        writer.set_workspace_disclosure_policy(
+                            "tenant-a",
+                            "workspace-a",
+                            self._full_fidelity_policy(),
+                            actor_id="operator",
+                            expected_version=0,
+                        )
+                    )
+
+            self.store._connection.set_trace_callback(update_before_policy_head_read)
+            try:
+                observed = self.store.get_workspace_disclosure_policy(
+                    "tenant-a", "workspace-a"
+                )
+            finally:
+                self.store._connection.set_trace_callback(None)
+        self.assertEqual(len(committed), 1)
+        self.assertEqual(observed, prior)
+        self.assertEqual(
+            self.store.get_workspace_disclosure_policy("tenant-a", "workspace-a"),
+            committed[0],
+        )
 
     def tearDown(self) -> None:
         self.store.close()

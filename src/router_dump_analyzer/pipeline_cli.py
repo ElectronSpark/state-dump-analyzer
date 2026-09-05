@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from .canonical import canonical_json
+from .canonical import encode_ascii_json_document as _encode_document
 from .cli import _add_repeatable_plugin_allowlist_arguments
 from .control_plane import ControlPlane
 from .ingestion_pipeline import (
@@ -31,6 +32,7 @@ from .ingestion_pipeline import (
     PluginRegistry,
 )
 from .plugin_composition_deployment import (
+    _control_plane_composition_options,
     PluginCompositionDeploymentContext,
     load_plugin_composition_deployment,
 )
@@ -302,9 +304,7 @@ def _idempotency_key(
         "content_type": effective_content_type,
         "node_hint": configuration.node_hint,
         "metadata": configuration.metadata,
-        "plugin_execution_environment_fingerprint": (
-            execution_environment_fingerprint
-        ),
+        "plugin_execution_environment_fingerprint": (execution_environment_fingerprint),
     }
     return (
         "headless:"
@@ -327,28 +327,12 @@ def _result_record(
     return result
 
 
-def _encode_document(document: dict[str, Any], *, pretty: bool) -> str:
-    # Keep stdout strictly ASCII so the command remains scriptable on Windows
-    # consoles and redirected streams configured with legacy code pages.
-    # JSON escapes preserve the exact Unicode value for every consumer.
-    return json.dumps(
-        document,
-        ensure_ascii=True,
-        indent=2 if pretty else None,
-        sort_keys=True,
-        separators=None if pretty else (",", ":"),
-        allow_nan=False,
-    )
-
-
 def run(
     configuration: HeadlessIngestionConfiguration,
     *,
     entry_point_loader: Callable[[str], Any] = load_plugin_entry_point,
     module_loader: Callable[[str], Any] = load_plugin_module,
-    plugin_deployment_loader: Callable[..., Any] = (
-        load_plugin_composition_deployment
-    ),
+    plugin_deployment_loader: Callable[..., Any] = (load_plugin_composition_deployment),
     stdout: TextIO = sys.stdout,
     pipeline_limits: PipelineLimits | None = None,
     control_plane_factory: Callable[..., Any] = ControlPlane,
@@ -378,11 +362,7 @@ def run(
         )
         registry = composition.primary_registry
         execution_environment_fingerprint = composition.deployment_digest
-        composition_options = {
-            "plugin_composition_policy": composition.policy,
-            "capability_providers": composition.capability_providers,
-            "allow_inline_only": composition.allow_inline_only,
-        }
+        composition_options = _control_plane_composition_options(composition)
         requires_inline_execution = composition.requires_inline_execution
     else:
         loaded_plugins = _load_plugins(
@@ -512,9 +492,7 @@ def run(
 
     document = {
         "schema_version": "router_dump_analyzer.headless_result.v1",
-        "plugin_execution_environment_fingerprint": (
-            execution_environment_fingerprint
-        ),
+        "plugin_execution_environment_fingerprint": (execution_environment_fingerprint),
         "scope": {
             "tenant_id": configuration.tenant_id,
             "project_id": configuration.project_id,

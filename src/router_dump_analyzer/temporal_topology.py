@@ -22,20 +22,28 @@ from bisect import bisect_left
 from collections.abc import Callable
 from typing import Any
 
-from .normalized_data import contains_time
+from .contract_validation import strict_integer
+from .normalized_data import active_interval, state_intervals_for_perspective
+from .plugin_api import StatusPerspectiveRef
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .temporal_core import (
+    MIN_TEMPORAL_NS,
     RESOURCE_CREATION_OPERATIONS,
     RESOURCE_DELETION_OPERATIONS,
     TEMPORAL_ORDER_VERSION,
     checked_temporal_add,
     checked_temporal_subtract,
+    contains_time,
     distinct_temporal_states,
+    possible_relationship_presence,
+    relationship_presence,
     temporal_integer,
     temporal_order_key,
 )
+from .value_core import MAX_JSON_SAFE_INTEGER
 
 StateReader = Callable[[str, int], dict[str, Any]]
+PerspectiveStateReader = Callable[[str, int, StatusPerspectiveRef], dict[str, Any]]
 RelationshipReader = Callable[[int], list[dict[str, Any]]]
 
 
@@ -114,6 +122,17 @@ def _materialize_provider_items(value: Any, operation: str) -> list[Any]:
     return items
 
 
+def _page_count(value: object, field: str) -> int:
+    """Keep cursor coordinates and published counts in the exact JSON domain."""
+
+    try:
+        return strict_integer(
+            value, field, minimum=0, maximum=MAX_JSON_SAFE_INTEGER
+        )
+    except ValueError as error:
+        raise TemporalTopologyRequestError(str(error)) from error
+
+
 def _ns(value: Any, field: str) -> int:
     try:
         return temporal_integer(value, field)
@@ -178,6 +197,7 @@ class TemporalTopologyService:
         *,
         contract: dict[str, Any],
         temporal_metadata: dict[str, Any],
+        perspective_state_reader: PerspectiveStateReader | None = None,
     ) -> None:
         if not isinstance(contract, dict):
             raise TemporalTopologyRequestError(
@@ -185,6 +205,7 @@ class TemporalTopologyService:
             )
         self.dataset: dict[str, Any] = dataset
         self.state_reader: StateReader | None = state_reader
+        self.perspective_state_reader = perspective_state_reader
         self.relationship_reader: RelationshipReader = relationship_reader
         self.contract: dict[str, Any] = contract
         self.temporal_metadata: dict[str, Any] = dict(temporal_metadata)
@@ -217,9 +238,12 @@ class TemporalTopologyService:
             str(item["resource_id"]): item for item in dataset.get("resources", [])
         }
         self._perspective_event_cache: dict[
-            tuple[str, str], list[dict[str, Any]]
+            tuple[str, str, str | None, str | None], list[dict[str, Any]]
         ] = {}
         self.runtime: Any = dataset.get("_scale_runtime")
+        self._resource_history_cache: dict[
+            str, tuple[list[dict[str, Any]], list[dict[str, Any]]]
+        ] = {}
         if self.runtime is not None:
             self._events = self.runtime.events
             self._event_times = self.runtime.event_times
@@ -340,6 +364,14 @@ class TemporalTopologyService:
         ).encode("utf-8")
         return hashlib.sha256(canonical).hexdigest()[:24]
 
+    @staticmethod
+    def _reject_generic_cursor(body: dict[str, Any]) -> None:
+        if body.get("cursor") is not None:
+            raise TemporalTopologyRequestError(
+                "cursor is ambiguous; use resource_cursor for resources "
+                "or change_cursor for changes"
+            )
+
     def _encode_cursor(
         self,
         kind: str,
@@ -354,10 +386,10 @@ class TemporalTopologyService:
             "kind": kind,
             "revision_id": self.revision_id,
             "fingerprint": fingerprint,
-            "position": position,
+            "position": _page_count(position, f"{kind}_cursor position"),
         }
         if offset is not None:
-            payload["offset"] = offset
+            payload["offset"] = _page_count(offset, f"{kind}_cursor offset")
         if after is not None:
             payload["after"] = list(after)
         raw = json.dumps(
@@ -418,9 +450,13 @@ class TemporalTopologyService:
             raise TemporalTopologyRequestError(
                 f"{kind}_cursor does not match the current query"
             )
-        position = payload.get("position")
-        if isinstance(position, bool) or not isinstance(position, int) or position < 0:
-            raise TemporalTopologyRequestError(f"invalid {kind}_cursor position")
+        payload["position"] = _page_count(
+            payload.get("position"), f"{kind}_cursor position"
+        )
+        if kind == "resource":
+            payload["offset"] = _page_count(
+                payload.get("offset", 0), "resource_cursor offset"
+            )
         return payload
 
     @staticmethod
@@ -454,10 +490,21 @@ class TemporalTopologyService:
         ]
 
     def query(self, body: dict[str, Any]) -> dict[str, Any]:
+        self._reject_generic_cursor(body)
         projection, perspective = self._selection(
             body.get("projection_id", body.get("topology_projection_id")),
             body.get("status_perspective_id"),
         )
+        requested_relation_types = None
+        if "relation_types" in body:
+            raw_relation_types = body["relation_types"]
+            if not isinstance(raw_relation_types, list) or any(
+                not isinstance(item, str) or not item for item in raw_relation_types
+            ):
+                raise TemporalTopologyRequestError(
+                    "relation_types must be an array of non-empty strings"
+                )
+            requested_relation_types = set(raw_relation_types)
         requested_basis = body.get("basis") or {}
         clock_policy = str(
             body.get("clock_policy", requested_basis.get("clock_policy", "strict"))
@@ -537,12 +584,6 @@ class TemporalTopologyService:
             body.get("resource_cursor"), "resource", resource_fingerprint
         )
         resource_offset = resource_cursor.get("offset", 0)
-        if (
-            isinstance(resource_offset, bool)
-            or not isinstance(resource_offset, int)
-            or resource_offset < 0
-        ):
-            raise TemporalTopologyRequestError("invalid resource_cursor offset")
         resources, resource_meta = self._resource_views(
             projection,
             perspective,
@@ -580,6 +621,7 @@ class TemporalTopologyService:
                 {item["resource_id"] for item in resources},
                 relationship_limit=relationship_limit,
                 connectivity_limit=connectivity_limit,
+                requested_relation_types=requested_relation_types,
             )
         inferred: list[dict[str, Any]] = []
         connectivity_meta = {
@@ -771,6 +813,7 @@ class TemporalTopologyService:
         return response
 
     def query_changes(self, body: dict[str, Any]) -> dict[str, Any]:
+        self._reject_generic_cursor(body)
         """Return a bounded ordered replay slice between two temporal bases."""
 
         projection, perspective = self._selection(
@@ -864,7 +907,7 @@ class TemporalTopologyService:
             }
         )
         change_cursor = self._decode_cursor(
-            body.get("change_cursor", body.get("cursor")),
+            body.get("change_cursor"),
             "change",
             change_fingerprint,
         )
@@ -1375,7 +1418,8 @@ class TemporalTopologyService:
             kinds,
             projection_kinds,
         )
-        total = len(candidates)
+        total = _page_count(len(candidates), "resource page count")
+        offset = _page_count(offset, "resource_cursor offset")
         if offset > total:
             raise TemporalTopologyRequestError(
                 "resource_cursor is beyond the end of this query"
@@ -1398,7 +1442,7 @@ class TemporalTopologyService:
                     record, node_id, node_time, perspective
                 )
             )
-        next_offset = offset + len(result)
+        next_offset = _page_count(offset + len(result), "resource page count")
         has_more = next_offset < total
         return result, {
             "total_count": total,
@@ -1422,6 +1466,22 @@ class TemporalTopologyService:
             str(record["resource_id"]), perspective
         )
         sample_times = {min_ns, center_ns, max_ns}
+        states, lifecycle = self._resource_history(str(record["resource_id"]))
+        if self._has_named_history(states) or not self._allows_unqualified_perspective(perspective):
+            states = state_intervals_for_perspective(
+                states, self._perspective_ref(perspective)
+            )
+        elif str(record.get("layer", "unknown")) != perspective["layer"]:
+            states = []
+        for interval in (*states, *lifecycle):
+            for field in ("valid_from_ns", "valid_to_ns"):
+                bound = interval.get(field)
+                if bound is not None:
+                    timestamp = temporal_integer(bound, field)
+                    if min_ns <= timestamp <= max_ns:
+                        sample_times.add(timestamp)
+                        if timestamp > min_ns:
+                            sample_times.add(timestamp - 1)
         for item in status_events:
             timestamp = int(item["timestamp_ns"])
             if min_ns <= timestamp <= max_ns:
@@ -1520,16 +1580,65 @@ class TemporalTopologyService:
             "valid_from_ns": center.get("valid_from_ns"),
             "valid_to_ns": center.get("valid_to_ns"),
             "source_event_uid": center.get("source_event_uid"),
-            "quality": center.get("quality", "unknown"),
+            "quality": (
+                "best_effort"
+                if min_ns != max_ns and center.get("quality") == "exact"
+                else center.get("quality", "unknown")
+            ),
             "temporal_resolution": "stable_within_clock_window",
             "possible_states": [],
             "unknown_fields": center.get("unknown_fields", []),
         }
 
+    def _resource_history(
+        self, resource_id: str
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        cached = self._resource_history_cache.get(resource_id)
+        if cached is None:
+            if self.runtime is not None:
+                states = list(self.runtime.state_by_resource.get(resource_id, ()))
+                lifecycle = list(self.runtime.lifecycle_by_resource.get(resource_id, ()))
+            else:
+                states = [
+                    item for item in self.dataset.get("state_intervals", [])
+                    if item.get("resource") == resource_id
+                ]
+                lifecycle = [
+                    item for item in self.dataset.get("lifecycle_intervals", [])
+                    if item.get("resource") == resource_id
+                ]
+            cached = states, lifecycle
+            self._resource_history_cache[resource_id] = cached
+        return cached
+
+    @staticmethod
+    def _has_named_history(states: list[dict[str, Any]]) -> bool:
+        return any(item.get("perspective_ref") is not None for item in states)
+
+    @staticmethod
+    def _perspective_ref(perspective: dict[str, Any]) -> StatusPerspectiveRef:
+        return StatusPerspectiveRef(
+            perspective["perspective_id"],
+            perspective.get("plugin_instance_id"),
+            perspective.get("schema_digest"),
+        )
+
+    def _allows_unqualified_perspective(self, perspective: dict[str, Any]) -> bool:
+        if perspective.get("plugin_instance_id") or perspective.get("schema_digest"):
+            return False
+        return sum(
+            item.get("layer") == perspective["layer"]
+            for item in self.contract.get("status_perspectives", [])
+        ) <= 1
+
     def _perspective_status_events(
         self, resource_id: str, perspective: dict[str, Any]
     ) -> list[dict[str, Any]]:
-        cache_key = (resource_id, perspective["perspective_id"])
+        requested = self._perspective_ref(perspective)
+        cache_key = (
+            resource_id, requested.perspective_id,
+            requested.plugin_instance_id, requested.schema_digest,
+        )
         cached = self._perspective_event_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1547,6 +1656,10 @@ class TemporalTopologyService:
                 )
             ]
         entries: list[dict[str, Any]] = []
+        named = (
+            self._has_named_history(self._resource_history(resource_id)[0])
+            or not self._allows_unqualified_perspective(perspective)
+        )
         for event in candidates:
             if _event_layer(event) != perspective["layer"]:
                 continue
@@ -1568,6 +1681,13 @@ class TemporalTopologyService:
                     }
             ]
             for effect_index, effect in enumerate(effects):
+                explicit = effect.get("perspective_ref", event.get("perspective_ref"))
+                if named and explicit is None:
+                    continue
+                if explicit is not None and not state_intervals_for_perspective(
+                    [{"perspective_ref": explicit}], requested
+                ):
+                    continue
                 timestamp_ns, source_sequence, event_uid = temporal_order_key(
                     event,
                     time_field="timestamp_ns",
@@ -1606,18 +1726,29 @@ class TemporalTopologyService:
     ) -> dict[str, Any]:
         resource_id = str(record["resource_id"])
         native = str(record.get("layer", "unknown")) == perspective["layer"]
-        initial = (
-            _invoke_provider_callback(
-                self.state_reader,
-                "state read",
-                resource_id,
-                self.timeline_start_ns,
-            )
-            if native and self.state_reader is not None
-            else None
+        states, lifecycle = self._resource_history(resource_id)
+        named = self._has_named_history(states) or not self._allows_unqualified_perspective(perspective)
+        selected_states = (
+            state_intervals_for_perspective(states, self._perspective_ref(perspective))
+            if named else states if native else []
         )
+        read_time = timestamp_ns
+        if through_order is not None and timestamp_ns > MIN_TEMPORAL_NS:
+            read_time = checked_temporal_subtract(timestamp_ns, 1, "event before time")
+        initial = None
+        if through_order is None or timestamp_ns > MIN_TEMPORAL_NS:
+            if named and self.perspective_state_reader is not None:
+                initial = _invoke_provider_callback(
+                    self.perspective_state_reader, "perspective state read",
+                    resource_id, read_time, self._perspective_ref(perspective),
+                )
+            elif native and not named and self.state_reader is not None:
+                initial = _invoke_provider_callback(
+                    self.state_reader, "state read", resource_id, read_time,
+                )
+        initial_available = isinstance(initial, dict)
         initial_observed = (
-            isinstance(initial, dict)
+            initial_available
             and isinstance(initial.get("exists"), bool)
         )
         state = (
@@ -1631,6 +1762,8 @@ class TemporalTopologyService:
             else None
         )
         if (
+            not initial_available
+            and
             entries
             and entries[0]["operation"] in RESOURCE_CREATION_OPERATIONS
         ):
@@ -1641,22 +1774,54 @@ class TemporalTopologyService:
             if initial_observed and isinstance(initial, dict)
             else None
         )
-        valid_to = None
+        valid_to = initial.get("valid_to_ns") if initial_available else None
         source_event_uid = (
             initial.get("source_event_uid")
             if initial_observed and isinstance(initial, dict)
             else None
         )
-        observed = initial_observed
+        observed = initial_available
         applied_entries = 0
+        anchor_ns = (
+            temporal_integer(valid_from, "valid_from_ns")
+            if valid_from is not None else None
+        )
+        anchor_order = next(
+            (tuple(entry["order_key"]) for entry in entries
+             if source_event_uid is not None and entry.get("event_uid") == source_event_uid),
+            None,
+        )
+        snapshot_times = {
+            temporal_integer(item["valid_from_ns"], "valid_from_ns")
+            for item in selected_states
+            if item.get("valid_from_ns") is not None
+            and item.get("start_event_uid", item.get("source_event_uid")) is None
+        }
+        unresolved_order = any(
+            int(entry["timestamp_ns"]) in snapshot_times
+            and int(entry["timestamp_ns"]) == (
+                timestamp_ns if through_order is not None else anchor_ns
+            )
+            for entry in entries
+        )
+        if unresolved_order:
+            # Snapshot observations have no event-sequence coordinate. Neither
+            # their iterator position nor their timestamp orders a same-time effect.
+            observed = False
+            entries = []
         for entry in entries:
             entry_time = int(entry["timestamp_ns"])
             entry_order = tuple(entry["order_key"])
             if entry_time > timestamp_ns or (
                 through_order is not None and entry_order > through_order
             ):
-                valid_to = str(entry_time)
+                if valid_to is None or entry_time < int(valid_to):
+                    valid_to = str(entry_time)
                 break
+            if anchor_order is not None and entry_order <= anchor_order:
+                continue
+            if anchor_order is None and anchor_ns is not None and entry_time <= anchor_ns:
+                continue
             operation = entry["operation"]
             if operation in RESOURCE_CREATION_OPERATIONS:
                 state = {}
@@ -1671,6 +1836,29 @@ class TemporalTopologyService:
             source_event_uid = entry.get("event_uid")
             observed = True
             applied_entries += 1
+        # A replayed create cannot extend an authoritative lifecycle interval.
+        active_lifecycle = active_interval(lifecycle, timestamp_ns)
+        if lifecycle and active_lifecycle is None:
+            exists = False
+            previous_ends = [
+                int(item["valid_to_ns"]) for item in lifecycle
+                if item.get("valid_to_ns") is not None
+                and int(item["valid_to_ns"]) <= timestamp_ns
+            ]
+            next_starts = [
+                int(item["valid_from_ns"]) for item in lifecycle
+                if item.get("valid_from_ns") is not None
+                and int(item["valid_from_ns"]) > timestamp_ns
+            ]
+            valid_from = str(max(previous_ends)) if previous_ends else None
+            valid_to = str(min(next_starts)) if next_starts else None
+        elif exists is True and active_lifecycle is not None:
+            start = active_lifecycle.get("valid_from_ns")
+            end = active_lifecycle.get("valid_to_ns")
+            if start is not None and (valid_from is None or int(start) > int(valid_from)):
+                valid_from = str(start)
+            if end is not None and (valid_to is None or int(end) < int(valid_to)):
+                valid_to = str(end)
         if not observed:
             return {
                 "exists": None,
@@ -1684,12 +1872,19 @@ class TemporalTopologyService:
                 "unknown_fields": [
                     {
                         "name": "status",
-                        "reason_code": "selected_perspective_status_missing",
+                        "reason_code": (
+                            "snapshot_event_order_unknown" if unresolved_order
+                            else "selected_perspective_status_missing"
+                        ),
                     }
                 ],
             }
         if exists is False:
             status = "absent"
+        elif exists is None:
+            status = "unknown"
+        elif initial_available and not applied_entries:
+            status = str(initial.get("status", "unknown"))
         else:
             status = str(
                 state.get("status")
@@ -1722,12 +1917,13 @@ class TemporalTopologyService:
                 else "partial"
                 if applied_entries
                 else initial.get("quality", "observed_snapshot")
-                if initial_observed and isinstance(initial, dict)
+                if initial_available
                 else "unknown"
             ),
             "unknown_fields": (
-                []
-                if exists is not None
+                initial.get("unknown_fields", [])
+                if initial_available
+                else [] if exists is not None
                 else [
                     {
                         "name": "exists",
@@ -1811,6 +2007,8 @@ class TemporalTopologyService:
         resource_ids: set[str],
         relationship_limit: int,
         connectivity_limit: int,
+        *,
+        requested_relation_types: set[str] | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         list[dict[str, Any]],
@@ -1835,7 +2033,14 @@ class TemporalTopologyService:
         center_ns = int(node_time["query_time_ns"])
         min_ns = int(node_time["resolved_at_min_ns"])
         max_ns = int(node_time["resolved_at_max_ns"])
-        relation_types = set(projection.get("relationship_types") or [])
+        declared_types = projection.get("relationship_types")
+        relation_types = set(declared_types) if declared_types is not None else None
+        if requested_relation_types is not None:
+            relation_types = (
+                requested_relation_types
+                if relation_types is None
+                else relation_types & requested_relation_types
+            )
         probe_times = {min_ns, center_ns, max_ns}
         if self.runtime is not None:
             interval_candidates = {
@@ -1847,7 +2052,7 @@ class TemporalTopologyService:
             interval_candidates = self.dataset.get("relationship_intervals", [])
         for item in interval_candidates:
             relation_type = item.get("relation_type", item.get("type", "related_to"))
-            if relation_types and relation_type not in relation_types:
+            if relation_types is not None and relation_type not in relation_types:
                 continue
             if resource_ids and not (
                 item.get("source") in resource_ids
@@ -1872,9 +2077,10 @@ class TemporalTopologyService:
                 _relationship_key(item): item
                 for item in values
                 if (
-                    not relation_types
+                    relation_types is None
                     or item.get("relation_type", item.get("type")) in relation_types
                 )
+                and relationship_presence(item) is not False
                 and (
                     not resource_ids
                     or item.get("source") in resource_ids
@@ -1905,7 +2111,12 @@ class TemporalTopologyService:
             )
             if not need_relationship and not need_connectivity:
                 continue
-            presence = [key in mapping for mapping in maps]
+            possible_presence = sorted({
+                value
+                for mapping in maps
+                for value in possible_relationship_presence(mapping.get(key))
+            })
+            confirmed_present = possible_presence == [True]
             view = {
                 "relationship_id": key,
                 "source": item["source"],
@@ -1913,15 +2124,15 @@ class TemporalTopologyService:
                 "source_resource_id": item["source"],
                 "target_resource_id": item["target"],
                 "relation_type": relation_type,
-                "present": True if all(presence) else None,
+                "present": True if confirmed_present else None,
                 "temporal_resolution": (
-                    "stable_within_clock_window" if all(presence) else "ambiguous"
+                    "stable_within_clock_window" if confirmed_present else "ambiguous"
                 ),
-                "possible_presence": sorted(set(presence)),
+                "possible_presence": possible_presence,
                 "valid_from_ns": item.get("valid_from_ns"),
                 "valid_to_ns": item.get("valid_to_ns"),
                 "quality": (
-                    item.get("quality", "unknown") if all(presence) else "ambiguous"
+                    item.get("quality", "unknown") if confirmed_present else "ambiguous"
                 ),
                 "provenance": item.get("provenance", "unknown"),
                 "evidence": item.get("evidence", []),
@@ -2214,6 +2425,7 @@ class TemporalTopologyService:
         after: tuple[int, int, int, str] | None,
         position: int,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        position = _page_count(position, "change_cursor position")
         if end_ns < start_ns:
             raise TemporalTopologyRequestError(
                 "change_start_ns must not exceed the resolved time"
@@ -2430,16 +2642,19 @@ class TemporalTopologyService:
         has_more = len(buffered) > limit
         next_after = page[-1][0] if has_more and page else None
         returned_count = len(page)
-        minimum_total = position + returned_count + (1 if has_more else 0)
+        next_position = _page_count(position + returned_count, "change page count")
+        minimum_total = _page_count(
+            next_position + (1 if has_more else 0), "change page count"
+        )
         return [item[1] for item in page], {
-            "total_count": None if has_more else position + returned_count,
+            "total_count": None if has_more else next_position,
             "total_count_is_exact": not has_more,
             "minimum_total_count": minimum_total,
             "returned_count": returned_count,
             "position": position,
             "truncated": has_more,
             "next_after": next_after,
-            "next_position": position + returned_count if has_more else None,
+            "next_position": next_position if has_more else None,
         }
 
     @staticmethod

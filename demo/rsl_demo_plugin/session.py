@@ -17,6 +17,7 @@ from typing import Any, Self, TypeVar
 from router_dump_analyzer.multi_node_route import MultiNodeRouteService
 from router_dump_analyzer.multi_node_topology import MultiNodeTopologyService
 from router_dump_analyzer.normalized_data import NormalizedDataService
+from router_dump_analyzer.plugin_api import StatusPerspectiveRef
 from router_dump_analyzer.runtime import PLUGIN_RUNTIME_CAPABILITY_ID
 from router_dump_analyzer.temporal_topology import TemporalTopologyService
 
@@ -109,9 +110,17 @@ class _LazyDemoAssemblyStore(DemoAssemblyStore):
     def manifest(self) -> dict[str, Any]:
         return self._materialized().manifest
 
+    @manifest.setter
+    def manifest(self, value: dict[str, Any]) -> None:
+        self._materialized().manifest = value
+
     @property
     def coverage(self) -> dict[str, Any]:
         return self._materialized().coverage
+
+    @coverage.setter
+    def coverage(self, value: dict[str, Any]) -> None:
+        self._materialized().coverage = value
 
     def revision(self, revision_id: str) -> Any:
         return self._materialized().revision(revision_id)
@@ -295,12 +304,23 @@ class DemoTemporalProvider:
             with data_service.revision_scope(selected_revision_id):
                 return data_service.relationships_at(timestamp_ns)
 
+        def perspective_state_reader(
+            resource_identifier: str,
+            timestamp_ns: int,
+            perspective_ref: StatusPerspectiveRef,
+        ) -> dict[str, Any]:
+            with data_service.revision_scope(selected_revision_id):
+                return data_service.resource_state_at(
+                    resource_identifier, timestamp_ns, perspective_ref=perspective_ref,
+                )
+
         return TemporalTopologyService(
             dataset,
             state_reader,
             relationship_reader,
             contract=build_demo_plugin_contract(dataset),
             temporal_metadata=build_temporal_metadata(dataset),
+            perspective_state_reader=perspective_state_reader,
         )
 
     def reset(self) -> None:

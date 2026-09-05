@@ -62,16 +62,27 @@ class CanonicalValueError(ValueError):
     """A value cannot be represented by the requested canonical profile."""
 
 
-def validate_prefixed_lowercase_sha256(value: object, label: str) -> str:
-    """Return one exact ``sha256:``-prefixed lowercase hexadecimal digest."""
+def validate_lowercase_sha256(value: object, label: str) -> str:
+    """Return one exact, bare lowercase hexadecimal SHA-256 digest."""
 
     if (
         type(value) is not str
-        or len(value) != 71
-        or not value.startswith("sha256:")
-        or any(character not in "0123456789abcdef" for character in value[7:])
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
     ):
+        raise ValueError(f"{label} must be a lowercase SHA-256 digest")
+    return value
+
+
+def validate_prefixed_lowercase_sha256(value: object, label: str) -> str:
+    """Return one exact ``sha256:``-prefixed lowercase hexadecimal digest."""
+
+    if type(value) is not str or len(value) != 71 or not value.startswith("sha256:"):
         raise ValueError(f"{label} must be a sha256-prefixed lowercase digest")
+    try:
+        validate_lowercase_sha256(value[7:], label)
+    except ValueError:
+        raise ValueError(f"{label} must be a sha256-prefixed lowercase digest") from None
     return value
 
 
@@ -324,6 +335,23 @@ def canonical_json(value: Any) -> str:
     """Return stable compact JSON for an already normalized value."""
 
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def encode_ascii_json_document(document: Mapping[str, Any], *, pretty: bool) -> str:
+    """Encode scriptable CLI output without changing content-addressed profiles.
+
+    ASCII escaping round-trips Unicode on legacy Windows console encodings;
+    nonfinite values are rejected in both compact and human-readable output.
+    """
+
+    return json.dumps(
+        document,
+        ensure_ascii=True,
+        indent=2 if pretty else None,
+        sort_keys=True,
+        separators=None if pretty else (",", ":"),
+        allow_nan=False,
+    )
 
 
 def strict_canonical_json(value: Any) -> str:

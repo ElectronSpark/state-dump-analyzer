@@ -27,9 +27,20 @@ from .dashboard_core import (
     validate_dashboard_descriptors,
 )
 from .load_progress import AnalysisLoadStage, AnalysisLoadTracker
-from .plugin_api import MAX_CAPTURE_RANGE_SCOPE_LENGTH
+from .materialization_contract import (
+    CONSISTENCY_MATERIALIZATION_SCHEMA_VERSION as _CLIENT_CONSISTENCY_MATERIALIZATION_SCHEMA,
+)
+from .materialization_contract import (
+    RELATIONSHIP_PROJECTION_MATERIALIZATION_SCHEMA_VERSION as _CLIENT_RELATIONSHIP_PROJECTION_MATERIALIZATION_SCHEMA,
+)
+from .plugin_api import MAX_CAPTURE_RANGE_SCOPE_LENGTH, StatusPerspectiveRef
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .source_record_core import project_source_record_for_log
+from .temporal_core import (
+    contains_time as contains_time,  # noqa: PLC0414 - compatibility export
+    overlaps_range as overlaps_range,  # noqa: PLC0414 - compatibility export
+    relationship_presence,
+)
 from .value_core import parse_canonical_decimal_integer
 
 MAX_RESOURCE_TABLE_TRAVERSAL_NODES = 5_000
@@ -512,28 +523,11 @@ def resource_label(
     return identifier
 
 
-def contains_time(timestamp_ns: int, start: Any, end: Any) -> bool:
-    return (start is None or timestamp_ns >= int(start)) and (
-        end is None or timestamp_ns < int(end)
-    )
-
-
-def overlaps_range(
-    start: Any,
-    end: Any,
-    query_start_ns: int,
-    query_end_ns: int,
-) -> bool:
-    return (end is None or int(end) > query_start_ns) and (
-        start is None or int(start) < query_end_ns
-    )
-
-
-def active_interval(
+def _active_intervals(
     records: Iterable[dict[str, Any]],
     timestamp_ns: int,
-) -> dict[str, Any] | None:
-    candidates = [
+) -> list[dict[str, Any]]:
+    return [
         item
         for item in records
         if contains_time(
@@ -542,12 +536,75 @@ def active_interval(
             item.get("valid_to_ns"),
         )
     ]
-    if not candidates:
-        return None
+
+
+def active_interval(
+    records: Iterable[dict[str, Any]],
+    timestamp_ns: int,
+) -> dict[str, Any] | None:
+    candidates = _active_intervals(records, timestamp_ns)
     return max(
         candidates,
         key=lambda item: int(item.get("valid_from_ns") or -1),
+        default=None,
     )
+
+
+def _active_state_interval(
+    records: Iterable[dict[str, Any]],
+    timestamp_ns: int,
+) -> tuple[dict[str, Any] | None, bool]:
+    """Select within one perspective; overlapping independent views are ambiguous."""
+    candidates = _active_intervals(records, timestamp_ns)
+    perspectives: set[tuple[str | None, ...] | None] = set()
+    for candidate in candidates:
+        raw_perspective = candidate.get("perspective_ref")
+        perspective = _project_relationship_perspective(raw_perspective)
+        if raw_perspective is not None and (
+            perspective is None
+            or "perspective_id" not in perspective
+            or any(
+                raw_perspective.get(name) is not None
+                and perspective.get(name) != raw_perspective.get(name)
+                for name in ("perspective_id", "plugin_instance_id", "schema_digest")
+            )
+        ):
+            return None, True
+        perspectives.add(
+            tuple(perspective.get(name) for name in (
+                "perspective_id", "plugin_instance_id", "schema_digest"
+            ))
+            if perspective is not None
+            else None
+        )
+        if len(perspectives) > 1:
+            return None, True
+    return active_interval(candidates, timestamp_ns), False
+
+
+def state_intervals_for_perspective(
+    records: Iterable[dict[str, Any]],
+    perspective_ref: StatusPerspectiveRef,
+) -> list[dict[str, Any]]:
+    """Narrow normalized history without borrowing an unqualified view.
+
+    Omitted producer qualifiers may select one local ID, but the ordinary
+    active-interval selector still rejects multiple independent producers.
+    """
+    if type(perspective_ref) is not StatusPerspectiveRef:
+        raise TypeError("perspective_ref must be an exact StatusPerspectiveRef")
+    selected = []
+    for record in records:
+        perspective = _project_relationship_perspective(record.get("perspective_ref"))
+        if perspective is None:
+            continue
+        if all(
+            getattr(perspective_ref, field) is None
+            or perspective.get(field) == getattr(perspective_ref, field)
+            for field in ("perspective_id", "plugin_instance_id", "schema_digest")
+        ):
+            selected.append(record)
+    return selected
 
 
 def descriptor_property_rules(
@@ -905,7 +962,7 @@ def redact_resource_view(
                 )
                 if key in view
             },
-            "status": "unknown" if view.get("exists") else "absent",
+            "status": "absent" if view.get("exists") is False else "unknown",
             "status_class": "unknown",
             "state": {},
             "key": {},
@@ -978,9 +1035,9 @@ def redact_resource_view(
         for name in visible_properties:
             if "." not in name and name in raw_record:
                 safe_record[name] = redact_sensitive_tree(
-                    raw_record[name],
+                    {name: raw_record[name]},
                     sensitive,
-                )
+                ).get(name)
         if descriptor_sensitive_condition(descriptor):
             if "status" in safe_record:
                 safe_record["status"] = "unknown"
@@ -1132,9 +1189,7 @@ _CLIENT_CONSISTENCY_SELECTOR_KINDS = frozenset(
 )
 _CLIENT_CONSISTENCY_CLOCK_POLICIES = frozenset({"strict", "best_effort"})
 _CLIENT_CONSISTENCY_CAPABILITIES = frozenset({"consistency_check"})
-_CLIENT_RELATIONSHIP_PROJECTION_CAPABILITIES = frozenset(
-    {"relationship_projection"}
-)
+_CLIENT_RELATIONSHIP_PROJECTION_CAPABILITIES = frozenset({"relationship_projection"})
 _CLIENT_SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CLIENT_PACKAGE_DIGEST_PATTERN = re.compile(
     r"^(?:(?:manifest|module|package)-sha256|sha256):[0-9a-f]{64}$"
@@ -1527,9 +1582,7 @@ def _project_relationship_resource_reference(value: Any) -> dict[str, str]:
         maximum=4_096,
     )
     return (
-        {"resource_id": resource_identifier}
-        if resource_identifier is not None
-        else {}
+        {"resource_id": resource_identifier} if resource_identifier is not None else {}
     )
 
 
@@ -1539,9 +1592,7 @@ def _project_relationship_perspective(value: Any) -> dict[str, str] | None:
     if not isinstance(value, Mapping):
         return None
     projected: dict[str, str] = {}
-    perspective_id = _client_bounded_string(
-        value.get("perspective_id"), maximum=128
-    )
+    perspective_id = _client_bounded_string(value.get("perspective_id"), maximum=128)
     plugin_instance_id = _client_bounded_string(
         value.get("plugin_instance_id"), maximum=256
     )
@@ -1575,8 +1626,7 @@ def _project_relationship_property_value(
     initial = path_trie.get(root_property)
     initial_branches = (
         (initial,)
-        if isinstance(initial, Mapping)
-        and not initial.get(_SENSITIVE_PATH_TERMINAL)
+        if isinstance(initial, Mapping) and not initial.get(_SENSITIVE_PATH_TERMINAL)
         else ()
     )
 
@@ -1597,7 +1647,10 @@ def _project_relationship_property_value(
         if value_type in {"number", "bytes", "uuid"}:
             if frozenset(nested) != frozenset({"type", "encoding", "value"}):
                 return _DROP_CLIENT_FIELD
-            if type(nested.get("encoding")) is not str or type(nested.get("value")) is not str:
+            if (
+                type(nested.get("encoding")) is not str
+                or type(nested.get("value")) is not str
+            ):
                 return _DROP_CLIENT_FIELD
             return dict(nested)
         if value_type == "tuple":
@@ -1677,9 +1730,7 @@ def _project_relationship_attribute_patch(
             if not isinstance(item, Mapping):
                 continue
             name = _client_bounded_string(item.get("name"), maximum=256)
-            reason_code = _client_bounded_string(
-                item.get("reason_code"), maximum=256
-            )
+            reason_code = _client_bounded_string(item.get("reason_code"), maximum=256)
             message = _client_bounded_string(
                 item.get("message"), maximum=8_192, allow_empty=True
             )
@@ -1721,9 +1772,7 @@ def _project_relationship_contributions(value: Any) -> list[dict[str, Any]]:
         if not isinstance(item, Mapping):
             continue
         record: dict[str, Any] = {
-            "producer": _project_relationship_projection_producer(
-                item.get("producer")
-            ),
+            "producer": _project_relationship_projection_producer(item.get("producer")),
             "evidence": _project_consistency_evidence(item.get("evidence")),
         }
         occurrence_count = item.get("occurrence_count")
@@ -1771,9 +1820,7 @@ def _project_relationship_declarations(
             nested = _project_relationship_resource_reference(item.get(field))
             if nested:
                 record[field] = nested
-        relation_type = _client_bounded_string(
-            item.get("relation_type"), maximum=256
-        )
+        relation_type = _client_bounded_string(item.get("relation_type"), maximum=256)
         if relation_type is not None:
             record["relation_type"] = relation_type
         for field, allowed in (
@@ -1828,9 +1875,7 @@ def _project_relationship_projection_edges(
             nested = _project_relationship_resource_reference(item.get(field))
             if nested:
                 record[field] = nested
-        relation_type = _client_bounded_string(
-            item.get("relation_type"), maximum=256
-        )
+        relation_type = _client_bounded_string(item.get("relation_type"), maximum=256)
         if relation_type is not None:
             record["relation_type"] = relation_type
         for field, allowed in (
@@ -1873,12 +1918,7 @@ def _project_relationship_projection_edges(
     return projected
 
 
-_CLIENT_RELATIONSHIP_PROJECTION_MATERIALIZATION_SCHEMA = (
-    "router_dump_analyzer.relationship_projection_materialization.v1"
-)
-_CLIENT_RELATIONSHIP_PROJECTION_STATUSES = frozenset(
-    {"complete", "not_applicable"}
-)
+_CLIENT_RELATIONSHIP_PROJECTION_STATUSES = frozenset({"complete", "not_applicable"})
 _CLIENT_RELATIONSHIP_PROJECTION_COUNT_FIELDS = frozenset(
     {
         "provider_count",
@@ -1956,9 +1996,6 @@ _CLIENT_CONSISTENCY_MATERIALIZATION_NULLABLE_COUNTS = frozenset(
         "duplicate_diagnostics_discarded",
         "world_reads",
     }
-)
-_CLIENT_CONSISTENCY_MATERIALIZATION_SCHEMA = (
-    "router_dump_analyzer.consistency_materialization.v1"
 )
 _CLIENT_CONSISTENCY_MATERIALIZATION_STATUSES = frozenset(
     {"complete", "not_applicable", "not_materialized"}
@@ -2384,15 +2421,16 @@ def redact_event_for_client(
     sensitive: set[str] = set()
     for kind in kinds:
         sensitive.update(sensitive_by_kind.get(kind, ()))
-    if (
+    conservative_fallback = (
         not kinds
         or unresolved_identifiers
         or any(kind not in sensitive_by_kind for kind in kinds)
-    ):
+    )
+    if conservative_fallback:
         sensitive.update(all_sensitive)
     sensitive_condition = any(
         sensitive_condition_by_kind.get(kind, False) for kind in kinds
-    )
+    ) or (conservative_fallback and any(sensitive_condition_by_kind.values()))
     result: dict[Any, Any] = {}
     for key, nested in event.items():
         name = str(key)
@@ -2501,30 +2539,45 @@ def resource_search_text(
     """Build client-safe search text from declared searchable properties."""
 
     rules = descriptor_property_rules(descriptor)
-    sensitive = {name for name, rule in rules.items() if bool(rule.get("sensitive"))}
-    visible = _client_visible_property_names(descriptor or {})
-    visible_key_fields = visible | {
-        str(name)
-        for name in (descriptor.get("key_fields", ()) if descriptor else ())
-        if isinstance(name, str)
-    }
-    values: list[Any] = [
-        view.get("resource_id", resource_id(record)),
-        view.get("label", record.get("label", "")),
-        view.get("kind", record.get("kind", "")),
-        view.get("layer", record.get("layer", "")),
-        view.get("status", ""),
-        view.get("status_class", ""),
-        view.get("exists", ""),
-    ]
-    key = view.get("key") or record.get("key") or {}
-    if isinstance(key, Mapping):
-        values.extend(
-            nested
-            for name, nested in key.items()
-            if str(name) in visible_key_fields and str(name) not in sensitive
+    search_fields = {
+        name for name, rule in rules.items() if rule.get("searchable")
+    } | set(descriptor.get("display_name_fields", ()) if descriptor else ())
+    # Publish only candidate search fields; traversing unrelated nested state
+    # would duplicate the full publication cost on every search row.
+    search_record = {
+        name: record[name]
+        for name in (
+            "resource_id", "canonical_resource_id", "resource_uid", "label", "kind", "layer"
         )
-    state = view.get("state") or {}
+        if name in record
+    }
+    search_record.update(_project_declared_fields(record, search_fields))
+    # Apply the publication policy once for every search input, including raw
+    # top-level descriptor properties. An explicitly empty public key must not
+    # resurrect the private record key, and nested restrictions keep their path.
+    public = redact_resource_view(
+        {
+            **view,
+            "state": _project_declared_fields(view.get("state", {}), search_fields),
+            "key": view.get("key", record.get("key", {})),
+            "resource": search_record,
+        },
+        descriptor,
+    )
+    public_record = public.get("resource", {})
+    values: list[Any] = [
+        public.get("resource_id", resource_id(public_record)),
+        public.get("label", public_record.get("label", "")),
+        public.get("kind", public_record.get("kind", "")),
+        public.get("layer", public_record.get("layer", "")),
+        public.get("status", ""),
+        public.get("status_class", ""),
+        public.get("exists", ""),
+    ]
+    key = public.get("key", {})
+    if isinstance(key, Mapping):
+        values.extend(key.values())
+    state = public.get("state") or {}
     if rules:
         for name, rule in rules.items():
             if (
@@ -2535,11 +2588,9 @@ def resource_search_text(
                 continue
             if isinstance(state, Mapping) and name in state:
                 values.append(state[name])
-            elif name in record:
-                values.append(record[name])
+            elif name in public_record:
+                values.append(public_record[name])
         for name in descriptor.get("display_name_fields", ()) if descriptor else ():
-            if name in sensitive:
-                continue
             if isinstance(state, Mapping) and name in state:
                 values.append(state[name])
             elif isinstance(key, Mapping) and name in key:
@@ -3030,6 +3081,8 @@ class NormalizedDataService:
         self,
         resource_identifier: str,
         timestamp_ns: int,
+        *,
+        perspective_ref: StatusPerspectiveRef | None = None,
     ) -> dict[str, Any]:
         dataset = self.load_dataset()
         runtime = self.history_runtime(dataset)
@@ -3059,11 +3112,27 @@ class NormalizedDataService:
                 for item in dataset.get("state_intervals", [])
                 if item.get("resource") == resource_identifier
             ]
+        has_state_history = bool(states)
+        if perspective_ref is not None:
+            states = state_intervals_for_perspective(states, perspective_ref)
         lifecycle_interval = active_interval(lifecycle, timestamp_ns)
-        exists = lifecycle_interval is not None
-        state_interval = active_interval(states, timestamp_ns)
+        missing_lifecycle_evidence = record is not None and not lifecycle
+        exists: bool | None = (
+            None if missing_lifecycle_evidence else lifecycle_interval is not None
+        )
+        state_interval, ambiguous = _active_state_interval(states, timestamp_ns)
+        missing_perspective = perspective_ref is not None and state_interval is None
+        history_gap = (
+            has_state_history and state_interval is None
+            and not ambiguous and not missing_perspective
+        )
+        if (ambiguous or missing_perspective) and exists:
+            exists = None
         state = dict(state_interval.get("properties", {})) if state_interval else {}
-        if not state and record is not None and exists:
+        if (
+            state_interval is None and record is not None and exists
+            and not ambiguous and not has_state_history
+        ):
             state = dict(record.get("state", {}))
         kind = str(record.get("kind", "UNKNOWN")) if record else "UNKNOWN"
         descriptors = self._descriptors(dataset)
@@ -3078,8 +3147,10 @@ class NormalizedDataService:
             and not condition_is_sensitive
             else None
         )
-        if not exists:
+        if exists is False:
             status = status_class = "absent"
+        elif exists is None:
+            status = status_class = "unknown"
         else:
             status = (
                 (
@@ -3127,8 +3198,25 @@ class NormalizedDataService:
                 if state_interval
                 else "unknown"
             ),
-            "resource": record,
+            "unknown_fields": (
+                state_interval.get("unknown_fields", [])
+                if state_interval is not None
+                else [{"name": "*", "reason_code": "selected_perspective_status_missing"}]
+                if missing_perspective
+                else [{"name": "*", "reason_code": "state_history_gap"}]
+                if history_gap
+                else [{"name": "*", "reason_code": "lifecycle_evidence_missing"}]
+                if missing_lifecycle_evidence
+                else []
+            ),
+            "resource": (
+                {**record, "state": {}, "status": "unknown", "status_class": "unknown"}
+                if (ambiguous or missing_perspective or history_gap) and record is not None
+                else record
+            ),
         }
+        if ambiguous:
+            view["quality"] = "ambiguous"
         return redact_resource_view(view, descriptor)
 
     def relationships_at(
@@ -3140,6 +3228,8 @@ class NormalizedDataService:
         if runtime is not None:
             result = []
             for item in runtime.relationships:
+                if relationship_presence(item) is False:
+                    continue
                 if not contains_time(
                     timestamp_ns,
                     item.get("valid_from_ns"),
@@ -3192,6 +3282,8 @@ class NormalizedDataService:
         }
         result: list[dict[str, Any]] = []
         for item in dataset.get("relationships", []):
+            if relationship_presence(item) is False:
+                continue
             if not {item.get("source"), item.get("target")} <= active_ids:
                 continue
             key = (
@@ -3210,6 +3302,8 @@ class NormalizedDataService:
                 }
             )
         for interval in intervals:
+            if relationship_presence(interval) is False:
+                continue
             if not contains_time(
                 timestamp_ns,
                 interval.get("valid_from_ns"),
@@ -3378,7 +3472,7 @@ class NormalizedDataService:
         safe_offset = max(0, int(offset))
         needle = search.casefold() if search else None
         state_cache: dict[str, dict[str, Any]] = {}
-        existence_cache: dict[str, bool] = {}
+        existence_cache: dict[str, bool | None] = {}
         neighbor_cache: dict[
             tuple[str, int],
             list[tuple[dict[str, Any], dict[str, Any]]],
@@ -3392,10 +3486,9 @@ class NormalizedDataService:
                 )
             return state_cache[identifier]
 
-        def exists(identifier: str) -> bool:
-            cached = existence_cache.get(identifier)
-            if cached is not None:
-                return cached
+        def exists(identifier: str) -> bool | None:
+            if identifier in existence_cache:
+                return existence_cache[identifier]
             value = (
                 active_interval(
                     runtime.lifecycle_by_resource.get(identifier, ()),
@@ -3403,7 +3496,7 @@ class NormalizedDataService:
                 )
                 is not None
                 if runtime is not None
-                else bool(temporal_state(identifier)["exists"])
+                else temporal_state(identifier)["exists"]
             )
             existence_cache[identifier] = value
             return value
@@ -3424,6 +3517,8 @@ class NormalizedDataService:
             found: list[tuple[dict[str, Any], dict[str, Any]]] = []
             seen: set[tuple[Any, ...]] = set()
             for relationship in endpoint_relationships(identifier):
+                if relationship_presence(relationship) is False:
+                    continue
                 relation_type = relationship.get(
                     "relation_type",
                     relationship.get("type", "related_to"),
@@ -3453,7 +3548,7 @@ class NormalizedDataService:
                         continue
                     if target_kinds and target.get("kind") not in target_kinds:
                         continue
-                    if not include_absent and not exists(target_id):
+                    if not include_absent and exists(target_id) is False:
                         continue
                     relationship_id = relationship.get("relationship_id")
                     identity = (
@@ -3500,7 +3595,7 @@ class NormalizedDataService:
                     match_cache[cache_key] = False
                     return False
                 search_traversal_count += 1
-            if not include_absent and not exists(identifier):
+            if not include_absent and exists(identifier) is False:
                 match_cache[cache_key] = False
                 return False
             matched = needle is None or needle in resource_search_text(
@@ -3530,7 +3625,7 @@ class NormalizedDataService:
                 return None
             identifier = resource_id(record)
             view = temporal_state(identifier)
-            if not include_absent and not view["exists"]:
+            if not include_absent and view["exists"] is False:
                 return None
             occurrence_count += 1
             node: dict[str, Any] = {
@@ -3591,7 +3686,7 @@ class NormalizedDataService:
         matched_records: list[dict[str, Any]] = []
         matched_count = 0
         for record in root_records:
-            if not include_absent and not exists(resource_id(record)):
+            if not include_absent and exists(resource_id(record)) is False:
                 continue
             if not branch_matches(record, 0):
                 continue

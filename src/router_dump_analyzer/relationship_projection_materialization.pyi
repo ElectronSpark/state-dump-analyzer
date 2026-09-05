@@ -1,15 +1,15 @@
 from .capability_router import CapabilityProviderRef, PlanBoundCapabilityRouter
-from .plugin_api import Evidence, PluginDiagnostic, PluginSchema, ReadOnlyWorld, RelationDirection, RelationshipDeclaration, RelationshipView, ResourceKey, ResourceStateView, StatusPerspectiveRef, WorldBasis
+from .materialization_contract import RELATIONSHIP_PROJECTION_MATERIALIZATION_SCHEMA_VERSION as RELATIONSHIP_PROJECTION_MATERIALIZATION_SCHEMA_VERSION
+from .plugin_api import Evidence, PluginDiagnostic, PluginSchema, ReadOnlyWorld, RelationshipDeclaration, RelationshipView, StatusPerspectiveRef
 from .plugin_execution_plan import PluginExecutionPin, PluginExecutionPlan
-from collections.abc import Collection, Iterable, Mapping
+from .world_read_budget import AggregateReadWorld
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Final
+from typing import Any
 from uuid import UUID
 
 __all__ = ['RELATIONSHIP_PROJECTION_MATERIALIZATION_SCHEMA_VERSION', 'RelationshipProjectionMaterializationError', 'RelationshipProjectionMaterializationStatus', 'RelationshipProjectionMaterializationLimits', 'revision_relationship_projection_selected_pins', 'MaterializedRelationshipContribution', 'MaterializedRelationshipDeclaration', 'MaterializedRelationshipProjectionDiagnostic', 'MaterializedProjectedRelationship', 'RelationshipProjectionMaterializationResult', 'not_applicable_relationship_projection_materialization', 'materialize_revision_relationship_projection', 'validate_relationship_projection_storage_fragment', 'validate_relationship_projection_dataset_fragment']
-
-RELATIONSHIP_PROJECTION_MATERIALIZATION_SCHEMA_VERSION: Final[str]
 
 class RelationshipProjectionMaterializationError(RuntimeError): ...
 
@@ -35,18 +35,8 @@ class RelationshipProjectionMaterializationLimits:
     max_serialized_bytes: int = ...
     def __post_init__(self) -> None: ...
 
-class _AggregateWorld:
+class _AggregateWorld(AggregateReadWorld):
     def __init__(self, world: ReadOnlyWorld, maximum_reads: int, *, perspective_ref: StatusPerspectiveRef | None) -> None: ...
-    @property
-    def basis(self) -> WorldBasis: ...
-    @property
-    def perspective_ref(self) -> StatusPerspectiveRef | None: ...
-    @property
-    def reads_used(self) -> int: ...
-    def state_of(self, resource: ResourceKey) -> ResourceStateView | None: ...
-    def iter_states(self, layers: frozenset[str] | None = None, kinds: frozenset[str] | None = None, limit: int | None = None) -> Iterable[ResourceStateView]: ...
-    def related(self, resource: ResourceKey, direction: RelationDirection = ..., relation_types: frozenset[str] | None = None, limit: int | None = None) -> Iterable[RelationshipView]: ...
-    def iter_relationships(self, relation_types: frozenset[str] | None = None, layers: frozenset[str] | None = None, limit: int | None = None) -> Iterable[RelationshipView]: ...
 
 def revision_relationship_projection_selected_pins(plan: PluginExecutionPlan) -> tuple[PluginExecutionPin, ...]: ...
 

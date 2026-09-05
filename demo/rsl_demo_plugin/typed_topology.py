@@ -59,14 +59,16 @@ from router_dump_analyzer.topology_federation import (
 from router_dump_analyzer.value_core import parse_canonical_decimal_integer
 
 from .assembly_store import DemoAssemblyStore
+from ._identity import (
+    PLUGIN_ID as DEMO_TOPOLOGY_PLUGIN_ID,
+    PLUGIN_VERSION as DEMO_TOPOLOGY_PLUGIN_VERSION,
+)
 
 DEMO_CONNECTOR_CLAIM_CONTRACT_ID = "demo.topology.connector.v1"
 DEMO_CONNECTOR_POLICY_ID = "demo.topology.connector.exact.v1"
 DEMO_TOPOLOGY_RESOURCE_KIND = "demo.topology.endpoint"
 DEMO_TOPOLOGY_CLAIM_KIND = "demo.topology.connector_claim"
 DEMO_CONNECTOR_LINK_TYPE = "demo.underlay.point_to_point"
-DEMO_TOPOLOGY_PLUGIN_ID = "demo.example-router"
-DEMO_TOPOLOGY_PLUGIN_VERSION = "0.1.0"
 DEMO_TOPOLOGY_PROJECTION_ID = "demo.generated-topology"
 DEMO_TOPOLOGY_PERSPECTIVE_ID = "demo.generated-observed"
 DEMO_TOPOLOGY_PROCESS_TARGET = (

@@ -11,14 +11,27 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from hashlib import sha256
 from types import MappingProxyType
-from typing import Any
 
-from .canonical import canonical_json, opaque_value_json
+from .observation_reconstruction import (
+    RelationshipIdentity,
+    apply_property_patch,
+    relationship_observation_groups,
+    relationship_order_key,
+    snapshot_observation_groups,
+)
+from .observation_reconstruction import (
+    bind_primary_perspective as _bind_primary_perspective,
+)
+from .observation_reconstruction import (
+    canonical_relationship_endpoints as _canonical_relationship_endpoints,
+)
+from .observation_reconstruction import (
+    canonical_resource_identity as _canonical_resource_identity,  # noqa: F401 - compatibility export
+)
 from .plugin_api import (
-    KeyAtom,
     PropertyPatch,
+    Provenance,
     Quality,
     ReadOnlyWorld,
     RelationDirection,
@@ -33,72 +46,7 @@ from .plugin_api import (
     WorldBasis,
 )
 
-type _RelationshipIdentityKey = tuple[
-    ResourceKey,
-    ResourceKey,
-    str,
-    StatusPerspectiveRef | None,
-]
-
-
-def _observation_time_key(
-    observed_at_min_ns: int | None,
-    observed_at_max_ns: int | None,
-    artifact_bytes: bytes,
-    locator: str,
-    ordinal: int,
-) -> tuple[bool, int, bool, int, bytes, str, int]:
-    """Mirror ingestion's ordering and make its stable-order rule explicit."""
-
-    return (
-        observed_at_min_ns is None,
-        observed_at_min_ns or 0,
-        observed_at_max_ns is None,
-        observed_at_max_ns or 0,
-        artifact_bytes,
-        locator,
-        ordinal,
-    )
-
-
-def _resource_order_key(resource: ResourceKey) -> tuple[Any, ...]:
-    """Use the same opaque, type-preserving identity order as ingestion."""
-
-    identifier, _identity = _canonical_resource_identity(resource)
-    return (identifier,)
-
-
-def _perspective_order_key(
-    perspective: StatusPerspectiveRef | None,
-) -> tuple[str, str, str]:
-    if perspective is None:
-        return ("", "", "")
-    return (
-        perspective.perspective_id,
-        perspective.plugin_instance_id or "",
-        perspective.schema_digest or "",
-    )
-
-
-def _bind_primary_perspective(
-    perspective: StatusPerspectiveRef | None,
-    *,
-    plugin_instance_id: str | None,
-    schema_digest: str | None,
-) -> StatusPerspectiveRef | None:
-    """Qualify local parser perspectives with primary-plan authority."""
-
-    if perspective is None or plugin_instance_id is None or schema_digest is None:
-        return perspective
-    if perspective.plugin_instance_id not in (None, plugin_instance_id):
-        raise ValueError("perspective belongs to a different plug-in instance")
-    if perspective.schema_digest not in (None, schema_digest):
-        raise ValueError("perspective belongs to a different schema")
-    return StatusPerspectiveRef(
-        perspective_id=perspective.perspective_id,
-        plugin_instance_id=plugin_instance_id,
-        schema_digest=schema_digest,
-    )
+type _RelationshipIdentityKey = RelationshipIdentity
 
 
 def _relationship_identity_key(
@@ -110,52 +58,6 @@ def _relationship_identity_key(
         relationship.relation_type,
         relationship.perspective_ref,
     )
-
-
-def _canonical_relationship_endpoints(
-    source: ResourceKey,
-    target: ResourceKey,
-    relation_type: str,
-    undirected_relationship_types: frozenset[str],
-) -> tuple[ResourceKey, ResourceKey]:
-    if (
-        relation_type in undirected_relationship_types
-        and _resource_order_key(target) < _resource_order_key(source)
-    ):
-        return target, source
-    return source, target
-
-
-def _canonical_resource_identity(
-    resource: ResourceKey,
-) -> tuple[str, dict[str, Any]]:
-    """Return the one canonical durable identity used by every core surface.
-
-    ``canonical_json`` deliberately uses the durable ingestion serialization
-    profile (including ASCII escaping).  Hashing a stricter UTF-8 projection
-    here would produce a different identifier for otherwise identical
-    non-ASCII keys and break joins between findings and normalized resources.
-    """
-
-    identity = {
-        "namespace": resource.namespace,
-        "node": resource.node,
-        "layer": resource.layer,
-        "kind": resource.kind,
-        "parts": [
-            {
-                "name": name,
-                "value": opaque_value_json(value, key_atom_type=KeyAtom),
-            }
-            for name, value in resource.parts
-        ],
-    }
-    digest = sha256(canonical_json(identity).encode("utf-8")).hexdigest()[:32]
-    identifier = (
-        f"{resource.namespace}/{resource.node}/{resource.layer}/"
-        f"{resource.kind}/{digest}"
-    )
-    return identifier, identity
 
 
 def _freeze_value(value: Value) -> Value:
@@ -186,34 +88,33 @@ def _apply_patch(
     *,
     default_quality: Quality,
 ) -> None:
-    """Apply the same known/removed/unknown semantics as ingestion."""
+    apply_property_patch(
+        properties, unknown_fields, field_quality, None, patch,
+        default_quality=default_quality,
+        default_provenance=Provenance.OBSERVED,
+        project_value=_freeze_value,
+        project_unknown=lambda item: item,
+        project_quality=lambda item: item,
+        project_provenance=lambda item: item,
+    )
 
-    if patch.complete:
-        properties.clear()
-        unknown_fields.clear()
-        field_quality.clear()
 
-    for name in patch.remove_fields:
-        properties.pop(name, None)
-        unknown_fields.pop(name, None)
-        field_quality.pop(name, None)
-
-    for name, value in patch.set_values.items():
-        key = str(name)
-        properties[key] = _freeze_value(value)
-        unknown_fields.pop(key, None)
-
-    for item in patch.unknown_fields:
-        properties.pop(item.name, None)
-        unknown_fields[item.name] = item
-
-    mentioned = {
-        *(str(name) for name in patch.set_values),
-        *patch.remove_fields,
-        *(item.name for item in patch.unknown_fields),
-    }
-    for name in mentioned:
-        field_quality[name] = patch.field_quality.get(name, default_quality)
+def _unknown_perspective_state(
+    resource: ResourceKey,
+    perspective: StatusPerspectiveRef | None,
+) -> ResourceStateView:
+    """No selected/unique view is an unknown answer, never confirmed absence."""
+    return ResourceStateView(
+        resource=resource,
+        exists=None,
+        properties=MappingProxyType({}),
+        provenance=Provenance.CORRELATED,
+        quality=Quality.AMBIGUOUS if perspective is None else Quality.UNKNOWN,
+        valid_from_ns=None,
+        valid_to_ns=None,
+        field_quality=MappingProxyType({}),
+        perspective_ref=perspective,
+    )
 
 
 def _checked_limit(limit: int | None) -> int | None:
@@ -297,6 +198,11 @@ class IngestionRevisionWorld(ReadOnlyWorld):
     only as relationship endpoints are indexable through those relationships
     but do not receive a fabricated state.  A relationship is active only when
     its latest ordered observation says ``present is True``.
+
+    Histories from distinct perspectives never patch one another. An explicit
+    perspective selects only that view. Without one, scans retain independent
+    states and ambiguous point lookups return ``exists=None``; a missing
+    selected perspective likewise returns unknown rather than borrowing state.
     """
 
     __slots__ = (
@@ -394,7 +300,35 @@ class IngestionRevisionWorld(ReadOnlyWorld):
             primary_schema_digest=primary_schema_digest,
         )
 
-        states_by_resource = {state.resource: state for state in states}
+        selected_perspective = _bind_primary_perspective(
+            perspective_ref,
+            plugin_instance_id=primary_plugin_instance_id,
+            schema_digest=primary_schema_digest,
+        )
+        states_per_resource: dict[ResourceKey, list[ResourceStateView]] = defaultdict(list)
+        for state in states:
+            states_per_resource[state.resource].append(state)
+        states_by_resource: dict[ResourceKey, ResourceStateView] = {}
+        for resource, candidates in states_per_resource.items():
+            selected_states = (
+                candidates
+                if selected_perspective is None
+                else [
+                    item for item in candidates
+                    if item.perspective_ref == selected_perspective
+                ]
+            )
+            states_by_resource[resource] = (
+                selected_states[0]
+                if len(selected_states) == 1
+                else _unknown_perspective_state(resource, selected_perspective)
+            )
+        if selected_perspective is not None:
+            states = tuple(states_by_resource.values())
+            relationships = tuple(
+                item for item in relationships
+                if item.perspective_ref == selected_perspective
+            )
         states_by_layer: dict[str, list[ResourceStateView]] = defaultdict(list)
         states_by_kind: dict[str, list[ResourceStateView]] = defaultdict(list)
         for state in states:
@@ -410,11 +344,7 @@ class IngestionRevisionWorld(ReadOnlyWorld):
             relationships_by_type[relationship.relation_type].append(relationship)
 
         self._basis = basis
-        self._perspective_ref = _bind_primary_perspective(
-            perspective_ref,
-            plugin_instance_id=primary_plugin_instance_id,
-            schema_digest=primary_schema_digest,
-        )
+        self._perspective_ref = selected_perspective
         self._states = states
         self._relationships = relationships
         self._states_by_resource = MappingProxyType(states_by_resource)
@@ -504,15 +434,7 @@ class IngestionRevisionWorld(ReadOnlyWorld):
             )
         return tuple(
             by_key[key]
-            for key in sorted(
-                by_key,
-                key=lambda item: (
-                    _resource_order_key(item[0]),
-                    _resource_order_key(item[1]),
-                    item[2],
-                    _perspective_order_key(item[3]),
-                ),
-            )
+            for key in sorted(by_key, key=relationship_order_key)
         )
 
     @staticmethod
@@ -522,29 +444,18 @@ class IngestionRevisionWorld(ReadOnlyWorld):
         primary_plugin_instance_id: str | None,
         primary_schema_digest: str | None,
     ) -> tuple[ResourceStateView, ...]:
-        grouped: dict[
-            ResourceKey,
-            list[tuple[int, SnapshotObservation]],
-        ] = defaultdict(list)
-        for ordinal, observation in enumerate(snapshots):
-            grouped[observation.resource].append((ordinal, observation))
+        grouped = snapshot_observation_groups(
+            snapshots,
+            plugin_instance_id=primary_plugin_instance_id,
+            schema_digest=primary_schema_digest,
+        )
 
         result: list[ResourceStateView] = []
-        for resource in sorted(grouped, key=_resource_order_key):
-            ordered = sorted(
-                grouped[resource],
-                key=lambda item: _observation_time_key(
-                    item[1].observed_at_min_ns,
-                    item[1].observed_at_max_ns,
-                    item[1].evidence.artifact_id.bytes,
-                    item[1].evidence.locator,
-                    item[0],
-                ),
-            )
+        for (resource, perspective), ordered in grouped.items():
             properties: dict[str, Value] = {}
             unknown_fields: dict[str, UnknownField] = {}
             field_quality: dict[str, Quality] = {}
-            for _ordinal, observation in ordered:
+            for observation in ordered:
                 _apply_patch(
                     properties,
                     unknown_fields,
@@ -552,7 +463,7 @@ class IngestionRevisionWorld(ReadOnlyWorld):
                     observation.state,
                     default_quality=observation.quality,
                 )
-            latest = ordered[-1][1]
+            latest = ordered[-1]
             result.append(
                 ResourceStateView(
                     resource=resource,
@@ -567,11 +478,7 @@ class IngestionRevisionWorld(ReadOnlyWorld):
                     field_quality=MappingProxyType(dict(field_quality)),
                     unknown_fields=tuple(unknown_fields.values()),
                     evidence=(latest.evidence,),
-                    perspective_ref=_bind_primary_perspective(
-                        latest.perspective_ref,
-                        plugin_instance_id=primary_plugin_instance_id,
-                        schema_digest=primary_schema_digest,
-                    ),
+                    perspective_ref=perspective,
                 )
             )
         return tuple(result)
@@ -584,60 +491,18 @@ class IngestionRevisionWorld(ReadOnlyWorld):
         primary_plugin_instance_id: str | None,
         primary_schema_digest: str | None,
     ) -> tuple[tuple[RelationshipView, ...], frozenset[_RelationshipIdentityKey]]:
-        grouped: dict[
-            tuple[
-                ResourceKey,
-                ResourceKey,
-                str,
-                StatusPerspectiveRef | None,
-            ],
-            list[tuple[int, RelationshipObservation]],
-        ] = defaultdict(list)
-        for ordinal, observation in enumerate(observations):
-            source, target = _canonical_relationship_endpoints(
-                observation.source,
-                observation.target,
-                observation.relation_type,
-                undirected_relationship_types,
-            )
-            grouped[
-                (
-                    source,
-                    target,
-                    observation.relation_type,
-                    _bind_primary_perspective(
-                        observation.perspective_ref,
-                        plugin_instance_id=primary_plugin_instance_id,
-                        schema_digest=primary_schema_digest,
-                    ),
-                )
-            ].append((ordinal, observation))
-
-        group_keys = sorted(
-            grouped,
-            key=lambda item: (
-                _resource_order_key(item[0]),
-                _resource_order_key(item[1]),
-                item[2],
-                _perspective_order_key(item[3]),
-            ),
+        grouped = relationship_observation_groups(
+            observations,
+            undirected_relationship_types,
+            plugin_instance_id=primary_plugin_instance_id,
+            schema_digest=primary_schema_digest,
         )
         result: list[RelationshipView] = []
-        for group_key in group_keys:
-            ordered = sorted(
-                grouped[group_key],
-                key=lambda item: _observation_time_key(
-                    item[1].observed_at_min_ns,
-                    item[1].observed_at_max_ns,
-                    item[1].evidence.artifact_id.bytes,
-                    item[1].evidence.locator,
-                    item[0],
-                ),
-            )
+        for group_key, ordered in grouped.items():
             attributes: dict[str, Value] = {}
             unknown_fields: dict[str, UnknownField] = {}
             field_quality: dict[str, Quality] = {}
-            for _ordinal, observation in ordered:
+            for observation in ordered:
                 _apply_patch(
                     attributes,
                     unknown_fields,
@@ -645,7 +510,7 @@ class IngestionRevisionWorld(ReadOnlyWorld):
                     observation.attributes,
                     default_quality=observation.quality,
                 )
-            latest = ordered[-1][1]
+            latest = ordered[-1]
             if latest.present is not True:
                 continue
             source, target, relation_type, perspective = group_key

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from itertools import product
 
 from router_dump_analyzer.plugin_api import (
@@ -388,6 +389,77 @@ class ForwardingPacketContractTests(unittest.TestCase):
         )
         self.assertEqual(result.outcome, "unknown")
         self.assertEqual(result.continuity, "unknown_incomplete")
+
+    def test_trace_retains_incomplete_identity_even_when_snapshots_are_equal(
+        self,
+    ) -> None:
+        complete = packet(
+            (layer("payload", "example.payload.v1", "Payload", size_bytes=64),),
+            64,
+        )
+        incomplete_states = {
+            "packet": replace(complete, complete=False),
+            "layer": replace(
+                complete, layers=(replace(complete.layers[0], complete=False),)
+            ),
+            "size": replace(
+                complete, size=replace(complete.size, complete=False)
+            ),
+        }
+        for identity_part, incomplete in incomplete_states.items():
+            for position, states in {
+                "equal": (incomplete, incomplete, incomplete),
+                "initial": (incomplete, complete, complete),
+                "before": (complete, incomplete, complete),
+                "terminal_after": (complete, complete, incomplete),
+            }.items():
+                with self.subTest(identity_part=identity_part, position=position):
+                    initial, before, after = states
+                    result = evaluate_forwarding_packet_trace(
+                        initial,
+                        (
+                            transition(
+                                "deliver", before, after,
+                                disposition=ForwardingPacketDisposition.DELIVER,
+                            ),
+                        ),
+                    )
+                    self.assertEqual(result.continuity, "unknown_incomplete")
+                    self.assertEqual(result.outcome, "deliver")
+                    self.assertIs(
+                        result.terminal_disposition,
+                        ForwardingPacketDisposition.DELIVER,
+                    )
+
+    def test_incomplete_identity_is_retained_across_a_complete_terminal_step(
+        self,
+    ) -> None:
+        complete = packet((), 64)
+        incomplete = replace(complete, complete=False)
+        result = evaluate_forwarding_packet_trace(
+            complete,
+            (
+                transition("one", complete, incomplete),
+                transition("two", incomplete, complete),
+                transition(
+                    "three", complete, complete,
+                    disposition=ForwardingPacketDisposition.DELIVER,
+                ),
+            ),
+        )
+        self.assertEqual(result.continuity, "unknown_incomplete")
+        self.assertEqual(result.outcome, "deliver")
+
+    def test_incomplete_initial_identity_survives_empty_or_budgeted_trace(
+        self,
+    ) -> None:
+        incomplete = packet((), 64, complete=False)
+        for transitions in ((), (transition("one", incomplete, incomplete),)):
+            with self.subTest(transitions=len(transitions)):
+                result = evaluate_forwarding_packet_trace(
+                    incomplete, transitions, max_steps=0
+                )
+                self.assertEqual(result.continuity, "unknown_incomplete")
 
     def test_dispositions_distinguish_terminal_branching_and_continuation(
         self,

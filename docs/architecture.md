@@ -1227,11 +1227,38 @@ topology or evidence auxiliary is recorded in revision provenance without
 being loaded for either scheduled stage.
 
 `IngestionRevisionWorld` folds snapshot observations sharing a `ResourceKey`
-before relationship projection. The resulting state retains the final ordered
-observation's evidence rather than a raw per-observation stream. Projectors
+and qualified status perspective before relationship projection. The resulting
+state retains the final ordered observation's evidence rather than a raw
+per-observation stream. Projectors
 that need to compare observations collapsed under one key therefore require a
 future, separately bounded observation/source reader; the world-scoped hook
 does not pretend to preserve them.
+
+The dataset and typed-world paths share `observation_reconstruction` for patch
+application, observation order, perspective grouping, and directed/undirected
+relationship identity. Neither path merges fields across perspectives. A
+plan-bound rebuild qualifies primary-parser local perspective IDs with the exact
+primary instance/schema; unplanned data remains unbound, and unrelated dataset
+sections are preserved. A singular unselected lookup across multiple
+perspectives is ambiguous, and
+missing selected-perspective status remains unknown. `world_read_budget` owns
+scan limits and aggregate reader forwarding across capability execution and
+both materializers; exact explicit limits do not consume a sentinel outside
+the requested slice. Materialization wire versions have a dependency-light
+single owner in `materialization_contract`.
+
+Other deduplicated primitives deliberately remain narrow: SQLite stores share
+BEGIN/checkpoint/body/commit recovery fencing while retaining their own locks,
+connection replacement, and error translation; deployment descriptors share
+state-directory normalization and target grammar while keeping distinct exact
+context types. Authorization and operational telemetry derive their closed
+vocabulary from `access_control_contract`. Generator scheduling/classification
+belongs only to the standalone generator, not to these core primitives.
+The duplicate-source gate scans the generator too. Its two exact cross-product
+constant exceptions are deliberate: the saved-scenario schema ID is a wire
+contract between independently installable producers/consumers, and each
+independent CLI owns its loopback default. Neither justifies an import dependency
+between generator, demo, and core; additional owners still fail the gate.
 
 `PlanBoundCapabilityRouter` is the production composition layer above that
 executor. It digest-verifies and detaches a revision plan, resolves an exact
@@ -1398,6 +1425,24 @@ FTS vocabulary digest protect reopen reuse from stale document/index
 combinations; FTS5's full source-aware integrity check runs before publication.
 
 Client publication is a separate core projection over that storage model.
+
+Historical state fallback is absence-based: a selected interval containing an
+explicitly empty property mapping remains empty, including after deletion of
+the last field. Only a resource without any state history uses the legacy
+final-record fallback; a gap in declared history never borrows a future snapshot.
+Shared half-open containment and tri-state
+relationship-presence helpers serve both indexed and scanning consumers.
+Legacy omitted presence means present; explicit false is excluded from active
+graphs and table traversal; explicit null remains ambiguous with both presence
+alternatives. History retains tombstone evidence. Browser fallback and
+transport-normalization paths preserve the same distinctions.
+
+Overlapping independent status perspectives remain ambiguous in singular
+resource reads and named resource-table views: no final-state fallback fills
+their empty state. Ambiguous resources and child branches remain discoverable
+through table search in both indexed and scanning history; only explicit
+absence excludes them from an active table.
+
 Descriptor sensitivity and visibility rules apply only inside plug-in property
 containers, including nested mappings/lists and literal dotted keys; they never
 become a global blacklist over core envelopes. Revision/node/resource/event
@@ -1406,6 +1451,12 @@ schema, and capability fields therefore retain their core meaning even when a
 plug-in property collides with the same name. Public evidence, provenance,
 unknown-field, and incarnation values use bounded typed metadata shapes rather
 than arbitrary plug-in maps.
+
+Core-generated resource and event-subject labels use the same publication
+policy to select permitted key values before formatting, with the resource
+kind as an all-hidden fallback. Original typed keys and canonical identities
+stay private and unchanged. This construction rule does not rewrite stored or
+explicit plug-in-supplied labels; those remain intentional public presentation.
 
 For an event, core assembles the applicable property policies from explicit
 event/subject/effect resource kinds and from every referenced canonical
@@ -1490,7 +1541,19 @@ retain validity/capture ranges and evidence. Forwarding and consistency outputs
 inherit/reference that basis instead of compressing several observation times
 into one synthetic timestamp.
 
-### 6.1 Preferred forward algorithm
+The following forward and reverse algorithms are target algorithms for an
+explicitly configured replay host, not a shipped automatic stage of ordinary
+parser ingestion. The current `IngestionCoordinator` normalizes observations
+into intervals and retains ordered events; it does not schedule `apply()`,
+`revert()`, `correlate()`, or checkpoints. Those hooks are executable through
+`PluginCapabilityExecutor` and plan-bound routing, but require host scheduling
+and persistence. Durable publication separately schedules revision relationship
+projection followed by consistency checks. See the shipped-support matrix in
+[`plugin-contract.md`](plugin-contract.md#shipped-execution-and-scheduling).
+This distinction does not move replay mechanics into the plug-in: the host
+owns ordering, storage, and budgets; the plug-in owns event semantics.
+
+### 6.1 Target preferred forward algorithm
 
 1. Normalize observation and event clocks when evidence permits; retain every
    uncertainty window.
@@ -1507,7 +1570,7 @@ into one synthetic timestamp.
 8. Record exact/best-effort/ambiguous/unknown output counts by resource, field,
    relationship type, and time range.
 
-### 6.2 Final-snapshot reverse fallback
+### 6.2 Target final-snapshot reverse fallback
 
 1. Initialize each resource or relationship at its own latest observation
    anchor, not at one global final time.
@@ -2726,7 +2789,13 @@ Generic records cite the exact `primary_parser` role, while optional provider
 evidence cites an exact declared capability. Client-safe projections use the
 existing redaction policy. Full-fidelity plug-in-owned normalized fields and
 retained `copy_text` are available only when both the workspace and local
-runner policies opt in; `never_assistant` is never admitted.
+runner policies opt in; `never_assistant` is never released to the runner.
+This is an envelope-classification guarantee, not automated secret detection:
+the built-in revision adapter has no per-field private-evidence classifier and
+does not infer one from a nested `disclosure_class` property. Authorized
+full-fidelity payloads can include credential-shaped text. Deployments must
+exclude unsafe evidence before admission, provide a filtered source, or decline
+full-fidelity access; client sensitivity rules are not private-mode exclusions.
 Active-resource ordering uses deterministic bounded chunk sorting plus merge,
 with cooperative cancellation during input collection, each chunk boundary,
 and merge. Selected-record normalization, payload hashing, reference

@@ -15,10 +15,28 @@ PRODUCTION_ROOTS = (
     ROOT / "src" / "router_dump_analyzer",
     ROOT / "demo" / "rsl_demo_plugin",
     ROOT / "demo" / "rsl_demo_generator",
+    ROOT / "state-dump-generator" / "src" / "state_dump_generator",
     ROOT / "scripts",
 )
 MINIMUM_CLONE_TOKENS = 80
 MINIMUM_STRUCTURAL_AST_LENGTH = 1_200
+# These products are independently installable: sharing an import would create
+# a forbidden generator/core/demo dependency. Pin both the literal and the exact
+# pair of owners; a third copy or a renamed/new contract is still a violation.
+INDEPENDENT_PRODUCT_CONSTANTS = {
+    "state-dump-generator-scenario/v1": frozenset(
+        {
+            ("demo/rsl_demo_generator/scenario_source.py", "SCENARIO_SCHEMA_ID"),
+            ("state-dump-generator/src/state_dump_generator/model.py", "SCHEMA_ID"),
+        }
+    ),
+    "127.0.0.1": frozenset(
+        {
+            ("src/router_dump_analyzer/cli.py", "DEFAULT_HOST"),
+            ("state-dump-generator/src/state_dump_generator/server.py", "DEFAULT_HOST"),
+        }
+    ),
+}
 IGNORED_TOKEN_TYPES = frozenset(
     {
         tokenize.ENCODING,
@@ -41,6 +59,15 @@ def _production_python_files() -> tuple[Path, ...]:
             if path.is_file() and "__pycache__" not in path.parts
         )
     )
+
+
+def _independent_product_constant(
+    value: str, declarations: list[tuple[Path, int, str]]
+) -> bool:
+    owners = frozenset(
+        (path.relative_to(ROOT).as_posix(), name) for path, _, name in declarations
+    )
+    return owners == INDEPENDENT_PRODUCT_CONSTANTS.get(value)
 
 
 def _significant_tokens(
@@ -688,8 +715,9 @@ class PythonSourceDeduplicationTests(unittest.TestCase):
                 f"{path.relative_to(ROOT)}:{line} ({name})"
                 for path, line, name in declarations
             )
-            for declarations in owners.values()
+            for value, declarations in owners.items()
             if len({path for path, _, _ in declarations}) > 1
+            and not _independent_product_constant(value, declarations)
         ]
         self.assertEqual(
             [],
@@ -697,6 +725,21 @@ class PythonSourceDeduplicationTests(unittest.TestCase):
             "named string contract constants have multiple owners:\n"
             + "\n".join(duplicates),
         )
+
+    def test_independent_product_exceptions_cannot_hide_new_owners(self) -> None:
+        for value, owners in INDEPENDENT_PRODUCT_CONSTANTS.items():
+            declarations = [(ROOT / path, 1, name) for path, name in owners]
+            with self.subTest(value=value):
+                self.assertTrue(_independent_product_constant(value, declarations))
+                self.assertFalse(
+                    _independent_product_constant("different-contract", declarations)
+                )
+                self.assertFalse(
+                    _independent_product_constant(
+                        value, declarations + [(ROOT / "src/new.py", 1, "COPY")]
+                    )
+                )
+                self.assertFalse(_independent_product_constant(value, declarations[:1]))
 
     def test_decimal_integer_grammar_guard_sees_nested_parser_languages(
         self,

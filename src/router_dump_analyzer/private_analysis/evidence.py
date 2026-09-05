@@ -19,6 +19,7 @@ from json import JSONDecodeError, loads
 from typing import Any, Final
 
 from ..canonical import strict_canonical_json, strict_canonical_json_sha256
+from ..canonical import validate_lowercase_sha256 as _sha256
 from ..contract_validation import validate_bounded_json_value
 from ..public_text import (
     contains_filesystem_identity_path,
@@ -26,6 +27,7 @@ from ..public_text import (
     has_visible_identity_anchor,
 )
 from ..value_core import MAX_JSON_SAFE_INTEGER
+from ..value_core import require_bounded_integer as _integer
 from ._wire import (
     SealedContractValue,
 )
@@ -154,6 +156,8 @@ class CoreEvidenceProducer(StrEnum):
 _CORE_EVIDENCE_PRODUCER_IDS: Final = frozenset(
     producer.value for producer in CoreEvidenceProducer
 )
+
+
 @lru_cache(maxsize=8_192)
 def _valid_evidence_identifier(value: str, maximum: int) -> bool:
     """Cache the expensive Unicode/path safety scan for repeated identities.
@@ -200,16 +204,6 @@ def validate_evidence_token(
     return result
 
 
-def _sha256(value: object, label: str) -> str:
-    if (
-        type(value) is not str
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
-        raise ValueError(f"{label} must be a lowercase SHA-256 digest")
-    return value
-
-
 def _execution_plan_digest(value: object, label: str) -> str:
     if type(value) is not str or not value.startswith("sha256:") or len(value) != 71:
         raise ValueError(f"{label} must be a sha256-prefixed lowercase digest")
@@ -223,18 +217,6 @@ def _prefixed_sha256(value: object, label: str) -> str:
     if len(value) != 71:
         raise ValueError(f"{label} must be a sha256-prefixed lowercase digest")
     _sha256(value[7:], label)
-    return value
-
-
-def _integer(
-    value: object,
-    label: str,
-    *,
-    minimum: int,
-    maximum: int,
-) -> int:
-    if type(value) is not int or not minimum <= value <= maximum:
-        raise ValueError(f"{label} must be between {minimum} and {maximum}")
     return value
 
 

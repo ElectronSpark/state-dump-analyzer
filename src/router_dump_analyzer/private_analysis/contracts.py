@@ -16,13 +16,14 @@ from json import JSONDecodeError, loads
 from typing import Any, Final
 
 from ..canonical import strict_canonical_json, strict_canonical_json_sha256
+from ..canonical import validate_lowercase_sha256 as _bare_sha256
 from ..contract_validation import validate_bounded_json_value
 from ..public_text import (
     contains_filesystem_identity_path,
     contains_unsafe_identifier_text,
     has_visible_identity_anchor,
 )
-from ..value_core import MAX_JSON_SAFE_INTEGER
+from ..value_core import MAX_JSON_SAFE_INTEGER, require_bounded_integer
 from ._wire import SealedContractValue
 from ._wire import bounded_canonical_decimal_integer as _bounded_decimal
 from ._wire import bounded_utf8_text as _bounded_utf8_text
@@ -243,16 +244,6 @@ def _identifier(value: object, label: str) -> str:
     return value
 
 
-def _bare_sha256(value: object, label: str) -> str:
-    if (
-        type(value) is not str
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
-        raise ValueError(f"{label} must be a lowercase SHA-256 digest")
-    return value
-
-
 def _prefixed_sha256(value: object, label: str) -> str:
     if type(value) is not str or len(value) != 71 or not value.startswith("sha256:"):
         raise ValueError(f"{label} must be a sha256-prefixed lowercase digest")
@@ -261,9 +252,7 @@ def _prefixed_sha256(value: object, label: str) -> str:
 
 
 def _integer(value: object, label: str, minimum: int, maximum: int) -> int:
-    if type(value) is not int or not minimum <= value <= maximum:
-        raise ValueError(f"{label} must be between {minimum} and {maximum}")
-    return value
+    return require_bounded_integer(value, label, minimum=minimum, maximum=maximum)
 
 
 def _bounded_wire_list(

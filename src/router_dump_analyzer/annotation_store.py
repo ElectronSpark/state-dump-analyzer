@@ -30,10 +30,12 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
+from itertools import islice
 from pathlib import Path
 from typing import Any, Self
 from uuid import uuid4
 
+from ._sqlite_transactions import sqlite_transaction
 from .canonical import (
     CanonicalValueError,
     strict_canonical_json,
@@ -298,15 +300,22 @@ class ReviewSubject:
         )
 
 
-def _normalize_subjects(
+def normalize_review_subjects(
     subjects: Iterable[ReviewSubject],
     *,
     maximum: int,
     event_only: bool = False,
 ) -> tuple[ReviewSubject, ...]:
+    """Validate one bounded review selection before any resource resolution.
+
+    Shared by durable overlays and their coordinator. At most ``maximum + 1``
+    values are consumed, including when the caller supplies a generator.
+    """
+    if type(maximum) is not int or not 1 <= maximum <= MAX_ANNOTATION_SUBJECTS:
+        raise ReviewValidationError("invalid review subject limit")
     if isinstance(subjects, (str, bytes)) or not isinstance(subjects, Iterable):
         raise ReviewValidationError("subjects must be an iterable")
-    materialized = tuple(subjects)
+    materialized = tuple(islice(subjects, maximum + 1))
     if not 1 <= len(materialized) <= maximum:
         raise ReviewValidationError(
             f"subjects must contain between 1 and {maximum} items"
@@ -318,6 +327,10 @@ def _normalize_subjects(
     ):
         raise ReviewValidationError(
             "manual event correlations may reference only event subjects"
+        )
+    if event_only and len(materialized) < 2:
+        raise ReviewValidationError(
+            "manual event correlations require at least two subjects"
         )
     identities = [subject.identity_key() for subject in materialized]
     if len(identities) != len(set(identities)):
@@ -356,7 +369,7 @@ class ReviewAnnotation:
         object.__setattr__(
             self,
             "subjects",
-            _normalize_subjects(
+            normalize_review_subjects(
                 self.subjects,
                 maximum=MAX_ANNOTATION_SUBJECTS,
             ),
@@ -503,15 +516,11 @@ class ManualEventCorrelation:
         )
         if type(self.scope) is not ReviewScope:
             raise ReviewValidationError("scope must be an exact ReviewScope")
-        subjects = _normalize_subjects(
+        subjects = normalize_review_subjects(
             self.subjects,
             maximum=MAX_CORRELATION_SUBJECTS,
             event_only=True,
         )
-        if len(subjects) < 2:
-            raise ReviewValidationError(
-                "manual event correlations require at least two subjects"
-            )
         object.__setattr__(self, "subjects", subjects)
         object.__setattr__(
             self,
@@ -1362,10 +1371,9 @@ class ReviewOverlayStore:
 
         SQLite commit failures are ambiguous to the caller.  A successful
         rollback makes the shared connection reusable; if rollback itself
-        fails or leaves the connection inside a transaction, file-backed
-        stores discard it and reopen the durable database.  An in-memory
-        database cannot be reconstructed without silently losing state, so it
-        is closed and reported as unrecoverable instead.
+        fails or leaves the connection inside a transaction, the store opens
+        a replacement before retiring it. Named shared-memory databases retain
+        their committed state across that handoff as well.
         """
 
         connection = self._connection
@@ -1410,13 +1418,13 @@ class ReviewOverlayStore:
                 raise ReviewOverlayError("review overlay store is closed")
             if begin not in {"BEGIN", "BEGIN IMMEDIATE"}:
                 raise ValueError("unsupported review overlay transaction mode")
-            self._connection.execute(begin)
-            try:
-                yield self._connection
-                self._connection.commit()
-            except BaseException:
-                self._recover_failed_transaction()
-                raise
+            connection = self._connection
+            with sqlite_transaction(
+                begin=lambda: connection.execute(begin),
+                commit=connection.commit,
+                recover=self._recover_failed_transaction,
+            ):
+                yield connection
 
     def _now(self) -> int:
         with self._lock:
@@ -1720,7 +1728,7 @@ class ReviewOverlayStore:
             annotation_id=candidate_id,
             scope=scope,
             kind=kind,
-            subjects=tuple(subjects),
+            subjects=subjects,  # type: ignore[arg-type] -- bounded by the record
             author=author,
             title=title,
             body=body,
@@ -1941,7 +1949,7 @@ class ReviewOverlayStore:
                 scope=scope,
                 kind=current.kind if kind is _UNSET else kind,  # type: ignore[arg-type]
                 subjects=(
-                    current.subjects if subjects is _UNSET else tuple(subjects)  # type: ignore[arg-type]
+                    current.subjects if subjects is _UNSET else subjects  # type: ignore[arg-type]
                 ),
                 author=current.author,
                 title=current.title if title is _UNSET else title,  # type: ignore[arg-type]
@@ -2092,7 +2100,7 @@ class ReviewOverlayStore:
         candidate = ManualEventCorrelation(
             correlation_id=candidate_id,
             scope=scope,
-            subjects=tuple(subjects),
+            subjects=subjects,  # type: ignore[arg-type] -- bounded by the record
             edges=tuple(edges),
             author=author,
             rationale=rationale,
@@ -2310,7 +2318,7 @@ class ReviewOverlayStore:
                 correlation_id=current.correlation_id,
                 scope=scope,
                 subjects=(
-                    current.subjects if subjects is _UNSET else tuple(subjects)  # type: ignore[arg-type]
+                    current.subjects if subjects is _UNSET else subjects  # type: ignore[arg-type]
                 ),
                 edges=(
                     current.edges if edges is _UNSET else tuple(edges)  # type: ignore[arg-type]
@@ -3906,4 +3914,5 @@ __all__ = [
     "ReviewSubjectKind",
     "ReviewValidationError",
     "build_correlation_report",
+    "normalize_review_subjects",
 ]

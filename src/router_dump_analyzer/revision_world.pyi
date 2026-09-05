@@ -1,9 +1,10 @@
+from .observation_reconstruction import RelationshipIdentity
 from .plugin_api import ReadOnlyWorld, RelationDirection, RelationshipObservation, RelationshipView, ResourceKey, ResourceStateView, SnapshotObservation, StatusPerspectiveRef, WorldBasis
 from collections.abc import Iterable, Sequence
 
 __all__ = ['IngestionRevisionWorld']
 
-type _RelationshipIdentityKey = tuple[ResourceKey, ResourceKey, str, StatusPerspectiveRef | None]
+type _RelationshipIdentityKey = RelationshipIdentity
 class IngestionRevisionWorld(ReadOnlyWorld):
     def __init__(self, *, basis: WorldBasis, snapshots: Sequence[SnapshotObservation], relationship_observations: Sequence[RelationshipObservation], projected_relationships: Sequence[RelationshipView] = (), undirected_relationship_types: frozenset[str] = ..., perspective_ref: StatusPerspectiveRef | None = None, primary_plugin_instance_id: str | None = None, primary_schema_digest: str | None = None) -> None: ...
     @property

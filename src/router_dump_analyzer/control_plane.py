@@ -33,11 +33,14 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
+from itertools import islice
 from pathlib import Path, PurePosixPath
 from typing import Any, Self
 from uuid import UUID
 
 from .annotation_store import (
+    MAX_ANNOTATION_SUBJECTS,
+    MAX_CORRELATION_SUBJECTS,
     CorrelationReport,
     ManualCorrelationEdge,
     ManualEventCorrelation,
@@ -51,7 +54,9 @@ from .annotation_store import (
     ReviewScope,
     ReviewSubject,
     ReviewSubjectKind,
+    _review_retention_policy_document as _review_policy_document,
     build_correlation_report,
+    normalize_review_subjects,
 )
 from .canonical import canonical_json, strict_canonical_json
 from .capability_router import (
@@ -403,8 +408,20 @@ class ControlPlaneLimits:
     max_private_analysis_evidence_corpus_payload_bytes: int = (
         _DEFAULT_MAX_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_PAYLOAD_BYTES
     )
+    max_subject_revisions: int = _DEFAULT_MAX_REPORT_REVISIONS
+    max_subject_dataset_bytes: int = _DEFAULT_MAX_REPORT_DATASET_BYTES
 
     def __post_init__(self) -> None:
+        if (
+            type(self.max_subject_revisions) is not int
+            or not 1 <= self.max_subject_revisions <= MAX_ANNOTATION_SUBJECTS
+        ):
+            raise ValueError("max_subject_revisions must be between 1 and 5000")
+        if (
+            type(self.max_subject_dataset_bytes) is not int
+            or self.max_subject_dataset_bytes < 1
+        ):
+            raise ValueError("max_subject_dataset_bytes must be a positive integer")
         if type(self.max_dataset_bytes) is not int or self.max_dataset_bytes < 1:
             raise ValueError("max_dataset_bytes must be a positive integer")
         if (
@@ -530,17 +547,6 @@ class ControlPlaneRetentionResult:
     review: ReviewRetentionInventory | ReviewRetentionResult
     replayed_release_actions: int = 0
     replayed_artifact_releases: int = 0
-
-
-def _review_policy_document(policy: ReviewRetentionPolicy) -> dict[str, Any]:
-    return {
-        "enabled": policy.enabled,
-        "tombstone_before_ns": policy.tombstone_before_ns,
-        "idempotency_before_ns": policy.idempotency_before_ns,
-        "audit_mode": policy.audit_mode.value,
-        "audit_before_sequence": policy.audit_before_sequence,
-        "maximum_candidates": policy.maximum_candidates,
-    }
 
 
 def _catalog_policy_is_effective_for(
@@ -1111,9 +1117,7 @@ def _verified_materialized_identity(
         canonical_payload = strict_canonical_json(payload)
     except (TypeError, ValueError) as error:
         raise DatasetIntegrityError(f"{label} is not canonical") from error
-    expected = "sha256:" + hashlib.sha256(
-        canonical_payload.encode("utf-8")
-    ).hexdigest()
+    expected = "sha256:" + hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
     if identifier != expected:
         raise DatasetIntegrityError(f"{label} identifier does not match its record")
     return identifier
@@ -2650,13 +2654,14 @@ class ControlPlane:
         raw_declarations = dataset.get("relationship_declarations")
         raw_diagnostics = dataset.get("relationship_projection_diagnostics")
         raw_edges = dataset.get("relationship_projection_edges")
-        raw_materialization = dataset.get(
-            "relationship_projection_materialization"
-        )
-        if any(
-            type(value) is not list
-            for value in (raw_declarations, raw_diagnostics, raw_edges)
-        ) or type(raw_materialization) is not dict:
+        raw_materialization = dataset.get("relationship_projection_materialization")
+        if (
+            any(
+                type(value) is not list
+                for value in (raw_declarations, raw_diagnostics, raw_edges)
+            )
+            or type(raw_materialization) is not dict
+        ):
             raise DatasetIntegrityError(
                 "relationship projection materialization has invalid containers"
             )
@@ -2691,17 +2696,14 @@ class ControlPlane:
             )
         providers = raw_materialization.get("providers")
         if type(providers) is not list or len(providers) > limits.max_providers:
-            raise DatasetIntegrityError(
-                "relationship projection providers are invalid"
-            )
+            raise DatasetIntegrityError("relationship projection providers are invalid")
         for provider in providers:
             if (
                 not isinstance(provider, Mapping)
                 or provider.get("catalog_revision_id")
                 != execution_plan.basis_revision_id
                 or provider.get("member_id") != execution_plan.basis_revision_id
-                or provider.get("basis_revision_id")
-                != execution_plan.basis_revision_id
+                or provider.get("basis_revision_id") != execution_plan.basis_revision_id
                 or provider.get("node_id") != execution_plan.node_id
                 or provider.get("plan_digest") != execution_plan.plan_digest
                 or provider.get("capability")
@@ -2714,9 +2716,7 @@ class ControlPlane:
         inventory = dataset.get("inventory")
         members = inventory.get("members") if isinstance(inventory, Mapping) else None
         if type(members) is not list or len(members) > limits.max_artifact_ids:
-            raise DatasetIntegrityError(
-                "relationship projection inventory is invalid"
-            )
+            raise DatasetIntegrityError("relationship projection inventory is invalid")
         artifact_ids: set[UUID] = set()
         for member in members:
             artifact_text = member.get("artifact_id") if type(member) is dict else None
@@ -2851,9 +2851,7 @@ class ControlPlane:
                 ) from error
             expected_basis_digest = (
                 "sha256:"
-                + hashlib.sha256(
-                    canonical_projection_basis.encode("utf-8")
-                ).hexdigest()
+                + hashlib.sha256(canonical_projection_basis.encode("utf-8")).hexdigest()
             )
         else:
             expected_basis_digest = None
@@ -2873,8 +2871,7 @@ class ControlPlane:
             status is RelationshipProjectionMaterializationStatus.COMPLETE
             and isinstance(consistency_materialization, Mapping)
             and consistency_status is ConsistencyMaterializationStatus.COMPLETE
-            and consistency_materialization.get("basis_digest")
-            != expected_basis_digest
+            and consistency_materialization.get("basis_digest") != expected_basis_digest
         ):
             raise DatasetIntegrityError(
                 "relationship projection and consistency bases disagree"
@@ -3038,8 +3035,7 @@ class ControlPlane:
         inventory = dataset.get("inventory")
         if (
             not isinstance(inventory, Mapping)
-            or inventory.get("mode")
-            != _CONSISTENCY_MATERIALIZATION_INGESTION_MODE
+            or inventory.get("mode") != _CONSISTENCY_MATERIALIZATION_INGESTION_MODE
         ):
             raise DatasetIntegrityError(
                 "consistency materialization requires core-ingestion-v3 inventory"
@@ -3064,7 +3060,10 @@ class ControlPlane:
                 raise DatasetIntegrityError(
                     "consistency materialization inventory artifact is invalid"
                 ) from error
-            if str(artifact_id) != artifact_text or artifact_id in admitted_artifact_ids:
+            if (
+                str(artifact_id) != artifact_text
+                or artifact_id in admitted_artifact_ids
+            ):
                 raise DatasetIntegrityError(
                     "consistency materialization inventory artifact is invalid"
                 )
@@ -3871,7 +3870,9 @@ class ControlPlane:
         one selector is required and at most 128 members are admitted.
         """
 
-        supplied = tuple(revision_ids)
+        supplied = tuple(islice(revision_ids, 129))
+        if len(supplied) > 128:
+            raise ValueError("a capability revision set requires 1 to 128 members")
         selector_count = sum(
             (
                 bool(supplied),
@@ -3939,13 +3940,10 @@ class ControlPlane:
                 scope.tenant_id,
                 scope.workspace_id,
                 fixture_id=fixture_id,
+                source_revision_id=source_revision_id,
                 limit=2,
             )
             if revision.fixture_id == fixture_id
-            and (
-                source_revision_id is None
-                or revision.metadata.get("source_revision_id") == source_revision_id
-            )
         ]
         if len(matches) != 1:
             raise SubjectResolutionError(
@@ -3957,51 +3955,64 @@ class ControlPlane:
         self,
         scope: ReviewScope,
         subjects: Iterable[ReviewSubject],
+        *,
+        event_only: bool = False,
     ) -> tuple[ReviewSubject, ...]:
         """Resolve every exact subject before a mutable write is admitted."""
 
-        materialized = tuple(subjects)
-        loaded_by_revision: dict[str, _LoadedRevision] = {}
+        materialized = normalize_review_subjects(
+            subjects,
+            maximum=MAX_CORRELATION_SUBJECTS if event_only else MAX_ANNOTATION_SUBJECTS,
+            event_only=event_only,
+        )
+        subjects_by_revision: dict[str, list[ReviewSubject]] = {}
         for subject in materialized:
-            if type(subject) is not ReviewSubject:
-                raise SubjectResolutionError(
-                    "subjects must contain exact ReviewSubject values"
-                )
-            loaded = loaded_by_revision.get(subject.revision_id)
-            if loaded is None:
-                loaded = self._load_revision(scope, subject.revision_id)
-                loaded_by_revision[subject.revision_id] = loaded
-            if (
-                subject.node_id is not None
-                and subject.node_id != loaded.descriptor.node_id
-            ):
-                raise SubjectResolutionError(
-                    "subject node does not match its exact revision"
-                )
-            subject_id = subject.subject_id
-            if subject.kind is ReviewSubjectKind.EVENT:
-                exists = subject_id in loaded.index.events
-            elif subject.kind is ReviewSubjectKind.SOURCE_RECORD:
-                exists = subject_id in loaded.index.source_records
-            elif subject.kind is ReviewSubjectKind.RESOURCE:
-                exists = subject_id in loaded.index.resources
-            elif subject.kind is ReviewSubjectKind.RELATIONSHIP:
-                exists = subject_id in loaded.index.relationships
-            else:
-                assert subject.kind is ReviewSubjectKind.TIME_RANGE
-                assert subject.start_ns is not None and subject.end_ns is not None
-                exists = (
-                    loaded.index.timeline_start_ns
-                    <= subject.start_ns
-                    <= subject.end_ns
-                    <= loaded.index.timeline_end_ns
-                )
-            if not exists:
-                raise SubjectResolutionError(
-                    f"{subject.kind.value} subject does not exist in revision "
-                    f"{subject.revision_id!r}"
-                )
+            subjects_by_revision.setdefault(subject.revision_id, []).append(subject)
+        self._preflight_revision_reads(
+            scope,
+            tuple(subjects_by_revision),
+            maximum_revisions=self.limits.max_subject_revisions,
+            maximum_bytes=self.limits.max_subject_dataset_bytes,
+            label="review subject",
+        )
+        # Retain only the existing bounded LRU, not every decoded revision.
+        for revision_id, selected in subjects_by_revision.items():
+            loaded = self._load_revision(scope, revision_id)
+            for subject in selected:
+                self._validate_loaded_subject(subject, loaded)
         return materialized
+
+    @staticmethod
+    def _validate_loaded_subject(
+        subject: ReviewSubject, loaded: _LoadedRevision
+    ) -> None:
+        if subject.node_id is not None and subject.node_id != loaded.descriptor.node_id:
+            raise SubjectResolutionError(
+                "subject node does not match its exact revision"
+            )
+        subject_id = subject.subject_id
+        if subject.kind is ReviewSubjectKind.EVENT:
+            exists = subject_id in loaded.index.events
+        elif subject.kind is ReviewSubjectKind.SOURCE_RECORD:
+            exists = subject_id in loaded.index.source_records
+        elif subject.kind is ReviewSubjectKind.RESOURCE:
+            exists = subject_id in loaded.index.resources
+        elif subject.kind is ReviewSubjectKind.RELATIONSHIP:
+            exists = subject_id in loaded.index.relationships
+        else:
+            assert subject.kind is ReviewSubjectKind.TIME_RANGE
+            assert subject.start_ns is not None and subject.end_ns is not None
+            exists = (
+                loaded.index.timeline_start_ns
+                <= subject.start_ns
+                <= subject.end_ns
+                <= loaded.index.timeline_end_ns
+            )
+        if not exists:
+            raise SubjectResolutionError(
+                f"{subject.kind.value} subject does not exist in revision "
+                f"{subject.revision_id!r}"
+            )
 
     def create_annotation(
         self,
@@ -4105,7 +4116,7 @@ class ControlPlane:
         idempotency_key: str | None = None,
     ) -> ManualEventCorrelation:
         with self._coordinated_review_catalog():
-            resolved = self.validate_subjects(scope, subjects)
+            resolved = self.validate_subjects(scope, subjects, event_only=True)
             return self.annotations.create_correlation(
                 scope,
                 subjects=resolved,
@@ -4150,7 +4161,7 @@ class ControlPlane:
             resolved = (
                 current.subjects
                 if subjects is None
-                else self.validate_subjects(scope, subjects)
+                else self.validate_subjects(scope, subjects, event_only=True)
             )
             return self.annotations.update_correlation(
                 scope,
@@ -4187,8 +4198,14 @@ class ControlPlane:
         revision_ids: Iterable[str],
         session_id: str | None,
         snapshot_id: str | None,
+        *,
+        maximum: int,
     ) -> tuple[str, ...]:
-        supplied = tuple(revision_ids)
+        supplied = tuple(islice(revision_ids, maximum + 1))
+        if len(supplied) > maximum:
+            raise ControlPlaneError(
+                "selected revisions exceed the report revision limit"
+            )
         selected_forms = sum(
             (
                 bool(supplied),
@@ -4331,6 +4348,42 @@ class ControlPlane:
             "provenance": list(fact.provenance),
         }
 
+    def _preflight_revision_reads(
+        self,
+        scope: ReviewScope,
+        revision_ids: tuple[str, ...],
+        *,
+        maximum_revisions: int,
+        maximum_bytes: int,
+        label: str,
+    ) -> None:
+        """Bound catalog-authorized dataset reads before decoding any payload."""
+        if len(revision_ids) > maximum_revisions:
+            raise ControlPlaneError(
+                f"selected revisions exceed the {label} revision limit"
+            )
+        total_bytes = 0
+        for revision_id in revision_ids:
+            descriptor = self._revision(scope, revision_id)
+            path = self._dataset_path(
+                self.ingestion.dataset_root, descriptor.metadata.get("dataset_ref")
+            )
+            try:
+                size = path.stat().st_size
+            except OSError as error:
+                raise DatasetIntegrityError(
+                    "serialized revision dataset is unavailable"
+                ) from error
+            if size < 1 or size > self.limits.max_dataset_bytes:
+                raise DatasetIntegrityError(
+                    "serialized dataset violates the configured byte limit"
+                )
+            total_bytes += size
+            if total_bytes > maximum_bytes:
+                raise ControlPlaneError(
+                    f"selected revision datasets exceed the {label} byte limit"
+                )
+
     def build_report(
         self,
         scope: ReviewScope,
@@ -4352,6 +4405,7 @@ class ControlPlane:
             revision_ids,
             session_id,
             snapshot_id,
+            maximum=self.limits.max_report_revisions,
         )
         if (session_id is not None or snapshot_id is not None) and not selected_ids:
             raise SubjectResolutionError(
@@ -4362,27 +4416,13 @@ class ControlPlane:
                 "correlation reports require explicit revision_ids, "
                 "session_id, or snapshot_id"
             )
-        if len(selected_ids) > self.limits.max_report_revisions:
-            raise ControlPlaneError(
-                "selected revisions exceed the report revision limit"
-            )
-        total_dataset_bytes = 0
-        for revision_id in selected_ids:
-            descriptor = self._revision(scope, revision_id)
-            dataset_path = self._dataset_path(
-                self.ingestion.dataset_root,
-                descriptor.metadata.get("dataset_ref"),
-            )
-            try:
-                total_dataset_bytes += dataset_path.stat().st_size
-            except OSError as error:
-                raise DatasetIntegrityError(
-                    "serialized revision dataset is unavailable"
-                ) from error
-            if total_dataset_bytes > self.limits.max_report_dataset_bytes:
-                raise ControlPlaneError(
-                    "selected revision datasets exceed the report byte limit"
-                )
+        self._preflight_revision_reads(
+            scope,
+            selected_ids,
+            maximum_revisions=self.limits.max_report_revisions,
+            maximum_bytes=self.limits.max_report_dataset_bytes,
+            label="report",
+        )
         loaded = {
             revision_id: self._load_revision(scope, revision_id)
             for revision_id in selected_ids

@@ -9,7 +9,6 @@ serializing a byte.
 
 from __future__ import annotations
 
-import dataclasses
 import gzip
 import hashlib
 import io
@@ -22,9 +21,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from ._json_values import plain_value as _project_json_value
+from ._json_values import stable_json_key as _stable_sort_key
 from .boundary import forbidden_authoring_paths
 from .path_safety import resolve_output_file
-
 
 ASSEMBLY_SCHEMA = "state-dump-assembly/v1"
 NODE_DUMP_SCHEMA = "router-state-dump/v1"
@@ -107,9 +107,7 @@ def validate_member_name(value: str) -> str:
             or part.endswith((".", " "))
             or base_name in _WINDOWS_RESERVED_MEMBER_NAMES
         ):
-            raise ArchiveProjectionError(
-                f"unsafe archive member name: {value!r}"
-            )
+            raise ArchiveProjectionError(f"unsafe archive member name: {value!r}")
     return normalized
 
 
@@ -156,39 +154,12 @@ def sha256_hex(content: bytes) -> str:
 
 
 def _plain_value(value: Any) -> Any:
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {
-            field.name: _plain_value(getattr(value, field.name))
-            for field in dataclasses.fields(value)
-        }
-    if isinstance(value, Mapping):
-        return {str(key): _plain_value(item) for key, item in value.items()}
-    if isinstance(value, tuple | list):
-        return [_plain_value(item) for item in value]
-    if isinstance(value, set | frozenset):
-        return sorted(
-            (_plain_value(item) for item in value),
-            key=_stable_sort_key,
-        )
-    if isinstance(value, Path):
-        return str(value)
-    if value is None or isinstance(value, str | int | float | bool):
-        return value
-    to_dict = getattr(value, "to_dict", None)
-    if callable(to_dict):
-        return _plain_value(to_dict())
-    raise ArchiveProjectionError(
-        f"compiled plan contains a non-serializable {type(value).__name__}"
-    )
-
-
-def _stable_sort_key(value: Any) -> str:
-    return json.dumps(
+    return _project_json_value(
         value,
-        allow_nan=False,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
+        set_sort_key=_stable_sort_key,
+        path_strings=True,
+        error_type=ArchiveProjectionError,
+        unsupported_message="compiled plan contains a non-serializable {kind}",
     )
 
 
@@ -330,7 +301,9 @@ def _normalize_plan(plan_value: Any, node_id_hint: str | None) -> dict[str, Any]
     for index, record in enumerate(log_records):
         _assert_node_local(record, location=f"node[{node_id}].logs[{index}]")
 
-    final_records.sort(key=lambda item: (_record_identity(item), _stable_sort_key(item)))
+    final_records.sort(
+        key=lambda item: (_record_identity(item), _stable_sort_key(item))
+    )
     log_records.sort(
         key=lambda item: (
             _timestamp(item),
@@ -383,16 +356,11 @@ def normalize_compiled_plans(compiled: Any) -> list[dict[str, Any]]:
             value = value["nodes"]
     plans: list[dict[str, Any]]
     if isinstance(value, Mapping):
-        plans = [
-            _normalize_plan(plan, str(node_id))
-            for node_id, plan in value.items()
-        ]
+        plans = [_normalize_plan(plan, str(node_id)) for node_id, plan in value.items()]
     elif isinstance(value, list | tuple):
         plans = [_normalize_plan(plan, None) for plan in value]
     else:
-        raise ArchiveProjectionError(
-            "compile_scenario must return per-node plans"
-        )
+        raise ArchiveProjectionError("compile_scenario must return per-node plans")
     plans.sort(key=lambda item: item["node_id"])
     node_ids = [item["node_id"] for item in plans]
     if not plans:
@@ -558,9 +526,9 @@ def write_assembly(document: Any, output: Path | str) -> Path:
 
 __all__ = [
     "ASSEMBLY_SCHEMA",
-    "ArchiveProjectionError",
     "GENERATOR_NAME",
     "NODE_DUMP_SCHEMA",
+    "ArchiveProjectionError",
     "build_assembly_bytes",
     "build_node_dump_bytes",
     "canonical_json_bytes",

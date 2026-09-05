@@ -22,6 +22,7 @@ from .cli import _add_repeatable_plugin_allowlist_arguments
 from .control_plane import ControlPlane
 from .ingestion_pipeline import PluginRegistry
 from .plugin_composition_deployment import (
+    _control_plane_composition_options,
     PluginCompositionDeploymentContext,
     load_plugin_composition_deployment,
 )
@@ -405,8 +406,7 @@ def build_parser() -> argparse.ArgumentParser:
     recover_expired = commands.add_parser(
         "recover-expired",
         help=(
-            "terminalize expired attempts in this workspace without retrying "
-            "the model"
+            "terminalize expired attempts in this workspace without retrying the model"
         ),
     )
     _add_mutation_identity(recover_expired)
@@ -663,9 +663,7 @@ def run(
     entry_point_loader: Callable[[str], Any] = load_plugin_entry_point,
     module_loader: Callable[[str], Any] = load_plugin_module,
     deployment_loader: Callable[..., Any] = load_private_analysis_deployment,
-    plugin_deployment_loader: Callable[..., Any] = (
-        load_plugin_composition_deployment
-    ),
+    plugin_deployment_loader: Callable[..., Any] = (load_plugin_composition_deployment),
     registry_factory: Callable[..., Any] = PluginRegistry,
     control_plane_factory: Callable[..., Any] = ControlPlane,
     stdout: TextIO = sys.stdout,
@@ -680,11 +678,7 @@ def run(
             context=PluginCompositionDeploymentContext(state_dir=state_root),
         )
         registry = composition.primary_registry
-        composition_options = {
-            "plugin_composition_policy": composition.policy,
-            "capability_providers": composition.capability_providers,
-            "allow_inline_only": composition.allow_inline_only,
-        }
+        composition_options = _control_plane_composition_options(composition)
     else:
         loaded_plugins = _load_plugins(
             configuration,

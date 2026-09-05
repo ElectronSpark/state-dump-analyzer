@@ -1,8 +1,10 @@
 from .capability_router import CapabilityProviderRef, PlanBoundCapabilityRouter
-from .plugin_api import PluginDiagnostic, ReadOnlyWorld, RelationDirection, RelationshipView, ResourceKey, ResourceStateView, WorldBasis
+from .materialization_contract import CONSISTENCY_MATERIALIZATION_SCHEMA_VERSION as CONSISTENCY_MATERIALIZATION_SCHEMA_VERSION
+from .plugin_api import PluginDiagnostic, ReadOnlyWorld, WorldBasis
 from .plugin_execution_plan import PluginExecutionPin, PluginExecutionPlan
+from .world_read_budget import AggregateReadWorld
 from _typeshed import Incomplete
-from collections.abc import Collection, Iterable
+from collections.abc import Collection
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
@@ -10,7 +12,6 @@ from uuid import UUID
 
 __all__ = ['CONSISTENCY_MATERIALIZATION_SCHEMA_VERSION', 'CONSISTENCY_MATERIALIZATION_COUNT_FIELDS', 'ConsistencyMaterializationError', 'ConsistencyMaterializationStatus', 'legacy_consistency_materialization_envelope', 'ConsistencyMaterializationLimits', 'ConsistencyMaterializationSummary', 'MaterializedConsistencyFinding', 'MaterializedConsistencyDiagnostic', 'ConsistencyMaterializationResult', 'revision_consistency_selected_pins', 'not_applicable_consistency_materialization', 'validate_materialized_consistency_basis', 'validate_materialized_consistency_finding', 'validate_materialized_consistency_diagnostic', 'validate_consistency_materialization_envelope', 'materialize_revision_consistency']
 
-CONSISTENCY_MATERIALIZATION_SCHEMA_VERSION: Final[str]
 CONSISTENCY_MATERIALIZATION_COUNT_FIELDS: Final[tuple[str, ...]]
 
 class ConsistencyMaterializationError(RuntimeError): ...
@@ -84,18 +85,8 @@ class ConsistencyMaterializationResult:
     def metadata_projection(self) -> dict[str, Any]: ...
     def dataset_fragment(self) -> dict[str, Any]: ...
 
-class _AggregateWorld:
+class _AggregateWorld(AggregateReadWorld):
     def __init__(self, world: ReadOnlyWorld, *, basis: WorldBasis, perspective_ref: Any, maximum_reads: int) -> None: ...
-    @property
-    def basis(self) -> WorldBasis: ...
-    @property
-    def perspective_ref(self) -> Any: ...
-    @property
-    def reads_used(self) -> int: ...
-    def state_of(self, resource: ResourceKey) -> ResourceStateView | None: ...
-    def iter_states(self, layers: frozenset[str] | None = None, kinds: frozenset[str] | None = None, limit: int | None = None) -> Iterable[ResourceStateView]: ...
-    def related(self, resource: ResourceKey, direction: RelationDirection = ..., relation_types: frozenset[str] | None = None, limit: int | None = None) -> Iterable[RelationshipView]: ...
-    def iter_relationships(self, relation_types: frozenset[str] | None = None, layers: frozenset[str] | None = None, limit: int | None = None) -> Iterable[RelationshipView]: ...
 
 class _ProjectionByteBudget:
     maximum: Incomplete

@@ -2048,7 +2048,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                     package_hash="module-sha256:" + package_character * 64,
                     configuration_digest=("sha256:" + configuration_character * 64),
                     plugin_process_module_target=(
-                        "tests.test_ingestion_pipeline:_PARSE_ONLY_PROCESS_PLUGIN"
+                        f"{__name__}:_PARSE_ONLY_PROCESS_PLUGIN"
                     ),
                 )
 
@@ -2505,7 +2505,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             instance_id="tests.parse-only.blue",
             configuration_digest="sha256:" + ("1" * 64),
             plugin_process_module_target=(
-                "tests.test_ingestion_pipeline:_PARSE_ONLY_PROCESS_PLUGIN"
+                f"{__name__}:_PARSE_ONLY_PROCESS_PLUGIN"
             ),
         )
         self.assertNotEqual(
@@ -2542,7 +2542,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                 instance_id="tests.parse-only.blue",
                 configuration_digest="sha256:" + ("1" * 64),
                 plugin_process_module_target=(
-                    "tests.test_ingestion_pipeline:_PARSE_ONLY_PROCESS_PLUGIN"
+                    f"{__name__}:_PARSE_ONLY_PROCESS_PLUGIN"
                 ),
             )
             selected = registry.register(
@@ -2551,7 +2551,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                 instance_id="tests.parse-only.green",
                 configuration_digest="sha256:" + ("2" * 64),
                 plugin_process_module_target=(
-                    "tests.test_ingestion_pipeline:_PARSE_ONLY_PROCESS_PLUGIN"
+                    f"{__name__}:_PARSE_ONLY_PROCESS_PLUGIN"
                 ),
             )
             return registry, selected
@@ -4078,7 +4078,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             package_hash=package_hash,
             configuration_digest=configured_digest,
             plugin_process_module_target=(
-                "tests.test_ingestion_pipeline:_ConfiguredProcessPlugin"
+                f"{__name__}:_ConfiguredProcessPlugin"
             ),
             plugin_process_construct_class=True,
         )
@@ -4094,7 +4094,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             package_hash=package_hash,
             configuration_digest=configured_digest,
             plugin_process_module_target=(
-                "tests.test_ingestion_pipeline:_CONFIGURED_PROCESS_PLUGIN"
+                f"{__name__}:_CONFIGURED_PROCESS_PLUGIN"
             ),
         )
         self.assertEqual(
@@ -4109,7 +4109,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             package_hash=package_hash,
             configuration_digest=configured_digest,
             plugin_process_module_target=(
-                "tests.test_ingestion_pipeline:_CONFIGURED_PROCESS_PLUGIN"
+                f"{__name__}:_CONFIGURED_PROCESS_PLUGIN"
             ),
         )
         with self.assertRaisesRegex(
@@ -4131,7 +4131,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             configuration_digest=configured_digest,
             decoder_identity=decoder_identity,
             plugin_process_module_target=(
-                "tests.test_ingestion_pipeline:_CONFIGURED_PROCESS_PLUGIN"
+                f"{__name__}:_CONFIGURED_PROCESS_PLUGIN"
             ),
         )
         with self.assertRaisesRegex(
@@ -4148,10 +4148,10 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             configuration_digest=configured_digest,
             decoder_identity=decoder_identity,
             plugin_process_module_target=(
-                "tests.test_ingestion_pipeline:_CONFIGURED_PROCESS_PLUGIN"
+                f"{__name__}:_CONFIGURED_PROCESS_PLUGIN"
             ),
             decoder_module_target=(
-                "tests.test_ingestion_pipeline:_CONFIGURED_PROCESS_DECODER"
+                f"{__name__}:_CONFIGURED_PROCESS_DECODER"
             ),
         )
         self.assertEqual(
@@ -4552,7 +4552,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                 package_hash=package_hash,
                 configuration_digest="sha256:" + ("a" * 64),
                 plugin_process_module_target=(
-                    "tests.test_ingestion_pipeline:_PARSE_ONLY_PROCESS_PLUGIN"
+                    f"{__name__}:_PARSE_ONLY_PROCESS_PLUGIN"
                 ),
             )
             first = DurableIngestionPipeline(
@@ -4577,7 +4577,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                 package_hash=package_hash,
                 configuration_digest="sha256:" + ("b" * 64),
                 plugin_process_module_target=(
-                    "tests.test_ingestion_pipeline:_PARSE_ONLY_PROCESS_PLUGIN"
+                    f"{__name__}:_PARSE_ONLY_PROCESS_PLUGIN"
                 ),
             )
             publisher = _Publisher()

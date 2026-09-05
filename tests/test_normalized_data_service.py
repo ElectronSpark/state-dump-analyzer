@@ -5,10 +5,15 @@ import json
 import random
 import re
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from router_dump_analyzer.normalized_data import (
     project_consistency_findings_for_client,
     project_consistency_materialization_for_client,
+    redact_event_for_client,
+    redact_resource_view,
+    resource_search_text,
 )
 from tests.support.normalized_data import static_data_service
 
@@ -779,6 +784,68 @@ class NormalizedDataServiceTests(unittest.TestCase):
         self.assertNotIn("secret", view["state"])
         self.assertNotIn("secret", view["resource"]["state"])
 
+    def test_search_reuses_visibility_policy_without_raw_key_fallback(self) -> None:
+        descriptor = {
+            "key_fields": ["public", "hidden", "sensitive", "nested"],
+            "display_name_fields": ["hidden", "nested"],
+            "properties": [
+                {"name": "hidden", "client_visible": False, "searchable": True},
+                {"name": "sensitive", "sensitive": True, "searchable": True},
+                {"name": "nested", "searchable": True},
+                {"name": "nested.secret", "client_visible": False},
+            ],
+        }
+        record = {
+            "resource_id": "resource", "label": "visible label", "kind": "ITEM",
+            "key": {"public": "public-key", "hidden": "hidden-token",
+                    "sensitive": "secret-token", "undeclared": "undeclared-token",
+                    "nested": {"safe": "safe-nested", "secret": "nested-token"}},
+            "nested": {"safe": "safe-top-level", "secret": "nested-token"},
+        }
+        for view in (record, redact_resource_view(record, descriptor)):
+            with self.subTest(view=view):
+                text = resource_search_text(record, view, descriptor)
+                for hidden in ("hidden-token", "secret-token", "undeclared-token", "nested-token"):
+                    self.assertNotIn(hidden, text)
+                self.assertIn("public-key", text)
+                self.assertIn("safe-nested", text)
+                self.assertIn("safe-top-level", text)
+        self.assertNotIn("public-key", resource_search_text(record, {"key": {}}, descriptor))
+        self.assertNotIn("public-key", resource_search_text(record, record, None))
+
+    def test_search_does_not_traverse_unrelated_non_searchable_payloads(self) -> None:
+        class UnvisitedPayload(dict):
+            def items(self):
+                self.fail_if_visited()
+
+            @staticmethod
+            def fail_if_visited():
+                raise AssertionError("non-searchable payload traversed during search")
+
+        payload = UnvisitedPayload(items=[{"value": "large payload"}] * 500)
+        descriptor = {"properties": [{"name": "payload", "searchable": False}]}
+        record = {"resource_id": "r", "label": "visible", "payload": payload}
+        view = {"state": {"payload": payload}, "resource": record}
+        self.assertIn("visible", resource_search_text(record, view, descriptor))
+
+    def test_hidden_key_is_not_a_scanning_or_indexed_search_oracle(self) -> None:
+        for indexed in (False, True):
+            dataset = self.dataset()
+            descriptor = dataset["kind_descriptors"][0]
+            descriptor["key_fields"] = ["private", "ifindex"]
+            descriptor["properties"].append({"name": "private", "client_visible": False})
+            dataset["resources"][0]["key"] = {"private": "unique-hidden-token", "ifindex": "public-index"}
+            service = static_data_service(dataset)
+            view = service.resource_state_at("node-x/INTERFACE/1", 10)
+            if indexed:
+                dataset["_scale_runtime"] = SimpleNamespace(
+                    resources=dataset["resources"],
+                    resource_search=SimpleNamespace(get_or_build=lambda _time, build: build()),
+                )
+            with self.subTest(indexed=indexed), patch.object(service, "resource_state_at", return_value=view):
+                self.assertEqual(service.resources_at(10, search="unique-hidden-token")["items"], [])
+                self.assertEqual(len(service.resources_at(10, search="public-index")["items"]), 1)
+
     def test_client_projection_uses_explicit_metadata_envelope_without_mutation(
         self,
     ) -> None:
@@ -990,6 +1057,32 @@ class NormalizedDataServiceTests(unittest.TestCase):
         self.assertEqual(client["events"][0]["condition"], "unknown")
         self.assertEqual(client["events"][0]["condition_class"], "healthy")
         self.assertNotIn("classified-condition", json.dumps(client))
+
+    def test_unresolved_event_subjects_use_union_condition_redaction(self) -> None:
+        marker = "private-condition-marker"
+        for sensitive in (True, False):
+            for identifiers in ([], ["missing"], ["node-x/INTERFACE/1", "missing"]):
+                dataset = self.dataset()
+                descriptor = dataset["kind_descriptors"][0]
+                descriptor["condition_field"] = "secret" if sensitive else "oper_status"
+                event = {
+                    "event_uid": "condition-fallback", "timestamp_ns": "10",
+                    "status": marker, "condition": marker,
+                    "affected_resources": identifiers,
+                    "properties": {"secret": marker},
+                }
+                dataset["events"] = [event]
+                service = static_data_service(dataset)
+                with self.subTest(sensitive=sensitive, identifiers=identifiers):
+                    outputs = (
+                        redact_event_for_client(event, dataset),
+                        service.client_dataset()["events"][0],
+                        service.range_summary(10, 10)["events"][0],
+                    )
+                    for result in outputs:
+                        self.assertEqual(result["status"], "unknown" if sensitive else marker)
+                        self.assertEqual(result["condition"], "unknown" if sensitive else marker)
+                        self.assertNotIn("secret", result.get("properties", {}))
 
     def test_range_histograms_preserve_core_action_on_property_collision(
         self,

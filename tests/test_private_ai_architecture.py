@@ -665,6 +665,7 @@ def _private_analysis_import_violations(source_root: Path) -> tuple[str, ...]:
             {
                 "strict_canonical_json",
                 "strict_canonical_json_sha256",
+                "validate_lowercase_sha256",
                 "validate_prefixed_lowercase_sha256",
             }
         ),
@@ -678,7 +679,11 @@ def _private_analysis_import_violations(source_root: Path) -> tuple[str, ...]:
         ),
         "..process_control": frozenset({"PROCESS_CONTROL_EXCEPTIONS"}),
         "..value_core": frozenset(
-            {"MAX_JSON_SAFE_INTEGER", "parse_canonical_decimal_integer"}
+            {
+                "MAX_JSON_SAFE_INTEGER",
+                "parse_canonical_decimal_integer",
+                "require_bounded_integer",
+            }
         ),
         "__future__": frozenset({"annotations"}),
         "bisect": frozenset({"bisect_left", "bisect_right"}),

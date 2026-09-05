@@ -5,6 +5,7 @@ const API = Object.freeze({
   create: "/api/scenario/new",
   validate: "/api/scenario/validate",
   preview: "/api/scenario/preview",
+  propagation: "/api/scenario/propagation",
   generate: "/api/scenario/generate",
 });
 
@@ -86,6 +87,10 @@ const PATTERNS = Object.freeze({
 });
 
 const dom = {};
+let eventSemantics = null;
+let propagationPreviewGeneration = 0;
+let loadedPropagationSettings = null;
+let loadedPropagationForm = null;
 let scenario = fallbackScenario();
 let selection = null;
 let selectedEventId = null;
@@ -106,7 +111,13 @@ function byId(id) {
   return document.getElementById(id);
 }
 
-function initialize() {
+async function initialize() {
+  try {
+    eventSemantics = await apiJson("/assets/semantics.json");
+  } catch (error) {
+    document.body.textContent = `Could not load editor semantics: ${error.message}`;
+    return;
+  }
   [
     "project-name",
     "new-project",
@@ -237,6 +248,7 @@ function fallbackScenario() {
     name: "Untitled scenario",
     seed: 1,
     capture_time_ns: 60_000_000_000,
+    _captureTimeExplicit: false,
     description: "",
     created_at: now,
     updated_at: now,
@@ -273,11 +285,10 @@ function normalizeScenario(input) {
     normalized.nodes.push(...converted.mediumNodes);
     normalized.physical_links = converted.links;
   }
-  normalized.events = Array.isArray(source.events)
-    ? source.events.map(normalizeEvent)
-    : Array.isArray(source.timeline)
-      ? source.timeline.map(normalizeEvent)
-      : [];
+  normalized.events = (Array.isArray(source.events) ? source.events : source.timeline || [])
+    .map((event, index) => normalizeEvent({ ...event, order: event.order ?? index }));
+  normalized._captureTimeExplicit = source._captureTimeExplicit
+    ?? (source.capture_time_ns !== undefined);
   normalized.defaults = {
     propagation: {
       ...base.defaults.propagation,
@@ -307,10 +318,8 @@ function normalizeScenario(input) {
   );
   normalized.id = stringValue(source.id || source.scenario_id, base.id);
   normalized.seed = Math.max(0, Math.trunc(finiteNumber(source.seed, 1)));
-  normalized.capture_time_ns = Math.max(
-    0,
-    Math.round(finiteNumber(source.capture_time_ns, normalized.duration_ms * 1_000_000)),
-  );
+  normalized.capture_time_ns = source.capture_time_ns
+    ?? Math.round(normalized.duration_ms * 1_000_000);
   return normalized;
 }
 
@@ -332,9 +341,11 @@ function normalizeNode(node, index) {
     notes: stringValue(source.notes, ""),
     dump_enabled:
       typeof source.dump_enabled === "boolean" ? source.dump_enabled : kind === "router",
-    clock: isPlainObject(source.clock)
-      ? structuredClone(source.clock)
-      : { offset_ns: 0, uncertainty_ns: 0 },
+    clock: {
+      ...(isPlainObject(source.clock) ? structuredClone(source.clock) : {}),
+      offset_ns: exactIntegerValue(source.clock?.offset_ns ?? source.clock_offset_ns ?? 0, "Clock offset"),
+      uncertainty_ns: exactIntegerValue(source.clock?.uncertainty_ns ?? source.clock_uncertainty_ns ?? 0, "Clock uncertainty", true),
+    },
     initial_resources: Array.isArray(source.initial_resources)
       ? structuredClone(source.initial_resources)
       : [],
@@ -377,25 +388,45 @@ function normalizeEndpoint(value) {
   return normalized;
 }
 
+function isPhysicalEvent(event) {
+  const kind = String(event.kind || event.event_kind || "").toLowerCase().replaceAll("_", "-");
+  const target = String(event.target_type || "").toLowerCase().replaceAll("_", "-");
+  return event.scope === "physical"
+    || eventSemantics.physical_kinds.includes(kind)
+    || eventSemantics.physical_target_types.includes(target);
+}
+
+function statePatchStatus(properties) {
+  for (const key of ["status", "oper_status", "state", "condition"]) {
+    const value = properties?.[key];
+    if (value !== undefined && value !== null && typeof value !== "object") return value;
+  }
+  return undefined;
+}
+
+function eventUpdatesSnapshot(event) {
+  if (Object.hasOwn(event, "update_snapshot")) return Boolean(event.update_snapshot);
+  if (Object.hasOwn(event, "update_final_state")) return Boolean(event.update_final_state);
+  const kind = String(event.kind || "status").toLowerCase().replaceAll("_", "-");
+  return !eventSemantics.log_only_kinds.includes(kind);
+}
+
 function normalizeEvent(event) {
   const source = event && typeof event === "object" ? event : {};
+  // The editor has one flag; discard the canonical alias after resolving its
+  // precedence so later form edits and undo/redo cannot restore a stale value.
+  const {update_snapshot: _snapshotAlias, message: _messageAlias, log: _logAlias, ...editableSource} = source;
   const timeMs =
     source.time_ms ??
     source.timestamp_ms ??
     (source.time_s !== undefined ? Number(source.time_s) * 1000 : undefined) ??
     (source.timestamp_ns !== undefined ? Number(source.timestamp_ns) / 1_000_000 : 0);
   return {
-    ...source,
+    ...editableSource,
     id: stringValue(source.id || source.event_id, makeId("event")),
     time_ms: Math.max(0, finiteNumber(timeMs, 0)),
-    scope:
-      source.scope === "physical" ||
-      ["medium", "link", "physical-link"].includes(source.target_type) ||
-      ["physical-link-state", "link-state", "medium-state", "physical-state"].includes(
-        stringValue(source.kind).replaceAll("_", "-"),
-      )
-        ? "physical"
-        : "node",
+    scope: isPhysicalEvent(source) ? "physical" : "node",
+    _originalTimeMs: source._originalTimeMs ?? Math.max(0, finiteNumber(timeMs, 0)),
     node_id: stringValue(source.node_id || source.observer_node_id, ""),
     target_type: stringValue(source.target_type, ""),
     target_id: stringValue(
@@ -405,7 +436,7 @@ function normalizeEvent(event) {
     kind: stringValue(source.kind || source.event_kind, "status"),
     subject: stringValue(source.subject || source.resource_key || source.resource_id, ""),
     action: stringValue(source.action || source.operation, ""),
-    outcome: stringValue(source.outcome || source.status, "ok"),
+    outcome: stringValue(source.outcome, "ok"),
     state_patch: isPlainObject(source.state_patch)
       ? source.state_patch
       : isPlainObject(source.properties)
@@ -413,9 +444,10 @@ function normalizeEvent(event) {
       : isPlainObject(source.payload)
         ? source.payload
         : {},
-    log_text: stringValue(source.log_text || source.message, ""),
-    update_final_state:
-      source.update_final_state !== false && source.update_snapshot !== false,
+    log_text: stringValue(source.message ?? source.log ?? source.log_text, ""),
+    _messageExplicit: source._messageExplicit
+      ?? ["message", "log", "log_text"].some((key) => Object.hasOwn(source, key)),
+    update_final_state: eventUpdatesSnapshot(source),
     propagation: source.propagation && typeof source.propagation === "object"
       ? source.propagation
       : null,
@@ -551,6 +583,7 @@ async function loadBlankProject() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     scenario = normalizeScenario(payload.scenario || payload);
+    scenario._captureTimeExplicit = false;
     if (scenario.id === "untitled-scenario") scenario.id = makeId("scenario");
   } catch {
     scenario = fallbackScenario();
@@ -1387,6 +1420,7 @@ function deleteSelection() {
   transact(() => {
     if (selection.type === "node") {
       const nodeId = selection.id;
+      const mediumId = nodeById(nodeId)?.medium_id;
       const removedLinkIds = new Set(
         scenario.physical_links
           .filter((link) => link.a.node_id === nodeId || link.b.node_id === nodeId)
@@ -1398,6 +1432,7 @@ function deleteSelection() {
         (event) =>
           event.node_id !== nodeId &&
           event.target_id !== nodeId &&
+          event.target_id !== mediumId &&
           !removedLinkIds.has(event.target_id),
       );
     } else {
@@ -1673,7 +1708,8 @@ function linkStateAt(linkId, timeMs) {
         event.scope === "physical" &&
         targetIds.has(event.target_id) &&
         event.time_ms <= timeMs &&
-        (event.kind === "physical-link-state" || event.action === "set_state"),
+        (!eventSemantics.failed_outcomes.includes(String(event.outcome).toLowerCase())
+          || event.apply_on_failure === true),
     )
     .sort(eventSort)
     .forEach((event) => {
@@ -1690,6 +1726,7 @@ function linkStateAt(linkId, timeMs) {
 function makeEvent(overrides = {}) {
   return normalizeEvent({
     id: makeId("event"),
+    order: scenario.events.reduce((maximum, item) => Math.max(maximum, Number(item.order || 0)), -1) + 1,
     time_ms: selectedTimeMs(),
     scope: "node",
     node_id: dumpNodes()[0]?.id || "",
@@ -1699,10 +1736,33 @@ function makeEvent(overrides = {}) {
     outcome: "ok",
     state_patch: {},
     log_text: "",
-    update_final_state: true,
     propagation: null,
     ...overrides,
   });
+}
+
+function editableEventTime(event) {
+  const timestampNs = event.timestamp_ns !== undefined && event.time_ms === event._originalTimeMs
+    ? BigInt(event.timestamp_ns) : BigInt(Math.round(event.time_ms * 1_000_000));
+  const fraction = (timestampNs % 1_000_000_000n).toString().padStart(9, "0").replace(/0+$/, "");
+  return `${timestampNs / 1_000_000_000n}${fraction ? `.${fraction}` : ""}`;
+}
+
+function exactIntegerValue(value, label, nonNegative = false) {
+  if ((typeof value === "number" && !Number.isSafeInteger(value))
+    || (typeof value !== "number" && (typeof value !== "string" || !/^[+-]?\d+$/.test(value.trim())))) {
+    throw new Error(`${label} must be an exact integer; use a decimal string beyond JavaScript's safe integer range.`);
+  }
+  const integer = BigInt(value);
+  if (nonNegative && integer < 0n) throw new Error(`${label} cannot be negative.`);
+  return typeof value === "number" ? value : integer.toString();
+}
+
+function eventTimeInputNs(value) {
+  const match = String(value).trim().match(/^(\d+)(?:\.(\d{0,9}))?$/);
+  if (!match) throw new Error("Event time must be non-negative seconds with at most nine decimal places.");
+  return (BigInt(match[1]) * 1_000_000_000n
+    + BigInt((match[2] || "").padEnd(9, "0"))).toString();
 }
 
 function saveEventFromForm(event) {
@@ -1710,9 +1770,24 @@ function saveEventFromForm(event) {
   const parsed = parsePayload();
   if (!parsed.ok) return;
   const existing = selectedEventId ? eventById(selectedEventId) : null;
+  let timestampNs;
+  try {
+    timestampNs = eventTimeInputNs(dom["event-time"].value);
+  } catch (error) {
+    toast(error.message, "error");
+    return;
+  }
+  const timeMs = Number(timestampNs) / 1_000_000;
   const value = makeEvent({
     id: existing?.id || makeId("event"),
-    time_ms: Math.max(0, finiteNumber(dom["event-time"].value, 0) * 1000),
+    order: existing?.order ?? scenario.events.reduce(
+      (maximum, item) => Math.max(maximum, Number(item.order || 0)), -1,
+    ) + 1,
+    status: statePatchStatus(parsed.value) ?? existing?.status,
+    time_ms: timeMs,
+    timestamp_ns: existing?.timestamp_ns !== undefined
+      && BigInt(existing.timestamp_ns) === BigInt(timestampNs)
+      ? existing.timestamp_ns : timestampNs,
     scope: existing?.scope === "physical" ? "physical" : "node",
     node_id: dom["event-node"].value,
     target_type: existing?.target_type || "",
@@ -1747,7 +1822,7 @@ function loadEventForm(event) {
   selectedEventId = event.id;
   dom["event-heading"].textContent =
     event.scope === "physical" ? "Edit physical change" : "Edit local event";
-  dom["event-time"].value = formatSeconds(event.time_ms);
+  dom["event-time"].value = editableEventTime(event);
   dom["event-node"].value = event.node_id || dumpNodes()[0]?.id || "";
   dom["event-kind"].value = optionValueOr(dom["event-kind"], event.kind, "status");
   dom["event-outcome"].value = optionValueOr(dom["event-outcome"], event.outcome, "ok");
@@ -1844,18 +1919,43 @@ function showInspectorPanel(tabId, panelId) {
   });
 }
 
-function propagationSettings() {
+function propagationFormValues() {
   return {
     mode: dom["propagation-mode"].value,
     delay_ms: Math.max(0, finiteNumber(dom["propagation-delay"].value, 0)),
     jitter_ms: Math.max(0, finiteNumber(dom["propagation-jitter"].value, 0)),
     target_mode: dom["propagation-target-mode"].value,
-    target_node_ids: [
-      ...dom["propagation-target-options"].querySelectorAll("input:checked"),
-    ].map((input) => input.value),
+    ...(dom["propagation-target-mode"].value === "selected" ? {
+      target_node_ids: [...dom["propagation-target-options"].querySelectorAll("input:checked")]
+        .map((input) => input.value),
+    } : {}),
     outcome: dom["propagation-outcome"].value,
     cadence: dom["propagation-cadence"].value,
   };
+}
+
+function propagationSettings() {
+  const values = propagationFormValues();
+  if (!loadedPropagationSettings || !loadedPropagationForm) return values;
+  const result = structuredClone(loadedPropagationSettings);
+  for (const key of ["mode", "cadence", "outcome", "target_mode"]) {
+    if (values[key] !== loadedPropagationForm[key]) result[key] = values[key];
+  }
+  if (values.delay_ms !== loadedPropagationForm.delay_ms
+      || values.jitter_ms !== loadedPropagationForm.jitter_ms) {
+    result.delay_ns = Math.round(values.delay_ms * 1_000_000);
+    result.jitter_ns = Math.round(values.jitter_ms * 1_000_000);
+    delete result.delay_ms;
+    delete result.base_delay_ms;
+    delete result.jitter_ms;
+  }
+  if (values.target_mode !== loadedPropagationForm.target_mode
+      || JSON.stringify(values.target_node_ids) !== JSON.stringify(loadedPropagationForm.target_node_ids)) {
+    delete result.targets;
+    delete result.target_node_ids;
+    if (values.target_mode === "selected") result.targets = values.target_node_ids;
+  }
+  return result;
 }
 
 function loadPropagationControls(value) {
@@ -1866,14 +1966,17 @@ function loadPropagationControls(value) {
     "best-effort",
   );
   dom["propagation-delay"].value = String(
-    Math.max(0, finiteNumber(settings.delay_ms ?? settings.base_delay_ms, 250)),
+    Math.max(0, finiteNumber(settings.delay_ns !== undefined
+      ? Number(settings.delay_ns) / 1_000_000 : settings.delay_ms ?? settings.base_delay_ms, 0)),
   );
   dom["propagation-jitter"].value = String(
-    Math.max(0, finiteNumber(settings.jitter_ms, 50)),
+    Math.max(0, finiteNumber(settings.jitter_ns !== undefined
+      ? Number(settings.jitter_ns) / 1_000_000 : settings.jitter_ms, 0)),
   );
   dom["propagation-target-mode"].value = optionValueOr(
     dom["propagation-target-mode"],
-    settings.target_mode || settings.targets_mode || "neighbors",
+    Array.isArray(settings.targets || settings.target_node_ids)
+      ? "selected" : settings.target_mode || settings.targets_mode || "neighbors",
     "neighbors",
   );
   dom["propagation-outcome"].value = optionValueOr(
@@ -1891,6 +1994,8 @@ function loadPropagationControls(value) {
   dom["propagation-target-options"].querySelectorAll("input").forEach((input) => {
     input.checked = targets.has(input.value);
   });
+  loadedPropagationSettings = structuredClone(settings);
+  loadedPropagationForm = propagationFormValues();
 }
 
 function propagationSourceEvent() {
@@ -1901,95 +2006,61 @@ function propagationSourceEvent() {
     .at(-1);
 }
 
-function computePropagationPreview(source, settings) {
-  if (!source) return { schedule: [], summary: "Select or add an event first." };
-  if (settings.mode === "suppressed") {
-    return { schedule: [], summary: "Propagation is explicitly suppressed." };
-  }
-  const sourceNodeId =
-    source.node_id ||
-    (source.target_type === "physical-link"
-      ? linkById(source.target_id)?.a.node_id
-      : "");
-  let targets = [];
-  if (settings.target_mode === "all-nodes") {
-    targets = dumpNodes().filter((node) => node.id !== sourceNodeId);
-  } else if (settings.target_mode === "selected") {
-    const ids = new Set(settings.target_node_ids);
-    targets = dumpNodes().filter((node) => ids.has(node.id));
-  } else {
-    targets = propagationNeighbors(sourceNodeId);
-    if (
-      source.scope === "physical" &&
-      ["physical-link", "link", "medium"].includes(source.target_type)
-    ) {
-      const link = linkById(source.target_id);
-      targets = physicalTargetNodes(link, source.target_id);
-    }
-  }
-  const base = source.time_ms + settings.delay_ms;
-  const schedule = targets.map((node, index) => {
-    let offset = 0;
-    if (settings.cadence === "serial") offset = index * settings.delay_ms;
-    if (settings.cadence === "waves") offset = Math.floor(index / 2) * settings.delay_ms;
-    const jitter = deterministicJitter(`${source.id}:${node.id}`, settings.jitter_ms);
-    const outcome =
-      settings.outcome === "partial" && index % 3 === 2
-        ? "failed"
-        : settings.outcome === "failure"
-          ? "failed"
-          : settings.outcome === "stale"
-            ? "partial"
-            : "ok";
-    return {
-      node,
-      time_ms: Math.max(source.time_ms, base + offset + jitter),
-      outcome,
-    };
-  });
-  return {
-    schedule,
-    summary: `${schedule.length} node-local observation${schedule.length === 1 ? "" : "s"} would be scheduled.`,
-  };
+function propagationRequest(source, settings) {
+  const project = scenarioForApi();
+  const eventId = safeIdentifier(source.id, "event");
+  const event = project.events.find((item) => item.event_id === eventId);
+  if (!event) throw new Error("The selected propagation event is no longer available.");
+  event.propagation = canonicalPropagation(settings);
+  delete event.propagation.materialized;
+  delete event.propagation.generated;
+  return { scenario: project, event_id: eventId };
+}
+
+async function computePropagationPreview(source, settings) {
+  if (!source) return { events: [], summary: "Select or add an event first." };
+  const result = await apiJson(API.propagation, propagationRequest(source, settings));
+  const events = Array.isArray(result.events) ? result.events : [];
+  return { events, summary: `${events.length} node-local observation${events.length === 1 ? "" : "s"} would be scheduled.` };
 }
 
 async function previewPropagation() {
+  const generation = ++propagationPreviewGeneration;
   const source = propagationSourceEvent();
   const settings = propagationSettings();
-  const preview = computePropagationPreview(source, settings);
-  dom["propagation-preview"].replaceChildren();
-  const title = document.createElement("strong");
-  title.textContent = preview.summary;
-  dom["propagation-preview"].append(title);
-  if (preview.schedule.length) {
+  const projectVersion = scenario;
+  const projectText = JSON.stringify(scenario);
+  const selectedAtStart = selectedEventId;
+  const settingsText = JSON.stringify(settings);
+  const isCurrent = () => generation === propagationPreviewGeneration
+    && scenario === projectVersion && JSON.stringify(scenario) === projectText
+    && selectedEventId === selectedAtStart && propagationSourceEvent() === source
+    && JSON.stringify(propagationSettings()) === settingsText;
+  dom["propagation-preview"].textContent = "Calculating the authoritative propagation schedule…";
+  try {
+    const preview = await computePropagationPreview(source, settings);
+    if (!isCurrent()) return;
+    dom["propagation-preview"].replaceChildren();
+    const title = document.createElement("strong");
+    title.textContent = preview.summary;
+    dom["propagation-preview"].append(title);
     const list = document.createElement("ul");
-    preview.schedule.forEach((item) => {
+    preview.events.forEach((item) => {
       const line = document.createElement("li");
-      line.textContent = `+${formatSeconds(item.time_ms)} s · ${item.node.name} · ${item.outcome}`;
+      const afterCapture = scenario._captureTimeExplicit
+        && BigInt(item.timestamp_ns) > BigInt(scenario.capture_time_ns);
+      line.textContent = `+${formatSeconds(Number(item.timestamp_ns) / 1_000_000)} s · ${nodeById(item.node_id)?.name || item.node_id} · ${item.outcome}${afterCapture ? " · after capture (not exported)" : ""}`;
       list.append(line);
     });
     dom["propagation-preview"].append(list);
-  } else {
-    const detail = document.createElement("p");
-    detail.textContent =
-      settings.mode === "manual"
-        ? "Manual mode records intent without synthesizing additional observations."
-        : "Change the target scope or add connected routers.";
-    dom["propagation-preview"].append(detail);
-  }
-
-  try {
-    const result = await apiJson(API.preview, { scenario: scenarioForApi() });
-    const detail = document.createElement("p");
-    const totals = result.totals || {};
-    detail.textContent = `Current replay: ${result.node_count ?? dumpNodes().length} dump files, ${totals.final_state_records ?? "?"} final records, ${totals.history_records ?? "?"} history records.`;
-    dom["propagation-preview"].append(detail);
-  } catch {
-    // Local scheduling preview remains useful while a partially authored scenario is invalid.
+  } catch (error) {
+    if (isCurrent()) {
+      dom["propagation-preview"].textContent = `Could not preview propagation: ${error.message}`;
+    }
   }
 }
 
-function applyPropagation(event) {
+async function applyPropagation(event) {
   event.preventDefault();
   const source = propagationSourceEvent();
   if (!source) {
@@ -1997,73 +2068,36 @@ function applyPropagation(event) {
     return;
   }
   const settings = propagationSettings();
-  const preview = computePropagationPreview(source, settings);
-  transact(() => {
-    source.propagation = { ...structuredClone(settings), materialized: true };
-    scenario.defaults.propagation = structuredClone(settings);
-    if (settings.mode !== "best-effort" && settings.mode !== "failed") return;
-    preview.schedule.forEach((item) => {
-      const physicalSource = source.scope === "physical";
-      const localPhysical = physicalSource
-        ? localPhysicalObservation(item.node.id, source.target_id)
-        : null;
-      const stateChanged =
-        settings.outcome !== "stale" && item.outcome !== "failed";
-      const requestedState = stringValue(
-        source.state_patch?.state ??
-          source.state_patch?.oper_status ??
-          source.status,
-        "unknown",
-      );
-      scenario.events.push(
-        makeEvent({
-          time_ms: item.time_ms,
-          node_id: item.node.id,
-          kind: "propagated-observation",
-          subject: localPhysical?.resourceId || source.subject,
-          resource_type: localPhysical ? "interface" : source.resource_type,
-          action: source.action || "observe_change",
-          outcome: item.outcome,
-          state_patch: stateChanged
-            ? localPhysical
-              ? { oper_status: requestedState }
-              : structuredClone(source.state_patch)
-            : {},
-          log_text: localPhysical
-            ? stateChanged
-              ? `Observed local carrier ${requestedState} on ${localPhysical.port}.`
-              : `Local carrier update on ${localPhysical.port} did not change state.`
-            : "Best-effort local observation scheduled from the selected event.",
-          update_final_state: item.outcome === "ok",
-          propagation: {
-            parent_event_id: source.id,
-            generated: true,
-            materialized: true,
-            authored_mode: settings.mode,
-            ...settings,
-            mode: "manual",
-          },
-        }),
-      );
+  const projectVersion = scenario;
+  const projectText = JSON.stringify(scenario);
+  const selectedAtStart = selectedEventId;
+  const settingsText = JSON.stringify(settings);
+  dom["apply-propagation"].disabled = true;
+  try {
+    const preview = await computePropagationPreview(source, settings);
+    if (scenario !== projectVersion || JSON.stringify(scenario) !== projectText
+        || selectedEventId !== selectedAtStart || propagationSourceEvent() !== source
+        || JSON.stringify(propagationSettings()) !== settingsText) {
+      throw new Error("The scenario changed during preview; apply propagation again.");
+    }
+    transact(() => {
+      source.propagation = { ...structuredClone(settings), materialized: true };
+      scenario.defaults.propagation = structuredClone(settings);
+      const usedIds = new Set(scenario.events.map((item) => item.id));
+      preview.events.forEach((item) => {
+        scenario.events.push(normalizeEvent({
+          ...item,
+          event_id: uniqueIdentifier(item.event_id, usedIds, "event"),
+        }));
+      });
     });
-  });
-  toast(
-    preview.schedule.length
-      ? `Scheduled ${preview.schedule.length} propagated observations.`
-      : "Saved propagation intent without generated observations.",
-    "success",
-  );
-  void previewPropagation();
-}
-
-function deterministicJitter(seed, maximum) {
-  if (!maximum) return 0;
-  let hash = 2166136261;
-  for (let index = 0; index < seed.length; index += 1) {
-    hash ^= seed.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
+    toast(`Scheduled ${preview.events.length} propagated observations using the compiler's schedule.`, "success");
+    void previewPropagation();
+  } catch (error) {
+    toast(`Could not apply propagation: ${error.message}`, "error");
+  } finally {
+    dom["apply-propagation"].disabled = false;
   }
-  return ((Math.abs(hash) % (maximum * 2 + 1)) - maximum);
 }
 
 function openPattern(patternId) {
@@ -2301,12 +2335,13 @@ function buildPatternEvents(patternId, values) {
       const participants = neighborsOf(targetId).filter(
         (node) => node.kind !== "shared-medium" && node.dump_enabled !== false,
       );
-      const output = participants.map((node, index) =>
-        makeEvent({
+      const output = participants.flatMap((node, index) =>
+        localPhysicalObservations(node.id, targetId).map((local) => makeEvent({
           time_ms: time + delay * index,
           node_id: node.id,
           kind: "physical-observation",
-          subject: nodeById(targetId)?.name || targetId,
+          subject: local.resourceId,
+          resource_type: local.resourceType,
           action: "multi_access_member_change",
           outcome: index === participants.length - 1 ? "failed" : "ok",
           state_patch: index === participants.length - 1 ? {} : { member_status: "down" },
@@ -2315,7 +2350,7 @@ function buildPatternEvents(patternId, values) {
               ? "Member failed to observe the shared-medium change."
               : "Shared-medium member changed state.",
           update_final_state: index !== participants.length - 1,
-        }),
+        })),
       );
       return output;
     }
@@ -2450,21 +2485,14 @@ function scenarioForApi() {
 
 function toCanonicalProject() {
   const media = canonicalMedia();
-  const captureTimeMs = Math.max(
-    scenario.duration_ms || 0,
-    maxEventTime(scenario.events) + maximumPropagationHorizonMs() + 1,
-  );
-  scenario.capture_time_ns = Math.max(
-    Math.round(captureTimeMs * 1_000_000),
-    finiteNumber(scenario.capture_time_ns, 0),
-  );
+  const captureTimeMs = Math.max(scenario.duration_ms || 0, maxEventTime(scenario.events));
   return {
     schema_version: 1,
     schema_id: "state-dump-generator-scenario/v1",
     scenario_id: safeIdentifier(scenario.id || scenario.scenario_id, "untitled-scenario"),
     name: scenario.name || "Untitled scenario",
     seed: Math.max(0, Math.trunc(finiteNumber(scenario.seed, 1))),
-    capture_time_ns: scenario.capture_time_ns,
+    ...(scenario._captureTimeExplicit ? { capture_time_ns: scenario.capture_time_ns } : {}),
     nodes: scenario.nodes
       .filter((node) => node.kind !== "shared-medium")
       .map((node) => ({
@@ -2482,11 +2510,8 @@ function toCanonicalProject() {
         site: node.site || "",
         profile: node.profile || "generic",
         clock: {
-          offset_ns: Math.trunc(finiteNumber(node.clock?.offset_ns, 0)),
-          uncertainty_ns: Math.max(
-            0,
-            Math.trunc(finiteNumber(node.clock?.uncertainty_ns, 0)),
-          ),
+          offset_ns: exactIntegerValue(node.clock?.offset_ns ?? 0, "Clock offset"),
+          uncertainty_ns: exactIntegerValue(node.clock?.uncertainty_ns ?? 0, "Clock uncertainty", true),
         },
         initial_resources: Array.isArray(node.initial_resources)
           ? structuredClone(node.initial_resources)
@@ -2587,7 +2612,7 @@ function canonicalAttachment(endpoint) {
   const portId = safeIdentifier(endpoint.port || endpoint.port_id, "auto");
   const fallbackResourceId = safeIdentifier(
     endpoint.resource_id || endpoint.local_resource_id,
-    `interface:${portId}`,
+    portId.includes(":") ? portId : `interface:${portId}`,
   );
   const suppliedObservation = isPlainObject(endpoint.node_local_observation)
     ? structuredClone(endpoint.node_local_observation)
@@ -2633,18 +2658,17 @@ function canonicalAttachment(endpoint) {
 }
 
 function canonicalEvent(event, order) {
-  const physical =
-    event.scope === "physical" ||
-    event.target_type === "physical-link" ||
-    ["physical-link-state", "link-state", "medium-state"].includes(event.kind);
+  const physical = isPhysicalEvent(event);
   const properties = isPlainObject(event.state_patch)
     ? structuredClone(event.state_patch)
     : {};
   const propagation = canonicalPropagation(event.propagation);
   const base = {
     event_id: safeIdentifier(event.id, `event-${order + 1}`),
-    timestamp_ns: Math.max(0, Math.round(event.time_ms * 1_000_000)),
-    order,
+    timestamp_ns: event.timestamp_ns !== undefined && event.time_ms === event._originalTimeMs
+      ? event.timestamp_ns : Math.max(0, Math.round(event.time_ms * 1_000_000)),
+    order: event.order ?? order,
+    ...(event.apply_on_failure !== undefined ? { apply_on_failure: event.apply_on_failure } : {}),
     kind: event.kind || "status",
     outcome: event.outcome || "ok",
     propagation,
@@ -2670,13 +2694,11 @@ function canonicalEvent(event, order) {
     ...base,
     node_id: safeIdentifier(event.node_id, ""),
     resource_id: event.subject || event.resource_id || event.target_id || `event:${event.id}`,
-    resource_type:
-      event.resource_type ||
-      event.target_type ||
-      (event.kind.startsWith("resource-") ? "resource" : event.kind),
-    operation: event.action || event.operation || event.kind,
+    resource_type: event.resource_type ?? event.resource_kind
+      ?? properties.resource_type ?? eventSemantics.default_resource_type,
+    operation: event.action || event.operation || event.kind.toLowerCase().replaceAll("_", "-"),
     properties,
-    message: event.log_text || event.message || "",
+    ...(event._messageExplicit || event.log_text ? {message: event.log_text} : {}),
     update_snapshot: event.update_final_state !== false,
   };
   const status =
@@ -2692,31 +2714,14 @@ function canonicalEvent(event, order) {
 }
 
 function canonicalPropagation(value) {
-  if (!value || typeof value !== "object") return {};
-  const targets = Array.isArray(value.targets)
-    ? value.targets
-    : Array.isArray(value.target_node_ids)
-      ? value.target_node_ids
-      : [];
-  const result = {
-    mode: value.mode || "best-effort",
-    delay_ms: Math.max(
-      0,
-      Math.round(finiteNumber(value.delay_ms ?? value.base_delay_ms, 0)),
-    ),
-    jitter_ms: Math.max(0, Math.round(finiteNumber(value.jitter_ms, 0))),
-    target_mode: value.target_mode || value.targets_mode || "neighbors",
-    targets: targets.map((target) => safeIdentifier(target, "")).filter(Boolean),
-    outcome: value.outcome || value.intended_outcome || "success",
-    cadence: value.cadence || "parallel",
-  };
-  for (const key of [
-    "materialized",
-    "generated",
-    "parent_event_id",
-    "authored_mode",
-  ]) {
-    if (value[key] !== undefined) result[key] = structuredClone(value[key]);
+  if (!isPlainObject(value)) return {};
+  // Absence is semantic: omitted targets means infer targets, while [] means
+  // none. Preserve ns timing, per-node outcomes, and inherited parent outcome.
+  const result = structuredClone(value);
+  if (Array.isArray(value.targets) || Array.isArray(value.target_node_ids)) {
+    result.targets = (value.targets || value.target_node_ids)
+      .map((target) => safeIdentifier(target, "")).filter(Boolean);
+    delete result.target_node_ids;
   }
   return result;
 }
@@ -2738,73 +2743,6 @@ function canonicalMediumIdForTarget(targetId) {
     return safeIdentifier(link.source_medium_id || link.id, targetId);
   }
   return safeIdentifier(targetId, targetId || "unknown-medium");
-}
-
-function maximumPropagationHorizonMs() {
-  return scenario.events.reduce((maximum, event) => {
-    const propagation = event.propagation;
-    if (!propagation || typeof propagation !== "object") return maximum;
-    const targetCount = propagationTargetsForEvent(event).length;
-    if (!targetCount) return maximum;
-    let delay = Math.max(
-      0,
-      finiteNumber(propagation.delay_ms ?? propagation.base_delay_ms, 0),
-    );
-    const jitter = Math.abs(finiteNumber(propagation.jitter_ms, 0));
-    const finalOrdinal = targetCount - 1;
-    const cadence = stringValue(propagation.cadence, "parallel").toLowerCase();
-    if (cadence === "serial") {
-      delay += finalOrdinal * Math.max(delay, 1);
-    } else if (cadence === "waves") {
-      delay += Math.floor(finalOrdinal / 2) * Math.max(delay / 2, 1);
-    }
-    return Math.max(maximum, delay + jitter);
-  }, 0);
-}
-
-function propagationTargetsForEvent(event) {
-  const propagation = event.propagation;
-  if (
-    !propagation ||
-    typeof propagation !== "object" ||
-    propagation.materialized === true ||
-    propagation.generated === true
-  ) {
-    return [];
-  }
-  const physical =
-    event.scope === "physical" ||
-    event.target_type === "physical-link" ||
-    ["physical-link-state", "link-state", "medium-state"].includes(event.kind);
-  const mode = stringValue(
-    propagation.mode,
-    physical ? "manual" : "best-effort",
-  ).toLowerCase();
-  if (["manual", "none", "suppressed"].includes(mode)) return [];
-
-  const eligible = new Set(dumpNodes().map((node) => node.id));
-  let targets;
-  if (Array.isArray(propagation.targets || propagation.target_node_ids)) {
-    targets = propagation.targets || propagation.target_node_ids;
-  } else {
-    const targetMode = stringValue(
-      propagation.target_mode || propagation.targets_mode,
-      "neighbors",
-    ).toLowerCase();
-    if (["all", "all-nodes", "all_nodes"].includes(targetMode)) {
-      targets = [...eligible];
-    } else if (physical) {
-      const targetId = stringValue(event.target_id, "");
-      targets = physicalTargetNodes(linkById(targetId), targetId).map(
-        (node) => node.id,
-      );
-    } else {
-      targets = propagationNeighbors(event.node_id).map((node) => node.id);
-    }
-  }
-  return [...new Set(targets.map(String))].filter(
-    (nodeId) => eligible.has(nodeId) && (physical || nodeId !== event.node_id),
-  );
 }
 
 function safeIdentifier(value, fallback) {
@@ -2829,7 +2767,7 @@ function uniqueIdentifier(value, used, fallbackPrefix) {
 
 async function apiJson(url, payload, allowErrorPayload = false) {
   const response = await fetch(url, {
-    method: "POST",
+    method: payload === undefined ? "GET" : "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(payload),
   });
@@ -2915,26 +2853,6 @@ function neighborsOf(nodeId) {
   return [...ids].map(nodeById).filter(Boolean);
 }
 
-function propagationNeighbors(nodeId) {
-  const output = new Map();
-  neighborsOf(nodeId).forEach((neighbor) => {
-    if (neighbor.kind === "shared-medium") {
-      neighborsOf(neighbor.id).forEach((participant) => {
-        if (
-          participant.id !== nodeId &&
-          participant.kind !== "shared-medium" &&
-          participant.dump_enabled !== false
-        ) {
-          output.set(participant.id, participant);
-        }
-      });
-    } else if (neighbor.dump_enabled !== false) {
-      output.set(neighbor.id, neighbor);
-    }
-  });
-  return [...output.values()];
-}
-
 function physicalTargetNodes(link, targetId) {
   if (link) {
     const endpoints = [nodeById(link.a.node_id), nodeById(link.b.node_id)].filter(Boolean);
@@ -2961,42 +2879,31 @@ function physicalTargetNodes(link, targetId) {
 }
 
 function localPhysicalObservation(nodeId, targetId) {
+  return localPhysicalObservations(nodeId, targetId)[0] || null;
+}
+
+function localPhysicalObservations(nodeId, targetId) {
   const directLink = linkById(targetId);
-  let endpoint = null;
-  let mediumNode = null;
-  if (directLink) {
-    endpoint = [directLink.a, directLink.b].find(
-      (candidate) => candidate.node_id === nodeId,
-    );
-    mediumNode = [directLink.a.node_id, directLink.b.node_id]
-      .map(nodeById)
-      .find((node) => node?.kind === "shared-medium");
-  }
-  if (!endpoint) {
-    mediumNode ||= scenario.nodes.find(
-      (node) =>
-        node.kind === "shared-medium" &&
-        (node.id === targetId || node.medium_id === targetId),
-    );
-    const incidentLink = scenario.physical_links.find(
+  const mediumNode = scenario.nodes.find(
+    (node) => node.kind === "shared-medium"
+      && (node.id === targetId || node.medium_id === targetId),
+  );
+  const links = directLink ? [directLink] : scenario.physical_links.filter(
       (candidate) =>
         mediumNode &&
         [candidate.a.node_id, candidate.b.node_id].includes(mediumNode.id) &&
         [candidate.a.node_id, candidate.b.node_id].includes(nodeId),
-    );
-    if (incidentLink) {
-      endpoint = [incidentLink.a, incidentLink.b].find(
-        (candidate) => candidate.node_id === nodeId,
-      );
-    }
-  }
-  if (!endpoint) return null;
-  const port = stringValue(endpoint.port || endpoint.port_id, "unknown-port");
-  return {
-    port,
-    resourceId: port.includes(":") ? port : `interface:${port}`,
-    resourceType: "interface",
-  };
+  );
+  return links.flatMap((link) => [link.a, link.b])
+    .filter((endpoint) => endpoint.node_id === nodeId)
+    .map((endpoint) => {
+      const local = canonicalAttachment(endpoint);
+      return {
+        port: local.port_id,
+        resourceId: local.node_local_observation.resource_id,
+        resourceType: local.node_local_observation.resource_type,
+      };
+    });
 }
 
 function maxEventTime(events) {
@@ -3004,7 +2911,9 @@ function maxEventTime(events) {
 }
 
 function eventSort(left, right) {
-  return left.time_ms - right.time_ms || left.id.localeCompare(right.id);
+  return left.time_ms - right.time_ms
+    || Number(left.order ?? 0) - Number(right.order ?? 0)
+    || left.id.localeCompare(right.id);
 }
 
 function formatSeconds(milliseconds) {

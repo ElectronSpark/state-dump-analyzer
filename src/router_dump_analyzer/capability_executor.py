@@ -108,6 +108,7 @@ from .plugin_execution_plan import (
 )
 from .plugin_schema_identity import plugin_schema_digest
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
+from .world_read_budget import WorldReadBudget
 
 
 class PluginCapabilityExecutionError(RuntimeError):
@@ -362,7 +363,7 @@ class _BoundedWorld:
         maximum_evidence: int,
     ) -> None:
         self._world = world
-        self._remaining = maximum_reads
+        self._budget = WorldReadBudget(maximum_reads, self._read_limit_error)
         self._capability = capability
         self._basis = basis
         self._perspective_ref = perspective_ref
@@ -378,18 +379,20 @@ class _BoundedWorld:
 
     @property
     def remaining_reads(self) -> int:
-        return self._remaining
+        return self._budget.remaining
 
-    def _charge(self) -> None:
-        if self._remaining <= 0:
-            raise PluginCapabilityOutputError(
-                "plug-in exceeded the configured world-read limit",
-                capability=self._capability,
-            )
-        self._remaining -= 1
+    def _read_limit_error(self, aggregate_limited: bool) -> Exception:
+        return PluginCapabilityOutputError(
+            (
+                "plug-in exceeded the configured world-read limit"
+                if aggregate_limited
+                else "world provider exceeded the bounded read request"
+            ),
+            capability=self._capability,
+        )
 
     def state_of(self, resource: ResourceKey) -> ResourceStateView | None:
-        self._charge()
+        self._budget.charge()
         value = self._world_input(
             lambda: self._world.state_of(resource),
             "world provider failed while reading state",
@@ -450,76 +453,15 @@ class _BoundedWorld:
         detacher: Callable[..., Item],
         unreadable_message: str,
     ) -> Iterator[Item]:
-        remaining = self._remaining
-        allowed = remaining
-        if requested_limit is not None:
-            if type(requested_limit) is not int or requested_limit < 0:
-                raise ValueError("world read limit must be a non-negative integer")
-            allowed = min(allowed, requested_limit)
-        cap_limited = requested_limit is None or requested_limit >= remaining
-        # Probe one item beyond the wrapper cap so a limit-aware underlying
-        # world cannot silently turn an incomplete plug-in scan into a clean
-        # result.  Explicit smaller plug-in limits remain normal pagination.
-        producer_limit = (
-            allowed + 1 if cap_limited and requested_limit != 0 else allowed
+        return self._budget.iterate(
+            producer,
+            requested_limit,
+            invoke=self._world_input,
+            transform=lambda item: self._detach_world_item(
+                item, detacher, unreadable_message
+            ),
+            suppress_secondary_close_errors=(PluginCapabilityInputError,),
         )
-        iterator = self._world_input(
-            lambda: iter(producer(producer_limit)),
-            "world provider could not start a bounded read",
-        )
-        count = 0
-        completed = False
-        try:
-            while True:
-                try:
-                    item = next(iterator)
-                except StopIteration:
-                    completed = True
-                    break
-                except PluginCapabilityExecutionError:
-                    raise
-                except PROCESS_CONTROL_EXCEPTIONS:
-                    raise
-                except BaseException as error:
-                    raise PluginCapabilityInputError(
-                        "world provider failed during a bounded read",
-                        capability=self._capability,
-                    ) from error
-                if count >= allowed:
-                    message = (
-                        "plug-in exceeded the configured world-read limit"
-                        if cap_limited
-                        else "world provider exceeded the bounded read request"
-                    )
-                    raise PluginCapabilityOutputError(
-                        message,
-                        capability=self._capability,
-                    )
-                self._charge()
-                count += 1
-                yield self._detach_world_item(
-                    item,
-                    detacher,
-                    unreadable_message,
-                )
-        finally:
-            try:
-                close = self._world_input(
-                    lambda: getattr(iterator, "close", None),
-                    "world provider iterator could not be closed",
-                )
-                if callable(close):
-                    self._world_input(
-                        close,
-                        "world provider iterator could not be closed",
-                    )
-            except PROCESS_CONTROL_EXCEPTIONS:
-                raise
-            except PluginCapabilityInputError:
-                # Do not hide a stronger quota/output failure or a consumer
-                # cancellation with a secondary close failure.
-                if completed:
-                    raise
 
     def iter_states(
         self,

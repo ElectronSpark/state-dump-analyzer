@@ -7,8 +7,9 @@ import json
 import sys
 import webbrowser
 from pathlib import Path
-from typing import Any
+from typing import TextIO
 
+from ._json_values import plain_value as _plain_value
 from .archive import ArchiveProjectionError, write_assembly
 from .path_safety import resolve_output_file
 from .server import (
@@ -21,29 +22,24 @@ from .server import (
 )
 
 
-def _plain_value(value: Any) -> Any:
-    import dataclasses
-    from collections.abc import Mapping
+def _console_text(text: str, stream: TextIO) -> str:
+    """Preserve Unicode unless the destination console cannot represent it."""
 
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {
-            field.name: _plain_value(getattr(value, field.name))
-            for field in dataclasses.fields(value)
-        }
-    if isinstance(value, Mapping):
-        return {str(key): _plain_value(item) for key, item in value.items()}
-    if isinstance(value, tuple | list):
-        return [_plain_value(item) for item in value]
-    if value is None or isinstance(value, str | int | float | bool):
-        return value
-    to_dict = getattr(value, "to_dict", None)
-    if callable(to_dict):
-        return _plain_value(to_dict())
-    raise TypeError(f"cannot serialize {type(value).__name__}")
+    encoding = getattr(stream, "encoding", None)
+    if encoding is None:
+        return text
+    return text.encode(encoding, errors="backslashreplace").decode(encoding)
+
+
+class _ConsoleArgumentParser(argparse.ArgumentParser):
+    def _print_message(self, message: str | None, file: TextIO | None = None) -> None:
+        if message:
+            stream = sys.stderr if file is None else file
+            super()._print_message(_console_text(message, stream), stream)
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _ConsoleArgumentParser(
         prog="state-dump-generator",
         description=(
             "Author temporal router scenarios and generate topology-free, "
@@ -95,9 +91,8 @@ def _parser() -> argparse.ArgumentParser:
 
 def _write_new(output: Path, *, force: bool) -> int:
     destination = resolve_output_file(output, label="new project output")
-    if destination.exists():
-        if not force:
-            raise ValueError(f"project already exists: {destination}")
+    if destination.exists() and not force:
+        raise ValueError(f"project already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     content = (
         json.dumps(
@@ -109,7 +104,7 @@ def _write_new(output: Path, *, force: bool) -> int:
         + "\n"
     )
     destination.write_text(content, encoding="utf-8", newline="\n")
-    print(destination)
+    print(_console_text(str(destination), sys.stdout))
     return 0
 
 
@@ -117,11 +112,8 @@ def _validate(project: Path) -> int:
     document = load_document(project)
     report = validate_document(document)
     print(
-        json.dumps(
-            report,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
+        _console_text(
+            json.dumps(report, ensure_ascii=True, indent=2, sort_keys=True), sys.stdout
         )
     )
     return 0 if report["ok"] else 1
@@ -132,12 +124,15 @@ def _generate(project: Path, output: Path) -> int:
     report = validate_document(document)
     if not report["ok"]:
         print(
-            json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True),
+            _console_text(
+                json.dumps(report, ensure_ascii=True, indent=2, sort_keys=True),
+                sys.stderr,
+            ),
             file=sys.stderr,
         )
         return 1
     destination = write_assembly(document, output)
-    print(destination)
+    print(_console_text(str(destination), sys.stdout))
     return 0
 
 
@@ -146,13 +141,16 @@ def _serve(host: str, port: int, *, open_browser: bool) -> int:
         address, selected_port = server.server_address[:2]
         display_host = "127.0.0.1" if address in {"0.0.0.0", "::"} else address
         url = f"http://{display_host}:{selected_port}/"
-        print(f"State dump generator editor: {url}", flush=True)
+        print(_console_text(f"State dump generator editor: {url}", sys.stdout), flush=True)
         if open_browser:
             webbrowser.open(url)
         try:
             server.serve_forever(poll_interval=0.25)
         except KeyboardInterrupt:
-            print("\nStopping state dump generator editor.", file=sys.stderr)
+            print(
+                _console_text("\nStopping state dump generator editor.", sys.stderr),
+                file=sys.stderr,
+            )
         finally:
             server.shutdown()
     return 0

@@ -146,7 +146,9 @@ explicit event/subject/effect resource kind and from canonical resource IDs in
 resource references and `affected_resources`, resolved against the immutable
 resource catalog. Generic event `kind` is event classification, not a resource
 kind. An unresolved reference, missing kind policy, or event with no determined
-resource kind uses the conservative union of all declared sensitive fields.
+resource kind uses the conservative union of all declared sensitive fields and
+condition policies; unresolved subjects cannot bypass private condition/status
+redaction.
 This publication boundary is identical for bootstrap, resource, search,
 interval, range-summary, and event-query responses.
 Nested event subjects, affected resources, effects, and relationship effects
@@ -340,9 +342,22 @@ trusting the digest field alone. It also reconstructs evidence, occurrence,
 and serialized-byte charges before duplicate elimination, so deduplicated
 storage cannot bypass ingestion limits.
 
-The base world folds snapshot observations sharing one `ResourceKey`; it
-retains the final ordered observation's evidence for the resulting state. The
-projection API does not expose the raw observations hidden by that fold.
+The base world folds snapshot observations sharing one `ResourceKey` and
+qualified status perspective; it retains the final ordered observation's
+evidence for the resulting state. The projection API does not expose the raw
+observations hidden by that fold.
+Different perspectives retain independent states and intervals. Without a
+selected perspective, a singular lookup covering multiple perspectives is
+ambiguous (`exists: null`) rather than a merged state. Missing selected status
+is unknown. Resource tables (including named bundled views) and topology both
+preserve this tri-state existence: only explicit `false` means absent.
+After the execution plan is frozen, core qualifies primary-parser local
+perspective references using the exact primary pin before rebuilding the
+published histories. Data without a plan remains unbound.
+Undirected relationship endpoints are canonicalized before grouping, so an
+oppositely ordered removal targets the same relationship within its perspective.
+Explicit world-read limits equal to the remaining quota are accepted by both
+materializers and the capability executor; unbounded over-quota reads still fail.
 
 Runtime-v2 ingestion also validates and retains scoped
 `RelationshipCollectionObservation` markers as private normalized metadata.
@@ -2019,6 +2034,22 @@ metadata key such as `hold_down_ns` retains its original JSON value and type.
 Subject existence is checked against the exact immutable revision before a
 write commits.
 
+Core validates subject shape, uniqueness, and cardinality before loading any
+revision. The shared `annotation_store.normalize_review_subjects(subjects, *,
+maximum, event_only=False)` validates selection shape only; it does not grant
+scope access or replace the coordinator's exact subject resolution.
+`ControlPlaneLimits.max_subject_revisions` (default 128) and
+`max_subject_dataset_bytes` (default 8 GiB) bound each admission. Every selected
+revision must pass scope, dataset-path, individual-file, and aggregate-size
+checks before the first dataset is decoded. Subjects are resolved by revision
+without retaining a second collection of decoded datasets; their original
+order is preserved. Reports reuse this preflight with their report-specific
+limits. Explicit revision iterables stop at the limit plus one sentinel.
+
+Catalog source-identity resolution applies `source_revision_id` within the
+scoped SQL query, before pagination or the two-result ambiguity check. Matches
+outside the first page therefore cannot be missed or falsely declared unique.
+
 A manual correlation has two to 1,024 event subjects and one to 4,096 edges.
 An edge names distinct subject-array ordinals, a plug-in/user-owned
 `link_type`, and optional `directed` (default `true`). The object also accepts
@@ -2307,6 +2338,17 @@ may use a recorded assumption, but it must expose the mapping method, evidence,
 and degraded quality. No policy silently substitutes another timestamp, node,
 status perspective, or topology projection.
 
+The built-in temporal query service reads the snapshot interval valid at the
+requested local time, including empty states and explicit absence. It samples
+state and lifecycle transitions inside the mapped uncertainty window, not only
+events or window endpoints. Later snapshots are not replaced by timeline-start
+state, and events already represented by an interval are not replayed twice.
+Independent named perspectives require a perspective-aware reader: embedders
+can connect `TemporalTopologyService.perspective_state_reader` to
+`NormalizedDataService.resource_state_at(..., perspective_ref=...)`. The legacy
+two-argument reader remains valid for an unqualified single perspective; it
+cannot establish exact status for a different named perspective.
+
 ## 3. State query
 
 Request:
@@ -2318,82 +2360,46 @@ Content-Type: application/json
 
 ```json
 {
-  "basis": {"kind": "reconstructed_time", "time_ns": "1759680003015000000"},
+  "basis": {"kind": "absolute_time", "time_ns": "1759680003015000000", "clock_domain": "utc"},
   "status_perspective_id": "hardware-observed",
   "resource_ids": ["res-route-1", "res-ete-b"],
   "include_relationships": true,
   "relation_types": ["depends_on", "references"],
   "page_size": 500,
-  "cursor": null
+  "resource_cursor": null
 }
 ```
 
-Response:
+The shipped adapter returns `basis` (also aliased as `resolved_basis`) with
+`requested`, `kind`, `clock_policy`, `anchor`, `simultaneity`, and per-node
+resolutions. Absolute requests resolve to `kind: "absolute_time"`; relative
+requests resolve to `"relative_capture_vector"`. `reconstructed_time` is a
+typed world-basis concept, not an accepted selector for this HTTP adapter.
 
-```json
-{
-  "revision_id": "rev-01",
-  "absolute_clock_domains": ["utc"],
-  "status_perspective_id": "hardware-observed",
-  "basis": {
-    "kind": "reconstructed_time",
-    "requested_time_ns": "1759680003015000000",
-    "resolved_at_min_ns": "1759680003015000000",
-    "resolved_at_max_ns": "1759680003015000000",
-    "clock_domain": "normalized:revision",
-    "provenance": "reconstructed",
-    "quality": "best_effort"
-  },
-  "resources": [
-    {
-      "resource_id": "res-ete-b",
-      "key": {
-        "namespace": "synthetic",
-        "node": "node-a",
-        "layer": "data-bridge-layer",
-        "kind": "ETE",
-        "parts": [
-          ["parent_resource_id", {"type": "uuid", "value": "123e4567-e89b-12d3-a456-426614174000"}],
-          ["path_id", {"type": "uint64", "value": "7"}]
-        ]
-      },
-      "exists": true,
-      "properties": {"neighbor": "198.51.100.0"},
-      "unknown_fields": [
-        {"name": "program_state", "reason_code": "missing_before_value", "evidence_ids": ["ev-ete-update-4"]}
-      ],
-      "valid_from_ns": null,
-      "valid_to_ns": "1759680003015000000",
-      "provenance": "reconstructed",
-      "quality": "unknown",
-      "evidence_ids": ["ev-ete-update-4"]
-    }
-  ],
-  "relationships": [
-    {
-      "relationship_id": "rel-22",
-      "source_resource_id": "res-ete-b",
-      "target_resource_id": "res-nbr-failed",
-      "relation_type": "references",
-      "attributes": {},
-      "valid_from_ns": "1759680003015000000",
-      "valid_to_ns": null,
-      "provenance": "event_derived",
-      "quality": "exact",
-      "evidence_ids": ["ev-ete-update-4"]
-    }
-  ],
-  "next_cursor": null,
-  "truncated": false
-}
-```
+The response also contains `node_times`, selected projection/perspective IDs,
+`resources`, `relationships`, `counts`, `completeness`, and independent paging
+handles. Resource rows have canonical `resource_id`, tri-state `exists`,
+`state`/`properties`, status, validity bounds, quality, unknown fields, and
+possible states for an ambiguous clock window. Relationship rows use `source`
+and `target` resource IDs, not `source_resource_id`/`target_resource_id`.
+Additional identity/evidence fields depend on the admitted provider data; this
+adapter does not promise the typed plug-in `ResourceKey.parts` wire envelope.
 
-The same endpoint accepts an absolute or relative selector from section 2 and
-returns the resolved basis, including all per-node mappings. Resource rows use
-the generic envelope regardless of plugin kind: canonical typed key, tri-state
-`exists`, plugin properties, field-level unknowns, validity/capture ranges,
-provenance, quality, and evidence. Relationship rows are the same time-valid
-typed edges used by graph and topology projections.
+`include_relationships` defaults to true and accepts a JSON boolean. False
+returns no relationships and does not query the relationship reader.
+`relation_types`, when supplied, is an array of strings that narrows the
+selected plug-in projection's relationship types; it cannot broaden that
+projection. An empty array selects no relationship types; omit the field to
+use the projection's defaults.
+
+For another resource page, copy `next_resource_cursor` into `resource_cursor`
+and keep the revision, basis, perspective, resource IDs, and kinds unchanged.
+Use `next_change_cursor` as `change_cursor` for change pages. The generic
+`next_cursor` response is a legacy convenience, not a request-field name:
+non-null `cursor` requests are rejected so they cannot silently repeat page one.
+Cursor positions and offsets are bounded JSON-safe integers. An out-of-range
+position, or a page whose position/count arithmetic would exceed that range,
+returns `422`; recomputing a cursor checksum does not bypass those checks.
 
 `status_perspective_id` selects one declared independent layer-local view. The
 server returns `422` for an undeclared perspective. When that perspective lacks
@@ -2461,7 +2467,7 @@ Content-Type: application/json
   "include_resources": true,
   "include_relationships": true,
   "page_size": 500,
-  "cursor": null
+  "resource_cursor": null
 }
 ```
 
@@ -2569,12 +2575,16 @@ POST /v1/revisions/rev-01/topology/changes/query
 ```
 
 The request supplies `start_basis`, `end_basis`, the same projection and status
-perspective IDs, a page size, and an opaque cursor. The response streams ordered
+perspective IDs, a page size, and an opaque `change_cursor` copied from the
+previous response's `next_cursor`. The response streams ordered
 resource existence/status changes and inferred-connectivity add/remove/status
 changes. Every change carries its node-local effective range, normalized
 absolute range when supported, uncertainty, before/after value, cause/evidence,
-provenance, and quality. Pagination is revision/query-bound; replaying all pages
-must produce the same snapshot as `topology/query` at the end basis.
+provenance, and quality. Pagination is revision/query-bound. This is a bounded
+change stream over retained events and relationship intervals, not a complete
+snapshot-reconciliation log: snapshot-only resource transitions need a fresh
+`topology/query`, and an event exactly at the end basis belongs to the next
+window. Do not reconstruct the complete end snapshot from these pages alone.
 The query window is half-open:
 `start_ns <= effective_time_ns < end_ns` for both resource events and
 relationship mutations. A change on the shared boundary of adjacent windows is
@@ -3244,6 +3254,13 @@ state, or override disposition. The resulting transition is
 Observed device policy is `origin=node_plugin`. A counterfactual trace must not
 be returned as observed reachability or mutate the stored forwarding
 projection.
+
+Equal packet values do not prove continuity if either identity is incomplete.
+Core retains that uncertainty through terminal transitions, independently of
+the declared delivery disposition. A generic plug-in DROP is not an MTU
+failure: that label requires a matching core MTU result of `exceeds`.
+User-forced transitions and their resulting path remain counterfactual, not
+observed device decisions.
 
 The bundled advanced demo accepts an advertised `steering_profile_id` and
 returns its evaluated teaching payload under `paths[].packet_trace`. That
@@ -4163,7 +4180,10 @@ exactly once without changing the HTTP response, including concealed scope
   `project_creation_scope_denied`, `workspace_creation_scope_denied`.
 
 The decision constructor, reporter boundary, and event validator enforce this
-closed vocabulary. A process-random HMAC derived only from a trusted resolved
+closed vocabulary from one dependency-neutral core contract. Maintenance roles
+are requested explicitly by their endpoints; a project/workspace named
+`retention` does not change authorization for ordinary catalog operations.
+A process-random HMAC derived only from a trusted resolved
 tenant is optional within-run correlation and is never a sampling key. It is
 included only when the bounded candidate algorithm's lower bound proves one
 tenant is a strict majority of the current sample window; otherwise it is
@@ -4313,14 +4333,27 @@ POST /v1/revisions/rev-01/resources/query
 ```
 
 `POST .../resources/query` and `GET .../resources/at` accept `offset` only in
-`0..9007199254740991`; the response echoes an exact JSON number in that same
-range. `time_ns` instead uses the signed 64-bit nanosecond domain. The generic
-integer adapter has no timestamp defaults: every non-time field declares its
-own lower and upper bounds.
+`0..9007199254740991`. Indexed history and named table views apply pagination
+and echo an exact numeric `offset` in that range. The legacy unindexed plain
+table path is intentionally unpaged: it returns every matching row, ignores
+`offset`/`limit` after HTTP validation, and omits pagination fields. Clients
+requiring bounded pages must use indexed history or a named table view;
+repeated offsets do not paginate the legacy response. `time_ns` instead uses
+the signed 64-bit nanosecond domain. The generic HTTP integer adapter has no
+timestamp defaults: every non-time field declares its own lower and upper
+bounds.
 
-Every item includes its canonical resource ID, descriptor kind, existence and
-status at the requested time, active typed relationships, last accepted change,
-failed events that did not change state, provenance, quality, and evidence.
+Each item is a bounded resource-state row: canonical resource ID, descriptor
+kind, layer, label, tri-state existence, status/status class, projected state
+and key, interval validity bounds, quality, unknown fields, and the public
+resource envelope. `source_event_uid` identifies the selected interval's
+opening event when available; it is not a joined last-change record. These
+rows do not join active relationships, failed-event history, or interval
+provenance/evidence. Query relationships separately through the
+[state-query surface](#3-state-query) with `include_relationships: true`.
+Use the [timeline and cluster-detail surface](#6-timeline-and-cluster-expansion)
+or `POST /v1/revisions/{revision_id}/event-log/query` in
+[windowed scale history](#windowed-scale-history) for retained event details.
 Resource `state` and typed `key` objects are allowlist projections: only fields
 declared by that kind's `PropertyDescriptor` (or explicit `key_fields`) may
 appear. `sensitive`, `client_visible: false`, and undeclared fields are omitted

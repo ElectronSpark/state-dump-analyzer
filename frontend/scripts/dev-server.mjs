@@ -4,10 +4,10 @@ import {
   realpathSync,
   statSync,
 } from "node:fs";
-import { createServer, request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
+import { createServer } from "node:http";
 import { dirname, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createDevProxy, frontendOrigin } from "./dev-proxy.mjs";
 
 const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const realFrontendRoot = realpathSync(frontendRoot);
@@ -61,33 +61,10 @@ function sendText(response, statusCode, message) {
   response.end(message);
 }
 
-function proxyRequest(incoming, response) {
-  const requested = new URL(incoming.url, "http://frontend.invalid");
-  const target = new URL(`${requested.pathname}${requested.search}`, backend);
-  const transport = target.protocol === "https:" ? httpsRequest : httpRequest;
-  const upstream = transport(
-    target,
-    {
-      method: incoming.method,
-      headers: { ...incoming.headers, host: target.host },
-    },
-    (upstreamResponse) => {
-      response.writeHead(
-        upstreamResponse.statusCode ?? 502,
-        upstreamResponse.headers,
-      );
-      upstreamResponse.pipe(response);
-    },
-  );
-  upstream.on("error", (error) => {
-    if (!response.headersSent) {
-      sendText(response, 502, `Backend unavailable: ${error.message}\n`);
-    } else {
-      response.destroy(error);
-    }
-  });
-  incoming.pipe(upstream);
-}
+const proxyRequest = createDevProxy({
+  backend,
+  origin: frontendOrigin(options.host, options.port),
+});
 
 function safeAssetPath(pathname) {
   const encodedRelative = pathname.slice(`${manifest.assets.url_prefix}/`.length);
@@ -133,7 +110,7 @@ function safePagePath(relative) {
 }
 
 const server = createServer((request, response) => {
-  const requestUrl = new URL(request.url, `http://${request.headers.host ?? "localhost"}`);
+  const requestUrl = new URL(request.url, "http://frontend.invalid");
   const pathname = requestUrl.pathname;
   if (
     proxyPrefixes.some(

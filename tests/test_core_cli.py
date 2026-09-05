@@ -79,7 +79,7 @@ class CoreCliTests(unittest.TestCase):
                 module_target="vendor_router_plugin:plugin",
             ),
             process_module_target=(
-                "tests.test_core_cli:_RegisteredRuntimePlugin"
+                f"{__name__}:_RegisteredRuntimePlugin"
             ),
             process_construct_class=True,
         )

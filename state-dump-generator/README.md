@@ -95,6 +95,19 @@ events through the capture time. Editing an event in the past therefore changes
 the reconstructed history while later events still determine the latest state.
 An attempted event may also be retained as a log without changing the snapshot.
 
+Omitted snapshot flags default to **false** for `log`, `log-only`, and `clock`
+events, and **true** for other node-local kinds. Underscores in kind names are
+equivalent to hyphens. Explicit `update_snapshot` takes precedence over the
+legacy `update_final_state` alias; opening, editing, and saving retain that
+decision. Failed events still do not update snapshots unless `apply_on_failure`
+is enabled. A clock event is a local history record; the node's `clock` object
+sets the offset actually applied to exported timestamps.
+
+An event's resource type defaults to `resource`, never its event kind or target
+type. Explicit `resource_type`, then `resource_kind`, then the payload's
+`resource_type` take precedence. The editor preserves these rules and lets the
+compiler supply the default log message when no message was authored.
+
 ## Command-line workflow
 
 The commands in this section assume the current directory is
@@ -110,7 +123,16 @@ Create a blank authoring project:
 state-dump-generator new lab.json
 ```
 
-Validate it before generation:
+A blank project has no topology and intentionally fails validation. Before
+generating, edit `lab.json`: replace `"nodes": []` with at least one
+dump-producing router, keeping the other generated fields. For example:
+
+```json
+"nodes": [{"node_id": "r1", "kind": "router"}]
+```
+
+Alternatively, use the browser editor below to open `lab.json`, add a router,
+and save the project. Then validate the saved, authored project:
 
 ```bash
 state-dump-generator validate lab.json
@@ -121,6 +143,11 @@ Generate an assembly with one node dump per router:
 ```bash
 state-dump-generator generate lab.json --output lab-state-dumps.tgz
 ```
+
+Path notices and errors preserve Unicode on UTF-8 consoles. On legacy console
+encodings, only unrepresentable characters are displayed as backslash escapes;
+the actual file names are unchanged. JSON reports use JSON-safe ASCII escapes
+and preserve their original string values when parsed, including non-BMP text.
 
 Run the browser editor:
 
@@ -135,8 +162,15 @@ python -m state_dump_generator serve --port 8877 --open
 ```
 
 `new` refuses to overwrite an existing file unless `--force` is supplied.
-`validate` emits a machine-readable JSON report and returns a nonzero status
-for an invalid project. `generate` validates before writing and replaces its
+`validate` uses these exit codes and output streams:
+
+| Exit code | Output | Meaning |
+|---:|---|---|
+| `0` | JSON report on stdout | The loaded, normalized project passes validation; warnings may still be present. |
+| `1` | JSON report on stdout | The loaded, normalized project fails semantic validation, such as having no dump-producing nodes. |
+| `2` | Usage/error text on stderr, no JSON report | An argument, path/read, JSON/root, or model-construction error prevented validation. |
+
+`generate` validates before writing and replaces its
 regular-file destination atomically. It refuses an output path that traverses
 a symbolic link or Windows junction.
 
@@ -237,6 +271,8 @@ top-level attachment `resource_id` (or legacy `local_resource_id`, then the
 port ID) is retained only as the fallback identity of that node's local
 interface record. Top-level `properties` and `observed_state` are not promoted
 into node-local evidence.
+Unqualified fallback ports gain an `interface:` prefix; already-qualified
+ports such as `interface:xe0` retain their identity through browser saves.
 
 Existing schema-v1 saves can still be opened, but authors must move every value
 that should cross the dump boundary into an explicit
@@ -248,6 +284,8 @@ values. An exact private medium ID is rejected when it appears in any
 identity-bearing field: built-in fields and plug-in-defined `*_id`, `*_ids`,
 `*_key`, or `*_keys` fields all participate. The same ordinary text in a
 non-identity note is not treated as topology identity.
+Validation also checks the resolved local event resource identity, including
+`subject` and `target_id` aliases, before compilation.
 
 ## Best-effort propagation
 
@@ -278,6 +316,26 @@ delay a transit node, and turn one route update into a failed attempt.
 
 ### Capture horizon and cadence
 
+Propagation preview and **Apply propagation** use the same generator-owned
+Python scheduler as compilation. The browser does not independently choose
+targets, cadence, jitter, or outcomes. The local editor endpoint
+`POST /api/scenario/propagation` accepts `{ "scenario": ..., "event_id": ... }`
+and returns editable node-local events. Preview is bounded to 512 observations and a
+conservative 4 MiB response budget; select fewer targets when it exceeds either
+bound. The generator remains standalone and uses no analyzer or plug-in code.
+
+Every explicitly attached interface on a selected node receives its own
+observation, even when several interfaces share one medium. They share that
+node's scheduled time and outcome and have distinct history IDs. A declared
+LAG, member, or subinterface is updated only when it is itself an attachment;
+the scheduler does not infer effects on other parent/member resources. The
+partial multi-access pattern likewise addresses local attachment identities,
+never the private medium's name or ID. Preview is limited to 512 observations,
+so multiple attachments count separately toward its allocation budget.
+Successful carrier observations replace `oper_status` from the attachment's
+starting properties with the newly observed state while preserving other local
+properties. Failed or stale observations leave the previous state unchanged.
+
 Validation computes the latest possible generated observation using the actual
 eligible target set, delay, absolute jitter bound, and cadence:
 
@@ -292,6 +350,29 @@ remain in the authoring plan but do not enter final snapshots or exported
 history. If capture time is omitted, the loader chooses a default at least one
 second beyond the calculated horizon. Explicit capture time always wins, which
 lets an author deliberately test incomplete propagation.
+
+The editor preserves an imported explicit capture time, including when saving
+or validating the project. New projects leave capture automatic so the Python
+loader chooses the horizon. Applying propagation may retain generated child
+observations after an explicit capture: validation warns, and those children
+remain in the authoring project but are excluded from the exported snapshot
+and history. An ordinary authored event after capture is still an error.
+
+Omitted propagation targets request inference from `target_mode`; an explicit
+empty target list requests no observations. Opening and saving preserves this
+distinction, nanosecond delay/jitter, per-node outcomes, and inherited parent
+outcomes. Selecting **Propagation attempt fails** forces failed, non-mutating
+observations regardless of the outcome control. Nanosecond coordinates and
+source-order fields must be integers; fractional values are rejected.
+The event-time editor displays exact decimal seconds with nanosecond precision,
+so opening and saving an event without changing its time preserves its timestamp.
+
+Clock `offset_ns` and `uncertainty_ns` also preserve exact integer values,
+including the `clock_offset_ns` and `clock_uncertainty_ns` import aliases.
+Use decimal JSON strings beyond JavaScript's safe integer range
+(`-9007199254740991` through `9007199254740991`); the editor rejects larger
+numeric literals rather than rounding them. Offsets may be negative, while
+uncertainty must be non-negative. Fractional clock coordinates are rejected.
 
 ## Generated archive layout
 
@@ -327,6 +408,8 @@ history `timestamp_ns`, and final-state `updated_at_ns` all include that node's
 configured offset. The private editor timeline is not exported as an absolute
 clock oracle. History rows also carry `source_sequence`, which preserves the
 author-defined order of changes that share one local timestamp.
+History rows also retain an explicit `status` when an observation declares
+one, even if its properties do not contain a status field.
 
 The generation boundary rejects forbidden authoring/oracle keys recursively
 and also rejects a private physical-medium identifier if it is copied into an

@@ -103,8 +103,17 @@ npm --prefix frontend run serve
 ```
 
 Open `http://127.0.0.1:4173`. The frontend server proxies the API paths declared
-in the manifest to `http://127.0.0.1:8765`, avoiding browser CORS differences
-between integrated and split-process operation.
+in the manifest to `http://127.0.0.1:8765`. With a concrete configured frontend
+address, every proxied request must have exactly its matching `Host`, including
+reads and requests without `Origin`; rewriting Host must not bypass the
+backend's DNS-rebinding protection. For mutating requests with an
+`Origin` header, the proxy requires exactly the configured frontend origin
+and matching request `Host` before rewriting the origin to the backend origin.
+Foreign, opaque `null`, duplicate, and mismatched sources are rejected before
+forwarding. Use the exact displayed frontend URL: `localhost` and
+`127.0.0.1` are not interchangeable authorities. No-Origin CLI requests with
+the valid Host keep their absent Origin, and authentication, tenant/principal, conditional,
+and idempotency headers still pass through to backend authorization.
 
 The development server accepts `--host`, `--port`, and `--backend` after npm's
 `--` separator. For example, with a backend on port 8876:
@@ -113,10 +122,18 @@ The development server accepts `--host`, `--port`, and `--backend` after npm's
 npm --prefix frontend run serve -- --backend http://127.0.0.1:8876 --port 4174
 ```
 
+For browser mutations, `--host` must name the concrete address used in the
+browser URL. Wildcard listeners (`0.0.0.0` or `::`) cannot establish a trusted
+browser origin and reject Origin-bearing mutations; they do not disable
+backend authentication. This proxy is a local development tool, not a
+production authentication gateway.
+
 Use `npm --prefix frontend run check` to validate the manifest, local asset
 references, JavaScript syntax, single-source frontend boundary, and the
 framework-free helper tests under `frontend/tests/`, without installing
-packages. `durable_review_controller.test.mjs` executes timeout/abort,
+packages. `dev_proxy.test.mjs` uses short-lived local HTTP servers to verify
+origin rejection, accepted-origin rewriting, and preserved request authority
+and body; the servers are closed after the test. `durable_review_controller.test.mjs` executes timeout/abort,
 pagination, stale-connection, mutation-lock, ambiguous-result reconciliation,
 atomic watermark restart, confirmed-marker replacement, persistent-journal
 reload/tamper/capacity recovery, and blocked-storage behavior against injected

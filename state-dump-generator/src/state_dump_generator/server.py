@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import ipaddress
 import json
 import mimetypes
@@ -16,6 +15,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Final
 from urllib.parse import unquote, urlsplit
 
+from ._json_values import plain_value as _project_json_value
+from ._json_values import stable_json_key
 from .archive import (
     ArchiveProjectionError,
     compile_and_build,
@@ -26,7 +27,6 @@ from .path_safety import (
     resolve_regular_directory,
     resolve_regular_file,
 )
-
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8770
@@ -40,32 +40,11 @@ class ScenarioRequestError(ValueError):
 
 
 def _plain_value(value: Any) -> Any:
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {
-            field.name: _plain_value(getattr(value, field.name))
-            for field in dataclasses.fields(value)
-        }
-    if isinstance(value, Mapping):
-        return {str(key): _plain_value(item) for key, item in value.items()}
-    if isinstance(value, tuple | list):
-        return [_plain_value(item) for item in value]
-    if isinstance(value, set | frozenset):
-        return sorted(
-            (_plain_value(item) for item in value),
-            key=lambda item: json.dumps(
-                item,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-        )
-    if value is None or isinstance(value, str | int | float | bool):
-        return value
-    to_dict = getattr(value, "to_dict", None)
-    if callable(to_dict):
-        return _plain_value(to_dict())
-    raise ScenarioRequestError(
-        f"cannot serialize {type(value).__name__} as scenario JSON"
+    return _project_json_value(
+        value,
+        set_sort_key=lambda item: stable_json_key(item, allow_nan=True),
+        error_type=ScenarioRequestError,
+        unsupported_message="cannot serialize {kind} as scenario JSON",
     )
 
 
@@ -186,14 +165,21 @@ def validate_document(document: Any) -> dict[str, Any]:
         return {
             **dict(plain),
             "ok": ok,
-            "errors": list(errors) if isinstance(errors, Sequence) and not isinstance(errors, str) else [str(errors)],
-            "warnings": list(warnings) if isinstance(warnings, Sequence) and not isinstance(warnings, str) else [str(warnings)],
+            "errors": list(errors)
+            if isinstance(errors, Sequence) and not isinstance(errors, str)
+            else [str(errors)],
+            "warnings": list(warnings)
+            if isinstance(warnings, Sequence) and not isinstance(warnings, str)
+            else [str(warnings)],
         }
     if isinstance(plain, list):
         errors: list[Any] = []
         warnings: list[Any] = []
         for issue in plain:
-            if isinstance(issue, Mapping) and str(issue.get("severity", "error")).lower() == "warning":
+            if (
+                isinstance(issue, Mapping)
+                and str(issue.get("severity", "error")).lower() == "warning"
+            ):
                 warnings.append(issue)
             else:
                 errors.append(issue)
@@ -478,8 +464,7 @@ class ScenarioEditorHandler(BaseHTTPRequestHandler):
 
     def _static_file(self, request_path: str) -> Path | None:
         logical = "index.html" if request_path == "/" else request_path.lstrip("/")
-        if logical.startswith("assets/"):
-            logical = logical[len("assets/") :]
+        logical = logical.removeprefix("assets/")
         path = PurePosixPath(logical)
         if (
             not logical
@@ -487,9 +472,7 @@ class ScenarioEditorHandler(BaseHTTPRequestHandler):
             or any(part in {"", ".", ".."} for part in path.parts)
         ):
             return None
-        lexical_candidate = lexical_absolute(
-            self.server.web_root.joinpath(*path.parts)
-        )
+        lexical_candidate = lexical_absolute(self.server.web_root.joinpath(*path.parts))
         if path_has_link_component(lexical_candidate):
             return None
         candidate = lexical_candidate.resolve()
@@ -539,8 +522,7 @@ class ScenarioEditorHandler(BaseHTTPRequestHandler):
                 return
             content = static_file.read_bytes()
             media_type = (
-                mimetypes.guess_type(static_file.name)[0]
-                or "application/octet-stream"
+                mimetypes.guess_type(static_file.name)[0] or "application/octet-stream"
             )
             if media_type.startswith("text/") or media_type in {
                 "application/javascript",
@@ -568,6 +550,7 @@ class ScenarioEditorHandler(BaseHTTPRequestHandler):
             if path not in {
                 "/api/scenario/validate",
                 "/api/scenario/preview",
+                "/api/scenario/propagation",
                 "/api/scenario/generate",
             }:
                 # No body was consumed, so this connection cannot safely be
@@ -589,6 +572,14 @@ class ScenarioEditorHandler(BaseHTTPRequestHandler):
                 return
             if not report["ok"]:
                 self._send_json(HTTPStatus.UNPROCESSABLE_ENTITY, report)
+                return
+            if path == "/api/scenario/propagation":
+                from .simulation import _preview_propagation
+
+                self._send_json(
+                    HTTPStatus.OK,
+                    _preview_propagation(document, str(payload.get("event_id", ""))),
+                )
                 return
             if path == "/api/scenario/preview":
                 preview = preview_document(
@@ -669,10 +660,10 @@ __all__ = [
     "DEFAULT_HOST",
     "DEFAULT_PORT",
     "MAX_REQUEST_BYTES",
+    "WEB_ROOT",
     "ScenarioEditorHandler",
     "ScenarioEditorServer",
     "ScenarioRequestError",
-    "WEB_ROOT",
     "create_server",
     "load_document",
     "new_document",

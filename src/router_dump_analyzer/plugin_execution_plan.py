@@ -161,9 +161,15 @@ class DecoderIdentity:
         _digest(self.executable_digest, "executable_digest")
 
 
-def _snapshot_decoder_identity(decoder: DecoderIdentity) -> DecoderIdentity:
+def _snapshot_decoder_identity(
+    decoder: DecoderIdentity,
+    *,
+    type_error_message: str = "decoder must be DecoderIdentity",
+) -> DecoderIdentity:
+    """Detach and revalidate exact identity; adapters own type-error wording."""
+
     if type(decoder) is not DecoderIdentity:
-        raise TypeError("decoder must be DecoderIdentity")
+        raise TypeError(type_error_message)
     return DecoderIdentity(
         decoder_id=decoder.decoder_id,
         decoder_version=decoder.decoder_version,

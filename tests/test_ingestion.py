@@ -6,6 +6,7 @@ import unittest
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -67,6 +68,7 @@ from router_dump_analyzer.runtime import (
     require_plugin_runtime,
     validate_runtime_session,
 )
+from tests.support.normalized_data import static_data_service
 
 
 class ParseOnlyPlugin(AnalyzerPluginBase):
@@ -841,6 +843,64 @@ class DeclaredTimelineEventPlugin(TemporalEventPlugin):
             yield output
 
 
+class LabelVisibilityPlugin(TemporalEventPlugin):
+    def __init__(self, *, public_visible: bool) -> None:
+        self.public_visible = public_visible
+
+    def describe(self) -> PluginSchema:
+        schema = super().describe()
+        kind = schema.resource_kinds[0]
+        return replace(
+            schema,
+            resource_kinds=(
+                replace(
+                    kind,
+                    key_fields=("hidden", "public", "sensitive"),
+                    properties=(
+                        *kind.properties,
+                        PropertyDescriptor(
+                            name="hidden", label="Hidden", value_type="string",
+                            client_visible=False,
+                        ),
+                        PropertyDescriptor(
+                            name="public", label="Public", value_type="string",
+                            client_visible=self.public_visible,
+                        ),
+                        PropertyDescriptor(
+                            name="sensitive", label="Sensitive", value_type="string",
+                            sensitive=True,
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+    def _resource(self, node: str) -> ResourceKey:
+        return ResourceKey(
+            namespace=self.manifest.plugin_id,
+            node=node,
+            layer="interface",
+            kind="INTERFACE",
+            parts=(
+                ("hidden", "hidden-key-token"),
+                ("public", "visible-index"),
+                ("sensitive", "sensitive-key-token"),
+            ),
+        )
+
+    def parse_status(self, reader, spec):
+        for output in super().parse_status(reader, spec):
+            yield (
+                replace(output, resource=self._resource(spec.node))
+                if isinstance(output, SnapshotObservation)
+                else output
+            )
+
+    def parse_text_trace(self, reader, spec):
+        for event in super().parse_text_trace(reader, spec):
+            yield replace(event, subjects=(self._resource(spec.node),))
+
+
 class CoreIngestionTests(unittest.TestCase):
     def _fixture(self, directory: str) -> Path:
         path = Path(directory) / "status.jsonl"
@@ -936,6 +996,70 @@ class CoreIngestionTests(unittest.TestCase):
             result.dataset["_ingestion"]["matched_event_count"],
             0,
         )
+
+    def test_standard_ingestion_does_not_schedule_declared_reducer_hooks(self) -> None:
+        plugin = TemporalEventPlugin()
+        plugin.manifest = replace(
+            plugin.manifest,
+            capabilities=plugin.manifest.capabilities | {
+                PluginCapability.EVENT_REDUCTION,
+                PluginCapability.EVENT_REVERSION,
+                PluginCapability.CORRELATION,
+            },
+        )
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(plugin, "apply", side_effect=AssertionError("unexpected apply")) as apply,
+            patch.object(plugin, "revert", side_effect=AssertionError("unexpected revert")) as revert,
+            patch.object(plugin, "correlate", side_effect=AssertionError("unexpected correlate")) as correlate,
+        ):
+            self._fixture(directory)
+            (Path(directory) / "router.log").write_text("observed event\n", encoding="utf-8")
+            result = IngestionCoordinator().ingest(plugin, Path(directory))
+        for hook in (apply, revert, correlate):
+            hook.assert_not_called()
+        self.assertEqual(len(result.events), 4)
+        self.assertEqual(len(result.snapshots), 2)
+        self.assertEqual(len(result.dataset["state_intervals"]), 2)
+        self.assertEqual(result.dataset["resources"][0]["state"]["oper_status"], "up")
+
+    def test_generated_resource_and_event_labels_exclude_private_key_fields(self) -> None:
+        resource_ids = []
+        for public_visible in (True, False):
+            with self.subTest(public_visible=public_visible):
+                with tempfile.TemporaryDirectory() as directory:
+                    self._fixture(directory)
+                    (Path(directory) / "router.log").write_text(
+                        "observed event\n", encoding="utf-8"
+                    )
+                    result = IngestionCoordinator().ingest(
+                        LabelVisibilityPlugin(public_visible=public_visible),
+                        Path(directory),
+                    )
+                record = result.dataset["resources"][0]
+                resource_ids.append(record["resource_id"])
+                expected = "visible-index" if public_visible else "INTERFACE"
+                self.assertEqual(record["label"], expected)
+                self.assertEqual(
+                    [event["subjects"][0]["label"] for event in result.dataset["events"]],
+                    [expected] * 4,
+                )
+                # Only generated presentation is filtered; retained evidence
+                # and canonical identity keep the original typed key parts.
+                self.assertIn("hidden-key-token", json.dumps(record["key"]))
+                self.assertIn("sensitive-key-token", json.dumps(record["key"]))
+                service = static_data_service(result.dataset)
+                for hidden in ("hidden-key-token", "sensitive-key-token"):
+                    self.assertEqual(service.resources_at(200, search=hidden)["items"], [])
+                self.assertEqual(
+                    [row["label"] for row in service.resources_at(200)["items"]],
+                    [expected],
+                )
+                self.assertEqual(
+                    len(service.resources_at(200, search="visible-index")["items"]),
+                    int(public_visible),
+                )
+        self.assertEqual(resource_ids[0], resource_ids[1])
 
     def test_revision_identity_is_content_stable_and_changes_with_input(
         self,

@@ -417,48 +417,67 @@ class PipelineCliTests(unittest.TestCase):
                         "test.plugin:plugin",
                     )
 
-    def test_headless_run_reports_selection_required_with_exit_two(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            input_path = root / "status.jsonl"
-            input_path.write_bytes(_fixture(0))
-            configuration = HeadlessIngestionConfiguration(
-                state_dir=root / "state",
-                tenant_id="tenant-a",
-                project_id="project-a",
-                workspace_id="workspace-a",
-                project_label="Project A",
-                workspace_label="Workspace A",
-                plugin_names=(),
-                plugin_modules=("test.plugin",),
-                input_paths=(input_path,),
-                timeout_seconds=10,
-                auto_select=False,
-                preferred_plugin_id=None,
-                content_type=None,
-                node_hint=None,
-                metadata={},
-                output_path=None,
-                pretty=False,
-            )
-            stdout = io.StringIO()
-            exit_code = run(
-                configuration,
-                module_loader=lambda target: ParseOnlyPlugin(),
-                entry_point_loader=lambda name: self.fail(name),
-                stdout=stdout,
-                pipeline_limits=self._limits(),
-            )
-            document = json.loads(stdout.getvalue())
-            self.assertEqual(exit_code, 2)
-            self.assertEqual(
-                document["imports"][0]["state"],
-                ImportState.AWAITING_SELECTION.value,
-            )
+    def test_headless_run_honors_explicit_preference_without_auto_selection(self) -> None:
+        cases = (
+            (None, 2, ImportState.AWAITING_SELECTION),
+            (ParseOnlyPlugin.manifest.plugin_id, 0, ImportState.COMPLETED),
+            ("tests.not-registered", 1, ImportState.FAILED),
+        )
+        for preferred, expected_exit, expected_state in cases:
+            with (
+                self.subTest(preferred=preferred),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                self._assert_headless_selection_result(
+                    Path(directory), preferred, expected_exit, expected_state
+                )
+
+    def _assert_headless_selection_result(
+        self,
+        root: Path,
+        preferred: str | None,
+        expected_exit: int,
+        expected_state: ImportState,
+    ) -> None:
+        input_path = root / "status.jsonl"
+        input_path.write_bytes(_fixture(0))
+        configuration = HeadlessIngestionConfiguration(
+            state_dir=root / "state",
+            tenant_id="tenant-a",
+            project_id="project-a",
+            workspace_id="workspace-a",
+            project_label="Project A",
+            workspace_label="Workspace A",
+            plugin_names=(),
+            plugin_modules=("test.plugin",),
+            input_paths=(input_path,),
+            timeout_seconds=10,
+            auto_select=False,
+            preferred_plugin_id=preferred,
+            content_type=None,
+            node_hint=None,
+            metadata={},
+            output_path=None,
+            pretty=False,
+        )
+        stdout = io.StringIO()
+        exit_code = run(
+            configuration,
+            module_loader=lambda target: ParseOnlyPlugin(),
+            entry_point_loader=lambda name: self.fail(name),
+            stdout=stdout,
+            pipeline_limits=self._limits(),
+        )
+        document = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, expected_exit)
+        self.assertEqual(document["imports"][0]["state"], expected_state.value)
+        if expected_state is ImportState.AWAITING_SELECTION:
             self.assertEqual(
                 len(document["imports"][0]["plugin_candidates"]),
                 1,
             )
+        elif expected_state is ImportState.COMPLETED:
+            self.assertTrue(document["imports"][0]["revision_id"].startswith("revision-"))
 
     def test_headless_failure_output_never_contains_private_diagnostics(
         self,

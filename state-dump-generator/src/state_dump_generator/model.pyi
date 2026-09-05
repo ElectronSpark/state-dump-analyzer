@@ -1,6 +1,7 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 __all__ = ['SCHEMA_VERSION', 'SCHEMA_ID', 'MAX_NODES', 'MAX_MEDIA', 'MAX_EVENTS', 'ScenarioValidationError', 'ScenarioDocument', 'scenario_from_dict', 'load_scenario', 'new_scenario', 'validate_scenario']
 

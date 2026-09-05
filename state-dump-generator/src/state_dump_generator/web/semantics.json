@@ -1,0 +1,9 @@
+{
+  "physical_kinds": ["link-state", "medium-state", "physical-link-state", "physical-state"],
+  "physical_target_types": ["link", "medium", "physical-link"],
+  "disabled_propagation_modes": ["manual", "none", "suppressed"],
+  "failed_outcomes": ["failed", "failure"],
+  "successful_outcomes": ["ok", "success", "succeeded"],
+  "log_only_kinds": ["log", "log-only", "clock"],
+  "default_resource_type": "resource"
+}

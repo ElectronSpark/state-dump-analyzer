@@ -33,6 +33,16 @@ from types import MappingProxyType
 from typing import Any, NoReturn, Protocol
 from urllib.parse import urlsplit
 
+from router_dump_analyzer.access_control_contract import (
+    ACCESS_DENIAL_REASONS_BY_PHASE as _ACCESS_DENIAL_REASONS_BY_PHASE,
+    CONTROL_PLANE_ADMIN_ROLE as CONTROL_PLANE_ADMIN_ROLE,
+    CONTROL_PLANE_INSTANCE_OPERATOR_ROLE as CONTROL_PLANE_INSTANCE_OPERATOR_ROLE,
+    CONTROL_PLANE_READ_ROLE as CONTROL_PLANE_READ_ROLE,
+    CONTROL_PLANE_ROLES as _ACCESS_DENIAL_ROLES,
+    CONTROL_PLANE_WRITE_ROLE as CONTROL_PLANE_WRITE_ROLE,
+    ControlPlaneAccessPhase as ControlPlaneAccessPhase,
+    ControlPlaneAccessReason as ControlPlaneAccessReason,
+)
 from fastapi import (
     APIRouter,
     Header,
@@ -183,10 +193,6 @@ from router_dump_analyzer.web.service_api import control_plane_service_health
 MAX_UPLOAD_SPOOL_MEMORY = 8 * 1024 * 1024
 MAX_CONTROL_PLANE_JSON_BODY_BYTES = 1024 * 1024
 MAX_PAGE_LIMIT = 5_000
-CONTROL_PLANE_READ_ROLE = "control-plane:read"
-CONTROL_PLANE_WRITE_ROLE = "control-plane:write"
-CONTROL_PLANE_ADMIN_ROLE = "control-plane:admin"
-CONTROL_PLANE_INSTANCE_OPERATOR_ROLE = "control-plane:instance-operator"
 MAX_RETENTION_AUDIT_LIMIT = 500
 MAX_RETENTION_OPERATION_ID_LENGTH = 248
 MAX_RETENTION_PROTECTED_IDS = 5_000
@@ -206,14 +212,6 @@ _ACCESS_DENIAL_REPORTED_RESPONSE_STATUSES = frozenset(
 )
 _ACCESS_DENIAL_REQUEST_METHODS = frozenset(
     {"DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"}
-)
-_ACCESS_DENIAL_ROLES = frozenset(
-    {
-        CONTROL_PLANE_ADMIN_ROLE,
-        CONTROL_PLANE_INSTANCE_OPERATOR_ROLE,
-        CONTROL_PLANE_READ_ROLE,
-        CONTROL_PLANE_WRITE_ROLE,
-    }
 )
 _MAX_RESOLVER_RESPONSE_HEADERS = 32
 _MAX_RESOLVER_HEADER_NAME_BYTES = 128
@@ -240,70 +238,6 @@ _RESOLVER_FORBIDDEN_RESPONSE_HEADERS = frozenset(
 )
 _ACCESS_DENIAL_REPORTER_INSTALL_LOCK = threading.Lock()
 _MISSING_ACCESS_DENIAL_REPORTER = object()
-
-
-class ControlPlaneAccessPhase(str, Enum):
-    """Closed ownership phase for one rejected control-plane request."""
-
-    REQUEST_SOURCE = "request_source"
-    IDENTITY_VERIFICATION = "identity_verification"
-    IDENTITY_BINDING = "identity_binding"
-    ROLE_AUTHORIZATION = "role_authorization"
-    SCOPE_AUTHORIZATION = "scope_authorization"
-
-
-class ControlPlaneAccessReason(str, Enum):
-    """Closed, caller-independent reason vocabulary for access telemetry."""
-
-    HOST_REJECTED = "host_rejected"
-    ORIGIN_REJECTED = "origin_rejected"
-    IDENTITY_VERIFICATION_FAILED = "identity_verification_failed"
-    TENANT_REQUIRED = "tenant_required"
-    TENANT_BINDING_MISMATCH = "tenant_binding_mismatch"
-    PRINCIPAL_REQUIRED = "principal_required"
-    PRINCIPAL_BINDING_MISMATCH = "principal_binding_mismatch"
-    REQUIRED_ROLE_MISSING = "required_role_missing"
-    PROJECT_SCOPE_DENIED = "project_scope_denied"
-    WORKSPACE_SCOPE_DENIED = "workspace_scope_denied"
-    PROJECT_CREATION_SCOPE_DENIED = "project_creation_scope_denied"
-    WORKSPACE_CREATION_SCOPE_DENIED = "workspace_creation_scope_denied"
-
-
-_ACCESS_DENIAL_REASONS_BY_PHASE: Mapping[
-    ControlPlaneAccessPhase,
-    frozenset[ControlPlaneAccessReason],
-] = MappingProxyType(
-    {
-        ControlPlaneAccessPhase.REQUEST_SOURCE: frozenset(
-            {
-                ControlPlaneAccessReason.HOST_REJECTED,
-                ControlPlaneAccessReason.ORIGIN_REJECTED,
-            }
-        ),
-        ControlPlaneAccessPhase.IDENTITY_VERIFICATION: frozenset(
-            {ControlPlaneAccessReason.IDENTITY_VERIFICATION_FAILED}
-        ),
-        ControlPlaneAccessPhase.IDENTITY_BINDING: frozenset(
-            {
-                ControlPlaneAccessReason.TENANT_REQUIRED,
-                ControlPlaneAccessReason.TENANT_BINDING_MISMATCH,
-                ControlPlaneAccessReason.PRINCIPAL_REQUIRED,
-                ControlPlaneAccessReason.PRINCIPAL_BINDING_MISMATCH,
-            }
-        ),
-        ControlPlaneAccessPhase.ROLE_AUTHORIZATION: frozenset(
-            {ControlPlaneAccessReason.REQUIRED_ROLE_MISSING}
-        ),
-        ControlPlaneAccessPhase.SCOPE_AUTHORIZATION: frozenset(
-            {
-                ControlPlaneAccessReason.PROJECT_SCOPE_DENIED,
-                ControlPlaneAccessReason.WORKSPACE_SCOPE_DENIED,
-                ControlPlaneAccessReason.PROJECT_CREATION_SCOPE_DENIED,
-                ControlPlaneAccessReason.WORKSPACE_CREATION_SCOPE_DENIED,
-            }
-        ),
-    }
-)
 
 
 class _ControlPlaneAccessDenied(Exception):
@@ -1382,11 +1316,10 @@ def _resolved_identity(
             reason=ControlPlaneAccessReason.PRINCIPAL_BINDING_MISMATCH,
             identity=identity,
         )
-    is_retention_admin_request = "/retention/" in request.url.path
+    # Maintenance endpoints request their role explicitly. Catalog identifiers
+    # are user data, not an authorization policy (e.g. a project "retention").
     required_role = required_role_override or (
-        CONTROL_PLANE_ADMIN_ROLE
-        if is_retention_admin_request
-        else (CONTROL_PLANE_WRITE_ROLE if mutating else CONTROL_PLANE_READ_ROLE)
+        CONTROL_PLANE_WRITE_ROLE if mutating else CONTROL_PLANE_READ_ROLE
     )
     if required_role not in identity.roles:
         _deny_control_plane_access(

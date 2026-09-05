@@ -525,9 +525,9 @@ plug-in.
 | Status parse | Yield resource and relationship observations, scoped completeness markers, retained `SourceRecordEmission` values, and precise evidence locators. | Batch validation, source-record identity assignment, storage, diagnostics. |
 | Trace parse | Map dependency-free core CTF records or raw text into domain events and retained `SourceRecordEmission` values. | When configured, own the `TraceDecoder`, normalize native messages, retain raw time/source order, enforce quotas, and persist decoder diagnostics. The current runtime ships no built-in CTF decoder. |
 | Source-record presentation | Declare source-group metadata, source-type labels/colors/group membership, and optional regex-lane presets; link decoded records to domain events when normalization succeeds. | Validate group/type references, retain matched and unmatched timestamped records, assign stable IDs, validate regexes, page/query records, and implement generic timeline/log navigation. |
-| Reduce | Convert one event into all direct/derived state and edge changes. | Deterministic ordering, interval materialization, checkpointing. |
-| Revert | Invert an event when information permits. | Mark non-invertible state unknown and measure reconstruction coverage. |
-| Correlate | Query a bounded indexed reader and emit cross-layer edges, event causal links, and clock anchors. | Clamp windows/budgets, persist evidence/quality, and reject invalid references. |
+| Reduce | Convert one event into all direct/derived state and edge changes. | Validate bounded `ChangeSet` output and world reads; an explicitly configured host owns replay ordering, interval materialization, and checkpoint scheduling. |
+| Revert | Invert an event when information permits; otherwise return explicit unknowns and coverage. | Validate inverse/unknown changes and coverage; an explicitly configured host owns reverse replay and materializes the returned uncertainty. |
+| Correlate | Query a bounded indexed reader and emit cross-layer edges, event causal links, and clock anchors. | Validate windows, output budgets, evidence, and references; an explicitly configured host supplies the reader, schedules calls, and persists results. |
 | Revision relationship projection | Compare the complete immutable base revision and declare evidence-backed relationships between existing resources. | Schedule selected projectors on one shared base world, bind basis/provider authority, resolve duplicate or conflicting claims without merging identities, and augment the revision before consistency checks. |
 | Check | Return PASS/FAIL/UNKNOWN findings. | Execute rules at selected time/revision and aggregate dashboard results. |
 | Forwarding | Project bootstrap or bounded `ChangeSet` deltas into a negotiated typed forwarding IR. | Validate/version/store deltas; own LPM, recursive resolution, cycle/limit handling, and explanation API. |
@@ -541,6 +541,27 @@ MUST revalidate that snapshot before advancing or closing the plug-in
 iterator. Later mutation of the original dataclass, mapping, sequence, or
 nested value MUST NOT change normalized output, the immutable revision world,
 the execution plan, or published bytes.
+
+### Shipped execution and scheduling
+
+A declared capability is permission for the core execution boundary to call a
+hook, not a request to install an automatic scheduler. The shipped paths are:
+
+| Capability or stage | Current invocation path |
+|---|---|
+| Status/CTF/text parsing and observation normalization | Ordinary `IngestionCoordinator` dispatches selected parser hooks, retains events, and builds observation-derived state and relationship intervals. |
+| `EVENT_REDUCTION` / `EVENT_REVERSION` | Executor-only, host-scheduled through `PluginCapabilityExecutor` or the plan-bound router. Ordinary ingestion does not call `apply()` or `revert()`, replay events into state, or schedule checkpoints. |
+| `CORRELATION` | Executor-only, host-scheduled with an already bounded/indexed reader. Ordinary ingestion does not call `correlate()` or persist its outputs automatically. |
+| `RELATIONSHIP_PROJECTION` then `CONSISTENCY_CHECK` | Durable publication automatically schedules selected plan-bound providers, in that order, before hashing and publishing the dataset; this is not part of the ordinary parser-only coordinator. |
+| Topology, forwarding, and evidence analysis | Explicitly configured host/coordinator paths invoke the selected providers; capability declarations alone do not install those services. |
+
+An embedding host that implements reducer replay still owns generic ordering,
+budgets, interval storage, and checkpoints. The plug-in owns only the meaning
+of each event and its returned mutations, inverses, and correlations. The
+executor validates these values; it does not apply or persist them. The
+standard-ingestion boundary is exercised by
+`tests.test_ingestion.CoreIngestionTests.test_standard_ingestion_does_not_schedule_declared_reducer_hooks`;
+direct hook execution is covered by `tests.test_capability_executor`.
 
 ### Hook selection and input dispatch
 
@@ -797,12 +818,19 @@ every result, and uses a scoped internal router that cannot resolve an unbound
 pin. The ordinary public router remains full-plan and fail-closed.
 
 `IngestionRevisionWorld` folds snapshot observations sharing one
-`ResourceKey` into a single `ResourceStateView` before projectors run. That
-view retains the final ordered observation's evidence for the resulting state,
+`ResourceKey` and qualified status perspective into a single `ResourceStateView`
+before projectors run. That view retains the final ordered observation's
+evidence for the resulting state,
 not an independently addressable raw observation stream. A projector needing
 to compare two raw observations that collapse to one key cannot recover them
 through this hook; a future bounded observation/source reader would be a
 separate contract.
+
+Once the execution plan is frozen, primary-parser local perspective references
+MUST be qualified using that pin's exact instance/schema identity before the
+published histories are rebuilt. Equivalent local and qualified references then
+share a history; unplanned data remains unbound rather than acquiring invented
+authority. Distinct perspectives MUST remain independent.
 
 Production composition MUST use `CapabilityProviderRegistry`,
 `CapabilityRouteSelector`, and `PlanBoundCapabilityRouter` rather than selecting
@@ -940,6 +968,12 @@ time independently for every revision, freezes an indexed read-only corpus,
 enforces disclosure policy, and owns citation accounting. In explicit
 full-fidelity local mode the corpus MAY retain plug-in-owned normalized fields
 and bounded `copy_text`; `never_assistant` evidence is unconditionally denied.
+That classification applies to evidence envelopes. The built-in revision adapter
+does not offer a per-field `never_assistant` declaration or detect secrets in
+full-fidelity payloads; client-sensitive descriptors are not such an exclusion.
+Authors MUST omit never-disclosable content from retained full-fidelity values,
+or the deployment MUST not authorize that mode for the dataset. A payload field
+named `disclosure_class` carries no core policy authority.
 The stable `plugin_schema.v1` evidence payload includes the exact v2-and-later
 `registered_execution_identity`. Retained plan-v1 pins never recorded that
 identity or the current timeline semantics and are ineligible for evidence
@@ -1326,6 +1360,11 @@ streaming scans with coordinator budgets. Reducers can therefore find reverse
 dependents and implement one-to-many fan-out without losing edge metadata or
 forcing a full-world list.
 
+All bounded world adapters MUST accept an explicit scan limit equal to the
+remaining quota without charging an unrequested sentinel item. An unbounded
+scan or a request exceeding the remaining quota MUST still detect exhaustion
+and fail rather than silently truncate. Zero-limit scans yield no items.
+
 Every world exposes its resolved `WorldBasis`: an observed capture vector,
 legacy reconstructed time, absolute-time mapping, or relative capture vector.
 Resource views retain validity/capture ranges and evidence, so findings and
@@ -1345,6 +1384,32 @@ the core qualifies it with the selected plug-in instance and immutable schema
 digest when those identities are available. `ReadOnlyWorld.perspective_ref`
 therefore makes the selected view explicit to reducers and projectors without
 assuming that equal local IDs from different plug-ins are interchangeable.
+
+Snapshot reconstruction MUST group by resource identity and qualified
+perspective together. Fields from another perspective MUST NOT be patched into
+the selected state. Missing status in an explicitly selected perspective is an
+unknown state, not proof of absence and not permission to fall back. An
+unselected revision-world scan retains independent perspective states; an
+ambiguous singular lookup MUST return `exists=None`, `Quality.AMBIGUOUS`, and no
+combined properties. The dataset's singular resource summary likewise remains
+unknown/ambiguous while its perspective-specific intervals retain the evidence.
+An endpoint-only catalog placeholder with no lifecycle evidence MUST have unknown
+existence, not known absence. A nonempty lifecycle history still establishes
+absence outside its live intervals. Missing selected-perspective status MUST NOT
+leak another perspective's state through the nested resource record of a public
+time response.
+A gap in declared state history MUST retain unknown properties rather than
+borrowing the final snapshot, while independent lifecycle evidence may still
+prove existence. The legacy final-record fallback applies only when the resource
+has no state history at all.
+Public singular time reads and named resource-table views MUST preserve that
+ambiguity as `exists=None`, unknown status, and an empty state, rather than
+selecting the latest perspective or falling back to the final record. An
+ambiguous resource is not absent: table traversal and search retain it,
+including as a child, in both indexed and scanning history paths.
+Relationship grouping MUST include the qualified perspective and MUST
+canonicalize endpoint order when the schema declares an undirected relation.
+These rules apply equally to normalized datasets and immutable revision worlds.
 
 `PluginSchema.topology_projections` declares named plugin interpretations of
 which typed resources and time-valid relationships constitute connectivity.
@@ -1865,6 +1930,14 @@ If `condition_field` names a sensitive or non-client-visible property, the core
 reports the generic condition as `unknown` in resource views, intervals, event
 effects, and top-level event condition/status fields rather than copying that
 value into `status`.
+
+When constructing a normalized revision, core-generated resource labels and
+event-subject labels use only key fields retained by the same publication
+policy; if none remain, the label is the resource kind. Raw typed keys and
+canonical resource identity remain unchanged in private storage. This rule
+does not rewrite previously stored or explicitly plug-in-supplied labels. A
+plug-in-supplied label is intentional public presentation, so authors MUST NOT
+copy private property values into it.
 
 A dotted property name is a relative path inside plug-in-owned property
 payloads. Redaction follows that path through nested mappings and lists and
@@ -2446,7 +2519,9 @@ wrapper.
 Every complete transition's `before` state must equal the preceding `after`
 state. A complete mismatch is a contract error. An explicitly incomplete side
 retains the branch with `unknown_incomplete` continuity; core does not invent
-the missing transformation. `max_steps` is independent from the hop and
+the missing transformation. This also applies when incomplete packet values
+compare equal, and when a terminal step's `after` state is incomplete. Delivery
+and continuity completeness are separate results. `max_steps` is independent from the hop and
 recursion limits used by `evaluate_forwarding_traversal()`. Terminal
 `deliver`, `drop`, `punt`, and `unknown` dispositions stop the branch.
 `replicate` also stops the current linear branch with a typed branching
@@ -2468,6 +2543,14 @@ known excess bytes. Transition evaluation compares the declared `after` packet
 size with the transition's MTU constraint. The plug-in owns the measurement
 basis, effective MTU, encapsulation overhead, fragmentation rules, and
 resulting packet disposition.
+
+A generic `drop` MUST NOT be diagnosed as MTU failure without a complete,
+exact-basis `exceeds` result and an applicable node-plug-in disposition.
+Missing/non-comparable/below-limit MTU evidence retains a generic drop and the
+plug-in's opaque action. User-forced drops remain counterfactual, preserve the
+forced actor/rule, and are not attributed to observed node behavior, even if an
+independent size comparison exceeds a limit. A downstream step after forced
+steering is likewise not relabeled as an observed branch.
 
 ### Step requests and counterfactual steering
 
@@ -2821,7 +2904,11 @@ join.
 - Empty, truncated, malformed, wrong encoding, very long line, repeated section.
 - Unknown fields are retained or diagnosed according to policy.
 - 100K+ records stream within memory limit.
-- Plug-ins emit compact state deltas; the core lazily reconstructs intervals only for queried resources and preserves failed-event no-mutation semantics.
+- Ordinary parser ingestion eagerly builds state and lifecycle intervals from
+  retained observations before publication. Indexed history may query or decode
+  selected resources lazily; that does not make ordinary normalization query-only.
+  Reducer deltas and failed-event replay semantics belong to the explicitly
+  host-scheduled reducer tests below.
 - When the deployment supplies a core `TraceDecoder`, CTF 2 passing and failing
   decoder corpus cases. Without one, selecting CTF must fail closed rather than
   implying built-in decoding.

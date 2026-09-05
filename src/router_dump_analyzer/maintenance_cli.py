@@ -32,6 +32,7 @@ from .session_store import (
     CatalogRetentionResult,
 )
 from .value_core import parse_canonical_decimal_integer
+from .canonical import encode_ascii_json_document as _encode_document
 
 POLICY_SCHEMA_VERSION = "router_dump_analyzer.retention_policy.v1"
 RESULT_SCHEMA_VERSION = "router_dump_analyzer.retention_maintenance.v1"
@@ -417,17 +418,6 @@ def result_document(
         "catalog": _catalog_document(result.catalog),
         "review": _review_document(result.review),
     }
-
-
-def _encode_document(document: Mapping[str, Any], *, pretty: bool) -> str:
-    return json.dumps(
-        document,
-        ensure_ascii=True,
-        indent=2 if pretty else None,
-        sort_keys=True,
-        separators=None if pretty else (",", ":"),
-        allow_nan=False,
-    )
 
 
 def _bounded_command_identity(

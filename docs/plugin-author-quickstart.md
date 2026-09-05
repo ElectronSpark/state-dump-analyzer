@@ -47,6 +47,7 @@ python -X utf8 -m rsl_demo_generator --verify-conformance-fixture demo/fixtures/
 router-dump-plugin-validate demo_router --artifact demo/fixtures/minimal-status.jsonl --node-hint router-1 --metadata platform=demo-router-os --metadata software_version=1
 python -m unittest discover -s demo/tests -v
 python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_relationship_projection_materialization tests.test_relationship_projection_ingestion tests.test_consistency_materialization tests.test_consistency_ingestion tests.test_revision_world -v
+python -m unittest tests.test_reconstruction_boundaries tests.test_public_reconstruction_reads tests.test_shared_core_contracts -v
 python -m unittest discover -s state-dump-generator/tests -p "test_runtime_v2_vectors.py" -v
 python -X utf8 -m router_dump_analyzer.pipeline_cli --plugin demo_router --state-dir .runtime/plugin-author-state --tenant author-smoke --project example --workspace first-run --input demo/fixtures/minimal-status.jsonl --node-hint router-1 --pretty
 ```
@@ -222,7 +223,21 @@ material that must never reach an assistant out of `copy_text` and other
 full-fidelity normalized values, and mark sensitive client-view fields through
 the declared descriptor policy. A deployment must not authorize full-fidelity
 analysis for a data set whose retained plug-in values are unsafe to disclose;
-the core rejects a corpus classified `never_assistant` entirely.
+the core never releases evidence classified `never_assistant`. The built-in
+revision corpus builder accepts only `client_safe` or `proprietary` plug-in
+evidence classifications; a generic corpus may retain a never-disclosable entry,
+but that entry cannot become a released evidence envelope.
+This is whole-envelope classification, not a secret detector. A nested payload
+field named `disclosure_class` does not opt a field out of full-fidelity release.
+
+When testing historical views, include a complete empty snapshot and deletion
+of the last field: neither should inherit the latest snapshot's properties.
+Relationship absence (`present=False`) and uncertainty (`present=None`) must
+remain distinct; core hides absent edges from active graphs and keeps uncertain
+edges ambiguous while preserving both in history. For packet tracing, equal but
+incomplete states still have unknown continuity, and generic or user-forced
+discards must not be described as observed MTU drops. These boundary examples
+run in `tests.test_reconstruction_truth` and `tests.test_route_packet_projection`.
 
 Installed entry points are pinned with their real distribution and
 `module:attribute` coordinates. Direct `--plugin-module` use is deliberately
@@ -449,14 +464,22 @@ relationship_types=(
 )
 ```
 
-Every browser-visible state/key field must have a `PropertyDescriptor`.
-Undeclared fields are server-side only and are removed from resource
-projections and search text. Set `client_visible=False` for a declared property
+Browser-visible state fields require a `PropertyDescriptor`. Declared
+`ResourceKindDescriptor.key_fields` also admit identity-key fields without a
+separate property descriptor (the example's `ifindex` is one). Other undeclared
+fields stay server-side and are removed from projections and search text.
+Property visibility restrictions still apply to declared key fields.
+Set `client_visible=False` for a declared property
 that reducers or server-side analysis need but the browser must not receive;
 set `sensitive=True` for secret material. Either setting also prevents that
 property from becoming a search oracle or a public `condition_field` value.
 `client_visible` defaults to `True` for compatibility, so the declaration
 itself is the allowlist.
+
+Core-generated resource and event-subject labels use only admitted key parts,
+or the resource kind when all parts are hidden. Plug-in-supplied labels are
+public presentation: do not embed private fields in them. Existing revisions
+are immutable and their previously generated labels are not rewritten.
 
 A dotted descriptor name such as `credentials.token` removes that relative
 path anywhere inside a plug-in property payload, including objects nested in
@@ -505,7 +528,7 @@ For event payload redaction, identify resources explicitly. Use an event-level
 resource catalog and applies every involved kind's policy. The generic event
 `kind` is the event classification and is never treated as a resource kind.
 An unresolved affected ID makes publication use the conservative union of
-sensitive fields. If a private property is also the descriptor's
+sensitive fields and condition policies. If a private property is also the descriptor's
 `condition_field`, public resource, interval, effect, and top-level event
 condition/status values become `unknown`.
 Nested `subject`, `affected_resources`, `effects`, and
@@ -733,10 +756,30 @@ same fully qualified edge, the explicit observation remains authoritative in
 the augmented world.
 
 This hook sees folded `ResourceStateView` values. If two raw observations use
-the same `ResourceKey`, the revision world merges them before projection and
-retains only the final ordered observation's state evidence. Use distinct
+the same `ResourceKey` **and qualified status perspective**, the revision world
+merges them before projection and retains only the final ordered observation's
+state evidence. Use distinct
 resource identities when the comparison must survive that fold; raw
 observation/source access is not part of this hook.
+
+Different perspectives are never merged into one state. A selected-perspective
+world does not borrow another perspective's data; missing selected status is
+unknown. An unselected scan retains independent perspective views, while a
+singular `state_of()` lookup with several possible perspectives returns an
+ambiguous state (`exists=None`, no combined properties), not an arbitrary winner.
+Public time reads clear both the top-level state and nested resource state when
+the selected perspective is missing. A catalog placeholder seen only as a
+relationship endpoint has unknown existence when no lifecycle was observed;
+a known lifecycle still proves absence before creation or after deletion.
+A gap in declared state history stays unknown even when lifecycle evidence
+proves the resource exists. Only a resource with no state history at all keeps
+the legacy final-record fallback.
+Unqualified observations remain valid for examples that declare no perspective.
+Once a revision's execution plan is frozen, core qualifies primary-parser local
+perspective references with that pin's instance/schema identity before rebuilding
+the stored histories. Equivalent local and already-qualified references then
+address one history; unplanned data is not assigned invented authority.
+The executable cases are in `tests.test_reconstruction_boundaries`.
 
 ### G. Revision consistency rule
 
@@ -843,6 +886,16 @@ Everything else is capability-gated:
 Inherit undeclared hooks from `AnalyzerPluginBase`; they return safe empty
 results. Do not copy placeholder implementations into a new plug-in.
 
+Declaring a capability does not mean ingestion schedules it. Ordinary ingestion
+parses inputs and stores validated observations, intervals, and events. It does
+**not** automatically call `apply()`, `revert()`, or `correlate()`; these are
+executable hooks for an explicitly configured host to schedule through the
+executor/router. Event retention alone therefore does not materialize reducer
+changes, correlation edges, or replay checkpoints. Durable publication adds the
+two scheduled stages described below: relationship projection, then consistency.
+Topology, forwarding, and evidence analysis likewise need their configured host
+providers. See the [capability support matrix](plugin-contract.md#2-capability-boundary).
+
 Core callers must not invoke these optional hooks directly. The root package
 exports `PluginCapabilityExecutor`, the executable boundary used by host code
 and by a plug-in's golden tests:
@@ -869,6 +922,11 @@ diagnostics. A missing capability raises
 the one exception to the world wrapper: the caller supplies the already
 bounded/indexed `CorrelationReader`, and the executor validates its exact
 bounded `CorrelationWindow` and outputs.
+
+An explicit scan limit equal to the remaining read quota is valid: core returns
+at most that many items without probing beyond your requested slice. A request
+for the whole stream still fails if its next item exceeds the quota. These rules
+are shared by direct capability execution and both revision materializers.
 
 The durable ingestion pipeline additionally schedules two optional hooks. It
 freezes the execution plan, builds the immutable base revision world, executes
@@ -1468,9 +1526,11 @@ it adds no plug-in method or state.
 To test durable admission for your package, replace `demo_router` and the
 fixture in the final command of step 1. Repeat `--plugin` to admit several
 installed candidates, or repeat `--plugin-module` during source development;
-the two selector forms are mutually exclusive. `--no-auto-select` should leave
-an applicable fixture in `awaiting_selection` and exit with status 2 rather
-than allowing the plug-in to choose itself. The full operator contract is in
+the two selector forms are mutually exclusive. Without `--preferred-plugin`,
+`--no-auto-select` leaves an applicable fixture in `awaiting_selection` and
+exits with status 2. An explicit `--preferred-plugin` takes precedence and must
+match exactly one applicable candidate; a missing or ambiguous match fails
+instead of silently choosing another plug-in. The full operator contract is in
 [`control-plane.md`](control-plane.md).
 
 The runnable demo also exercises the trusted descriptor path:

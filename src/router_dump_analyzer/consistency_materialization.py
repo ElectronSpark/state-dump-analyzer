@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from base64 import b64decode
-from collections.abc import Callable, Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import Enum, StrEnum
 from hashlib import sha256
@@ -31,6 +31,8 @@ from .capability_router import (
     CapabilityRouteSelector,
     PlanBoundCapabilityRouter,
 )
+from .materialization_contract import CONSISTENCY_MATERIALIZATION_SCHEMA_VERSION
+from .materialization_support import materialization_provider_projection
 from .plugin_api import (
     MAX_CAPTURE_RANGE_SCOPE_LENGTH,
     MAX_TIMESTAMP_NS,
@@ -51,12 +53,9 @@ from .plugin_api import (
     Quality,
     ReadOnlyWorld,
     ReconstructionWatermark,
-    RelationDirection,
-    RelationshipView,
     RelativeToWatermarkSelector,
     ResolvedNodeBasis,
     ResourceKey,
-    ResourceStateView,
     TemporalSelectorKind,
     WatermarkScope,
     WorldBasis,
@@ -73,10 +72,8 @@ from .plugin_execution_plan import (
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .revision_world import _canonical_resource_identity
 from .value_core import parse_canonical_decimal_integer
+from .world_read_budget import AggregateReadWorld
 
-CONSISTENCY_MATERIALIZATION_SCHEMA_VERSION: Final[str] = (
-    "router_dump_analyzer.consistency_materialization.v1"
-)
 CONSISTENCY_MATERIALIZATION_COUNT_FIELDS: Final[tuple[str, ...]] = (
     "provider_count",
     "finding_count",
@@ -781,7 +778,7 @@ def _require_published_consistency_storage_budget(
         )
 
 
-class _AggregateWorld:
+class _AggregateWorld(AggregateReadWorld):
     """Charge all providers against one revision-wide world-read budget."""
 
     def __init__(
@@ -792,123 +789,21 @@ class _AggregateWorld:
         perspective_ref: Any,
         maximum_reads: int,
     ) -> None:
-        self._world = world
-        self._basis = basis
-        self._perspective_ref = perspective_ref
-        self._maximum = maximum_reads
-        self._remaining = maximum_reads
-
-    @property
-    def basis(self) -> WorldBasis:
-        return self._basis
-
-    @property
-    def perspective_ref(self) -> Any:
-        return self._perspective_ref
-
-    @property
-    def reads_used(self) -> int:
-        return self._maximum - self._remaining
-
-    def _charge(self) -> None:
-        if self._remaining <= 0:
-            raise ConsistencyMaterializationError(
-                "consistency providers exceeded the aggregate world-read limit"
-            )
-        self._remaining -= 1
-
-    def state_of(self, resource: ResourceKey) -> ResourceStateView | None:
-        self._charge()
-        return self._world.state_of(resource)
-
-    def _bounded_iter[Item](
-        self,
-        producer: Callable[[int], Iterable[Item]],
-        requested_limit: int | None,
-    ) -> Iterable[Item]:
-        if requested_limit is not None and (
-            type(requested_limit) is not int or requested_limit < 0
-        ):
-            raise ValueError("world read limit must be a non-negative integer")
-        remaining = self._remaining
-        allowed = remaining
-        if requested_limit is not None:
-            allowed = min(allowed, requested_limit)
-        cap_limited = requested_limit is None or requested_limit >= remaining
-        # When the wrapper's aggregate cap is the limiting factor, ask the
-        # underlying bounded world for one sentinel item.  A compliant world
-        # otherwise returns a clean EOF at exactly ``allowed`` and could make a
-        # truncated consistency scan look complete.  An explicit smaller
-        # caller limit remains ordinary pagination and is not probed.
-        producer_limit = (
-            allowed + 1 if cap_limited and requested_limit != 0 else allowed
-        )
-        iterator = iter(producer(producer_limit))
-        count = 0
-        try:
-            for item in iterator:
-                if count >= allowed:
-                    message = (
-                        "consistency providers exceeded the aggregate world-read limit"
-                        if cap_limited
-                        else "world provider exceeded the aggregate bounded read request"
-                    )
-                    raise ConsistencyMaterializationError(message)
-                self._charge()
-                count += 1
-                yield item
-        finally:
-            close = getattr(iterator, "close", None)
-            if callable(close):
-                close()
-
-    def iter_states(
-        self,
-        layers: frozenset[str] | None = None,
-        kinds: frozenset[str] | None = None,
-        limit: int | None = None,
-    ) -> Iterable[ResourceStateView]:
-        return self._bounded_iter(
-            lambda bounded: self._world.iter_states(
-                layers=layers,
-                kinds=kinds,
-                limit=bounded,
-            ),
-            limit,
+        super().__init__(
+            world,
+            basis=basis,
+            perspective_ref=perspective_ref,
+            maximum_reads=maximum_reads,
+            error=self._read_limit_error,
         )
 
-    def related(
-        self,
-        resource: ResourceKey,
-        direction: RelationDirection = RelationDirection.OUTGOING,
-        relation_types: frozenset[str] | None = None,
-        limit: int | None = None,
-    ) -> Iterable[RelationshipView]:
-        return self._bounded_iter(
-            lambda bounded: self._world.related(
-                resource,
-                direction=direction,
-                relation_types=relation_types,
-                limit=bounded,
-            ),
-            limit,
+    @staticmethod
+    def _read_limit_error(aggregate_limited: bool) -> Exception:
+        return ConsistencyMaterializationError(
+            "consistency providers exceeded the aggregate world-read limit"
+            if aggregate_limited
+            else "world provider exceeded the aggregate bounded read request"
         )
-
-    def iter_relationships(
-        self,
-        relation_types: frozenset[str] | None = None,
-        layers: frozenset[str] | None = None,
-        limit: int | None = None,
-    ) -> Iterable[RelationshipView]:
-        return self._bounded_iter(
-            lambda bounded: self._world.iter_relationships(
-                relation_types=relation_types,
-                layers=layers,
-                limit=bounded,
-            ),
-            limit,
-        )
-
 
 def _artifact_id_set(
     artifact_ids: Collection[UUID],
@@ -1549,22 +1444,7 @@ def _validate_basis_containers(
 
 
 def _provider_projection(provider: CapabilityProviderRef) -> dict[str, Any]:
-    pin = provider.pin
-    return {
-        "member_id": provider.member_id,
-        "node_id": provider.node_id,
-        "basis_revision_id": provider.basis_revision_id,
-        "plan_digest": provider.plan_digest,
-        "instance_id": pin.instance_id,
-        "plugin_id": pin.plugin_id,
-        "plugin_version": pin.plugin_version,
-        "registered_execution_identity": pin.registered_execution_identity,
-        "configuration_digest": pin.configuration_digest,
-        "schema_digest": pin.schema_digest,
-        "package_hash": pin.artifact.package_hash,
-        "capability": provider.capability.value,
-        "roles": list(pin.roles),
-    }
+    return materialization_provider_projection(provider)
 
 
 def _selected_pins(plan: PluginExecutionPlan) -> tuple[PluginExecutionPin, ...]:

@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Self
 from uuid import uuid4
 
+from ._sqlite_transactions import sqlite_transaction
 from .canonical import canonical_json, canonical_json_sha256, strict_canonical_json
 from .contract_validation import validate_bounded_json_value
 from .filesystem_lock import exclusive_file_lock
@@ -1376,6 +1377,12 @@ class SqliteSessionStore:
                 ON analysis_revisions(
                     tenant_id, workspace_id, node_id, revision_id
                 );
+            CREATE INDEX IF NOT EXISTS revision_source_lookup_index
+                ON analysis_revisions(
+                    tenant_id, workspace_id, fixture_id,
+                    json_extract(metadata_json, '$.source_revision_id'),
+                    node_id, revision_id
+                );
             CREATE INDEX IF NOT EXISTS session_workspace_index
                 ON analysis_sessions(tenant_id, workspace_id, session_id);
             CREATE INDEX IF NOT EXISTS catalog_retention_audit_tenant_sequence
@@ -1977,28 +1984,37 @@ class SqliteSessionStore:
         *,
         deadline_ns: int | None = None,
     ) -> Iterator[sqlite3.Cursor]:
+        with self._cursor_transaction(
+            begin="BEGIN IMMEDIATE", deadline_ns=deadline_ns
+        ) as cursor:
+            yield cursor
+
+    @contextmanager
+    def _cursor_transaction(
+        self,
+        *,
+        begin: str,
+        deadline_ns: int | None = None,
+    ) -> Iterator[sqlite3.Cursor]:
         with self._deadline_lock(deadline_ns):
             self._ensure_open()
             connection = self._connection
             self._apply_deadline_busy_timeout(connection, deadline_ns)
             cursor = connection.cursor()
             connection_replaced = False
-            cursor.execute("BEGIN IMMEDIATE")
-            self._remaining_deadline_ns(deadline_ns)
-            try:
-                yield cursor
-            except BaseException:
+
+            def recover() -> None:
+                nonlocal connection_replaced
                 connection_replaced = self._recover_transaction_connection(connection)
-                raise
-            else:
-                try:
-                    self._remaining_deadline_ns(deadline_ns)
-                    connection.commit()
-                except BaseException:
-                    connection_replaced = self._recover_transaction_connection(
-                        connection
-                    )
-                    raise
+
+            try:
+                with sqlite_transaction(
+                    begin=lambda: cursor.execute(begin),
+                    commit=connection.commit,
+                    recover=recover,
+                    checkpoint=lambda: self._remaining_deadline_ns(deadline_ns),
+                ):
+                    yield cursor
             finally:
                 if not connection_replaced:
                     cursor.close()
@@ -2012,17 +2028,12 @@ class SqliteSessionStore:
         *,
         deadline_ns: int | None = None,
     ) -> Iterator[sqlite3.Cursor]:
-        with self._deadline_lock(deadline_ns):
-            self._ensure_open()
-            self._apply_deadline_busy_timeout(self._connection, deadline_ns)
-            cursor = self._connection.cursor()
-            try:
-                yield cursor
-            finally:
-                cursor.close()
-                if not self._closed:
-                    with suppress(sqlite3.Error):
-                        self._connection.execute("PRAGMA busy_timeout = 30000")
+        # Heads, membership, and policy seals must come from one WAL snapshot,
+        # including when another process commits between their SELECTs.
+        with self._cursor_transaction(
+            begin="BEGIN", deadline_ns=deadline_ns
+        ) as cursor:
+            yield cursor
 
     @staticmethod
     def _ensure_tenant(cursor: sqlite3.Cursor, tenant_id: str) -> None:
@@ -3707,6 +3718,7 @@ class SqliteSessionStore:
         *,
         node_id: str | None = None,
         fixture_id: str | None = None,
+        source_revision_id: str | None = None,
         limit: int = _DEFAULT_PAGE_LIMIT,
         offset: int = 0,
     ) -> tuple[AnalysisRevisionDescriptor, ...]:
@@ -3719,63 +3731,26 @@ class SqliteSessionStore:
             else None
         )
         page_limit, page_offset = _page_bounds(limit, offset)
+        source_revision = (
+            _bounded_identifier(source_revision_id, "source_revision_id")
+            if source_revision_id is not None else None
+        )
+        predicates = ["tenant_id = ?", "workspace_id = ?"]
+        parameters: list[Any] = [tenant, workspace]
+        for column, value in (("node_id", node), ("fixture_id", fixture)):
+            if value is not None:
+                predicates.append(f"{column} = ?")
+                parameters.append(value)
+        if source_revision is not None:
+            predicates.append("json_extract(metadata_json, '$.source_revision_id') = ?")
+            parameters.append(source_revision)
         with self._read_cursor() as cursor:
             self._require_workspace(cursor, tenant, workspace)
-            if node is None and fixture is None:
-                rows = cursor.execute(
-                    """
-                    SELECT * FROM analysis_revisions
-                    WHERE tenant_id = ? AND workspace_id = ?
-                    ORDER BY node_id, revision_id
-                    LIMIT ? OFFSET ?
-                    """,
-                    (tenant, workspace, page_limit, page_offset),
-                ).fetchall()
-            elif fixture is None:
-                rows = cursor.execute(
-                    """
-                    SELECT * FROM analysis_revisions
-                    WHERE tenant_id = ? AND workspace_id = ? AND node_id = ?
-                    ORDER BY revision_id
-                    LIMIT ? OFFSET ?
-                    """,
-                    (tenant, workspace, node, page_limit, page_offset),
-                ).fetchall()
-            elif node is None:
-                rows = cursor.execute(
-                    """
-                    SELECT * FROM analysis_revisions
-                    WHERE tenant_id = ? AND workspace_id = ?
-                      AND fixture_id = ?
-                    ORDER BY node_id, revision_id
-                    LIMIT ? OFFSET ?
-                    """,
-                    (
-                        tenant,
-                        workspace,
-                        fixture,
-                        page_limit,
-                        page_offset,
-                    ),
-                ).fetchall()
-            else:
-                rows = cursor.execute(
-                    """
-                    SELECT * FROM analysis_revisions
-                    WHERE tenant_id = ? AND workspace_id = ?
-                      AND node_id = ? AND fixture_id = ?
-                    ORDER BY revision_id
-                    LIMIT ? OFFSET ?
-                    """,
-                    (
-                        tenant,
-                        workspace,
-                        node,
-                        fixture,
-                        page_limit,
-                        page_offset,
-                    ),
-                ).fetchall()
+            rows = cursor.execute(
+                "SELECT * FROM analysis_revisions WHERE " + " AND ".join(predicates)
+                + " ORDER BY node_id, revision_id LIMIT ? OFFSET ?",
+                (*parameters, page_limit, page_offset),
+            ).fetchall()
             return tuple(self._revision_row(row) for row in rows)
 
     def create_session(

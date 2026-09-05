@@ -88,8 +88,16 @@ workspace, revision, time, and byte scoped; results are paged and every item
 has a stable evidence reference. This is required for deterministic replay and
 100K-scale operation rather than for semantic restriction.
 
-Credentials, private keys, tokens, and fields declared `never_assistant` are
-not exposed even in full-fidelity mode. Every run records a disclosure ledger
+Evidence envelopes classified `never_assistant` are rejected in every mode.
+This is an envelope-level contract, not an automatic credential detector or a
+per-field classification hook. The built-in revision adapter classifies retained
+plug-in payloads as `proprietary` in authorized full-fidelity mode, including
+source `copy_text`; credential- or key-shaped content inside that payload is
+not heuristically removed. A nested field named `disclosure_class` has no
+authorization meaning. Keep never-disclosable material out of retained
+full-fidelity values, use an appropriately filtered source, or do not enable
+full fidelity for that dataset. Client-view sensitivity descriptors do not
+constitute full-fidelity exclusions. Every run records a disclosure ledger
 with the immutable revision vector and context digest.
 
 Policy administration is durable and fail-closed. `GET

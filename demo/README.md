@@ -12,6 +12,36 @@ contains:
   and
 - plug-in-owned conformance fixtures and tests.
 
+The minimal parser intentionally emits one unqualified status view. When
+extending it with intended/programmed/observed perspectives, keep them explicit:
+core reconstructs each independently and never merges their fields. A singular
+ambiguous lookup has unknown existence; this example's projector requires
+`state.exists is True` before emitting an edge. The core parity regressions are
+exercised with `python -m unittest tests.test_reconstruction_boundaries
+tests.test_shared_core_contracts -v` from the repository root. Explicit world
+scan limits equal to the remaining quota are supported across both scheduled
+materializers and direct capability execution.
+For named perspectives, core binds local references to the frozen primary
+execution-plan pin before publishing histories; authors do not invent their own
+instance/schema qualifiers for unplanned observations.
+
+Ordinary ingestion stores parsed observations and events; it does not schedule
+the optional `apply`, `revert`, or `correlate` hooks. Hosts invoke those through
+the core executor/router. Durable publication schedules revision relationship
+projection before consistency checking. The demo's explicit history adapter
+must not be mistaken for an automatic core reducer scheduler.
+
+Core-generated resource and event-subject labels use only publicly admitted key
+parts (falling back to the resource kind if none remain). Plug-in-authored
+display labels must themselves be safe to publish; changing a descriptor does
+not rewrite labels already persisted in an older revision.
+
+The teaching status parser validates `lifecycle`, `admin_status`, and
+`oper_status` as string choices before interpreting them. Wrong JSON types or
+unsupported values yield a recoverable `demo.invalid-status-record` diagnostic
+with line evidence, and parsing continues at the next row. Unexpected parser
+implementation exceptions are not blanket-classified as malformed input.
+
 The distribution uses the collision-resistant import packages
 `rsl_demo_plugin` and `rsl_demo_generator`. It deliberately does not publish
 generic top-level packages named `plugin` or `generator`, which are likely to

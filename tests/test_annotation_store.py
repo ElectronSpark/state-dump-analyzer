@@ -74,6 +74,22 @@ class _FaultingConnection:
         self.connection.rollback()
 
 
+class _FailAfterBeginConnection:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+        self.failed = False
+
+    def __getattr__(self, name: str):
+        return getattr(self.connection, name)
+
+    def execute(self, statement: str, *parameters):
+        cursor = self.connection.execute(statement, *parameters)
+        if statement.startswith("BEGIN") and not self.failed:
+            self.failed = True
+            raise sqlite3.OperationalError("injected failure after BEGIN")
+        return cursor
+
+
 class ReviewOverlayStoreTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -468,6 +484,29 @@ class ReviewOverlayStoreTests(unittest.TestCase):
             author="alice",
         )
         self.assertEqual(committed.annotation_id, "committed-after-recovery")
+
+    def test_failure_after_begin_does_not_leave_the_transaction_open(self) -> None:
+        connection = self.store._connection
+        self.store._connection = _FailAfterBeginConnection(  # type: ignore[assignment]
+            connection
+        )
+        with self.assertRaisesRegex(sqlite3.OperationalError, "after BEGIN"):
+            self.store.create_annotation(
+                self.scope,
+                kind=ReviewAnnotationKind.NOTE,
+                subjects=(self.event("event-a"),),
+                author="alice",
+            )
+        self.assertFalse(connection.in_transaction)
+        created = self.store.create_annotation(
+            self.scope,
+            kind=ReviewAnnotationKind.NOTE,
+            subjects=(self.event("event-a"),),
+            author="alice",
+        )
+        self.assertEqual(
+            self.store.get_annotation(self.scope, created.annotation_id), created
+        )
 
     def test_failed_rollback_discards_and_reopens_file_connection(self) -> None:
         original = self.store._connection

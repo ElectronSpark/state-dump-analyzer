@@ -33,6 +33,13 @@ from .artifact_core import (
 )
 from .canonical import canonical_json
 from .load_progress import AnalysisLoadStage, report_analysis_load
+from .normalized_data import redact_resource_view
+from .observation_reconstruction import (
+    apply_property_patch,
+    bind_observation_perspectives,
+    relationship_observation_groups,
+    snapshot_observation_groups,
+)
 from .plugin_api import (
     CORE_PLUGIN_API_VERSION,
     INPUT_PARSER_HOOKS,
@@ -87,6 +94,7 @@ from .plugin_execution_plan import validate_execution_identity
 from .plugin_schema_identity import (
     PluginSchemaIdentityError,
     plugin_schema_dataset,
+    plugin_schema_digest,
 )
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .revision_store import (
@@ -825,9 +833,17 @@ def _resource_identity(resource: ResourceKey) -> tuple[str, dict[str, Any]]:
     return _canonical_resource_identity(resource)
 
 
-def _resource_label(resource: ResourceKey) -> str:
+def _resource_label(
+    resource: ResourceKey,
+    descriptor: Mapping[str, Any] | None,
+) -> str:
+    # Labels are public presentation, not a second disclosure path for the
+    # original key. Reuse the same field policy as client publication.
+    public_key = redact_resource_view(
+        {"key": dict(resource.parts)}, descriptor
+    )["key"]
     values: list[str] = []
-    for _name, value in resource.parts:
+    for value in public_key.values():
         if isinstance(value, KeyAtom):
             value = value.value
         if isinstance(value, bytes):
@@ -852,38 +868,19 @@ def _patch(
     dict[str, str],
     dict[str, str],
 ]:
-    result = dict(current) if not patch.complete else {}
-    unknown = dict(current_unknown) if not patch.complete else {}
-    field_quality = dict(current_quality) if not patch.complete else {}
-    field_provenance = dict(current_provenance) if not patch.complete else {}
-    for name in patch.remove_fields:
-        result.pop(name, None)
-        unknown.pop(name, None)
-        field_quality.pop(name, None)
-        field_provenance.pop(name, None)
-    for name, value in patch.set_values.items():
-        key = str(name)
-        result[key] = _json_value(value)
-        unknown.pop(key, None)
-    for item in patch.unknown_fields:
-        # Unknown masks a formerly known value. Keeping that stale value would
-        # silently turn missing evidence into a positive state assertion.
-        result.pop(item.name, None)
-        unknown[item.name] = _json_value(item)
-    mentioned = {
-        *(str(name) for name in patch.set_values),
-        *patch.remove_fields,
-        *(item.name for item in patch.unknown_fields),
-    }
-    for name in mentioned:
-        field_quality[name] = patch.field_quality.get(
-            name,
-            default_quality,
-        ).value
-        field_provenance[name] = patch.field_provenance.get(
-            name,
-            default_provenance,
-        ).value
+    result = dict(current)
+    unknown = dict(current_unknown)
+    field_quality = dict(current_quality)
+    field_provenance = dict(current_provenance)
+    apply_property_patch(
+        result, unknown, field_quality, field_provenance, patch,
+        default_quality=default_quality,
+        default_provenance=default_provenance,
+        project_value=_json_value,
+        project_unknown=_json_value,
+        project_quality=lambda item: item.value,
+        project_provenance=lambda item: item.value,
+    )
     return result, unknown, field_quality, field_provenance
 
 
@@ -1702,11 +1699,29 @@ def _build_dataset(
     diagnostics: Sequence[PluginDiagnostic],
     timeline_time_basis: TimelineTimeBasis,
     timeline_clock_domain: str | None,
+    primary_plugin_instance_id: str | None = None,
+    primary_schema_digest: str | None = None,
 ) -> dict[str, Any]:
+    snapshots = bind_observation_perspectives(
+        snapshots,
+        plugin_instance_id=primary_plugin_instance_id,
+        schema_digest=primary_schema_digest,
+    )
+    relationship_observations = bind_observation_perspectives(
+        relationship_observations,
+        plugin_instance_id=primary_plugin_instance_id,
+        schema_digest=primary_schema_digest,
+    )
+    relationship_collections = bind_observation_perspectives(
+        relationship_collections,
+        plugin_instance_id=primary_plugin_instance_id,
+        schema_digest=primary_schema_digest,
+    )
     resources_by_key: dict[ResourceKey, dict[str, Any]] = {}
     snapshots_by_key: dict[ResourceKey, list[SnapshotObservation]] = defaultdict(list)
-    for observation in snapshots:
-        snapshots_by_key[observation.resource].append(observation)
+    snapshot_groups = snapshot_observation_groups(snapshots)
+    for (resource, _perspective), group_observations in snapshot_groups.items():
+        snapshots_by_key[resource].extend(group_observations)
     for relationship_observation in relationship_observations:
         resources_by_key.setdefault(
             relationship_observation.source,
@@ -1726,6 +1741,14 @@ def _build_dataset(
 
     resource_ids = {
         resource: _resource_identity(resource)[0] for resource in resources_by_key
+    }
+    schema_fields = _schema_dataset(schema)
+    descriptors_by_kind = {
+        item["kind"]: item for item in schema_fields["kind_descriptors"]
+    }
+    resource_labels = {
+        resource: _resource_label(resource, descriptors_by_kind.get(resource.kind))
+        for resource in resources_by_key
     }
     resources: list[dict[str, Any]] = []
     state_intervals: list[dict[str, Any]] = []
@@ -1757,23 +1780,22 @@ def _build_dataset(
         key=lambda item: resource_ids[item],
     ):
         identifier, identity = _resource_identity(resource)
-        observations = sorted(
-            snapshots_by_key.get(resource, ()),
-            key=lambda item: (
-                item.observed_at_min_ns is None,
-                item.observed_at_min_ns or 0,
-                item.observed_at_max_ns is None,
-                item.observed_at_max_ns or 0,
-                item.evidence.artifact_id.bytes,
-                item.evidence.locator,
-            ),
-        )
+        observations = snapshots_by_key.get(resource, ())
+        perspectives = {item.perspective_ref for item in observations}
         current: dict[str, Any] = {}
         current_unknown: dict[str, dict[str, Any]] = {}
         current_field_quality: dict[str, str] = {}
         current_field_provenance: dict[str, str] = {}
         resource_intervals: list[dict[str, Any]] = []
         for index, observation in enumerate(observations):
+            if (
+                index
+                and observation.perspective_ref != observations[index - 1].perspective_ref
+            ):
+                current = {}
+                current_unknown = {}
+                current_field_quality = {}
+                current_field_provenance = {}
             (
                 current,
                 current_unknown,
@@ -1795,6 +1817,7 @@ def _build_dataset(
             valid_to = (
                 next_observation.observed_at_min_ns
                 if next_observation is not None
+                and next_observation.perspective_ref == observation.perspective_ref
                 else None
             )
             if valid_from is not None:
@@ -1840,7 +1863,14 @@ def _build_dataset(
             }
             state_intervals.append(interval)
             resource_intervals.append(interval)
-        first_seen = observations[0].observed_at_min_ns if observations else None
+        first_seen = min(
+            (
+                item.observed_at_min_ns
+                for item in observations
+                if item.observed_at_min_ns is not None
+            ),
+            default=None,
+        )
         if observations:
             lifecycle_intervals.append(
                 {
@@ -1851,14 +1881,20 @@ def _build_dataset(
                     "valid_to_ns": None,
                 }
             )
-        latest = resource_intervals[-1] if resource_intervals else None
+        # A singular summary has no authority to pick one independent view.
+        # Preserve all perspective intervals while keeping this summary unknown.
+        latest = (
+            resource_intervals[-1]
+            if resource_intervals and len(perspectives) == 1
+            else None
+        )
         resources.append(
             {
                 "resource_id": identifier,
                 "canonical_resource_id": identifier,
                 "kind": resource.kind,
                 "layer": resource.layer,
-                "label": _resource_label(resource),
+                "label": resource_labels[resource],
                 "key": identity,
                 "placeholder": not observations,
                 "state": (dict(latest["properties"]) if latest is not None else {}),
@@ -1882,38 +1918,14 @@ def _build_dataset(
 
     relationship_intervals: list[dict[str, Any]] = []
     relationships: list[dict[str, Any]] = []
-    grouped_relationships: dict[
-        tuple[ResourceKey, ResourceKey, str],
-        list[RelationshipObservation],
-    ] = defaultdict(list)
-    for relationship_observation in relationship_observations:
-        grouped_relationships[
-            (
-                relationship_observation.source,
-                relationship_observation.target,
-                relationship_observation.relation_type,
-            )
-        ].append(relationship_observation)
-    for key, relationship_items in sorted(
-        grouped_relationships.items(),
-        key=lambda item: (
-            resource_ids[item[0][0]],
-            resource_ids[item[0][1]],
-            item[0][2],
+    grouped_relationships = relationship_observation_groups(
+        relationship_observations,
+        frozenset(
+            item.relation_type for item in schema.relationship_types if not item.directed
         ),
-    ):
-        source, target, relation_type = key
-        ordered_relationships = sorted(
-            relationship_items,
-            key=lambda item: (
-                item.observed_at_min_ns is None,
-                item.observed_at_min_ns or 0,
-                item.observed_at_max_ns is None,
-                item.observed_at_max_ns or 0,
-                item.evidence.artifact_id.bytes,
-                item.evidence.locator,
-            ),
-        )
+    )
+    for key, ordered_relationships in grouped_relationships.items():
+        source, target, relation_type, _perspective = key
         relationship_state: dict[str, Any] = {}
         relationship_unknown: dict[str, dict[str, Any]] = {}
         relationship_field_quality: dict[str, str] = {}
@@ -2019,7 +2031,7 @@ def _build_dataset(
                         "resource_id": resource_ids[subject],
                         "kind": subject.kind,
                         "layer": subject.layer,
-                        "label": _resource_label(subject),
+                        "label": resource_labels[subject],
                     }
                     for subject in event.subjects
                 ],
@@ -2135,7 +2147,6 @@ def _build_dataset(
         if item.observed_at_max_ns is not None:
             time_values.append(item.observed_at_max_ns)
 
-    schema_fields = _schema_dataset(schema)
     layer_names = sorted({resource.layer for resource in resources_by_key})
     timeline_start = min(time_values) if time_values else 0
     timeline_end = max(time_values) if time_values else timeline_start
@@ -2865,6 +2876,79 @@ def snapshot_ingestion_result_for_publication(
         events=events,
         source_records=source_emissions,
         source_record_origins=origins,
+    )
+
+
+def _bind_primary_ingestion_perspectives(
+    result: IngestionResult,
+    *,
+    plugin_id: str,
+    primary_plugin_instance_id: str,
+    primary_schema_digest: str,
+    timeline_time_basis: TimelineTimeBasis,
+    timeline_clock_domain: str | None,
+) -> IngestionResult:
+    """Bind an already-admitted coordinator result once its plan is frozen.
+
+    Initial ingestion has no deployment-instance authority. The durable path
+    validates that unplanned result first, then qualifies observations before
+    rebuilding observation projections. Unrelated normalized fields survive.
+    """
+    validate_execution_identity(primary_plugin_instance_id, "primary plugin instance")
+    if plugin_schema_digest(result.schema) != primary_schema_digest:
+        raise IngestionError("primary perspective schema does not match the result")
+    snapshots = bind_observation_perspectives(
+        result.snapshots,
+        plugin_instance_id=primary_plugin_instance_id,
+        schema_digest=primary_schema_digest,
+    )
+    relationships = bind_observation_perspectives(
+        result.relationship_observations,
+        plugin_instance_id=primary_plugin_instance_id,
+        schema_digest=primary_schema_digest,
+    )
+    collections = bind_observation_perspectives(
+        result.relationship_collections,
+        plugin_instance_id=primary_plugin_instance_id,
+        schema_digest=primary_schema_digest,
+    )
+    rebuilt = _build_dataset(
+        plugin_id=plugin_id,
+        inventory=result.inventory,
+        schema=result.schema,
+        revision_id=result.revision_id,
+        node_id=result.node_id,
+        snapshots=snapshots,
+        relationship_observations=relationships,
+        relationship_collections=collections,
+        events=result.events,
+        source_records=tuple(
+            _ParsedSourceRecord(
+                parser_id=origin.parser_id,
+                input_ordinal=origin.input_ordinal,
+                output_ordinal=origin.output_ordinal,
+                emission=emission,
+            )
+            for origin, emission in zip(
+                result.source_record_origins, result.source_records, strict=True
+            )
+        ),
+        diagnostics=result.diagnostics,
+        timeline_time_basis=timeline_time_basis,
+        timeline_clock_domain=timeline_clock_domain,
+    )
+    dataset = dict(result.dataset)
+    for name in (
+        "resources", "state_intervals", "lifecycle_intervals", "relationships",
+        "relationship_intervals", "_relationship_collection_observations",
+    ):
+        dataset[name] = rebuilt[name]
+    return replace(
+        result,
+        dataset=dataset,
+        snapshots=snapshots,
+        relationship_observations=relationships,
+        relationship_collections=collections,
     )
 
 

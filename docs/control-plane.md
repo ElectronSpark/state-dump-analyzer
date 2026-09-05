@@ -33,15 +33,33 @@ project/workspace scopes.
 ## 1. Start it
 
 Install the core with its web dependencies and an independently packaged
-plug-in. To add the durable routes to the normal server, provide a state
-directory:
+plug-in. For this demo-specific browser example, first prepare the archive
+using the repository's [Run the demo](../README.md#run-the-demo) instructions.
+Run the following from the repository root in that environment. Set
+`$demoArchive` to the archive selected by the launcher: normally the path below,
+or `router-state-lab-demo.generated.tgz` when it preserved an unowned preferred
+file. This preflight checks an existing archive; it does not generate one.
+
+```powershell
+$demoArchive = ".\demo\fixtures\router-state-lab-demo.tgz"
+python -X utf8 -m rsl_demo_generator --check-launchable $demoArchive
+if ($LASTEXITCODE -ne 0) { throw "Prepare a launch-ready demo archive first." }
+```
+
+To add the durable routes to the normal server, reuse that archive and provide
+a state directory:
 
 ```powershell
 router-dump-analyzer --plugin demo_router `
-  --input .\demo\fixtures\minimal-status.jsonl `
+  --input $demoArchive `
   --control-plane-dir .\.runtime\control-plane `
   --no-browser
 ```
+
+The installed `demo_router` browser runtime uses the archive-only
+`router_dump_analyzer.runtime.v1` compatibility adapter. The tiny
+`minimal-status.jsonl` parser fixture is for headless durable ingestion or
+plug-in conformance, not this browser runtime's `--input`.
 
 The server still opens the selected `--input` as its initial browser
 workspace. `--control-plane-dir` additionally starts the durable queue with
@@ -125,7 +143,7 @@ policy used by the maintenance command:
 
 ```powershell
 router-dump-analyzer --plugin demo_router `
-  --input .\demo\fixtures\minimal-status.jsonl `
+  --input $demoArchive `
   --control-plane-dir .\.runtime\control-plane `
   --control-plane-retention-policy .\retention-policy.json `
   --no-browser
@@ -191,9 +209,13 @@ Headless exit codes are:
 | `2` | At least one input is waiting for an explicit plug-in selection. |
 | `1` | A command error, timeout, failed import, or cancelled import occurred. |
 
-`--no-auto-select` deliberately stops after probing. `--preferred-plugin`
-requires the matching plug-in ID. The per-import wait defaults to 900 seconds
-and is bounded to seven days.
+`--no-auto-select` disables automatic candidate selection: without an explicit
+preference, an applicable input stops after probing in `awaiting_selection`.
+`--preferred-plugin ID` is an explicit selection and intentionally takes
+precedence over `--no-auto-select`; it continues only when exactly one probe
+candidate has that plug-in ID. No matching candidate, or several configured
+candidates with that ID, fails the import. The per-import wait defaults to
+900 seconds and is bounded to seven days.
 
 ## 2. Storage and identity model
 
@@ -852,8 +874,12 @@ cannot reconstruct a suffix already erased by such an actor.
 
 The closed tiers are `disabled`, `client_safe`, and `full_fidelity`. The last
 tier permits proprietary dump evidence only over explicitly selected core
-local transports. Credentials, tokens, keys, and `never_assistant` evidence
-remain denied. Policy decisions contain class, transport, digest, and a closed
+local transports. `never_assistant` evidence envelopes remain denied; the
+built-in full-fidelity adapter does not detect credentials, tokens, or keys
+inside plug-in payloads. Deployment owners must keep never-disclosable material
+out of those retained values or decline full-fidelity access. A nested payload
+classification field cannot change the envelope's authority.
+Policy decisions contain class, transport, digest, and a closed
 reason only; they do not contain the evaluated payload.
 
 ### Private-analysis run lifecycle
@@ -1175,12 +1201,15 @@ mutation.
 
 The host application must install a callable `ControlPlaneIdentityResolver`.
 It returns one exact `ControlPlaneIdentity` with tenant, principal, roles, and
-optional allowed project/workspace ID sets. Reads require
-`control-plane:read`; ordinary mutations require `control-plane:write`;
-retention routes require the separate `control-plane:admin` role; operational
-diagnostics require the independent `control-plane:instance-operator` role.
-Neither privileged role implies the other. Request headers must match the
-resolved identity, and an out-of-scope project/workspace is hidden as `404`.
+optional allowed project/workspace ID sets. Ordinary reads require
+`control-plane:read`; ordinary mutations require `control-plane:write`.
+Retention preview, execution, and audit instead require `control-plane:admin`
+as a role override: an admin-only identity is sufficient without also holding
+read/write roles. This does not grant that identity access to ordinary
+read/write routes. Operational diagnostics require the independent
+`control-plane:instance-operator` role. Neither privileged role implies the
+other. Request headers must match the resolved identity, and an out-of-scope
+project/workspace is hidden as `404`.
 
 The resolver is an authorization input, not an authenticator. A production
 deployment must verify credentials first, remove client-supplied identity
@@ -1520,8 +1549,11 @@ checks every tenant's queue rows and catalog ownership pins; fenced plan
 acceptance and deletion check them again, with content deletion also holding
 the per-address install lock. A concurrent publisher, live import, path
 replacement, or cross-tenant pin therefore wins over cleanup. Malformed
-layouts and fixture names, referenced fixture views, quarantined corrupt files, and
-other unknown host objects remain outside the orphan reaper. Host-global work is
+layouts and fixture names, referenced fixture views, and other unknown host
+objects remain outside the orphan reaper. Quarantined corrupt files are not
+blanket-exempt: the exact core-owned `.{leaf}.corrupt-{32-hex}` files described
+above are eligible under `stale_partial_seconds`; malformed or non-core-owned
+quarantine names remain excluded. Host-global work is
 reported through `stale_partials`, `content_blobs`, `revision_datasets`, and
 `fixture_views`; exact empty-shard cleanup contributes to the bounded cleanup
 item/result counts but is not attributed as tenant-owned storage.
@@ -1686,6 +1718,20 @@ to 128 revisions, 8 GiB of aggregate serialized datasets, 20,000 selected
 manual correlation edges, and 10,000 client-safe observations. Applications
 may lower supported constructor limits; HTTP and store-level validation still
 applies.
+
+Mutable review subject admission uses the store's shared bounded normalizer
+before any dataset reads: annotations accept 1–5,000 subjects, correlations
+2–1,024 event subjects, with no duplicates. `ControlPlaneLimits.max_subject_revisions`
+(128 by default) and `max_subject_dataset_bytes` (8 GiB by default) preflight the
+distinct immutable revisions and aggregate serialized bytes. Resolution groups
+subjects by revision without retaining all decoded datasets; only the configured
+LRU remains. Reports share that preflight machinery with their separate report
+limits. Explicit revision iterables stop at the first over-limit sentinel.
+
+`SqliteSessionStore.list_revisions(source_revision_id=...)` applies source identity
+inside the tenant/workspace/fixture query, before pagination. Resolving one
+fixture/source pair therefore detects a second match anywhere in that scope,
+not just within the first unfiltered page.
 
 Important fixed contract bounds are:
 

@@ -2,12 +2,54 @@ from __future__ import annotations
 
 import tomllib
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class PluginAuthoringDocumentationTests(unittest.TestCase):
+    def test_control_plane_demo_launch_reuses_archive_without_generation(self) -> None:
+        from rsl_demo_generator import __main__ as generator_main
+
+        document = (ROOT / "docs" / "control-plane.md").read_text(encoding="utf-8")
+        launch_blocks = [
+            block.split("```", 1)[0]
+            for block in document.split("```powershell\n")[1:]
+            if block.startswith("router-dump-analyzer --plugin demo_router ")
+        ]
+        self.assertEqual(len(launch_blocks), 2)
+        for block in launch_blocks:
+            with self.subTest(block=block):
+                self.assertIn("--input $demoArchive", block)
+                self.assertNotIn("minimal-status.jsonl", block)
+        self.assertIn("--check-launchable $demoArchive", document)
+        self.assertIn("not this browser runtime's `--input`", document)
+
+        archive = ROOT / "demo" / "fixtures" / "router-state-lab-demo.tgz"
+        report = SimpleNamespace(
+            assembly_id="existing-demo", node_ids=("node-a",), coverage_case_count=1
+        )
+        with (
+            mock.patch.object(
+                generator_main, "probe_demo_fixture_for_launch", return_value=report
+            ) as probe,
+            mock.patch.object(generator_main, "ensure_demo_fixture_for_launch") as ensure,
+            mock.patch.object(generator_main, "_build_demo_fixture_with_report") as build,
+            mock.patch.object(generator_main, "validate_demo_fixture") as validate,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(
+                generator_main.main(["--check-launchable", str(archive)]), 0
+            )
+        probe.assert_called_once_with(archive)
+        ensure.assert_not_called()
+        build.assert_not_called()
+        validate.assert_not_called()
+
     def test_quickstart_tracks_executable_novice_contract(self) -> None:
         quickstart = (ROOT / "docs" / "plugin-author-quickstart.md").read_text(
             encoding="utf-8"

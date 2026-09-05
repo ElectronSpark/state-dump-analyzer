@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Final, Self, cast
 from uuid import uuid4
 
+from ._sqlite_transactions import sqlite_transaction
 from .canonical import (
     strict_canonical_json,
     validate_prefixed_lowercase_sha256,
@@ -59,7 +60,7 @@ from .private_analysis_runner_support import (
     private_analysis_transcript_summary_json,
 )
 from .private_analysis_tool_service import PrivateAnalysisToolBudgetState
-from .value_core import parse_canonical_decimal_integer
+from .value_core import parse_canonical_decimal_integer, require_bounded_integer
 
 _SCHEMA_VERSION: Final = 1
 _RUN_STORE_CONTRACT_VERSION: Final = (
@@ -280,9 +281,12 @@ def _bounded_integer(
     minimum: int,
     maximum: int,
 ) -> int:
-    if type(value) is not int or not minimum <= value <= maximum:
-        raise ValueError(f"{label} must be an integer from {minimum} to {maximum}")
-    return value
+    try:
+        return require_bounded_integer(value, label, minimum=minimum, maximum=maximum)
+    except ValueError:
+        raise ValueError(
+            f"{label} must be an integer from {minimum} to {maximum}"
+        ) from None
 
 
 def _identity(value: object, label: str) -> str:
@@ -1037,21 +1041,25 @@ class SqlitePrivateAnalysisRunStore:
         with self._lock:
             self._require_open()
             cursor = self._connection.cursor()
-            try:
-                # One record is reconstructed from its head, revision vector,
-                # disclosure ledger, and audit chain.  A real read transaction
-                # keeps those statements on one WAL snapshot when another
-                # process commits concurrently.
-                cursor.execute("BEGIN")
-                yield cursor
-                cursor.execute("COMMIT")
-            except BaseException as error:
+
+            def recover() -> None:
                 try:
                     if self._connection.in_transaction:
                         cursor.execute("ROLLBACK")
                 except sqlite3.DatabaseError:
                     self._closed = True
                     self._connection.close()
+
+            try:
+                # Keep the head, revision vector, disclosure ledger, and audit
+                # chain on one WAL snapshot across concurrent process commits.
+                with sqlite_transaction(
+                    begin=lambda: cursor.execute("BEGIN"),
+                    commit=lambda: cursor.execute("COMMIT"),
+                    recover=recover,
+                ):
+                    yield cursor
+            except BaseException as error:
                 if isinstance(error, sqlite3.DatabaseError):
                     raise PrivateAnalysisRunStoreError(
                         "private-analysis run storage failed"
@@ -1065,11 +1073,8 @@ class SqlitePrivateAnalysisRunStore:
         with self._lock:
             self._require_open()
             cursor = self._connection.cursor()
-            try:
-                cursor.execute("BEGIN IMMEDIATE")
-                yield cursor
-                cursor.execute("COMMIT")
-            except BaseException as error:
+
+            def recover() -> None:
                 rollback_failed = False
                 try:
                     if self._connection.in_transaction:
@@ -1088,6 +1093,15 @@ class SqlitePrivateAnalysisRunStore:
                     else:
                         self._connection = replacement
                         old_connection.close()
+
+            try:
+                with sqlite_transaction(
+                    begin=lambda: cursor.execute("BEGIN IMMEDIATE"),
+                    commit=lambda: cursor.execute("COMMIT"),
+                    recover=recover,
+                ):
+                    yield cursor
+            except BaseException as error:
                 if isinstance(error, sqlite3.IntegrityError):
                     raise PrivateAnalysisRunConflict(
                         "private-analysis run conflicts with durable state"

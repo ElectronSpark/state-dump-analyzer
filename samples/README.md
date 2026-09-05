@@ -124,8 +124,10 @@ lists the expected reconstructed state.
 
 The generator assigns every event and resource to exactly one raw container:
 EVPN control, multi-home forwarding, single-home forwarding, or the underlay
-agent. It stages and packs one node at a time, then writes the outer assembly
-atomically. The normal launch scripts fast-check and reuse this TGZ, generate
+agent. It stages and packs nodes with bounded concurrency: up to two workers
+in full-scale mode, or four with `--allow-small`, further limited by node count
+and available CPUs. It then writes the outer assembly atomically. The normal
+launch scripts fast-check and reuse this TGZ, generate
 or replace it only at a safe generator-owned path, and preserve unknown inputs
 while selecting the fixed recovery sibling.
 

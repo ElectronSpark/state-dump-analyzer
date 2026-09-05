@@ -1,37 +1,11 @@
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field as dataclass_field
-from enum import Enum
 from fastapi import APIRouter, HTTPException as FastAPIHTTPException, Request
 from fastapi.routing import APIRoute
+from router_dump_analyzer.access_control_contract import CONTROL_PLANE_ADMIN_ROLE as CONTROL_PLANE_ADMIN_ROLE, CONTROL_PLANE_INSTANCE_OPERATOR_ROLE as CONTROL_PLANE_INSTANCE_OPERATOR_ROLE, CONTROL_PLANE_READ_ROLE as CONTROL_PLANE_READ_ROLE, CONTROL_PLANE_WRITE_ROLE as CONTROL_PLANE_WRITE_ROLE, ControlPlaneAccessPhase as ControlPlaneAccessPhase, ControlPlaneAccessReason as ControlPlaneAccessReason
 from typing import Any, Protocol
 
-__all__ = ['CONTROL_PLANE_READ_ROLE', 'CONTROL_PLANE_WRITE_ROLE', 'CONTROL_PLANE_ADMIN_ROLE', 'CONTROL_PLANE_INSTANCE_OPERATOR_ROLE', 'control_plane_router', 'ControlPlaneIdentity', 'ControlPlaneIdentityResolver', 'TrustedHeaderIdentityResolver']
-
-CONTROL_PLANE_READ_ROLE: str
-CONTROL_PLANE_WRITE_ROLE: str
-CONTROL_PLANE_ADMIN_ROLE: str
-CONTROL_PLANE_INSTANCE_OPERATOR_ROLE: str
-
-class ControlPlaneAccessPhase(str, Enum):
-    REQUEST_SOURCE = 'request_source'
-    IDENTITY_VERIFICATION = 'identity_verification'
-    IDENTITY_BINDING = 'identity_binding'
-    ROLE_AUTHORIZATION = 'role_authorization'
-    SCOPE_AUTHORIZATION = 'scope_authorization'
-
-class ControlPlaneAccessReason(str, Enum):
-    HOST_REJECTED = 'host_rejected'
-    ORIGIN_REJECTED = 'origin_rejected'
-    IDENTITY_VERIFICATION_FAILED = 'identity_verification_failed'
-    TENANT_REQUIRED = 'tenant_required'
-    TENANT_BINDING_MISMATCH = 'tenant_binding_mismatch'
-    PRINCIPAL_REQUIRED = 'principal_required'
-    PRINCIPAL_BINDING_MISMATCH = 'principal_binding_mismatch'
-    REQUIRED_ROLE_MISSING = 'required_role_missing'
-    PROJECT_SCOPE_DENIED = 'project_scope_denied'
-    WORKSPACE_SCOPE_DENIED = 'workspace_scope_denied'
-    PROJECT_CREATION_SCOPE_DENIED = 'project_creation_scope_denied'
-    WORKSPACE_CREATION_SCOPE_DENIED = 'workspace_creation_scope_denied'
+__all__ = ['CONTROL_PLANE_ADMIN_ROLE', 'CONTROL_PLANE_INSTANCE_OPERATOR_ROLE', 'CONTROL_PLANE_READ_ROLE', 'CONTROL_PLANE_WRITE_ROLE', 'control_plane_router', 'ControlPlaneIdentity', 'ControlPlaneIdentityResolver', 'TrustedHeaderIdentityResolver']
 
 class _ControlPlaneAccessDenied(Exception):
     status_code: int

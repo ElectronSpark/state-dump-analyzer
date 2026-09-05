@@ -10,14 +10,14 @@ from __future__ import annotations
 import importlib
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 from .canonical import strict_canonical_json_sha256
 from .capability_router import (
     CapabilityProviderRegistry,
     CapabilityRouteStaleError,
 )
+from .deployment_core import _StateDirectoryContext, _deployment_target
 from .ingestion_pipeline import (
     PluginRegistry,
     RegisteredPlugin,
@@ -32,7 +32,6 @@ PLUGIN_COMPOSITION_DEPLOYMENT_VERSION: Final = (
     "router_dump_analyzer.plugin_composition_deployment.v2"
 )
 
-_PATH_TYPE: Final = type(Path())
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -41,21 +40,8 @@ class PluginCompositionDeploymentLoadError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class PluginCompositionDeploymentContext:
+class PluginCompositionDeploymentContext(_StateDirectoryContext):
     """The sole core-owned value disclosed to a deployment factory."""
-
-    state_dir: Path
-
-    def __post_init__(self) -> None:
-        if type(self.state_dir) not in (str, _PATH_TYPE):
-            raise TypeError("state_dir must be a string or platform Path")
-        try:
-            resolved = Path(self.state_dir).expanduser().resolve(strict=False)
-        except (OSError, RuntimeError, ValueError) as error:
-            raise ValueError("state_dir could not be resolved safely") from error
-        if not resolved.is_absolute():  # pragma: no cover - resolve guarantees it.
-            raise ValueError("state_dir must resolve to an absolute path")
-        object.__setattr__(self, "state_dir", resolved)
 
 
 def _execution_coordinate(
@@ -241,24 +227,16 @@ class PluginCompositionDeployment:
             object.__setattr__(self, "deployment_digest", expected)
 
 
-def _deployment_target(value: object) -> tuple[str, str]:
-    if type(value) is not str:
-        raise TypeError("deployment target must be a string")
-    if not value or value != value.strip() or len(value) > 512:
-        raise ValueError("deployment target must use 'package.module:attribute' syntax")
-    module_name, separator, attribute = value.partition(":")
-    if (
-        not separator
-        or not module_name
-        or not attribute
-        or ":" in attribute
-        or len(module_name) > 255
-        or len(attribute) > 128
-        or any(not part.isidentifier() for part in module_name.split("."))
-        or not attribute.isidentifier()
-    ):
-        raise ValueError("deployment target must use 'package.module:attribute' syntax")
-    return module_name, attribute
+def _control_plane_composition_options(
+    deployment: PluginCompositionDeployment,
+) -> dict[str, Any]:
+    """Forward every deployment authority together at each composition root."""
+
+    return {
+        "plugin_composition_policy": deployment.policy,
+        "capability_providers": deployment.capability_providers,
+        "allow_inline_only": deployment.allow_inline_only,
+    }
 
 
 def _detached_context(

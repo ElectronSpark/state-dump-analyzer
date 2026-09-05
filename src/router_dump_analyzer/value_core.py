@@ -12,6 +12,20 @@ from typing import Any
 MAX_JSON_SAFE_INTEGER: int = (1 << 53) - 1
 
 
+def require_bounded_integer(
+    value: object,
+    label: str,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    """Validate an exact in-memory integer without accepting wire coercions."""
+
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise ValueError(f"{label} must be between {minimum} and {maximum}")
+    return value
+
+
 class CanonicalIntegerErrorReason(str, Enum):
     """Closed failure categories for exact decimal-integer admission."""
 
@@ -132,4 +146,5 @@ __all__ = [
     "MAX_JSON_SAFE_INTEGER",
     "parse_canonical_decimal_integer",
     "parse_decimal_integer",
+    "require_bounded_integer",
 ]

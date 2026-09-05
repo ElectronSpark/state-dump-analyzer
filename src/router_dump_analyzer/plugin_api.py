@@ -21,6 +21,7 @@ from uuid import UUID
 from .canonical import (
     MAX_TYPED_ATOM_PAYLOAD_UNITS,
     validate_named_typed_parts,
+    validate_prefixed_lowercase_sha256,
 )
 from .contract_validation import (
     bounded_string,
@@ -67,6 +68,7 @@ def _exact_temporal_ns(
             f"{label} must be a {qualifier}signed 64-bit integer{nullable}"
         )
     return value
+
 
 MAX_PROBE_REASONS = 128
 MAX_PROBE_REASON_LENGTH = 1_024
@@ -616,9 +618,7 @@ class TopologyPluginSemanticsDescriptor:
     def __post_init__(self) -> None:
         if self.role is not None:
             role_text = (
-                self.role.value
-                if type(self.role) is TopologyDomainRole
-                else self.role
+                self.role.value if type(self.role) is TopologyDomainRole else self.role
             )
             bounded_string(
                 role_text,
@@ -1677,9 +1677,7 @@ class PluginSchema:
             descriptor.policy_id for descriptor in self.connector_match_policies
         ]
         if len(match_policy_ids) != len(set(match_policy_ids)):
-            raise ValueError(
-                "plugin connector match policy identifiers must be unique"
-            )
+            raise ValueError("plugin connector match policy identifiers must be unique")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2913,9 +2911,7 @@ class TopologyResourceRecord:
                 self.role,
                 "topology resource role",
                 maximum=128,
-                message=(
-                    "topology resource role must contain 1 to 128 characters"
-                ),
+                message=("topology resource role must contain 1 to 128 characters"),
             )
         if not isinstance(self.presentation, TopologyResourcePresentation):
             raise ValueError(
@@ -2941,9 +2937,7 @@ class TopologyEndpointRecord:
                 self.role,
                 "topology endpoint role",
                 maximum=128,
-                message=(
-                    "topology endpoint role must contain 1 to 128 characters"
-                ),
+                message=("topology endpoint role must contain 1 to 128 characters"),
             )
 
 
@@ -3166,8 +3160,7 @@ class ConnectorClaim:
         _validate_dashboard_id(self.link_type, "connector claim link_type")
         if not isinstance(self.presentation, InterNodeLinkPresentation):
             raise ValueError(
-                "connector claim presentation must be an "
-                "InterNodeLinkPresentation"
+                "connector claim presentation must be an InterNodeLinkPresentation"
             )
         if self.status_perspective is not None and not isinstance(
             self.status_perspective,
@@ -3575,23 +3568,17 @@ class EvidenceAnalysisKind(StrEnum):
 
 
 def _validate_evidence_analysis_digest(value: object, label: str) -> str:
-    if (
-        type(value) is not str
-        or len(value) != 71
-        or not value.startswith("sha256:")
-        or any(character not in "0123456789abcdef" for character in value[7:])
-    ):
-        raise ValueError(f"{label} must be a prefixed SHA-256")
-    return value
+    try:
+        return validate_prefixed_lowercase_sha256(value, label)
+    except ValueError:
+        # Preserve this public contract's established diagnostic wording.
+        raise ValueError(f"{label} must be a prefixed SHA-256") from None
 
 
 def _freeze_evidence_analysis_json(value: object) -> object:
     if type(value) is dict:
         return MappingProxyType(
-            {
-                key: _freeze_evidence_analysis_json(item)
-                for key, item in value.items()
-            }
+            {key: _freeze_evidence_analysis_json(item) for key, item in value.items()}
         )
     if type(value) is list:
         return tuple(_freeze_evidence_analysis_json(item) for item in value)
@@ -3819,7 +3806,9 @@ class EvidenceAnalysisObservation:
         _validate_opaque_id(self.observation_id, "evidence analysis observation ID")
         _validate_opaque_id(self.category, "evidence analysis category")
         if type(self.summary) is not str or not 1 <= len(self.summary) <= 8_192:
-            raise ValueError("evidence analysis summary must contain 1 to 8192 characters")
+            raise ValueError(
+                "evidence analysis summary must contain 1 to 8192 characters"
+            )
         if type(self.cited_reference_digests) is not tuple:
             raise TypeError("evidence analysis citations must be a tuple")
         if not 1 <= len(self.cited_reference_digests) <= 256:

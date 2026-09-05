@@ -57,6 +57,7 @@ from .ingestion import (
     IngestionError,
     IngestionLimits,
     IngestionResult,
+    _bind_primary_ingestion_perspectives,
     snapshot_ingestion_result_for_publication,
 )
 from .operational_logging import emit_operational_event
@@ -93,6 +94,7 @@ from .plugin_execution_plan import (
     PluginExecutionPin,
     PluginExecutionPlan,
     PluginExecutionPlanAuthority,
+    _snapshot_decoder_identity as _plan_snapshot_decoder_identity,
     plugin_execution_pin_uses_legacy_identity,
     plugin_execution_plan_dict,
     plugin_execution_plan_from_dict,
@@ -1360,12 +1362,9 @@ class _IdentityBoundTraceDecoder:
 def _snapshot_decoder_identity(identity: DecoderIdentity) -> DecoderIdentity:
     """Detach an exact decoder identity from caller-owned mutable aliases."""
 
-    if type(identity) is not DecoderIdentity:
-        raise TypeError("decoder identity must be an exact DecoderIdentity")
-    return DecoderIdentity(
-        decoder_id=identity.decoder_id,
-        decoder_version=identity.decoder_version,
-        executable_digest=identity.executable_digest,
+    return _plan_snapshot_decoder_identity(
+        identity,
+        type_error_message="decoder identity must be an exact DecoderIdentity",
     )
 
 
@@ -3829,6 +3828,14 @@ def _dataset_with_execution_plan(
         execution_plan_authority=execution_plan_authority,
     )
     primary_pin = primary_parser_execution_pin(plan)
+    result = _bind_primary_ingestion_perspectives(
+        result,
+        plugin_id=registered.plugin_id,
+        primary_plugin_instance_id=primary_pin.instance_id,
+        primary_schema_digest=primary_pin.schema_digest,
+        timeline_time_basis=TimelineTimeBasis(registered.timeline_time_basis),
+        timeline_clock_domain=registered.timeline_clock_domain,
+    )
     # Import lazily: the capability router binds RegisteredPlugin from this
     # module, while materialization itself is intentionally a later pipeline
     # stage rather than part of parser normalization.

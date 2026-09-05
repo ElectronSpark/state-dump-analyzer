@@ -7088,9 +7088,23 @@ class MultiNodeRouteService:
             segment["route_resolution"]["packet_transition"] = serialized
             expected_packet_state = evaluation.transition.after
 
-        counterfactual = any(
-            item.counterfactual for item in trace.transitions
+        first_forced_ordinal = min(
+            (
+                segment_by_id[item.transition.step_id]["ordinal"]
+                for item in trace.transitions
+                if item.counterfactual
+            ),
+            default=None,
         )
+        counterfactual = first_forced_ordinal is not None
+        if first_forced_ordinal is not None:
+            # The forced step and its downstream route are hypothetical even
+            # when later transitions retain node-plug-in action ownership.
+            for segment in path["segments"]:
+                if segment["ordinal"] >= first_forced_ordinal:
+                    segment["observed"] = False
+                    segment["counterfactual"] = True
+                    segment["completeness"]["observed"] = False
         declared_profile_id = (
             str(declared_case["packet_profile_id"])
             if declared_case is not None
@@ -7145,32 +7159,63 @@ class MultiNodeRouteService:
         if trace.outcome != "drop" or not trace.transitions:
             return
         dropped = trace.transitions[-1]
+        forced_drop = dropped.counterfactual
+        mtu_drop = dropped.mtu.outcome == "exceeds" and not forced_drop
+        drop_kind = "packet_mtu_drop" if mtu_drop else "packet_drop"
+        drop_phase = "packet_mtu_decision" if mtu_drop else "packet_drop_decision"
+        if forced_drop:
+            reason_code = "user_forced_packet_drop"
+            drop_summary = "User steering declares a counterfactual packet drop"
+            drop_detail = (
+                "The user-forced transition declares DROP. The actor, steering "
+                "rule, and opaque action are retained in the packet transition; "
+                "this is not observed node-plug-in drop evidence."
+            )
+            drop_owner = "user_forced_disposition"
+        elif mtu_drop:
+            reason_code = "mtu_exceeded_after_encapsulation"
+            drop_summary = "Plug-in-declared MTU policy drops the packet"
+            drop_detail = (
+                "Core confirmed that the plug-in-declared packet size "
+                "exceeds an exactly comparable MTU. The node plug-in, not "
+                "core, declared the DF/drop disposition."
+            )
+            drop_owner = "core_size_comparison_node_plugin_disposition"
+        else:
+            reason_code = "plugin_declared_packet_drop"
+            drop_summary = "Node plug-in declares a packet drop"
+            drop_detail = (
+                "The plug-in declared DROP. Its action contract, label, "
+                "and evidence are retained in the packet transition; "
+                "core does not infer a protocol-specific cause."
+            )
+            drop_owner = "node_plugin_disposition"
         terminal = segment_by_id[dropped.transition.step_id]
         drop_index = path["segments"].index(terminal)
         terminal.update(
             {
-                "segment_kind": "packet_mtu_drop",
+                "segment_kind": drop_kind,
                 "active": False,
                 "confidence": 1.0,
                 "completeness": {
                     "state": "terminal_drop",
                     "end_to_end_resolved": False,
-                    "observed": True,
+                    "observed": not counterfactual,
                 },
             }
         )
         terminal["state"].update(
             {
                 "active": False,
-                "selected_active_by_plugin": True,
+                "selected_active_by_plugin": not forced_drop,
                 "operational": "unusable",
-                "terminal": "mtu_exceeded",
-                "reason_code": "mtu_exceeded_after_encapsulation",
+                "terminal": "mtu_exceeded" if mtu_drop else "packet_drop",
+                "reason_code": reason_code,
                 "terminal_disposition": "dropped",
             }
         )
-        terminal["route_resolution"]["phase"] = "packet_mtu_decision"
-        terminal["phase"] = "packet_mtu_decision"
+        terminal["route_resolution"]["phase"] = drop_phase
+        terminal["phase"] = drop_phase
         for suffix in path["segments"][drop_index + 1 :]:
             suffix["active"] = False
             suffix["completeness"] = {
@@ -7185,9 +7230,8 @@ class MultiNodeRouteService:
                     "reason_code": "upstream_terminal_drop",
                 }
             )
-        issue_id = (
-            f"issue:packet-mtu:{direction}:{terminal['segment_id']}"
-        )
+        issue_kind = "packet-mtu" if mtu_drop else "packet-drop"
+        issue_id = f"issue:{issue_kind}:{direction}:{terminal['segment_id']}"
         terminal["issue_refs"] = list(
             dict.fromkeys([*terminal.get("issue_refs", []), issue_id])
         )
@@ -7199,20 +7243,16 @@ class MultiNodeRouteService:
                 "issue_id": issue_id,
                 "category": "forwarding",
                 "severity": "error",
-                "summary": "Plug-in-declared MTU policy drops the packet",
-                "detail": (
-                    "Core confirmed that the plug-in-declared packet size "
-                    "exceeds an exactly comparable MTU. The node plug-in, not "
-                    "core, declared the DF/drop disposition."
-                ),
+                "summary": drop_summary,
+                "detail": drop_detail,
+                "observed": not counterfactual,
+                "counterfactual": counterfactual,
                 "path_refs": [path["path_id"]],
                 "segment_refs": [terminal["segment_id"]],
                 "interaction_target_ids": list(
                     terminal.get("interaction_target_ids", [])
                 ),
-                "ownership": (
-                    "core_size_comparison_node_plugin_disposition"
-                ),
+                "ownership": drop_owner,
             }
         )
         self._refresh_path(path)

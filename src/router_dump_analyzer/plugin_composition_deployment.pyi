@@ -1,8 +1,8 @@
 from .capability_router import CapabilityProviderRegistry
+from .deployment_core import _StateDirectoryContext
 from .ingestion_pipeline import PluginRegistry
 from .plugin_composition import PluginCompositionPolicy
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Final
 
 __all__ = ['PLUGIN_COMPOSITION_DEPLOYMENT_VERSION', 'PluginCompositionDeploymentLoadError', 'PluginCompositionDeploymentContext', 'PluginCompositionDeployment', 'load_plugin_composition_deployment']
@@ -10,11 +10,8 @@ __all__ = ['PLUGIN_COMPOSITION_DEPLOYMENT_VERSION', 'PluginCompositionDeployment
 PLUGIN_COMPOSITION_DEPLOYMENT_VERSION: Final[str]
 
 class PluginCompositionDeploymentLoadError(RuntimeError): ...
-
 @dataclass(frozen=True, slots=True)
-class PluginCompositionDeploymentContext:
-    state_dir: Path
-    def __post_init__(self) -> None: ...
+class PluginCompositionDeploymentContext(_StateDirectoryContext): ...
 
 @dataclass(frozen=True, slots=True)
 class PluginCompositionDeployment:

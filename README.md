@@ -461,6 +461,9 @@ their scheduled declarations under the primary revision schema without adding
 a public schema-override API. Perspective-qualified edges remain distinct, and
 explicit parser relationships stay authoritative over projections at the same
 qualified edge.
+Different status perspectives also retain independent resource state: core
+does not combine intended and observed fields, and an ambiguous singular view
+stays unknown instead of selecting an arbitrary perspective.
 Results are immutable, plan-bound, bounded, and queryable in the stored
 revision. A failed projector or rule cannot publish a partial revision.
 Legacy consistency revisions are labeled `not_materialized`, while revisions
@@ -483,6 +486,7 @@ router-dump-plugin-validate demo_router `
   --metadata platform=demo-router-os `
   --metadata software_version=1
 python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_capability_executor tests.test_capability_router tests.test_relationship_projection_materialization tests.test_relationship_projection_ingestion tests.test_consistency_materialization tests.test_consistency_ingestion tests.test_revision_world -v
+python -m unittest tests.test_reconstruction_boundaries tests.test_shared_core_contracts tests.test_reconstruction_truth tests.test_route_packet_projection -v
 python -m unittest discover -s demo/tests -v
 python -m unittest discover -s state-dump-generator/tests `
   -p "test_runtime_v2_vectors.py" -v
@@ -1301,3 +1305,9 @@ loopback adapter merely trusts headers. Runtime-v2 temporal/topology/route
 providers are also not yet supplied. Scoped relationship-collection
 completeness is retained during ingestion but not yet materialized into public
 relationship interval/query semantics.
+
+The standard ingestion path retains events but does not automatically run
+reducer/reversion or event-correlation hooks. Those require an explicitly
+configured host; durable publication does automatically schedule selected
+revision relationship projectors, followed by consistency checks. See the
+[capability support matrix](docs/plugin-contract.md#2-capability-boundary).

@@ -1,4 +1,4 @@
-from .canonical import MAX_TYPED_ATOM_PAYLOAD_UNITS as MAX_TYPED_ATOM_PAYLOAD_UNITS, validate_named_typed_parts as validate_named_typed_parts
+from .canonical import MAX_TYPED_ATOM_PAYLOAD_UNITS as MAX_TYPED_ATOM_PAYLOAD_UNITS, validate_named_typed_parts as validate_named_typed_parts, validate_prefixed_lowercase_sha256 as validate_prefixed_lowercase_sha256
 from .contract_validation import bounded_string as bounded_string, coerce_enum as coerce_enum, strict_boolean as strict_boolean, strict_integer as strict_integer, typed_tuple as typed_tuple, validate_bounded_json_value as validate_bounded_json_value, validity_bounds as validity_bounds
 from .public_text import contains_filesystem_identity_path as contains_filesystem_identity_path, contains_unsafe_identifier_text as contains_unsafe_identifier_text, has_visible_identity_anchor as has_visible_identity_anchor
 from .temporal_core import MAX_TEMPORAL_NS as MAX_TEMPORAL_NS, MIN_TEMPORAL_NS as MIN_TEMPORAL_NS

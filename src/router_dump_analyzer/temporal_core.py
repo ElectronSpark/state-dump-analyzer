@@ -8,9 +8,7 @@ from typing import Any
 from .canonical import CanonicalValueError, bounded_value_key
 from .value_core import parse_canonical_decimal_integer
 
-RESOURCE_CREATION_OPERATIONS: frozenset[str] = frozenset(
-    {"create", "add", "insert"}
-)
+RESOURCE_CREATION_OPERATIONS: frozenset[str] = frozenset({"create", "add", "insert"})
 RESOURCE_DELETION_OPERATIONS: frozenset[str] = frozenset({"delete", "remove"})
 
 # Ordering-dependent cursors and cluster handles must change version whenever
@@ -31,6 +29,52 @@ _TEMPORAL_STATE_FIELDS = (
     "valid_from_ns",
     "valid_to_ns",
 )
+
+
+def contains_time(timestamp_ns: int, start: Any, end: Any) -> bool:
+    """Test a validated half-open interval, including unbounded endpoints."""
+
+    return (start is None or timestamp_ns >= int(start)) and (
+        end is None or timestamp_ns < int(end)
+    )
+
+
+def relationship_presence(record: Mapping[str, Any] | None) -> bool | None:
+    """Read tri-state evidence without confusing an interval with presence.
+
+    Legacy relationship records omit ``present`` to mean an observed edge.
+    An absent record means no active edge; explicit unknown remains unknown.
+    Invalid non-boolean values cannot confirm connectivity.
+    """
+
+    if record is None:
+        return False
+    present = record.get("present", True)
+    return present if type(present) is bool else None
+
+
+def possible_relationship_presence(record: Mapping[str, Any] | None) -> tuple[bool, ...]:
+    """Expand tri-state presence into the boolean possibilities on the wire."""
+
+    present = relationship_presence(record)
+    return (False, True) if present is None else (present,)
+
+
+def overlaps_range(
+    start: Any,
+    end: Any,
+    query_start_ns: int,
+    query_end_ns: int,
+) -> bool:
+    """Intersect validated half-open intervals, retaining unbounded endpoints.
+
+    Stored dataset coordinates may be exact decimal strings; coordinate
+    admission and query ordering remain the caller's validation responsibility.
+    """
+
+    return (end is None or int(end) > query_start_ns) and (
+        start is None or int(start) < query_end_ns
+    )
 
 
 def temporal_integer(value: Any, field: str) -> int:
@@ -92,9 +136,7 @@ def temporal_state_comparison_key(
     transition are still distinct temporal observations.
     """
 
-    return bounded_value_key(
-        tuple(view.get(field) for field in _TEMPORAL_STATE_FIELDS)
-    )
+    return bounded_value_key(tuple(view.get(field) for field in _TEMPORAL_STATE_FIELDS))
 
 
 def distinct_temporal_states(
@@ -127,7 +169,11 @@ __all__ = [
     "TEMPORAL_ORDER_VERSION",
     "checked_temporal_add",
     "checked_temporal_subtract",
+    "contains_time",
     "distinct_temporal_states",
+    "overlaps_range",
+    "possible_relationship_presence",
+    "relationship_presence",
     "temporal_integer",
     "temporal_order_key",
     "temporal_state_comparison_key",

@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import importlib
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Final
 
+from .deployment_core import _StateDirectoryContext, _deployment_target
 from .private_analysis_execution import (
     PrivateAnalysisExecutionLimits,
     PrivateAnalysisRunnerRegistration,
@@ -24,34 +24,19 @@ from .process_control import PROCESS_CONTROL_EXCEPTIONS
 
 MAX_PRIVATE_ANALYSIS_DEPLOYMENT_RUNNERS: Final = 256
 
-_PATH_TYPE: Final = type(Path())
-
 
 class PrivateAnalysisDeploymentLoadError(RuntimeError):
     """A trusted deployment target could not produce a valid descriptor."""
 
 
 @dataclass(frozen=True, slots=True)
-class PrivateAnalysisDeploymentContext:
+class PrivateAnalysisDeploymentContext(_StateDirectoryContext):
     """The complete core context disclosed to a deployment factory.
 
     No request, tenant, credential, plug-in, network, or model configuration is
     ambiently supplied.  The deployment receives only the canonical durable
     state root from which it can construct request-bound evidence services.
     """
-
-    state_dir: Path
-
-    def __post_init__(self) -> None:
-        if type(self.state_dir) not in (str, _PATH_TYPE):
-            raise TypeError("state_dir must be a string or platform Path")
-        try:
-            resolved = Path(self.state_dir).expanduser().resolve(strict=False)
-        except (OSError, RuntimeError, ValueError) as error:
-            raise ValueError("state_dir could not be resolved safely") from error
-        if not resolved.is_absolute():  # pragma: no cover - Path.resolve guarantees it.
-            raise ValueError("state_dir must resolve to an absolute path")
-        object.__setattr__(self, "state_dir", resolved)
 
 
 def _detached_execution_limits(
@@ -152,26 +137,6 @@ class PrivateAnalysisDeployment:
             _detached_execution_limits(self.execution_limits),
         )
         object.__setattr__(self, "ceilings", _detached_ceilings(self.ceilings))
-
-
-def _deployment_target(value: object) -> tuple[str, str]:
-    if type(value) is not str:
-        raise TypeError("deployment target must be a string")
-    if not value or value != value.strip() or len(value) > 512:
-        raise ValueError("deployment target must use 'package.module:attribute' syntax")
-    module_name, separator, attribute = value.partition(":")
-    if (
-        not separator
-        or not module_name
-        or not attribute
-        or ":" in attribute
-        or len(module_name) > 255
-        or len(attribute) > 128
-        or any(not part.isidentifier() for part in module_name.split("."))
-        or not attribute.isidentifier()
-    ):
-        raise ValueError("deployment target must use 'package.module:attribute' syntax")
-    return module_name, attribute
 
 
 def _detached_context(

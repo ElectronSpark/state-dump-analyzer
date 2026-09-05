@@ -46,6 +46,10 @@ from router_dump_analyzer.source_record_core import (
 )
 from router_dump_analyzer.temporal_core import (
     TEMPORAL_ORDER_VERSION,
+    contains_time as _contains_time,
+    overlaps_range as _overlaps_window,
+    possible_relationship_presence,
+    relationship_presence,
     temporal_integer,
     temporal_order_key,
 )
@@ -615,12 +619,6 @@ def _resource_id(record: dict[str, Any]) -> str:
     return resource_id(record)
 
 
-def _contains_time(timestamp_ns: int, start: Any, end: Any) -> bool:
-    return (start is None or timestamp_ns >= int(start)) and (
-        end is None or timestamp_ns < int(end)
-    )
-
-
 def _indexed_resource_exists(runtime: Any, identifier: str, timestamp_ns: int) -> bool:
     return any(
         _contains_time(
@@ -632,6 +630,30 @@ def _indexed_resource_exists(runtime: Any, identifier: str, timestamp_ns: int) -
     )
 
 
+def _graph_edge_payload(
+    item: Mapping[str, Any],
+    identifier: str,
+    *,
+    temporal_note: str | None = None,
+) -> dict[str, Any]:
+    present = relationship_presence(item)
+    return {
+        "id": identifier,
+        "source": item["source"],
+        "target": item["target"],
+        "type": item.get("relation_type", item.get("type", "related_to")),
+        "present": present,
+        "possible_presence": list(possible_relationship_presence(item)),
+        "quality": item.get("quality", "unknown") if present is True else "ambiguous",
+        "provenance": item.get("provenance", "unknown"),
+        "temporal_note": temporal_note if temporal_note is not None else item.get("temporal_note"),
+        "valid_from_ns": item.get("valid_from_ns"),
+        "valid_to_ns": item.get("valid_to_ns"),
+        "start_event_uid": item.get("start_event_uid"),
+        "end_event_uid": item.get("end_event_uid"),
+    }
+
+
 def _graph_payload(timestamp_ns: int) -> dict[str, Any]:
     dataset = load_dataset()
     complete = {_resource_id(item): item for item in dataset["resources"]}
@@ -639,7 +661,7 @@ def _graph_payload(timestamp_ns: int) -> dict[str, Any]:
     active_views = {
         identifier: view
         for identifier in complete
-        if (view := resource_state_at(identifier, timestamp_ns))["exists"]
+        if (view := resource_state_at(identifier, timestamp_ns))["exists"] is not False
     }
     relationships = [
         item
@@ -657,6 +679,7 @@ def _graph_payload(timestamp_ns: int) -> dict[str, Any]:
                 "label": view["label"],
                 "layer": view["layer"],
                 "kind": view["kind"],
+                "exists": view["exists"],
                 "status": view["status_class"],
                 "status_value": view["status"],
                 "state": view["state"],
@@ -671,19 +694,7 @@ def _graph_payload(timestamp_ns: int) -> dict[str, Any]:
         )
 
     edges = [
-        {
-            "id": item.get("relationship_id", f"edge-{index}"),
-            "source": item["source"],
-            "target": item["target"],
-            "type": item["type"],
-            "quality": item.get("quality", "unknown"),
-            "provenance": item.get("provenance", "unknown"),
-            "temporal_note": item.get("temporal_note"),
-            "valid_from_ns": item.get("valid_from_ns"),
-            "valid_to_ns": item.get("valid_to_ns"),
-            "start_event_uid": item.get("start_event_uid"),
-            "end_event_uid": item.get("end_event_uid"),
-        }
+        _graph_edge_payload(item, item.get("relationship_id", f"edge-{index}"))
         for index, item in enumerate(relationships)
     ]
     return {
@@ -694,7 +705,8 @@ def _graph_payload(timestamp_ns: int) -> dict[str, Any]:
         "incomplete_node_count": sum(not node["complete_record"] for node in nodes),
         "note": (
             "Nodes require an active resource lifecycle; edges additionally require "
-            "an active relationship interval and two active endpoints."
+            "an active relationship interval and two active endpoints. Explicitly "
+            "absent relationships are excluded; unknown presence remains ambiguous."
         ),
     }
 
@@ -889,6 +901,8 @@ def _indexed_correlation_payload(
         following: set[str] = set()
         for identifier in frontier:
             for relationship in runtime.relationships_by_endpoint.get(identifier, []):
+                if relationship_presence(relationship) is False:
+                    continue
                 relation_type = relationship.get(
                     "relation_type",
                     relationship.get("type", "related_to"),
@@ -927,6 +941,8 @@ def _indexed_correlation_payload(
     edge_records: dict[str, dict[str, Any]] = {}
     for identifier in reached:
         for relationship in runtime.relationships_by_endpoint.get(identifier, []):
+            if relationship_presence(relationship) is False:
+                continue
             source = relationship["source"]
             target = relationship["target"]
             relation_type = relationship.get(
@@ -955,7 +971,7 @@ def _indexed_correlation_payload(
     nodes: list[dict[str, Any]] = []
     for identifier in sorted(reached):
         view = resource_state_at(identifier, timestamp_ns)
-        if not view["exists"]:
+        if view["exists"] is False:
             continue
         record = runtime.resource_by_id[identifier]
         nodes.append(
@@ -964,6 +980,7 @@ def _indexed_correlation_payload(
                 "label": view["label"],
                 "layer": view["layer"],
                 "kind": view["kind"],
+                "exists": view["exists"],
                 "status": view["status_class"],
                 "status_value": view["status"],
                 "state": view["state"],
@@ -976,19 +993,9 @@ def _indexed_correlation_payload(
         )
     node_ids = {node["id"] for node in nodes}
     edges = [
-        {
-            "id": key,
-            "source": item["source"],
-            "target": item["target"],
-            "type": item.get("relation_type", item.get("type", "related_to")),
-            "quality": item.get("quality", "unknown"),
-            "provenance": item.get("provenance", "unknown"),
-            "temporal_note": "selected from full-scale validity interval",
-            "valid_from_ns": item.get("valid_from_ns"),
-            "valid_to_ns": item.get("valid_to_ns"),
-            "start_event_uid": item.get("start_event_uid"),
-            "end_event_uid": item.get("end_event_uid"),
-        }
+        _graph_edge_payload(
+            item, key, temporal_note="selected from full-scale validity interval"
+        )
         for key, item in sorted(edge_records.items())
         if item["source"] in node_ids and item["target"] in node_ids
     ]
@@ -1672,7 +1679,11 @@ def temporal_state_query(
 
     _require_revision(revision_id)
     normalized = dict(body)
-    normalized["include"] = ["resources", "relationships"]
+    normalized["include"] = ["resources"]
+    if _body_boolean(body, "include_relationships", default=True):
+        normalized["include"].append("relationships")
+    if "relation_types" in body:
+        normalized["relation_types"] = _body_string_list(body, "relation_types")
     return _temporal_topology_query(normalized)
 
 
@@ -2589,18 +2600,12 @@ def event_density_query(
     dataset = load_dataset()
     runtime = history_runtime(dataset)
     if runtime is not None:
-        failure_event_times, event_times_by_type = _density_secondary_indexes(
-            runtime
-        )
+        failure_event_times, event_times_by_type = _density_secondary_indexes(runtime)
         left = bisect_left(runtime.event_times, start_ns)
         right = bisect_right(runtime.event_times, end_ns)
         total_count = right - left
-        page_start_ns = start_ns + (
-            integer_span * bin_start_index
-        ) // bin_count
-        page_end_exclusive = start_ns + (
-            integer_span * bin_end_index
-        ) // bin_count
+        page_start_ns = start_ns + (integer_span * bin_start_index) // bin_count
+        page_end_exclusive = start_ns + (integer_span * bin_end_index) // bin_count
         type_counts_by_bin = _density_type_counts_by_bin(
             event_times_by_type,
             page_start_ns=page_start_ns,
@@ -3309,19 +3314,6 @@ def _interval_duration(start: Any, end: Any) -> str | None:
     if start is None or end is None:
         return None
     return str(int(end) - int(start))
-
-
-def _overlaps_window(
-    start: Any,
-    end: Any,
-    query_start_ns: int,
-    query_end_ns: int,
-) -> bool:
-    """Return whether two half-open temporal intervals intersect."""
-
-    return (end is None or int(end) > query_start_ns) and (
-        start is None or int(start) < query_end_ns
-    )
 
 
 def _effective_relationship_intervals(

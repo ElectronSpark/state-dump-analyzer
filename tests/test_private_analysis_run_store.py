@@ -60,6 +60,7 @@ from router_dump_analyzer.private_analysis_run_store import (
     PrivateAnalysisRunRetentionPolicy,
     PrivateAnalysisRunStaleVersion,
     PrivateAnalysisRunState,
+    PrivateAnalysisRunStoreError,
     SqlitePrivateAnalysisRunStore,
 )
 from router_dump_analyzer.private_analysis_runner_support import (
@@ -300,6 +301,26 @@ class PrivateAnalysisRunStoreTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.store.close()
         self.temporary.cleanup()
+
+    def test_transaction_error_vocabulary_and_recovery_are_preserved(self) -> None:
+        for read_only in (False, True):
+            for error_type in (sqlite3.IntegrityError, sqlite3.OperationalError):
+                with self.subTest(read_only=read_only, error_type=error_type):
+                    expected = (
+                        PrivateAnalysisRunConflict
+                        if not read_only and error_type is sqlite3.IntegrityError
+                        else PrivateAnalysisRunStoreError
+                    )
+                    failure = error_type("injected store failure")
+                    context = (
+                        self.store._read_cursor if read_only else self.store._transaction
+                    )
+                    with self.assertRaises(expected) as raised, context():
+                        raise failure
+                    self.assertIs(raised.exception.__cause__, failure)
+                    self.assertFalse(self.store._connection.in_transaction)
+                    with context() as cursor:
+                        self.assertEqual(cursor.execute("SELECT 1").fetchone()[0], 1)
 
     def test_multi_revision_admission_is_scoped_idempotent_and_reopenable(self) -> None:
         request = _request()

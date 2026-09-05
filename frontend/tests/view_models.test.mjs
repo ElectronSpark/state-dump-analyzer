@@ -25,11 +25,23 @@ import {
   routePayloadForwardingPresentation,
   stateChipClassName,
   statusClassPresentation,
+  resourceExistenceLabel,
   statusSegmentClassName,
   topologyResolutionLabel,
   virtualScrollTopForIndex,
   virtualScrollWindow,
 } from "../assets/view_models.js";
+
+test("resource tables and topology preserve the same tri-state existence", () => {
+  assert.equal(resourceExistenceLabel(true), "exists");
+  assert.equal(resourceExistenceLabel(false), "absent");
+  assert.equal(resourceExistenceLabel(true, { brief: true }), "yes");
+  assert.equal(resourceExistenceLabel(false, { brief: true }), "no");
+  for (const value of [null, undefined, "true", "false", 0, 1]) {
+    assert.equal(resourceExistenceLabel(value), "existence unknown");
+    assert.equal(resourceExistenceLabel(value, { brief: true }), "unknown");
+  }
+});
 
 test("million-row virtual scrolling stays inside a bounded physical surface", () => {
   const rowCount = 1_250_001;

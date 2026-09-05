@@ -10,13 +10,26 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
+from ._semantics import (
+    event_is_physical as _event_is_physical,
+)
+from ._semantics import event_target_resource
+from ._semantics import (
+    integer as _semantic_integer,
+)
+from ._semantics import (
+    propagation_horizon_ns as _propagation_horizon_ns,
+)
+from ._semantics import (
+    propagation_target_ids as _propagation_target_ids,
+)
 from .boundary import node_dump_projection_issue
 from .path_safety import resolve_regular_file
-
 
 SCHEMA_VERSION = 1
 SCHEMA_ID = "state-dump-generator-scenario/v1"
@@ -61,17 +74,10 @@ def _sequence(value: Any, label: str) -> list[Any]:
 
 
 def _integer(value: Any, label: str, *, minimum: int = 0) -> int:
-    if isinstance(value, bool):
-        raise ScenarioValidationError(f"{label} must be an integer")
     try:
-        result = int(value)
-    except (TypeError, ValueError) as error:
-        raise ScenarioValidationError(f"{label} must be an integer") from error
-    if result < minimum:
-        raise ScenarioValidationError(
-            f"{label} must be greater than or equal to {minimum}"
-        )
-    return result
+        return _semantic_integer(value, label, minimum=minimum)
+    except ValueError as error:
+        raise ScenarioValidationError(str(error)) from error
 
 
 def _identifier(value: Any, label: str) -> str:
@@ -172,11 +178,7 @@ def _attachment(
     resource_id = (
         _identifier(raw_resource_id, f"{label}.resource_id")
         if raw_resource_id is not None
-        else (
-            port_id
-            if ":" in port_id
-            else f"interface:{port_id}"
-        )
+        else (port_id if ":" in port_id else f"interface:{port_id}")
     )
     properties = item.get("properties", {})
     if not isinstance(properties, Mapping):
@@ -206,12 +208,15 @@ def _attachment(
         raw_observation_resource_id,
         f"{label}.node_local_observation.resource_id",
     )
-    observation_resource_type = str(
-        observation.get(
-            "resource_type",
-            observation.get("type", "interface"),
-        )
-    ).strip() or "interface"
+    observation_resource_type = (
+        str(
+            observation.get(
+                "resource_type",
+                observation.get("type", "interface"),
+            )
+        ).strip()
+        or "interface"
+    )
     node_local_observation = {
         "resource_id": observation_resource_id,
         "resource_type": observation_resource_type,
@@ -296,7 +301,11 @@ def _normalize_node(value: Any, index: int) -> dict[str, Any]:
     if not isinstance(raw_clock, Mapping):
         raise ScenarioValidationError(f"nodes[{index}].clock must be an object")
     clock = {
-        "offset_ns": int(raw_clock.get("offset_ns", item.get("clock_offset_ns", 0))),
+        "offset_ns": _semantic_integer(
+            raw_clock.get("offset_ns", item.get("clock_offset_ns", 0)),
+            f"nodes[{index}].clock.offset_ns",
+            minimum=None,
+        ),
         "uncertainty_ns": _integer(
             raw_clock.get(
                 "uncertainty_ns",
@@ -334,9 +343,7 @@ def _normalize_event(value: Any, index: int) -> dict[str, Any]:
     if propagation is None and item.get("auto_propagate"):
         propagation = {"mode": "best-effort"}
     if propagation is not None and not isinstance(propagation, Mapping):
-        raise ScenarioValidationError(
-            f"events[{index}].propagation must be an object"
-        )
+        raise ScenarioValidationError(f"events[{index}].propagation must be an object")
     result = {
         **item,
         "event_id": event_id,
@@ -389,7 +396,7 @@ class ScenarioDocument:
         }
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "ScenarioDocument":
+    def from_dict(cls, value: Mapping[str, Any]) -> ScenarioDocument:
         return scenario_from_dict(value)
 
 
@@ -428,9 +435,7 @@ def scenario_from_dict(value: Mapping[str, Any]) -> ScenarioDocument:
         for index, item in enumerate(_sequence(raw_events, "events"))
     )
     dump_node_ids = frozenset(
-        str(node["node_id"])
-        for node in nodes
-        if bool(node.get("dump_enabled", True))
+        str(node["node_id"]) for node in nodes if bool(node.get("dump_enabled", True))
     )
     latest_scheduled_ns = max(
         (
@@ -476,116 +481,6 @@ def scenario_from_dict(value: Mapping[str, Any]) -> ScenarioDocument:
     return document
 
 
-def _propagation_horizon_ns(value: Any, *, target_count: int) -> int:
-    """Return a safe upper bound for every generated target observation."""
-
-    if not isinstance(value, Mapping) or target_count < 1:
-        return 0
-    if "delay_ns" in value or "jitter_ns" in value:
-        delay = _integer(value.get("delay_ns", 0), "propagation.delay_ns")
-        jitter = _integer(value.get("jitter_ns", 0), "propagation.jitter_ns")
-    else:
-        delay = _integer(
-            value.get("delay_ms", value.get("base_delay_ms", 0)),
-            "propagation.delay_ms",
-        ) * 1_000_000
-        jitter = _integer(
-            value.get("jitter_ms", 0),
-            "propagation.jitter_ms",
-        ) * 1_000_000
-    cadence = str(value.get("cadence", "parallel")).casefold()
-    final_ordinal = target_count - 1
-    if cadence == "serial":
-        delay += final_ordinal * max(delay, 1_000_000)
-    elif cadence == "waves":
-        delay += (final_ordinal // 2) * max(delay // 2, 1_000_000)
-    return max(0, delay + abs(jitter))
-
-
-def _propagation_target_ids(
-    media: Sequence[Mapping[str, Any]],
-    event: Mapping[str, Any],
-    dump_node_ids: frozenset[str],
-) -> tuple[str, ...]:
-    """Mirror the simulator's generated-observation target selection."""
-
-    propagation = event.get("propagation", {})
-    if not isinstance(propagation, Mapping) or not propagation:
-        return ()
-    if (
-        propagation.get("materialized") is True
-        or propagation.get("generated") is True
-    ):
-        return ()
-    physical = _event_is_physical(event)
-    default_mode = "manual" if physical else "best-effort"
-    mode = str(propagation.get("mode", default_mode)).casefold()
-    if mode in {"manual", "none", "suppressed"}:
-        return ()
-
-    explicit = propagation.get(
-        "targets",
-        propagation.get("target_node_ids"),
-    )
-    if isinstance(explicit, Sequence) and not isinstance(explicit, (str, bytes)):
-        candidates = list(dict.fromkeys(str(item) for item in explicit))
-    else:
-        target_mode = str(
-            propagation.get(
-                "target_mode",
-                propagation.get("targets_mode", "neighbors"),
-            )
-        ).casefold()
-        if target_mode in {"all", "all-nodes", "all_nodes"}:
-            candidates = sorted(dump_node_ids)
-        elif physical:
-            medium_id = str(
-                event.get(
-                    "medium_id",
-                    event.get("link_id", event.get("target_id", "")),
-                )
-            )
-            medium = next(
-                (
-                    item
-                    for item in media
-                    if str(item["medium_id"]) == medium_id
-                ),
-                None,
-            )
-            candidates = (
-                [
-                    str(item["node_id"])
-                    for item in medium.get("attachments", [])
-                    if str(item["node_id"]) in dump_node_ids
-                ]
-                if medium is not None
-                else []
-            )
-        else:
-            source_node_id = str(event.get("node_id", ""))
-            neighbors: set[str] = set()
-            for medium in media:
-                participants = {
-                    str(item["node_id"])
-                    for item in medium.get("attachments", [])
-                }
-                if source_node_id in participants:
-                    neighbors.update(participants)
-            candidates = sorted(neighbors)
-
-    if not physical:
-        source_node_id = str(event.get("node_id", ""))
-        candidates = [
-            node_id for node_id in candidates if node_id != source_node_id
-        ]
-    return tuple(
-        node_id
-        for node_id in dict.fromkeys(candidates)
-        if node_id in dump_node_ids
-    )
-
-
 def load_scenario(path: Path | str) -> ScenarioDocument:
     try:
         source = resolve_regular_file(path, label="scenario project")
@@ -594,7 +489,9 @@ def load_scenario(path: Path | str) -> ScenarioDocument:
     try:
         value = json.loads(source.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise ScenarioValidationError(f"cannot read scenario project: {error}") from error
+        raise ScenarioValidationError(
+            f"cannot read scenario project: {error}"
+        ) from error
     if not isinstance(value, Mapping):
         raise ScenarioValidationError("scenario project root must be an object")
     return scenario_from_dict(value)
@@ -626,9 +523,7 @@ def validate_scenario(value: ScenarioDocument | Mapping[str, Any]) -> dict[str, 
 
     try:
         document = (
-            value
-            if isinstance(value, ScenarioDocument)
-            else scenario_from_dict(value)
+            value if isinstance(value, ScenarioDocument) else scenario_from_dict(value)
         )
     except (ScenarioValidationError, TypeError, ValueError) as error:
         return {
@@ -665,17 +560,13 @@ def validate_scenario(value: ScenarioDocument | Mapping[str, Any]) -> dict[str, 
         if node.get("dump_enabled", True)
     )
     if not dump_nodes:
-        errors.append(
-            _issue("nodes", "at least one dump-producing node is required")
-        )
+        errors.append(_issue("nodes", "at least one dump-producing node is required"))
     for node_index, node in enumerate(document.nodes):
         node_id = str(node["node_id"])
         if node_id in dump_nodes:
             clock = node.get("clock", {})
             offset_ns = (
-                int(clock.get("offset_ns", 0))
-                if isinstance(clock, Mapping)
-                else 0
+                int(clock.get("offset_ns", 0)) if isinstance(clock, Mapping) else 0
             )
             if document.capture_time_ns + offset_ns < 0:
                 errors.append(
@@ -684,16 +575,11 @@ def validate_scenario(value: ScenarioDocument | Mapping[str, Any]) -> dict[str, 
                         "clock offset makes the node snapshot timestamp negative",
                     )
                 )
-        for resource_index, resource in enumerate(
-            node.get("initial_resources", [])
-        ):
+        for resource_index, resource in enumerate(node.get("initial_resources", [])):
             issue = node_dump_projection_issue(
                 resource,
                 private_medium_ids,
-                location=(
-                    f"nodes[{node_index}].initial_resources"
-                    f"[{resource_index}]"
-                ),
+                location=(f"nodes[{node_index}].initial_resources[{resource_index}]"),
             )
             if issue is not None:
                 errors.append(_issue(*issue))
@@ -745,13 +631,27 @@ def validate_scenario(value: ScenarioDocument | Mapping[str, Any]) -> dict[str, 
     for event_index, event in enumerate(document.events):
         timestamp_ns = int(event["timestamp_ns"])
         if timestamp_ns > document.capture_time_ns:
-            errors.append(
+            generated = event.get("propagation", {}).get("generated") is True
+            (warnings if generated else errors).append(
                 _issue(
                     f"events[{event_index}].timestamp_ns",
-                    "event occurs after the final snapshot capture",
+                    "generated observation occurs after capture and will not enter the dump"
+                    if generated
+                    else "event occurs after the final snapshot capture",
+                    severity="warning" if generated else "error",
                 )
             )
         physical_event = _event_is_physical(event)
+        if not physical_event:
+            # Validate the resolved exported identity, including subject and
+            # target aliases, rather than only the event's nested properties.
+            issue = node_dump_projection_issue(
+                {"resource_id": event_target_resource(event)},
+                private_medium_ids,
+                location=f"events[{event_index}]",
+            )
+            if issue is not None:
+                errors.append(_issue(*issue))
         node_id = event.get("node_id")
         if not physical_event and not str(node_id or "").strip():
             errors.append(
@@ -778,10 +678,7 @@ def validate_scenario(value: ScenarioDocument | Mapping[str, Any]) -> dict[str, 
             "medium_id",
             event.get("link_id", event.get("target_id")),
         )
-        if (
-            physical_event
-            and str(target_id or "") not in known_media
-        ):
+        if physical_event and str(target_id or "") not in known_media:
             errors.append(
                 _issue(
                     f"events[{event_index}].target_id",
@@ -838,7 +735,7 @@ def validate_scenario(value: ScenarioDocument | Mapping[str, Any]) -> dict[str, 
             event,
             dump_nodes,
         )
-        if (
+        if propagation_targets and (
             timestamp_ns
             + _propagation_horizon_ns(
                 propagation,
@@ -854,17 +751,6 @@ def validate_scenario(value: ScenarioDocument | Mapping[str, Any]) -> dict[str, 
                 )
             )
     return {"ok": not errors, "errors": errors, "warnings": warnings}
-
-
-def _event_is_physical(event: Mapping[str, Any]) -> bool:
-    kind = str(event.get("kind", "")).casefold().replace("_", "-")
-    target_type = str(event.get("target_type", "")).casefold()
-    return kind in {
-        "link-state",
-        "medium-state",
-        "physical-link-state",
-        "physical-state",
-    } or target_type in {"link", "medium", "physical-link"}
 
 
 __all__ = [

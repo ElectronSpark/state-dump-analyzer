@@ -822,7 +822,9 @@ def evaluate_forwarding_packet_trace(
         )
 
     expected = initial_state
-    continuity = "complete"
+    continuity = (
+        "complete" if initial_state.identity_complete else "unknown_incomplete"
+    )
     evaluations: list[ForwardingPacketTransitionEvaluation] = []
     for step, transition in enumerate(transitions):
         if step >= max_steps:
@@ -835,18 +837,19 @@ def evaluate_forwarding_packet_trace(
                 budget_limit=max_steps,
                 budget_observed=step + 1,
             )
-        if transition.before != expected:
-            if (
-                transition.before.identity_complete
-                and expected.identity_complete
-            ):
-                raise RouteTraceContractError(
-                    "complete packet transition continuity mismatch at "
-                    f"step {step}"
-                )
+        if not (
+            transition.before.identity_complete and expected.identity_complete
+        ):
             continuity = "unknown_incomplete"
+        elif transition.before != expected:
+            raise RouteTraceContractError(
+                "complete packet transition continuity mismatch at "
+                f"step {step}"
+            )
         evaluation = evaluate_forwarding_packet_transition(transition)
         evaluations.append(evaluation)
+        if not evaluation.diff.complete:
+            continuity = "unknown_incomplete"
         expected = transition.after
         disposition = transition.disposition
         if disposition in {

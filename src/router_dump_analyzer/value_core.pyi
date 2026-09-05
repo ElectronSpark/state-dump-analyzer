@@ -1,9 +1,11 @@
 from enum import Enum
 from typing import Any
 
-__all__ = ['MAX_JSON_SAFE_INTEGER', 'CanonicalIntegerErrorReason', 'CanonicalIntegerError', 'parse_canonical_decimal_integer', 'parse_decimal_integer']
+__all__ = ['MAX_JSON_SAFE_INTEGER', 'require_bounded_integer', 'CanonicalIntegerErrorReason', 'CanonicalIntegerError', 'parse_canonical_decimal_integer', 'parse_decimal_integer']
 
 MAX_JSON_SAFE_INTEGER: int
+
+def require_bounded_integer(value: object, label: str, *, minimum: int, maximum: int) -> int: ...
 
 class CanonicalIntegerErrorReason(str, Enum):
     GRAMMAR = 'grammar'

@@ -4,9 +4,11 @@ import json
 import sys
 import tarfile
 import unittest
+from hashlib import sha256
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Sequence
+from unittest.mock import patch
 from uuid import UUID
 
 DEMO_ROOT = Path(__file__).resolve().parents[1]
@@ -514,6 +516,46 @@ class DemoPluginTests(unittest.TestCase):
         )
         self.assertEqual(retained.attributes["source_sequence"], 1)
         self.assertEqual(retained.attributes["lifecycle"], "snapshot")
+
+    def test_invalid_status_choices_are_recoverable_and_keep_line_evidence(self) -> None:
+        spec = next(iter(plugin.locate_inputs(fixture_inventory())))
+        valid = render_conformance_status_fixture().splitlines()[0]
+        for field in ("lifecycle", "admin_status", "oper_status"):
+            for value in ([], {}, None, True, 1, "unsupported", ""):
+                with self.subTest(field=field, value=value):
+                    record = json.loads(valid)
+                    record[field] = value
+                    invalid = json.dumps(record).encode("utf-8")
+                    output = tuple(plugin.parse_status(
+                        MemoryArtifactReader(invalid + b"\n" + valid + b"\n"),
+                        spec,
+                    ))
+                    self.assertEqual(len(output), 3)
+                    diagnostic = output[0]
+                    self.assertIsInstance(diagnostic, PluginDiagnostic)
+                    self.assertEqual(diagnostic.code, "demo.invalid-status-record")
+                    self.assertEqual(diagnostic.severity, DiagnosticSeverity.ERROR)
+                    self.assertTrue(diagnostic.recoverable)
+                    self.assertIn(field, diagnostic.message)
+                    self.assertEqual(diagnostic.evidence[0].artifact_id, ARTIFACT_ID)
+                    self.assertEqual(diagnostic.evidence[0].locator, "line:1")
+                    self.assertEqual(
+                        diagnostic.evidence[0].excerpt_sha256,
+                        sha256(invalid).hexdigest(),
+                    )
+                    self.assertIsInstance(output[1], SourceRecordEmission)
+                    self.assertIsInstance(output[2], SnapshotObservation)
+                    self.assertEqual(output[2].evidence.locator, "line:2")
+
+    def test_status_parser_does_not_mask_programming_type_errors(self) -> None:
+        spec = next(iter(plugin.locate_inputs(fixture_inventory())))
+        with patch.object(
+            type(plugin), "_validated_record", side_effect=TypeError("injected parser bug")
+        ):
+            with self.assertRaisesRegex(TypeError, "injected parser bug"):
+                tuple(plugin.parse_status(
+                    MemoryArtifactReader(render_conformance_status_fixture()), spec
+                ))
 
     def test_missing_malformed_and_incompatible_inputs_are_explicit(self) -> None:
         empty = DumpInventory(node_hint="router-1", artifacts=())

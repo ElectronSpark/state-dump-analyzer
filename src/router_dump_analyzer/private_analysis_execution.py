@@ -19,6 +19,7 @@ from typing import Final, cast
 from uuid import uuid4
 
 from .canonical import strict_canonical_json_sha256
+from .value_core import require_bounded_integer as _bounded_integer
 from .private_analysis import (
     EvidenceReference,
     EvidenceScope,
@@ -118,18 +119,6 @@ class _CleanupFenceEstablishedAfterError(RuntimeError):
         self.original: BaseException = original
 
 
-def _bounded_integer(
-    value: object,
-    label: str,
-    *,
-    minimum: int,
-    maximum: int,
-) -> int:
-    if type(value) is not int or not minimum <= value <= maximum:
-        raise ValueError(f"{label} must be between {minimum} and {maximum}")
-    return value
-
-
 def _actor_id(value: object) -> str:
     if (
         type(value) is not str
@@ -224,8 +213,7 @@ class PrivateAnalysisRunnerRegistration:
                     character not in "0123456789abcdef"
                     for character in supplied_digest[7:]
                 )
-                or supplied_digest
-                == LEGACY_PRIVATE_ANALYSIS_EVIDENCE_SERVICE_DIGEST
+                or supplied_digest == LEGACY_PRIVATE_ANALYSIS_EVIDENCE_SERVICE_DIGEST
             ):
                 raise ValueError(
                     "custom evidence services require a non-legacy stable "
@@ -355,9 +343,7 @@ class PrivateAnalysisRegisteredRunner:
                 for character in self.evidence_service_digest[7:]
             )
         ):
-            raise ValueError(
-                "evidence_service_digest must be a sha256-prefixed digest"
-            )
+            raise ValueError("evidence_service_digest must be a sha256-prefixed digest")
 
 
 @dataclass(frozen=True, slots=True)
@@ -777,9 +763,7 @@ class _DurableExecutionAttempt:
                 except BaseException as reconciliation_error:  # noqa: BLE001
                     selected = (
                         reconciliation_error
-                        if isinstance(
-                            reconciliation_error, PROCESS_CONTROL_EXCEPTIONS
-                        )
+                        if isinstance(reconciliation_error, PROCESS_CONTROL_EXCEPTIONS)
                         else error
                     )
                     raise _CleanupFenceEstablishedAfterError(selected) from error
@@ -978,9 +962,7 @@ class PrivateAnalysisExecutionCoordinator:
                 instruction_profile_digest=(
                     route.registration.runner.instruction_profile_digest
                 ),
-                evidence_service_digest=(
-                    route.registration.evidence_service_digest
-                ),
+                evidence_service_digest=(route.registration.evidence_service_digest),
             )
             for route in self._routes.values()
         )
@@ -1100,8 +1082,7 @@ class PrivateAnalysisExecutionCoordinator:
                 durable_attempt.stop_monitor()
                 return durable_attempt.finalize_unstarted()
             preparation_deadline_ns = (
-                time.monotonic_ns()
-                + claimed.request.limits.deadline_ms * 1_000_000
+                time.monotonic_ns() + claimed.request.limits.deadline_ms * 1_000_000
             )
             preparation_timed_out = False
 
@@ -1123,8 +1104,8 @@ class PrivateAnalysisExecutionCoordinator:
                     # The deletion capability exists only in this coordinator
                     # lifetime and is created before spawning.  Durable state
                     # receives only its one-way verifier.
-                    cleanup_capability = (
-                        "cleanup-capability-v1:" + secrets.token_hex(32)
+                    cleanup_capability = "cleanup-capability-v1:" + secrets.token_hex(
+                        32
                     )
                     prelaunch_cleanup = self._register_prelaunch_cleanup(
                         durable_attempt,
@@ -1133,16 +1114,14 @@ class PrivateAnalysisExecutionCoordinator:
                     self._begin_prelaunch_cleanup_fence(prelaunch_cleanup)
                     cleanup_fence_established = True
                     try:
-                        service = (
-                            start_private_analysis_tool_service_process(
-                                process_factory,
-                                claimed.request,
-                                cancellation_probe=preparation_cancelled,
-                                absolute_deadline_ns=preparation_deadline_ns,
-                                poll_interval_ns=(
-                                    self._limits.cancellation_poll_interval_ns
-                                ),
-                            )
+                        service = start_private_analysis_tool_service_process(
+                            process_factory,
+                            claimed.request,
+                            cancellation_probe=preparation_cancelled,
+                            absolute_deadline_ns=preparation_deadline_ns,
+                            poll_interval_ns=(
+                                self._limits.cancellation_poll_interval_ns
+                            ),
                         )
                     except BaseException as error:
                         bootstrap_cleanup_owner = (
@@ -1180,7 +1159,10 @@ class PrivateAnalysisExecutionCoordinator:
                     )
                 if (
                     type(service)
-                    not in {PrivateAnalysisToolService, PrivateAnalysisRemoteToolService}
+                    not in {
+                        PrivateAnalysisToolService,
+                        PrivateAnalysisRemoteToolService,
+                    }
                     or service.request != claimed.request
                     or not service.runner_lease_eligible
                     or service.disclosed_references
@@ -1372,8 +1354,8 @@ class PrivateAnalysisExecutionCoordinator:
             )
             try:
                 if subprocess_runner is not None and cleanup_capability is None:
-                    cleanup_capability = (
-                        "cleanup-capability-v1:" + secrets.token_hex(32)
+                    cleanup_capability = "cleanup-capability-v1:" + secrets.token_hex(
+                        32
                     )
                     prelaunch_cleanup = self._register_prelaunch_cleanup(
                         durable_attempt,
@@ -1497,10 +1479,7 @@ class PrivateAnalysisExecutionCoordinator:
                     pass
                 raise
             except BaseException:  # noqa: BLE001 - exact runner boundary.
-                if (
-                    subprocess_runner is not None
-                    and subprocess_runner.cleanup_pending
-                ):
+                if subprocess_runner is not None and subprocess_runner.cleanup_pending:
                     if cleanup_capability is None or not cleanup_fence_established:
                         raise PrivateAnalysisExecutionUnavailable(
                             "private-analysis subprocess cleanup ownership is invalid"
@@ -2094,9 +2073,7 @@ class PrivateAnalysisExecutionCoordinator:
         store; this method never reconstructs or kills from a persisted PID.
         """
 
-        selected_limit = _bounded_integer(
-            limit, "limit", minimum=1, maximum=1_000
-        )
+        selected_limit = _bounded_integer(limit, "limit", minimum=1, maximum=1_000)
         if scope is None:
             selected_scope = None
         elif type(scope) is EvidenceScope:
@@ -2273,9 +2250,7 @@ class PrivateAnalysisExecutionCoordinator:
     ) -> tuple[PrivateAnalysisRunRecord, ...]:
         """Run the store's no-retry recovery under this coordinator identity."""
 
-        selected_limit = _bounded_integer(
-            limit, "limit", minimum=1, maximum=1_000
-        )
+        selected_limit = _bounded_integer(limit, "limit", minimum=1, maximum=1_000)
         actor = _actor_id(actor_id)
         retried = self.retry_pending_cleanup(
             limit=selected_limit,

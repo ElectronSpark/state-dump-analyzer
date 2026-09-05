@@ -5,7 +5,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Self
 
-__all__ = ['CORRELATION_REPORT_SCHEMA_VERSION', 'ReviewOverlayError', 'ReviewValidationError', 'CorrelationReportProvenanceClass', 'ReviewConflictError', 'ReviewIdempotencyConflictError', 'ReviewRetentionDisabledError', 'ReviewSubjectKind', 'ReviewAnnotationKind', 'ReviewAuditRetentionMode', 'CorroborationResult', 'ReviewScope', 'ReviewSubject', 'ReviewAnnotation', 'ManualCorrelationEdge', 'ManualEventCorrelation', 'ReviewAuditEntry', 'ReviewOverlaySnapshot', 'CorrelationReport', 'ReviewRetentionPolicy', 'ReviewRetentionCandidate', 'ReviewRetentionInventory', 'ReviewRetentionResult', 'ReviewRetentionAuditEntry', 'ReviewOverlayStore', 'build_correlation_report']
+__all__ = ['CORRELATION_REPORT_SCHEMA_VERSION', 'ReviewOverlayError', 'ReviewValidationError', 'CorrelationReportProvenanceClass', 'ReviewConflictError', 'ReviewIdempotencyConflictError', 'ReviewRetentionDisabledError', 'ReviewSubjectKind', 'ReviewAnnotationKind', 'ReviewAuditRetentionMode', 'CorroborationResult', 'ReviewScope', 'ReviewSubject', 'normalize_review_subjects', 'ReviewAnnotation', 'ManualCorrelationEdge', 'ManualEventCorrelation', 'ReviewAuditEntry', 'ReviewOverlaySnapshot', 'CorrelationReport', 'ReviewRetentionPolicy', 'ReviewRetentionCandidate', 'ReviewRetentionInventory', 'ReviewRetentionResult', 'ReviewRetentionAuditEntry', 'ReviewOverlayStore', 'build_correlation_report']
 
 CORRELATION_REPORT_SCHEMA_VERSION: str
 
@@ -59,6 +59,8 @@ class ReviewSubject:
     def to_dict(self) -> dict[str, Any]: ...
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ReviewSubject: ...
+
+def normalize_review_subjects(subjects: Iterable[ReviewSubject], *, maximum: int, event_only: bool = False) -> tuple[ReviewSubject, ...]: ...
 
 @dataclass(frozen=True, slots=True)
 class ReviewAnnotation:

@@ -1,3 +1,4 @@
+from ._identity import PLUGIN_ID as DEMO_TOPOLOGY_PLUGIN_ID, PLUGIN_VERSION as DEMO_TOPOLOGY_PLUGIN_VERSION
 from .assembly_store import DemoAssemblyStore
 from collections.abc import Mapping
 from router_dump_analyzer.capability_router import CapabilityProviderRef
@@ -5,15 +6,13 @@ from router_dump_analyzer.plugin_api import AnalyzerPluginBase, PluginManifest, 
 from router_dump_analyzer.topology_federation import TopologyFederationCoordinator
 from typing import Any
 
-__all__ = ['DEMO_CONNECTOR_CLAIM_CONTRACT_ID', 'DEMO_CONNECTOR_POLICY_ID', 'DEMO_TOPOLOGY_RESOURCE_KIND', 'DEMO_TOPOLOGY_CLAIM_KIND', 'DEMO_CONNECTOR_LINK_TYPE', 'DEMO_TOPOLOGY_PLUGIN_ID', 'DEMO_TOPOLOGY_PLUGIN_VERSION', 'DEMO_TOPOLOGY_PROJECTION_ID', 'DEMO_TOPOLOGY_PERSPECTIVE_ID', 'DEMO_TOPOLOGY_PROCESS_TARGET', 'DemoTopologyProjectionPlugin', 'demo_topology_projection_plugin', 'build_demo_topology_federation', 'build_demo_topology_projection_state_provider']
+__all__ = ['DEMO_TOPOLOGY_PLUGIN_ID', 'DEMO_TOPOLOGY_PLUGIN_VERSION', 'DEMO_CONNECTOR_CLAIM_CONTRACT_ID', 'DEMO_CONNECTOR_POLICY_ID', 'DEMO_TOPOLOGY_RESOURCE_KIND', 'DEMO_TOPOLOGY_CLAIM_KIND', 'DEMO_CONNECTOR_LINK_TYPE', 'DEMO_TOPOLOGY_PROJECTION_ID', 'DEMO_TOPOLOGY_PERSPECTIVE_ID', 'DEMO_TOPOLOGY_PROCESS_TARGET', 'DemoTopologyProjectionPlugin', 'demo_topology_projection_plugin', 'build_demo_topology_federation', 'build_demo_topology_projection_state_provider']
 
 DEMO_CONNECTOR_CLAIM_CONTRACT_ID: str
 DEMO_CONNECTOR_POLICY_ID: str
 DEMO_TOPOLOGY_RESOURCE_KIND: str
 DEMO_TOPOLOGY_CLAIM_KIND: str
 DEMO_CONNECTOR_LINK_TYPE: str
-DEMO_TOPOLOGY_PLUGIN_ID: str
-DEMO_TOPOLOGY_PLUGIN_VERSION: str
 DEMO_TOPOLOGY_PROJECTION_ID: str
 DEMO_TOPOLOGY_PERSPECTIVE_ID: str
 DEMO_TOPOLOGY_PROCESS_TARGET: str

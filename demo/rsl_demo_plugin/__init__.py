@@ -18,6 +18,7 @@ from hashlib import sha256
 from pathlib import PurePosixPath
 from typing import Any, Final, Iterable, Mapping, Protocol, cast
 
+from router_dump_analyzer.contract_validation import bounded_string
 from router_dump_analyzer.plugin_api import (
     CORE_PLUGIN_API_VERSION,
     AnalyzerPlugin,
@@ -62,12 +63,14 @@ from router_dump_analyzer.plugin_api import (
 from router_dump_analyzer.plugin_loading import (
     PluginProcessBootstrapDescriptor,
 )
+from ._identity import (
+    EVIDENCE_PLUGIN_ID as EVIDENCE_PLUGIN_ID,
+    EVIDENCE_PLUGIN_VERSION as EVIDENCE_PLUGIN_VERSION,
+    PLUGIN_ID as PLUGIN_ID,
+    PLUGIN_VERSION as PLUGIN_VERSION,
+)
 
 PLUGIN_ENTRY_POINT_NAME = "demo_router"
-PLUGIN_ID = "demo.example-router"
-PLUGIN_VERSION = "0.1.0"
-EVIDENCE_PLUGIN_ID = "demo.example-router-evidence-analysis"
-EVIDENCE_PLUGIN_VERSION = "0.1.0"
 STATUS_FILENAME = "minimal-status.jsonl"
 PARSER_ID = "demo.interface-status.v1"
 PLATFORM_ID = "demo-router-os"
@@ -1456,6 +1459,9 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
         The example deliberately compares the immutable revision world rather
         than parser-local rows.  Core supplies a bounded world and later binds
         the accepted declaration to the exact revision basis and provider.
+        This minimal schema has one unqualified view. Perspective-aware
+        extensions must retain separate views and must not treat an ambiguous
+        singular lookup (exists=None) as affirmative endpoint evidence.
         """
 
         scan_limit = 10_000
@@ -1858,7 +1864,12 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
         )
         if type(source_sequence) is not int or source_sequence < 0:
             raise ValueError("source_sequence must be a non-negative integer")
-        lifecycle = record.get("lifecycle", "snapshot")
+        lifecycle = bounded_string(
+            record.get("lifecycle", "snapshot"),
+            "lifecycle",
+            maximum=8,
+            message="lifecycle must be create, modify, or snapshot",
+        )
         if lifecycle not in {"create", "modify", "snapshot"}:
             raise ValueError("lifecycle must be create, modify, or snapshot")
         ifindex = record.get("ifindex")
@@ -1868,8 +1879,18 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
         name = record.get("name")
         if not isinstance(name, str) or not name:
             raise ValueError("name must be a non-empty string")
-        admin_status = record.get("admin_status")
-        oper_status = record.get("oper_status")
+        admin_status = bounded_string(
+            record.get("admin_status"),
+            "admin_status",
+            maximum=7,
+            message="admin_status must be up, down, or unknown",
+        )
+        oper_status = bounded_string(
+            record.get("oper_status"),
+            "oper_status",
+            maximum=7,
+            message="oper_status must be up, down, or unknown",
+        )
         allowed_statuses = {"up", "down", "unknown"}
         if admin_status not in allowed_statuses:
             raise ValueError("admin_status must be up, down, or unknown")

@@ -158,6 +158,44 @@ class ServerTests(unittest.TestCase):
             'attachment; filename="lab-export.tgz"',
         )
 
+    def test_propagation_endpoint_uses_compiler_observations(self) -> None:
+        scenario = {
+            "name": "Preview failed propagation",
+            "capture_time_ns": 1_000_000_000,
+            "nodes": [{"node_id": "a"}, {"node_id": "b"}],
+            "events": [
+                {
+                    "event_id": "source",
+                    "timestamp_ns": 0,
+                    "node_id": "a",
+                    "kind": "status",
+                    "resource_id": "resource:test",
+                    "status": "up",
+                    "propagation": {
+                        "mode": "failed",
+                        "target_mode": "all-nodes",
+                        "delay_ns": 101,
+                    },
+                }
+            ],
+        }
+        status, content, _ = self._post(
+            "/api/scenario/propagation",
+            {"scenario": scenario, "event_id": "source"},
+        )
+        self.assertEqual(status, 200)
+        event = json.loads(content)["events"][0]
+        self.assertEqual(event["node_id"], "b")
+        self.assertEqual(event["timestamp_ns"], "101")
+        self.assertEqual(event["outcome"], "failed")
+        self.assertFalse(event["update_snapshot"])
+        with self.assertRaises(HTTPError) as caught:
+            self._post(
+                "/api/scenario/propagation",
+                {"scenario": scenario, "event_id": "missing"},
+            )
+        self.assertEqual(caught.exception.code, 400)
+
     def test_preview_reconstructs_at_requested_time_with_private_truth_summary(
         self,
     ) -> None:
@@ -221,9 +259,7 @@ class ServerTests(unittest.TestCase):
             payload["private_truth"]["media"][0]["state"],
             "up",
         )
-        self.assertFalse(
-            payload["private_truth"]["exported_to_node_dumps"]
-        )
+        self.assertFalse(payload["private_truth"]["exported_to_node_dumps"])
 
         status, content, _ = self._post(
             "/api/scenario/preview",
@@ -297,9 +333,11 @@ class ServerTests(unittest.TestCase):
 
     def test_non_loopback_bind_is_rejected(self) -> None:
         for host in ("0.0.0.0", "::", "192.0.2.1"):
-            with self.subTest(host=host):
-                with self.assertRaisesRegex(ValueError, "local-only"):
-                    require_loopback_bind(host)
+            with (
+                self.subTest(host=host),
+                self.assertRaisesRegex(ValueError, "local-only"),
+            ):
+                require_loopback_bind(host)
 
     def test_ipv6_loopback_uses_an_ipv6_server_when_available(self) -> None:
         if not socket.has_ipv6:

@@ -156,6 +156,7 @@ def _world(
             provenance=Provenance.OBSERVED,
             quality=Quality.EXACT,
             evidence=evidence,
+            perspective_ref=perspective_ref,
         )
         for resource in (SOURCE, TARGET)
     )

@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
-import hashlib
+import json
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any
 
+from ._semantics import (
+    delay_ns as _delay_ns,
+)
+from ._semantics import (
+    event_is_physical as _event_is_physical,
+)
+from ._semantics import EVENT_SEMANTICS, event_target_resource, event_updates_snapshot
+from ._semantics import integer as _semantic_integer
+from ._semantics import (
+    observation_outcome as _observation_outcome,
+)
+from ._semantics import (
+    propagation_target_ids as _propagation_target_ids,
+)
 from .boundary import node_dump_projection_issue
 from .model import (
     ScenarioDocument,
@@ -16,15 +31,7 @@ from .model import (
     validate_scenario,
 )
 
-
 _DELETE_KINDS = {"delete", "remove", "resource-delete", "resource-remove"}
-_LOG_ONLY_KINDS = {"log", "log-only", "clock"}
-_PHYSICAL_KINDS = {
-    "link-state",
-    "medium-state",
-    "physical-link-state",
-    "physical-state",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,61 +51,6 @@ class _ScheduledObservation:
     source: str
 
 
-def _stable_unit_interval(seed: int, *parts: str) -> float:
-    digest = hashlib.sha256(str(seed).encode("ascii"))
-    for part in parts:
-        digest.update(b"\0")
-        digest.update(part.encode("utf-8"))
-    return int.from_bytes(digest.digest()[:8], "big") / float(2**64 - 1)
-
-
-def _delay_ns(
-    seed: int,
-    event: Mapping[str, Any],
-    node_id: str,
-    ordinal: int,
-) -> int:
-    propagation = event.get("propagation", {})
-    if not isinstance(propagation, Mapping):
-        return 0
-    if "delay_ns" in propagation or "jitter_ns" in propagation:
-        base = int(propagation.get("delay_ns", 0))
-        jitter = int(propagation.get("jitter_ns", 0))
-    else:
-        base = int(
-            propagation.get(
-                "delay_ms",
-                propagation.get("base_delay_ms", 0),
-            )
-        ) * 1_000_000
-        jitter = int(propagation.get("jitter_ms", 0)) * 1_000_000
-    cadence = str(propagation.get("cadence", "parallel")).casefold()
-    if cadence == "serial":
-        base += ordinal * max(base, 1_000_000)
-    elif cadence == "waves":
-        base += (ordinal // 2) * max(base // 2, 1_000_000)
-    if not jitter:
-        return max(0, base)
-    unit = _stable_unit_interval(
-        seed,
-        str(event["event_id"]),
-        node_id,
-        str(ordinal),
-    )
-    signed = round((unit * 2.0 - 1.0) * jitter)
-    return max(0, base + signed)
-
-
-def _event_is_physical(event: Mapping[str, Any]) -> bool:
-    kind = str(event.get("kind", "")).casefold().replace("_", "-")
-    target_type = str(event.get("target_type", "")).casefold()
-    return kind in _PHYSICAL_KINDS or target_type in {
-        "link",
-        "medium",
-        "physical-link",
-    }
-
-
 def _resource_record(
     value: Any,
     *,
@@ -108,9 +60,7 @@ def _resource_record(
     if not isinstance(value, Mapping):
         raise ScenarioValidationError("initial resource entries must be objects")
     record = deepcopy(dict(value))
-    resource_id = str(
-        record.get("resource_id", record.get("id", default_id))
-    )
+    resource_id = str(record.get("resource_id", record.get("id", default_id)))
     resource_type = str(
         record.get(
             "resource_type",
@@ -128,15 +78,6 @@ def _resource_record(
         "properties": deepcopy(dict(properties)),
         "updated_at_ns": timestamp_ns,
     }
-
-
-def _event_target_resource(event: Mapping[str, Any]) -> str:
-    return str(
-        event.get(
-            "resource_id",
-            event.get("subject", event.get("target_id", "event")),
-        )
-    )
 
 
 def _event_properties(event: Mapping[str, Any]) -> dict[str, Any]:
@@ -174,151 +115,20 @@ def _physical_event_state(event: Mapping[str, Any]) -> str:
     )
 
 
-def _observation_outcome(
-    seed: int,
-    event: Mapping[str, Any],
-    node_id: str,
-    ordinal: int,
-) -> str:
-    propagation = event.get("propagation", {})
-    if not isinstance(propagation, Mapping):
-        return "success"
-    outcomes = propagation.get("outcomes", {})
-    if isinstance(outcomes, Mapping) and node_id in outcomes:
-        return str(outcomes[node_id])
-    parent_outcome = str(event.get("outcome", "success")).casefold()
-    intended = str(
-        propagation.get(
-            "outcome",
-            propagation.get("intended_outcome", parent_outcome),
-        )
-    ).casefold()
-    if intended == "partial":
-        return (
-            "success"
-            if _stable_unit_interval(
-                seed,
-                str(event["event_id"]),
-                node_id,
-                str(ordinal),
-                "partial",
-            )
-            >= 0.5
-            else "stale"
-        )
-    if intended in {"failure", "failed"}:
-        return "failed"
-    if intended in {"stale", "suppressed", "dropped"}:
-        return intended
-    if intended in {"ok", "success", "succeeded"}:
-        return "success"
-    # Unknown parent outcomes are not proof that a propagated update applied.
-    # Authors can explicitly override them per target through
-    # ``propagation.outcomes`` or ``propagation.outcome``.
-    return intended
-
-
-def _target_node_ids(
-    event: Mapping[str, Any],
-    *,
-    neighbor_ids: Sequence[str],
-    dump_node_ids: Sequence[str],
-) -> list[str]:
-    propagation = event.get("propagation", {})
-    if not isinstance(propagation, Mapping):
-        return list(neighbor_ids)
-    explicit = propagation.get(
-        "targets",
-        propagation.get("target_node_ids"),
-    )
-    if isinstance(explicit, Sequence) and not isinstance(explicit, (str, bytes)):
-        return list(dict.fromkeys(str(item) for item in explicit))
-    target_mode = str(
-        propagation.get(
-            "target_mode",
-            propagation.get("targets_mode", "neighbors"),
-        )
-    ).casefold()
-    if target_mode in {"all", "all-nodes", "all_nodes"}:
-        return list(dump_node_ids)
-    return list(neighbor_ids)
-
-
 def _physical_observations(
     document: ScenarioDocument,
     event: Mapping[str, Any],
     medium: Mapping[str, Any],
     dump_node_ids: Sequence[str],
 ) -> list[_ScheduledObservation]:
-    propagation = event.get("propagation", {})
-    if not isinstance(propagation, Mapping) or not propagation:
-        # Physical truth and router observations are deliberately separate.
-        # The author must explicitly request automatic propagation.
-        return []
-    mode = (
-        str(propagation.get("mode", "manual")).casefold()
-    )
-    if isinstance(propagation, Mapping) and (
-        propagation.get("materialized") is True
-        or propagation.get("generated") is True
-    ):
-        return []
-    if mode in {"manual", "none", "suppressed"}:
-        return []
-    attachments = list(medium.get("attachments", []))
-    attachment_by_node = {
-        str(item["node_id"]): item
-        for item in attachments
-        if str(item["node_id"]) in dump_node_ids
-    }
-    targets = _target_node_ids(
-        event,
-        neighbor_ids=list(attachment_by_node),
-        dump_node_ids=dump_node_ids,
-    )
-    requested_state = str(
-        _physical_event_state(event)
-    )
+    attachments_by_node: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for attachment in medium.get("attachments", []):
+        attachments_by_node[str(attachment["node_id"])].append(attachment)
+    targets = _propagation_target_ids(document.media, event, dump_node_ids)
+    requested_state = str(_physical_event_state(event))
     observations: list[_ScheduledObservation] = []
     for ordinal, node_id in enumerate(targets):
-        attachment = attachment_by_node.get(node_id)
-        if attachment is None:
-            # A manually selected remote node receives a generic signal rather
-            # than an invented interface attachment.
-            port_id = str(event.get("resource_id", "physical-observation"))
-            properties = {"observed_physical_state": requested_state}
-            resource_type = "observation"
-        else:
-            port_id = str(attachment["port_id"])
-            resource_id = _attachment_resource_id(attachment)
-            local_observation = attachment.get(
-                "node_local_observation",
-                {},
-            )
-            if not isinstance(local_observation, Mapping):
-                raise ScenarioValidationError(
-                    "attachment.node_local_observation must be an object"
-                )
-            properties = {
-                "admin_status": "up",
-                "oper_status": requested_state,
-                **deepcopy(
-                    dict(local_observation.get("properties", {}))
-                ),
-            }
-            resource_type = str(
-                local_observation.get("resource_type", "interface")
-            )
-        outcome = (
-            "failed"
-            if mode == "failed"
-            else _observation_outcome(
-                document.seed,
-                event,
-                node_id,
-                ordinal,
-            )
-        )
+        outcome = _observation_outcome(document.seed, event, node_id, ordinal)
         state_changed = outcome == "success"
         timestamp_ns = int(event["timestamp_ns"]) + _delay_ns(
             document.seed,
@@ -326,35 +136,56 @@ def _physical_observations(
             node_id,
             ordinal,
         )
-        observations.append(
-            _ScheduledObservation(
-                timestamp_ns=timestamp_ns,
-                order=int(event["order"]) * 10_000 + ordinal,
-                stable_id=f"{event['event_id']}:observe:{node_id}",
-                node_id=node_id,
-                resource_id=(
-                    resource_id
-                    if attachment is not None
-                    else (
-                        port_id
-                        if ":" in port_id
-                        else f"interface:{port_id}"
+        # Cadence/outcome describe a node's observation, shared by all its
+        # explicitly attached interfaces. No LAG or parent/member inference.
+        local_attachments = attachments_by_node.get(node_id, [])
+        for attachment_index, local_attachment in enumerate(local_attachments or [None]):
+            if local_attachment is None:
+                # A manually selected remote node receives a generic signal.
+                port_id = str(event.get("resource_id", "physical-observation"))
+                resource_id = port_id if ":" in port_id else f"interface:{port_id}"
+                properties = {"observed_physical_state": requested_state}
+                resource_type = "observation"
+            else:
+                port_id = str(local_attachment["port_id"])
+                resource_id = _attachment_resource_id(local_attachment)
+                local_observation = local_attachment.get("node_local_observation", {})
+                if not isinstance(local_observation, Mapping):
+                    raise ScenarioValidationError(
+                        "attachment.node_local_observation must be an object"
                     )
-                ),
-                resource_type=resource_type,
-                operation="observe_physical_state",
-                outcome=outcome,
-                status=requested_state if state_changed else None,
-                properties=properties if state_changed else {},
-                message=(
-                    f"Observed local carrier {requested_state} on {port_id}."
-                    if state_changed
-                    else f"Local carrier update for {port_id} was {outcome}; previous state remains."
-                ),
-                update_snapshot=state_changed,
-                source="auto-propagation",
+                properties = {
+                    "admin_status": "up",
+                    **deepcopy(dict(local_observation.get("properties", {}))),
+                    # This scheduled observation supersedes the attachment's
+                    # starting carrier state, not its other local properties.
+                    "oper_status": requested_state,
+                }
+                resource_type = str(local_observation.get("resource_type", "interface"))
+            stable_id = f"{event['event_id']}:observe:{node_id}"
+            if len(local_attachments) > 1:
+                stable_id += f":attachment:{attachment_index}"
+            observations.append(
+                _ScheduledObservation(
+                    timestamp_ns=timestamp_ns,
+                    order=int(event["order"]),
+                    stable_id=stable_id,
+                    node_id=node_id,
+                    resource_id=resource_id,
+                    resource_type=resource_type,
+                    operation="observe_physical_state",
+                    outcome=outcome,
+                    status=requested_state if state_changed else None,
+                    properties=properties if state_changed else {},
+                    message=(
+                        f"Observed local carrier {requested_state} on {port_id}."
+                        if state_changed
+                        else f"Local carrier update for {port_id} was {outcome}; previous state remains."
+                    ),
+                    update_snapshot=state_changed,
+                    source="auto-propagation",
+                )
             )
-        )
     return observations
 
 
@@ -383,20 +214,18 @@ def _local_observation(
             ):
                 status_value = properties[status_key]
                 break
-    resource_id = _event_target_resource(event)
+    resource_id = event_target_resource(event)
     resource_type = str(
         event.get(
             "resource_type",
-            event.get("resource_kind", properties.get("resource_type", "resource")),
+            event.get(
+                "resource_kind",
+                properties.get("resource_type", EVENT_SEMANTICS["default_resource_type"]),
+            ),
         )
     )
     operation = str(event.get("operation", event.get("action", kind)))
-    update_snapshot = bool(
-        event.get(
-            "update_snapshot",
-            event.get("update_final_state", kind not in _LOG_ONLY_KINDS),
-        )
-    )
+    update_snapshot = event_updates_snapshot(event)
     if kind in _DELETE_KINDS:
         operation = "delete"
     failed_without_effect = outcome.casefold() in {"failed", "failure"} and not bool(
@@ -418,9 +247,7 @@ def _local_observation(
     )
     return _ScheduledObservation(
         timestamp_ns=(
-            int(event["timestamp_ns"])
-            if timestamp_ns is None
-            else timestamp_ns
+            int(event["timestamp_ns"]) if timestamp_ns is None else timestamp_ns
         ),
         order=int(event.get("order", 0)),
         stable_id=f"{event['event_id']}:{stable_suffix}:{node_id}",
@@ -441,45 +268,12 @@ def _propagated_local_observations(
     document: ScenarioDocument,
     event: Mapping[str, Any],
     *,
-    neighbor_ids: Sequence[str],
     dump_node_ids: Sequence[str],
 ) -> list[_ScheduledObservation]:
-    propagation = event.get("propagation", {})
-    if not isinstance(propagation, Mapping) or not propagation:
-        return []
-    if (
-        propagation.get("materialized") is True
-        or propagation.get("generated") is True
-    ):
-        # The editor can turn a preview into ordinary, individually editable
-        # child events.  The parent then retains its intent for explanation
-        # but must not synthesize a second copy during compilation.
-        return []
-    mode = str(propagation.get("mode", "best-effort")).casefold()
-    if mode in {"manual", "none", "suppressed"}:
-        return []
-    source_node = str(event.get("node_id", ""))
-    targets = [
-        node_id
-        for node_id in _target_node_ids(
-            event,
-            neighbor_ids=neighbor_ids,
-            dump_node_ids=dump_node_ids,
-        )
-        if node_id != source_node
-    ]
+    targets = _propagation_target_ids(document.media, event, dump_node_ids)
     observations: list[_ScheduledObservation] = []
     for ordinal, node_id in enumerate(targets):
-        outcome = (
-            "failed"
-            if mode == "failed"
-            else _observation_outcome(
-                document.seed,
-                event,
-                node_id,
-                ordinal,
-            )
-        )
+        outcome = _observation_outcome(document.seed, event, node_id, ordinal)
         propagated = dict(event)
         propagated["outcome"] = outcome
         if outcome != "success":
@@ -504,23 +298,6 @@ def _propagated_local_observations(
             )
         )
     return observations
-
-
-def _neighbors_by_node(document: ScenarioDocument) -> dict[str, list[str]]:
-    result: dict[str, set[str]] = defaultdict(set)
-    for medium in document.media:
-        node_ids = [
-            str(item["node_id"])
-            for item in medium.get("attachments", [])
-        ]
-        for node_id in node_ids:
-            result[node_id].update(
-                candidate for candidate in node_ids if candidate != node_id
-            )
-    return {
-        node_id: sorted(neighbors)
-        for node_id, neighbors in result.items()
-    }
 
 
 def _initial_state(
@@ -567,9 +344,7 @@ def _initial_state(
                 "properties": {
                     "admin_status": "up",
                     "oper_status": observed_state,
-                    **deepcopy(
-                        dict(local_observation.get("properties", {}))
-                    ),
+                    **deepcopy(dict(local_observation.get("properties", {}))),
                 },
                 "updated_at_ns": 0,
             }
@@ -624,6 +399,7 @@ def _log_record(
         "operation": observation.operation,
         "outcome": observation.outcome,
         "state_changed": observation.update_snapshot,
+        **({"status": observation.status} if observation.status is not None else {}),
         "message": observation.message,
         "properties": deepcopy(observation.properties),
         "source": observation.source,
@@ -634,16 +410,11 @@ def _scenario_document(
     value: ScenarioDocument | Mapping[str, Any],
 ) -> ScenarioDocument:
     document = (
-        value
-        if isinstance(value, ScenarioDocument)
-        else scenario_from_dict(value)
+        value if isinstance(value, ScenarioDocument) else scenario_from_dict(value)
     )
     report = validate_scenario(document)
     if not report["ok"]:
-        messages = [
-            str(item.get("message", item))
-            for item in report["errors"]
-        ]
+        messages = [str(item.get("message", item)) for item in report["errors"]]
         raise ScenarioValidationError("; ".join(messages))
     return document
 
@@ -654,14 +425,10 @@ def _reconstruction_time_ns(
 ) -> int:
     if at_time_ns is None:
         return document.capture_time_ns
-    if isinstance(at_time_ns, bool):
-        raise ScenarioValidationError("at_time_ns must be an integer")
-    if isinstance(at_time_ns, float) and not at_time_ns.is_integer():
-        raise ScenarioValidationError("at_time_ns must be an integer")
     try:
-        result = int(at_time_ns)
-    except (TypeError, ValueError) as error:
-        raise ScenarioValidationError("at_time_ns must be an integer") from error
+        result = _semantic_integer(at_time_ns, "at_time_ns", minimum=None)
+    except ValueError as error:
+        raise ScenarioValidationError(str(error)) from error
     if result < 0:
         raise ScenarioValidationError("at_time_ns cannot be negative")
     if result > document.capture_time_ns:
@@ -697,9 +464,7 @@ def _private_medium_truth_at(
                     "node_id": str(attachment["node_id"]),
                     "port_id": str(attachment["port_id"]),
                     "resource_id": _attachment_resource_id(attachment),
-                    "properties": deepcopy(
-                        dict(attachment.get("properties", {}))
-                    ),
+                    "properties": deepcopy(dict(attachment.get("properties", {}))),
                 }
                 for attachment in medium.get("attachments", [])
             ],
@@ -759,14 +524,9 @@ def reconstruct_scenario(
     document = _scenario_document(value)
     reconstruction_time_ns = _reconstruction_time_ns(document, at_time_ns)
 
-    dump_nodes = [
-        node for node in document.nodes if node.get("dump_enabled", True)
-    ]
+    dump_nodes = [node for node in document.nodes if node.get("dump_enabled", True)]
     dump_node_ids = [str(node["node_id"]) for node in dump_nodes]
-    neighbors = _neighbors_by_node(document)
-    media_by_id = {
-        str(medium["medium_id"]): medium for medium in document.media
-    }
+    media_by_id = {str(medium["medium_id"]): medium for medium in document.media}
     scheduled_by_node: dict[str, list[_ScheduledObservation]] = defaultdict(list)
 
     for event in sorted(
@@ -802,7 +562,6 @@ def reconstruct_scenario(
         for observation in _propagated_local_observations(
             document,
             event,
-            neighbor_ids=neighbors.get(node_id, []),
             dump_node_ids=dump_node_ids,
         ):
             scheduled_by_node[observation.node_id].append(observation)
@@ -812,9 +571,7 @@ def reconstruct_scenario(
         node_id = str(node["node_id"])
         clock = node.get("clock", {})
         clock_offset_ns = (
-            int(clock.get("offset_ns", 0))
-            if isinstance(clock, Mapping)
-            else 0
+            int(clock.get("offset_ns", 0)) if isinstance(clock, Mapping) else 0
         )
         state = _initial_state(document, node)
         logs: list[dict[str, Any]] = []
@@ -878,6 +635,94 @@ def reconstruct_scenario(
             reconstruction_time_ns,
         ),
     }
+
+
+def _preview_propagation(document: ScenarioDocument, event_id: str) -> dict[str, Any]:
+    """Return editable observations from the exact compilation scheduler."""
+    event = next(
+        (item for item in document.events if item["event_id"] == event_id), None
+    )
+    if event is None:
+        raise ScenarioValidationError("unknown propagation source event")
+    node_ids = [
+        str(node["node_id"])
+        for node in document.nodes
+        if node.get("dump_enabled", True)
+    ]
+    target_ids = _propagation_target_ids(document.media, event, node_ids)
+    target_count = len(target_ids)
+    physical = _event_is_physical(event)
+    medium = None
+    if physical:
+        medium_id = str(
+            event.get("medium_id", event.get("link_id", event.get("target_id", "")))
+        )
+        medium = next(
+            item for item in document.media if str(item["medium_id"]) == medium_id
+        )
+    observation_count = target_count
+    if medium is not None:
+        attachment_counts: dict[str, int] = defaultdict(int)
+        for attachment in medium.get("attachments", []):
+            attachment_counts[str(attachment["node_id"])] += 1
+        observation_count = sum(max(1, attachment_counts[node_id]) for node_id in target_ids)
+    # Reject amplification before constructing per-attachment payload copies.
+    estimated_bytes = (
+        len(json.dumps(event, ensure_ascii=False).encode("utf-8")) + 4096
+    ) * observation_count
+    if medium is not None:
+        targets = frozenset(target_ids)
+        estimated_bytes += sum(
+            len(json.dumps(attachment, ensure_ascii=False).encode("utf-8"))
+            for attachment in medium.get("attachments", [])
+            if str(attachment["node_id"]) in targets
+        )
+    if observation_count > 512 or estimated_bytes > 4 * 1024 * 1024:
+        raise ScenarioValidationError(
+            "propagation preview exceeds the 512-observation or 4 MiB response budget; select fewer targets"
+        )
+    if medium is not None:
+        observations = _physical_observations(document, event, medium, node_ids)
+    else:
+        observations = _propagated_local_observations(
+            document, event, dump_node_ids=node_ids
+        )
+    result = {
+        "ok": True,
+        "events": [
+            {
+                "event_id": observation.stable_id,
+                "timestamp_ns": str(observation.timestamp_ns),
+                "order": observation.order,
+                "node_id": observation.node_id,
+                "resource_id": observation.resource_id,
+                "resource_type": observation.resource_type,
+                "kind": "propagated-observation",
+                "operation": observation.operation,
+                "outcome": observation.outcome,
+                **(
+                    {"status": observation.status}
+                    if observation.status is not None
+                    else {}
+                ),
+                "properties": deepcopy(observation.properties),
+                "message": observation.message,
+                "update_snapshot": observation.update_snapshot,
+                "propagation": {
+                    "mode": "manual",
+                    "generated": True,
+                    "materialized": True,
+                    "parent_event_id": event_id,
+                },
+            }
+            for observation in observations
+        ],
+    }
+    if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 4 * 1024 * 1024:
+        raise ScenarioValidationError(
+            "propagation preview exceeds the 4 MiB response budget"
+        )
+    return result
 
 
 def compile_scenario(

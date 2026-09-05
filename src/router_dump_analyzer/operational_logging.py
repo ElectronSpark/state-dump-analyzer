@@ -17,6 +17,10 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final
 
+from .access_control_contract import (
+    ACCESS_DENIAL_WIRE_REASONS as _ACCESS_DENIAL_PHASE_REASON,
+    CONTROL_PLANE_ROLES as _ACCESS_DENIAL_ROLES,
+)
 from .public_text import (
     contains_probable_absolute_filesystem_path,
     contains_unsafe_invisible_text,
@@ -90,37 +94,6 @@ class OperationalEventDiagnosticsSnapshot:
     event_classes: Mapping[str, OperationalEventClassHealthSnapshot]
 
 
-_ACCESS_DENIAL_PHASE_REASON: Mapping[str, frozenset[str]] = MappingProxyType(
-    {
-        "request_source": frozenset({"host_rejected", "origin_rejected"}),
-        "identity_verification": frozenset({"identity_verification_failed"}),
-        "identity_binding": frozenset(
-            {
-                "tenant_required",
-                "tenant_binding_mismatch",
-                "principal_required",
-                "principal_binding_mismatch",
-            }
-        ),
-        "role_authorization": frozenset({"required_role_missing"}),
-        "scope_authorization": frozenset(
-            {
-                "project_scope_denied",
-                "workspace_scope_denied",
-                "project_creation_scope_denied",
-                "workspace_creation_scope_denied",
-            }
-        ),
-    }
-)
-_ACCESS_DENIAL_ROLES = frozenset(
-    {
-        "control-plane:read",
-        "control-plane:write",
-        "control-plane:admin",
-        "control-plane:instance-operator",
-    }
-)
 _ACCESS_DENIAL_SAMPLING_SCOPES = frozenset({"exact", "overflow"})
 
 

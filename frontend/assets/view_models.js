@@ -17,6 +17,24 @@ const DASHBOARD_EQUALITY_MAX_UNITS = 4_096;
 const DASHBOARD_EQUALITY_MAX_ATOM_UNITS = 65_536;
 const DASHBOARD_EQUALITY_MAX_INTEGER_BITS = 4_096;
 
+export function resourceExistenceLabel(exists, { brief = false } = {}) {
+  if (exists === true) return brief ? "yes" : "exists";
+  if (exists === false) return brief ? "no" : "absent";
+  return brief ? "unknown" : "existence unknown";
+}
+
+export function relationshipPresencePresentation(record) {
+  // Legacy positive-only records omit presence. Explicit uncertainty is never
+  // proof of an edge; all graph/timeline consumers use the same interpretation.
+  const present = !Object.hasOwn(record, "present") ? true
+    : record.present === true ? true : record.present === false ? false : null;
+  return {
+    present,
+    possible_presence: present === null ? [false, true] : [present],
+    quality: present === null ? "ambiguous" : (record.quality || "unknown"),
+  };
+}
+
 function virtualScrollScale(rowCount, rowHeight, maximumHeight, viewportHeight) {
   exactBoundedInteger(rowCount, "rowCount");
   exactBoundedInteger(rowHeight, "rowHeight", { minimum: 1 });

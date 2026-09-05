@@ -26,6 +26,7 @@ from .control_plane_server import (
 )
 from .ingestion_pipeline import PluginRegistry
 from .plugin_composition_deployment import (
+    _control_plane_composition_options,
     PluginCompositionDeploymentContext,
     load_plugin_composition_deployment,
 )
@@ -240,9 +241,7 @@ def run(
     private_analysis_deployment_loader: Callable[..., Any] = (
         load_private_analysis_deployment
     ),
-    plugin_deployment_loader: Callable[..., Any] = (
-        load_plugin_composition_deployment
-    ),
+    plugin_deployment_loader: Callable[..., Any] = (load_plugin_composition_deployment),
     application_factory: ControlPlaneApplicationFactory = (
         create_control_plane_application
     ),
@@ -300,11 +299,7 @@ def run(
             context=PluginCompositionDeploymentContext(state_dir=state_root),
         )
         registry = composition.primary_registry
-        composition_options = {
-            "plugin_composition_policy": composition.policy,
-            "capability_providers": composition.capability_providers,
-            "allow_inline_only": composition.allow_inline_only,
-        }
+        composition_options = _control_plane_composition_options(composition)
     else:
         loaded_plugins = _plugins(
             configuration,

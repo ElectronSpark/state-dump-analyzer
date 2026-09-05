@@ -1014,6 +1014,12 @@ class PrivateAnalysisRevisionEvidenceTests(unittest.TestCase):
 
     def test_full_fidelity_projection_keeps_plugin_owned_private_fields(self) -> None:
         trusted = _trusted("a", 100, 200)
+        # Full-fidelity is an explicit proprietary-envelope opt-in, not a
+        # credential classifier. Nested producer fields cannot declare policy.
+        source = trusted.dataset["source_records"][0]
+        source["copy_text"] += " synthetic-credential-marker"
+        source["attributes"]["credential"] = "synthetic-token-marker"
+        source["attributes"]["disclosure_class"] = "never_assistant"
         request = _request(
             (trusted,),
             mode=PrivateAnalysisClockMode.ABSOLUTE_UNIX_NS,
@@ -1051,6 +1057,9 @@ class PrivateAnalysisRevisionEvidenceTests(unittest.TestCase):
         self.assertNotIn("private-state", serialized)
         self.assertIn("future-secret", serialized)
         self.assertIn("not-client-safe", serialized)
+        self.assertIn("synthetic-credential-marker", serialized)
+        self.assertIn("synthetic-token-marker", serialized)
+        self.assertIn("never_assistant", serialized)
         self.assertTrue(
             all(
                 entry.reference.evidence_class
