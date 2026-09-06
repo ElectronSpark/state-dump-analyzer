@@ -9,7 +9,8 @@
     "/": "pages/topology.html",
     "/topology": "pages/topology.html",
     "/node": "pages/node.html",
-    "/analysis": "pages/private-analysis.html"
+    "/analysis": "pages/private-analysis.html",
+    "/manage": "pages/management.html"
   },
   "development": {
     "backend_proxy_prefixes": [

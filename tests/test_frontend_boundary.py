@@ -106,7 +106,7 @@ class FrontendBoundaryTests(unittest.TestCase):
 
         self.assertEqual(
             set(bundle.page_routes),
-            {"/", "/topology", "/node", "/analysis"},
+            {"/", "/topology", "/node", "/analysis", "/manage"},
         )
         self.assertEqual(bundle.assets_url_prefix, "/assets")
         self.assertEqual(bundle.assets_directory, FRONTEND_ROOT / "assets")
@@ -122,6 +122,7 @@ class FrontendBoundaryTests(unittest.TestCase):
             bundle.page_for_route("/analysis").name,
             "private-analysis.html",
         )
+        self.assertEqual(bundle.page_for_route("/manage").name, "management.html")
 
     def test_pages_reference_only_declared_local_assets(self) -> None:
         bundle = load_frontend_bundle(FRONTEND_ROOT)
@@ -357,13 +358,13 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIsNone(host.bundle)
         self.assertEqual(
             set(host.page_routes),
-            {"/", "/topology", "/node", "/analysis"},
+            {"/", "/topology", "/node", "/analysis", "/manage"},
         )
         host.configure(enabled=False)
         self.assertFalse(host.enabled)
         self.assertIsNone(host.bundle)
         self.assertEqual(
             set(host.page_routes),
-            {"/", "/topology", "/node", "/analysis"},
+            {"/", "/topology", "/node", "/analysis", "/manage"},
         )
         self.assertFalse(host.owns_request_path("/"))

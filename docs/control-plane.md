@@ -123,7 +123,9 @@ allowlist.
 
 The API-only process exposes aggregate root `/health` and
 `/v1/control-plane`; it has no `--input`, single-node browser analysis runtime,
-frontend, or static assets. It does construct the durable private-analysis
+frontend, or static assets. Its `.../analysis/query` endpoint can inspect an
+authorized durable revision without creating that startup runtime. It does
+construct the durable private-analysis
 service/coordinator, but its local runner registration is empty by default.
 OpenAPI JSON, Swagger UI, and ReDoc are disabled by default.
 Operators may opt in with `--expose-api-docs` only on a loopback listener; both
@@ -1117,6 +1119,7 @@ All routes have the prefix `/v1/control-plane`.
 | Workspaces | `GET, POST /projects/{project_id}/workspaces` |
 | Private analysis | `GET, PUT .../private-analysis-policy` (`PUT` requires `control-plane:admin` and `If-Match`); `GET .../private-analysis-capabilities`; `GET .../private-analysis-runners`; `GET, POST .../private-analysis-runs`; `GET .../private-analysis-runs/{run_id}`; `POST .../private-analysis-runs/{run_id}/execute`; `POST .../private-analysis-runs/{run_id}/cancel`; `GET .../private-analysis-runs/{run_id}/report`; `POST .../private-analysis-runs/{run_id}/proposals/{proposal_id}/decision`; `GET .../private-analysis-runs/{run_id}/proposal-decisions`; `GET .../private-analysis-runs/{run_id}/proposal-decisions/{decision_id}`; `POST .../private-analysis-runs/{run_id}/proposal-decisions/{decision_id}/recover` |
 | Catalog | `GET /projects/{project_id}/workspaces/{workspace_id}/fixtures`; `GET .../revisions?node_id=...`; `GET .../revisions/{revision_id}/consistency-findings` |
+| Durable inspection | `POST .../analysis/query` (read-only; explicit revision/session/snapshot selector) |
 | Sessions | `GET, POST .../sessions`; `GET, PATCH, DELETE .../sessions/{session_id}`; `PUT, DELETE .../sessions/{session_id}/members/{member_id}`; `POST .../sessions/{session_id}/snapshots`; `GET .../snapshots`; `GET .../snapshots/{snapshot_id}` |
 | Imports | `GET, POST .../imports`; `GET .../imports/{import_id}`; `GET .../candidates`; `GET .../events`; `GET .../events/stream`; `POST .../selection`; `POST .../resume`; `POST .../cancel` |
 | Annotations | `GET, POST .../annotations`; `GET, PATCH, DELETE .../annotations/{annotation_id}` |
@@ -1195,9 +1198,13 @@ Create/admit routes accept `Idempotency-Key`, and plug-in selection requires
 it. Private-analysis create specifically requires `Idempotency-Key`;
 private-analysis execute and cancel require the current strong numeric
 `If-Match`. Other versioned mutations require `If-Match`. `GET /context` returns the
-resolved `principal_id` and `can_write`; a read-only identity can list,
-inspect, and generate explicitly scoped reports but receives `403` for every
-mutation.
+resolved `principal_id`, `can_write`, `can_admin`, `can_instance_operator`,
+closed `identity_mode`, and `configuration: {owner: "deployment", editable: false}`.
+A read-only identity can list, inspect through `POST .../analysis/query`, and
+generate explicitly scoped reports but receives `403` for every mutation.
+`identity_mode` is `trusted_headers` only for the exact built-in local resolver;
+all other resolvers are labeled `deployment`. These labels and capability flags
+do not authenticate the browser or make deployment configuration editable.
 
 The host application must install a callable `ControlPlaneIdentityResolver`.
 It returns one exact `ControlPlaneIdentity` with tenant, principal, roles, and
@@ -1249,6 +1256,82 @@ five families (and response `Authorization`), allow `WWW-Authenticate`, and
 allow only explicitly registered custom headers. A deployment survey is needed
 before replacing today's generic bounded policy, so this task does not silently
 break an existing resolver.
+
+### Management console and durable inspection
+
+Open `/manage` on the frontend-hosting analyzer to manage durable data in an
+explicit tenant/project/workspace. The core page also works through the
+separate frontend development server's same-origin API proxy. The API-only
+`router-dump-server` does not serve `/manage` or static assets itself.
+The normal startup demo remains a separate runtime input: opening it does
+not publish it into the durable catalog. Import supported files explicitly
+before expecting revisions in the selected workspace.
+
+The console includes project/workspace creation and paginated lists; immutable
+fixture/revision provenance; raw-byte file upload with automatic or manual
+parser selection and an optional node identity hint (`X-Node-Hint`); import
+state, candidates, progress events, cancellation and
+eligible retry; session creation/rename/deletion; member add/replace/remove
+and default selection; and immutable snapshot creation/inspection. Existing
+API restrictions remain authoritative: an immutable revision cannot appear
+twice in a session, and snapshots prevent their parent session from being
+deleted. Project/workspace rename/delete and plug-in installation/configuration
+are not offered because no corresponding management API exists.
+
+**Inspect analysis** opens a durable revision, session, or snapshot inside
+`/manage`, not in the existing startup `/node` or Fabric runtime. It shows the
+exact member vector, lets the user choose one member (including before/after
+revisions of the same node), and pages summary, resources, events,
+relationships, and materialized findings. The moment selector uses exact
+nanosecond strings/BigInt; it reconstructs resource and relationship
+observations. Event duration filtering is inclusive and independent of that
+moment. Findings are not rerun by changing the moment. The client carries the
+returned vector/default-member digest into later queries; a live session
+change conflicts instead of silently mixing selections. **Reload current
+session membership** deliberately discards that guard; snapshots are the
+stable choice for reproducible comparisons.
+
+The inspector uses `POST .../analysis/query` with read permission. It never
+sets a shared active revision, dispatches an arbitrary plug-in/provider, or
+exposes raw dataset files. Optional route/topology execution remains
+unavailable; relationship observations are not an inferred network topology.
+Fabric and Node links continue to inspect only the configured startup input.
+Related review/private-analysis links require connecting again on the target
+page; they transfer no identity in the URL or browser storage. Node review
+annotates the startup input, while private evidence analysis separately selects
+published revisions. Opening either link does not submit data or run a model.
+Exact payloads and limits are in the
+[scoped analysis API contract](api-contract.md#scoped-durable-analysis-query).
+The inspector returns at most 500 rows and 1 MiB per response (the UI requests
+50 rows). It has no artificial 100,000-record cutoff, but it still uses the
+configured durable dataset-byte bound and a per-request detached dataset.
+Unfiltered event paging projects only the selected page; visible-field search
+scans, and relationship reconstruction uses stored observation collections.
+It is not a new persistent on-disk query index for large archives.
+
+Identity and scope live only in page memory: they are not saved in URLs or
+browser storage. The browser sends same-origin identity headers, which must
+match the host's verified resolver. Read/write, tenant-admin, and separate
+instance-operator controls are gated by context capabilities and enforced
+again by the server. The Administration configuration summary is read-only
+and contains no credentials, paths, environment values, or raw settings.
+An admin may explicitly confirm a workspace disclosure-policy update; saving
+does not start private analysis. Retention requires a fresh untruncated
+bounded preview of the exact body, an acknowledgement, and the typed workspace
+ID. Editing policy/cutoffs clears confirmation. Preview is advisory rather
+than an atomic deletion plan; execution rechecks live protections. Ingestion
+retention policy remains deployment-owned. Catalog/review audit cursors are
+independent; ingestion audit displays only its bounded recent entries.
+
+Writes are single-flight and carry idempotency/precondition headers where
+supported. An ambiguous write blocks further writes until the user inspects
+server state and explicitly reconnects; the console does not persist retry
+identities or automatically reconcile/replay the operation. Ordinary requests
+time out after 30 seconds and uploads after 120 seconds. Stale scope responses
+are discarded. Import progress can refresh every 2.5 seconds while processing;
+it stops for terminal/selection-required imports or when hidden. Aggregate
+server health refresh is separately opt-in every 10 seconds, interprets the
+payload health state rather than HTTP status alone, and stops while hidden.
 
 ### Browser review behavior
 
@@ -1796,6 +1879,21 @@ security controls. Those components are deployment work, not hidden features
 of this repository.
 
 ## 11. Verification
+
+For the management console and its read-only durable query, run these focused
+checks without starting a server or loading the full generated archive:
+
+```powershell
+python -m unittest tests.test_management_analysis tests.test_management_context tests.test_plugin_authoring_docs -v
+node --test frontend/tests/management_controller.test.mjs frontend/tests/management_workflows.test.mjs frontend/tests/management_analysis.test.mjs frontend/tests/management_admin.test.mjs frontend/tests/management_entry_regressions.test.mjs
+python scripts/export_type_stubs.py --check
+```
+
+The analysis tests include real small-fixture ingestion, tenant/workspace and
+concurrent-selection isolation, same-node session members, immutable snapshots,
+vector/default-member drift, exact timestamps, private-field redaction, bounds,
+and a lightweight 1.25-million-event paging regression. They do not certify
+new route/topology execution or full-archive memory/latency performance.
 
 Run the focused contract suites from the repository root:
 

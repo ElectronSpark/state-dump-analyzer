@@ -25,7 +25,7 @@ FRONTEND_DIR_ENV = "ROUTER_DUMP_FRONTEND_DIR"
 SERVE_FRONTEND_ENV = "ROUTER_DUMP_SERVE_FRONTEND"
 FRONTEND_MANIFEST = "frontend-manifest.json"
 REQUIRED_PAGE_ROUTES: Final[frozenset[str]] = frozenset(
-    {"/", "/topology", "/node", "/analysis"}
+    {"/", "/topology", "/node", "/analysis", "/manage"}
 )
 
 

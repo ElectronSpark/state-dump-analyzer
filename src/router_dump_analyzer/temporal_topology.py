@@ -205,7 +205,7 @@ class TemporalTopologyService:
             )
         self.dataset: dict[str, Any] = dataset
         self.state_reader: StateReader | None = state_reader
-        self.perspective_state_reader = perspective_state_reader
+        self.perspective_state_reader: PerspectiveStateReader | None = perspective_state_reader
         self.relationship_reader: RelationshipReader = relationship_reader
         self.contract: dict[str, Any] = contract
         self.temporal_metadata: dict[str, Any] = dict(temporal_metadata)

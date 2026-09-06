@@ -107,6 +107,11 @@ from router_dump_analyzer.ingestion_pipeline import (
 from router_dump_analyzer.ingestion_pipeline import (
     MAX_SCOPE_ID_LENGTH as MAX_IMPORT_SCOPE_ID_LENGTH,
 )
+from router_dump_analyzer.management_analysis import (
+    ManagementAnalysisRequestError,
+    parse_management_analysis_query,
+    query_management_analysis,
+)
 from router_dump_analyzer.operational_logging import (
     MAX_OPERATIONAL_COUNTER,
     OPERATIONAL_EVENT_CONTRACT,
@@ -1050,7 +1055,10 @@ class ControlPlaneIdentityResolver(Protocol):
 def _is_mutating_control_plane_request(request: Request) -> bool:
     method = request.method.upper()
     return method not in {"GET", "HEAD", "OPTIONS"} and not (
-        method == "POST" and request.url.path.endswith("/correlation-report")
+        method == "POST" and (
+            request.url.path.endswith("/correlation-report")
+            or getattr(request.scope.get("route"), "name", None) == "query_durable_analysis"
+        )
     )
 
 
@@ -2769,12 +2777,23 @@ def control_plane_context(
         limit=limit,
         offset=offset,
     )
+    # Publish a closed resolver profile, never deployment resolver attributes.
+    # Subclasses/wrappers may implement another authentication model and remain
+    # deployment-owned; this profile does not authenticate or grant roles.
+    resolver = getattr(request.app.state, "control_plane_identity_resolver", None)
     return {
         "enabled": True,
         "tenant_id": tenant_id,
         "principal_id": identity.principal_id,
         "can_admin": CONTROL_PLANE_ADMIN_ROLE in identity.roles,
         "can_write": CONTROL_PLANE_WRITE_ROLE in identity.roles,
+        "can_instance_operator": CONTROL_PLANE_INSTANCE_OPERATOR_ROLE in identity.roles,
+        "identity_mode": (
+            "trusted_headers"
+            if type(resolver) is TrustedHeaderIdentityResolver
+            else "deployment"
+        ),
+        "configuration": {"owner": "deployment", "editable": False},
         "limit": limit,
         "offset": offset,
         "next_offset": offset + len(projects) if len(projects) == limit else None,
@@ -3798,6 +3817,34 @@ def list_sessions(
             "items": [_json_value(item) for item in values],
             "next_offset": offset + len(values) if len(values) == limit else None,
         }
+    except Exception as error:
+        _raise_api_error(error)
+
+
+@control_plane_router.post(
+    "/projects/{project_id}/workspaces/{workspace_id}/analysis/query"
+)
+async def query_durable_analysis(
+    project_id: str,
+    workspace_id: str,
+    request: Request,
+    payload: dict[str, Any],
+    response: Response,
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
+) -> dict[str, Any]:
+    """Inspect an explicit durable selection without changing active runtime."""
+
+    _resolved_identity(request, required_role_override=CONTROL_PLANE_READ_ROLE)
+    scope = _scope(request, _tenant(x_tenant_id), project_id, workspace_id)
+    try:
+        query = parse_management_analysis_query(_body_object(payload))
+        result = await asyncio.to_thread(
+            query_management_analysis, _control_plane(request), scope, query,
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return result
+    except ManagementAnalysisRequestError as error:
+        raise _ControlPlaneHTTPResponse(status_code=422, detail=str(error)) from error
     except Exception as error:
         _raise_api_error(error)
 

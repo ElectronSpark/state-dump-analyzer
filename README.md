@@ -197,6 +197,7 @@ development-only `--trust-control-plane-headers` override.
 | `http://127.0.0.1:8765/topology` | Compatibility alias for the topology home |
 | `http://127.0.0.1:8765/node` | Individual-node temporal workspace |
 | `http://127.0.0.1:8765/analysis` | Private workspace analysis lifecycle, evidence report, and explicit human proposal review |
+| `http://127.0.0.1:8765/manage` | Durable project/workspace catalog, imports, sessions, scoped revision inspection, and role-gated administration |
 | `http://127.0.0.1:8765/docs` | Interactive API documentation; available only after a loopback launch with `--expose-api-docs` |
 | `http://127.0.0.1:8765/health` | Server and fixture health |
 | `http://127.0.0.1:8765/v1/analysis-load` | Non-sensitive progress for active dump/revision parsing and indexing |
@@ -497,6 +498,25 @@ for the separate generate/verify commands and the currently executable subset.
 
 ## Durable ingestion and review
 
+Open `/manage` on the normal frontend-hosting analyzer to create projects and
+workspaces, upload supported dumps, inspect parser candidates/progress, and
+manage sessions and immutable snapshots. Connect with an authorized tenant and
+principal; these fields stay only in the current page, not URLs or browser
+storage. Headers are not authentication: the deployment verifies identity.
+Write, tenant-admin, and instance-operator controls are separately gated.
+The bundled startup demo is not automatically published into this catalog.
+
+**Inspect analysis** reads an explicit published revision, session member, or
+snapshot inside `/manage`. It pages summary, resources, events, relationship
+observations, and materialized findings with exact nanosecond controls. It
+does not switch the server's startup input or open arbitrary durable revisions
+in the existing Fabric/Node route and topology runtime. Those advanced
+capabilities remain unavailable in this durable inspector. Deployment settings
+are read-only; disclosure-policy changes and retention require explicit
+administrator confirmation, and retention first requires a bounded preview.
+See the [management guide](docs/control-plane.md#management-console-and-durable-inspection)
+for workflows, uncertain-write handling, and current scaling limits.
+
 The optional control plane keeps uploaded fixtures and published revisions in
 an explicit `tenant -> project -> workspace` catalog. A mutable session selects
 any number of exact fixture/revision pairs—including several revisions of the
@@ -766,7 +786,12 @@ development, or use one mutually exclusive
 descriptor binds the complete primary registry, auxiliary-provider directory,
 and immutable composition policy as one content-addressed deployment. This server
 serves aggregate root `/health` and `/v1/control-plane`: it accepts no startup
-dump and mounts no single-node analyzer routes, frontend, or assets. Its
+dump and mounts no startup single-node analyzer routes, frontend, or assets.
+Its scoped `.../analysis/query` API still supports durable inspection without
+a startup dump. To use `/manage` with this API-only server, serve the frontend
+through the [documented same-origin development proxy](frontend/README.md#develop-the-frontend-separately)
+or an authenticated deployment-owned frontend host; the server itself does not
+serve browser pages. Its
 configured instances remain distinct through probing, manual selection,
 restart, publication, and capability routing by their paired `instance_id` and
 `registered_execution_identity`.

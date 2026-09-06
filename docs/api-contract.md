@@ -414,8 +414,10 @@ identity mode; `--trust-control-plane-headers` replaces the resolver only on a
 loopback bind. `--grant-instance-operator` is valid only with that trusted
 mode and the same loopback restriction. The module resolver is synchronous and returns a verified
 `ControlPlaneIdentity`. This API-only application mounts aggregate root
-`/health` and `/v1/control-plane`; it has no input argument, analysis-data
-routes, frontend, or static assets. OpenAPI JSON, Swagger UI, and ReDoc are
+`/health` and `/v1/control-plane`; it has no input argument, startup-runtime
+`/v1/revisions` routes, frontend, or static assets. The workspace-scoped
+durable inspection query below does not require a startup runtime and is
+available on this server. OpenAPI JSON, Swagger UI, and ReDoc are
 absent by default. The server CLI exposes them only after an explicit
 `--expose-api-docs` on a loopback bind and rejects that option on non-loopback
 listeners. The durable plug-in allowlist is fixed at construction and cannot
@@ -445,8 +447,8 @@ composition descriptor owns only the embedded durable control plane. The
 embedded descriptor option is invalid without `--control-plane-dir`; it is not
 an alias for the standalone roots' `--plugin-deployment-module`.
 
-`GET /context` returns the resolved `principal_id` and `can_write` alongside
-the visible project page:
+`GET /context` returns resolved identity, explicit capability booleans, a closed
+identity-mode label, and the visible project page:
 
 ```json
 {
@@ -455,6 +457,9 @@ the visible project page:
   "principal_id": "analyst@example",
   "can_write": false,
   "can_admin": false,
+  "can_instance_operator": false,
+  "identity_mode": "deployment",
+  "configuration": { "owner": "deployment", "editable": false },
   "limit": 1000,
   "offset": 0,
   "next_offset": null,
@@ -465,6 +470,13 @@ the visible project page:
 `can_write: false` does not imply that reads or explicitly selected report
 generation are unavailable. It means all mutation routes require a different
 authorized identity and return `403` for this one.
+`identity_mode` is `trusted_headers` only for the exact built-in local resolver;
+other resolvers, including subclasses, are labeled `deployment`. Neither this
+label nor a capability boolean authenticates the caller. Configuration is
+deployment-owned and read-only: context exposes no resolver attributes, host
+paths, credentials, environment values, or editable server settings. Ordinary
+context access still requires `control-plane:read`; admin/operator roles do
+not imply that role.
 
 Create/admit mutations accept `Idempotency-Key`. Plug-in selection and
 private-analysis run creation require that header. Private-analysis execute
@@ -499,7 +511,7 @@ All paths below are relative to `/v1/control-plane`.
 |---|---|---|
 | `GET` | `/health` | Session-independent durable worker and queue health; no tenant identity required. |
 | `GET` | `/diagnostics/operational-events` | Payload-free instance diagnostics; requires `control-plane:instance-operator`. |
-| `GET` | `/context` | Confirm enablement, resolved principal, `can_write`, and list visible tenant projects. |
+| `GET` | `/context` | Confirm resolved identity, write/admin/operator capabilities, deployment-owned configuration status, and visible projects. |
 | `GET, POST` | `/projects` | List or create tenant projects. |
 | `GET, POST` | `/projects/{project_id}/workspaces` | List or create project workspaces. |
 | `GET, PUT` | `/projects/{project_id}/workspaces/{workspace_id}/private-analysis-policy` | Read the current workspace disclosure policy or append an admin-authorized compare-and-swap revision. |
@@ -517,6 +529,7 @@ All paths below are relative to `/v1/control-plane`.
 | `GET` | `/projects/{project_id}/workspaces/{workspace_id}/fixtures` | List immutable fixtures. |
 | `GET` | `/projects/{project_id}/workspaces/{workspace_id}/revisions` | List immutable revisions; optional `node_id` or `fixture_id`. |
 | `GET` | `/projects/{project_id}/workspaces/{workspace_id}/revisions/{revision_id}/consistency-findings` | Page durable, schema-redacted consistency findings and their materialization envelope. |
+| `POST` | `/projects/{project_id}/workspaces/{workspace_id}/analysis/query` | Read one bounded client-safe page from an explicit durable revision/session/snapshot selection; requires read, not write. |
 | `GET, POST` | `/projects/{project_id}/workspaces/{workspace_id}/sessions` | List or create mutable sessions. |
 | `GET, PATCH, DELETE` | `/projects/{project_id}/workspaces/{workspace_id}/sessions/{session_id}` | Read, update, or permanently delete one session. |
 | `PUT, DELETE` | `/projects/{project_id}/workspaces/{workspace_id}/sessions/{session_id}/members/{member_id}` | Add/replace or remove one exact fixture/revision member. |
@@ -542,6 +555,111 @@ All paths below are relative to `/v1/control-plane`.
 | `GET` | `/projects/{project_id}/workspaces/{workspace_id}/retention/audit` | Return bounded store-specific retention journals. |
 
 Here, an abbreviated `...` preserves the same project/workspace prefix.
+
+#### Scoped durable analysis query
+
+`POST .../analysis/query` is a read-only POST. It requires `X-Tenant-ID` and
+`control-plane:read`; `X-Principal-ID` is optional, but must match the verified
+identity when supplied. It does not require `Idempotency-Key` or `If-Match` and
+does not mutate catalog records or the application-wide startup runtime.
+Responses have `Cache-Control: no-store`. Its body is a closed object:
+
+```json
+{
+  "selector": { "session_id": "comparison" },
+  "selected_member_id": "before",
+  "section": "events",
+  "limit": 50,
+  "offset": 0,
+  "search": "interface",
+  "start_ns": "100",
+  "end_ns": "200"
+}
+```
+
+`selector` contains exactly one of a nonempty unique `revision_ids` array,
+`session_id`, or `snapshot_id`. Revision arrays and resolved member vectors
+contain 1–128 members. Every member is checked against the authorized catalog
+scope before the selected dataset is loaded. Distinct revisions of one node
+remain separate members; the query never coerces a session into a topology
+assembly with unique node IDs.
+
+| Optional field | Contract |
+|---|---|
+| `selected_member_id`, `selected_revision_id` | Select within the resolved vector. If both are present they must identify the same member. Otherwise use the session/snapshot default, then the first member. Explicit revision vectors use each revision ID as its member ID. |
+| `section` | `summary` (default), `resources`, `events`, `relationships`, or `findings`. |
+| `limit`, `offset` | Canonical integers; limit 1–500, default 100; offset 0–9007199254740991, default 0. |
+| `search` | At most 256 printable characters; case-insensitive literal match against the section's client-safe JSON projection. Not accepted for `summary`. Private/omitted fields cannot create a match. |
+| `time_ns` | Signed 64-bit canonical integer coordinate; selects resource/relationship observation state. Defaults to the selected revision's timeline end. It does not filter events or re-evaluate findings. |
+| `start_ns`, `end_ns` | Paired signed 64-bit coordinates with start ≤ end, accepted only for `events`; inclusive event-time range. |
+| `expected_revision_vector_digest` | Optional exact `sha256:` digest returned by the previous response. A changed member vector or default member returns `409` before dataset loading. |
+
+Send nanoseconds as decimal strings to preserve precision. Negative coordinates
+are accepted by the signed query domain; the revision's declared time basis
+still governs interpretation, with no invented cross-node alignment. Unknown
+fields, duplicate/empty selectors, unrecognized sections, reversed/partial
+event ranges, or out-of-bounds values return `422`.
+
+The response contains:
+
+```text
+scope: { tenant_id, project_id, workspace_id }
+selection: {
+  kind: "revisions" | "session" | "snapshot",
+  session_id?, snapshot_id?, version?: decimal string,
+  revision_vector_digest: "sha256:..."
+}
+revision_vector: [{ member_id, fixture_id, revision_id, node_id, role, identity_digest }]
+selected_member: one exact revision_vector item
+section: summary | resources | events | relationships | findings
+time_ns: decimal string
+timeline: { start_ns: decimal string, end_ns: decimal string, time_basis }
+capabilities: { sections, route: { available: false, reason }, topology: { available: false, reason } }
+items, total_count, count, limit, offset, next_offset
+```
+
+`selection.version` is the live session version or snapshot's captured session
+version, not a new runtime version. The vector digest binds the ordered member
+identities and default member, not a server-side analysis handle. The client
+should retain it for subsequent pages or choose an immutable snapshot. A
+deliberate refresh of live membership may omit it. `timeline.time_basis` is
+`absolute_unix_ns`, `revision_start_relative_ns`, or null when this inspector
+does not publish a recognized basis; no cross-revision clock equivalence is
+implied. `total_count` is the exact matched count for that request, `count` is
+the returned row count, and `next_offset` is null at the end.
+
+Summary rows contain resource, event, relationship, relationship-interval, and
+finding counts plus the client-safe consistency materialization envelope.
+Resource rows reuse the normalized engine's lifecycle/status reconstruction
+and descriptor-based state/key redaction; missing or ambiguous observations
+stay unknown rather than inferred from event labels. Event rows contain closed
+identity/time/action/outcome/quality fields and resource-subject identities,
+not arbitrary event attributes or raw evidence locators. Relationship rows
+reuse the existing embedded-history lifecycle/validity rules and expose only
+closed endpoint/type/time/quality fields and tri-state presence: `present: true`
+for confirmed or legacy-present edges, `present: null` for an explicitly unknown
+observation. Absent edges are excluded; the inspector labels unknown presence
+instead of presenting it as confirmed connectivity. Findings use the existing schema-aware
+client projection, including closed basis/producer/evidence records with raw
+locators omitted. Findings are materialized facts, not newly executed rules.
+
+The existing durable loader verifies workspace ownership, safe dataset
+location, configured byte limits, SHA-256, and published ingestion/plan
+identity. No arbitrary dataset metadata or host settings is projected by this
+query. Route providers, topology providers, parsers, and private models are
+not invoked; the advanced route/topology capabilities remain unavailable.
+
+The JSON request and response ceilings are each 1 MiB. An oversized result
+fails with bounded `422`; request fewer rows rather than accepting a silently
+truncated page. There is no fixed input-record-count rejection: the existing
+configured dataset-byte ceiling remains authoritative. Unfiltered event pages
+project only returned rows, including in the 1.25-million-event regression.
+Search scans client-safe projections, relationship reconstruction scans its
+stored observation collections, and the verified loader currently decodes or
+reuses then deep-copies the selected dataset per request. This is a bounded
+inspector, not a new on-disk million-row query index or startup-runtime binding.
+
+#### Other durable records
 
 Consistency finding pages accept `limit` from 1 through 5,000 and a
 JSON-safe non-negative `offset`. They return `items`, `count`, `total_count`,

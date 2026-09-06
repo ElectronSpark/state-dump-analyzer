@@ -11001,6 +11001,16 @@ function timelineViewSnapshotsEqual(left, right) {
 function updateTimelineCommandAvailability() {
   const priorFocus = document.activeElement;
   const bounds = rangeBounds();
+  const [windowStartNs, windowEndNs] = timelineWindowBounds();
+  const earlier = byId("timeline-pan-earlier");
+  const later = byId("timeline-pan-later");
+  const windowReadout = byId("timeline-window-readout");
+  if (earlier) earlier.disabled = windowStartNs <= state.viewStartNs;
+  if (later) later.disabled = windowEndNs >= state.viewEndNs;
+  if (windowReadout) {
+    const precision = visibleTimelineOffsetPrecision();
+    windowReadout.textContent = `${formatOffset(windowStartNs, precision)} – ${formatOffset(windowEndNs, precision)}`;
+  }
   const hasCenter = Boolean(bounds) || state.cursorSelected;
   const back = byId("timeline-view-back");
   const forward = byId("timeline-view-forward");
@@ -11014,6 +11024,12 @@ function updateTimelineCommandAvailability() {
   if (zoomSelection) zoomSelection.disabled = !bounds;
   if (center) center.disabled = !hasCenter;
   syncTimelineToolbarTabStop();
+  // Keep keyboard focus usable when a pan button reaches its capture boundary.
+  if (priorFocus && (priorFocus === earlier || priorFocus === later) && priorFocus.disabled) {
+    const opposite = priorFocus === earlier ? later : earlier;
+    (opposite && !opposite.disabled ? opposite : byId("timeline-scroll"))
+      ?.focus({ preventScroll: true });
+  }
   if (
     priorFocus instanceof HTMLButtonElement
     && priorFocus.closest("#timeline-viewport-controls")
@@ -11703,8 +11719,17 @@ function timelineContextMenuKeyDown(event) {
 }
 
 function timelineViewportKeyDown(event) {
-  if (event.defaultPrevented || event.repeat || event.isComposing) return;
-  if (event.target.closest?.("input, textarea, select, [contenteditable='true']")) return;
+  if (event.defaultPrevented || event.isComposing) return;
+  const directionKey = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key);
+  if (event.repeat && !directionKey) return;
+  if (event.target.closest?.("input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
+  // Endpoint handles and sliders own their arrows; do not turn range editing
+  // into viewport navigation when the event bubbles through the timeline.
+  if (directionKey && event.target.closest?.("[data-range-handle], [role='slider']")) return;
+  if (directionKey && state.brush) {
+    event.preventDefault();
+    return;
+  }
   if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
     event.preventDefault();
     const element = event.target === byId("timeline-scroll")
@@ -11718,18 +11743,19 @@ function timelineViewportKeyDown(event) {
       byId("timeline-scroll")?.focus({ preventScroll: true });
     }
   };
-  if (event.altKey && event.key === "ArrowLeft") {
+  if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === "ArrowLeft") {
     event.preventDefault();
     retainStableFocus();
     restoreTimelineView(state.timelineViewHistoryIndex - 1);
     return;
   }
-  if (event.altKey && event.key === "ArrowRight") {
+  if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === "ArrowRight") {
     event.preventDefault();
     retainStableFocus();
     restoreTimelineView(state.timelineViewHistoryIndex + 1);
     return;
   }
+  if (directionKey && (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey)) return;
   if (["+", "="].includes(event.key)) {
     event.preventDefault();
     retainStableFocus();
@@ -11752,14 +11778,21 @@ function timelineViewportKeyDown(event) {
     event.preventDefault();
     retainStableFocus();
     centerTimelineAt();
-  } else if (event.target === byId("timeline-scroll") && event.key === "ArrowLeft") {
+  } else if (event.key === "ArrowLeft") {
     event.preventDefault();
     retainStableFocus();
-    panTimelineViewport(-1);
-  } else if (event.target === byId("timeline-scroll") && event.key === "ArrowRight") {
+    if (event.repeat) scheduleTimelinePan(-timelinePhysicalTrackWidth() / 10);
+    else panTimelineViewport(-1);
+  } else if (event.key === "ArrowRight") {
     event.preventDefault();
     retainStableFocus();
-    panTimelineViewport(1);
+    if (event.repeat) scheduleTimelinePan(timelinePhysicalTrackWidth() / 10);
+    else panTimelineViewport(1);
+  } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+    event.preventDefault();
+    retainStableFocus();
+    const scroll = byId("timeline-scroll");
+    scroll.scrollTop += (event.key === "ArrowUp" ? -1 : 1) * Math.max(40, scroll.clientHeight / 10);
   }
 }
 
@@ -11892,7 +11925,31 @@ function resetTimelineView() {
   rememberTimelineView();
 }
 
+function bindTimelineStickyHeader() {
+  const frame = byId("timeline-frame");
+  const topbar = document.querySelector(".topbar");
+  if (!frame || !topbar) return;
+  const updateOffset = () => {
+    frame.style.setProperty("--timeline-sticky-top", `${topbar.getBoundingClientRect().height}px`);
+  };
+  updateOffset();
+  // CSS owns sticking/release. Observe only header resizing, not page scroll,
+  // so wrapping navigation or font changes cannot cover the time ruler.
+  if (typeof window.ResizeObserver === "function") {
+    const observer = new window.ResizeObserver(updateOffset);
+    observer.observe(topbar);
+    window.addEventListener("pagehide", () => observer.disconnect());
+    window.addEventListener("pageshow", () => {
+      observer.observe(topbar);
+      updateOffset();
+    });
+  } else {
+    window.addEventListener("resize", updateOffset, { passive: true });
+  }
+}
+
 function bindControls() {
+  bindTimelineStickyHeader();
   bindCorrelationPanelControls();
   bindGraphStageInspectionClear();
   const timelineScroll = byId("timeline-scroll");
@@ -11907,6 +11964,8 @@ function bindControls() {
   byId("timeline-zoom").addEventListener("input", (event) => {
     applyTimelineZoom(event.target.value, { announce: true });
   });
+  byId("timeline-pan-earlier").addEventListener("click", () => panTimelineViewport(-1));
+  byId("timeline-pan-later").addEventListener("click", () => panTimelineViewport(1));
   byId("timeline-view-back").addEventListener("click", () => {
     restoreTimelineView(state.timelineViewHistoryIndex - 1);
   });
@@ -11952,6 +12011,7 @@ function bindControls() {
   timelineContent.addEventListener("keydown", timelineHandleKeyDown);
   timelineContent.addEventListener("contextmenu", timelineContextMenuRequested);
   timelineScroll.addEventListener("keydown", timelineViewportKeyDown);
+  byId("timeline-pan-controls").addEventListener("keydown", timelineViewportKeyDown);
   byId("timeline-context-menu").addEventListener("keydown", timelineContextMenuKeyDown);
   timelineMenu.addEventListener("click", (event) => {
     const actionButton = event.target.closest?.("[data-timeline-action]");

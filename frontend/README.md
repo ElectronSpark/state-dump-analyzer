@@ -24,6 +24,7 @@ With the normal server on port 8765:
 | `http://127.0.0.1:8765/topology` | Compatibility alias for the topology home |
 | `http://127.0.0.1:8765/node` | Individual-node timeline, resources, correlations, and dashboards |
 | `http://127.0.0.1:8765/analysis` | Workspace-scoped private-analysis run, evidence report, and explicit human proposal-review workflow |
+| `http://127.0.0.1:8765/manage` | Durable catalog, imports, sessions/snapshots, revision inspection, policy/retention, and server status |
 | `http://127.0.0.1:8765/docs` | Interactive core API documentation, available only when the loopback server is started with `--expose-api-docs` |
 
 The topology page links to the corresponding individual-node workspace. The
@@ -64,6 +65,63 @@ attempt, and another mutation always requires another explicit click. An
 ambiguous recovery performs one read-only reconciliation and re-enables the
 button only when the same frozen report and durable decision remain exact; the
 refresh itself never sends another recovery POST.
+
+### Manage durable data
+
+On `/manage`, connect an authorized tenant/principal, select a project and
+workspace, then use Projects, Data & revisions, Imports, Sessions,
+Administration, or Server status. The startup demo is not automatically an
+imported fixture. Read-only identities can browse and inspect; changes require
+write capability, policy/retention requires admin, and process-wide diagnostics
+requires the separate instance-operator role. The browser's identity fields
+are not authentication and are never saved in URLs or browser storage.
+
+Imports send raw file bytes and an optional node identity hint to the same-origin
+control plane, then show exact probed parser candidates and paginated processing
+events. Session tools select
+published revision members and can freeze immutable snapshots. A snapshot
+protects its parent session from deletion. Project/workspace rename/delete,
+plug-in installation, and deployment configuration editing are not supported.
+
+**Inspect analysis** opens the dedicated inspector inside `/manage`. It pages
+resources, events, relationship observations, and materialized findings for one
+explicit member of a revision/session/snapshot selection. Its exact-nanosecond
+moment controls reconstruct resource/relationship observations; event ranges
+are inclusive and independently selected. Findings are not rerun. The response
+vector/default-member digest guards later queries; use **Reload current
+session membership** only to deliberately accept a changed live selection.
+Before/after revisions of the same node remain different members.
+
+This inspector does not replace the startup runtime or rebind the existing
+Fabric/Node pages. Advanced route/topology execution is unavailable here;
+relationship observations are not a newly inferred network graph. The UI
+requests 50-row pages from the bounded
+[durable analysis API](../docs/api-contract.md#scoped-durable-analysis-query).
+Search scans only safe visible projections, while verified durable loading
+still returns a detached dataset per request; full-archive index/latency
+improvements are not implied by the paged UI.
+
+Related review/private-analysis links open the existing pages without passing
+identity or saving it in browser storage; connect again using the displayed
+scope. Node review still annotates the startup input. Private evidence analysis
+selects published revisions after connecting. Following a link does not submit
+data or start a model run.
+
+Administration shows only a read-only deployment ownership/capability summary.
+Policy changes require a fresh version and explicit confirmation. Retention
+requires a fresh, untruncated bounded preview of the exact request, an
+acknowledgement, and the typed workspace ID; editing cutoffs clears approval.
+The preview is advisory, and execution rechecks live protection. Ingestion
+retention settings remain deployment-owned. An uncertain write blocks further
+writes until the user inspects state and reconnects; this page does not persist
+a retry journal or automatically retry mutations.
+
+Import following refreshes every 2.5 seconds while processing, unless disabled,
+hidden, terminal, or awaiting selection. Server-status polling is separate,
+opt-in every 10 seconds while visible, and evaluates health payloads rather
+than treating HTTP 200 as healthy. Ordinary requests time out after 30 seconds;
+upload admission after 120 seconds. The API-only `router-dump-server` does not
+host this page: use the integrated analyzer or the same-origin frontend proxy.
 
 ### Select a reconstructed topology moment
 
@@ -127,6 +185,32 @@ browser URL. Wildcard listeners (`0.0.0.0` or `::`) cannot establish a trusted
 browser origin and reject Origin-bearing mutations; they do not disable
 backend authentication. This proxy is a local development tool, not a
 production authentication gateway.
+
+### Resource timeline navigation
+
+The time ruler and Earlier/Later navigation stick below the main page header
+while the resource lanes cross the top of the screen. They release at the end
+of the lanes, before the selected-time footer and following sections. The
+offset follows the main header's actual height, including wrapped navigation.
+
+Zoom changes the visible time window, not the width of a giant scrollable
+canvas. Use **Earlier** / **Later** directly above the lanes to move left or
+right by 10% of the visible duration. The adjacent readout shows the window's
+start and end; buttons disable at the capture boundaries. Panning preserves
+the zoom, selected time, selected duration, and visible lanes.
+
+Horizontal two-finger scrolling or Shift+wheel also pans. Click a resource
+lane, event, timeline background, or Earlier/Later button to use the direction
+keys: Left/Right pans time and Up/Down scrolls the lanes. Holding an arrow keeps
+moving; horizontal repeats are frame-coalesced using the same bounded refresh
+path as trackpad panning. Ordinary dragging still selects a duration. Text
+fields, sliders, range handles, and the zoom/history toolbar retain their own
+keyboard behavior; shortcuts do not intercept keys elsewhere in the page.
+**Back view** / **Forward view** traverse zoom/pan history, while **Fit** shows
+the complete capture again. The **Selected time** slider remains independent:
+it changes the reconstructed moment, not the viewport position.
+
+### Frontend checks
 
 Use `npm --prefix frontend run check` to validate the manifest, local asset
 references, JavaScript syntax, single-source frontend boundary, and the

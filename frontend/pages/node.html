@@ -23,6 +23,7 @@
           </span>
         </a>
         <nav class="topnav" aria-label="Analysis sections">
+          <a href="/manage">Management</a>
           <a href="#timeline">Timeline</a>
           <a href="#resource-tables">Resources</a>
           <a href="#dependency-graph">Correlations</a>
@@ -176,8 +177,8 @@
                 <button type="button" data-correlation-view="separate" aria-pressed="true">Separate</button>
               </div>
               <div class="timeline-viewport-controls" id="timeline-viewport-controls" role="toolbar" aria-label="Timeline viewport controls">
-                <button id="timeline-view-back" type="button" disabled aria-label="Previous timeline view" title="Previous view (Alt+Left)">&#8592;</button>
-                <button id="timeline-view-forward" type="button" disabled aria-label="Next timeline view" title="Next view (Alt+Right)">&#8594;</button>
+                <button id="timeline-view-back" type="button" disabled title="Return to the previous zoom or pan position (Alt+Left)">Back view</button>
+                <button id="timeline-view-forward" type="button" disabled title="Restore the next zoom or pan position (Alt+Right)">Forward view</button>
                 <button id="timeline-zoom-out" type="button" aria-label="Zoom timeline out" title="Zoom out (-)">&#8722;</button>
                 <label class="zoom-control">
                   Zoom
@@ -196,12 +197,22 @@
           </div>
 
           <div class="timeline-frame" id="timeline-frame">
-            <div class="timeline-sticky">
-              <div class="lane-spacer">Resource lane</div>
-              <div class="ruler" id="timeline-ruler"></div>
-            </div>
-            <div class="timeline-scroll" id="timeline-scroll" tabindex="0" aria-label="Scrollable event timeline" aria-keyshortcuts="+ - 0 Z C Enter Shift+F10">
-              <div class="timeline-content" id="timeline-content"></div>
+            <div class="timeline-lanes-region" id="timeline-lanes-region">
+              <div class="timeline-floating-header" id="timeline-floating-header">
+                <div class="timeline-pan-controls" id="timeline-pan-controls" role="group" aria-label="Timeline navigation">
+                  <button id="timeline-pan-earlier" type="button" disabled aria-label="Pan timeline earlier" aria-controls="timeline-scroll" title="Move left by 10% of the visible duration">&#8592; Earlier</button>
+                  <span id="timeline-window-readout" aria-label="Visible time window"></span>
+                  <button id="timeline-pan-later" type="button" disabled aria-label="Pan timeline later" aria-controls="timeline-scroll" title="Move right by 10% of the visible duration">Later &#8594;</button>
+                  <span class="timeline-pan-help" id="timeline-pan-help">Click a lane, event or navigation button: &#8592;/&#8594; pans time; &#8593;/&#8595; scrolls lanes. Hold to keep moving. Shift+wheel or horizontal two-finger scroll also pans; dragging selects a duration.</span>
+                </div>
+                <div class="timeline-sticky">
+                  <div class="lane-spacer">Resource lane</div>
+                  <div class="ruler" id="timeline-ruler"></div>
+                </div>
+              </div>
+              <div class="timeline-scroll" id="timeline-scroll" tabindex="0" aria-label="Scrollable event timeline" aria-describedby="timeline-pan-help" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown + - 0 Z C Enter Shift+F10">
+                <div class="timeline-content" id="timeline-content"></div>
+              </div>
             </div>
             <div class="cursor-readout">
               <label for="time-cursor">Selected time</label>

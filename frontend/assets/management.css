@@ -1,0 +1,37 @@
+.management-main { max-width: 1440px; margin: 28px auto; padding: 0 24px 60px; }
+.management-main .section-wrap { padding: 24px; margin-bottom: 18px; }
+.management-main h1 { font-size: clamp(26px, 3vw, 40px); margin: 0 0 12px; }
+.management-main h2 { margin-top: 0; }
+.management-main p { color: var(--muted, #99b0bd); line-height: 1.6; }
+.management-form, .management-scope, .management-actions { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
+.management-form { margin: 16px 0; }
+.management-form label, .management-scope label { display: grid; gap: 7px; min-width: 160px; flex: 1; }
+.management-main input, .management-main select, .management-main textarea { background: #081720; color: #e8f2f7; border: 1px solid #294452; border-radius: 8px; padding: 10px; width: 100%; min-width: 0; }
+.management-main button { border: 1px solid #345664; border-radius: 8px; background: #102530; color: #d8e9f0; padding: 10px 14px; cursor: pointer; }
+.management-main button:hover:not(:disabled), .management-tabs [aria-pressed=true] { border-color: #45d6bd; background: #123b3c; }
+.management-main button:disabled { opacity: .45; cursor: not-allowed; }
+.management-main button[aria-busy=true] { cursor: progress; opacity: .65; }
+.management-main a { color: #5fe4cf; text-underline-offset: 3px; }
+.management-body .topnav { display: flex; flex-wrap: wrap; }
+.management-main :focus-visible { outline: 2px solid #55e5d0; outline-offset: 3px; }
+.management-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 22px 0 16px; }
+.management-message { padding: 12px 18px; border-left: 3px solid #45d6bd; background: #102730; overflow-wrap: anywhere; }
+.management-message[data-error=true] { border-color: #ffb85b; color: #ffdcaa; }
+.management-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); gap: 20px; }
+.management-card { border: 1px solid #294452; border-radius: 10px; padding: 18px; min-width: 0; }
+.management-list { max-height: 520px; overflow: auto; }
+.management-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; border-bottom: 1px solid #203a46; }
+.management-row > div:first-child { flex: 1; min-width: 160px; overflow-wrap: anywhere; }
+.management-row small { display: block; color: #94adba; margin-top: 5px; }
+.management-main pre { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #06141d; padding: 16px; border-radius: 8px; font-size: 12px; }
+.management-pager { display: flex; gap: 12px; align-items: center; margin-top: 18px; }
+.management-empty { padding: 30px 0; }
+.management-main .danger { color: #ffb2b2; border-color: #87505a; }
+.management-main .metric { font-size: 28px; color: #5fe4cf; }
+.management-main input[type=checkbox] { width: auto; margin: 8px; accent-color: #45d6bd; }
+.management-main details { margin: 10px 0; }
+.management-main summary { cursor: pointer; padding: 8px 0; overflow-wrap: anywhere; }
+.management-record { border-bottom: 1px solid #203a46; padding: 8px; }
+.management-main table { border-collapse: collapse; width: 100%; }
+.management-main th, .management-main td { text-align: left; padding: 9px; border-bottom: 1px solid #203a46; overflow-wrap: anywhere; }
+@media(max-width: 760px) { .management-main { padding: 0 12px 30px; } .management-body .topbar { position: static; flex-wrap: wrap; } .management-main .section-wrap { padding: 16px; } .management-grid { grid-template-columns: minmax(0,1fr); } .management-pager { flex-wrap: wrap; } .management-form label, .management-scope label { min-width: min(160px,100%); } }

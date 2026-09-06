@@ -65,6 +65,8 @@ class TimelineInteractionContractTests(unittest.TestCase):
 
     def test_toolbar_and_context_menu_are_static_accessible_controls(self) -> None:
         required_buttons = (
+            "timeline-pan-earlier",
+            "timeline-pan-later",
             "timeline-zoom-out",
             "timeline-zoom-in",
             "timeline-zoom-selection",
@@ -95,6 +97,57 @@ class TimelineInteractionContractTests(unittest.TestCase):
             self.assertEqual(action.get("type"), "button")
             self.assertEqual(action.get("role"), "menuitem")
             self.assertTrue(action.get("data-timeline-action"))
+
+    def test_pan_controls_and_help_are_distinct_from_view_history(self) -> None:
+        for identifier, direction in (("timeline-pan-earlier", -1), ("timeline-pan-later", 1)):
+            with self.subTest(identifier=identifier):
+                attrs = self.elements.by_id[identifier]
+                self.assertEqual(attrs.get("aria-controls"), "timeline-scroll")
+                self.assertNotIn("hidden", attrs)
+                self.assertIn(
+                    f'byId("{identifier}").addEventListener("click", () => panTimelineViewport({direction}))',
+                    self.script,
+                )
+        self.assertIn("timeline-window-readout", self.elements.by_id)
+        self.assertIn("Back view</button>", self.page)
+        self.assertIn("Forward view</button>", self.page)
+        for identifier in ("timeline-view-back", "timeline-view-forward"):
+            self.assertNotIn("aria-label", self.elements.by_id[identifier])
+        scroll = self.elements.by_id["timeline-scroll"]
+        self.assertEqual(scroll.get("aria-describedby"), "timeline-pan-help")
+        self.assertIn("ArrowLeft", scroll["aria-keyshortcuts"])
+        self.assertIn("ArrowRight", scroll["aria-keyshortcuts"])
+        self.assertIn("ArrowUp", scroll["aria-keyshortcuts"])
+        self.assertIn("ArrowDown", scroll["aria-keyshortcuts"])
+        self.assertIn(
+            'byId("timeline-pan-controls").addEventListener("keydown", timelineViewportKeyDown)',
+            self.script,
+        )
+
+    def test_floating_header_is_bounded_by_lanes_not_the_cursor_footer(self) -> None:
+        self.assertIn("timeline-floating-header", self.elements.by_id)
+        self.assertIn("timeline-lanes-region", self.elements.by_id)
+        region_start = self.page.index('id="timeline-lanes-region"')
+        header_start = self.page.index('id="timeline-floating-header"')
+        navigation_start = self.page.index('id="timeline-pan-controls"')
+        ruler_start = self.page.index('id="timeline-ruler"')
+        scroll_start = self.page.index('id="timeline-scroll"')
+        footer_start = self.page.index('class="cursor-readout"')
+        self.assertLess(region_start, header_start)
+        self.assertLess(header_start, navigation_start)
+        self.assertLess(navigation_start, ruler_start)
+        self.assertLess(ruler_start, scroll_start)
+        # Close content, inner scroll, and containing lane region before footer.
+        self.assertRegex(
+            self.page[scroll_start:footer_start],
+            r'id="timeline-content"[^>]*></div>\s*</div>\s*</div>\s*<div\s*$',
+        )
+        frame_css = re.search(r"\.timeline-frame\s*\{([^}]+)\}", self.styles).group(1)
+        self.assertIn("overflow: clip", frame_css)
+        floating_css = re.search(r"\.timeline-floating-header\s*\{([^}]+)\}", self.styles).group(1)
+        self.assertIn("position: sticky", floating_css)
+        self.assertIn("--timeline-sticky-top", floating_css)
+        self.assertIn("bindTimelineStickyHeader();", javascript_function(self.script, "bindControls"))
 
     def test_context_menu_is_delegated_from_the_stable_timeline_surface(self) -> None:
         controls = javascript_function(self.script, "bindControls")

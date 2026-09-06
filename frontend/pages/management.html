@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Management · Router State Lab</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E" />
+  <link rel="stylesheet" href="/assets/styles.css" />
+  <link rel="stylesheet" href="/assets/management.css" />
+</head>
+<body class="management-body">
+  <header class="topbar">
+    <a class="brand" href="/"><span class="brand-mark">RSL</span><span><strong>Router State Lab</strong><small>core management console</small></span></a>
+    <nav class="topnav" aria-label="Core workspaces"><a href="/manage" aria-current="page">Management</a><a href="/">Fabric</a><a href="/node">Node</a><a href="/analysis">Private analysis</a></nav>
+  </header>
+  <main class="management-main">
+    <section class="section-wrap"><p class="eyebrow">CONTROL PLANE</p><h1>Projects, data and operations</h1><p>Choose a workspace to manage durable revisions. Opening the startup demo does not publish its dump into this catalog.</p>
+      <form id="management-connect" class="management-form">
+        <label>Tenant<input name="tenant" required maxlength="256" autocomplete="off" /></label>
+        <label>Principal<input name="principal" required maxlength="256" autocomplete="off" /></label>
+        <button type="submit" class="primary-action">Connect</button><button type="button" id="management-disconnect">Disconnect</button>
+      </form>
+      <p id="management-identity">Disconnected. Identity fields are kept in this page only, never in URLs or browser storage. Headers do not authenticate a user; the host verifies access.</p>
+    </section>
+    <p id="management-message" class="management-message" role="status" aria-live="polite">Connect to browse projects, or inspect aggregate server status below.</p>
+    <section class="section-wrap management-scope">
+      <label>Project<select id="management-project" disabled><option value="">Connect first</option></select></label>
+      <label>Workspace<select id="management-workspace" disabled><option value="">Choose a project</option></select></label>
+      <button type="button" id="management-refresh">Refresh current view</button>
+      <span id="management-breadcrumb">No workspace selected</span>
+    </section>
+    <nav id="management-tabs" class="management-tabs" aria-label="Management sections">
+      <button type="button" data-view="projects" aria-pressed="true">Projects</button>
+      <button type="button" data-view="catalog" aria-pressed="false">Data &amp; revisions</button>
+      <button type="button" data-view="imports" aria-pressed="false">Imports</button>
+      <button type="button" data-view="sessions" aria-pressed="false">Sessions</button>
+      <button type="button" data-view="administration" aria-pressed="false">Administration</button>
+      <button type="button" data-view="server" aria-pressed="false">Server status</button>
+    </nav>
+    <section id="management-content" class="section-wrap" aria-live="polite"></section>
+  </main>
+  <script type="module" src="/assets/management.js"></script>
+</body>
+</html>

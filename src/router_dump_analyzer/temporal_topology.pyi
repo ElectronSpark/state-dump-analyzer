@@ -4,7 +4,6 @@ from .plugin_api import StatusPerspectiveRef as StatusPerspectiveRef
 from .process_control import PROCESS_CONTROL_EXCEPTIONS as PROCESS_CONTROL_EXCEPTIONS
 from .temporal_core import MIN_TEMPORAL_NS as MIN_TEMPORAL_NS, RESOURCE_CREATION_OPERATIONS as RESOURCE_CREATION_OPERATIONS, RESOURCE_DELETION_OPERATIONS as RESOURCE_DELETION_OPERATIONS, TEMPORAL_ORDER_VERSION as TEMPORAL_ORDER_VERSION, checked_temporal_add as checked_temporal_add, checked_temporal_subtract as checked_temporal_subtract, contains_time as contains_time, distinct_temporal_states as distinct_temporal_states, possible_relationship_presence as possible_relationship_presence, relationship_presence as relationship_presence, temporal_integer as temporal_integer, temporal_order_key as temporal_order_key
 from .value_core import MAX_JSON_SAFE_INTEGER as MAX_JSON_SAFE_INTEGER
-from _typeshed import Incomplete
 from collections.abc import Callable
 from typing import Any
 
@@ -17,7 +16,7 @@ class TemporalTopologyRequestError(ValueError): ...
 class TemporalTopologyService:
     dataset: dict[str, Any]
     state_reader: StateReader | None
-    perspective_state_reader: Incomplete
+    perspective_state_reader: PerspectiveStateReader | None
     relationship_reader: RelationshipReader
     contract: dict[str, Any]
     temporal_metadata: dict[str, Any]

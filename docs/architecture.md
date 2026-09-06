@@ -376,7 +376,9 @@ flowchart LR
 this profile. It constructs an explicit allowlisted `PluginRegistry`, requires
 a deployment identity-resolver callable (or loopback-only trusted-header
 development mode), and serves root health plus `/v1/control-plane` without an
-analysis input, analysis providers, frontend, or assets. The ASGI lifespan owns
+analysis input, startup-runtime providers, frontend, or assets. Authenticated
+`.../analysis/query` independently reads a selected durable revision through
+the verified dataset boundary; it does not create a startup runtime. The ASGI lifespan owns
 worker startup and shutdown. OpenAPI/Swagger/ReDoc are absent by default and
 may be enabled only by an explicit option on a loopback listener. The ordinary
 `router-dump-analyzer` process may
@@ -2500,6 +2502,52 @@ distribution; the demo artifacts must not duplicate it. An explicit
 `ROUTER_DUMP_SERVE_FRONTEND=0` or the core CLI's `--api-only` option leaves
 only the backend endpoints enabled.
 
+#### Management console and request-scoped durable inspection
+
+The manifest also declares `/manage`, whose core-owned management modules
+implement catalog, import, session, administration, health, and durable
+inspection views. The page consumes existing control-plane APIs; it does not
+introduce plug-in HTTP, tenancy, UI, or database hooks. A deployment-owned
+configuration summary is read-only. Context publishes closed role/mode flags,
+not an introspection of resolver objects or host configuration. Tenant-admin
+and instance-operator authority remain distinct and do not imply ordinary
+read/write access.
+
+The dedicated `management_analysis` module resolves one explicit authorized
+revision/session/snapshot member vector. It verifies every catalog binding,
+loads only the selected revision through `ControlPlane.load_revision_dataset`,
+and uses a request-local single-revision adapter and the existing generic
+ingestion policy/normalized observation engine. The resource index contains
+only that revision's existing observations. No application-wide runtime/default
+revision is changed, and no installed provider is selected as a fallback.
+The response is a bounded client-safe projection, not an arbitrary snapshot
+JSON dump or a new browser-accessible filesystem path.
+
+Session vectors retain member IDs and allow distinct revisions of one node;
+they are not coerced into `AssemblyDescriptor`, whose node IDs must be unique.
+A digest binds ordered member identities and the default member. The browser
+uses it as a continuation guard and requires an explicit reload after live
+membership changes. Nanoseconds remain strings/BigInt, with no invented
+cross-revision clock equivalence. Route/topology execution is deliberately
+unavailable in this inspector, even if another startup runtime has providers.
+Fabric/Node navigation continues to address the startup runtime only.
+
+The page keeps identities/scopes in live memory, uses same-origin requests,
+discards stale-scope responses, and serializes writes. Ambiguous writes disable
+further writes pending explicit inspection/reconnection; unlike the node's
+durable review journal, management does not persist retry identities or replay
+uncertain writes. Retention preview/confirmation and disclosure-policy
+confirmation are explicit user steps, not automatic actions on navigation.
+
+Paging limits returned rows/bytes but does not claim a new disk-backed query
+engine: unfiltered event pages project only requested rows, search scans safe
+projections, relationships use the existing observation reconstruction, and
+the current verified loader returns a detached dataset per request. The
+lightweight 1.25-million-event regression proves page projection/count behavior,
+not full-archive latency or peak-memory bounds beyond the configured dataset
+ceiling. See [the API contract](api-contract.md#scoped-durable-analysis-query)
+and [operator workflows](control-plane.md#management-console-and-durable-inspection).
+
 ### 9.4 Why not a Python-only browser framework
 
 Parsing, correlation, reconstruction, APIs, and route logic remain Python 3.12;
@@ -2585,6 +2633,7 @@ GET      .../private-analysis-runs/{run_id}/proposal-decisions
 GET      .../private-analysis-runs/{run_id}/proposal-decisions/{decision_id}
 POST     .../private-analysis-runs/{run_id}/proposal-decisions/{decision_id}/recover
 GET      /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/fixtures
+POST     /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/analysis/query
 GET      /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/revisions
 GET,POST /v1/control-plane/projects/{project_id}/workspaces/{workspace_id}/sessions
 GET,PATCH,DELETE .../sessions/{session_id}
@@ -2601,8 +2650,9 @@ POST        .../correlation-report
 
 It can be hosted independently with `router-dump-server`. That composition
 requires one repeatable plug-in allowlist family and a verified synchronous
-identity resolver. It constructs no single-node analyzer runtime or frontend
-host; the private-analysis lifecycle is present but inert because the shipped
+identity resolver. It constructs no startup single-node analyzer runtime or
+frontend host; durable inspection remains available through the scoped
+read-only query. The private-analysis lifecycle is present but inert because the shipped
 composition registers no model runner. An operator may explicitly add
 `--private-analysis-deployment-module PACKAGE:ATTRIBUTE`; the embedded analyzer
 accepts the same option only with `--control-plane-dir`. Both entry points pass

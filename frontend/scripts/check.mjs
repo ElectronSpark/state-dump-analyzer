@@ -82,7 +82,7 @@ function resolveAssetReference(reference, importer) {
 if (manifest.schema_version !== 1) {
   fail("frontend manifest schema_version must equal 1");
 }
-for (const route of ["/", "/topology", "/node", "/analysis"]) {
+for (const route of ["/", "/topology", "/node", "/analysis", "/manage"]) {
   if (!manifest.pages?.[route]) {
     fail(`frontend manifest is missing ${route}`);
   }
