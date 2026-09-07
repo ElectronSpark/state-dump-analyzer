@@ -84,6 +84,9 @@ Saving preserves schema-valid identifiers and references exactly, including
 `+`, `@`, and `~`. Identifiers contain 1–256 characters, start with an ASCII
 letter or digit, and then use letters, digits, or `_.:@/+~-`. Invalid or
 overlong identifiers produce an error and leave the project unsaved.
+Seeds are nonnegative exact integers. Store seeds above `9007199254740991` as
+decimal strings; opening and saving preserves their value without JavaScript
+number rounding. Invalid seeds produce an error instead of being clamped.
 
 To work on the bundled Router State Lab scenario, click **Open** and choose
 `demo/router-state-lab-default.scenario.json` from the repository checkout.

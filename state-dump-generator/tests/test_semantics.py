@@ -646,6 +646,74 @@ return toCanonicalProject();
         self.assertEqual(output["capture_time_ns"], value["capture_time_ns"])
         self.assertEqual(compile_scenario(output), compile_scenario(value))
 
+    def test_file_open_and_save_preserve_exact_seed_and_python_jitter_history(self) -> None:
+        histories = {}
+        for seed in (
+            0, 7, 9_007_199_254_740_991,
+            "9007199254740992", "9007199254740993", "18446744073709551615",
+            "+009007199254740993", "1" + "0" * 100,
+        ):
+            with self.subTest(seed=seed):
+                value = scenario()
+                value["seed"] = seed
+                value["events"][0]["propagation"].update(
+                    delay_ns=100_000_001, jitter_ns=49_000_001,
+                )
+                output = self.run_web("""
+const messages = [];
+loadPropagationControls = () => {};
+renderAll = () => {};
+globalThis.requestAnimationFrame = () => {};
+toast = (message, kind) => messages.push({message, kind});
+await handleProjectFile({target:{value:'selected',files:[{
+  name:'exact-seed.scenario.json', text:async () => JSON.stringify(input),
+}]}});
+const normalizedSeed = scenario.seed;
+dom['project-name'] = {value:scenario.name};
+globalThis.Blob = class Blob { constructor(parts) { this.parts = parts; } };
+let saved;
+downloadBlob = blob => { saved = JSON.parse(blob.parts.join('')); };
+saveProject();
+return {normalizedSeed, saved, messages};
+""", value)
+                expected_seed = str(int(seed)) if isinstance(seed, str) else seed
+                self.assertEqual(output["normalizedSeed"], expected_seed)
+                self.assertEqual(output["saved"]["seed"], expected_seed)
+                self.assertTrue(all(message["kind"] == "success" for message in output["messages"]))
+                expected = compile_scenario(value)
+                self.assertEqual(compile_scenario(output["saved"]), expected)
+                histories[str(int(seed))] = [
+                    log["timestamp_ns"] for node in expected.values() for log in node["logs"]
+                ]
+        self.assertNotEqual(histories["9007199254740992"], histories["9007199254740993"])
+
+    def test_invalid_or_unsafe_seed_is_rejected_at_import_and_serialization(self) -> None:
+        for seed in (9_007_199_254_740_992, 9_007_199_254_740_993, 1.5, True, None, "", "1.5", -1, "-1"):
+            with self.subTest(seed=seed):
+                value = scenario()
+                value["seed"] = seed
+                output = self.run_web("""
+const messages = [];
+try { normalizeScenario(input); messages.push(null); }
+catch (error) { messages.push(error.message); }
+scenario.seed = input.seed;
+try { toCanonicalProject(); messages.push(null); }
+catch (error) { messages.push(error.message); }
+return messages;
+""", value)
+                for message in output:
+                    self.assertIsInstance(message, str)
+                    self.assertIn("Seed", message)
+                    self.assertIn("cannot be negative" if seed in (-1, "-1") else "exact integer", message)
+
+    def test_missing_seed_retains_default(self) -> None:
+        output = self.run_web("""
+delete input.seed;
+scenario = normalizeScenario(input);
+return {normalizedSeed:scenario.seed, savedSeed:toCanonicalProject().seed};
+""")
+        self.assertEqual(output, {"normalizedSeed": 1, "savedSeed": 1})
+
     def test_exact_timestamps_and_explicit_orders_survive_round_trip(self) -> None:
         value = scenario()
         value["capture_time_ns"] = "9007199254740993"

@@ -317,7 +317,7 @@ function normalizeScenario(input) {
     "",
   );
   normalized.id = stringValue(source.id || source.scenario_id, base.id);
-  normalized.seed = Math.max(0, Math.trunc(finiteNumber(source.seed, 1)));
+  normalized.seed = exactIntegerValue(source.seed === undefined ? 1 : source.seed, "Seed", true);
   normalized.capture_time_ns = source.capture_time_ns
     ?? Math.round(normalized.duration_ms * 1_000_000);
   return normalized;
@@ -2495,7 +2495,7 @@ function toCanonicalProject() {
     schema_id: "state-dump-generator-scenario/v1",
     scenario_id: safeIdentifier(scenario.id || scenario.scenario_id, "untitled-scenario"),
     name: scenario.name || "Untitled scenario",
-    seed: Math.max(0, Math.trunc(finiteNumber(scenario.seed, 1))),
+    seed: exactIntegerValue(scenario.seed === undefined ? 1 : scenario.seed, "Seed", true),
     ...(scenario._captureTimeExplicit ? { capture_time_ns: scenario.capture_time_ns } : {}),
     nodes: scenario.nodes
       .filter((node) => node.kind !== "shared-medium")
