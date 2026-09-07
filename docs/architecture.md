@@ -3269,6 +3269,15 @@ default and closes it before the durable run store. The coordinator adds no
 model endpoint, credential, network client, HTTP/CLI route, scheduler, or
 promotion authority.
 
+Coordinator shutdown stops admission before attempting cleanup and applies one
+deadline to active runs, monitors, and pending reaps. One locally owned cleanup
+worker can finish an already-started bounded reap after the caller times out;
+it starts no further reaps after that deadline. Repeated close calls share that
+worker. The coordinator remains closing, retaining live handles and durable
+fences until cleanup is confirmed; dependent stores must remain open after a
+close timeout. Cleanup failures, including process-control exceptions, reach
+the closing caller.
+
 The core-owned `PrivateAnalysisService` is the application boundary above the
 catalog, run store, and coordinator. It accepts only caller intent and derives
 all authority-bearing values from the authenticated workspace path, immutable

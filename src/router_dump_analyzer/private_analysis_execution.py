@@ -931,6 +931,8 @@ class PrivateAnalysisExecutionCoordinator:
         self._active_monitor_count = 0
         self._closing = False
         self._closed = False
+        self._close_cleanup_active = False
+        self._close_cleanup_error: BaseException | None = None
 
     def resolve_runner(
         self,
@@ -2073,6 +2075,15 @@ class PrivateAnalysisExecutionCoordinator:
         store; this method never reconstructs or kills from a persisted PID.
         """
 
+        return self._retry_pending_cleanup(limit=limit, scope=scope)
+
+    def _retry_pending_cleanup(
+        self,
+        *,
+        limit: int,
+        scope: EvidenceScope | None = None,
+        deadline: float | None = None,
+    ) -> tuple[PrivateAnalysisRunRecord, ...]:
         selected_limit = _bounded_integer(limit, "limit", minimum=1, maximum=1_000)
         if scope is None:
             selected_scope = None
@@ -2102,6 +2113,8 @@ class PrivateAnalysisExecutionCoordinator:
             )
         finalized: list[PrivateAnalysisRunRecord] = []
         for key, pending in selected:
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             if not pending.retry_ready:
                 continue
             if not pending.retry_lock.acquire(blocking=False):
@@ -2266,7 +2279,11 @@ class PrivateAnalysisExecutionCoordinator:
         return retried + recovered
 
     def close(self, *, timeout: float = 30.0) -> None:
-        """Stop accepting work and wait a bounded time for cooperative runs."""
+        """Stop admission, then wait within one deadline for runs and cleanup.
+
+        An in-flight reaper retains its handles and durable fences after a
+        timeout. A later close can wait for it; no duplicate reaper is started.
+        """
 
         if (
             type(timeout) not in {int, float}
@@ -2275,26 +2292,63 @@ class PrivateAnalysisExecutionCoordinator:
         ):
             raise ValueError("timeout must be a finite non-negative number")
         deadline = time.monotonic() + float(timeout)
-        # One retry per locally retained handle is bounded by the factory
-        # process reaper.  A stubborn child keeps the coordinator open and its
-        # durable fence intact; close never pretends an unconfirmed reap won.
-        self.retry_pending_cleanup(limit=1_000)
         with self._condition:
             if self._closed:
                 return
             self._closing = True
-            while self._active_count or self._active_monitor_count:
+            if (
+                self._pending_cleanup
+                and not self._close_cleanup_active
+                and self._close_cleanup_error is None
+                and time.monotonic() < deadline
+            ):
+                self._close_cleanup_active = True
+                self._close_cleanup_error = None
+                worker = threading.Thread(
+                    target=self._close_cleanup,
+                    args=(deadline,),
+                    name="private-analysis-close-cleanup",
+                    daemon=False,
+                )
+                try:
+                    worker.start()
+                except BaseException:
+                    self._close_cleanup_active = False
+                    raise
+            while (
+                self._active_count
+                or self._active_monitor_count
+                or self._close_cleanup_active
+            ):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise PrivateAnalysisExecutionCloseTimeout(
                         "private-analysis executions did not stop before timeout"
                     )
                 self._condition.wait(remaining)
+            if self._close_cleanup_error is not None:
+                error = self._close_cleanup_error
+                self._close_cleanup_error = None
+                raise error
             if self._pending_cleanup:
                 raise PrivateAnalysisExecutionCloseTimeout(
                     "private-analysis child cleanup is still pending"
                 )
             self._closed = True
+
+    def _close_cleanup(self, deadline: float) -> None:
+        error: BaseException | None = None
+        try:
+            self._retry_pending_cleanup(limit=1_000, deadline=deadline)
+        except BaseException as caught:
+            # Transfer failures, including process-control exceptions, to the
+            # closing caller. Cleanup ownership remains in this coordinator.
+            error = caught
+        finally:
+            with self._condition:
+                self._close_cleanup_error = error
+                self._close_cleanup_active = False
+                self._condition.notify_all()
 
     def _enter_execution(self) -> None:
         with self._condition:
