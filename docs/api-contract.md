@@ -4727,6 +4727,9 @@ between the two endpoint worlds. A timeline query also returns relationship
 validity spans clipped to the lifecycles of both endpoint resources. The point
 cursor, pinned event, and selected range are independent client state; the
 request does not imply that selecting a range clears either of the others.
+While a range-summary request is pending or fails, the browser displays loading
+or unavailable instead of deriving complete facts from its cache. Explicit node
+snapshot mode labels a local summary as limited to loaded evidence.
 
 ## 8. Durable upload-coordinator plug-in selection and resume
 

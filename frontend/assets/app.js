@@ -5107,7 +5107,7 @@ function endpointDiffItems(summary) {
   return diff.items || diff.changed || diff.resources || Object.entries(diff).map(([resource_id, value]) => ({ resource_id, ...(typeof value === "object" ? value : { change: value }) }));
 }
 
-function renderRangeSummary(draft = false) {
+function renderRangeSummary() {
   const bounds = rangeBounds();
   if (!bounds) {
     byId("range-title").textContent = "Drag horizontally on any lane to select a period.";
@@ -5116,8 +5116,20 @@ function renderRangeSummary(draft = false) {
     syncRangeInputs();
     return;
   }
-  const summary = draft ? localRangeSummary() : state.rangeSummary || localRangeSummary();
+  const summary = state.rangeSummary;
   byId("range-title").textContent = `${formatOffset(bounds[0])} to ${formatOffset(bounds[1])} / ${formatDuration(bounds[1] - bounds[0])}`;
+  if (!summary || summary.source === "loading" || summary.source === "unavailable") {
+    const message = summary?.source === "loading"
+      ? "Loading range summary…"
+      : summary?.source === "unavailable"
+        ? "Range summary unavailable."
+        : "Range summary has not been loaded.";
+    byId("range-facts").innerHTML = `<span>${message}</span>`;
+    byId("range-diff").innerHTML = summary?.source === "unavailable"
+      ? `<span>${escapeHtml(summary.unavailable_reason)} Select the range again to retry.</span>`
+      : "";
+    return;
+  }
   const facts = rangeSummaryFacts(summary, {
     fallbackFailureCount: Array.isArray(summary.events)
       ? summary.events.filter(eventFailed).length
@@ -5125,7 +5137,10 @@ function renderRangeSummary(draft = false) {
   });
   const truncatedKinds = facts.truncatedKinds.map(titleCase);
   const endpointScope = `${facts.evaluatedEndpointCount.toLocaleString()} of ${facts.affectedResourceCount.toLocaleString()} endpoint states evaluated`;
-  byId("range-facts").innerHTML = `<span>${facts.eventCount.toLocaleString()} events</span><span class="failure-fact">${facts.failureCount.toLocaleString()} failed</span><span>${facts.affectedResourceCount.toLocaleString()} resources</span><span>${facts.relationshipChangeCount.toLocaleString()} relationship changes</span><span class="${facts.truncation.endpoint_diff ? "bounded-fact" : ""}">${escapeHtml(endpointScope)}${facts.truncation.endpoint_diff ? " / bounded" : ""}</span>${truncatedKinds.length ? `<span class="bounded-fact" title="${escapeHtml(`Bounded detail arrays: ${truncatedKinds.join(", ")}`)}">${truncatedKinds.length} detail sets truncated</span>` : ""}`;
+  const localScope = summary.source === "local_node_snapshot"
+    ? '<span class="bounded-fact">Local snapshot summary / loaded evidence only</span>'
+    : "";
+  byId("range-facts").innerHTML = `${localScope}<span>${facts.eventCount.toLocaleString()} events</span><span class="failure-fact">${facts.failureCount.toLocaleString()} failed</span><span>${facts.affectedResourceCount.toLocaleString()} resources</span><span>${facts.relationshipChangeCount.toLocaleString()} relationship changes</span><span class="${facts.truncation.endpoint_diff ? "bounded-fact" : ""}">${escapeHtml(endpointScope)}${facts.truncation.endpoint_diff ? " / bounded" : ""}</span>${truncatedKinds.length ? `<span class="bounded-fact" title="${escapeHtml(`Bounded detail arrays: ${truncatedKinds.join(", ")}`)}">${truncatedKinds.length} detail sets truncated</span>` : ""}`;
   const diff = endpointDiffItems(summary);
   const relationshipChanges = Array.isArray(summary.relationship_changes) ? summary.relationship_changes : [];
   const endpointScopeNote = facts.truncation.endpoint_diff
@@ -5160,15 +5175,15 @@ async function requestRangeSummary() {
   if (!bounds) return;
   const requestId = ++state.rangeRequestId;
   abortLatestRequests("rangeAbortController");
-  state.rangeSummary = null;
-  renderRangeSummary();
   if (isTopologyNodeSnapshot()) {
     // Member workspaces carry only their local plug-in projection. Never leak
     // into an unscoped revision for a range summary.
-    state.rangeSummary = localRangeSummary();
+    state.rangeSummary = { ...localRangeSummary(), source: "local_node_snapshot" };
     renderRangeSummary();
     return requestId === state.rangeRequestId;
   }
+  state.rangeSummary = { source: "loading" };
+  renderRangeSummary();
   const controller = beginLatestRequest("rangeAbortController");
   try {
     const summary = await analysisRuntimeApi(revisionPath("range/summary"), {
@@ -5177,13 +5192,19 @@ async function requestRangeSummary() {
       body: JSON.stringify({ start_ns: bounds[0].toString(), end_ns: bounds[1].toString() }),
     });
     if (requestId !== state.rangeRequestId) return;
+    if (controller.signal.aborted) throw new DOMException("Range summary request was cancelled.", "AbortError");
     state.rangeSummary = summary;
   } catch (error) {
-    if (requestWasAborted(error, controller)) return;
     if (requestId !== state.rangeRequestId || !rangeBounds()) return;
-    state.rangeSummary = localRangeSummary();
+    state.rangeSummary = {
+      source: "unavailable",
+      unavailable_reason: requestWasAborted(error, controller)
+        ? "Range summary request was cancelled."
+        : error?.message || "The range summary could not be loaded.",
+    };
+  } finally {
+    finishLatestRequest("rangeAbortController", controller);
   }
-  finishLatestRequest("rangeAbortController", controller);
   renderRangeSummary();
 }
 

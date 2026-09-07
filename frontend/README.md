@@ -14,6 +14,10 @@ resource icons, labels, dashboards, table layouts, source-record controls,
 topology projections, and route presentation declarations that this frontend
 renders through core-owned components.
 
+Range summaries show loading or unavailable when their server request has no
+answer; cached events cannot establish complete counts or endpoint differences.
+An explicit node snapshot may show a labeled summary of its loaded evidence.
+
 ## Pages
 
 With the normal server on port 8765:
