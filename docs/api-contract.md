@@ -3933,6 +3933,7 @@ subject:
     "layer": "data-bridge",
     "label": "path-a"
   },
+  "has_lifecycle_history": true,
   "lifecycle_intervals": [
     {
       "start_ns": "1759680001000000000",
@@ -3970,6 +3971,14 @@ accepted mutation can still have an `unchanged` mark, which is how a typical
 failed programming callback remains visible without splitting the status bar.
 Unknown snapshot boundaries are open or hatched; they are not converted into
 fabricated create/delete events.
+
+`has_lifecycle_history` is core-owned and reports whether that resource has any
+lifecycle evidence in the full revision, before filtering this query window.
+Clients MUST preserve empty returned lifecycle/status arrays. Within the
+response's half-open `[start_ns, end_ns)` window, a missing live interval means
+absence only when this flag is true; missing/false metadata leaves existence
+unknown. Outside the returned window, missing intervals establish no absence.
+Neither empty status arrays nor event previews authorize final-snapshot replay.
 
 An aggregated mark includes an opaque ID plus the canonical lane resource and
 exact time envelope needed by the runnable demo's expansion endpoint:

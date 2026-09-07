@@ -2359,6 +2359,10 @@ function deriveLaneIntervals(lane) {
     mark.durationToNextChangeNs = next ? next.timeNs - mark.timeNs : state.viewEndNs - mark.timeNs;
   });
 
+  // Empty server intervals describe the selected window. They are never a
+  // request to reconstruct history from event previews or the final snapshot.
+  if (lane.authoritativeHistory) return;
+
   if (!lane.lifecycle.length) {
     let open = null;
     for (const mark of lane.marks) {
@@ -2494,9 +2498,14 @@ function normalizeTimeline(payload) {
       kind: raw.kind,
       label: raw.label,
     });
+    lane.authoritativeHistory = authoritativeServerLanes;
+    lane.historyWindowStartNs = toNs(payload?.start_ns, state.viewStartNs);
+    lane.historyWindowEndNs = toNs(payload?.end_ns, state.viewEndNs);
+    lane.hasLifecycleHistory = raw.has_lifecycle_history === true;
     for (const interval of raw.lifecycle_intervals || raw.lifecycle || raw.existence_intervals || []) {
       lane.lifecycle.push(normalizeInterval(interval, "lifecycle", lane));
     }
+    lane.hasLifecycleHistory ||= lane.lifecycle.length > 0;
     for (const interval of raw.status_intervals || raw.state_intervals || raw.intervals || []) {
       lane.statuses.push(normalizeInterval(interval, "status", lane));
     }
@@ -4985,6 +4994,16 @@ function statusAtLane(lane, time) {
   const contains = (item) => time >= item.startNs && (time < item.endNs || (item.openEnd && time === item.endNs));
   const life = lane.lifecycle.find(contains);
   const status = lane.statuses.find(contains);
+  if (lane.authoritativeHistory) {
+    const insideReturnedWindow = time >= lane.historyWindowStartNs && time < lane.historyWindowEndNs;
+    const exists = life ? true : lane.hasLifecycleHistory && insideReturnedWindow ? false : null;
+    return {
+      exists,
+      status: exists === false ? "absent" : exists === null ? "unknown" : status?.status || "unknown",
+      statusClass: exists === false ? "absent" : exists === null ? "unknown" : status?.statusClass || "unknown",
+      properties: exists === false ? {} : status?.properties || {},
+    };
+  }
   return {
     exists: Boolean(life),
     status: status?.status || (life ? "exists" : "absent"),

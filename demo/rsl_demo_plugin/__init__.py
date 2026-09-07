@@ -1853,6 +1853,8 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
                     },
                     evidence=(evidence,),
                 )
+                # Core owns historical reconstruction; empty query windows
+                # never inherit this final snapshot in the browser.
                 yield SnapshotObservation(
                     resource=resource,
                     observed_at_min_ns=observed_at_min_ns,

@@ -3997,6 +3997,9 @@ def timeline_query(
                 # instead of parsing vendor/domain meaning out of its shape.
                 "label": resource.get("label") or identifier,
                 "resource": safe_resource,
+                "has_lifecycle_history": bool(
+                    lifecycle_by_resource.get(identifier)
+                ),
                 "lifecycle_intervals": lifecycle_payload,
                 "status_intervals": status_payload,
                 "event_marks": marks,

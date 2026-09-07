@@ -796,6 +796,11 @@ a known lifecycle still proves absence before creation or after deletion.
 A gap in declared state history stays unknown even when lifecycle evidence
 proves the resource exists. Only a resource with no state history at all keeps
 the legacy final-record fallback.
+This fallback never fills empty server timeline lanes in the browser. Core adds
+`has_lifecycle_history` to each lane so an empty half-open query window preserves
+known absence versus unknown lifecycle; authors emit observations, not this flag.
+Run `python -m unittest tests.test_single_node_api_bounds -v` for the transport
+conformance cases.
 Unqualified observations remain valid for examples that declare no perspective.
 Once a revision's execution plan is frozen, core qualifies primary-parser local
 perspective references with that pin's instance/schema identity before rebuilding

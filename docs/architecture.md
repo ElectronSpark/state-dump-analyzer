@@ -1905,6 +1905,11 @@ projection. Plug-ins do not ship executable page templates or duplicate the
 core frontend. A full node workspace declares
 `history_mode: server-windowed`; a bounded topology member snapshot declares
 `point-in-time` so the generic UI does not invent unavailable history.
+For server timeline lanes, core includes `has_lifecycle_history` before window
+filtering. The browser preserves returned intervals exactly, including empty
+arrays, and treats absent intervals as known absence only inside the returned
+half-open window when lifecycle evidence exists. Missing evidence remains unknown;
+a final resource snapshot or preview event cannot fill a server history gap.
 
 The all-node route table may include a plug-in inventory row with no candidate
 path, for example a null-scenario local route. Such a row is preserved with

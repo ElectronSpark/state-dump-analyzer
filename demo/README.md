@@ -407,6 +407,9 @@ The teaching implementation is
 [`rsl_demo_plugin/__init__.py`](rsl_demo_plugin/__init__.py).
 It recognizes `minimal-status.jsonl` and maps each accepted row to a typed
 `INTERFACE` snapshot plus a retained source record.
+The core owns windowed timeline reconstruction: an empty query window never
+borrows this fixture's final snapshot. Core's `has_lifecycle_history` lane flag
+preserves known absence versus missing lifecycle evidence.
 Its `oper_status` condition is intentionally public. When adapting the schema,
 private parent/relative paths also hide descendant conditions and literal dotted
 keys. Verify publication with

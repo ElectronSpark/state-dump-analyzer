@@ -262,6 +262,49 @@ class SingleNodeApiBoundsTests(unittest.TestCase):
             [item["cluster_id"] for item in second["clusters"]],
         )
 
+    def test_empty_timeline_windows_retain_lifecycle_evidence_metadata(self) -> None:
+        future = "test/RESOURCE/future"
+        unknown = "test/RESOURCE/unknown"
+        lifecycle = {
+            future: [{
+                "resource": future,
+                "valid_from_ns": "80",
+                "valid_to_ns": None,
+            }],
+            unknown: [],
+        }
+        for indexed in (True, False):
+            with self.subTest(indexed=indexed):
+                dataset = scale_dataset(
+                    [resource(future), resource(unknown)],
+                    lifecycle_by_resource=lifecycle,
+                )
+                if not indexed:
+                    dataset.pop("_scale_runtime")
+                    dataset["lifecycle_intervals"] = lifecycle[future]
+                    dataset["state_intervals"] = []
+                    dataset["relationship_intervals"] = []
+                    dataset["relationships"] = []
+                with patch.object(
+                    demo_app, "load_dataset", return_value=dataset,
+                ), patch.object(
+                    demo_data, "load_demo_dataset", return_value=dataset,
+                ), patch.object(
+                    demo_app, "_require_revision", return_value=None,
+                ):
+                    payload = demo_app.timeline_query(REVISION_ID, {
+                        "start_ns": "0", "end_ns": "60",
+                        "resource_ids": [future, unknown],
+                    })
+                lanes = {item["resource_id"]: item for item in payload["lanes"]}
+                self.assertIs(lanes[future]["has_lifecycle_history"], True)
+                self.assertIs(lanes[unknown]["has_lifecycle_history"], False)
+                for lane in lanes.values():
+                    self.assertEqual(lane["lifecycle_intervals"], [])
+                    self.assertEqual(lane["status_intervals"], [])
+                    self.assertEqual(lane["event_marks"], [])
+                self.assertEqual((payload["start_ns"], payload["end_ns"]), ("0", "60"))
+
     def test_relationship_history_reserves_child_lanes_and_discloses_truncation(self) -> None:
         roots = [f"test/ETG/{index:02d}" for index in range(60)]
         children = [f"test/ETE/{index:02d}" for index in range(60)]

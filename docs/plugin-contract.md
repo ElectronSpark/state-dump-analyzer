@@ -1402,6 +1402,11 @@ A gap in declared state history MUST retain unknown properties rather than
 borrowing the final snapshot, while independent lifecycle evidence may still
 prove existence. The legacy final-record fallback applies only when the resource
 has no state history at all.
+The browser MUST preserve authoritative timeline lane arrays, including empty
+arrays. Core supplies `has_lifecycle_history` from the complete revision; only
+within the returned half-open query window can that flag establish absence
+without a matching live interval. The plug-in does not emit this transport flag
+and clients MUST NOT reconstruct missing intervals from snapshots or previews.
 Public singular time reads and named resource-table views MUST preserve that
 ambiguity as `exists=None`, unknown status, and an empty state, rather than
 selecting the latest perspective or falling back to the final record. An
