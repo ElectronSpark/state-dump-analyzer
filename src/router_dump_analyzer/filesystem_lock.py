@@ -6,8 +6,10 @@ distributed lease and deliberately carry no network-filesystem guarantees.
 
 from __future__ import annotations
 
+import errno
 import os
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -61,6 +63,18 @@ def _held_lock_keys() -> set[str]:
     return held
 
 
+def _try_windows_lock(descriptor: int) -> bool:
+    import msvcrt
+
+    try:
+        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+    except OSError as exc:
+        if exc.errno != errno.EACCES:
+            raise
+        return False
+    return True
+
+
 @contextmanager
 def exclusive_file_lock(path: Path) -> Iterator[None]:
     """Hold a blocking one-byte advisory lock until the context exits."""
@@ -86,7 +100,10 @@ def exclusive_file_lock(path: Path) -> Iterator[None]:
                         stream.flush()
                         os.fsync(stream.fileno())
                     stream.seek(0)
-                    msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+                    # CRT LK_LOCK gives up after ten attempts; blocking store
+                    # locks must instead wait until the holder releases them.
+                    while not _try_windows_lock(stream.fileno()):
+                        time.sleep(0.05)
                     try:
                         yield
                     finally:
@@ -128,9 +145,7 @@ def try_exclusive_file_lock(path: Path) -> Iterator[bool]:
                     stream.flush()
                     os.fsync(stream.fileno())
                 stream.seek(0)
-                try:
-                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-                except OSError:
+                if not _try_windows_lock(stream.fileno()):
                     yield False
                     return
                 held.add(key)
@@ -192,9 +207,7 @@ def try_existing_exclusive_file_lock(path: Path) -> Iterator[bool]:
                     stream.flush()
                     os.fsync(stream.fileno())
                 stream.seek(0)
-                try:
-                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-                except OSError:
+                if not _try_windows_lock(stream.fileno()):
                     yield False
                     return
                 held.add(key)

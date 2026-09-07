@@ -32,6 +32,11 @@ project/workspace scopes.
 
 ## 1. Start it
 
+Local store coordination uses advisory file locks. On Windows, a blocking lock
+waits until its holder releases it, including contention longer than ten seconds;
+it has no CRT retry-count timeout. Nonblocking lock calls report contention,
+while unrelated filesystem and unlock errors propagate to the caller.
+
 Install the core with its web dependencies and an independently packaged
 plug-in. For this demo-specific browser example, first prepare the archive
 using the repository's [Run the demo](../README.md#run-the-demo) instructions.
