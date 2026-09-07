@@ -42,6 +42,7 @@ DEMO_IMPORT_ROOTS = frozenset(
 DEMO_PLUGIN_POLICY_MODULES = frozenset(
     {
         "__init__.py",
+        "_entrypoint.py",
         "_identity.py",
         "archive.py",
         "advanced_trace.py",

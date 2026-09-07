@@ -1,0 +1,3 @@
+from typing import Any
+
+def resolve_export(name: str, namespace: dict[str, Any], exports: dict[str, str]) -> object: ...

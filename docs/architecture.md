@@ -972,6 +972,15 @@ Its Python import roots are the collision-resistant `rsl_demo_plugin` and
 `rsl_demo_generator`; the distribution must not claim generic top-level
 `plugin` or `generator` namespaces.
 
+Package facades resolve compatibility exports on demand. Importing a core
+contract does not initialize ingestion, routing, or the control plane; demo
+catalog defaults are read only when a caller requests their values. The
+standalone generator keeps its own independent loader. Demo parser declarations
+remain at their original module path so strict source attestation and pickle
+lookups retain their provenance; only access to the runtime-attached `plugin`
+constructs the archive session. Public names, type stubs, and instance identity
+are preserved and checked in fresh-process import/bootstrap tests.
+
 The independent `state-dump-generator` editor obtains its physical canvas state
 from a bounded view of the same Python replay used by reconstruction. The
 browser owns editing and presentation, while the generator owns state

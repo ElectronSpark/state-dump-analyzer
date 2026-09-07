@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any
 
 from rsl_demo_plugin import (
@@ -129,9 +130,34 @@ PACKET_PROFILES: Mapping[str, Mapping[str, Any]] = (
 )
 
 
-DEFAULT_SCENARIO_SOURCE: DemoScenarioSource = load_default_scenario_source()
-DEMO_NODES: tuple[NodeSpec, ...] = DEFAULT_SCENARIO_SOURCE.nodes
-DEMO_LINKS: tuple[LinkSpec, ...] = DEFAULT_SCENARIO_SOURCE.links
+DEFAULT_SCENARIO_SOURCE: DemoScenarioSource
+DEMO_NODES: tuple[NodeSpec, ...]
+DEMO_LINKS: tuple[LinkSpec, ...]
+_DEFAULT_SOURCE_LOCK = Lock()
+
+
+def _default_scenario_source() -> DemoScenarioSource:
+    with _DEFAULT_SOURCE_LOCK:
+        source = globals().get("DEFAULT_SCENARIO_SOURCE")
+        if source is None:
+            source = load_default_scenario_source()
+            globals().update(
+                DEFAULT_SCENARIO_SOURCE=source,
+                DEMO_NODES=source.nodes,
+                DEMO_LINKS=source.links,
+            )
+        return source
+
+
+def __getattr__(name: str) -> object:
+    if name not in {"DEFAULT_SCENARIO_SOURCE", "DEMO_NODES", "DEMO_LINKS"}:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    _default_scenario_source()
+    return globals()[name]
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
 
 
 def _case(
@@ -692,14 +718,17 @@ COVERAGE_CASES: tuple[CoverageCaseSpec, ...] = (
 
 
 def node_by_id(node_id: str) -> NodeSpec:
-    for node in DEMO_NODES:
+    for node in _default_scenario_source().nodes:
         if node.node_id == node_id:
             return node
     raise KeyError(node_id)
 
 
 def links_for_node(node_id: str) -> tuple[LinkSpec, ...]:
-    return tuple(link for link in DEMO_LINKS if node_id in link.participants)
+    return tuple(
+        link for link in _default_scenario_source().links
+        if node_id in link.participants
+    )
 
 
 def adjacent_nodes(node_id: str) -> tuple[str, ...]:
@@ -718,15 +747,16 @@ def route_inventory_contexts_for_node(
     merely joins them to the generator's canonical node catalog.
     """
 
-    known_node_ids = {node.node_id for node in DEMO_NODES}
+    nodes = _default_scenario_source().nodes
+    known_node_ids = {node.node_id for node in nodes}
     if node_id not in known_node_ids:
         raise KeyError(node_id)
     result: list[dict[str, object]] = []
     seen_ids: set[str] = set()
-    known_roles = {node.role for node in DEMO_NODES}
+    known_roles = {node.role for node in nodes}
     known_routing_groups = {
         group
-        for node in DEMO_NODES
+        for node in nodes
         for group in node.routing_groups
     }
     for context in ROUTE_INVENTORY_CONTEXTS:
@@ -787,7 +817,7 @@ def route_inventory_contexts_for_node(
             )
         eligible_node_ids = tuple(
             node.node_id
-            for node in DEMO_NODES
+            for node in nodes
             if node.node_id in explicit_node_ids
             or node.role in eligible_roles
             or any(

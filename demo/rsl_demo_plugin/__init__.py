@@ -20,8 +20,9 @@ import json
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import PurePosixPath
-from typing import Any, Final, Iterable, Mapping, Protocol, cast
+from typing import TYPE_CHECKING, Any, Final, Iterable, Mapping, Protocol
 
+from router_dump_analyzer._lazy_exports import resolve_export as _resolve_export
 from router_dump_analyzer.contract_validation import bounded_string
 from router_dump_analyzer.plugin_api import (
     CORE_PLUGIN_API_VERSION,
@@ -2067,18 +2068,6 @@ class RuntimeAttachedExampleRouterPlugin(AnalyzerPlugin, Protocol):
     runtime: Any
 
 
-# Strict executable identity never executes imports merely to discover a
-# dependency. Bind the demo's optional runtime once, while the installed entry
-# point is imported, so ordinary strict registration can attest it directly.
-_session = __import__(f"{__name__}.session", fromlist=("runtime",))
-
-
-_entry_plugin = ExampleRouterPlugin()
-setattr(_entry_plugin, "runtime", _session.runtime)
-plugin: RuntimeAttachedExampleRouterPlugin = cast(
-    RuntimeAttachedExampleRouterPlugin,
-    _entry_plugin,
-)
 evidence_plugin: AnalyzerPlugin = ExampleEvidenceAnalysisPlugin()
 
 # This ordinary parser instance uses the core runtime-v2 adapter. Its source
@@ -2127,3 +2116,22 @@ __all__ = [
     "plugin",
     "render_conformance_status_fixture",
 ]
+
+
+if TYPE_CHECKING:
+    from ._entrypoint import plugin as plugin
+
+
+_RUNTIME_EXPORTS = {
+    "plugin": "._entrypoint",
+    "_entry_plugin": "._entrypoint",
+    "_session": "._entrypoint",
+}
+
+
+def __getattr__(name: str) -> object:
+    return _resolve_export(name, globals(), _RUNTIME_EXPORTS)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

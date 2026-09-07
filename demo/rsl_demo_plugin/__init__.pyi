@@ -1,10 +1,11 @@
+from ._entrypoint import plugin as plugin
 from ._identity import EVIDENCE_PLUGIN_ID as EVIDENCE_PLUGIN_ID, EVIDENCE_PLUGIN_VERSION as EVIDENCE_PLUGIN_VERSION, PLUGIN_ID as PLUGIN_ID, PLUGIN_VERSION as PLUGIN_VERSION
 from dataclasses import dataclass
 from router_dump_analyzer.plugin_api import AnalyzerPlugin, AnalyzerPluginBase, ArtifactReader, ConsistencyFinding, DumpInventory, EvidenceAnalysisObservation, EvidenceAnalysisRequest, InputSpec, PluginDiagnostic, PluginManifest, PluginSchema, ProbeReport, ReadOnlyWorld, RelationshipDeclaration, StatusParseOutput
 from router_dump_analyzer.plugin_loading import PluginProcessBootstrapDescriptor
 from typing import Any, Final, Iterable, Mapping, Protocol
 
-__all__ = ['EVIDENCE_PLUGIN_ID', 'EVIDENCE_PLUGIN_VERSION', 'PLUGIN_ID', 'PLUGIN_VERSION', 'PLUGIN_ENTRY_POINT_NAME', 'STATUS_FILENAME', 'PARSER_ID', 'PLATFORM_ID', 'SOFTWARE_VERSION', 'DEVICE_CLOCK', 'GENERATED_PROJECTION_POLICY_ID', 'GENERATED_ASSEMBLY_FORMAT_VERSION', 'GENERATED_COVERAGE_FORMAT_VERSION', 'GENERATED_COVERAGE_REGISTRY_ID', 'GENERATED_PROJECTION_FORMAT_VERSION', 'GENERATED_PROJECTION_ROOT', 'GENERATED_PROJECTION_CAPABILITY_ID', 'GENERATED_SCHEMA_CONTRACT_ID', 'GENERATED_SCHEMA_CONTRACT_VERSION', 'GENERATED_SCHEMA_BODY_SHA256', 'TopologyProfileSpec', 'GeneratedProjectionMemberSpec', 'ExampleRouterGeneratedProjectionPolicy', 'GENERATED_TOPOLOGY_PROFILE', 'GENERATED_VPN_TOPOLOGY_PROFILE', 'GENERATED_TOPOLOGY_SEGMENT_MATCHER_ID', 'GENERATED_TOPOLOGY_FEDERATION_PLUGIN_ID', 'GENERATED_PROJECTION_MEMBERS', 'GENERATED_PROJECTION_POLICY', 'CONFORMANCE_STATUS_RECORDS', 'render_conformance_status_fixture', 'SCHEMA', 'EVIDENCE_SCHEMA', 'ExampleRouterPlugin', 'ExampleEvidenceAnalysisPlugin', 'RuntimeAttachedExampleRouterPlugin', 'plugin', 'evidence_plugin', 'parser_plugin']
+__all__ = ['EVIDENCE_PLUGIN_ID', 'EVIDENCE_PLUGIN_VERSION', 'PLUGIN_ID', 'PLUGIN_VERSION', 'PLUGIN_ENTRY_POINT_NAME', 'STATUS_FILENAME', 'PARSER_ID', 'PLATFORM_ID', 'SOFTWARE_VERSION', 'DEVICE_CLOCK', 'GENERATED_PROJECTION_POLICY_ID', 'GENERATED_ASSEMBLY_FORMAT_VERSION', 'GENERATED_COVERAGE_FORMAT_VERSION', 'GENERATED_COVERAGE_REGISTRY_ID', 'GENERATED_PROJECTION_FORMAT_VERSION', 'GENERATED_PROJECTION_ROOT', 'GENERATED_PROJECTION_CAPABILITY_ID', 'GENERATED_SCHEMA_CONTRACT_ID', 'GENERATED_SCHEMA_CONTRACT_VERSION', 'GENERATED_SCHEMA_BODY_SHA256', 'TopologyProfileSpec', 'GeneratedProjectionMemberSpec', 'ExampleRouterGeneratedProjectionPolicy', 'GENERATED_TOPOLOGY_PROFILE', 'GENERATED_VPN_TOPOLOGY_PROFILE', 'GENERATED_TOPOLOGY_SEGMENT_MATCHER_ID', 'GENERATED_TOPOLOGY_FEDERATION_PLUGIN_ID', 'GENERATED_PROJECTION_MEMBERS', 'GENERATED_PROJECTION_POLICY', 'CONFORMANCE_STATUS_RECORDS', 'render_conformance_status_fixture', 'SCHEMA', 'EVIDENCE_SCHEMA', 'ExampleRouterPlugin', 'ExampleEvidenceAnalysisPlugin', 'RuntimeAttachedExampleRouterPlugin', 'evidence_plugin', 'parser_plugin', 'plugin']
 
 PLUGIN_ENTRY_POINT_NAME: str
 STATUS_FILENAME: str
@@ -114,6 +115,5 @@ class ExampleEvidenceAnalysisPlugin(AnalyzerPluginBase):
 class RuntimeAttachedExampleRouterPlugin(AnalyzerPlugin, Protocol):
     runtime: Any
 
-plugin: RuntimeAttachedExampleRouterPlugin
 evidence_plugin: AnalyzerPlugin
 parser_plugin: AnalyzerPlugin
