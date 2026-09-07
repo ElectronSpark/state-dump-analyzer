@@ -286,15 +286,13 @@ class DemoAppTests(unittest.TestCase):
         self.assertEqual(payload["inventory"]["mode"], "inventory-only")
 
         gaps = {gap["id"]: gap for gap in payload["gaps"]}
-        self.assertEqual(gaps["scale"]["status"], "implemented-demo")
-        self.assertIn("trusted assembly", gaps["ingestion"]["detail"])
-        self.assertIn(
-            "installed example plug-in",
-            gaps["plugins"]["detail"],
-        )
-        self.assertIn(
-            "precomputed projections",
-            gaps["plugins"]["detail"],
+        self.assertEqual(
+            {key: gap["status"] for key, gap in gaps.items()},
+            {
+                "synthetic-input": "fixture-only",
+                "reconstruction": "fixture-only",
+                "routing": "demo-only",
+            },
         )
         self.assertIn("IP, MPLS, SR, VPN", gaps["routing"]["detail"])
 
