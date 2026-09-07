@@ -13,7 +13,7 @@ import json
 import os
 import sys
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, fields
 from enum import Enum
 from pathlib import Path
