@@ -2780,12 +2780,6 @@
   gap: 4px;
 }
 
-.mn-route-node-path-count {
-  color: var(--muted-2);
-  font: 800 8px/1 var(--mono);
-  white-space: nowrap;
-}
-
 .mn-route-node-path-chip {
   display: inline-grid;
   min-width: 24px;
@@ -3385,7 +3379,6 @@
 }
 
 .mn-route-workbench.is-overview-only .mn-trace-map-panel,
-.mn-route-workbench.is-all-paths-unpinned .mn-trace-map-panel,
 .mn-route-workbench.is-all-paths:not(.is-path-pinned) .mn-trace-map-panel,
 .mn-route-workbench:has(#mn-route-map-stage.is-all-paths:not(.is-path-pinned)) .mn-trace-map-panel,
 .mn-route-workbench:has(#mn-route-map-stage[data-route-graph-mode="all"]:not([data-route-pinned-path]):not(.is-path-pinned)) .mn-trace-map-panel {
@@ -3393,7 +3386,6 @@
   grid-column: 1 / -1;
 }
 
-.mn-route-workbench.is-all-paths-unpinned,
 .mn-route-workbench.is-all-paths:not(.is-path-pinned),
 .mn-route-workbench:has(#mn-route-map-stage.is-all-paths:not(.is-path-pinned)),
 .mn-route-workbench:has(#mn-route-map-stage[data-route-graph-mode="all"]:not([data-route-pinned-path]):not(.is-path-pinned)) {
@@ -3401,7 +3393,6 @@
 }
 
 .mn-route-workbench.is-overview-only .mn-route-result,
-.mn-route-workbench.is-all-paths-unpinned .mn-route-result,
 .mn-route-workbench.is-all-paths:not(.is-path-pinned) .mn-route-result,
 .mn-route-workbench:has(#mn-route-map-stage.is-all-paths:not(.is-path-pinned)) .mn-route-result,
 .mn-route-workbench:has(#mn-route-map-stage[data-route-graph-mode="all"]:not([data-route-pinned-path]):not(.is-path-pinned)) .mn-route-result {
@@ -5499,7 +5490,6 @@
   opacity: 0.48;
 }
 
-#mn-route-map-stage.has-route-pinned .mn-route-edge:not(.is-route-pinned):not(.is-route-preview),
 #mn-route-map-stage.is-path-pinned .mn-route-edge:not(.is-route-pinned):not(.is-route-preview),
 #mn-route-map-stage[data-route-pinned-path]:not([data-route-pinned-path=""]) .mn-route-edge:not([data-route-pinned="true"]):not([data-route-preview="true"]) {
   --mn-route-edge-opacity: 0.42;
