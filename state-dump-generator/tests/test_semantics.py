@@ -320,7 +320,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const request = JSON.parse(fs.readFileSync(0, 'utf8'));
 const context = vm.createContext({
-  document: {addEventListener(){}}, structuredClone, console,
+  document: {addEventListener(){}}, structuredClone, console, fetch,
   crypto: require('node:crypto').webcrypto, input: request.input,
   semantics: JSON.parse(fs.readFileSync(request.root + '/semantics.json', 'utf8')),
 });
@@ -990,7 +990,7 @@ return {normalizedSeed:scenario.seed, savedSeed:toCanonicalProject().seed};
         self.assertNotIn("capture_time_ns", output)
         self.assertTrue(validate_scenario(output)["ok"])
 
-    def test_supported_physical_kinds_and_failed_truth_preview(self) -> None:
+    def test_physical_state_waits_for_authoritative_preview(self) -> None:
         for kind in EVENT_SEMANTICS["physical_kinds"]:
             value = scenario()
             value["events"][0]["kind"] = kind.replace("-", "_")
@@ -998,13 +998,13 @@ return {normalizedSeed:scenario.seed, savedSeed:toCanonicalProject().seed};
                 "scenario = normalizeScenario(input); return linkStateAt(scenario.physical_links[0].id, 1);",
                 value,
             )
-            self.assertEqual(output, "down", kind)
+            self.assertEqual(output, "unknown", kind)
         value["events"][0]["outcome"] = "failed"
         output = self.run_web(
             "scenario = normalizeScenario(input); return linkStateAt(scenario.physical_links[0].id, 1);",
             value,
         )
-        self.assertEqual(output, "up")
+        self.assertEqual(output, "unknown")
 
     def test_deleting_imported_medium_removes_canonical_target_events(self) -> None:
         output = self.run_web("""

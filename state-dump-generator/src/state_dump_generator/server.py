@@ -582,6 +582,16 @@ class ScenarioEditorHandler(BaseHTTPRequestHandler):
                 )
                 return
             if path == "/api/scenario/preview":
+                if payload.get("view") == "physical":
+                    from .simulation import _preview_physical_truth
+
+                    self._send_json(
+                        HTTPStatus.OK,
+                        _preview_physical_truth(
+                            document, at_time_ns=payload.get("at_time_ns")
+                        ),
+                    )
+                    return
                 preview = preview_document(
                     document,
                     at_time_ns=(

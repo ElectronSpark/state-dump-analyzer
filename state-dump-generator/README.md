@@ -190,6 +190,14 @@ a symbolic link or Windows junction.
 
 ### Validate, preview, and compile the canonical demo save
 
+The editor obtains physical state from the generator's Python replay using
+`POST /api/scenario/preview` with `view: "physical"` and `at_time_ns`. This
+bounded view returns one state per medium and does not construct node histories.
+It is private authoring data. Reconstruction and the canvas use the same state
+precedence and event ordering, including exact timestamp/order integers.
+While a preview is pending or unavailable, the canvas shows unknown state;
+responses for an older cursor or edited project are discarded.
+
 From the Router State Lab repository root, these PowerShell commands are
 copy-paste ready:
 

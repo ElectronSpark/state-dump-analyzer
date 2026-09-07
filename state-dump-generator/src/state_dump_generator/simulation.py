@@ -451,14 +451,11 @@ def _private_medium_truth_at(
             "medium_id": medium_id,
             "name": str(medium.get("name", medium_id)),
             "kind": str(medium.get("kind", "point-to-point")),
-            "state": str(medium.get("state", "up")),
             "properties": deepcopy(
                 dict(medium.get("properties", {}))
                 if isinstance(medium.get("properties", {}), Mapping)
                 else {}
             ),
-            "changed_at_ns": None,
-            "source_event_id": None,
             "attachments": [
                 {
                     "node_id": str(attachment["node_id"]),
@@ -469,6 +466,32 @@ def _private_medium_truth_at(
                 for attachment in medium.get("attachments", [])
             ],
         }
+    for medium_id, state in _medium_states_at(document, at_time_ns).items():
+        media_by_id[medium_id].update(state)
+    return {
+        "visibility": "authoring-only",
+        "exported_to_node_dumps": False,
+        "at_time_ns": at_time_ns,
+        "media": sorted(
+            media_by_id.values(),
+            key=lambda item: str(item["medium_id"]),
+        ),
+    }
+
+
+def _medium_states_at(
+    document: ScenarioDocument, at_time_ns: int
+) -> dict[str, dict[str, Any]]:
+    """The single physical replay used by reconstruction and the canvas."""
+
+    states = {
+        str(medium["medium_id"]): {
+            "state": str(medium.get("state", "up")),
+            "changed_at_ns": None,
+            "source_event_id": None,
+        }
+        for medium in document.media
+    }
     for event in sorted(
         document.events,
         key=lambda item: (
@@ -493,18 +516,32 @@ def _private_medium_truth_at(
                 event.get("link_id", event.get("target_id")),
             )
         )
-        medium = media_by_id[medium_id]
+        medium = states[medium_id]
         medium["state"] = _physical_event_state(event)
         medium["changed_at_ns"] = timestamp_ns
         medium["source_event_id"] = str(event["event_id"])
+    return states
+
+
+def _preview_physical_truth(
+    value: ScenarioDocument | Mapping[str, Any],
+    *,
+    at_time_ns: int | str | None = None,
+) -> dict[str, Any]:
+    """Return one state per medium without constructing node histories."""
+
+    document = _scenario_document(value)
+    timestamp_ns = _reconstruction_time_ns(document, at_time_ns)
+    states = _medium_states_at(document, timestamp_ns)
     return {
+        "ok": True,
         "visibility": "authoring-only",
         "exported_to_node_dumps": False,
-        "at_time_ns": at_time_ns,
-        "media": sorted(
-            media_by_id.values(),
-            key=lambda item: str(item["medium_id"]),
-        ),
+        "at_time_ns": str(timestamp_ns),
+        "media": [
+            {"medium_id": medium_id, "state": states[medium_id]["state"]}
+            for medium_id in sorted(states)
+        ],
     }
 
 

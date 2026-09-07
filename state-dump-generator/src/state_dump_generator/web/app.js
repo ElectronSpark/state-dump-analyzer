@@ -104,6 +104,8 @@ let future = [];
 let dirty = false;
 let projectLoadRequestId = 0;
 let projectEditVersion = 0;
+let physicalPreview = null;
+let physicalPreviewInFlight = null;
 let eventDurationMs = 60_000;
 const pointers = new Map();
 
@@ -363,7 +365,8 @@ function normalizeLink(link, index) {
     name: stringValue(source.name || source.label, `Link ${index + 1}`),
     a: normalizeEndpoint(source.a || endpoints[0]),
     b: normalizeEndpoint(source.b || endpoints[1]),
-    initial_state: stringValue(source.initial_state || source.state, "up"),
+    initial_state: Object.hasOwn(source, "initial_state") ? source.initial_state
+      : Object.hasOwn(source, "state") ? source.state : "up",
     notes: stringValue(source.notes, ""),
   };
 }
@@ -391,8 +394,11 @@ function normalizeEndpoint(value) {
 }
 
 function isPhysicalEvent(event) {
-  const kind = String(event.kind || event.event_kind || "").toLowerCase().replaceAll("_", "-");
-  const target = String(event.target_type || "").toLowerCase().replaceAll("_", "-");
+  // Long s is the only additional casefold-to-ASCII character in this
+  // vocabulary beyond the mappings already handled by toLowerCase().
+  const fold = (value) => String(value).toLowerCase().replaceAll("ſ", "s").replaceAll("_", "-");
+  const kind = fold(String(event.kind ?? event.event_type ?? event.event_kind ?? "").trim());
+  const target = fold(event.target_type ?? "");
   return event.scope === "physical"
     || eventSemantics.physical_kinds.includes(kind)
     || eventSemantics.physical_target_types.includes(target);
@@ -417,35 +423,33 @@ function normalizeEvent(event) {
   const source = event && typeof event === "object" ? event : {};
   // The editor has one flag; discard the canonical alias after resolving its
   // precedence so later form edits and undo/redo cannot restore a stale value.
-  const {update_snapshot: _snapshotAlias, message: _messageAlias, log: _logAlias, ...editableSource} = source;
-  const timeMs =
-    source.time_ms ??
-    source.timestamp_ms ??
-    (source.time_s !== undefined ? Number(source.time_s) * 1000 : undefined) ??
-    (source.timestamp_ns !== undefined ? Number(source.timestamp_ns) / 1_000_000 : 0);
+  const {update_snapshot: _snapshotAlias, message: _messageAlias, log: _logAlias,
+    properties: _propertiesAlias, payload: _payloadAlias, ...editableSource} = source;
+  const timestampNs = normalizedEventTimestampNs(source);
+  const timeMs = Number(timestampNs) / 1_000_000;
+  const properties = Object.hasOwn(source, "properties") ? source.properties
+    : Object.hasOwn(source, "payload") ? source.payload
+      : Object.hasOwn(source, "state_patch") ? source.state_patch : {};
+  const physical = isPhysicalEvent(source);
   return {
     ...editableSource,
-    id: stringValue(source.id || source.event_id, makeId("event")),
+    id: stringValue(source.event_id ?? source.change_id ?? source.id, makeId("event")),
+    timestamp_ns: timestampNs,
     time_ms: Math.max(0, finiteNumber(timeMs, 0)),
-    scope: isPhysicalEvent(source) ? "physical" : "node",
+    scope: physical ? "physical" : "node",
     _originalTimeMs: source._originalTimeMs ?? Math.max(0, finiteNumber(timeMs, 0)),
     node_id: stringValue(source.node_id || source.observer_node_id, ""),
     target_type: stringValue(source.target_type, ""),
     target_id: stringValue(
-      source.target_id || source.medium_id || source.link_id,
+      physical ? source.medium_id ?? source.link_id ?? source.target_id
+        : source.target_id,
       "",
     ),
-    kind: stringValue(source.kind || source.event_kind, "status"),
+    kind: stringValue(source.kind ?? source.event_type ?? source.event_kind, "status").trim(),
     subject: stringValue(source.subject || source.resource_key || source.resource_id, ""),
     action: stringValue(source.action || source.operation, ""),
     outcome: stringValue(source.outcome, "ok"),
-    state_patch: isPlainObject(source.state_patch)
-      ? source.state_patch
-      : isPlainObject(source.properties)
-        ? source.properties
-      : isPlainObject(source.payload)
-        ? source.payload
-        : {},
+    state_patch: isPlainObject(properties) ? properties : { value: properties },
     log_text: stringValue(source.message ?? source.log ?? source.log_text, ""),
     _messageExplicit: source._messageExplicit
       ?? ["message", "log", "log_text"].some((key) => Object.hasOwn(source, key)),
@@ -490,7 +494,7 @@ function topologyFromCanonicalMedia(media, nodes) {
             medium_kind: kind,
             a: attachments[0],
             b: attachments[1],
-            initial_state: medium.state || medium.initial_state || "up",
+            initial_state: initialMediumState(medium),
             notes: medium.notes || "",
             medium_properties: isPlainObject(medium.properties)
               ? structuredClone(medium.properties)
@@ -524,7 +528,7 @@ function topologyFromCanonicalMedia(media, nodes) {
           name: medium.name || medium.label || mediumId,
           kind: "shared-medium",
           medium_kind: kind,
-          initial_state: medium.state || medium.initial_state || "up",
+          initial_state: initialMediumState(medium),
           position,
           notes: medium.notes || "",
           medium_properties: isPlainObject(medium.properties)
@@ -549,7 +553,7 @@ function topologyFromCanonicalMedia(media, nodes) {
               port: `attachment-${attachmentIndex + 1}`,
               properties: {},
             },
-            initial_state: medium.state || medium.initial_state || "up",
+            initial_state: initialMediumState(medium),
           },
           links.length,
         ),
@@ -557,6 +561,11 @@ function topologyFromCanonicalMedia(media, nodes) {
     });
   });
   return { mediumNodes, links };
+}
+
+function initialMediumState(medium) {
+  return Object.hasOwn(medium, "state") ? medium.state
+    : Object.hasOwn(medium, "initial_state") ? medium.initial_state : "up";
 }
 
 function finiteNumber(value, fallback, alternateFallback) {
@@ -952,6 +961,7 @@ function renderHistoryButtons() {
 }
 
 function renderCanvas() {
+  void refreshPhysicalPreview();
   dom["objects-layer"].replaceChildren();
   dom["links-layer"].replaceChildren();
   dom["gesture-layer"].replaceChildren();
@@ -1050,13 +1060,16 @@ function renderLink(link) {
   const b = attachmentPoint(nodeB, centerOf(nodeA));
   const curve = curvedPath(a, b, stableCurve(link.id));
   const state = linkStateAt(link.id, selectedTimeMs());
+  const stateClass = ["up", "down", "degraded"].includes(state) ? state : "unknown";
   const group = svg("g", {
-    class: `topology-link state-${state}${selection?.type === "link" && selection.id === link.id ? " selected" : ""}`,
+    class: `topology-link state-${stateClass}${selection?.type === "link" && selection.id === link.id ? " selected" : ""}`,
     "data-link-id": link.id,
   });
   const hit = svg("path", { class: "link-hit", d: curve.path });
   const visible = svg("path", { class: "link-visible", d: curve.path });
-  group.append(hit, visible);
+  const title = svg("title");
+  title.textContent = physicalPreviewDescription(state);
+  group.append(title, hit, visible);
 
   if (panZoom.scale >= 0.72 || selection?.id === link.id) {
     const label = svg("g", {
@@ -1408,7 +1421,7 @@ function renderInspector() {
   if (isLink) {
     dom["link-port-a"].value = object.a.port || "";
     dom["link-port-b"].value = object.b.port || "";
-    dom["link-state"].value = linkStateAt(object.id, selectedTimeMs());
+    renderLinkStateControl(object.id);
   }
 }
 
@@ -1722,39 +1735,93 @@ function selectedTimeMs() {
 }
 
 function linkStateAt(linkId, timeMs) {
-  const link = linkById(linkId);
-  if (!link) return "unknown";
-  let state = link.initial_state || "up";
-  const targetIds = new Set([
-    linkId,
-    link.source_medium_id,
-    canonicalMediumIdForTarget(linkId),
-  ]);
-  scenario.events
-    .filter(
-      (event) =>
-        event.scope === "physical" &&
-        targetIds.has(event.target_id) &&
-        event.time_ms <= timeMs &&
-        (!eventSemantics.failed_outcomes.includes(String(event.outcome).toLowerCase())
-          || event.apply_on_failure === true),
-    )
-    .sort(eventSort)
-    .forEach((event) => {
-      state = stringValue(
-        event.state_patch?.state ??
-          event.state_patch?.oper_status ??
-          event.status,
-        state,
-      );
-    });
-  return state;
+  if (!linkById(linkId) || !ownsPhysicalPreview(physicalPreview, timeMs)
+    || physicalPreview.status !== "ready") return "unknown";
+  return physicalPreview.states.get(canonicalMediumIdForTarget(linkId)) ?? "unknown";
+}
+
+function physicalPreviewDescription(state) {
+  if (!ownsPhysicalPreview(physicalPreview) || physicalPreview.status === "pending") {
+    return "Physical state unknown: preview pending.";
+  }
+  if (physicalPreview.status === "error") {
+    return `Physical state unknown: ${physicalPreview.error}`;
+  }
+  return `Physical state: ${state}`;
+}
+
+function renderLinkStateControl(linkId) {
+  const state = linkStateAt(linkId, selectedTimeMs());
+  const control = dom["link-state"];
+  control.value = optionValueOr(control, state, "unknown");
+  control.title = physicalPreviewDescription(state);
+}
+
+function previewTimeNs(timeMs) {
+  return BigInt(Math.round(timeMs * 1_000_000)).toString();
+}
+
+function ownsPhysicalPreview(preview, timeMs = selectedTimeMs()) {
+  return preview !== null && preview.scenario === scenario
+    && preview.editVersion === projectEditVersion && preview.timeNs === previewTimeNs(timeMs);
+}
+
+function refreshPhysicalPreview() {
+  if (!ownsPhysicalPreview(physicalPreview)) {
+    const request = {
+      scenario, editVersion: projectEditVersion, timeNs: previewTimeNs(selectedTimeMs()),
+      status: "pending", states: new Map(),
+    };
+    physicalPreview = request;
+    try {
+      request.document = toCanonicalProject();
+      if (!request.document.media.length) request.status = "ready";
+    } catch (error) {
+      request.status = "error";
+      request.error = error.message;
+    }
+  }
+  // One in-flight call, with only the latest requested edit/cursor retained.
+  if (!physicalPreviewInFlight && physicalPreview.status === "pending") {
+    physicalPreviewInFlight = fetchPhysicalPreview().finally(() => { physicalPreviewInFlight = null; });
+  }
+  return physicalPreviewInFlight || Promise.resolve();
+}
+
+async function fetchPhysicalPreview() {
+  while (physicalPreview?.status === "pending") {
+    const request = physicalPreview;
+    let result;
+    let error;
+    try {
+      result = await apiJson(API.preview, {
+        scenario: request.document, view: "physical", at_time_ns: request.timeNs,
+      });
+      if (result.at_time_ns !== request.timeNs || !Array.isArray(result.media)
+        || result.media.some((medium) => typeof medium.medium_id !== "string" || typeof medium.state !== "string")) {
+        throw new Error("Invalid physical preview response.");
+      }
+    } catch (caught) {
+      error = caught;
+    }
+    if (request !== physicalPreview) continue;
+    if (!ownsPhysicalPreview(request)) {
+      physicalPreview = null;
+      break;
+    }
+    request.status = error ? "error" : "ready";
+    request.error = error?.message;
+    request.states = new Map(error ? [] : result.media.map((medium) => [medium.medium_id, medium.state]));
+    renderCanvas();
+    // Updating a preview must not reset other unsaved inspector fields.
+    if (selection?.type === "link") renderLinkStateControl(selection.id);
+  }
 }
 
 function makeEvent(overrides = {}) {
   return normalizeEvent({
     id: makeId("event"),
-    order: scenario.events.reduce((maximum, item) => Math.max(maximum, Number(item.order || 0)), -1) + 1,
+    order: nextEventOrder(),
     time_ms: selectedTimeMs(),
     scope: "node",
     node_id: dumpNodes()[0]?.id || "",
@@ -1769,11 +1836,51 @@ function makeEvent(overrides = {}) {
   });
 }
 
+function nextEventOrder() {
+  const next = scenario.events.reduce((maximum, event) => {
+    const order = BigInt(event.order ?? 0);
+    return order > maximum ? order : maximum;
+  }, -1n) + 1n;
+  return next <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(next) : next.toString();
+}
+
 function editableEventTime(event) {
-  const timestampNs = event.timestamp_ns !== undefined && event.time_ms === event._originalTimeMs
-    ? BigInt(event.timestamp_ns) : BigInt(Math.round(event.time_ms * 1_000_000));
+  const timestampNs = eventTimestampNs(event);
   const fraction = (timestampNs % 1_000_000_000n).toString().padStart(9, "0").replace(/0+$/, "");
   return `${timestampNs / 1_000_000_000n}${fraction ? `.${fraction}` : ""}`;
+}
+
+function roundedTimeNs(value, multiplier) {
+  const number = Number(value) * multiplier;
+  if (!Number.isFinite(number) || number < 0 || typeof value === "boolean" || value === null) {
+    throw new Error("Event time must be a finite non-negative number.");
+  }
+  // Python round() resolves exact halves to the nearest even integer.
+  const floor = Math.floor(number);
+  return BigInt(floor + (number - floor > 0.5 || (number - floor === 0.5 && floor % 2) ? 1 : 0));
+}
+
+function normalizedEventTimestampNs(source) {
+  if (source._originalTimeMs !== undefined && source.time_ms !== source._originalTimeMs) {
+    return previewTimeNs(source.time_ms);
+  }
+  for (const name of ["timestamp_ns", "time_ns", "at_ns"]) {
+    if (Object.hasOwn(source, name)) return exactIntegerValue(source[name], "Event time", true);
+  }
+  for (const [names, multiplier] of [
+    [["time_seconds", "at_seconds", "time_s"], 1_000_000_000],
+    [["time_ms", "timestamp_ms", "at_ms"], 1_000_000],
+  ]) {
+    for (const name of names) {
+      if (Object.hasOwn(source, name)) return roundedTimeNs(source[name], multiplier).toString();
+    }
+  }
+  return 0;
+}
+
+function eventTimestampNs(event) {
+  return event.timestamp_ns !== undefined && event.time_ms === event._originalTimeMs
+    ? BigInt(event.timestamp_ns) : BigInt(previewTimeNs(event.time_ms));
 }
 
 function exactIntegerValue(value, label, nonNegative = false) {
@@ -1808,9 +1915,7 @@ function saveEventFromForm(event) {
   const timeMs = Number(timestampNs) / 1_000_000;
   const value = makeEvent({
     id: existing?.id || makeId("event"),
-    order: existing?.order ?? scenario.events.reduce(
-      (maximum, item) => Math.max(maximum, Number(item.order || 0)), -1,
-    ) + 1,
+    order: existing?.order ?? nextEventOrder(),
     status: statePatchStatus(parsed.value) ?? existing?.status,
     time_ms: timeMs,
     timestamp_ns: existing?.timestamp_ns !== undefined
@@ -2596,7 +2701,7 @@ function canonicalMedia() {
       medium_id: mediumId,
       name: mediumNode.name,
       kind: mediumNode.medium_kind || "broadcast",
-      state: mediumNode.initial_state || "up",
+      state: Object.hasOwn(mediumNode, "initial_state") ? mediumNode.initial_state : "up",
       attachments,
       position: {
         x: Math.round(mediumNode.position.x * 1000) / 1000,
@@ -2625,7 +2730,7 @@ function canonicalMedia() {
         medium_id: mediumId,
         name: link.name,
         kind: link.medium_kind || "point-to-point",
-        state: link.initial_state || "up",
+        state: Object.hasOwn(link, "initial_state") ? link.initial_state : "up",
         attachments: [
           canonicalAttachment(link.a),
           canonicalAttachment(link.b),
@@ -2698,7 +2803,7 @@ function canonicalEvent(event, order) {
     event_id: safeIdentifier(event.id, `event-${order + 1}`),
     timestamp_ns: event.timestamp_ns !== undefined && event.time_ms === event._originalTimeMs
       ? event.timestamp_ns : Math.max(0, Math.round(event.time_ms * 1_000_000)),
-    order: event.order ?? order,
+    order: exactIntegerValue(event.order ?? order, "Event order", true),
     ...(event.apply_on_failure !== undefined ? { apply_on_failure: event.apply_on_failure } : {}),
     kind: event.kind || "status",
     outcome: event.outcome || "ok",
@@ -2711,12 +2816,8 @@ function canonicalEvent(event, order) {
       target_type: "medium",
       target_id: targetId,
       medium_id: targetId,
-      status: stringValue(
-        event.status ??
-          properties.state ??
-          properties.oper_status,
-        "unknown",
-      ),
+      ...(Object.hasOwn(event, "status") ? { status: event.status } : {}),
+      ...(Object.hasOwn(event, "state") ? { state: event.state } : {}),
       properties,
       message: event.log_text || "",
     };
@@ -2945,9 +3046,19 @@ function maxEventTime(events) {
 }
 
 function eventSort(left, right) {
-  return left.time_ms - right.time_ms
-    || Number(left.order ?? 0) - Number(right.order ?? 0)
-    || left.id.localeCompare(right.id);
+  const time = eventTimestampNs(left) - eventTimestampNs(right);
+  if (time !== 0n) return time < 0n ? -1 : 1;
+  const order = BigInt(left.order ?? 0) - BigInt(right.order ?? 0);
+  return order === 0n ? compareCodePoints(left.id, right.id) : order < 0n ? -1 : 1;
+}
+
+function compareCodePoints(left, right) {
+  const a = Array.from(String(left), (character) => character.codePointAt(0));
+  const b = Array.from(String(right), (character) => character.codePointAt(0));
+  for (let index = 0; index < Math.min(a.length, b.length); index += 1) {
+    if (a[index] !== b[index]) return a[index] - b[index];
+  }
+  return a.length - b.length;
 }
 
 function formatSeconds(milliseconds) {

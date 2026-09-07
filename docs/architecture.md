@@ -963,6 +963,12 @@ Its Python import roots are the collision-resistant `rsl_demo_plugin` and
 `rsl_demo_generator`; the distribution must not claim generic top-level
 `plugin` or `generator` namespaces.
 
+The independent `state-dump-generator` editor obtains its physical canvas state
+from a bounded view of the same Python replay used by reconstruction. The
+browser owns editing and presentation, while the generator owns state
+precedence and temporal ordering. Pending or stale preview responses cannot
+assert physical truth, and this authoring view never enters node dump evidence.
+
 The core dynamically loads a module-level plug-in instance either from an
 installed `router_dump_analyzer.plugins` entry point (`--plugin NAME`) or a
 direct development target (`--plugin-module PACKAGE[:ATTRIBUTE]`). Core never
