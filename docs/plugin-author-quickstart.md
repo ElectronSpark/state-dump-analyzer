@@ -962,6 +962,11 @@ in-process `Value` sequences are tuples. Each call also shares the bounded
 `PluginCapabilityLimits.max_output_snapshot_units` budget (default 1,000,000).
 Run `python -m unittest tests.test_capability_executor -v` for output ownership
 and aggregate-limit conformance.
+Use `Quality` and `Provenance` enum members in patch field metadata, keyed only
+by fields included in that patch's set, remove, or unknown operations. The same
+checks apply to reducer/correlation results and forwarding request changes;
+the conformance command above exercises all four paths. Unknown-field names
+and reasons must be nonempty; a patch's unknown-field message may be empty.
 
 An explicit scan limit equal to the remaining read quota is valid: core returns
 at most that many items without probing beyond your requested slice. A request

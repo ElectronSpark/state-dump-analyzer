@@ -1267,14 +1267,30 @@ def _snapshot_status_perspective(
     )
 
 
-def _snapshot_property_patch(
-    value: PropertyPatch,
+def _validate_unknown_field(
+    value: Any,
     label: str,
     *,
-    maximum_evidence: int,
-    aggregate_budget: _AggregateValueBudget | None = None,
-) -> PropertyPatch:
-    """Detach one plug-in-owned patch before it crosses the capability boundary."""
+    allow_empty_message: bool = False,
+) -> None:
+    if type(value) is not UnknownField:
+        raise ValueError(f"{label} must be an exact UnknownField")
+    for field_name, maximum in (("name", 256), ("reason_code", 256), ("message", 8_192)):
+        field_value = getattr(value, field_name)
+        if (
+            type(field_value) is not str
+            or (not field_value and (field_name != "message" or not allow_empty_message))
+            or len(field_value) > maximum
+            or "\x00" in field_value
+        ):
+            raise ValueError(f"{label}.{field_name} is invalid")
+
+
+def _validated_property_patch_fields(
+    value: PropertyPatch,
+    label: str,
+) -> tuple[frozenset[str], dict[str, Quality], dict[str, Provenance]]:
+    """Validate patch operations and metadata without copying property payloads."""
 
     if type(value) is not PropertyPatch:
         raise ValueError(f"{label} must be an exact PropertyPatch")
@@ -1282,38 +1298,42 @@ def _snapshot_property_patch(
         raise ValueError(f"{label}.set_values must be a bounded mapping")
     if type(value.remove_fields) is not tuple or len(value.remove_fields) > 1_024:
         raise ValueError(f"{label}.remove_fields must be a bounded exact tuple")
-    for index, name in enumerate(value.remove_fields):
-        if type(name) is not str or not name or len(name) > 256 or "\x00" in name:
-            raise ValueError(f"{label}.remove_fields[{index}] is invalid")
-        if aggregate_budget is not None:
-            aggregate_budget.charge(len(name), f"{label}.remove_fields")
-    if type(value.unknown_fields) is not tuple:
-        raise ValueError(f"{label}.unknown_fields must be an exact tuple")
-    unknown_fields = _snapshot_world_unknown_fields(
-        value.unknown_fields,
-        f"{label}.unknown_fields",
-        maximum_evidence=maximum_evidence,
-    )
-    if aggregate_budget is not None:
-        for item in unknown_fields:
-            aggregate_budget.charge(
-                len(item.name) + len(item.reason_code) + len(item.message),
-                f"{label}.unknown_fields",
-            )
-            for evidence in item.evidence:
-                aggregate_budget.charge(
-                    _evidence_snapshot_units(evidence),
-                    f"{label}.unknown_fields.evidence",
-                )
+    if type(value.unknown_fields) is not tuple or len(value.unknown_fields) > 1_024:
+        raise ValueError(f"{label}.unknown_fields must be a bounded exact tuple")
 
-    def snapshot_metadata(
+    def names(items: Iterable[Any], field_label: str) -> frozenset[str]:
+        result: set[str] = set()
+        for index, name in enumerate(items):
+            if index >= 1_024:
+                raise ValueError(f"{field_label} exceeds 1024 fields")
+            if type(name) is not str or not name or len(name) > 256 or "\x00" in name:
+                raise ValueError(f"{field_label}[{index}] is invalid")
+            if name in result:
+                raise ValueError(f"{field_label} contains duplicate names")
+            result.add(name)
+        return frozenset(result)
+
+    set_names = names(value.set_values, f"{label}.set_values")
+    remove_names = names(value.remove_fields, f"{label}.remove_fields")
+    for index, unknown in enumerate(value.unknown_fields):
+        _validate_unknown_field(
+            unknown, f"{label}.unknown_fields[{index}]", allow_empty_message=True
+        )
+    unknown_names = names(
+        (item.name for item in value.unknown_fields), f"{label}.unknown_fields"
+    )
+    if (set_names & remove_names) | (set_names & unknown_names) | (remove_names & unknown_names):
+        raise ValueError(f"{label} mentions fields in incompatible operations")
+    mentioned = set_names | remove_names | unknown_names
+
+    def metadata_values[EnumT: (Provenance, Quality)](
         metadata: object,
-        enum_type: type[Provenance] | type[Quality],
+        enum_type: type[EnumT],
         field_label: str,
-    ) -> Mapping[str, Provenance] | Mapping[str, Quality]:
+    ) -> dict[str, EnumT]:
         if not isinstance(metadata, Mapping) or len(metadata) > 1_024:
             raise ValueError(f"{field_label} must be a bounded mapping")
-        detached: dict[str, Provenance | Quality] = {}
+        detached: dict[str, EnumT] = {}
         for index, (name, item) in enumerate(metadata.items()):
             if index >= 1_024:
                 raise ValueError(f"{field_label} must be a bounded mapping")
@@ -1326,13 +1346,48 @@ def _snapshot_property_patch(
                 raise ValueError(f"{field_label} contains an invalid field name")
             if type(item) is not enum_type:
                 raise ValueError(f"{field_label}[{name!r}] is invalid")
-            detached[name] = enum_type(item)
-            if aggregate_budget is not None:
-                aggregate_budget.charge(len(name), field_label)
-        return MappingProxyType(detached)
+            if name not in mentioned:
+                raise ValueError(f"{field_label} references an unmentioned field")
+            detached[name] = item
+        return detached
 
     if type(value.complete) is not bool:
         raise ValueError(f"{label}.complete must be an exact boolean")
+    return (
+        mentioned,
+        metadata_values(value.field_quality, Quality, f"{label}.field_quality"),
+        metadata_values(value.field_provenance, Provenance, f"{label}.field_provenance"),
+    )
+
+
+def _snapshot_property_patch(
+    value: PropertyPatch,
+    label: str,
+    *,
+    maximum_evidence: int,
+    aggregate_budget: _AggregateValueBudget | None = None,
+) -> PropertyPatch:
+    """Detach one plug-in-owned patch before it crosses the capability boundary."""
+
+    _mentioned, field_quality, field_provenance = _validated_property_patch_fields(value, label)
+    unknown_fields = _snapshot_world_unknown_fields(
+        value.unknown_fields,
+        f"{label}.unknown_fields",
+        maximum_evidence=maximum_evidence,
+        allow_empty_message=True,
+    )
+    if aggregate_budget is not None:
+        for name in (*value.remove_fields, *field_quality, *field_provenance):
+            aggregate_budget.charge(len(name), label)
+        for item in unknown_fields:
+            aggregate_budget.charge(
+                len(item.name) + len(item.reason_code) + len(item.message),
+                f"{label}.unknown_fields",
+            )
+            for evidence in item.evidence:
+                aggregate_budget.charge(
+                    _evidence_snapshot_units(evidence), f"{label}.unknown_fields.evidence"
+                )
     return PropertyPatch(
         set_values=cast(
             Mapping[str, Any],
@@ -1344,22 +1399,8 @@ def _snapshot_property_patch(
         ),
         remove_fields=tuple(value.remove_fields),
         unknown_fields=unknown_fields,
-        field_quality=cast(
-            Mapping[str, Quality],
-            snapshot_metadata(
-                value.field_quality,
-                Quality,
-                f"{label}.field_quality",
-            ),
-        ),
-        field_provenance=cast(
-            Mapping[str, Provenance],
-            snapshot_metadata(
-                value.field_provenance,
-                Provenance,
-                f"{label}.field_provenance",
-            ),
-        ),
+        field_quality=MappingProxyType(field_quality),
+        field_provenance=MappingProxyType(field_provenance),
         complete=value.complete,
     )
 
@@ -1430,27 +1471,14 @@ def _snapshot_world_unknown_fields(
     label: str,
     *,
     maximum_evidence: int,
+    allow_empty_message: bool = False,
 ) -> tuple[UnknownField, ...]:
     if type(values) is not tuple or len(values) > 1_024:
         raise ValueError(f"{label} must be a bounded exact tuple")
     detached: list[UnknownField] = []
     for index, value in enumerate(values):
         item_label = f"{label}[{index}]"
-        if type(value) is not UnknownField:
-            raise ValueError(f"{item_label} must be an exact UnknownField")
-        for field_name, maximum in (
-            ("name", 256),
-            ("reason_code", 256),
-            ("message", 8_192),
-        ):
-            field_value = getattr(value, field_name)
-            if (
-                type(field_value) is not str
-                or not field_value
-                or len(field_value) > maximum
-                or "\x00" in field_value
-            ):
-                raise ValueError(f"{item_label}.{field_name} is invalid")
+        _validate_unknown_field(value, item_label, allow_empty_message=allow_empty_message)
         detached.append(
             UnknownField(
                 name=value.name,
@@ -2409,26 +2437,9 @@ class PluginCapabilityExecutor:
         *,
         resource_kind: str | None = None,
     ) -> PropertyPatch:
-        if type(value) is not PropertyPatch:
-            raise ValueError(f"{label} must be an exact PropertyPatch")
-        if len(value.set_values) > 1_024:
-            raise ValueError(f"{label}.set_values exceeds 1024 entries")
+        field_names, _quality, _provenance = _validated_property_patch_fields(value, label)
         _validate_value(value.set_values, f"{label}.set_values")
-        if (
-            not isinstance(value.remove_fields, tuple)
-            or len(value.remove_fields) > 1_024
-        ):
-            raise ValueError(f"{label}.remove_fields must be a bounded tuple")
-        if (
-            not isinstance(value.unknown_fields, tuple)
-            or len(value.unknown_fields) > 1_024
-        ):
-            raise ValueError(f"{label}.unknown_fields must be a bounded tuple")
-        mentioned = {
-            *(str(name).split(".", 1)[0] for name in value.set_values),
-            *(str(name).split(".", 1)[0] for name in value.remove_fields),
-            *(str(unknown.name).split(".", 1)[0] for unknown in value.unknown_fields),
-        }
+        mentioned = {name.split(".", 1)[0] for name in field_names}
         if resource_kind is not None:
             allowed = self._schema.property_roots_by_kind[resource_kind]
             if unknown_roots := mentioned - allowed:
@@ -2436,20 +2447,11 @@ class PluginCapabilityExecutor:
                     f"{label} references undeclared properties: "
                     + ", ".join(sorted(unknown_roots))
                 )
-        for field_name in value.remove_fields:
-            if not isinstance(field_name, str) or not field_name:
-                raise ValueError(f"{label}.remove_fields contains an invalid name")
         for index, unknown_field in enumerate(value.unknown_fields):
-            if type(unknown_field) is not UnknownField:
-                raise ValueError(
-                    f"{label}.unknown_fields[{index}] must be an exact UnknownField"
-                )
             self._evidence_tuple(
                 unknown_field.evidence,
                 f"{label}.unknown_fields[{index}].evidence",
             )
-        if type(value.complete) is not bool:
-            raise ValueError(f"{label}.complete must be a boolean")
         return value
 
     @staticmethod

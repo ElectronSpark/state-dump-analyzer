@@ -1209,6 +1209,16 @@ source-context endpoint. Include raw clock data even when normalized time exists
 - `field_quality` and before/after unknowns preserve property-level quality
   instead of assigning one blanket truth value to a state.
 
+Every capability patch uses the same operation and metadata validation,
+including `ForwardingProjectionRequest.changes`. Field names must be nonempty
+strings of at most 256 characters with no NUL; each operation and metadata
+mapping is limited to 1,024 entries. Duplicate or conflicting operations are
+invalid. `field_quality` and `field_provenance` may reference only fields named
+by an operation and must contain exact `Quality` and `Provenance` enum values,
+respectively. An `UnknownField` in a patch requires a nonempty name and reason
+code; its bounded message may be empty, as in parser ingestion. Validation
+rejects invalid metadata before a hook request or result is admitted.
+
 ### Capture anchors
 
 Every resource and relationship observation carries its individual capture-time

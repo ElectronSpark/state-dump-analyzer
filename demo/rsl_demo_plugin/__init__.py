@@ -1867,6 +1867,8 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
                     observed_at_max_ns=observed_at_max_ns,
                     state=PropertyPatch(
                         set_values=properties,
+                        # Metadata uses exact enums for fields in this patch;
+                        # capability hooks enforce the same typed contract.
                         field_quality={
                             field_name: Quality.EXACT for field_name in properties
                         },

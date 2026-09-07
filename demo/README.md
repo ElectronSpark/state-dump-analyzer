@@ -418,6 +418,9 @@ Optional semantic output hooks use core-owned snapshots: reusing a local
 dictionary cannot mutate an admitted result. In-process `Value` sequences are
 tuples. Run `python -m unittest tests.test_capability_executor -v` for ownership
 and aggregate-budget conformance before adding a capability.
+Patch field metadata uses typed `Quality`/`Provenance` members and names only
+fields changed by the patch. The same conformance suite checks invalid metadata
+in reducer/correlation results and forwarding request changes before admission.
 Forwarding IR extensions must use typed resource references, exact optional
 booleans, bounded tuple ranks, and valid IP address/prefix strings; malformed
 dataclass fields are rejected by the same capability conformance suite.

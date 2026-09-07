@@ -1128,6 +1128,10 @@ relationship projection, consistency, topology, forwarding projection, and
 forwarding-step calls;
 wraps world access in one bounded read-only facade; closes output iterators;
 and validates every exact request, result, schema reference, and diagnostic.
+Patch operation names, conflicts, unknown-field metadata, and exact field
+quality/provenance enums share one validator across result admission and
+request detachment. This includes forwarding request changes; validation does
+not make an extra copy of property payloads merely to inspect metadata.
 Capability authority comes from a one-time exact snapshot of the manifest set,
 not its overridable `supports()` helper.
 Correlation receives the caller's bounded/indexed reader and an independently

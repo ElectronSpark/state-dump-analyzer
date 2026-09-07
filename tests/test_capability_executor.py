@@ -94,6 +94,7 @@ from router_dump_analyzer.plugin_api import (
     TopologyResourceRecord,
     TopologyUsability,
     TunnelAction,
+    UnknownField,
     VrfForwardingState,
     WorldBasis,
     WorldBasisKind,
@@ -775,6 +776,26 @@ def _forwarding_records() -> tuple[Any, ...]:
     )
 
 
+def _invoke_patch_hook(plugin: _Plugin, hook_name: str, patch_value: PropertyPatch) -> Any:
+    executor = PluginCapabilityExecutor(plugin)
+    changes = ChangeSet(state=(replace(_state_mutation(), after=patch_value),))
+    if hook_name in ("apply", "revert"):
+        setattr(plugin, f"{hook_name}_output", changes)
+        return getattr(executor, hook_name)(EVENT, _World())
+    if hook_name == "correlate":
+        plugin.correlation_output = (
+            replace(_relationship_mutation(), attributes=patch_value),
+        )
+        return executor.correlate(
+            object(), CorrelationWindow(0, 2, max_events=10)  # type: ignore[arg-type]
+        )
+    if hook_name == "project_forwarding":
+        return executor.project_forwarding(
+            replace(_projection_request(), changes=changes), _World()  # type: ignore[arg-type]
+        )
+    raise AssertionError(f"unsupported test hook {hook_name}")
+
+
 def _step_request(ir_version: str = FORWARDING_IR_VERSION) -> ForwardingStepRequest:
     return ForwardingStepRequest(
         step_id="step-1",
@@ -1260,6 +1281,183 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
                 self.assertEqual(result.state[0].evidence[0].locator, EVIDENCE.locator)
                 with self.assertRaises(TypeError):
                     result.state[0].after.set_values["state"][0]["nested"] = "forbidden"
+
+    def test_patch_metadata_valid_enums_survive_all_capability_paths(self) -> None:
+        patch_value = PropertyPatch(
+            set_values={"state.value": "ready"},
+            remove_fields=("state.removed",),
+            unknown_fields=(UnknownField("state.unknown", "not_observed", "Not observed"),),
+            field_quality={
+                "state.value": Quality.EXACT,
+                "state.removed": Quality.BEST_EFFORT,
+                "state.unknown": Quality.UNKNOWN,
+            },
+            field_provenance={
+                "state.value": Provenance.OBSERVED,
+                "state.removed": Provenance.EVENT_DERIVED,
+                "state.unknown": Provenance.RECONSTRUCTED,
+            },
+        )
+        for hook_name in ("apply", "revert", "correlate", "project_forwarding"):
+            with self.subTest(hook=hook_name):
+                result = _invoke_patch_hook(_Plugin(), hook_name, patch_value)
+                if hook_name == "project_forwarding":
+                    self.assertEqual(result.mutations, ())
+                    continue
+                detached = (
+                    result.relationship_mutations[0].attributes
+                    if hook_name == "correlate"
+                    else result.state[0].after
+                )
+                self.assertEqual(detached, patch_value)
+                self.assertIs(detached.field_quality["state.value"], Quality.EXACT)
+                self.assertIs(detached.field_provenance["state.value"], Provenance.OBSERVED)
+
+    def test_patch_metadata_rejects_enum_impostors_and_bad_names_on_all_paths(self) -> None:
+        invalid_metadata = (
+            ("field_quality", {"state": "exact"}),
+            ("field_quality", {"state": object()}),
+            ("field_provenance", {"state": "observed"}),
+            ("field_provenance", {"state": object()}),
+            ("field_quality", {"state": Provenance.OBSERVED}),
+            ("field_provenance", {"state": Quality.EXACT}),
+            ("field_quality", {"unmentioned": Quality.EXACT}),
+            ("field_provenance", {"": Provenance.OBSERVED}),
+            ("field_quality", {"x" * 257: Quality.EXACT}),
+            ("field_provenance", {"state\x00": Provenance.OBSERVED}),
+            ("field_quality", ()),
+            ("field_provenance", {f"field-{index}": Provenance.OBSERVED for index in range(1025)}),
+        )
+        for hook_name in ("apply", "revert", "correlate", "project_forwarding"):
+            for field_name, invalid in invalid_metadata:
+                patch_value = PropertyPatch(set_values={"state": "ready"})
+                object.__setattr__(patch_value, field_name, invalid)
+                plugin = _Plugin()
+                expected_error = (
+                    PluginCapabilityInputError
+                    if hook_name == "project_forwarding"
+                    else PluginCapabilityOutputError
+                )
+                with self.subTest(hook=hook_name, field=field_name, value=invalid), self.assertRaises(
+                    expected_error
+                ):
+                    _invoke_patch_hook(plugin, hook_name, patch_value)
+                if hook_name == "project_forwarding":
+                    self.assertFalse(plugin.forwarding_called)
+
+    def test_patch_unknown_messages_may_be_empty_as_in_parser_ingestion(self) -> None:
+        patch_value = PropertyPatch(
+            unknown_fields=(UnknownField("state", "not_observed", ""),),
+            field_quality={"state": Quality.UNKNOWN},
+            field_provenance={"state": Provenance.OBSERVED},
+        )
+        for hook_name in ("apply", "revert", "correlate", "project_forwarding"):
+            with self.subTest(hook=hook_name):
+                result = _invoke_patch_hook(_Plugin(), hook_name, patch_value)
+                if hook_name == "project_forwarding":
+                    self.assertEqual(result.mutations, ())
+                    continue
+                detached = (
+                    result.relationship_mutations[0].attributes
+                    if hook_name == "correlate"
+                    else result.state[0].after
+                )
+                self.assertEqual(detached.unknown_fields[0].message, "")
+
+        plugin = _Plugin()
+        plugin.relationship_projection_output = (
+            _relationship_declaration(attributes=replace(patch_value, complete=True)),
+        )
+        result = PluginCapabilityExecutor(plugin).project_relationships(_World())  # type: ignore[arg-type]
+        self.assertEqual(result.declarations[0].attributes.unknown_fields[0].message, "")
+
+    def test_patch_unknown_metadata_and_operation_invariants_are_revalidated(self) -> None:
+        invalid_fields = (
+            ("unknown_fields", (UnknownField("state", "", "Unobserved"),)),
+            ("unknown_fields", (UnknownField("state", "reason", "x" * 8193),)),
+            ("unknown_fields", (UnknownField("state", "reason", "Unobserved", (object(),)),)),
+            ("unknown_fields", (UnknownField("state", "reason", "Unobserved", (EVIDENCE,) * 65),)),
+            ("remove_fields", ("state", "state")),
+            ("remove_fields", ("state\x00",)),
+            ("complete", "false"),
+        )
+        for hook_name in ("apply", "revert", "correlate", "project_forwarding"):
+            for field_name, invalid in invalid_fields:
+                patch_value = PropertyPatch()
+                object.__setattr__(patch_value, field_name, invalid)
+                expected_error = (
+                    PluginCapabilityInputError
+                    if hook_name == "project_forwarding"
+                    else PluginCapabilityOutputError
+                )
+                with self.subTest(hook=hook_name, field=field_name), self.assertRaises(expected_error):
+                    _invoke_patch_hook(_Plugin(), hook_name, patch_value)
+
+    def test_patch_metadata_cannot_authorize_undeclared_resource_properties(self) -> None:
+        patch_value = PropertyPatch(
+            set_values={"undeclared": "value"}, field_quality={"undeclared": Quality.EXACT}
+        )
+        for hook_name in ("apply", "revert", "project_forwarding"):
+            expected_error = (
+                PluginCapabilityInputError
+                if hook_name == "project_forwarding"
+                else PluginCapabilityOutputError
+            )
+            with self.subTest(hook=hook_name), self.assertRaisesRegex(expected_error, "undeclared properties"):
+                _invoke_patch_hook(_Plugin(), hook_name, patch_value)
+
+    def test_patch_metadata_mapping_has_a_sentinel_bound(self) -> None:
+        class MetadataFlood(Mapping[str, Any]):
+            def __init__(self) -> None:
+                self.reads = 0
+
+            def __len__(self) -> int:
+                return 1
+
+            def __iter__(self) -> Iterator[str]:
+                yield "state"
+
+            def __getitem__(self, key: str) -> Quality:
+                if key != "state":
+                    raise KeyError(key)
+                return Quality.EXACT
+
+            def items(self) -> Any:
+                while True:
+                    self.reads += 1
+                    yield "state", Quality.EXACT
+
+        metadata = MetadataFlood()
+        patch_value = PropertyPatch(set_values={"state": "ready"}, field_quality=metadata)
+        with self.assertRaisesRegex(PluginCapabilityOutputError, "bounded mapping"):
+            _invoke_patch_hook(_Plugin(), "apply", patch_value)
+        self.assertEqual(metadata.reads, 1025)
+
+    def test_patch_metadata_is_detached_before_generator_resume(self) -> None:
+        quality = {"state": Quality.EXACT}
+        provenance = {"state": Provenance.OBSERVED}
+        mutation = replace(
+            _relationship_mutation(),
+            attributes=PropertyPatch(
+                set_values={"state": "ready"},
+                field_quality=quality,
+                field_provenance=provenance,
+            ),
+        )
+
+        def outputs() -> Iterable[Any]:
+            yield mutation
+            quality["state"] = "invalid"  # type: ignore[assignment]
+            provenance["state"] = "invalid"  # type: ignore[assignment]
+
+        plugin = _Plugin()
+        plugin.correlation_output = outputs()
+        result = PluginCapabilityExecutor(plugin).correlate(
+            object(), CorrelationWindow(0, 2, max_events=10)  # type: ignore[arg-type]
+        )
+        detached = result.relationship_mutations[0].attributes
+        self.assertIs(detached.field_quality["state"], Quality.EXACT)
+        self.assertIs(detached.field_provenance["state"], Provenance.OBSERVED)
 
     def test_correlation_outputs_are_detached_before_advancing_the_stream(self) -> None:
         properties = {"nested": ({"value": "before"},)}
