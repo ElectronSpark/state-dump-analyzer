@@ -1432,6 +1432,32 @@ def _route_fence_reachable_functions(tree: ast.Module) -> frozenset[str]:
     return frozenset(reachable)
 
 
+def _is_internal_facade_loading_site(
+    node: ast.AST,
+    *,
+    filename: str,
+    parents: dict[ast.AST, ast.AST],
+) -> bool:
+    """Separate approved package export lookup from executable plug-in loading."""
+
+    if filename.replace("\\", "/") != "src/router_dump_analyzer/_lazy_exports.py":
+        return False
+    enclosing = _enclosing_functions(node, parents)
+    if len(enclosing) != 1 or enclosing[0].name != "resolve_export":
+        return False
+    if not isinstance(node, ast.Call) or node.keywords:
+        return False
+    # The facades supply declared relative-module tables. Exempt only these
+    # two reviewed lookup expressions, never arbitrary calls in the helper.
+    return (
+        _dotted_name(node.func),
+        tuple(_dotted_name(argument) for argument in node.args),
+    ) in {
+        ("import_module", ("module_name", "package_name")),
+        ("getattr", ("implementation", "name")),
+    }
+
+
 def _module_census(
     source: str,
     *,
@@ -1449,6 +1475,8 @@ def _module_census(
         contract=contract,
         wrappers=wrappers,
     ):
+        if _is_internal_facade_loading_site(node, filename=filename, parents=parents):
+            continue
         boundary = _lexical_boundary(node, parents=parents)
         if boundary is not None:
             problem = _boundary_problem(boundary)
@@ -1926,6 +1954,54 @@ class Adapter:
                 )
                 self.assertEqual(len(callback_sites), 1, sites)
                 self.assertEqual(callback_sites[0].guarded, expected_guarded)
+
+    def test_internal_facade_lookup_is_distinct_from_plugin_loading(self) -> None:
+        filename = "src/router_dump_analyzer/_lazy_exports.py"
+        source = (ROOT / filename).read_text(encoding="utf-8")
+        self.assertEqual(
+            _module_census(source, filename=filename, contract=self.contract),
+            (),
+        )
+        for label, candidate, candidate_filename, expected_sites in (
+            ("wrong module", source, "src/router_dump_analyzer/other_loader.py", 2),
+            (
+                "wrong function",
+                source.replace("def resolve_export(", "def other_loader("),
+                filename,
+                2,
+            ),
+            (
+                "unapproved call shapes",
+                (
+                    "from importlib import import_module\n"
+                    "def resolve_export(target, attribute):\n"
+                    "    module = import_module(target)\n"
+                    "    return getattr(module, attribute)\n"
+                ),
+                filename,
+                2,
+            ),
+            (
+                "additional call in approved helper",
+                source.replace(
+                    "    value = getattr(implementation, name)\n",
+                    (
+                        "    value = getattr(implementation, name)\n"
+                        "    import_module('unapproved_plugin')\n"
+                    ),
+                ),
+                filename,
+                1,
+            ),
+        ):
+            with self.subTest(shape=label):
+                sites = _module_census(
+                    candidate,
+                    filename=candidate_filename,
+                    contract=self.contract,
+                )
+                self.assertEqual(len(sites), expected_sites, sites)
+                self.assertTrue(all(not site.guarded for site in sites), sites)
 
     def test_all_derived_core_plugin_invocations_use_the_shared_boundary(self) -> None:
         """Assert the derived whole-source census, with readable evidence."""

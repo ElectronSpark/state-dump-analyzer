@@ -1026,6 +1026,8 @@ def _core_dynamic_import_violations(source_root: Path) -> tuple[str, ...]:
         ("filesystem_lock.py", "try_existing_exclusive_file_lock", "fcntl"),
     }
     allowed_import_module_sites = {
+        # Package facades resolve names through their declared export tables.
+        ("_lazy_exports.py", "resolve_export"),
         ("plugin_loading.py", "load_plugin_module"),
         (
             "plugin_composition_deployment.py",
@@ -2240,6 +2242,14 @@ class PrivateAiArchitectureTests(unittest.TestCase):
                 "plugin_loading.py": (
                     "import importlib\ndef unrelated(name):\n"
                     "    return importlib.import_module(name)\n"
+                ),
+                "_lazy_exports.py": (
+                    "from importlib import import_module as load\n"
+                    "def unrelated(name):\n    return load(name)\n"
+                ),
+                "other_lazy_exports.py": (
+                    "from importlib import import_module as load\n"
+                    "def resolve_export(name):\n    return load(name)\n"
                 ),
                 "builtins_alias.py": (
                     "from builtins import __import__ as load\n"
