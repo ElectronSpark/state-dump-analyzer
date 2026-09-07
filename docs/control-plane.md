@@ -1121,7 +1121,7 @@ All routes have the prefix `/v1/control-plane`.
 | Catalog | `GET /projects/{project_id}/workspaces/{workspace_id}/fixtures`; `GET .../revisions?node_id=...`; `GET .../revisions/{revision_id}/consistency-findings` |
 | Durable inspection | `POST .../analysis/query` (read-only; explicit revision/session/snapshot selector) |
 | Sessions | `GET, POST .../sessions`; `GET, PATCH, DELETE .../sessions/{session_id}`; `PUT, DELETE .../sessions/{session_id}/members/{member_id}`; `POST .../sessions/{session_id}/snapshots`; `GET .../snapshots`; `GET .../snapshots/{snapshot_id}` |
-| Imports | `GET, POST .../imports`; `GET .../imports/{import_id}`; `GET .../candidates`; `GET .../events`; `GET .../events/stream`; `POST .../selection`; `POST .../resume`; `POST .../cancel` |
+| Imports | `GET, POST .../imports`; `GET .../imports/{import_id}`; `GET .../imports/{import_id}/candidates`; `GET .../imports/{import_id}/events`; `GET .../imports/{import_id}/events/stream`; `POST .../imports/{import_id}/selection`; `POST .../imports/{import_id}/resume`; `POST .../imports/{import_id}/cancel` |
 | Annotations | `GET, POST .../annotations`; `GET, PATCH, DELETE .../annotations/{annotation_id}` |
 | Correlations | `GET, POST .../correlations`; `GET, PATCH, DELETE .../correlations/{correlation_id}` |
 | Review output | `GET .../review-audit`; `POST .../correlation-report?format=json|markdown` |
