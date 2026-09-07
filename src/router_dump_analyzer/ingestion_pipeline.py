@@ -5075,35 +5075,6 @@ class DurableIngestionPipeline:
                     prepared.target.parent,
                 )
 
-    def _install_content_file(
-        self,
-        temporary: Path,
-        *,
-        root: Path,
-        relative: Path,
-        expected_sha256: str,
-        expected_bytes: int,
-    ) -> Path:
-        """Verify, stage, and atomically publish one repairable object.
-
-        Queue admission uses the two explicit prepare/publish methods so its
-        host-global lock covers only publication and catalog references. This
-        wrapper preserves the independently useful per-address operation.
-        """
-
-        prepared: _PreparedContentFile | None = None
-        try:
-            prepared = self._prepare_content_file(
-                temporary,
-                root=root,
-                relative=relative,
-                expected_sha256=expected_sha256,
-                expected_bytes=expected_bytes,
-            )
-            return self._publish_prepared_content_file(prepared)
-        finally:
-            self._discard_prepared_content_file(prepared)
-
     def _prepare_fixture_view(
         self,
         source_path: Path,

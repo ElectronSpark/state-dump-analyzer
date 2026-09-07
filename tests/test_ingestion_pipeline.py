@@ -97,6 +97,7 @@ from router_dump_analyzer.plugin_execution_plan import (
     plugin_execution_plan_from_dict,
 )
 from router_dump_analyzer.plugin_identity import PluginExecutableIdentityError
+from tests.support.content_installation import install_content_file
 from tests.test_ingestion import (
     DiagnosticPlugin,
     FixedNodePlugin,
@@ -219,7 +220,8 @@ def _install_content_process(
     )
     if not start.wait(10):
         raise TimeoutError("content install start barrier timed out")
-    pipeline._install_content_file(
+    install_content_file(
+        pipeline,
         Path(source_value),
         root=Path(root_value),
         relative=Path(digest[:2]) / digest[2:4] / digest,
@@ -9081,7 +9083,8 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                 ThreadPoolExecutor(max_workers=1) as executor,
             ):
                 future = executor.submit(
-                    pipeline._install_content_file,
+                    install_content_file,
+                    pipeline,
                     source,
                     root=pipeline.blob_root,
                     relative=Path(digest[:2]) / digest[2:4] / digest,
