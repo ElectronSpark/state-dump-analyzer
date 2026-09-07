@@ -2386,12 +2386,16 @@ async function handleProjectFile(event) {
 function saveProject() {
   scenario.name = dom["project-name"].value.trim() || scenario.name;
   scenario.updated_at = new Date().toISOString();
-  const blob = new Blob([`${JSON.stringify(toCanonicalProject(), null, 2)}\n`], {
-    type: "application/json",
-  });
-  downloadBlob(blob, `${safeFilename(scenario.name)}.scenario.json`);
-  dirty = false;
-  toast("Saved the authoring project, including physical ground truth.", "success");
+  try {
+    const blob = new Blob([`${JSON.stringify(toCanonicalProject(), null, 2)}\n`], {
+      type: "application/json",
+    });
+    downloadBlob(blob, `${safeFilename(scenario.name)}.scenario.json`);
+    dirty = false;
+    toast("Saved the authoring project, including physical ground truth.", "success");
+  } catch (error) {
+    toast(`Could not save project: ${error.message}`, "error");
+  }
 }
 
 async function validateProject(showToast = false) {
@@ -2746,11 +2750,14 @@ function canonicalMediumIdForTarget(targetId) {
 }
 
 function safeIdentifier(value, fallback) {
-  const text = stringValue(value, fallback)
-    .trim()
-    .replace(/[^A-Za-z0-9_.:/-]+/g, "-")
-    .slice(0, 256);
-  return text || fallback;
+  const text = stringValue(value, fallback).trim();
+  if (!text) return fallback;
+  // IDs are references, not display slugs. Match the scenario schema without
+  // rewriting valid punctuation or truncating distinct supplied identities.
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.:@/+~-]{0,255}$/.test(text)) {
+    throw new Error("Identifiers must contain 1-256 safe identifier characters and start with a letter or digit.");
+  }
+  return text;
 }
 
 function uniqueIdentifier(value, used, fallbackPrefix) {

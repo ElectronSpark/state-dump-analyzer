@@ -362,6 +362,140 @@ Promise.resolve(vm.runInContext('(async () => {' + request.code + '})()', contex
                 self.assertTrue(validate_scenario(output)["ok"])
                 self.assertEqual(compile_scenario(output), compile_scenario(value))
 
+    def test_schema_identifier_alphabet_and_length_survive_browser_round_trip(self) -> None:
+        identifiers = [
+            "A", "0", "aZ09_.:@/+~-", "n" + "x" * 255,
+            *(f"node{character}1" for character in "_.:@/+~-"),
+        ]
+        value = {
+            "scenario_id": "scenario_.:@/+~-",
+            "seed": 7,
+            "capture_time_ns": 1_000_000_000,
+            "nodes": [{"node_id": identifier} for identifier in identifiers],
+            "media": [],
+            "events": [],
+        }
+        self.assertTrue(validate_scenario(value)["ok"])
+        output = self.run_web(
+            "scenario = normalizeScenario(input); return toCanonicalProject();", value,
+        )
+        self.assertTrue(validate_scenario(output)["ok"])
+        self.assertEqual(output["scenario_id"], value["scenario_id"])
+        self.assertEqual([node["node_id"] for node in output["nodes"]], identifiers)
+        self.assertEqual(compile_scenario(output), compile_scenario(value))
+
+    def test_distinct_identifiers_keep_all_cross_references_and_generated_history(self) -> None:
+        node_ids = ["node+1", "node-1", "node@1", "node~1"]
+        value = {
+            "scenario_id": "scenario+@~1",
+            "seed": 7,
+            "capture_time_ns": 1_000_000_000,
+            "nodes": [{"node_id": node_id} for node_id in node_ids],
+            "media": [],
+            "events": [],
+        }
+        for index, punctuation in enumerate("+-@~"):
+            medium_id = f"wire{punctuation}1"
+            attached_nodes = node_ids[:3] if punctuation == "~" else node_ids[:2]
+            attachments = [{
+                "node_id": node_id,
+                "port_id": f"port{punctuation}{index}/0",
+                "resource_id": f"attachment{punctuation}{index}:{node_id}",
+                "node_local_observation": {
+                    "resource_id": f"observed{punctuation}{index}:{node_id}",
+                    "properties": {"oper_status": "up"},
+                },
+            } for node_id in attached_nodes]
+            value["media"].append({
+                "medium_id": medium_id,
+                "kind": "broadcast" if punctuation == "~" else "point-to-point",
+                "attachments": attachments,
+            })
+            value["events"].append({
+                "event_id": f"physical{punctuation}1",
+                "timestamp_ns": index * 100_000_000,
+                "kind": "medium-state",
+                "medium_id": medium_id,
+                "status": "down",
+                "propagation": {
+                    "targets": attached_nodes,
+                    "outcomes": {node_id: "success" for node_id in attached_nodes},
+                },
+            })
+            value["events"].append({
+                "event_id": f"local{punctuation}1",
+                "timestamp_ns": index * 100_000_000 + 1,
+                "node_id": node_ids[index],
+                "resource_id": f"resource{punctuation}1",
+                "status": "up",
+            })
+        self.assertTrue(validate_scenario(value)["ok"])
+        output = self.run_web(
+            "scenario = normalizeScenario(input); return toCanonicalProject();", value,
+        )
+        self.assertTrue(validate_scenario(output)["ok"])
+        self.assertEqual([node["node_id"] for node in output["nodes"]], node_ids)
+        expected_media = {medium["medium_id"]: medium for medium in value["media"]}
+        actual_media = {medium["medium_id"]: medium for medium in output["media"]}
+        self.assertEqual(set(actual_media), set(expected_media))
+        for medium_id, medium in expected_media.items():
+            for actual, expected in zip(
+                actual_media[medium_id]["attachments"], medium["attachments"], strict=True,
+            ):
+                for field in ("node_id", "port_id", "resource_id", "node_local_observation"):
+                    if field == "node_local_observation":
+                        self.assertEqual(actual[field]["resource_id"], expected[field]["resource_id"])
+                    else:
+                        self.assertEqual(actual[field], expected[field])
+        expected_events = {event["event_id"]: event for event in value["events"]}
+        self.assertEqual({event["event_id"] for event in output["events"]}, set(expected_events))
+        for event in output["events"]:
+            expected = expected_events[event["event_id"]]
+            for field in ("node_id", "resource_id", "medium_id", "propagation"):
+                if field in expected:
+                    self.assertEqual(event[field], expected[field])
+        self.assertEqual(compile_scenario(output), compile_scenario(value))
+
+    def test_invalid_identifiers_are_rejected_without_lossy_rewriting(self) -> None:
+        identifiers = ["+node", "@node", "_node", "a b", "a?b", "a\\b", "a" * 257]
+        results = self.run_web("""
+return input.identifiers.map(value => {
+  try { return {value: safeIdentifier(value, 'fallback')}; }
+  catch (error) { return {error: error.message}; }
+});
+""", {"identifiers": identifiers})
+        for identifier, result in zip(identifiers, results, strict=True):
+            with self.subTest(identifier=identifier):
+                value = scenario()
+                value["scenario_id"] = identifier
+                with self.assertRaisesRegex(ValueError, "safe identifier characters"):
+                    scenario_from_dict(value)
+                self.assertIn("safe identifier characters", result["error"])
+        self.assertEqual(
+            self.run_web("return [safeIdentifier(null, 'fallback'), safeIdentifier('', 'fallback')];"),
+            ["fallback", "fallback"],
+        )
+
+    def test_invalid_identifier_save_keeps_unsaved_project_and_reports_error(self) -> None:
+        result = self.run_web("""
+scenario = normalizeScenario(input);
+scenario.nodes[0].id = 'node?1';
+dirty = true;
+dom['project-name'] = {value:scenario.name};
+globalThis.Blob = class Blob {};
+let downloads = 0;
+const messages = [];
+downloadBlob = () => { downloads += 1; };
+toast = (message, kind) => messages.push({message, kind});
+saveProject();
+return {downloads, dirty, messages};
+""")
+        self.assertEqual(result["downloads"], 0)
+        self.assertTrue(result["dirty"])
+        self.assertEqual(result["messages"][0]["kind"], "error")
+        self.assertIn("Could not save project", result["messages"][0]["message"])
+        self.assertIn("safe identifier characters", result["messages"][0]["message"])
+
     def test_partial_multiaccess_pattern_uses_all_local_attachments(self) -> None:
         value = scenario()
         value["events"] = []

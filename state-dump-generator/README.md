@@ -80,6 +80,11 @@ The editor follows the familiar GNS2 pattern:
    delay, jitter, and outcome before accepting the generated observations.
 6. Validate the project, save its JSON, and generate the dump assembly.
 
+Saving preserves schema-valid identifiers and references exactly, including
+`+`, `@`, and `~`. Identifiers contain 1–256 characters, start with an ASCII
+letter or digit, and then use letters, digits, or `_.:@/+~-`. Invalid or
+overlong identifiers produce an error and leave the project unsaved.
+
 To work on the bundled Router State Lab scenario, click **Open** and choose
 `demo/router-state-lab-default.scenario.json` from the repository checkout.
 That saved file, rather than a generated TGZ, is the durable source for future
