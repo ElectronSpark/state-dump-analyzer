@@ -4,6 +4,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from fastapi import FastAPI, Request
+
 from router_dump_analyzer.web import runtime_api
 
 
@@ -16,6 +18,7 @@ class RuntimeCapabilityAdvertisingTests(unittest.TestCase):
         topology_provider=None,
         route_provider=None,
     ) -> set[str]:
+        request = Request({"type": "http", "app": FastAPI()})
         session = SimpleNamespace(
             temporal_provider=temporal_provider,
             topology_provider=topology_provider,
@@ -44,7 +47,12 @@ class RuntimeCapabilityAdvertisingTests(unittest.TestCase):
                 return_value=session,
             ),
         ):
-            payload = runtime_api.capabilities("revision")
+            payload = runtime_api.capabilities("revision", request)
+        self.assertEqual(
+            payload["host_services"],
+            {"control_plane_configured": False, "request_identity_configured": False},
+        )
+        self.assertNotIn("durable_review", payload["implemented"])
         return set(payload["implemented"])
 
     def test_optional_services_are_not_advertised_when_absent(self) -> None:
