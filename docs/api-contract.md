@@ -121,6 +121,14 @@ that case. A complete node history uses `history_mode: server-windowed` and a
 matching top-level `history_transport.mode`. Event, source-record, density, and
 detail endpoints in `history_transport` are revision-scoped.
 
+For bounded node snapshots, the browser uses the recorded `node_snapshot`
+query-node envelope: `resolved_basis.requested`, `resolved_basis.clock_policy`,
+and the uniquely matching `node.plugin_results` entry. Its node/member/revision,
+projection, perspective, and resolved-time identity must match the request.
+Selector mismatches and topology API failures display an unavailable result;
+the browser never reconstructs a replacement from local resources or events.
+Recorded false/null existence and null clock bounds remain unchanged.
+
 Counts describe the whole workspace, not the current page or DOM window.
 `time_bounds` may repeat the three timestamp fields as a convenience.
 `initial_resource_ids` and `initial_focus_resource_id` are generic bootstrap

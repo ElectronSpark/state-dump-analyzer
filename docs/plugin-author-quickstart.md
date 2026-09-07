@@ -563,6 +563,12 @@ The core owns the generic browser pages, widgets, interaction logic, and
 accessible rendering. Plug-ins contribute declarative domain presentation
 only: labels, icons, tags, table/dashboard descriptors, topology projections,
 and route or packet explanation text.
+Topology capabilities must be declared; resource layers do not create fallback
+projection or perspective names. A topology API failure stays unavailable. A
+bounded node snapshot can display its recorded result only for the original
+member/revision, projection, perspective, basis, and clock policy; unknown clock
+fields stay unknown. The executable browser cases are in
+`frontend/tests/topology_authority.test.mjs`.
 
 ### C. Probe
 

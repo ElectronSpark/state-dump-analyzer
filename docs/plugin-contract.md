@@ -1416,6 +1416,13 @@ arrays. Core supplies `has_lifecycle_history` from the complete revision; only
 within the returned half-open query window can that flag establish absence
 without a matching live interval. The plug-in does not emit this transport flag
 and clients MUST NOT reconstruct missing intervals from snapshots or previews.
+A failed topology API query MUST remain unavailable; cached resources, event
+previews, and undeclared layer names do not authorize a substitute projection.
+A bounded node snapshot may display only its exact recorded member/revision,
+projection, perspective, original time basis, and clock policy. Selector
+mismatches remain unavailable, and missing clock mappings/uncertainties remain
+unknown. The browser does not assign offsets or watermarks to make a snapshot
+fit another request.
 Public singular time reads and named resource-table views MUST preserve that
 ambiguity as `exists=None`, unknown status, and an empty state, rather than
 selecting the latest perspective or falling back to the final record. An

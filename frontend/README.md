@@ -144,6 +144,12 @@ that the node clocks are simultaneous. If the pending query controls switch
 between absolute and relative bases, apply or restore that basis before using
 the bar again.
 
+A node topology query failure displays an unavailable result, without deriving
+replacement state from cached timeline data. A bounded node snapshot opens at
+its recorded basis and supports only its original immutable member/revision,
+projection, perspective, and clock policy. Changing those selectors requires a
+server query; missing clock bounds stay unknown.
+
 ## Develop the frontend separately
 
 Node.js 18 or newer is required. No package installation is needed.

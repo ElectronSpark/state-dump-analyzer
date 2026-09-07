@@ -5,6 +5,8 @@ conformance vector.  The comprehensive demo corpus is synthesized offline by
 the plug-in-owned :class:`ExampleRouterGeneratedProjectionPolicy`; immutable
 generated revisions can therefore load their checked, precomputed projections
 without pretending that the small parser produced them at request time.
+A bounded topology snapshot retains its original selection and clock basis;
+the core browser never reconstructs a replacement after a topology API error.
 
 The public entry point remains a normal installed ``AnalyzerPlugin`` and never
 depends on the generator or web application.

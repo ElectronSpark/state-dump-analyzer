@@ -1915,6 +1915,12 @@ filtering. The browser preserves returned intervals exactly, including empty
 arrays, and treats absent intervals as known absence only inside the returned
 half-open window when lifecycle evidence exists. Missing evidence remains unknown;
 a final resource snapshot or preview event cannot fill a server history gap.
+Topology API errors now produce an explicit unavailable result with no local
+reconstruction. A point-in-time node snapshot is read from its exact recorded
+`node_snapshot.node.plugin_results` entry only when immutable scope and original
+basis/clock policy match. Controls initialize that recorded basis; selector
+changes do not reinterpret the snapshot. Existence, links, and missing clock
+bounds are preserved, and resource layers never synthesize capabilities.
 
 The all-node route table may include a plug-in inventory row with no candidate
 path, for example a null-scenario local route. Such a row is preserved with

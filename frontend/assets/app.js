@@ -295,7 +295,6 @@ const state = {
   topologyRequestId: 0,
   topologyAbortController: null,
   topologyQueryPending: false,
-  topologyUsingFallback: false,
   topologyTimer: null,
   temporalTimer: null,
   routeRequestId: 0,
@@ -8102,57 +8101,7 @@ function topologyNodeId(item) {
   return String(item?.node_id ?? item?.id ?? item?.name ?? "");
 }
 
-function fallbackTopologyCapabilities() {
-  const nodeMap = new Map();
-  for (const resource of state.resourceById.values()) {
-    const nodeId = String(resource.node_id ?? resource.node ?? resource.device_id ?? "");
-    if (nodeId && !nodeMap.has(nodeId)) nodeMap.set(nodeId, { node_id: nodeId, label: nodeId });
-  }
-  const declaredNodes = firstArray(
-    state.dataset?.topology_nodes,
-    state.dataset?.nodes,
-    state.dataset?.schema?.topology_nodes,
-  );
-  declaredNodes.forEach((item) => {
-    const nodeId = topologyNodeId(item);
-    if (nodeId) nodeMap.set(nodeId, item);
-  });
-  if (!nodeMap.size) {
-    const nodeId = workspaceNodeId();
-    nodeMap.set(nodeId, { node_id: nodeId, label: topologyNodeSnapshotLabel() });
-  }
-
-  const layers = [...state.layerMeta.entries()].map(([layerId, descriptor]) => ({
-    status_perspective_id: layerId,
-    layer_id: layerId,
-    label: descriptor.label || humanLayer(layerId),
-    description: "Resource status reported by this layer.",
-  }));
-  if (!layers.length) layers.push({ status_perspective_id: "observed", layer_id: "observed", label: "Observed status" });
-
-  return {
-    projections: [{
-      projection_id: "resource-relationships",
-      label: "Resource relationships",
-      description: "Generic time-valid resources and relationships retained by the core.",
-    }],
-    status_perspectives: layers,
-    nodes: [...nodeMap.values()].slice(0, MAX_TOPOLOGY_NODE_ROWS),
-    defaults: {
-      projection_id: "resource-relationships",
-      status_perspective_id: topologyPerspectiveId(layers[0]),
-      clock_policy: "strict",
-    },
-    time_bounds: {
-      start_ns: state.viewStartNs.toString(),
-      end_ns: state.viewEndNs.toString(),
-    },
-    capability_source: "frontend_fallback",
-  };
-}
-
 function normalizeTopologyCapabilities(raw) {
-  const fallback = fallbackTopologyCapabilities();
   const projections = firstArray(
     raw?.projections,
     raw?.topology_projections,
@@ -8170,12 +8119,12 @@ function normalizeTopologyCapabilities(raw) {
     .slice(0, MAX_TOPOLOGY_NODE_ROWS);
   return {
     ...raw,
-    projections: projections.length ? projections : fallback.projections,
-    status_perspectives: perspectives.length ? perspectives : fallback.status_perspectives,
-    nodes: nodes.length ? nodes : fallback.nodes,
-    defaults: { ...fallback.defaults, ...(raw?.defaults || {}) },
-    time_bounds: raw?.time_bounds || fallback.time_bounds,
-    capability_source: raw?.capability_source || raw?.source || fallback.capability_source,
+    projections,
+    status_perspectives: perspectives,
+    nodes,
+    defaults: { ...(raw?.defaults || {}) },
+    time_bounds: raw?.time_bounds,
+    capability_source: raw?.capability_source || raw?.source || "workspace_schema",
   };
 }
 
@@ -8191,11 +8140,13 @@ async function requestTopologyCapabilities() {
     try {
       raw = await analysisRuntimeApi(revisionPath("topology/capabilities"));
     } catch (_error) {
-      // A local projection keeps the frontend reviewable while the versioned API is implemented.
+      // Declared workspace capabilities may remain visible, but query failures
+      // never authorize the browser to reconstruct a topology.
     }
   }
   state.topologyCapabilities = normalizeTopologyCapabilities(raw || {});
   renderTopologyControls();
+  renderTopologyQueryState();
 }
 
 function renderTopologyControlNotes() {
@@ -8272,6 +8223,7 @@ function renderTopologyControls() {
       || workspaceMetadata().capture_clock_domain
       || "utc";
   }
+  initializeTopologySnapshotControls();
   renderTopologyControlNotes();
   syncTopologyTimeEditors();
   renderTopologyNavigationBanner();
@@ -8289,6 +8241,9 @@ function parseSignedSecondsNs(value) {
 function topologyRequestBody() {
   const projectionId = byId("topology-projection").value;
   const perspectiveId = byId("topology-perspective").value;
+  if (!projectionId || !perspectiveId) {
+    throw new Error("No topology projection and status perspective are declared for this workspace.");
+  }
   const basisKind = byId("topology-basis-kind").value;
   let basis;
   if (basisKind === "absolute_time") {
@@ -8338,117 +8293,160 @@ function topologyRequestBody() {
   };
 }
 
-function localTopologyEvents(resolvedTimeNs) {
-  const candidates = [];
-  const seen = new Set();
-  const add = (event) => {
-    const id = String(event?.event_uid || event?.event_id || "");
-    if (!id || seen.has(id) || eventTime(event) > resolvedTimeNs) return;
-    seen.add(id);
-    candidates.push(event);
-  };
-  const events = state.dataset?.events || [];
-  events.slice(Math.max(0, events.length - 5000)).forEach(add);
-  state.lanes.forEach((lane) => lane.marks.forEach((mark) => add(mark.event)));
-  candidates.sort((left, right) => eventTime(left) > eventTime(right) ? -1 : eventTime(left) < eventTime(right) ? 1 : 0);
-  return candidates.slice(0, MAX_TOPOLOGY_CHANGE_ROWS).map((event) => {
-    const subject = eventSubject(event);
-    const properties = event?.attributes?.properties || event?.properties || {};
-    return {
-      change_id: event.event_uid || event.event_id,
-      time_ns: eventTime(event).toString(),
-      node_id: subject.node_id || event.node_id || workspaceNodeId(),
-      change_type: event.effect_type || event.action || event.operation || "status_change",
-      subject_id: canonicalResourceForSubject(subject, event),
-      before: properties.before ?? properties.previous_status,
-      after: properties.after ?? properties.status ?? eventStatus(event),
-      cause_event_id: event.event_uid || event.event_id,
-      quality: event.quality || "unknown",
-    };
-  });
+function topologyBasisIdentity(basis) {
+  if (!basis || typeof basis !== "object") return null;
+  const kind = basis.kind === "relative_to_scope_end" ? "relative_to_watermark" : basis.kind;
+  if (!["absolute_time", "relative_to_watermark"].includes(kind)) return null;
+  const allowedFields = new Set(["kind", "clock_policy", "scope", "scopes",
+    ...(kind === "absolute_time" ? ["time_ns", "clock_domain"] : ["offset_ns"])]);
+  if (Object.keys(basis).some((key) => !allowedFields.has(key))) return null;
+  const value = kind === "absolute_time" ? basis.time_ns : basis.offset_ns;
+  if ((typeof value !== "string" || !/^[+-]?\d+$/.test(value))
+    && (typeof value !== "number" || !Number.isSafeInteger(value))) return null;
+  if (kind === "absolute_time" && (typeof basis.clock_domain !== "string" || !basis.clock_domain)) return null;
+  return JSON.stringify([kind, kind === "absolute_time" ? basis.clock_domain : null, BigInt(value).toString()]);
 }
 
-function localTopologyQuery(request, apiError = null) {
-  const requested = request.basis.kind === "absolute_time"
-    ? toNs(request.basis.time_ns, state.cursorNs)
-    : state.viewEndNs + toNs(request.basis.offset_ns, 0n);
-  const resolvedTimeNs = requested < state.viewStartNs
-    ? state.viewStartNs
-    : requested > state.viewEndNs ? state.viewEndNs : requested;
-  const selectedFirst = state.selectedResourceId ? [state.selectedResourceId] : [];
-  const resourceIds = [...new Set([...selectedFirst, ...state.resourceById.keys()])]
-    .slice(0, MAX_TOPOLOGY_RESOURCE_ROWS);
-  const defaultNodeId = topologyNodeId(state.topologyCapabilities?.nodes?.[0]) || workspaceNodeId();
-  const resources = resourceIds.map((resourceId) => {
-    const record = state.resourceById.get(resourceId) || { resource_id: resourceId };
-    const lane = state.laneByResource.get(resourceId);
-    const temporal = lane
-      ? statusAtLane(lane, resolvedTimeNs)
-      : { exists: true, status: record.status || record.state?.status || "observed", properties: record.state || record.properties || {} };
-    return {
-      resource_id: resourceId,
-      label: resourceLabel(record, resourceId),
-      kind: resourceKind(record, resourceId),
-      node_id: record.node_id || record.node || defaultNodeId,
-      layer_id: resourceLayer(record, resourceId),
-      exists: temporal.exists,
-      status: temporal.status,
-      properties: temporal.properties,
-      quality: record.quality || "unknown",
-    };
-  });
-  const graph = localGraphAt(resolvedTimeNs);
-  const relationships = graph.edges.slice(0, MAX_TOPOLOGY_CONNECTIVITY_ROWS).map((edge) => ({
-    relationship_id: edge.id,
-    source_resource_id: edge.source,
-    target_resource_id: edge.target,
-    relation_type: edge.type,
-    status: "active",
-    quality: edge.quality,
-    inferred: Boolean(edge.inferred),
-  }));
-  const nodeTimes = (state.topologyCapabilities?.nodes || [{ node_id: defaultNodeId }]).map((node) => {
-    const nodeId = topologyNodeId(node);
-    const uncertaintyNs = toNs(node.clock_uncertainty_ns ?? node.uncertainty_ns, 0n);
-    const clockStatus = node.clock_status || node.status || "resolved";
-    return {
-      node_id: nodeId,
-      label: node.label || node.display_name || nodeId,
-      status: clockStatus,
-      local_time_ns: (resolvedTimeNs + toNs(node.clock_offset_ns, 0n)).toString(),
-      absolute_min_ns: (resolvedTimeNs - uncertaintyNs).toString(),
-      absolute_max_ns: (resolvedTimeNs + uncertaintyNs).toString(),
-      uncertainty_ns: uncertaintyNs.toString(),
-      mapping_method: node.clock_mapping_method || "capture clock",
-      watermark_ns: state.viewEndNs.toString(),
-    };
-  });
+function initializeTopologySnapshotControls() {
+  if (!isTopologyNodeSnapshot()) return;
+  const recorded = state.dataset?.node_snapshot?.resolved_basis;
+  const basis = recorded?.requested;
+  if (!topologyBasisIdentity(basis)) return;
+  const results = firstArray(state.dataset?.node_snapshot?.node?.plugin_results);
+  if (results.length === 1 && !navigationContext.projectionId && !navigationContext.perspectiveId) {
+    const result = results[0];
+    const capabilities = state.topologyCapabilities;
+    const projection = capabilities?.projections.find((item) => topologyProjectionId(item) === result?.projection_id);
+    const supported = firstArray(projection?.supported_status_perspective_ids,
+      projection?.status_perspective_ids, projection?.perspectives)
+      .map((item) => typeof item === "object" ? topologyPerspectiveId(item) : String(item));
+    if (projection && capabilities.status_perspectives.some((item) => topologyPerspectiveId(item) === result.status_perspective_id)
+      && (!supported.length || supported.includes(result.status_perspective_id))) {
+      byId("topology-projection").value = result.projection_id;
+      renderTopologyPerspectiveOptions(result.status_perspective_id);
+    }
+  }
+  byId("topology-basis-kind").value = basis.kind === "relative_to_scope_end" ? "relative_to_watermark" : basis.kind;
+  byId("topology-clock-policy").value = recorded.clock_policy;
+  byId("topology-follow-cursor").checked = false;
+  if (basis.kind === "absolute_time") {
+    byId("topology-absolute-time").value = String(basis.time_ns);
+    byId("topology-absolute-clock-domain").value = basis.clock_domain;
+  } else {
+    const offset = BigInt(basis.offset_ns);
+    const magnitude = offset < 0n ? -offset : offset;
+    const fraction = String(magnitude % 1_000_000_000n).padStart(9, "0");
+    byId("topology-relative-seconds").value = `${offset < 0n ? "-" : ""}${magnitude / 1_000_000_000n}.${fraction}`;
+  }
+}
+
+function unavailableTopologyQuery(request, reason) {
   return {
     projection_id: request.projection_id,
     status_perspective_id: request.status_perspective_id,
     clock_policy: request.clock_policy,
-    resolved_basis: {
-      ...request.basis,
-      requested_time_ns: requested.toString(),
-      resolved_time_ns: resolvedTimeNs.toString(),
-      scope_end_ns: state.viewEndNs.toString(),
-      label: request.basis.kind === "absolute_time" ? "Absolute time" : "Relative capture vector",
-    },
-    node_times: nodeTimes,
+    resolved_basis: { kind: "unresolved", requested: { ...request.basis } },
+    node_times: [],
+    resources: [],
+    relationships: [],
+    inferred_connectivity: [],
+    changes: [],
+    completeness: { complete: false, limitations: [reason] },
+    source: "unavailable",
+    unavailable_reason: reason,
+  };
+}
+
+function nodeSnapshotTopologyQuery(request) {
+  const unavailable = (reason) => unavailableTopologyQuery(request, reason);
+  const snapshot = state.dataset?.node_snapshot;
+  const node = snapshot?.node;
+  if (!node || ["node_id", "member_id", "revision_id"].some((field) => typeof node[field] !== "string" || !node[field])
+    || node.revision_id !== workspaceMetadata().revision_id
+    || (snapshot.revision_id !== undefined && snapshot.revision_id !== node.revision_id)) {
+    return unavailable("No validated topology snapshot is available for this immutable revision.");
+  }
+  if ((request.member_id !== undefined && request.member_id !== node.member_id)
+    || (request.plugin_set_id !== undefined && request.plugin_set_id !== node.plugin_set_id)
+    || (request.node_ids !== undefined && (!Array.isArray(request.node_ids)
+      || request.node_ids.length !== 1 || request.node_ids[0] !== node.node_id))) {
+    return unavailable("The requested member is outside the recorded topology snapshot.");
+  }
+  for (const basis of [request.basis, snapshot.resolved_basis?.requested]) {
+    if (basis?.scopes !== undefined && !Array.isArray(basis.scopes)) {
+      return unavailable("The watermark scope is not a recorded snapshot selector.");
+    }
+    const scopes = [...(basis?.scopes || []), ...(basis?.scope !== undefined ? [basis.scope] : [])];
+    if (scopes.length > 1 || scopes.some((scope) => (
+      !scope || typeof scope !== "object"
+      || Object.keys(scope).some((key) => !["node_id", "status_perspective_id", "topology_projection_id", "offset_ns"].includes(key))
+      || scope.node_id !== node.node_id
+      || scope.status_perspective_id !== request.status_perspective_id
+      || scope.topology_projection_id !== request.projection_id
+      || (scope.offset_ns !== undefined && (basis.kind === "absolute_time"
+        || topologyBasisIdentity({ ...basis, offset_ns: scope.offset_ns }) !== topologyBasisIdentity(basis)))
+    ))) {
+      return unavailable("The watermark scope differs from the recorded snapshot selectors or offset.");
+    }
+  }
+  const requestedBasis = topologyBasisIdentity(request.basis);
+  if (!requestedBasis || requestedBasis !== topologyBasisIdentity(snapshot.resolved_basis?.requested)
+    || typeof snapshot.resolved_basis?.clock_policy !== "string"
+    || request.clock_policy !== snapshot.resolved_basis.clock_policy
+    || (request.basis?.clock_policy !== undefined && request.basis.clock_policy !== request.clock_policy)) {
+    return unavailable("This snapshot supports only its recorded time basis and clock policy.");
+  }
+  const matches = firstArray(node.plugin_results).filter((item) => (
+    item?.projection_id === request.projection_id
+    && item?.status_perspective_id === request.status_perspective_id
+    && (request.plugin_id === undefined || request.plugin_id === item.plugin_provenance?.plugin_id)
+  ));
+  if (matches.length !== 1) {
+    return unavailable("No unique recorded projection matches this projection and status perspective.");
+  }
+  const selected = matches[0];
+  const resolved = selected.resolved_time;
+  if (!resolved || ["node_id", "member_id", "revision_id"].some((field) => resolved[field] !== node[field])
+    || resolved.projection_id !== request.projection_id
+    || resolved.status_perspective_id !== request.status_perspective_id
+    || !Array.isArray(selected.resources) || !Array.isArray(selected.local_links)) {
+    return unavailable("The recorded projection lacks its qualified resources, links, or time basis.");
+  }
+  const result = structuredClone(selected);
+  const resources = result.resources.slice(0, MAX_TOPOLOGY_RESOURCE_ROWS);
+  const links = result.local_links.slice(0, MAX_TOPOLOGY_CONNECTIVITY_ROWS);
+  const truncated = resources.length < result.resources.length || links.length < result.local_links.length;
+  const completeness = structuredClone(snapshot.completeness || node.completeness || {});
+  const resourceCounts = { ...result.counts?.resources,
+    returned_count: resources.length,
+    truncated: result.counts?.resources?.truncated === true || resources.length < result.resources.length,
+  };
+  return {
+    projection_id: result.projection_id,
+    status_perspective_id: result.status_perspective_id,
+    clock_policy: snapshot.resolved_basis.clock_policy,
+    resolved_basis: structuredClone(snapshot.resolved_basis),
+    node_times: [{ ...result.resolved_time,
+      ...(node.label !== undefined ? { label: node.label } : {}),
+      ...(node.resources_available !== undefined ? { resources_available: node.resources_available } : {}),
+    }],
     resources,
-    relationships: relationships.filter((item) => !item.inferred),
-    inferred_connectivity: relationships.filter((item) => item.inferred),
-    changes: localTopologyEvents(resolvedTimeNs),
+    relationships: links.filter((item) => item.inferred !== true),
+    inferred_connectivity: links.filter((item) => item.inferred === true),
+    changes: [],
+    counts: { ...result.counts, resources: resourceCounts },
     completeness: {
-      complete: false,
+      ...completeness,
+      complete: completeness.complete === true && result.complete === true && !truncated,
+      resources: { ...resourceCounts },
+      relationships: { truncated: links.length < result.local_links.length },
       limitations: [
-        "Frontend fallback: the versioned topology API was unavailable.",
-        "Only currently loaded resources and relationships are projected.",
-        ...(requested !== resolvedTimeNs ? ["Requested time was clamped to the loaded capture range."] : []),
+        ...firstArray(completeness.limitations),
+        "Showing the recorded topology snapshot; historical changes are not supplied.",
+        ...(truncated ? ["The recorded snapshot exceeds the display row limit."] : []),
       ],
     },
-    source: "frontend_fallback",
-    api_error: apiError,
+    source: "validated_node_snapshot",
   };
 }
 
@@ -8527,6 +8525,7 @@ function topologyReferenceLabel(value) {
 }
 
 function topologyBasisSummary(payload) {
+  if (payload?.source === "unavailable") return "No topology or clock resolution is available for this request.";
   const basis = payload?.resolved_basis || payload?.basis || {};
   if (["relative_to_watermark", "relative_to_scope_end", "relative_capture_vector"].includes(basis.kind)) {
     const offset = basis.offset_ns ?? basis.requested?.offset_ns ?? 0;
@@ -8544,7 +8543,9 @@ function renderTopologyQueryState() {
   const target = byId("topology-query-state");
   const button = document.querySelector(".topology-run-query");
   if (!target || !button) return;
-  button.disabled = state.topologyQueryPending;
+  const hasCapabilities = state.topologyCapabilities?.projections?.length
+    && state.topologyCapabilities?.status_perspectives?.length;
+  button.disabled = state.topologyQueryPending || !hasCapabilities;
   button.textContent = state.topologyQueryPending ? "Reconstructing..." : "Reconstruct topology";
   if (state.topologyQueryPending) {
     target.innerHTML = '<span class="topology-state-chip"><strong>Querying</strong> per-node temporal status...</span>';
@@ -8552,7 +8553,9 @@ function renderTopologyQueryState() {
   }
   const payload = state.topologyQuery;
   if (!payload) {
-    target.innerHTML = '<div class="empty-state">Choose a projection, status perspective, and time basis.</div>';
+    target.innerHTML = hasCapabilities
+      ? '<div class="empty-state">Choose a projection, status perspective, and time basis.</div>'
+      : '<div class="empty-state">No topology projection and status perspective are declared for this workspace.</div>';
     return;
   }
   const projection = state.topologyCapabilities?.projections.find((item) => topologyProjectionId(item) === (payload.projection_id || byId("topology-projection").value));
@@ -8567,7 +8570,7 @@ function renderTopologyQueryState() {
     `<span class="topology-state-chip">Projection <strong>${escapeHtml(projection?.label || payload.projection_id || "unknown")}</strong></span>`,
     `<span class="topology-state-chip">Status <strong>${escapeHtml(perspective?.label || payload.status_perspective_id || "unknown")}</strong></span>`,
     `<span class="topology-state-chip">Clock <strong>${escapeHtml(payload.clock_policy || byId("topology-clock-policy").value)}</strong></span>`,
-    `<span class="topology-state-chip ${state.topologyUsingFallback ? "is-warning" : ""}">Source <strong>${escapeHtml(state.topologyUsingFallback ? "local fallback" : payload.source || "versioned API")}</strong></span>`,
+    `<span class="topology-state-chip ${payload.source === "unavailable" ? "is-warning" : ""}">Source <strong>${escapeHtml(payload.source || "versioned API")}</strong></span>`,
     `<span class="topology-state-chip ${completeness.complete === false ? "is-warning" : ""}">Coverage <strong>${escapeHtml(completeness.complete === true ? "complete" : completeness.complete === false ? "partial" : "not declared")}</strong></span>`,
     ...limitations.slice(0, 3).map((item) => `<span class="topology-state-chip is-warning">${escapeHtml(item)}</span>`),
   ].join("");
@@ -8585,14 +8588,14 @@ function renderTopologyNodeTimes() {
     const minimum = item.absolute_min_ns ?? item.absolute_range?.min_ns;
     const maximum = item.absolute_max_ns ?? item.absolute_range?.max_ns;
     const uncertainty = item.uncertainty_ns ?? item.clock_uncertainty_ns
-      ?? (minimum !== undefined && maximum !== undefined ? (toNs(maximum) - toNs(minimum)) / 2n : undefined);
-    const localLabel = localTime !== undefined
+      ?? (minimum != null && maximum != null ? (toNs(maximum) - toNs(minimum)) / 2n : undefined);
+    const localLabel = localTime != null
       ? topologyTimeLabel(localTime)
-      : localMinimum !== undefined || localMaximum !== undefined
-        ? `${localMinimum === undefined ? "unknown" : topologyTimeLabel(localMinimum)} -> ${localMaximum === undefined ? "unknown" : topologyTimeLabel(localMaximum)}`
+      : localMinimum != null || localMaximum != null
+        ? `${localMinimum == null ? "unknown" : topologyTimeLabel(localMinimum)} -> ${localMaximum == null ? "unknown" : topologyTimeLabel(localMaximum)}`
         : "unknown";
-    const absoluteWindow = minimum !== undefined || maximum !== undefined
-      ? `${minimum === undefined ? "unknown" : topologyTimeLabel(minimum)} -> ${maximum === undefined ? "unknown" : topologyTimeLabel(maximum)}`
+    const absoluteWindow = minimum != null || maximum != null
+      ? `${minimum == null ? "unknown" : topologyTimeLabel(minimum)} -> ${maximum == null ? "unknown" : topologyTimeLabel(maximum)}`
       : "Absolute mapping not supplied";
     const statusClass = item.status_class ?? item.resolution_class ?? item.tone ?? "unknown";
     return `<article class="topology-node-time ${statusClassPresentation({ status_class: statusClass })}">
@@ -8600,8 +8603,8 @@ function renderTopologyNodeTimes() {
       <code>${escapeHtml(`local ${localLabel}${item.local_clock_domain || item.clock_domain ? ` / ${item.local_clock_domain || item.clock_domain}` : ""}`)}</code>
       <small>${escapeHtml(absoluteWindow)}</small>
       <small>${escapeHtml(`${item.mapping_method || item.clock_mapping_method || "mapping unknown"} / ${item.mapping_quality || item.quality || "quality unknown"} / uncertainty ${uncertainty === undefined ? "unknown" : formatDuration(uncertainty)}`)}</small>
-      <small>${escapeHtml(item.resources_available === false ? "Topology/clock observation only; resource state unavailable" : "Resource state available")}</small>
-      ${item.watermark_ns === undefined ? "" : `<small>${escapeHtml(`layer watermark ${topologyTimeLabel(item.watermark_ns)}`)}</small>`}
+      <small>${escapeHtml(item.resources_available === false ? "Topology/clock observation only; resource state unavailable" : item.resources_available === true ? "Resource state available" : "Resource availability not supplied")}</small>
+      ${item.watermark_ns == null ? "" : `<small>${escapeHtml(`layer watermark ${topologyTimeLabel(item.watermark_ns)}`)}</small>`}
     </article>`;
   }).join("") || '<div class="topology-empty-list">No per-node clock resolution was returned. The snapshot cannot be treated as synchronized.</div>';
 }
@@ -8737,10 +8740,8 @@ async function requestTopology(event) {
   state.topologyQueryPending = true;
   renderTopologyQueryState();
   let payload;
-  let usingFallback = false;
   if (isTopologyNodeSnapshot()) {
-    payload = localTopologyQuery(request, "bounded node snapshot");
-    usingFallback = true;
+    payload = nodeSnapshotTopologyQuery(request);
   } else {
     const controller = beginLatestRequest("topologyAbortController");
     try {
@@ -8751,17 +8752,14 @@ async function requestTopology(event) {
       });
     } catch (error) {
       if (requestWasAborted(error, controller)) return;
-      payload = localTopologyQuery(request, error.message);
-      usingFallback = true;
-      if (requestId === state.topologyRequestId) {
-        errorTarget.textContent = `Topology API unavailable; showing bounded local reconstruction (${error.message}).`;
-      }
+      payload = unavailableTopologyQuery(request, `Topology query unavailable: ${error.message}`);
+    } finally {
+      finishLatestRequest("topologyAbortController", controller);
     }
-    finishLatestRequest("topologyAbortController", controller);
   }
   if (requestId !== state.topologyRequestId) return;
   state.topologyQuery = payload;
-  state.topologyUsingFallback = usingFallback;
+  errorTarget.textContent = payload.unavailable_reason || "";
   state.topologyQueryPending = false;
   renderTopologyResults();
 }
