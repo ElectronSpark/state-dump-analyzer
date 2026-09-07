@@ -21,6 +21,7 @@ from rsl_demo_plugin.topology_contract import (
     build_topology_metadata,
     build_topology_profiles,
 )
+from rsl_demo_plugin.typed_topology import DEMO_TOPOLOGY_PROJECTION_ID
 
 from router_dump_analyzer import TopologyDomainRole
 from router_dump_analyzer.multi_node_topology import MultiNodeTopologyService
@@ -268,7 +269,7 @@ class GeneratedAssemblyApiIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(
                 available_members[node_id]["default_projection_id"],
-                f"{node_id}.generated-topology",
+                DEMO_TOPOLOGY_PROJECTION_ID,
             )
 
         topology_response = self.client.post(
@@ -325,7 +326,7 @@ class GeneratedAssemblyApiIntegrationTests(unittest.TestCase):
             self.assertTrue(
                 any(
                     result["projection_id"]
-                    == f"{node_id}.generated-topology"
+                    == DEMO_TOPOLOGY_PROJECTION_ID
                     for result in node["plugin_results"]
                 )
             )
