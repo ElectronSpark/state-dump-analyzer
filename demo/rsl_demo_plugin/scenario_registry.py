@@ -476,6 +476,20 @@ PACKET_TRACE_SCENARIOS: tuple[dict[str, Any], ...] = (
         default_destination="destination:node-b",
     ),
     _scenario(
+        "packet-native-ip-incomplete",
+        "Packet evolution · incomplete IPv4 capture",
+        (
+            "The first forwarded packet snapshot is explicitly incomplete. "
+            "Later complete snapshots and plug-in-declared delivery do not "
+            "turn unknown packet continuity into proof."
+        ),
+        route_type="ipv4_unicast",
+        vrf="default",
+        route_family="ipv4_unicast",
+        address_family="ipv4",
+        packet_profile_id="native-ip-incomplete",
+    ),
+    _scenario(
         "packet-sr-mpls-php",
         "Packet evolution · SR-MPLS swap and PHP",
         (
@@ -567,6 +581,48 @@ PACKET_TRACE_SCENARIOS: tuple[dict[str, Any], ...] = (
         packet_profile_id="mtu-drop",
         default_source="source:node-a",
         default_destination="destination:node-b",
+    ),
+    _scenario(
+        "packet-mtu-fit",
+        "Packet evolution · encapsulation fits MTU",
+        (
+            "A 1420-byte IPv4 packet gains 20 bytes of tunnel overhead. The "
+            "1440-byte wire size fits the 1500-byte egress limit and the "
+            "node plug-in forwards and delivers it."
+        ),
+        route_type="ipv4_unicast",
+        vrf="default",
+        route_family="ipv4_unicast",
+        address_family="ipv4",
+        packet_profile_id="mtu-fit",
+    ),
+    _scenario(
+        "packet-mtu-exact",
+        "Packet evolution · encapsulation exactly matches MTU",
+        (
+            "A 1480-byte IPv4 packet gains 20 bytes of tunnel overhead. The "
+            "1500-byte wire size exactly equals the egress MTU and fits; "
+            "the node plug-in forwards and delivers it."
+        ),
+        route_type="ipv4_unicast",
+        vrf="default",
+        route_family="ipv4_unicast",
+        address_family="ipv4",
+        packet_profile_id="mtu-exact",
+    ),
+    _scenario(
+        "packet-mtu-incomparable",
+        "Packet evolution · incomparable MTU size bases",
+        (
+            "A 1510-byte wire-size observation and a 1500-byte IP-size limit "
+            "use different contracts, so core reports an unknown comparison. "
+            "Forwarding and delivery remain the node plug-in's decision."
+        ),
+        route_type="ipv4_unicast",
+        vrf="default",
+        route_family="ipv4_unicast",
+        address_family="ipv4",
+        packet_profile_id="mtu-incomparable",
     ),
     _scenario(
         "packet-forced-steering",

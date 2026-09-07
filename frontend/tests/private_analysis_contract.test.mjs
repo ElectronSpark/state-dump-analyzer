@@ -9,6 +9,14 @@ const manifest = JSON.parse(readFileSync(new URL("../frontend-manifest.json", im
 const topology = readFileSync(new URL("../pages/topology.html", import.meta.url), "utf8");
 const node = readFileSync(new URL("../pages/node.html", import.meta.url), "utf8");
 const frontendReadme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+const stylesheet = readFileSync(new URL("../assets/private_analysis.css", import.meta.url), "utf8");
+
+test("private-analysis grid layouts respect hidden state and conditional clock fields", () => {
+  assert.match(stylesheet, /\.pa-body\s+\[hidden\]\s*\{\s*display:\s*none\s*!important\s*;/);
+  for (const id of ["pa-compose", "pa-time-field", "pa-results"]) {
+    assert.match(page, new RegExp(`id="${id}"[^>]*hidden`));
+  }
+});
 
 test("manifest and core navigation expose the private-analysis route without query state", () => {
   assert.equal(manifest.pages["/analysis"], "pages/private-analysis.html");

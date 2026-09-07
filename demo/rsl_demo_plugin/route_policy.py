@@ -12,7 +12,7 @@ from router_dump_analyzer.multi_node_route import (
 from .advanced_trace import STEERING_PROFILES, build_packet_transitions
 from .assembly_store import DemoAssemblyStore
 from .scenario_registry import SCENARIO_BY_ID
-
+from .vpn_topology import vpn_domain_key
 
 _SERVICE_PRESENTATIONS: dict[str, dict[str, Any]] = {
     "mpls_l3vpn": {
@@ -24,8 +24,8 @@ _SERVICE_PRESENTATIONS: dict[str, dict[str, Any]] = {
         ),
         "fact_fields": {},
         "connectivity_domain_keys": {
-            "blue": "vpn:blue:ipv4:10.20.0.0-24",
-            "red": "vpn:red:ipv6:2001-db8-30--64",
+            "blue": vpn_domain_key("mpls_l3vpn", "blue", "65000:100"),
+            "red": vpn_domain_key("mpls_l3vpn", "red", "65000:200"),
         },
     },
     "evpn_service": {
@@ -37,7 +37,7 @@ _SERVICE_PRESENTATIONS: dict[str, dict[str, Any]] = {
         ),
         "fact_fields": {"evpn": "service_attributes"},
         "connectivity_domain_keys": {
-            "blue": "vpn:blue:ipv4:10.20.0.0-24",
+            "blue": vpn_domain_key("evpn_vxlan", "blue", "65000:50100", 50100),
         },
     },
     "evpn_mac_ip": {
@@ -49,7 +49,7 @@ _SERVICE_PRESENTATIONS: dict[str, dict[str, Any]] = {
         ),
         "fact_fields": {"evpn": "service_attributes"},
         "connectivity_domain_keys": {
-            "blue": "vpn:blue:ipv4:10.20.0.0-24",
+            "blue": vpn_domain_key("evpn_vxlan", "blue", "65000:50100", 50100),
         },
     },
     "evpn_ip_prefix": {
@@ -61,8 +61,7 @@ _SERVICE_PRESENTATIONS: dict[str, dict[str, Any]] = {
         ),
         "fact_fields": {"evpn": "service_attributes"},
         "connectivity_domain_keys": {
-            "blue": "vpn:blue:ipv4:10.20.0.0-24",
-            "red": "vpn:red:ipv6:2001-db8-30--64",
+            "blue": vpn_domain_key("evpn_vxlan", "blue", "65000:50100", 50100),
         },
     },
 }

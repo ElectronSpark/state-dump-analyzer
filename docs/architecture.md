@@ -1855,6 +1855,10 @@ not the physical shared-medium rendering. When segment records are present, the
 physical view suppresses those route-only links to avoid drawing both models at
 once. VPN domains carry a plug-in presentation plane and may be rendered in a
 separate logical view without changing the core storage model.
+The renderer preserves optional display declarations rather than converting
+missing values into exclusions, and retains declared logical attachment kinds.
+These are generic presentation rules; VRF, route-target and VNI interpretation
+remains in the device plug-in.
 
 The link-status UI may expose presentation-only element filters for subnets,
 VLANs, physical interfaces, LAGs, and subinterfaces. These filters operate on
@@ -2522,6 +2526,13 @@ only that revision's existing observations. No application-wide runtime/default
 revision is changed, and no installed provider is selected as a fallback.
 The response is a bounded client-safe projection, not an arbitrary snapshot
 JSON dump or a new browser-accessible filesystem path.
+
+Validated revision-level relationship projections are a second inspection
+class alongside temporal observations. Core reuses its closed projection
+serializer, labels their revision scope and leaves selected-time presence
+unknown. It does not feed them into temporal observation reconstruction or
+arbitrate them against parser facts. Plug-ins retain ownership of correspondence
+meaning, while the core retains evidence boundaries, paging and provenance.
 
 Session vectors retain member IDs and allow distinct revisions of one node;
 they are not coerced into `AssemblyDescriptor`, whose node IDs must be unique.

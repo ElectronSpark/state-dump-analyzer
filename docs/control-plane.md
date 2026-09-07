@@ -1291,6 +1291,13 @@ change conflicts instead of silently mixing selections. **Reload current
 session membership** deliberately discards that guard; snapshots are the
 stable choice for reproducible comparisons.
 
+Revision-level relationship projections are included separately from timed
+observations. The inspector labels these correspondences as revision-scoped,
+shows their basis/plan digests, and does not assert presence at the selected
+moment or merge their resource endpoints. Summary counts distinguish the two
+evidence classes. The [demo walkthrough](demo-core-coverage.md) exercises this
+with generated before/after inputs and one real projected correspondence.
+
 The inspector uses `POST .../analysis/query` with read permission. It never
 sets a shared active revision, dispatches an arbitrary plug-in/provider, or
 exposes raw dataset files. Optional route/topology execution remains

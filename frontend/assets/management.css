@@ -18,7 +18,7 @@
 .management-message { padding: 12px 18px; border-left: 3px solid #45d6bd; background: #102730; overflow-wrap: anywhere; }
 .management-message[data-error=true] { border-color: #ffb85b; color: #ffdcaa; }
 .management-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); gap: 20px; }
-.management-card { border: 1px solid #294452; border-radius: 10px; padding: 18px; min-width: 0; }
+.management-card { border: 1px solid #294452; border-radius: 10px; padding: 18px; min-width: 0; overflow-wrap: anywhere; }
 .management-list { max-height: 520px; overflow: auto; }
 .management-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; border-bottom: 1px solid #203a46; }
 .management-row > div:first-child { flex: 1; min-width: 160px; overflow-wrap: anywhere; }
@@ -33,5 +33,12 @@
 .management-main summary { cursor: pointer; padding: 8px 0; overflow-wrap: anywhere; }
 .management-record { border-bottom: 1px solid #203a46; padding: 8px; }
 .management-main table { border-collapse: collapse; width: 100%; }
-.management-main th, .management-main td { text-align: left; padding: 9px; border-bottom: 1px solid #203a46; overflow-wrap: anywhere; }
+.management-main th, .management-main td { text-align: left; padding: 9px; border-bottom: 1px solid #203a46; white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
+.management-analysis-member { display: grid; gap: 7px; min-width: 0; margin: 16px 0; }
+.management-analysis-member select { max-width: 100%; text-overflow: ellipsis; }
+.management-main .management-summary-table { table-layout: fixed; }
+.management-summary-table th { width: 38%; }
+.management-main .management-summary-detail { margin: 0; }
+.management-summary-detail summary { padding: 0; }
+.management-summary-detail pre { margin-bottom: 0; }
 @media(max-width: 760px) { .management-main { padding: 0 12px 30px; } .management-body .topbar { position: static; flex-wrap: wrap; } .management-main .section-wrap { padding: 16px; } .management-grid { grid-template-columns: minmax(0,1fr); } .management-pager { flex-wrap: wrap; } .management-form label, .management-scope label { min-width: min(160px,100%); } }

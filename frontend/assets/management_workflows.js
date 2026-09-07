@@ -51,7 +51,7 @@ export async function renderImports(ui) {
     try {
       const query = new URLSearchParams({ original_name: selected.name, auto_select: auto.value });
       const record = await client.request(`${path("imports")}?${query}`, { method: "POST", file: selected, ...(nodeHint.value === "" ? {} : { nodeHint: nodeHint.value }) });
-      state.importId = record.import_id; await show(); message("Upload admitted. The durable worker is processing the dump.");
+      state.importId = record.import_id; await show(); message("Upload admitted. Follow its durable status below; manual parser selection may be required.");
     } finally { spinner.remove(); if (submit.isConnected) submit.disabled = !canWrite || client.uncertain; }
   }); });
   upload.append(form, progress); content.append(upload);

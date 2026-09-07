@@ -263,6 +263,71 @@ test("invalid analysis moments retain the visible selection without sending an i
   assert.equal(app.findButton("Reload current session membership"), undefined);
 });
 
+test("durable summary keeps scalar facts readable and structured materialization behind bounded JSON disclosures", async (t) => {
+  const materialization = { status: "complete", providers: [{ package_hash: "sha256:" + "a".repeat(64) }], evidence: "large-evidence-".repeat(1000) };
+  const facts = {
+    resource_count: 1200, event_count: 0, available: false, note: null,
+    relationship_projection_materialization: materialization,
+    consistency_materialization: { state: "not_materialized" },
+    extra: { status: "x".repeat(1000) }, empty: {}, items: [],
+  };
+  const app = await application(t, (path, options) => {
+    if (!path.endsWith("/analysis/query")) return undefined;
+    return analysisResponse(JSON.parse(options.body), "sha256:" + "a".repeat(64)).json().then((result) => jsonResponse({ ...result, count: 1, total_count: 1, items: [facts] }));
+  });
+  await app.connect(); await app.click(app.findButton("Inspect analysis"));
+  const table = descendants(app.content).find((node) => node.className === "management-summary-table");
+  assert.ok(table, "summary has a contained table layout");
+  const cells = new Map(table.children.map((row) => {
+    assert.equal(row.children[0].getAttribute("scope"), "row");
+    return [row.children[0].textContent, row.children[1]];
+  }));
+  for (const [label, value] of [["resource count", "1200"], ["event count", "0"], ["available", "false"], ["note", "null"]]) {
+    assert.equal(cells.get(label).textContent, value); assert.equal(cells.get(label).children.length, 0);
+  }
+  for (const [key, value] of Object.entries(facts).filter(([, value]) => value !== null && typeof value === "object")) {
+    const cell = cells.get(key.replaceAll("_", " ")); const disclosure = cell.children[0];
+    assert.equal(cell.children.length, 1); assert.equal(disclosure.tagName, "DETAILS");
+    assert.equal(disclosure.className, "management-summary-detail"); assert.equal(disclosure.getAttribute("open"), null);
+    const [summary, payload] = disclosure.children;
+    assert.equal(summary.tagName, "SUMMARY"); assert.ok(summary.textContent.length < 160);
+    assert.equal(payload.tagName, "PRE"); assert.deepEqual(JSON.parse(payload.textContent), value);
+    assert.doesNotMatch(summary.textContent, /large-evidence|sha256:/);
+  }
+  assert.equal(cells.get("relationship projection materialization").children[0].children[0].textContent, "complete · 3 field(s) · View JSON");
+  assert.equal(cells.get("consistency materialization").children[0].children[0].textContent, "not materialized · 1 field(s) · View JSON");
+  assert.equal(cells.get("empty").children[0].children[0].textContent, "0 field(s) · View JSON");
+  assert.equal(cells.get("items").children[0].children[0].textContent, "0 item(s) · View JSON");
+});
+
+test("durable member labels omit repeated revision IDs while preserving exact selection and frozen provenance", async (t) => {
+  const revisionId = "revision/" + "a".repeat(128); const distinctMemberId = "comparison/" + "b".repeat(128);
+  const vector = [
+    { member_id: revisionId, node_id: "same-node", revision_id: revisionId, fixture_id: "fixture-a" },
+    { member_id: distinctMemberId, node_id: "same-node", revision_id: revisionId, fixture_id: "fixture-a" },
+  ];
+  const queries = []; const digest = "sha256:" + "c".repeat(64);
+  const app = await application(t, (path, options) => {
+    if (!path.endsWith("/analysis/query")) return undefined;
+    const query = JSON.parse(options.body); queries.push(query);
+    return analysisResponse(query, digest).json().then((result) => jsonResponse({ ...result, revision_vector: vector, selected_member: vector.find((member) => member.member_id === query.selected_member_id) || vector[0] }));
+  });
+  await app.connect(); await app.click(app.findButton("Inspect analysis"));
+  const label = descendants(app.content).find((node) => node.className === "management-analysis-member");
+  assert.equal(label.tagName, "LABEL"); const select = label.children[0];
+  assert.deepEqual(select.children.map((option) => [option.textContent, option.value]), [
+    [`same-node · ${revisionId}`, revisionId],
+    [`same-node · ${distinctMemberId} · ${revisionId}`, distinctMemberId],
+  ]);
+  assert.equal(select.value, revisionId);
+  const provenance = descendants(app.content).find((node) => node.tagName === "DETAILS" && node.children[0].textContent === "Frozen selection & provenance");
+  assert.deepEqual(JSON.parse(provenance.children[1].textContent), vector);
+  select.value = distinctMemberId; select.emit("change"); await settle();
+  assert.equal(queries.at(-1).selected_member_id, distinctMemberId);
+  assert.equal(queries.at(-1).expected_revision_vector_digest, digest);
+  assert.deepEqual(queries.at(-1).selector, queries[0].selector);
+});
+
 test("actual relationship analysis labels unknown presence separately from confirmed edges", async (t) => {
   const app = await application(t, (path, options) => {
     if (!path.endsWith("/analysis/query")) return undefined;
@@ -297,6 +362,8 @@ test("the upload form forwards its optional node hint through the actual client 
   fileInput.parent.parent.emit("submit"); await settle();
   assert.ok(upload); assert.equal(upload.headers["X-Node-Hint"], "router-7"); assert.equal(upload.body, file);
   assert.doesNotMatch(upload.path, /router-7/); assert.match(app.content.textContent, /Import details/);
+  assert.match(app.elements.get("management-message").textContent, /Follow its durable status below/);
+  assert.doesNotMatch(app.elements.get("management-message").textContent, /worker is processing/);
 });
 
 test("actual import cancellation refreshes the version and sends one scoped conditional mutation", async (t) => {

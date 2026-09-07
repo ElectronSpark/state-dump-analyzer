@@ -29,6 +29,7 @@ from router_dump_analyzer.web.control_plane_api import (
     control_plane_router,
 )
 from tests.test_ingestion import ParseOnlyPlugin
+from tests.support.relationship_projection_plugin import RelationshipProjectionParsePlugin
 
 
 def _dataset(label="visible-port"):
@@ -120,6 +121,31 @@ def _dataset(label="visible-port"):
         "relationship_intervals": [],
         "findings": [],
         "metadata": {"secret": "PRIVATE-METADATA"},
+    }
+
+
+def _projected_relationship(identity="a", relation_type="corresponds_to"):
+    return {
+        "relationship_id": "sha256:" + identity * 64,
+        "scope": "revision",
+        "basis_digest": "sha256:" + "b" * 64,
+        "execution_plan_digest": "sha256:" + "c" * 64,
+        "source": {"resource_id": "r1", "typed_resource_key": {"secret": "PRIVATE-SOURCE"}},
+        "target": {"resource_id": "r2", "typed_resource_key": {"secret": "PRIVATE-TARGET"}},
+        "relation_type": relation_type,
+        "perspective_ref": {
+            "perspective_id": "observed",
+            "plugin_instance_id": "primary-parser",
+            "schema_digest": "sha256:" + "d" * 64,
+            "undeclared": "PRIVATE-PERSPECTIVE",
+        },
+        "quality": "exact",
+        "provenance": "correlated",
+        "ambiguity_group_id": None,
+        "attributes": {"secret": "PRIVATE-ATTRIBUTE"},
+        "evidence": [{"artifact_id": "artifact", "locator": "C:/PRIVATE/evidence"}],
+        "declaration_ids": ["sha256:" + "e" * 64],
+        "undeclared": "PRIVATE-EXTRA",
     }
 
 
@@ -446,6 +472,161 @@ class ManagementAnalysisTests(unittest.TestCase):
             {"unknown-peer": None, "confirmed-peer": True, "legacy-peer": True},
         )
         self.assertNotIn("PRIVATE", response.text)
+
+    def test_summary_counts_revision_projections_separately_from_temporal_records(self):
+        data = self.datasets[("tenant-a", "revision-a")]
+        data["relationship_projection_edges"] = [_projected_relationship()]
+        data["relationship_declarations"] = [{}, {}]
+        data["relationship_projection_materialization"] = {
+            "scope": "revision",
+            "status": "complete",
+            "resolved_edge_count": 1,
+            "declaration_count": 2,
+            "basis_digest": "sha256:" + "b" * 64,
+            "private": "PRIVATE-MATERIALIZATION",
+        }
+        response = self._post()
+        self.assertEqual(response.status_code, 200, response.text)
+        row = response.json()["items"][0]
+        self.assertEqual(row["relationship_count"], 1)
+        self.assertEqual(row["relationship_observation_count"], 0)
+        self.assertEqual(row["relationship_projection_count"], 1)
+        self.assertEqual(row["relationship_declaration_count"], 2)
+        self.assertEqual(row["relationship_interval_count"], 0)
+        self.assertEqual(row["relationship_projection_materialization"]["status"], "complete")
+        self.assertNotIn("PRIVATE", response.text)
+
+    def test_revision_projection_retains_basis_without_inventing_temporal_presence(self):
+        data = self.datasets[("tenant-a", "revision-a")]
+        edge = _projected_relationship()
+        data["relationship_projection_edges"] = [edge]
+        body = {"selector": {"revision_ids": ["revision-a"]}, "section": "relationships"}
+        for time_ns in ("0", "150", "900"):
+            with self.subTest(time_ns=time_ns):
+                response = self._post({**body, "time_ns": time_ns})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["total_count"], 1)
+                row = response.json()["items"][0]
+                self.assertEqual(row["record_kind"], "revision_projection")
+                self.assertEqual(row["scope"], "revision")
+                self.assertIsNone(row["present"])
+                self.assertNotIn("valid_from_ns", row)
+                self.assertNotIn("valid_to_ns", row)
+                self.assertNotIn("timestamp_ns", row)
+                self.assertEqual((row["source"], row["target"]), ("r1", "r2"))
+                self.assertEqual(row["relationship_id"], edge["relationship_id"])
+                self.assertEqual(row["basis_digest"], edge["basis_digest"])
+                self.assertEqual(row["execution_plan_digest"], edge["execution_plan_digest"])
+                self.assertEqual(row["perspective_ref"]["plugin_instance_id"], "primary-parser")
+                self.assertEqual(row["perspective_ref"]["schema_digest"], edge["perspective_ref"]["schema_digest"])
+                self.assertEqual(row["quality"], "exact")
+                self.assertEqual(row["provenance"], "correlated")
+                self.assertIn("selected time is not asserted", row["temporal_note"])
+                self.assertNotIn("PRIVATE", response.text)
+        self.assertEqual(data["relationships"], [])
+        self.assertEqual(data["relationship_intervals"], [])
+
+    def test_projection_inspection_does_not_resurrect_or_replace_parser_observations(self):
+        data = self.datasets[("tenant-a", "revision-a")]
+        data["resources"].append({"resource_id": "r2", "kind": "INTERFACE", "label": "peer"})
+        data["lifecycle_intervals"].append({"resource": "r2", "valid_from_ns": "100", "valid_to_ns": None})
+        edge = _projected_relationship()
+        data["relationship_projection_edges"] = [edge]
+        body = {"selector": {"revision_ids": ["revision-a"]}, "section": "relationships", "time_ns": "175"}
+        for present in (True, False, None):
+            with self.subTest(present=present):
+                data["relationship_intervals"] = [{
+                    "source": "r1", "target": "r2", "relation_type": "corresponds_to",
+                    "valid_from_ns": "150", "valid_to_ns": "200", "present": present,
+                    "quality": "exact", "provenance": "observed",
+                    "perspective_ref": edge["perspective_ref"],
+                }]
+                response = self._post(body)
+                self.assertEqual(response.status_code, 200, response.text)
+                rows = response.json()["items"]
+                projections = [row for row in rows if row["record_kind"] == "revision_projection"]
+                observations = [row for row in rows if row["record_kind"] == "temporal_observation"]
+                self.assertEqual(len(projections), 1)
+                self.assertIsNone(projections[0]["present"])
+                self.assertNotIn("valid_from_ns", projections[0])
+                self.assertEqual(len(observations), 0 if present is False else 1)
+                if observations:
+                    self.assertIs(observations[0]["present"], present)
+                    self.assertEqual(observations[0]["provenance"], "observed")
+                    self.assertEqual(observations[0]["valid_from_ns"], "150")
+                expired = self._post({**body, "time_ns": "200"}).json()["items"]
+                self.assertEqual(len(expired), 1)
+                self.assertEqual(expired[0]["record_kind"], "revision_projection")
+                self.assertIsNone(expired[0]["present"])
+
+    def test_projected_relationship_paging_search_and_perspective_identity(self):
+        data = self.datasets[("tenant-a", "revision-a")]
+        edges = [_projected_relationship(identity) for identity in ("a", "b", "c")]
+        edges[1]["perspective_ref"]["plugin_instance_id"] = "other-parser"
+        edges[2]["relation_type"] = "another_relation"
+        data["relationship_projection_edges"] = edges
+        body = {"selector": {"revision_ids": ["revision-a"]}, "section": "relationships", "limit": 1, "offset": 1}
+        import router_dump_analyzer.management_analysis as implementation
+
+        with patch.object(implementation, "_revision_relationship_row", wraps=implementation._revision_relationship_row) as project:
+            response = self._post(body)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["total_count"], 3)
+        self.assertEqual(response.json()["next_offset"], 2)
+        self.assertEqual(response.json()["items"][0]["relationship_id"], edges[1]["relationship_id"])
+        self.assertEqual(project.call_count, 1)
+        response = self._post({**body, "offset": 0, "limit": 10, "search": "corresponds_to"})
+        self.assertEqual(response.json()["total_count"], 2)
+        self.assertEqual({row["perspective_ref"]["plugin_instance_id"] for row in response.json()["items"]}, {"primary-parser", "other-parser"})
+        private = self._post({**body, "offset": 0, "search": "PRIVATE"})
+        self.assertEqual(private.json()["total_count"], 0)
+
+    def test_real_ingested_projection_is_visible_without_temporalizing_the_dataset(self):
+        control = ControlPlane(
+            Path(self.temporary.name) / "projected",
+            registry=PluginRegistry((RelationshipProjectionParsePlugin(),)),
+            pipeline_limits=PipelineLimits(
+                max_upload_bytes=1024 * 1024, max_workers=1,
+                plugin_execution_mode=PluginExecutionMode.INLINE,
+            ),
+            limits=ControlPlaneLimits(max_dataset_bytes=1024 * 1024),
+        )
+        self.addCleanup(control.close)
+        control.sessions.create_project("tenant-a", "Project", project_id="p")
+        control.sessions.create_workspace("tenant-a", "p", "Workspace", workspace_id="w")
+        control.start()
+        scope = control.import_scope("tenant-a", "p", "w")
+        admitted = control.ingestion.submit_bytes(
+            scope,
+            b'{"captured_at_ns":100,"ifindex":7,"name":"eth0","oper_status":"up"}\n'
+            b'{"captured_at_ns":200,"ifindex":8,"name":"eth1","oper_status":"up"}\n',
+            original_name="status.jsonl",
+        )
+        completed = control.ingestion.wait(scope, admitted.import_id, timeout=15)
+        self.assertEqual(completed.state.value, "completed", completed.error_message)
+        review = ReviewScope("tenant-a", "p", "w")
+        dataset = control.load_revision_dataset(review, completed.revision_id)
+        self.assertEqual(dataset["relationships"], [])
+        self.assertEqual(dataset["relationship_intervals"], [])
+        self.assertEqual(len(dataset["relationship_projection_edges"]), 1)
+        self.application.state.control_plane = control
+        for section in ("summary", "relationships"):
+            response = self.client.post(
+                self.path,
+                headers={"X-Tenant-ID": "tenant-a"},
+                json={"selector": {"revision_ids": [completed.revision_id]}, "section": section, "time_ns": "0"},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            row = response.json()["items"][0]
+            if section == "summary":
+                self.assertEqual(row["relationship_count"], 1)
+                self.assertEqual(row["relationship_projection_count"], 1)
+            else:
+                self.assertEqual(row["record_kind"], "revision_projection")
+                self.assertEqual(row["type"], "same_logical_interface")
+                self.assertIsNone(row["present"])
+                self.assertNotIn("valid_from_ns", row)
+                self.assertNotIn("valid_to_ns", row)
 
     def test_findings_use_existing_allowlisted_projection(self):
         self.datasets[("tenant-a", "revision-a")]["findings"] = [

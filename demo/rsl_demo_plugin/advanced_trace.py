@@ -85,6 +85,8 @@ def _header(
 def _state(
     layers: Sequence[ForwardingPacketLayer],
     size_bytes: int,
+    *,
+    complete: bool = True,
 ) -> ForwardingPacketState:
     return ForwardingPacketState(
         layers=tuple(layers),
@@ -92,6 +94,7 @@ def _state(
             basis_contract_id="demo.wire-size.v1",
             size_bytes=size_bytes,
         ),
+        complete=complete,
     )
 
 
@@ -276,7 +279,7 @@ def _profile_states(
     profile_id: str,
     direction: str,
 ) -> tuple[list[ForwardingPacketState], list[str], int | None]:
-    if profile_id == "native-ip":
+    if profile_id in {"native-ip", "native-ip-incomplete"}:
         initial = _inner_ipv4(direction=direction)
         initial_fields = dict(initial.layers[0].fields)
         forwarded = []
@@ -298,11 +301,20 @@ def _profile_states(
                         ),
                     ),
                     initial.size.size_bytes,  # type: ignore[union-attr]
+                    complete=not (
+                        profile_id == "native-ip-incomplete" and ttl == 63
+                    ),
                 )
             )
         return (
             [initial, *forwarded, forwarded[-1]],
-            ["Forward IPv4", "Forward IPv4", "Deliver IPv4"],
+            [
+                "Forward IPv4 with incomplete packet capture"
+                if profile_id == "native-ip-incomplete"
+                else "Forward IPv4",
+                "Forward IPv4",
+                "Deliver IPv4",
+            ],
             None,
         )
     if profile_id == "sr-mpls-php":
@@ -442,8 +454,17 @@ def _profile_states(
             ],
             None,
         )
-    if profile_id == "mtu-drop":
+    if profile_id in {"mtu-drop", "mtu-fit", "mtu-exact", "mtu-incomparable"}:
         inner = _inner_ipv4(direction=direction, large=True)
+        inner = _state(
+            inner.layers,
+            {
+                "mtu-drop": 1_490,
+                "mtu-fit": 1_420,
+                "mtu-exact": 1_480,
+                "mtu-incomparable": 1_490,
+            }[profile_id],
+        )
         outer_source, outer_destination = _directional_pair(
             direction,
             "192.0.2.1",
@@ -465,7 +486,19 @@ def _profile_states(
             ),
             inner.size.size_bytes + 20,  # type: ignore[union-attr]
         )
-        return [inner, wrapped], ["Encapsulate then drop: MTU exceeded"], 1_500
+        if profile_id == "mtu-drop":
+            return [inner, wrapped], ["Encapsulate then drop: MTU exceeded"], 1_500
+        return (
+            [inner, wrapped, wrapped, inner],
+            [
+                "Encapsulate; MTU comparison has incompatible size bases"
+                if profile_id == "mtu-incomparable"
+                else "Encapsulate within egress MTU",
+                "Forward outer IPv4 tunnel",
+                "Decapsulate IPv4 and deliver",
+            ],
+            1_500,
+        )
     raise ValueError(f"unknown demo packet profile: {profile_id}")
 
 
@@ -480,6 +513,15 @@ def build_packet_transitions(
     """Return plug-in-declared transitions for the route coordinator to validate."""
 
     states, actions, mtu_limit = _profile_states(profile_id, direction)
+    if (
+        profile_id == "sr-mpls-php"
+        and steering_profile_id == "force-alternate-p2"
+    ):
+        # The declared alternate path skips the swap node, but still performs
+        # PHP before egress delivery. Build that complete plan independently
+        # of how many route steps a traversal budget happens to expose.
+        del states[2]
+        del actions[1]
     if steering_profile_id == "force-outer-ipv4":
         forced_source, forced_destination = _directional_pair(
             direction,
@@ -504,6 +546,7 @@ def build_packet_transitions(
                         *state.layers,
                     ),
                     state.size.size_bytes + 20,  # type: ignore[union-attr]
+                    complete=state.complete,
                 )
             )
         wrapped_states.append(states[-1])
@@ -525,6 +568,7 @@ def build_packet_transitions(
                         *state.layers,
                     ),
                     state.size.size_bytes + 12,  # type: ignore[union-attr]
+                    complete=state.complete,
                 )
             )
         wrapped_states.append(states[-1])
@@ -541,7 +585,7 @@ def build_packet_transitions(
             ForwardingPacketDisposition.DROP
             if profile_id == "mtu-drop"
             else ForwardingPacketDisposition.DELIVER
-            if index == transition_count - 1
+            if index == len(actions) - 1
             else ForwardingPacketDisposition.CONTINUE
         )
         node_id = str(node_ids[index])
@@ -557,7 +601,11 @@ def build_packet_transitions(
             actor_id=PLUGIN_ID,
             mtu=(
                 ForwardingMtuConstraint(
-                    basis_contract_id="demo.wire-size.v1",
+                    basis_contract_id=(
+                        "demo.ip-size.v1"
+                        if profile_id == "mtu-incomparable"
+                        else "demo.wire-size.v1"
+                    ),
                     limit_bytes=mtu_limit,
                 )
                 if mtu_limit is not None

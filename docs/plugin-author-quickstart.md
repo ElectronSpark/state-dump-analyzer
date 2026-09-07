@@ -58,6 +58,23 @@ the single demo distribution so its `demo_router` entry point is discoverable.
 Your own device plug-in depends only on the core distribution; it does not
 depend on either repository example package.
 
+For an optional browser exercise of the same parser, projector and evidence
+provider, follow the [core demo walkthrough](demo-core-coverage.md). It generates
+compact before/after inputs without reducing the large fabric's scale, uses
+the real durable ingestion command, and installs a scripted offline runner only
+through an explicit deployment option. That runner is not an AI model or a
+required plug-in hook. Its new focused conformance command is:
+
+```text
+python -m pytest -p no:cacheprovider tests/test_demo_workbench.py -q
+```
+
+For the advanced topology example, see the [VPN sample walkthrough](../demo/README.md#vpn-topology-samples).
+It uses the existing projection contract, not a new required hook: the example
+plug-in interprets local VRF/RT/VNI evidence, while core renders a separate VPN
+plane without creating physical shortcuts. Run its focused regression with
+`python -m pytest -p no:cacheprovider tests/test_demo_vpn_topology.py -q`.
+
 The installed core also exposes a complete PEP 561 typing surface. Every
 `router_dump_analyzer` Python module has a sibling `.pyi`, and the package ships
 `py.typed`, so editors and type checkers resolve `AnalyzerPlugin`,

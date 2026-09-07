@@ -252,6 +252,7 @@ class SingleNodeAuditRegressionContractTests(unittest.TestCase):
         self.assertIn('${visible ? " checked" : ""}', checkbox)
         self.assertIn('aria-label="${escapeHtml(accessibleLabel)}"', checkbox)
         self.assertIn('title="${escapeHtml(accessibleLabel)}"', checkbox)
+        self.assertIn("Show ${label || resourceId} in Resource timeline", checkbox)
         self.assertNotIn("Shown", checkbox)
         self.assertNotIn("Hidden", checkbox)
         self.assertNotIn("aria-pressed", checkbox)
@@ -686,6 +687,8 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
         match = javascript_function(self.script, "routeStartMatch")
         seed = javascript_function(self.script, "routeStartSeedValue")
         controls = javascript_function(self.script, "renderRouteControls")
+        defaults = javascript_function(self.script, "routeScenarioStartDefault")
+        bindings = javascript_function(self.script, "bindControls")
         normalize = javascript_function(self.script, "normalizeRouteCapabilities")
 
         self.assertIn("item.start_id === value", match)
@@ -698,9 +701,31 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
         self.assertIn("advertisedRouteStart(raw, fallbackNodeId)", seed)
         self.assertNotIn('`start:${', seed)
         self.assertIn("routeStartSelectorValue(", normalize)
+        # Keep the shared helper boundary aligned with the executable deep-link,
+        # scenario-default, and transit tests in frontend/tests/route_controls.test.mjs.
+        self.assertIn('selectedRouteEndpoint("source")?.node_id', defaults)
+        self.assertIn("state.routeCapabilities?.start_points?.find(", defaults)
+        self.assertIn("sourceNodeId && point.node_id === sourceNodeId", defaults)
         self.assertLess(
-            controls.index("|| state.routeCapabilities.default_start"),
-            controls.index("|| sourceStart?.start_id"),
+            defaults.index("routeStartSelectorValue(scenario?.default_start)"),
+            defaults.index("|| sourceStart?.start_id"),
+        )
+        self.assertLess(
+            defaults.index("|| sourceStart?.start_id"),
+            defaults.index("|| state.routeCapabilities?.default_start"),
+        )
+        self.assertNotIn('`start:${', defaults)
+        self.assertRegex(
+            controls,
+            r'setRouteStartInput\(\s*params.get\("route_start"\)'
+            r"\s*\|\| routeScenarioStartDefault\(scenario\)\s*\)",
+        )
+        self.assertLess(
+            controls.index('setRouteEndpointInput("source",'),
+            controls.index("|| routeScenarioStartDefault(scenario)"),
+        )
+        self.assertIn(
+            "setRouteStartInput(routeScenarioStartDefault(scenario))", bindings
         )
 
     def test_executable_capability_ids_are_declared_or_unavailable(self) -> None:

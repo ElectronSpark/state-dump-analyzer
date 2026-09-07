@@ -45,6 +45,8 @@ cross-layer inconsistency.
 |---|---|
 | Run the bundled demo | [Run the demo](#run-the-demo) |
 | Learn what to inspect | [What to try](#what-to-try) |
+| Exercise durable workflows and offline evidence tooling | [Core demo walkthrough and validation](docs/demo-core-coverage.md) |
+| Compare physical connectivity with VPN membership | [VPN topology samples](demo/README.md#vpn-topology-samples) |
 | Build a device plug-in | [Plug-in author quickstart](docs/plugin-author-quickstart.md) |
 | Use the Python API from a typed client | [Typed Python API](#typed-python-api) |
 | Run durable uploads, sessions, or review | [Durable control plane](docs/control-plane.md) |

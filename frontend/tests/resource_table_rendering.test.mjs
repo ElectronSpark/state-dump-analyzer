@@ -13,6 +13,21 @@ function productionFunction(name) {
   return productionSource.slice(start, next < 0 ? undefined : start + 1 + next);
 }
 
+test("timeline visibility checkboxes keep a positive accessible name in both states", () => {
+  for (const visible of [true, false]) {
+    const context = vm.createContext({
+      laneSelectedByMode: () => visible,
+      escapeHtml: (value) => String(value).replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;"),
+    });
+    vm.runInContext(productionFunction("laneVisibilityCheckbox"), context, { timeout: 1_000 });
+    const markup = context.laneVisibilityCheckbox("resource-1", 'uplink <A> "one"');
+    assert.equal(markup.includes(" checked"), visible);
+    assert.ok(markup.includes('aria-label="Show uplink &lt;A> &quot;one&quot; in Resource timeline"'));
+    assert.ok(!markup.includes("Hide "));
+    assert.ok(context.laneVisibilityCheckbox("resource-1", "").includes('aria-label="Show resource-1 in Resource timeline"'));
+  }
+});
+
 test("the production resource-table renderer does not turn unknown existence into yes", () => {
   const source = readFileSync(new URL("../assets/app.js", import.meta.url), "utf8");
   const start = source.indexOf("function renderResourceTables() {");

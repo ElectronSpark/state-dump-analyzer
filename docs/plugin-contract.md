@@ -1556,6 +1556,20 @@ with one returned attachment means only `single_sided_in_query_scope` unless a
 plug-in asserts `external` and the relevant projection coverage is complete.
 VPN domains belong to a separate projection or presentation plane so an
 overlay is not silently mixed with underlay adjacency.
+The browser honors an explicitly declared presentation plane without requiring
+an additional `separate_view: true` flag; omission of that optional display
+flag is not an exclusion. Declared logical/virtual attachment kinds retain
+logical labels rather than being presented as physical ports.
+The browser honors an explicitly declared presentation plane without requiring
+an additional `separate_view: true` flag; omission of that optional display
+flag is not an exclusion. Declared logical/virtual attachment kinds retain
+logical labels rather than being presented as physical ports.
+
+The [runnable VPN topology sample](../demo/README.md#vpn-topology-samples)
+demonstrates this existing boundary with locally observed MPLS L3VPN and
+EVPN/VXLAN service resources. Its service-type/VRF/RT/VNI key is example policy,
+not a core matching rule. It retains a service-domain node even for two members
+and never promotes that membership into a forwarding connector claim.
 
 At the normalized assembly boundary, construct
 `TopologyPluginSemanticsDescriptor` from `plugin_semantics.role` and
@@ -3101,3 +3115,10 @@ additionally proves:
 
 The repository's `samples/` directory is a core smoke-test corpus. Real plugins
 need richer product-shaped synthetic generators, especially failure and clock-skew cases.
+
+The optional [demo workbench](demo-core-coverage.md) is a composition example,
+not an extension of the device plug-in protocol. Its scripted evidence runner
+uses the core request-bound gateway and retained provider identities; it does
+not call device hooks directly or grant workspace disclosure. Projected
+correspondences shown in durable inspection remain revision-scoped assertions,
+not new temporal relationship observations or merged resource identities.

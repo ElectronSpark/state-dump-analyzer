@@ -814,7 +814,8 @@ function normalizeConnectivityDomain(raw, index, resultNodes) {
       && raw?.connectivity_enabled !== false && raw?.participates_in_connectivity !== false,
     presentation_plane: firstDeclaredString(semantics?.presentation_group, raw?.presentation_plane, raw?.network_plane),
     is_vpn: raw?.is_vpn === true,
-    separate_view: semantics?.separate_view === true || raw?.separate_view === true,
+    // An omitted optional flag must not hide an explicitly declared VPN plane.
+    separate_view: semantics?.separate_view ?? raw?.separate_view,
     plugin_asserted_external: raw?.plugin_asserted_external === true || semantics?.plugin_asserted_external === true,
     coverage_complete: raw?.coverage_complete === true || semantics?.coverage_complete === true,
     topology_presentation: {
@@ -832,16 +833,20 @@ function normalizeConnectivityDomain(raw, index, resultNodes) {
 
 function normalizeSegmentAttachmentModel(member, fallbackRef) {
   const model = member?.attachment_model || {};
-  const vlan = model?.vlan?.id ?? model?.vlan_id ?? member?.vlan?.id ?? member?.vlan_id ?? null;
-  const physical = firstArray(model?.physical_interface_resource_ids, model?.physical_interfaces).map(String);
-  const logical = model?.logical_interface_resource_id ?? model?.subinterface_resource_id ?? "";
-  const parent = model?.parent_interface_resource_id ?? "";
-  const lag = model?.lag_resource_id ?? "";
+  const components = model?.components || {};
+  const vlan = model?.vlan?.id ?? model?.vlan_id ?? components?.vlan?.id ?? components?.vlan_id
+    ?? member?.vlan?.id ?? member?.vlan_id ?? null;
+  const physical = firstArray(model?.physical_interface_resource_ids, model?.physical_interfaces,
+    components?.physical_interface_resource_ids, components?.physical_interfaces).map(String);
+  const logical = model?.logical_interface_resource_id ?? model?.subinterface_resource_id
+    ?? components?.logical_interface_resource_id ?? components?.subinterface_resource_id ?? components?.logical_interface ?? "";
+  const parent = model?.parent_interface_resource_id ?? components?.parent_interface_resource_id ?? "";
+  const lag = model?.lag_resource_id ?? components?.lag_resource_id ?? components?.lag_id ?? "";
   const interfaceNames = [...new Set([logical, lag, parent, ...physical, fallbackRef?.resource_id].filter(Boolean).map(String))];
   const addresses = firstArray(model?.addresses, member?.addresses).map((item) => String(item?.address ?? item?.prefix ?? item)).filter(Boolean);
   return {
     attachment_id: String(member?.attachment_id ?? member?.membership_id ?? fallbackRef?.resource_id ?? ""),
-    interface_kind: String(model?.interface_kind ?? member?.interface_kind ?? "interface"),
+    interface_kind: String(model?.interface_kind ?? model?.kind ?? member?.interface_kind ?? "interface"),
     interface_names: interfaceNames,
     lag: String(lag),
     subinterface: String(logical),
@@ -1179,6 +1184,117 @@ function normalizeRouteCapabilities(raw) {
 
 function advertisedRouteType(value) {
   return state.routeCapabilities?.route_types.find((item) => item.type_id === String(value || "")) || null;
+}
+
+function routeBudgetDefinition(field) {
+  const minimum = field === "max_hops" ? 1 : field === "max_recursion" ? 0 : null;
+  const limits = state.routeCapabilities?.limits;
+  const defaultValue = limits?.[`default_${field}`];
+  const maximum = limits?.[`maximum_${field}`];
+  if (minimum === null || !Number.isSafeInteger(defaultValue) || !Number.isSafeInteger(maximum)
+    || defaultValue < minimum || maximum < defaultValue) return null;
+  return { minimum, maximum, defaultValue };
+}
+
+function routeBudgetValue(value, definition) {
+  const text = String(value ?? "").trim();
+  if (!definition || !/^\d+$/.test(text)) return null;
+  const parsed = Number(text);
+  return Number.isSafeInteger(parsed) && parsed >= definition.minimum && parsed <= definition.maximum
+    ? parsed : null;
+}
+
+function renderRouteBudgetControls(params = new URLSearchParams(location.search)) {
+  for (const field of ["max_hops", "max_recursion"]) {
+    const id = `mn-route-${field.replaceAll("_", "-")}`;
+    const input = byId(id);
+    const help = byId(`${id}-help`);
+    const definition = routeBudgetDefinition(field);
+    input.disabled = !definition;
+    if (!definition) {
+      input.value = "";
+      input.removeAttribute("min");
+      input.removeAttribute("max");
+      help.textContent = "No traversal limit advertised; the server's default applies.";
+      continue;
+    }
+    input.min = String(definition.minimum);
+    input.max = String(definition.maximum);
+    input.value = String(routeBudgetValue(params.get(`route_${field}`), definition) ?? definition.defaultValue);
+    help.textContent = `${definition.minimum}–${definition.maximum}; default ${definition.defaultValue}. Lower this to inspect a bounded partial trace.`;
+  }
+  byId("mn-route-restore-limits").disabled = !["max_hops", "max_recursion"].some(routeBudgetDefinition);
+}
+
+function restoreRouteBudgets() {
+  renderRouteBudgetControls(new URLSearchParams());
+  invalidateRouteTraceResult();
+  byId("mn-route-error").textContent = "";
+  syncUrl();
+  byId("mn-route-limits-status").textContent = "Advertised limits restored. Trace the route to apply them.";
+}
+
+function routeTraceBudgets() {
+  const budgets = {};
+  for (const field of ["max_hops", "max_recursion"]) {
+    const definition = routeBudgetDefinition(field);
+    if (!definition) continue;
+    const input = byId(`mn-route-${field.replaceAll("_", "-")}`);
+    const value = routeBudgetValue(input.value, definition);
+    if (value === null) {
+      throw new Error(`Maximum ${field === "max_hops" ? "hops" : "recursion"} must be a whole number from ${definition.minimum} to ${definition.maximum}.`);
+    }
+    budgets[field] = value;
+  }
+  return budgets;
+}
+
+function syncRouteBudgetParams(params) {
+  for (const field of ["max_hops", "max_recursion"]) {
+    const value = routeBudgetValue(
+      byId(`mn-route-${field.replaceAll("_", "-")}`).value,
+      routeBudgetDefinition(field),
+    );
+    if (value === null) params.delete(`route_${field}`);
+    else params.set(`route_${field}`, String(value));
+  }
+}
+
+function routeScenarioEndpointDefaults(scenario, pair = directionalPairForScenario(scenario)) {
+  return {
+    source: firstDeclaredString(
+      pair?.forward?.source_id,
+      scenario?.default_source?.source_id,
+      scenario?.default_source?.endpoint_id,
+      scenario?.default_source?.value,
+      scenario?.default_source,
+      state.routeCapabilities?.default_source,
+    ),
+    destination: firstDeclaredString(
+      pair?.forward?.destination_id,
+      scenario?.default_destination?.destination_id,
+      scenario?.default_destination?.endpoint_id,
+      scenario?.default_destination?.value,
+      scenario?.default_destination,
+      state.routeCapabilities?.default_destination,
+    ),
+  };
+}
+
+function routeScenarioStartDefault(scenario) {
+  const sourceNodeId = selectedRouteEndpoint("source")?.node_id;
+  const sourceStart = state.routeCapabilities?.start_points?.find(
+    (point) => sourceNodeId && point.node_id === sourceNodeId,
+  );
+  return routeStartSelectorValue(scenario?.default_start)
+    || sourceStart?.start_id
+    || state.routeCapabilities?.default_start
+    || "";
+}
+
+function renderRouteScenarioGuide(scenario = selectedRouteScenario()) {
+  byId("mn-route-scenario-description").textContent = scenario?.description
+    || "No route scenario is advertised for this assembly.";
 }
 
 function advertisedRouteFamily(value) {
@@ -1833,7 +1949,8 @@ function normalizedRouteOccurrences(raw, pathId, segments, nodes) {
         ...item,
         occurrence_id: String(item.occurrence_id ?? item.hop_occurrence_id ?? item.id
           ?? `${pathId}:occurrence:${index + 1}`),
-        occurrence_index: Math.max(0, Number(item.ordinal ?? item.occurrence_index ?? index + 1) - 1),
+        occurrence_index: Math.max(0, item.ordinal !== undefined && item.ordinal !== null
+          ? Number(item.ordinal) - 1 : Number(item.occurrence_index ?? index)),
         ref: refIdentity(refSource, fallback),
       };
     });
@@ -2167,22 +2284,24 @@ function normalizePacketTransitionEvaluation(raw, index, pathId, steps, segments
   const evaluation = raw && typeof raw === "object" ? raw : {};
   const transitionRaw = evaluation.transition && typeof evaluation.transition === "object"
     ? evaluation.transition : {};
-  const sourceStepId = String(transitionRaw.step_id ?? evaluation.step_id ?? `packet-step-${index + 1}`);
+  const declaredStepId = transitionRaw.step_id ?? evaluation.step_id;
+  const sourceStepId = String(declaredStepId ?? `packet-step-${index + 1}`);
   const transitionId = String(transitionRaw.transition_id ?? evaluation.transition_id ?? `${sourceStepId}:transition`);
   const explicitSegmentId = String(
     evaluation.segment_id ?? transitionRaw.segment_id ?? ""
   );
-  const step = steps.find((candidate) =>
-    candidate.step_id === sourceStepId
-    || candidate.segment_id === sourceStepId
-    || (explicitSegmentId && candidate.segment_id === explicitSegmentId)
-  ) || null;
+  // Exact step identity precedes legacy segment-valued step IDs. A shared
+  // segment cannot identify one of several resolution steps by array order.
+  const hasDeclaredStepId = declaredStepId !== undefined && declaredStepId !== null;
+  const segmentSteps = steps.filter((candidate) =>
+    hasDeclaredStepId ? candidate.segment_id === sourceStepId
+      : explicitSegmentId && candidate.segment_id === explicitSegmentId
+  );
+  const step = (hasDeclaredStepId ? steps.find((candidate) => candidate.step_id === sourceStepId) : null)
+    || (segmentSteps.length === 1 ? segmentSteps[0] : null);
   const stepId = String(step?.step_id || sourceStepId);
-  const segment = segments.find((candidate) =>
-    candidate.segment_id === explicitSegmentId
-    || candidate.segment_id === step?.segment_id
-    || candidate.segment_id === sourceStepId
-  ) || null;
+  const segmentId = explicitSegmentId || step?.segment_id || (hasDeclaredStepId ? sourceStepId : "");
+  const segment = segmentId ? segments.find((candidate) => candidate.segment_id === segmentId) || null : null;
   const contributions = firstArray(transitionRaw.contributions, evaluation.contributions)
     .map(normalizePacketContribution);
   const contributionTokens = contributions.flatMap((contribution) =>
@@ -2240,6 +2359,7 @@ function normalizePacketTransitionEvaluation(raw, index, pathId, steps, segments
     packet_ref: packetTransitionRef(pathId, stepId, transitionId),
     path_id: pathId,
     step_id: stepId,
+    resolution_step_id: step?.step_id ?? null,
     source_step_id: sourceStepId,
     segment_id: segment?.segment_id || explicitSegmentId || null,
     transition,
@@ -2278,7 +2398,8 @@ function normalizePacketTrace(raw, pathId, steps, segments) {
     normalizePacketTransitionEvaluation(evaluation, index, pathId, steps, segments)
   );
   for (const evaluation of transitions) {
-    const step = steps.find((candidate) => candidate.step_id === evaluation.step_id);
+    const step = evaluation.resolution_step_id === null ? null
+      : steps.find((candidate) => candidate.step_id === evaluation.resolution_step_id);
     if (step) {
       step.packet_refs = [...new Set([...(step.packet_refs || []), evaluation.packet_ref])];
     }
@@ -2948,6 +3069,7 @@ function buildRouteTraceRequest() {
     include_inactive_paths: true,
     include_route_resolution: true,
     max_paths: MAX_ROUTE_PATHS,
+    ...routeTraceBudgets(),
   };
   if (usesForwardStart) {
     const forwardStart = startCapability || { start_id: startValue, value: startValue };
@@ -3554,7 +3676,8 @@ function routePacketPathForEvaluation(evaluation) {
 
 function routePacketContext(evaluation) {
   const path = routePacketPathForEvaluation(evaluation);
-  const step = path?.steps.find((candidate) => candidate.step_id === evaluation?.step_id) || null;
+  const step = evaluation?.resolution_step_id == null ? null
+    : path?.steps.find((candidate) => candidate.step_id === evaluation.resolution_step_id) || null;
   const segment = path?.segments.find((candidate) => candidate.segment_id === evaluation?.segment_id) || null;
   const source = segment ? nodeLabelForRef(segment.source) : "";
   const target = segment ? nodeLabelForRef(segment.target) : "";
@@ -3749,6 +3872,7 @@ function packetStateMarkup(evaluation, packet, side, title) {
   const hiddenLayers = layers.length - visibleLayers.length;
   return `<section class="mn-route-packet-state is-${side}">
     <header><div><span>${escapeHtml(title)}</span><strong>${escapeHtml(packetStateSummary(packet))}</strong></div><small>${escapeHtml(packetSizeLabel(packet))}</small></header>
+    <small class="mn-route-packet-contract">${escapeHtml(`Packet size basis: ${packet?.size?.basis_contract_id || "unknown"}${packet?.size && packet.size.complete !== true ? " · size observation incomplete" : ""}`)}</small>
     <ol class="mn-route-packet-stack">${layerMarkup || '<li class="mn-route-packet-layer is-empty">No packet layers were declared.</li>'}</ol>
     ${hiddenLayers > 0 ? `<p class="mn-route-packet-more">+${formatInteger(hiddenLayers)} additional layers omitted from this bounded browser view</p>` : ""}
     ${packet?.complete ? "" : '<p class="mn-route-packet-incomplete">Packet snapshot is incomplete; an empty diff does not prove unchanged state.</p>'}
@@ -3823,8 +3947,12 @@ function packetTransitionDetailMarkup(evaluation) {
   const mtuConstraint = transition.mtu_constraint;
   const mtuResource = mtuConstraint?.resource
     ? packetResourceReferenceText(mtuConstraint.resource) : "";
+  const mtuBasis = `MTU basis: ${mtuConstraint?.basis_contract_id || "unknown"}${mtuResource ? ` · ${mtuResource}` : ""}`;
+  const mtuLimit = mtuConstraint?.limit_bytes === null || mtuConstraint?.limit_bytes === undefined
+    ? "unknown" : `${formatInteger(mtuConstraint.limit_bytes)} B`;
   const mtuProvenance = mtuConstraint
-    ? `<span title="${escapeHtml(mtuResource || "No MTU resource reference was declared")}">${escapeHtml(`MTU basis: ${mtuConstraint.basis_contract_id}${mtuResource ? ` · ${mtuResource}` : ""}`)}</span>`
+    ? `<span title="${escapeHtml(`${mtuBasis}${mtuResource ? "" : " · No MTU resource reference was declared"}`)}">${escapeHtml(mtuBasis)}</span>
+      <span>${escapeHtml(`MTU limit: ${mtuLimit}${mtuConstraint.complete !== true ? " · constraint incomplete" : ""}`)}</span>`
     : "";
   const forced = evaluation.counterfactual
     ? `<p class="mn-route-packet-warning"><strong>User-forced counterfactual.</strong> This transition is trace input, not observed forwarding truth.${transition.forced_rule_id ? ` Rule ${escapeHtml(transition.forced_rule_id)}.` : ""}</p>`
@@ -4224,7 +4352,9 @@ function renderRouteControls() {
   const steeringSelect = byId("mn-route-steering");
   const validationSelect = byId("mn-route-validation");
   const run = byId("mn-route-run");
+  renderRouteBudgetControls();
   if (!state.routeCapabilities) {
+    renderRouteScenarioGuide(null);
     status.textContent = "tracer unavailable";
     status.classList.add("is-warning");
     scenarioSelect.innerHTML = '<option value="">Unavailable</option>';
@@ -4267,18 +4397,14 @@ function renderRouteControls() {
   byId("mn-route-vrfs").innerHTML = state.routeCapabilities.vrfs.map((vrf) =>
     `<option value="${escapeHtml(vrf.vrf)}">${escapeHtml(vrf.label)}</option>`
   ).join("");
-  setRouteEndpointInput("source", params.get("route_source") || scenarioPair?.forward?.source_id || state.routeCapabilities.default_source);
-  setRouteEndpointInput("destination", params.get("route_destination") || scenarioPair?.forward?.destination_id || state.routeCapabilities.default_destination);
   const scenario = selectedRouteScenario();
-  const sourceStart = state.routeCapabilities.start_points.find(
-    (point) => point.node_id === selectedRouteEndpoint("source")?.node_id
-  );
-  const scenarioStart = routeStartSelectorValue(scenario?.default_start);
+  const scenarioEndpoints = routeScenarioEndpointDefaults(scenario, scenarioPair);
+  setRouteEndpointInput("source", params.get("route_source") || scenarioEndpoints.source);
+  setRouteEndpointInput("destination", params.get("route_destination") || scenarioEndpoints.destination);
+  renderRouteScenarioGuide(scenario);
   setRouteStartInput(
     params.get("route_start")
-    || scenarioStart
-    || state.routeCapabilities.default_start
-    || sourceStart?.start_id
+    || routeScenarioStartDefault(scenario)
   );
   familySelect.innerHTML = state.routeCapabilities.route_families.map((family) => {
     const suffix = [family.address_family, family.safi].filter(Boolean).join("/");
@@ -4369,6 +4495,34 @@ function traceDirectionState(trace) {
   if (!trace) return { code: "not_run", label: "not run", className: "" };
   const paths = trace.paths || [];
   const activePaths = paths.filter(pathIsUsableActive);
+  // reachable is a lossy boolean projection: partial, unknown, and unselected
+  // endpoint results also serialize as false. Keep the richer verdict intact.
+  const endpoint = trace.endpoint_reachability || {};
+  const endpointState = routeStateEnum(endpoint);
+  if (endpointState === "partial_active_reachability") {
+    return { code: "partial", label: "partial reachability", className: "is-warning" };
+  }
+  if (endpoint.reaches_target === null || endpointState === "unknown" || endpointState === "unknown_no_selected_active_path") {
+    return endpointState === "unknown_no_selected_active_path"
+      ? { code: "unknown", label: "no selected active path", className: "is-warning" }
+      : { code: "unresolved", label: "unresolved", className: "is-warning" };
+  }
+  const hasTerminalPath = paths.some((path) =>
+    routeValueIsCycle(path) || routeValueIsPolicyBlocked(path) || pathIsDead(path)
+  );
+  const hasUncertainCandidate = paths.some((path) => {
+    const activity = firstRouteEnum(path?.activity);
+    const selection = firstRouteEnum(path?.selection, path?.eligibility);
+    const excluded = ROUTE_INACTIVE_STATES.has(activity)
+      || ROUTE_STANDBY_STATES.has(selection) || selection === "ineligible_dead";
+    return !excluded && !pathIsUsableActive(path) && !pathIsControlPlaneOnly(path)
+      && !routeValueIsCycle(path) && !routeValueIsPolicyBlocked(path) && !pathIsDead(path);
+  });
+  // Failure of one branch does not prove failure of an eligible candidate whose
+  // forwarding state is still unknown. Branch-local terminal evidence is retained.
+  if (!activePaths.length && hasTerminalPath && hasUncertainCandidate) {
+    return { code: "unresolved", label: "unresolved", className: "is-warning" };
+  }
   if (paths.some(routeValueIsCycle) && !activePaths.length) {
     return { code: "cycle", label: "loop detected", className: "is-cycle", reason: "cycle" };
   }
@@ -4384,16 +4538,13 @@ function traceDirectionState(trace) {
   if (paths.some(pathIsDead) && !activePaths.length) {
     return { code: "dropped", label: "dropped", className: "is-error", reason: "dropped" };
   }
-  if (trace.reachable === false && paths.some(pathIsDead)) {
-    return { code: "dropped", label: "dropped", className: "is-error", reason: "dropped" };
-  }
   if (trace.reachable === false && traceIsControlPlaneOnly(trace)) {
     return { code: "control_plane_only", label: "not installed", className: "is-warning", reason: "control_plane_only" };
   }
   if (trace.reachable === false) {
     return trace.complete === false || traceIsIncomplete(trace)
       ? { code: "unresolved", label: "unresolved", className: "is-error" }
-      : { code: "dropped", label: "dropped", className: "is-error" };
+      : { code: "unknown", label: "state unknown", className: "is-warning" };
   }
   if (!paths.length || paths.every(pathIsUnresolved)) {
     return { code: "unresolved", label: "unresolved", className: "is-error" };
@@ -4435,9 +4586,10 @@ function routeFlowEndpointLabel(trace, side) {
 
 function routeTraceStartLabel(trace) {
   const start = trace?.trace_start || trace?.starting_point || trace?.request?.trace_starts?.[trace?.direction] || {};
-  const point = state.routeCapabilities?.start_points.find((item) =>
-    item.start_id === start.start_id || item.node_id === start.node_id || item.member_id === start.member_id
-  );
+  const points = state.routeCapabilities?.start_points || [];
+  const point = (start.start_id && points.find((item) => item.start_id === start.start_id))
+    || (start.member_id && points.find((item) => item.member_id === start.member_id))
+    || (start.node_id && points.find((item) => item.node_id === start.node_id));
   return point?.label || start.label || start.node_id || start.member_id || "trace start";
 }
 
@@ -4510,18 +4662,20 @@ function bidirectionalSummary() {
     symmetry?.path_relation?.state
     || state.routeBundle?.raw?.path_relation?.state,
   );
+  // A bounded or incomplete search can report reachable:false without proving
+  // a forwarding failure. Use classified terminal evidence, not that flag alone.
   const unavailableCodes = new Set([
     "dropped",
-    "unresolved",
     "control_plane_only",
     "cycle",
     "policy_blocked",
   ]);
-  const forwardUnavailable = forward.reachable === false || unavailableCodes.has(forwardState.code);
-  const reverseUnavailable = reverse.reachable === false || unavailableCodes.has(reverseState.code);
+  const forwardUnavailable = unavailableCodes.has(forwardState.code);
+  const reverseUnavailable = unavailableCodes.has(reverseState.code);
   const oneWayStates = new Set(["one_way", "one_way_reachable", "one_way_failure", "directional_drop", "inconsistent_one_way_drop"]);
   const incompleteStates = new Set([
     "unknown",
+    "unresolved",
     "incomplete",
     "partial",
     "partial_active_reachability",
@@ -4532,12 +4686,12 @@ function bidirectionalSummary() {
     "not_compared",
   ]);
   const incompleteComparison = incompleteStates.has(endpointState)
-    || [forwardState.code, reverseState.code].some((code) => code === "unknown" || code === "best_effort");
+    || [forwardState.code, reverseState.code].some((code) => code === "unresolved" || code === "unknown" || code === "best_effort" || code === "partial");
   if (incompleteComparison) {
     return {
       code: "incomplete",
       label: "Endpoint validation incomplete",
-      detail: symmetry.endpoint_state || symmetry.state || "At least one endpoint goal is unresolved",
+      detail: `${forwardState.label} forward · ${reverseState.label} return. Endpoint reachability is not fully established.`,
       className: "is-unresolved",
     };
   }
@@ -4644,6 +4798,15 @@ function renderRouteDirectionalDifference() {
 }
 
 function routeTraceOutcome(trace, directional) {
+  const directionState = traceDirectionState(trace);
+  if (directionState.code === "partial") {
+    return {
+      code: "partial",
+      label: "Partial active reachability",
+      detail: "Some selected active branches reach the traffic endpoint and others do not. Inspect each branch for its terminal evidence.",
+      className: "is-warning",
+    };
+  }
   if (trace.reachable === false && traceIsControlPlaneOnly(trace) && !trace.paths.some(pathIsDead)) {
     return {
       code: "control_plane_only",
@@ -4655,7 +4818,6 @@ function routeTraceOutcome(trace, directional) {
   if (new Set(["one_way", "both_unreachable"]).has(directional.code)) {
     return { code: directional.code, label: directional.label, detail: directional.detail, className: "is-inconsistent" };
   }
-  const directionState = traceDirectionState(trace);
   if (directionState.code === "cycle") {
     return {
       code: "cycle",
@@ -4673,10 +4835,10 @@ function routeTraceOutcome(trace, directional) {
       className: "is-policy-blocked",
     };
   }
-  if (trace.reachable === false || directionState.code === "dropped") {
+  if (directionState.code === "dropped") {
     return { code: "unreachable", label: "Route is not reachable", detail: "No complete forwarding path was resolved for the selected direction.", className: "is-inconsistent" };
   }
-  const incomplete = traceIsIncomplete(trace) || directional.code === "incomplete";
+  const incomplete = traceIsIncomplete(trace) || directionState.code === "unresolved" || directional.code === "incomplete";
   const inconsistent = traceIsInconsistent(trace);
   if (incomplete && inconsistent) {
     return { code: "incomplete_inconsistent", label: "Incomplete and inconsistent", detail: "Evidence is missing and the available nodes or status layers also disagree.", className: "is-inconsistent" };
@@ -4930,10 +5092,29 @@ function renderUnselectedRoutePathTabs(trace) {
   });
 }
 
+function renderRouteOutcome(trace) {
+  const comparison = byId("mn-direction-comparison");
+  comparison.hidden = state.routePending || !trace;
+  if (comparison.hidden) return;
+  const directional = bidirectionalSummary();
+  const outcome = routeTraceOutcome(trace, directional);
+  const symmetryIssue = state.routeBundle?.symmetry?.issues?.[0];
+  const symmetryEvidence = typeof symmetryIssue === "string" ? symmetryIssue
+    : symmetryIssue?.message || symmetryIssue?.description || symmetryIssue?.title || "";
+  comparison.className = `mn-direction-comparison ${outcome.className}`;
+  const comparisonLabel = new Set(["incomplete", "incomplete_inconsistent", "unknown"]).has(outcome.code) ? "Resolution quality"
+    : outcome.code === "unreachable" ? "Forwarding result"
+      : directional.label === outcome.label ? "Forward / return" : directional.label;
+  const evidenceMarkup = symmetryEvidence && symmetryEvidence !== outcome.detail
+    ? `<span class="mn-route-specific-evidence">${escapeHtml(symmetryEvidence)}</span>` : "";
+  comparison.innerHTML = `<span>Route outcome</span><div><strong>${escapeHtml(outcome.label)}</strong><small>${escapeHtml(`${routeFlowEndpointLabel(state.routeTraces.forward || trace, "source")} ⇄ ${routeFlowEndpointLabel(state.routeTraces.forward || trace, "destination")}`)}</small></div><div class="mn-route-outcome-detail"><strong>${escapeHtml(comparisonLabel)}</strong><small>${escapeHtml(outcome.detail || directional.detail)}</small>${evidenceMarkup}</div>`;
+}
+
 function renderRouteTrace() {
   renderDirectionTabs();
   renderRouteSeed();
   updateRouteViewChrome();
+  renderRouteOutcome(state.routeTrace);
   renderRoutePacketEvolution(null);
   const empty = byId("mn-route-empty");
   const content = byId("mn-route-content");
@@ -4958,8 +5139,6 @@ function renderRouteTrace() {
     empty.hidden = true;
     content.hidden = false;
     content.classList.add("is-no-path");
-    const directional = bidirectionalSummary();
-    const outcome = routeTraceOutcome(trace, directional);
     const traceRequest = trace.request || {};
     const traceVrf = trace?.vrf ?? traceRequest?.vrf ?? traceRequest?.vrf_id ?? "default";
     const traceFamily = trace?.route_family ?? trace?.address_family ?? traceRequest?.route_family ?? traceRequest?.address_family ?? "plug-in default";
@@ -4969,9 +5148,6 @@ function renderRouteTrace() {
       <article><span>Routing context</span><strong>${escapeHtml(traceVrf)}</strong><small>${escapeHtml(`${traceFamily} · ${traceType}`)}</small></article>
       <article><span>Path choices</span><strong>0 active</strong><small>No candidate path returned</small></article>
       <article><span>Trace evidence</span><strong class="${summaryClass}">${escapeHtml(titleCase(trace.completeness))}</strong><small>${escapeHtml(titleCase(trace.consistency))}</small></article>`;
-    const comparison = byId("mn-direction-comparison");
-    comparison.className = `mn-direction-comparison ${outcome.className}`;
-    comparison.innerHTML = `<span>Route outcome</span><div><strong>${escapeHtml(outcome.label)}</strong><small>${escapeHtml(`${routeFlowEndpointLabel(state.routeTraces.forward || trace, "source")} ⇄ ${routeFlowEndpointLabel(state.routeTraces.forward || trace, "destination")}`)}</small></div><div class="mn-route-outcome-detail"><strong>Endpoint result</strong><small>${escapeHtml(outcome.detail)}</small></div>`;
     byId("mn-route-findings").innerHTML = routeFindingsMarkup(trace);
     bindRouteCorrelationElements(content);
     return;
@@ -5001,8 +5177,6 @@ function renderRouteTrace() {
       - cycleCount - policyBlockedCount - unusableCount,
   );
   const pathEvidence = selectedPathEvidence(selected);
-  const directional = bidirectionalSummary();
-  const outcome = routeTraceOutcome(trace, directional);
   const traceRequest = trace.request || {};
   const traceVrf = trace?.vrf ?? traceRequest?.vrf ?? traceRequest?.vrf_id ?? "default";
   const traceFamily = trace?.route_family ?? trace?.address_family ?? traceRequest?.route_family ?? traceRequest?.address_family ?? "plug-in default";
@@ -5017,17 +5191,6 @@ function renderRouteTrace() {
     <article><span>Directional goal</span><strong>${escapeHtml(`${routeTraceStartLabel(trace)} → ${state.activeRouteDirection === "reverse" ? flowSourceLabel : flowDestinationLabel}`)}</strong><small>${escapeHtml(directionalFlowLabel)}</small></article>
     <article><span>Path choices</span><strong>${formatInteger(activeCount)} active</strong><small>${alternativeCount} alternative · ${cycleCount} looped · ${policyBlockedCount} policy-blocked · ${unusableCount} unusable · ${controlPlaneOnlyCount} control-plane only · ${trace.paths.length} total</small></article>
     <article><span>Selected-path evidence</span><strong class="${pathEvidence.className}">${escapeHtml(pathEvidence.status)}</strong><small>${escapeHtml(pathEvidence.detail)}</small></article>`;
-  const symmetryIssue = state.routeBundle?.symmetry?.issues?.[0];
-  const symmetryEvidence = typeof symmetryIssue === "string" ? symmetryIssue
-    : symmetryIssue?.message || symmetryIssue?.description || symmetryIssue?.title || "";
-  const comparison = byId("mn-direction-comparison");
-  comparison.className = `mn-direction-comparison ${outcome.className}`;
-  const comparisonLabel = new Set(["incomplete", "incomplete_inconsistent", "unknown"]).has(outcome.code) ? "Resolution quality"
-    : outcome.code === "unreachable" ? "Forwarding result"
-      : directional.label === outcome.label ? "Forward / return" : directional.label;
-  const evidenceMarkup = symmetryEvidence && symmetryEvidence !== outcome.detail
-    ? `<span class="mn-route-specific-evidence">${escapeHtml(symmetryEvidence)}</span>` : "";
-  comparison.innerHTML = `<span>Route outcome</span><div><strong>${escapeHtml(outcome.label)}</strong><small>${escapeHtml(`${routeFlowEndpointLabel(state.routeTraces.forward || trace, "source")} ⇄ ${routeFlowEndpointLabel(state.routeTraces.forward || trace, "destination")}`)}</small></div><div class="mn-route-outcome-detail"><strong>${escapeHtml(comparisonLabel)}</strong><small>${escapeHtml(outcome.detail || directional.detail)}</small>${evidenceMarkup}</div>`;
   const indexedPaths = trace.paths.map((path, index) => ({ path, index }));
   const activePaths = indexedPaths.filter(({ path }) => pathIsUsableActive(path));
   const controlPlaneOnlyPaths = indexedPaths.filter(({ path }) => pathIsControlPlaneOnly(path));
@@ -5714,7 +5877,8 @@ function isSuppressedConnectivityDomain(domain) {
 }
 
 function isVpnConnectivityDomain(domain) {
-  return domain?.is_vpn === true || ["vpn", "overlay"].includes(String(domain?.presentation_plane || domain?.network_plane || "").toLowerCase());
+  const plane = firstDeclaredString(domain?.presentation_plane, domain?.network_plane);
+  return plane ? ["vpn", "overlay"].includes(plane.toLowerCase()) : domain?.is_vpn === true;
 }
 
 function connectivityDomainKey(link) {
@@ -5775,6 +5939,7 @@ function networkAttachmentLabel(attachment = {}, compact = true) {
 function topologyAttachmentComponents(attachment = {}, visible = state.topologyElementVisibility) {
   const components = [];
   const interfaceKind = String(attachment.interface_kind || "interface").toLowerCase();
+  const logicalInterfaceKind = ["logical", "logical_interface", "virtual", "virtual_interface"].includes(interfaceKind);
   const physical = [...new Set((attachment.physical_interfaces || []).filter(Boolean).map(String))];
   if (visible.has("interfaces")) {
     let declaredInterfaces = physical;
@@ -5787,6 +5952,14 @@ function topologyAttachmentComponents(attachment = {}, visible = state.topologyE
       label: compactResourceLabel(resourceId),
       full: `Physical interface: ${resourceId}`,
     }));
+    if (logicalInterfaceKind) {
+      const logical = attachment.subinterface || attachment.interface_names?.[0];
+      if (logical) components.push({
+        kind: "interface",
+        label: compactResourceLabel(logical),
+        full: `Logical interface: ${logical}`,
+      });
+    }
   }
   if (visible.has("lags") && attachment.lag) {
     components.push({
@@ -5795,8 +5968,7 @@ function topologyAttachmentComponents(attachment = {}, visible = state.topologyE
       full: `Link aggregation: ${attachment.lag}`,
     });
   }
-  const subinterfaceKind = ["subinterface", "logical_subinterface"].includes(interfaceKind);
-  if (visible.has("subinterfaces") && subinterfaceKind && attachment.subinterface) {
+  if (visible.has("subinterfaces") && !logicalInterfaceKind && attachment.subinterface) {
     components.push({
       kind: "subinterface",
       label: `Subif ${compactResourceLabel(attachment.subinterface)}`,
@@ -7144,7 +7316,9 @@ function mapNodeMarkup(node, position, routePath = null, routeNodes = [], extraC
   const startMarker = state.activeRouteDirection === "reverse"
     ? "RETURN START"
     : "TRACE START";
-  const endMarker = state.activeRouteDirection === "reverse" ? "SOURCE TARGET" : "DESTINATION";
+  const endMarker = routePath?.terminal_reachability?.reached === true
+    ? state.activeRouteDirection === "reverse" ? "SOURCE TARGET" : "DESTINATION"
+    : "TRACE END";
   const controlPlaneOnly = pathIsControlPlaneOnly(routePath);
   const isInstallGate = Boolean(isSource && controlPlaneOnly);
   const routeMarker = isInstallGate
@@ -7912,18 +8086,24 @@ function allPathNodeMarkup(node, position, paths) {
   const mixedQuality = qualitySignatures.size > 1;
   const pathClasses = mixedQuality ? [] : (Object.values(qualityByPath)[0] || []);
   const sequences = memberships.map(routePathNodeRefs);
-  const occurrenceMatches = (candidate) => node.route_graph_shared
-    ? sameRouteRef(candidate, node)
-    : candidate?.route_occurrence_id === node.route_occurrence_id;
-  const source = sequences.some((sequence) => occurrenceMatches(sequence[0]));
-  const destination = sequences.some((sequence) => occurrenceMatches(sequence.at(-1)));
+  // A shared card represents each path's first visit to this node, not every
+  // repeated occurrence with the same resource identity.
+  const occurrenceMatches = (candidate, sequence) => Boolean(candidate && (node.route_graph_shared
+    ? sameRouteRef(candidate, node) && sequence.find((ref) => sameRouteRef(ref, node)) === candidate
+    : node.route_occurrence_id && candidate.route_occurrence_id === node.route_occurrence_id));
+  const source = sequences.some((sequence) => occurrenceMatches(sequence[0], sequence));
+  const terminalPaths = memberships.filter((_path, index) =>
+    occurrenceMatches(sequences[index].at(-1), sequences[index]));
+  const destination = terminalPaths.length > 0;
   const startMarker = state.activeRouteDirection === "reverse"
     ? "RETURN START"
     : "TRACE START";
-  const endMarker = state.activeRouteDirection === "reverse" ? "SOURCE TARGET" : "DESTINATION";
+  const endMarker = terminalPaths.length && terminalPaths.every((path) => path?.terminal_reachability?.reached === true)
+    ? state.activeRouteDirection === "reverse" ? "SOURCE TARGET" : "DESTINATION"
+    : "TRACE END";
   const installGateByPath = Object.fromEntries(memberships.map((path, index) => [
     path.path_id,
-    Boolean(pathIsControlPlaneOnly(path) && occurrenceMatches(sequences[index][0])),
+    Boolean(pathIsControlPlaneOnly(path) && occurrenceMatches(sequences[index][0], sequences[index])),
   ]));
   const installGateValues = Object.values(installGateByPath);
   const baseInstallGate = Boolean(installGateValues.length && installGateValues.every(Boolean));
@@ -9504,6 +9684,7 @@ function syncUrl() {
     url.searchParams.set("route_family", byId("mn-route-family").value);
     url.searchParams.set("route_type", byId("mn-route-type").value);
     url.searchParams.set("route_policy", byId("mn-route-policy").value);
+    syncRouteBudgetParams(url.searchParams);
     const steeringProfileId = byId("mn-route-steering").value;
     if (steeringProfileId) url.searchParams.set("route_steering", steeringProfileId);
     else url.searchParams.delete("route_steering");
@@ -9530,6 +9711,7 @@ async function runRouteTrace(event) {
     error.textContent = requestError.message;
     return;
   }
+  byId("mn-route-limits-status").textContent = "";
   const loadProgressLease = analysisLoadProgress.begin();
   const generation = ++state.routeRequestGeneration;
   const controller = replaceAbortController(state.routeAbortController);
@@ -9707,20 +9889,11 @@ function bindControls() {
   byId("mn-route-scenario").addEventListener("change", () => {
     const scenario = selectedRouteScenario();
     const pair = directionalPairForScenario(scenario);
-    const source = pair?.forward?.source_id ?? scenario?.default_source?.source_id ?? scenario?.default_source?.value
-      ?? scenario?.default_source ?? state.routeCapabilities.default_source;
-    const destination = pair?.forward?.destination_id ?? scenario?.default_destination?.destination_id ?? scenario?.default_destination?.value
-      ?? scenario?.default_destination ?? state.routeCapabilities.default_destination;
+    const { source, destination } = routeScenarioEndpointDefaults(scenario, pair);
     if (source) setRouteEndpointInput("source", source);
     if (destination) setRouteEndpointInput("destination", destination);
-    const sourceStart = state.routeCapabilities.start_points.find(
-      (point) => point.node_id === selectedRouteEndpoint("source")?.node_id
-    );
-    setRouteStartInput(
-      routeStartSelectorValue(scenario?.default_start)
-      || state.routeCapabilities.default_start
-      || sourceStart?.start_id
-    );
+    setRouteStartInput(routeScenarioStartDefault(scenario));
+    renderRouteScenarioGuide(scenario);
     const vrf = scenario?.vrf ?? scenario?.vrf_id;
     const family = pair?.forward?.route_family ?? scenario?.route_family ?? scenario?.address_family;
     const routeType = pair?.forward?.route_type ?? scenario?.route_type;
@@ -9788,6 +9961,14 @@ function bindControls() {
     invalidateRouteTraceResult();
     syncUrl();
   });
+  ["mn-route-max-hops", "mn-route-max-recursion"].forEach((id) => {
+    byId(id).addEventListener("input", () => {
+      byId("mn-route-limits-status").textContent = "";
+      invalidateRouteTraceResult();
+      syncUrl();
+    });
+  });
+  byId("mn-route-restore-limits").addEventListener("click", restoreRouteBudgets);
   byId("mn-route-steering").addEventListener("change", () => {
     invalidateRouteTraceResult();
     syncUrl();

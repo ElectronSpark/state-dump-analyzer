@@ -63,6 +63,41 @@ From the repository root:
 .\scripts\launch_demo.cmd -NoBrowser
 ```
 
+### VPN topology samples
+
+On the fabric page, choose **VPNs** above the graph. The generated node dumps
+include three logical services:
+
+| Service | Participants | Local configuration evidence |
+| --- | --- | --- |
+| Blue MPLS L3VPN | PE-A, PE-B, PE-C | VRF `blue`, RT `65000:100`, prefix `10.20.0.0/24` |
+| Red MPLS L3VPN | PE-D, PE-E | VRF `red`, RT `65000:200`, the same overlapping prefix |
+| Blue EVPN/VXLAN | PE-A, PE-B, PE-D, PE-E | VNI `50100`, RT `65000:50100` |
+
+VPNs use tinted service-domain nodes and logical attachments, not physical
+point-to-point links. Even the two-member Red VPN remains a service node.
+Hover a service or attachment to inspect the plug-in's identity, evidence and
+calculation. P1/P2 carry transport but are not advertised as service members.
+The matching key includes service type, VRF and route target (plus VNI for
+EVPN); matching prefixes alone never merge the Blue and Red services.
+
+The source remains `router-state-lab-default.scenario.json`: these are
+node-local service resources, not extra physical media or baked-in peer lists.
+PE-E's EVPN attachment goes down at +400 s and recovers at +560 s. Inspect
+relative offsets -420 s, -270 s and 0 s from the +720 s watermark to compare
+before, during and after. The service resource continues to exist while down;
+other PEs and the physical underlay retain their independent observations.
+
+The example plug-in owns service classification and domain-key semantics. Core
+only retains scoped evidence and renders the declared VPN presentation plane.
+The generator save format stays protocol-neutral. Focused conformance:
+
+```text
+python -m pytest -p no:cacheprovider tests/test_demo_vpn_topology.py demo/tests/test_scenario_source.py -q
+```
+
+### Launcher behavior
+
 The setup script creates or updates the `router-dump-analyzer-demo` Conda
 environment, installs the core and this demo as separate editable
 distributions, and runs their Python suites.
@@ -91,6 +126,75 @@ path to the core. It also enables core-owned durable state at
 non-loopback host requires the corresponding explicit
 `-TrustControlPlaneHeaders` or `--trust-control-plane-headers`
 development-only override.
+
+### Opt-in durable workbench
+
+The normal launch remains unchanged. To configure the embedded durable queue
+with the demo's exact primary parser and separate evidence-analysis provider,
+opt in explicitly:
+
+```powershell
+.\scripts\launch_demo.cmd -Workbench -NoBrowser
+```
+
+```bash
+./scripts/launch_demo.sh --workbench --no-browser
+```
+
+Open `http://127.0.0.1:8765/manage`, connect with explicit tenant/principal
+identities, and choose a project/workspace. This mode adds
+`--plugin-composition-deployment-module rsl_demo_plugin.deployment:build_plugin_deployment`
+and explicitly selects the existing trusted-header development adapter. It
+does not authenticate those identities, import the startup archive, create a
+workspace, enable private-analysis disclosure, or grant the independent
+instance-operator role. It also adds the separate
+`--private-analysis-deployment-module rsl_demo_plugin.offline_analysis:build_offline_analysis_deployment`:
+runner `demo.scripted-evidence-walk` version `1.0.0` is a deterministic local
+scripted demonstration, **not a model**, and admits only client-safe evidence.
+Its registration grants no workspace disclosure permission; an administrator
+must explicitly select **Client safe** and **Allow in-process runners** in
+`/manage` Administration and confirm the workspace policy before a run.
+No external model or proprietary-evidence disclosure is configured.
+
+Use the small documented runtime-v2 inputs for durable ingestion; the
+full-scale startup archive is
+still the same 1,250,000-event-per-node baseline, not a smaller replacement.
+The launcher prints, but does not execute, the companion-input command:
+
+```powershell
+python -m rsl_demo_generator.workbench --output-dir .runtime/workbench-inputs
+```
+
+Run it separately in the activated demo environment, then explicitly upload
+the selected inputs through `/manage`. Preparation does not publish data.
+
+Workbench accepts only a numeric loopback bind such as `127.0.0.1` or `::1`.
+Hostnames (including `localhost`), wildcard/public addresses, and an attempted
+`-TrustControlPlaneHeaders` / `--trust-control-plane-headers` override are
+rejected for this mode before archive preparation. The core additionally
+enforces its existing listener Host/Origin checks and role boundaries.
+
+For payload-free operator diagnostics, grant that separate role explicitly:
+
+```powershell
+.\scripts\launch_demo.cmd -Workbench -GrantInstanceOperator -NoBrowser
+```
+
+```bash
+./scripts/launch_demo.sh --workbench --grant-instance-operator --no-browser
+```
+
+The operator switch is also available without workbench and has the same
+numeric-loopback restriction. It does not imply a broader tenant scope or
+change workspace disclosure policy. `/manage` shows the separately granted
+capability; merely selecting Workbench leaves operator diagnostics denied.
+
+The bounded launcher smoke check exercises both argument builders and numeric
+loopback validation without starting a server or generating an archive:
+
+```powershell
+python -m unittest tests.test_demo_launchers -v
+```
 
 On the node page, expand **Durable review** above the normalized event log.
 Enter explicit tenant, project, workspace, and reviewer IDs; the UI labels
@@ -702,8 +806,8 @@ one current usable attachment on each side match. It performs no prefix, VLAN,
 address, label, or node-pair inference.
 
 `coverage.json` is generated from the versioned `COVERAGE_CASES` registry. The
-current registry contains 35 cases: 18 route, eight packet, four topology, and
-five temporal. The 26 route and packet entries map to executable route
+current registry contains 39 cases: 18 route, twelve packet, four topology, and
+five temporal. The 30 route and packet entries map to executable route
 scenarios with node/revision-qualified route and forwarding evidence; packet
 entries also carry a generated packet declaration. Validation rejects missing
 or mismatched evidence rather than falling back to a separate hand-written
@@ -775,3 +879,11 @@ starts”, “Packet transformations and trace-time forwarding”, and “Forwar
 loops and ingress-dependent policy” in the
 [`plugin-author-quickstart.md`](../docs/plugin-author-quickstart.md) before
 advertising those capabilities.
+
+For a finite, executable tour of the core beyond the startup graph, see the
+[core demo walkthrough](../docs/demo-core-coverage.md). It generates compact
+before/after/peer inputs with real correspondence and consistency results,
+documents the explicit workbench launch and offline scripted runner, and lists
+the MTU equality/incomparable-basis and incomplete-capture packet examples.
+The ten-node 1,250,000-event baseline is unchanged. No companion revision is
+silently substituted for a startup fabric revision.

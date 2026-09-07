@@ -155,7 +155,7 @@ class RoutePresentationLayerTests(unittest.TestCase):
         )
         self.assertEqual(
             connectivity_target["match_key"],
-            "vpn:blue:ipv4:10.20.0.0-24",
+            "vpn:evpn_vxlan:blue:rt:65000%3A50100:vni:50100",
         )
         self.assertEqual(
             connectivity_target["semantic_owner"],

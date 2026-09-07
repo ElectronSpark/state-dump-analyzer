@@ -618,6 +618,20 @@ capabilities: { sections, route: { available: false, reason }, topology: { avail
 items, total_count, count, limit, offset, next_offset
 ```
 
+The `relationships` section includes two separately labeled evidence classes.
+`record_kind="temporal_observation"` uses the existing selected-time observation
+reconstruction. `record_kind="revision_projection"`, `scope="revision"` exposes
+validated projected edges with `present=null`, an explicit `temporal_note`,
+canonical endpoint IDs and retained basis/execution-plan digests. It never adds
+validity timestamps, overrides parser observations, or claims the edge was
+present at `time_ns`. Its correspondence semantics still belong to the producer.
+Projection attributes, raw evidence and private fields are not exposed by this
+inspection projection. Summary `relationship_count` includes stored observation
+and projected-edge records; `relationship_observation_count`,
+`relationship_projection_count` and `relationship_declaration_count` distinguish
+them. Interval count remains separate. Counts describe records, not effective
+network adjacency or successful forwarding.
+
 `selection.version` is the live session version or snapshot's captured session
 version, not a new runtime version. The vector digest binds the ordered member
 identities and default member, not a server-side analysis handle. The client
@@ -3084,6 +3098,12 @@ scope*. It is external only when the plug-in explicitly classifies it as such
 and declares complete applicable coverage. Management and loopback exclusion,
 and VPN placement in a separate presentation plane, are likewise plug-in
 decisions.
+In the browser, an explicit presentation plane is authoritative over the
+legacy `is_vpn` fallback. An omitted optional `separate_view` flag does not hide
+a VPN domain; explicit `false` still excludes it from that display. Attachment
+normalization honors both existing flat fields and declared
+`attachment_model.kind`/`components`; logical kinds do not become physical
+interfaces merely because a resource reference is present.
 
 The typed provider boundary for this normalized envelope is
 `TopologyPluginSemanticsDescriptor`. `role` stays open bounded plug-in

@@ -46,6 +46,7 @@ from rsl_demo_plugin.scenario_registry import (
     ROUTE_RESOLUTION_LAYERS_BY_TYPE,
     scenario_semantics,
 )
+from rsl_demo_plugin.vpn_topology import project_vpn_topology_resource
 
 from . import _node_pack as packed_generator
 from . import _scale as scale_generator
@@ -2545,6 +2546,35 @@ def _adjacency_resource_id(
     )
 
 
+def _source_topology_changes(
+    node: NodeSpec,
+    local_resource_id: str,
+) -> list[dict[str, Any]]:
+    """Transport authored local history without interpreting service types."""
+
+    changes: list[dict[str, Any]] = []
+    for observation in DEFAULT_SCENARIO_SOURCE.observations_by_node[node.node_id]:
+        if observation.resource_id != local_resource_id:
+            continue
+        operation = observation.operation.casefold().replace("_", "-")
+        change: dict[str, Any] = {
+            "event_uid": f"{node.node_id}/scenario/{observation.event_id}",
+            "operation": observation.operation,
+            "outcome": observation.outcome,
+            "state": observation.to_event().get("properties", {}),
+            "state_changed": observation.update_snapshot,
+            "time_ns": str(observation.timestamp_ns),
+        }
+        if observation.status is not None:
+            change["status"] = observation.status
+        if operation in {"create", "add", "restore", "recreate"}:
+            change["exists"] = True
+        elif operation in {"delete", "remove", "withdraw"}:
+            change["exists"] = False
+        changes.append(change)
+    return changes
+
+
 def _topology_projection(
     node: NodeSpec,
     *,
@@ -2572,30 +2602,7 @@ def _topology_projection(
             + 1
         )
         interface_name = local_interface_id.removeprefix("interface:")
-        topology_changes = []
-        for observation in DEFAULT_SCENARIO_SOURCE.observations_by_node[
-            node.node_id
-        ]:
-            if observation.resource_id != local_interface_id:
-                continue
-            operation = observation.operation.casefold().replace("_", "-")
-            change: dict[str, Any] = {
-                "event_uid": (
-                    f"{node.node_id}/scenario/{observation.event_id}"
-                ),
-                "operation": observation.operation,
-                "outcome": observation.outcome,
-                "state": observation.to_event().get("properties", {}),
-                "state_changed": observation.update_snapshot,
-                "time_ns": str(observation.timestamp_ns),
-            }
-            if observation.status is not None:
-                change["status"] = observation.status
-            if operation in {"create", "add"}:
-                change["exists"] = True
-            elif operation in {"delete", "remove"}:
-                change["exists"] = False
-            topology_changes.append(change)
+        topology_changes = _source_topology_changes(node, local_interface_id)
         resources.append(
             {
                 "resource_id": interface_id,
@@ -2684,6 +2691,26 @@ def _topology_projection(
                 "evidence_resource_ids": [interface_id],
             }
         )
+
+    for authored in node.initial_resources:
+        projected = project_vpn_topology_resource(
+            node_id=node.node_id,
+            revision_id=node.revision_id,
+            resource={
+                "resource_id": _source_resource_id(
+                    node.node_id, authored.resource_type, authored.resource_id
+                ),
+                "kind": authored.resource_type,
+                "status": authored.status,
+                "properties": authored.properties,
+                "changes": _source_topology_changes(node, authored.resource_id),
+            },
+            valid_from_ns=DEFAULT_SCENARIO_SOURCE.base_time_ns,
+        )
+        if projected is not None:
+            resource, claim = projected
+            resources.append(resource)
+            claims.append(claim)
 
     # These one-node scopes prove that plugins can classify evidence which the
     # generic topology core must retain but must not use for inter-node links.

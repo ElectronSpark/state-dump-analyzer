@@ -1723,6 +1723,9 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
                 "ottawa-external",
                 "management",
                 "loopback",
+                "blue-l3vpn",
+                "red-l3vpn",
+                "blue-evpn",
             },
         }
         expected_temporal_events = {

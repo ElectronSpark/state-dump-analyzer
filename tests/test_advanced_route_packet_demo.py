@@ -289,7 +289,10 @@ class AdvancedRoutePacketDemoTests(unittest.TestCase):
                     path = trace["paths"][0]
                     packet_trace = path["packet_trace"]
                     self.assertEqual(
-                        packet_trace["continuity"], "complete"
+                        packet_trace["continuity"],
+                        "unknown_incomplete"
+                        if scenario_id == "packet-native-ip-incomplete"
+                        else "complete",
                     )
                     self.assertGreater(
                         len(packet_trace["transitions"]), 0
@@ -308,7 +311,9 @@ class AdvancedRoutePacketDemoTests(unittest.TestCase):
                         )
                         self.assertIs(
                             item["continuity_valid"],
-                            True,
+                            True
+                            if item["transition"]["before"]["identity_complete"]
+                            else None,
                         )
                         self.assertIn(
                             "complete",
@@ -367,7 +372,10 @@ class AdvancedRoutePacketDemoTests(unittest.TestCase):
                             following["transition"]["before"],
                         )
                     self.assertEqual(
-                        packet_trace["continuity"], "complete"
+                        packet_trace["continuity"],
+                        "unknown_incomplete"
+                        if scenario_id == "packet-native-ip-incomplete"
+                        else "complete",
                     )
                     expected_disposition = (
                         "drop"
@@ -400,6 +408,68 @@ class AdvancedRoutePacketDemoTests(unittest.TestCase):
                         inner["fields"]["destination"],
                         expected_destination,
                     )
+
+    def test_hop_budget_prefix_never_declares_packet_delivery(self) -> None:
+        for scenario_id, steering_profile_id in (
+            ("packet-native-ip", "observed"),
+            ("packet-forced-steering", "force-alternate-p2"),
+        ):
+            with self.subTest(
+                scenario_id=scenario_id,
+                steering_profile_id=steering_profile_id,
+            ):
+                response = self.client.post(
+                    "/v1/topologies/routes/trace",
+                    json={
+                        "scenario_id": scenario_id,
+                        "direction": "both",
+                        "steering_profile_id": steering_profile_id,
+                        "max_hops": 1,
+                    },
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                payload = response.json()
+                for trace_key in ("forward_trace", "reverse_trace"):
+                    path = payload[trace_key]["paths"][0]
+                    self.assertEqual(path["result"], "hop_limit_exceeded")
+                    self.assertFalse(
+                        path["completeness"]["end_to_end_resolved"]
+                    )
+                    packet_trace = path["packet_trace"]
+                    self.assertEqual(
+                        packet_trace["outcome"], "continuation_required"
+                    )
+                    self.assertTrue(packet_trace["transitions"])
+                    for item in packet_trace["transitions"]:
+                        self.assertEqual(
+                            item["transition"]["disposition"], "continue"
+                        )
+
+    def test_forced_alternate_delivers_only_after_php_at_egress(self) -> None:
+        payload = self._trace(
+            "packet-forced-steering",
+            direction="both",
+            steering_profile_id="force-alternate-p2",
+        )
+        for trace_key, egress_node in (
+            ("forward_trace", "node-b"),
+            ("reverse_trace", "node-a"),
+        ):
+            with self.subTest(trace_key=trace_key):
+                path = payload[trace_key]["paths"][0]
+                packet_trace = path["packet_trace"]
+                transitions = packet_trace["transitions"]
+                self.assertEqual(packet_trace["outcome"], "deliver")
+                self.assertEqual(packet_trace["continuity"], "complete")
+                self.assertEqual(len(transitions), 3)
+                self.assertEqual(
+                    transitions[1]["diff"]["removed_layer_ids"],
+                    ["transport-label"],
+                )
+                self.assertEqual(transitions[-1]["node_id"], egress_node)
+                self.assertEqual(
+                    transitions[-1]["transition"]["disposition"], "deliver"
+                )
 
     def test_directional_outer_tunnel_and_srv6_endpoints_are_independent(
         self,
@@ -622,6 +692,50 @@ class AdvancedRoutePacketDemoTests(unittest.TestCase):
             )
         )
 
+    def test_mtu_boundaries_preserve_plugin_forwarding_and_delivery(self) -> None:
+        for scenario_id, size_bytes, outcome in (
+            ("packet-mtu-fit", 1440, "fits"),
+            ("packet-mtu-exact", 1500, "fits"),
+            ("packet-mtu-incomparable", 1510, "unknown_basis_mismatch"),
+        ):
+            with self.subTest(scenario_id=scenario_id):
+                payload = self._trace(scenario_id, direction="both")
+                for trace_key in ("forward_trace", "reverse_trace"):
+                    trace = payload[trace_key]
+                    path = trace["paths"][0]
+                    packet_trace = path["packet_trace"]
+                    transitions = packet_trace["transitions"]
+                    first = transitions[0]
+                    self.assertEqual(first["mtu"]["outcome"], outcome)
+                    self.assertEqual(first["mtu"]["size_bytes"], size_bytes)
+                    self.assertEqual(first["mtu"]["limit_bytes"], 1500)
+                    self.assertEqual(
+                        first["transition"]["disposition"], "continue"
+                    )
+                    self.assertEqual(
+                        transitions[-1]["transition"]["disposition"], "deliver"
+                    )
+                    self.assertTrue(trace["reachable"])
+                    self.assertEqual(packet_trace["continuity"], "complete")
+
+    def test_incomplete_native_capture_remains_unknown_after_delivery(self) -> None:
+        payload = self._trace("packet-native-ip-incomplete", direction="both")
+        for trace_key in ("forward_trace", "reverse_trace"):
+            trace = payload[trace_key]
+            packet_trace = trace["paths"][0]["packet_trace"]
+            transitions = packet_trace["transitions"]
+            self.assertEqual(packet_trace["continuity"], "unknown_incomplete")
+            self.assertFalse(transitions[0]["transition"]["after"]["complete"])
+            self.assertTrue(transitions[-1]["transition"]["after"]["complete"])
+            self.assertEqual(
+                [transition["diff"]["complete"] for transition in transitions],
+                [False, False, True],
+            )
+            self.assertEqual(
+                transitions[-1]["transition"]["disposition"], "deliver"
+            )
+            self.assertTrue(trace["reachable"])
+
     def test_user_steering_is_bounded_and_counterfactual(self) -> None:
         observed = self._trace("packet-forced-steering")
         alternate = self._trace(
@@ -652,6 +766,8 @@ class AdvancedRoutePacketDemoTests(unittest.TestCase):
             self.assertTrue(payload["counterfactual"])
             for trace_key in ("forward_trace", "reverse_trace"):
                 path = payload[trace_key]["paths"][0]
+                self.assertEqual(path["packet_trace"]["outcome"], "deliver")
+                self.assertEqual(path["packet_trace"]["continuity"], "complete")
                 forced = next(
                     item
                     for item in path["packet_trace"]["transitions"]

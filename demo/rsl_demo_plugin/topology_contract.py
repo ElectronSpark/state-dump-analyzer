@@ -15,6 +15,7 @@ from . import (
     GENERATED_TOPOLOGY_FEDERATION_PLUGIN_ID,
     GENERATED_TOPOLOGY_PROFILE,
     GENERATED_TOPOLOGY_SEGMENT_MATCHER_ID,
+    GENERATED_VPN_TOPOLOGY_PROFILE,
 )
 from .assembly_store import DemoAssemblyStore
 from .typed_topology import (
@@ -357,6 +358,7 @@ def _install_generated_node_projections(
                             "reason": declared_presentation.get("reason"),
                         },
                         "coverage_complete": True,
+                        **dict(item.get("plugin_semantics") or {}),
                     },
                     "attachment_model": {
                         "kind": str(
@@ -498,18 +500,15 @@ def build_topology_profiles(
         )
     return [
         {
-            "profile_id": GENERATED_TOPOLOGY_PROFILE.profile_id,
-            "label": GENERATED_TOPOLOGY_PROFILE.label,
-            "projection_role": (
-                GENERATED_TOPOLOGY_PROFILE.projection_role
-            ),
-            "presentation_roles": list(
-                GENERATED_TOPOLOGY_PROFILE.presentation_roles
-            ),
+            "profile_id": profile.profile_id,
+            "label": profile.label,
+            "projection_role": profile.projection_role,
+            "presentation_roles": list(profile.presentation_roles),
             "plugin_set_by_member": plugin_sets,
             "projection_by_member": projections,
             "perspective_by_member": perspectives,
         }
+        for profile in (GENERATED_TOPOLOGY_PROFILE, GENERATED_VPN_TOPOLOGY_PROFILE)
     ]
 
 

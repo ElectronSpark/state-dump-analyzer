@@ -7,6 +7,8 @@ param(
     [string]$ControlPlaneDir = "",
     [switch]$NoBrowser,
     [switch]$ApiOnly,
+    [switch]$Workbench,
+    [switch]$GrantInstanceOperator,
     [switch]$TrustControlPlaneHeaders,
     [switch]$RebuildFixture,
     [switch]$ValidateFixture
@@ -29,10 +31,6 @@ else {
     [System.IO.Path]::GetFullPath($ControlPlaneDir)
 }
 $FixtureAssemblyArgument = "demo\fixtures\router-state-lab-demo.tgz"
-$PreviousPythonUtf8 = $env:PYTHONUTF8
-$PreviousPythonIoEncoding = $env:PYTHONIOENCODING
-$env:PYTHONUTF8 = "1"
-$env:PYTHONIOENCODING = "utf-8"
 
 function Find-CondaExecutable {
     $command = Get-Command conda.exe -ErrorAction SilentlyContinue
@@ -59,6 +57,29 @@ $AnalyzerPython = Join-Path $CondaRoot "envs\$EnvironmentName\python.exe"
 if (-not (Test-Path -LiteralPath $AnalyzerPython)) {
     throw "The Conda environment '$EnvironmentName' is missing. Run .\scripts\setup_demo.cmd first."
 }
+
+# Opt-in workbench/operator authority never follows DNS or the off-loopback
+# development override. Core validates the listener and resolver again.
+if ($Workbench -or $GrantInstanceOperator) {
+    $LoopbackCheck = @'
+import ipaddress
+import sys
+try:
+    allowed = ipaddress.ip_address(sys.argv[1]).is_loopback
+except ValueError:
+    allowed = False
+raise SystemExit(0 if allowed else 2)
+'@
+    & $AnalyzerPython -c $LoopbackCheck $BindAddress
+    if ($LASTEXITCODE -ne 0) {
+        throw "-Workbench and -GrantInstanceOperator require a numeric loopback -BindAddress (127.0.0.1 or ::1); -TrustControlPlaneHeaders cannot override this restriction."
+    }
+}
+
+$PreviousPythonUtf8 = $env:PYTHONUTF8
+$PreviousPythonIoEncoding = $env:PYTHONIOENCODING
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 
 # Windows PowerShell 5.1 otherwise decodes Python's forced UTF-8 stdout with
 # the legacy console code page. That corrupts a selected fixture path whenever
@@ -136,8 +157,19 @@ try {
     if ($ApiOnly) {
         $CoreArguments += "--api-only"
     }
-    if ($TrustControlPlaneHeaders) {
+    if ($Workbench) {
+        $CoreArguments += @(
+            "--plugin-composition-deployment-module",
+            "rsl_demo_plugin.deployment:build_plugin_deployment",
+            "--private-analysis-deployment-module",
+            "rsl_demo_plugin.offline_analysis:build_offline_analysis_deployment"
+        )
+    }
+    if ($TrustControlPlaneHeaders -or $Workbench) {
         $CoreArguments += "--trust-control-plane-headers"
+    }
+    if ($GrantInstanceOperator) {
+        $CoreArguments += "--grant-instance-operator"
     }
     if ($NoBrowser) {
         $CoreArguments += "--no-browser"
@@ -146,6 +178,15 @@ try {
     Write-Host "Using generated assembly: $SelectedFixture"
     Write-Host "Single-node and fabric views read this same generated assembly."
     Write-Host "Durable sessions, imports, and review data: $ControlPlaneRoot"
+    if ($Workbench) {
+        Write-Host "Workbench: exact demo parser/evidence composition; trusted tenant/principal headers on numeric loopback only."
+        Write-Host "Local runner: demo.scripted-evidence-walk 1.0.0; scripted demonstration, not a model; client-safe evidence only."
+        Write-Host "Open /manage for durable workflows. No startup data is published and no private-analysis policy is enabled automatically."
+        Write-Host "Optional compact inputs (run separately): python -m rsl_demo_generator.workbench --output-dir .runtime/workbench-inputs"
+    }
+    if ($GrantInstanceOperator) {
+        Write-Host "Explicit local development grant: control-plane:instance-operator."
+    }
     if ($ApiOnly) {
         Write-Host "Starting Router State Lab backend API at http://${BindAddress}:$Port"
         Write-Host "Run 'npm --prefix frontend run serve -- --backend http://${BindAddress}:$Port' in another terminal for the split frontend."

@@ -52,8 +52,13 @@ export async function renderDurableAnalysis(ui) {
   }
   if (!current()) return;
   state.analysisResult = result; state.analysisDigest = result.selection.revision_vector_digest;
-  const memberLabel = el("label", "Session member / revision"); const members = el("select");
-  for (const member of result.revision_vector) members.add(new Option(`${member.node_id} · ${member.member_id} · ${member.revision_id}`, member.member_id));
+  const memberLabel = el("label", "Session member / revision", "management-analysis-member"); const members = el("select");
+  for (const member of result.revision_vector) {
+    const label = member.member_id === member.revision_id
+      ? `${member.node_id} · ${member.revision_id}`
+      : `${member.node_id} · ${member.member_id} · ${member.revision_id}`;
+    members.add(new Option(label, member.member_id));
+  }
   members.value = result.selected_member.member_id;
   members.addEventListener("change", () => run(async () => { state.analysisMember = members.value; state.analysisOffset = 0; delete state.analysisTime; delete state.analysisRange; await show(); }));
   memberLabel.append(members); root.append(memberLabel);
@@ -91,16 +96,34 @@ export async function renderDurableAnalysis(ui) {
   root.append(el("p", `${result.count} shown · ${result.total_count.toLocaleString()} matching ${result.section}.`));
   if (!result.items.length) root.append(el("p", "No matching data for this selection and moment."));
   if (result.section === "summary") {
-    const table = el("table"); for (const [key, value] of Object.entries(result.items[0] || {})) { const row = el("tr"); row.append(el("th", key.replaceAll("_", " ")), el("td", typeof value === "object" ? JSON.stringify(value) : value)); table.append(row); } root.append(table);
+    const table = el("table", undefined, "management-summary-table");
+    for (const [key, value] of Object.entries(result.items[0] || {})) {
+      const row = el("tr"); const heading = el("th", key.replaceAll("_", " ")); heading.setAttribute("scope", "row");
+      const cell = el("td");
+      if (value !== null && typeof value === "object") {
+        const details = el("details", undefined, "management-summary-detail");
+        const count = Array.isArray(value) ? `${value.length} item(s)` : `${Object.keys(value).length} field(s)`;
+        const status = typeof value.status === "string" ? value.status : typeof value.state === "string" ? value.state : "";
+        const preview = status.length > 96 ? `${status.slice(0, 96)}…` : status;
+        details.append(el("summary", `${preview ? `${preview.replaceAll("_", " ")} · ` : ""}${count} · View JSON`), json(value));
+        cell.append(details);
+      } else cell.textContent = String(value);
+      row.append(heading, cell); table.append(row);
+    }
+    root.append(table);
   } else {
     const list = el("div", undefined, "management-list");
     for (const item of result.items) {
       const row = el("details", undefined, "management-record"); const summary = el("summary");
       const title = item.label || item.resource_id || item.event_name || item.event_type || item.finding_id || item.relation_type || "Observation";
-      const observation = result.section === "relationships"
+      const observation = item.record_kind === "revision_projection"
+        ? "revision-level correspondence · time not asserted"
+        : result.section === "relationships"
         ? (item.present === true ? "confirmed present" : "presence unknown")
         : item.status || item.outcome || item.severity || item.quality || "details";
-      summary.textContent = `${title} · ${observation}${item.timestamp_ns ? ` · ${item.timestamp_ns} ns` : ""}`; row.append(summary, json(item)); list.append(row);
+      summary.textContent = `${title} · ${observation}${item.timestamp_ns ? ` · ${item.timestamp_ns} ns` : ""}`; row.append(summary);
+      if (item.temporal_note) row.append(el("p", item.temporal_note));
+      row.append(json(item)); list.append(row);
     }
     root.append(list);
     ui.pager(root, result.next_offset, result.offset, async (offset) => { state.analysisOffset = offset; await show(); });

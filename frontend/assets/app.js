@@ -5808,9 +5808,7 @@ function bindResourcePagination(container) {
 
 function laneVisibilityCheckbox(resourceId, label) {
   const visible = laneSelectedByMode(resourceId);
-  const action = visible ? "Hide" : "Show";
-  const preposition = visible ? "from" : "in";
-  const accessibleLabel = `${action} ${label || resourceId} ${preposition} Resource timeline`;
+  const accessibleLabel = `Show ${label || resourceId} in Resource timeline`;
   return `<input class="lane-visibility-toggle" type="checkbox" data-lane-toggle="${escapeHtml(resourceId)}"${visible ? " checked" : ""} aria-label="${escapeHtml(accessibleLabel)}" title="${escapeHtml(accessibleLabel)}">`;
 }
 

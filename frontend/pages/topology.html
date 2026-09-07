@@ -294,6 +294,14 @@
           </div>
 
           <form id="mn-route-form" class="mn-route-form">
+            <div class="mn-route-scenario-guide">
+              <label>
+                Trace scenario
+                <select id="mn-route-scenario" aria-describedby="mn-route-scenario-description" disabled></select>
+                <small>Loads the advertised endpoints, routing context, and optional fault example together</small>
+              </label>
+              <p id="mn-route-scenario-description" aria-live="polite">Waiting for server-advertised route scenarios.</p>
+            </div>
             <div class="mn-route-primary-controls">
               <label id="mn-route-start-field" class="mn-route-field-endpoint mn-route-field-start" data-route-start-usage="used">
                 Start trace at
@@ -339,14 +347,9 @@
             <details class="mn-route-advanced">
               <summary>
                 <span>Advanced trace options</span>
-                <small>Trace scenario, route family and type, and missing-hop handling</small>
+                <small>Route family and type, missing-hop handling, steering, and traversal limits</small>
               </summary>
               <div class="mn-route-advanced-grid">
-                <label>
-                  Trace scenario
-                  <select id="mn-route-scenario" disabled></select>
-                  <small>Chooses server-declared forwarding behavior and optional fault context</small>
-                </label>
                 <label>
                   Route family
                   <select id="mn-route-family" disabled></select>
@@ -369,11 +372,26 @@
                   </select>
                   <small>Optional server-advertised counterfactual rules; observed state is not modified</small>
                 </label>
+                <label>
+                  Maximum hops
+                  <input id="mn-route-max-hops" type="number" step="1" aria-describedby="mn-route-max-hops-help" disabled />
+                  <small id="mn-route-max-hops-help">Waiting for advertised traversal limits</small>
+                </label>
+                <label>
+                  Maximum recursion
+                  <input id="mn-route-max-recursion" type="number" step="1" aria-describedby="mn-route-max-recursion-help" disabled />
+                  <small id="mn-route-max-recursion-help">Waiting for advertised traversal limits</small>
+                </label>
+              </div>
+              <div class="mn-route-limit-actions">
+                <button type="button" id="mn-route-restore-limits" disabled>Restore trace limits</button>
+                <small id="mn-route-limits-status" role="status">Restore the server-advertised hop and recursion defaults without changing endpoints or steering.</small>
               </div>
             </details>
           </form>
           <p id="mn-route-error" class="mn-query-error" role="alert"></p>
           <div id="mn-route-seed" class="mn-route-seed" hidden></div>
+          <div id="mn-direction-comparison" class="mn-direction-comparison" role="status" hidden></div>
 
           <div class="mn-route-workbench">
           <section class="panel mn-map-panel mn-trace-map-panel" aria-labelledby="mn-route-map-title">
@@ -432,7 +450,6 @@
               <span>Then trace the route to compare forward, return, ECMP, standby, and inactive alternatives.</span>
             </div>
             <div id="mn-route-content" hidden>
-              <div id="mn-direction-comparison" class="mn-direction-comparison" role="status"></div>
               <div class="mn-route-summary-row">
                 <div id="mn-route-summary" class="mn-route-summary"></div>
                 <div class="mn-route-legend" aria-label="Route segment legend">

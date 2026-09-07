@@ -7,6 +7,8 @@ bind_address="127.0.0.1"
 port="8765"
 open_browser=false
 api_only=false
+workbench=false
+grant_instance_operator=false
 rebuild_fixture=false
 validate_fixture=false
 control_plane_root=""
@@ -24,6 +26,10 @@ Options:
                        Durable session/import/review state
   --trust-control-plane-headers
                        Development only: allow the control plane off loopback
+  --workbench          Opt in to demo composition and a scripted local runner;
+                       trusted headers, numeric loopback only; no data import
+  --grant-instance-operator
+                       Separately grant the operator role on numeric loopback
   --api-only           Disable integrated pages for split-process development
   --open-browser       Ask the core analyzer process to open the browser
   --no-browser         Keep browser launch disabled (the WSL default)
@@ -57,6 +63,12 @@ while (($#)); do
             ;;
         --api-only)
             api_only=true
+            ;;
+        --workbench)
+            workbench=true
+            ;;
+        --grant-instance-operator)
+            grant_instance_operator=true
             ;;
         --trust-control-plane-headers)
             trust_control_plane_headers=true
@@ -129,6 +141,22 @@ if [[ ! -x "${analyzer_python}" ]]; then
     exit 1
 fi
 
+# Opt-in workbench/operator authority never follows DNS or the off-loopback
+# development override. Core validates the listener and resolver again.
+if [[ "${workbench}" == true || "${grant_instance_operator}" == true ]]; then
+    loopback_check='import ipaddress
+import sys
+try:
+    allowed = ipaddress.ip_address(sys.argv[1]).is_loopback
+except ValueError:
+    allowed = False
+raise SystemExit(0 if allowed else 2)'
+    if ! "${analyzer_python}" -c "${loopback_check}" "${bind_address}"; then
+        printf '%s\n' '--workbench and --grant-instance-operator require a numeric loopback --host (127.0.0.1 or ::1); --trust-control-plane-headers cannot override this restriction.' >&2
+        exit 2
+    fi
+fi
+
 # This generated assembly is the one input for both node and fabric views.
 fixture_argument="demo/fixtures/router-state-lab-demo.tgz"
 fixture_archive="${repository_root}/${fixture_argument}"
@@ -193,8 +221,19 @@ core_arguments=(
 if [[ "${api_only}" == true ]]; then
     core_arguments+=(--api-only)
 fi
-if [[ "${trust_control_plane_headers}" == true ]]; then
+if [[ "${workbench}" == true ]]; then
+    core_arguments+=(
+        --plugin-composition-deployment-module
+        rsl_demo_plugin.deployment:build_plugin_deployment
+        --private-analysis-deployment-module
+        rsl_demo_plugin.offline_analysis:build_offline_analysis_deployment
+    )
+fi
+if [[ "${trust_control_plane_headers}" == true || "${workbench}" == true ]]; then
     core_arguments+=(--trust-control-plane-headers)
+fi
+if [[ "${grant_instance_operator}" == true ]]; then
+    core_arguments+=(--grant-instance-operator)
 fi
 if [[ "${open_browser}" == false ]]; then
     core_arguments+=(--no-browser)
@@ -203,6 +242,16 @@ fi
 printf 'Using generated assembly: %s\n' "${selected_fixture}"
 printf '%s\n' 'Single-node and fabric views read this same generated assembly.'
 printf 'Durable sessions, imports, and review data: %s\n' "${control_plane_root}"
+if [[ "${workbench}" == true ]]; then
+    printf '%s\n' \
+        'Workbench: exact demo parser/evidence composition; trusted tenant/principal headers on numeric loopback only.' \
+        'Local runner: demo.scripted-evidence-walk 1.0.0; scripted demonstration, not a model; client-safe evidence only.' \
+        'Open /manage for durable workflows. No startup data is published and no private-analysis policy is enabled automatically.' \
+        'Optional compact inputs (run separately): python -m rsl_demo_generator.workbench --output-dir .runtime/workbench-inputs'
+fi
+if [[ "${grant_instance_operator}" == true ]]; then
+    printf '%s\n' 'Explicit local development grant: control-plane:instance-operator.'
+fi
 if [[ "${api_only}" == true ]]; then
     printf 'Starting Router State Lab backend API at http://%s:%s\n' \
         "${bind_address}" "${port}"

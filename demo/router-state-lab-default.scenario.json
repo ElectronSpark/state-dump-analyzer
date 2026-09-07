@@ -21,6 +21,18 @@
           "resource_type": "IP_ROUTE",
           "status": "installed",
           "properties": {"next_hop": "10.64.0.2", "protocol": "isis", "vrf": "blue"}
+        },
+        {
+          "resource_id": "vpn:blue-l3vpn",
+          "resource_type": "VIRTUAL_INTERFACE",
+          "status": "up",
+          "properties": {"service_id": "blue-l3vpn", "service_type": "mpls_l3vpn", "vrf": "blue", "route_target": "65000:100", "prefix": "10.20.0.0/24", "interface": "vrf-blue", "attachment_kind": "logical", "oper_status": "up"}
+        },
+        {
+          "resource_id": "vpn:blue-evpn",
+          "resource_type": "VIRTUAL_INTERFACE",
+          "status": "up",
+          "properties": {"service_id": "blue-evpn", "service_type": "evpn_vxlan", "vrf": "blue", "route_target": "65000:50100", "prefix": null, "vni": 50100, "interface": "nve-blue", "attachment_kind": "logical", "oper_status": "up"}
         }
       ]
     },
@@ -39,6 +51,18 @@
           "resource_type": "ADJACENCY",
           "status": "up",
           "properties": {"protocol": "isis", "interface": "ae-core-east"}
+        },
+        {
+          "resource_id": "vpn:blue-l3vpn",
+          "resource_type": "VIRTUAL_INTERFACE",
+          "status": "up",
+          "properties": {"service_id": "blue-l3vpn", "service_type": "mpls_l3vpn", "vrf": "blue", "route_target": "65000:100", "prefix": "10.20.0.0/24", "interface": "vrf-blue", "attachment_kind": "logical", "oper_status": "up"}
+        },
+        {
+          "resource_id": "vpn:blue-evpn",
+          "resource_type": "VIRTUAL_INTERFACE",
+          "status": "up",
+          "properties": {"service_id": "blue-evpn", "service_type": "evpn_vxlan", "vrf": "blue", "route_target": "65000:50100", "prefix": null, "vni": 50100, "interface": "nve-blue", "attachment_kind": "logical", "oper_status": "up"}
         },
         {
           "resource_id": "route:blue:198.51.100.0/30",
@@ -71,6 +95,12 @@
             "protocol": "isis",
             "vrf": "blue"
           }
+        },
+        {
+          "resource_id": "vpn:blue-l3vpn",
+          "resource_type": "VIRTUAL_INTERFACE",
+          "status": "up",
+          "properties": {"service_id": "blue-l3vpn", "service_type": "mpls_l3vpn", "vrf": "blue", "route_target": "65000:100", "prefix": "10.20.0.0/24", "interface": "vrf-blue", "attachment_kind": "logical", "oper_status": "up"}
         }
       ]
     },
@@ -92,6 +122,18 @@
             "interface": "Ethernet1/1.310",
             "protocol": "isis"
           }
+        },
+        {
+          "resource_id": "vpn:red-l3vpn",
+          "resource_type": "VIRTUAL_INTERFACE",
+          "status": "up",
+          "properties": {"service_id": "red-l3vpn", "service_type": "mpls_l3vpn", "vrf": "red", "route_target": "65000:200", "prefix": "10.20.0.0/24", "interface": "vrf-red", "attachment_kind": "logical", "oper_status": "up"}
+        },
+        {
+          "resource_id": "vpn:blue-evpn",
+          "resource_type": "VIRTUAL_INTERFACE",
+          "status": "up",
+          "properties": {"service_id": "blue-evpn", "service_type": "evpn_vxlan", "vrf": "blue", "route_target": "65000:50100", "prefix": null, "vni": 50100, "interface": "nve-blue", "attachment_kind": "logical", "oper_status": "up"}
         }
       ]
     },
@@ -104,7 +146,20 @@
       "site": "montreal-east",
       "profile": "provider_edge",
       "clock": {"offset_ns": 14000000, "uncertainty_ns": 8000000},
-      "initial_resources": []
+      "initial_resources": [
+        {
+          "resource_id": "vpn:red-l3vpn",
+          "resource_type": "VIRTUAL_INTERFACE",
+          "status": "up",
+          "properties": {"service_id": "red-l3vpn", "service_type": "mpls_l3vpn", "vrf": "red", "route_target": "65000:200", "prefix": "10.20.0.0/24", "interface": "vrf-red", "attachment_kind": "logical", "oper_status": "up"}
+        },
+        {
+          "resource_id": "vpn:blue-evpn",
+          "resource_type": "VIRTUAL_INTERFACE",
+          "status": "up",
+          "properties": {"service_id": "blue-evpn", "service_type": "evpn_vxlan", "vrf": "blue", "route_target": "65000:50100", "prefix": null, "vni": 50100, "interface": "nve-blue", "attachment_kind": "logical", "oper_status": "up"}
+        }
+      ]
     },
     {
       "node_id": "transit-p-1",
@@ -957,6 +1012,21 @@
       "message": "CE-East withdrew its EVPN-facing neighbor during maintenance."
     },
     {
+      "event_id": "node-e-vpn-local-withdraw",
+      "timestamp_ns": 400000000000,
+      "order": 200,
+      "kind": "status",
+      "node_id": "node-e",
+      "resource_id": "vpn:blue-evpn",
+      "resource_type": "VIRTUAL_INTERFACE",
+      "operation": "modify",
+      "status": "down",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"oper_status": "down", "reason": "local-vtep-maintenance"},
+      "message": "PE-E locally withdrew its Blue EVPN attachment; other PEs retained their own service observations."
+    },
+    {
       "event_id": "edge-c-recovery-route-create",
       "timestamp_ns": 405000000000,
       "order": 106,
@@ -1114,6 +1184,21 @@
       "update_snapshot": true,
       "properties": {"next_hop": "198.51.100.1", "generation": 2},
       "message": "Edge-C refreshed the recovery route after the Ottawa core restored."
+    },
+    {
+      "event_id": "node-e-vpn-local-restore",
+      "timestamp_ns": 560000000000,
+      "order": 201,
+      "kind": "status",
+      "node_id": "node-e",
+      "resource_id": "vpn:blue-evpn",
+      "resource_type": "VIRTUAL_INTERFACE",
+      "operation": "modify",
+      "status": "up",
+      "outcome": "success",
+      "update_snapshot": true,
+      "properties": {"oper_status": "up", "reason": "local-vtep-restored"},
+      "message": "PE-E restored its Blue EVPN attachment without changing the physical underlay."
     },
     {
       "event_id": "node-a-final-next-hop-change",

@@ -378,6 +378,13 @@ COVERAGE_CASES: tuple[CoverageCaseSpec, ...] = (
         required_capabilities=("route_resolution", "packet_evolution"),
     ),
     _case(
+        "packet-native-ip-incomplete",
+        "Native IPv4 with an incomplete packet capture",
+        category="packet",
+        packet_profile_id="native-ip-incomplete",
+        required_capabilities=("route_resolution", "packet_evolution"),
+    ),
+    _case(
         "packet-sr-mpls-php",
         "SR-MPLS label swap and PHP",
         category="packet",
@@ -440,6 +447,33 @@ COVERAGE_CASES: tuple[CoverageCaseSpec, ...] = (
             "route_resolution",
             "packet_evolution",
             "mtu_validation",
+        ),
+    ),
+    _case(
+        "packet-mtu-fit",
+        "Encapsulation fits the egress MTU",
+        category="packet",
+        packet_profile_id="mtu-fit",
+        required_capabilities=(
+            "route_resolution", "packet_evolution", "mtu_validation",
+        ),
+    ),
+    _case(
+        "packet-mtu-exact",
+        "Encapsulation exactly equals the egress MTU",
+        category="packet",
+        packet_profile_id="mtu-exact",
+        required_capabilities=(
+            "route_resolution", "packet_evolution", "mtu_validation",
+        ),
+    ),
+    _case(
+        "packet-mtu-incomparable",
+        "Incomparable packet-size and MTU contracts",
+        category="packet",
+        packet_profile_id="mtu-incomparable",
+        required_capabilities=(
+            "route_resolution", "packet_evolution", "mtu_validation",
         ),
     ),
     _case(
@@ -518,7 +552,7 @@ COVERAGE_CASES: tuple[CoverageCaseSpec, ...] = (
     ),
     _case(
         "topology-external-management-loopback-vpn",
-        "External and excluded subnet classifications",
+        "External, local-only, and separate VPN service domains",
         category="topology",
         route_type="not_applicable",
         route_family="not_applicable",
@@ -526,12 +560,15 @@ COVERAGE_CASES: tuple[CoverageCaseSpec, ...] = (
         vrf="default",
         source_node="node-c",
         destination_node="edge-c",
-        involved_nodes=("node-c", "edge-c"),
+        involved_nodes=("node-a", "node-b", "node-c", "node-d", "node-e", "edge-c"),
         required_capabilities=("topology_projection",),
         topology_evidence=(
             TopologyEvidenceSelector("link", "ottawa-external"),
             TopologyEvidenceSelector("local", "management", ("node-c",)),
             TopologyEvidenceSelector("local", "loopback", ("node-c",)),
+            TopologyEvidenceSelector("local", "blue-l3vpn", ("node-a", "node-b", "node-c")),
+            TopologyEvidenceSelector("local", "red-l3vpn", ("node-d", "node-e")),
+            TopologyEvidenceSelector("local", "blue-evpn", ("node-a", "node-b", "node-d", "node-e")),
         ),
     ),
     _case(

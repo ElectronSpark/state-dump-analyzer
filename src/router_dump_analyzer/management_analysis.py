@@ -13,6 +13,7 @@ from collections import defaultdict
 from collections.abc import Iterator, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass
+from itertools import chain
 from types import MappingProxyType
 from typing import Any
 
@@ -22,6 +23,9 @@ from .ingestion import IngestedDataPolicy, IngestedDatasetSource
 from .normalized_data import (
     IndexedHistory,
     NormalizedDataService,
+    _project_relationship_perspective,
+    _project_relationship_projection_edges,
+    _project_relationship_projection_materialization,
     event_redaction_policy,
     project_consistency_findings_for_client,
     project_consistency_materialization_for_client,
@@ -56,6 +60,8 @@ _COLLECTIONS = (
     "lifecycle_intervals",
     "relationships",
     "relationship_intervals",
+    "relationship_declarations",
+    "relationship_projection_edges",
     "findings",
 )
 
@@ -562,12 +568,24 @@ def _section_rows(
         service = NormalizedDataService(
             IngestedDatasetSource(store), IngestedDataPolicy(store)
         )
-        for index, relationship in enumerate(service.relationships_at(time_ns)):
+        # Durable loading has already validated the projection fragment through
+        # ControlPlane._relationship_projection_index. These are revision-basis
+        # claims, not intervals: keep them in a separate record kind rather than
+        # feeding them back into temporal reconstruction. Parser observations
+        # (including tombstones) remain authoritative about their own times.
+        relationships = chain(
+            ((False, item) for item in service.relationships_at(time_ns)),
+            ((True, item) for item in dataset.get("relationship_projection_edges", [])),
+        )
+        for index, (is_projection, relationship) in enumerate(relationships):
             if (
                 not query.search
                 and not query.offset <= index < query.offset + query.limit
             ):
                 yield None
+                continue
+            if is_projection:
+                yield _revision_relationship_row(relationship)
                 continue
             row = _public_row(
                 relationship,
@@ -587,6 +605,10 @@ def _section_rows(
             # Unknown presence is an observation, not a confirmed active edge.
             # Legacy records without this field retain their normalized meaning.
             row["present"] = relationship_presence(relationship)
+            row["record_kind"] = "temporal_observation"
+            row["perspective_ref"] = _project_relationship_perspective(
+                relationship.get("perspective_ref")
+            )
             yield row
     elif query.section == "findings":
         for index, finding in enumerate(dataset.get("findings", [])):
@@ -598,6 +620,56 @@ def _section_rows(
                 continue
             projected = project_consistency_findings_for_client(dataset, [finding])[0]
             yield projected
+
+
+def _revision_relationship_row(relationship: Mapping[str, Any]) -> dict[str, Any]:
+    """Inspect a retained projection without asserting selected-time presence."""
+
+    # Reuse the bootstrap's closed structural projector without publishing private
+    # attributes, evidence locators, typed keys, or producer-owned extra fields.
+    # This also bounds projection work to the requested page when not searching.
+    structural = {
+        field: relationship[field]
+        for field in (
+            "relationship_id",
+            "scope",
+            "basis_digest",
+            "execution_plan_digest",
+            "source",
+            "target",
+            "relation_type",
+            "perspective_ref",
+            "quality",
+            "provenance",
+            "ambiguity_group_id",
+        )
+        if field in relationship
+    }
+    projected = _project_relationship_projection_edges([structural], set())[0]
+    row = _public_row(
+        projected,
+        (
+            "relationship_id",
+            "scope",
+            "basis_digest",
+            "execution_plan_digest",
+            "relation_type",
+            "quality",
+            "provenance",
+            "ambiguity_group_id",
+        ),
+    )
+    row["source"] = projected.get("source", {}).get("resource_id")
+    row["target"] = projected.get("target", {}).get("resource_id")
+    row["type"] = projected.get("relation_type")
+    row["perspective_ref"] = projected.get("perspective_ref")
+    row["record_kind"] = "revision_projection"
+    row["present"] = None
+    row["temporal_note"] = (
+        "Revision-scoped projection; presence at the selected time is not asserted. "
+        "Timed parser observations remain authoritative."
+    )
+    return row
 
 
 def query_management_analysis(
@@ -659,9 +731,22 @@ def query_management_analysis(
                 {
                     "resource_count": len(dataset.get("resources", [])),
                     "event_count": len(dataset.get("events", [])),
-                    "relationship_count": len(dataset.get("relationships", [])),
+                    "relationship_count": len(dataset.get("relationships", []))
+                    + len(dataset.get("relationship_projection_edges", [])),
+                    "relationship_observation_count": len(
+                        dataset.get("relationships", [])
+                    ),
+                    "relationship_projection_count": len(
+                        dataset.get("relationship_projection_edges", [])
+                    ),
+                    "relationship_declaration_count": len(
+                        dataset.get("relationship_declarations", [])
+                    ),
                     "relationship_interval_count": len(
                         dataset.get("relationship_intervals", [])
+                    ),
+                    "relationship_projection_materialization": _project_relationship_projection_materialization(
+                        dataset.get("relationship_projection_materialization", {}),
                     ),
                     "finding_count": len(dataset.get("findings", [])),
                     "consistency_materialization": project_consistency_materialization_for_client(
@@ -725,7 +810,7 @@ def query_management_analysis(
             },
             "topology": {
                 "available": False,
-                "reason": "Relationships are observations, not an inferred network topology.",
+                "reason": "Relationship observations and revision-scoped projections are not an inferred network topology.",
             },
         },
         "items": page,

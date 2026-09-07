@@ -1095,10 +1095,27 @@ GENERATED_TOPOLOGY_PROFILE: Final[TopologyProfileSpec] = TopologyProfileSpec(
     projection_role="underlay",
     presentation_roles=("underlay",),
 )
+GENERATED_VPN_TOPOLOGY_PROFILE: Final[TopologyProfileSpec] = TopologyProfileSpec(
+    profile_id="fabric-vpn",
+    label="Generated VPN service membership",
+    projection_role="vpn",
+    presentation_roles=("vpn", "overlay"),
+)
 GENERATED_TOPOLOGY_SEGMENT_MATCHER_ID = "demo.connectivity-domain-key.exact.v1"
 GENERATED_TOPOLOGY_FEDERATION_PLUGIN_ID = "demo.fabric.federation-linker"
 
 _GENERATED_PACKET_PROFILES: dict[str, dict[str, Any]] = {
+    "native-ip-incomplete": {
+        "initial_layers": [
+            {
+                "kind": "ipv4",
+                "source": "192.0.2.10",
+                "destination": "198.51.100.20",
+            }
+        ],
+        "expected_actions": ["lookup", "forward", "incomplete_packet_capture"],
+        "expected_continuity": "unknown_incomplete",
+    },
     "native-ip": {
         "initial_layers": [
             {
@@ -1205,6 +1222,47 @@ _GENERATED_PACKET_PROFILES: dict[str, dict[str, Any]] = {
         ],
         "packet_size_bytes": 1490,
         "egress_mtu_bytes": 1500,
+    },
+    "mtu-fit": {
+        "initial_layers": [
+            {
+                "kind": "ipv4",
+                "source": "192.0.2.10",
+                "destination": "198.51.100.20",
+            }
+        ],
+        "expected_actions": ["encapsulate_ipv4", "mtu_check", "forward"],
+        "packet_size_bytes": 1420,
+        "egress_mtu_bytes": 1500,
+        "expected_mtu_outcome": "fits",
+    },
+    "mtu-exact": {
+        "initial_layers": [
+            {
+                "kind": "ipv4",
+                "source": "192.0.2.10",
+                "destination": "198.51.100.20",
+            }
+        ],
+        "expected_actions": ["encapsulate_ipv4", "mtu_check", "forward"],
+        "packet_size_bytes": 1480,
+        "egress_mtu_bytes": 1500,
+        "expected_mtu_outcome": "fits",
+    },
+    "mtu-incomparable": {
+        "initial_layers": [
+            {
+                "kind": "ipv4",
+                "source": "192.0.2.10",
+                "destination": "198.51.100.20",
+            }
+        ],
+        "expected_actions": ["encapsulate_ipv4", "mtu_check", "forward"],
+        "packet_size_bytes": 1490,
+        "egress_mtu_bytes": 1500,
+        "size_basis_contract_id": "demo.wire-size.v1",
+        "mtu_basis_contract_id": "demo.ip-size.v1",
+        "expected_mtu_outcome": "unknown_basis_mismatch",
     },
     "forced-steering": {
         "executor_profile_id": "sr-mpls-php",
@@ -2028,6 +2086,7 @@ __all__ = [
     "GENERATED_SCHEMA_CONTRACT_VERSION",
     "GENERATED_TOPOLOGY_FEDERATION_PLUGIN_ID",
     "GENERATED_TOPOLOGY_PROFILE",
+    "GENERATED_VPN_TOPOLOGY_PROFILE",
     "GENERATED_TOPOLOGY_SEGMENT_MATCHER_ID",
     "PARSER_ID",
     "PLATFORM_ID",
