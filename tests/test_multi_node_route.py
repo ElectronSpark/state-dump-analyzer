@@ -328,7 +328,7 @@ class RouteTraceCoreCompletenessTests(unittest.TestCase):
             "TopologyFixture",
             (),
             {
-                "contract": {
+                "route_catalog": lambda self: {
                     "federation_plugin": {
                         "plugin_id": "test.linker",
                         "plugin_run_id": "run-1",
