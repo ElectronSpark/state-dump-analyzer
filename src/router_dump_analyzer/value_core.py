@@ -2,14 +2,76 @@
 
 from __future__ import annotations
 
+import math
 from enum import Enum
+from types import MappingProxyType
 from typing import Any
-
 
 # Largest integer that survives a JSON number -> JavaScript Number -> integer
 # round trip exactly.  Browser-visible counters and page coordinates use this
 # shared boundary unless their domain is deliberately smaller.
 MAX_JSON_SAFE_INTEGER: int = (1 << 53) - 1
+
+
+def _copy_json_value(
+    value: Any, *, immutable: bool, active: set[int], depth: int
+) -> Any:
+    value_type = type(value)
+    if value is None or value_type in (bool, int, str):
+        return value
+    if value_type is float:
+        if not math.isfinite(value):
+            raise ValueError("JSON numbers must be finite")
+        return value
+    if value_type not in (dict, MappingProxyType, list, tuple):
+        raise ValueError("JSON values must contain only supported JSON types")
+    if depth >= 64:
+        raise ValueError("JSON values must not exceed 64 nested containers")
+    identity = id(value)
+    if identity in active:
+        raise ValueError("JSON values must not contain cycles")
+    active.add(identity)
+    try:
+        if value_type in (dict, MappingProxyType):
+            if any(type(key) is not str for key in value):
+                raise ValueError("JSON objects must use string keys")
+            copied = {
+                key: _copy_json_value(
+                    item, immutable=immutable, active=active, depth=depth + 1
+                )
+                for key, item in value.items()
+            }
+            return MappingProxyType(copied) if immutable else copied
+        copied_items = [
+            _copy_json_value(
+                item, immutable=immutable, active=active, depth=depth + 1
+            )
+            for item in value
+        ]
+        return tuple(copied_items) if immutable else copied_items
+    finally:
+        active.remove(identity)
+
+
+def snapshot_json_value(value: Any) -> Any:
+    """Detach JSON data into read-only mappings and tuples at every depth.
+
+    Accept built-in JSON scalars, dictionaries and lists, plus the immutable
+    mapping/tuple representation returned here. Reject custom objects, cycles,
+    non-string object keys, non-finite numbers and nesting beyond 64 containers.
+    """
+
+    return _copy_json_value(value, immutable=True, active=set(), depth=0)
+
+
+def mutable_json_value(value: Any) -> Any:
+    """Return independent JSON dictionaries/lists from a validated snapshot.
+
+    The accepted types and validation are the same as ``snapshot_json_value``.
+    Nested output containers share no mutable state with the input.
+    """
+
+    return _copy_json_value(value, immutable=False, active=set(), depth=0)
 
 
 def require_bounded_integer(
@@ -144,7 +206,9 @@ __all__ = [
     "CanonicalIntegerError",
     "CanonicalIntegerErrorReason",
     "MAX_JSON_SAFE_INTEGER",
+    "mutable_json_value",
     "parse_canonical_decimal_integer",
     "parse_decimal_integer",
     "require_bounded_integer",
+    "snapshot_json_value",
 ]

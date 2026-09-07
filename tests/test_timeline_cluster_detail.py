@@ -6,11 +6,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException
-
-from router_dump_analyzer.web import runtime_api as demo_app
 from rsl_demo_plugin.data import REVISION_ID
-from tests.support.generated_demo import generated_demo_runtime_session
 
+from router_dump_analyzer.revision_queries import bounded_timeline_clusters
+from router_dump_analyzer.web import runtime_api as demo_app
+from tests.support.generated_demo import generated_demo_runtime_session
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_JS = ROOT / "frontend" / "assets" / "app.js"
@@ -168,7 +168,7 @@ class TimelineClusterDetailTests(unittest.TestCase):
             }
         ]
 
-        clusters, _ = demo_app._bounded_timeline_clusters(
+        clusters, _ = bounded_timeline_clusters(
             lanes,
             start_ns=0,
             end_ns=20,

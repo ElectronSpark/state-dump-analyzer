@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from router_dump_analyzer import normalized_data, temporal_core
+from router_dump_analyzer import normalized_data, revision_queries, temporal_core
 from router_dump_analyzer.plugin_api import PropertyPatch
 from router_dump_analyzer.temporal_topology import TemporalTopologyService
 from router_dump_analyzer.web import runtime_api
@@ -331,7 +331,7 @@ class RelationshipPresenceTruthTests(unittest.TestCase):
 class SharedIntervalContainmentTests(unittest.TestCase):
     def test_existing_adapters_share_one_half_open_predicate(self):
         self.assertIs(normalized_data.contains_time, temporal_core.contains_time)
-        self.assertIs(runtime_api._contains_time, temporal_core.contains_time)
+        self.assertIs(revision_queries._contains_time, temporal_core.contains_time)
         for timestamp, start, end, expected in (
             (10, "10", "20", True),
             (20, "10", "20", False),

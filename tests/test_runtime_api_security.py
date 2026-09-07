@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from router_dump_analyzer import revision_queries
 from router_dump_analyzer.multi_node_topology import MultiNodeTopologyRequestError
 from router_dump_analyzer.temporal_topology import TemporalTopologyRequestError
 from router_dump_analyzer.web import runtime_api
@@ -76,6 +77,7 @@ class RuntimeApiErrorPolicyTests(unittest.TestCase):
         expected = {
             "MultiNodeRouteRequestError": 422,
             "MultiNodeTopologyRequestError": 422,
+            "RevisionQueryRequestError": 422,
             "SourceRecordRequestError": 422,
             "TemporalTopologyRequestError": 422,
             "TimeoutError": 504,
@@ -301,7 +303,7 @@ class RuntimeApiLiveBoundaryTests(unittest.TestCase):
                 )
 
         with patch.object(
-            runtime_api,
+            revision_queries,
             "record_lanes_for_window",
             side_effect=ValueError(failure),
         ):

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import unittest
+from types import MappingProxyType
 
 from router_dump_analyzer.value_core import (
     CanonicalIntegerError,
     CanonicalIntegerErrorReason,
+    mutable_json_value,
     parse_canonical_decimal_integer,
     parse_decimal_integer,
+    snapshot_json_value,
 )
 
 
@@ -33,9 +36,12 @@ class DecimalIntegerTests(unittest.TestCase):
             "-１２",
             None,
         ):
-            with self.subTest(value=value), self.assertRaisesRegex(
-                ValueError,
-                "value must be an integer or decimal integer string",
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(
+                    ValueError,
+                    "value must be an integer or decimal integer string",
+                ),
             ):
                 parse_decimal_integer(value, "value")
 
@@ -89,6 +95,51 @@ class DecimalIntegerTests(unittest.TestCase):
                     parse_canonical_decimal_integer(value, "value", **options)
                 self.assertEqual(raised.exception.field, "value")
                 self.assertIs(raised.exception.reason, expected_reason)
+
+
+class JsonSnapshotTests(unittest.TestCase):
+    def test_nested_snapshots_and_mutable_copies_are_independent(self) -> None:
+        supplied = {"items": [{"values": [None, True, 4, 1.5, "value"]}]}
+        snapshot = snapshot_json_value(supplied)
+        self.assertIsInstance(snapshot, MappingProxyType)
+        self.assertIsInstance(snapshot["items"], tuple)
+        with self.assertRaises(TypeError):
+            snapshot["items"][0]["values"] = ()
+        with self.assertRaises(TypeError):
+            snapshot["items"][0]["values"][0] = "changed"
+        supplied["items"][0]["values"].append("later")
+        copied = mutable_json_value(snapshot)
+        self.assertEqual(copied, {"items": [{"values": [None, True, 4, 1.5, "value"]}]})
+        copied["items"][0]["values"].clear()
+        self.assertEqual(len(snapshot["items"][0]["values"]), 5)
+        self.assertEqual(
+            mutable_json_value(snapshot_json_value(snapshot)),
+            mutable_json_value(snapshot),
+        )
+
+    def test_json_snapshots_reject_unsupported_and_cyclic_values(self) -> None:
+        cycle = []
+        cycle.append(cycle)
+        for value in (
+            object(),
+            {1: "invalid"},
+            {"nested": float("nan")},
+            float("inf"),
+            cycle,
+        ):
+            for convert in (snapshot_json_value, mutable_json_value):
+                with (
+                    self.subTest(value_type=type(value), convert=convert),
+                    self.assertRaises(ValueError),
+                ):
+                    convert(value)
+        deepest = None
+        for _ in range(64):
+            deepest = [deepest]
+        snapshot = snapshot_json_value(deepest)
+        self.assertEqual(mutable_json_value(snapshot), deepest)
+        with self.assertRaisesRegex(ValueError, "64 nested containers"):
+            snapshot_json_value([deepest])
 
 
 if __name__ == "__main__":

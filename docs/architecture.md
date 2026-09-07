@@ -1007,6 +1007,18 @@ indeterminate.
 
 #### Runtime session boundary
 
+`revision_queries.RevisionQueryService` executes bounded graph, correlation,
+event-density, event-log, and timeline queries without importing HTTP or
+consulting request context. Frozen query records carry validated selections;
+nested JSON metadata is detached and immutable. Core callers supply a matching
+normalized-data service, revision ID, dataset, optional history index, and
+cancellation probe. The service scopes data-service reads to that revision but
+does not independently attest that the supplied dataset and index correspond.
+The HTTP adapter owns authentication, revision selection, wire parsing, and
+translation of `RevisionQueryRequestError` into the existing safe 422 response.
+Headless execution and parity with each HTTP query family are exercised by
+`tests/test_revision_queries.py`.
+
 The standard parsing contract is the normal hosted path. An ordinary parser
 plug-in exposes no `runtime` attribute. Core validates the selected host input,
 creates the safe artifact inventory, calls `describe()`, `probe()`, and

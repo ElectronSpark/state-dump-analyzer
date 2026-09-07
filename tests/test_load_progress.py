@@ -22,12 +22,12 @@ from router_dump_analyzer.multi_node_route import MultiNodeRouteService
 from router_dump_analyzer.multi_node_topology import MultiNodeTopologyService
 from router_dump_analyzer.normalized_data import NormalizedDataService
 from router_dump_analyzer.process_control import PROCESS_CONTROL_EXCEPTIONS
+from router_dump_analyzer.revision_queries import RevisionQueryService
 from router_dump_analyzer.runtime import CoreRuntimeSession
 from router_dump_analyzer.web.runtime_api import (
     _active_topology_assembly_id,
     _multi_node_route,
     _multi_node_topology,
-    _query_event_search,
     _require_revision,
     _RuntimeHTTPResponse,
     analysis_health_projection,
@@ -525,18 +525,11 @@ class AnalysisLoadProgressTests(unittest.TestCase):
             load_tracker=tracker,
         )
         event_search = _TrackingEventSearch(tracker)
-        session = CoreRuntimeSession(
-            plugin_session=cast(Any, object()),
-            data_service=service,
+        queries = RevisionQueryService(
+            service, revision_id="test/revision", dataset={},
+            indexed_history=SimpleNamespace(event_search=event_search, resource_by_id={}),
         )
-
-        with activate_runtime_session(session):
-            matches = _query_event_search(
-                {},
-                SimpleNamespace(event_search=event_search),
-                object(),
-                "needle",
-            )
+        matches = queries.search_events("needle")
 
         self.assertEqual(matches, ())
         self.assertIsNotNone(event_search.observed)
@@ -556,21 +549,12 @@ class AnalysisLoadProgressTests(unittest.TestCase):
             load_tracker=tracker,
         )
         event_search = _TrackingEventSearch(tracker, capacity_error=True)
-        session = CoreRuntimeSession(
-            plugin_session=cast(Any, object()),
-            data_service=service,
+        queries = RevisionQueryService(
+            service, revision_id="test/revision", dataset={},
+            indexed_history=SimpleNamespace(event_search=event_search, resource_by_id={}),
         )
-
-        with (
-            activate_runtime_session(session),
-            self.assertRaises(HistorySearchCapacityError),
-        ):
-            _query_event_search(
-                {},
-                SimpleNamespace(event_search=event_search),
-                object(),
-                "needle",
-            )
+        with self.assertRaises(HistorySearchCapacityError):
+            queries.search_events("needle")
 
         terminal = tracker.snapshot()
         self.assertEqual(terminal.state, AnalysisLoadState.READY)
