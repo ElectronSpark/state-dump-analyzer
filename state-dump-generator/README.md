@@ -492,3 +492,8 @@ python -m unittest discover -s tests -v
 The test suite verifies deterministic archives, per-node isolation, recursive
 rejection of authoring truth, safe archive paths, the local web API, and the
 absence of analyzer/demo/plugin runtime dependencies.
+
+Browser conformance tests execute the editor's JavaScript with Node.js and
+compare it with the Python implementation. CI installs Node.js 22 and fails
+before testing if it is unavailable; these checks are required on both Windows
+and Linux. Local runs without Node.js skip the browser-specific tests.
