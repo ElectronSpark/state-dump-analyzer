@@ -26,7 +26,6 @@ from router_dump_analyzer.ingestion_pipeline import (
     _frozen_auxiliary_execution_pins,
     _run_plugin_child,
     _StagedChildIngestion,
-    executable_plugin_fingerprint,
 )
 from router_dump_analyzer.plugin_api import (
     CORE_PLUGIN_API_VERSION,
@@ -47,7 +46,10 @@ from router_dump_analyzer.plugin_execution_plan import (
     plugin_execution_plan_dict,
     plugin_execution_plan_plugin_ids,
 )
-from router_dump_analyzer.plugin_identity import PluginExecutableIdentityError
+from router_dump_analyzer.plugin_identity import (
+    PluginExecutableIdentityError,
+    executable_plugin_fingerprint,
+)
 from router_dump_analyzer.private_analysis_binding import (
     bind_private_analysis_revision,
 )
