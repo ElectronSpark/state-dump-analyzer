@@ -9859,7 +9859,6 @@ function eventLogPointerDown(event) {
   if (!row || event.target.closest("button, a, input, select, textarea")) return;
   const startIndex = Number(row.dataset.selectionIndex);
   if (!Number.isSafeInteger(startIndex)) return;
-  const host = byId("event-log-scroll");
   state.eventLogDrag = {
     pointerId: event.pointerId,
     startIndex,
@@ -9876,7 +9875,6 @@ function eventLogPointerDown(event) {
     active: false,
     animationFrame: null,
   };
-  host.setPointerCapture?.(event.pointerId);
 }
 
 function eventLogPointerMove(event) {
@@ -9890,6 +9888,9 @@ function eventLogPointerMove(event) {
   ) < 5) return;
   if (!drag.active) {
     drag.active = true;
+    // Capturing an ordinary click retargets it from the row to the scroll host.
+    // Capture only after movement establishes a drag-selection gesture.
+    byId("event-log-scroll").setPointerCapture?.(event.pointerId);
     byId("event-log-scroll").classList.add("is-selecting");
     setEventLogSelectionRanges(eventLogDragRanges(drag, drag.startIndex), {
       anchor: drag.extend && drag.anchor !== null ? drag.anchor : drag.startIndex,
