@@ -200,8 +200,9 @@ class ScaleHistoryFrontendTests(unittest.TestCase):
         controls = javascript_function(self.script, "bindControls")
 
         self.assertIn('event.pointerType === "touch"', down)
-        self.assertIn("setPointerCapture", down)
-        self.assertIn("Math.hypot", move)
+        self.assertNotIn("setPointerCapture", down)
+        self.assertIn("setPointerCapture", move)
+        self.assertLess(move.index("Math.hypot"), move.index("setPointerCapture"))
         self.assertIn("visibleEventLogRowAtPoint", move)
         self.assertIn("releasePointerCapture", finish)
         self.assertIn("cancelAnimationFrame", finish)
