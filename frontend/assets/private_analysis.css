@@ -7,7 +7,6 @@
     var(--bg);
 }
 
-.pa-topbar .pa-docs-link { display: inline-flex; justify-self: end; }
 .pa-disclosure { border-bottom-color: rgba(165, 139, 255, 0.28); }
 .pa-main { padding-bottom: 72px; }
 .pa-hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, .34fr); gap: 30px; align-items: end; padding-block: 42px 30px; }
@@ -78,7 +77,6 @@
 
 @media (max-width: 720px) {
   .pa-topbar { grid-template-columns: 1fr; gap: 12px; padding-block: 12px; }
-  .pa-topbar .pa-docs-link { justify-self: start; }
   .pa-grid-form, .pa-run-form, .pa-facts { grid-template-columns: 1fr; }
   .pa-query-field, .pa-durable-warning { grid-column: auto; }
   .pa-reload-panel { display: grid; }
