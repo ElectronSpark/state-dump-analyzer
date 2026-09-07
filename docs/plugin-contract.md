@@ -2161,8 +2161,9 @@ For identical artifacts, configuration, and plugin build, output must be stable:
 
 ## 4. Streaming and batching
 
-The protocol uses iterables to keep the reference dependency-free. The production
-worker should convert records into bounded Apache Arrow batches.
+The implemented Python protocol uses iterables to keep the reference
+dependency-free. Apache Arrow batches are a future transport design; the
+current worker does not expose an Arrow plug-in interface.
 
 - Never return one list containing the whole trace.
 - Bound batch rows and serialized bytes.
@@ -2201,21 +2202,19 @@ completeness instead of looking like a complete no-match.
 If a plugin needs Polars/Lark/TextFSM, those libraries remain in its worker image;
 they are not forced on every plugin.
 
-### Canonical wire values
+### Implemented values and proposed batch transport
 
-Arrow batches use core-owned schemas with fixed scalar columns. Variable
-properties are canonical JSON UTF-8 within a bounded Arrow binary/string column,
-plus plugin-declared projected typed columns for hot queries. The JSON encoding
-reserves tagged objects:
+Plug-in hooks return the typed Python values declared by `plugin_api`; authors
+must not invent JSON tags for bytes or UUIDs. No public `$rda` tagged-object
+encoding is implemented or reserved. Worker IPC and durable storage use their
+own core-owned, versioned codecs and are not plug-in extension points.
 
-```json
-{"$rda":"bytes","base64":"AQIDBA=="}
-{"$rda":"uuid","value":"123e4567-e89b-12d3-a456-426614174000"}
-```
+A future Arrow transport could use fixed scalar columns, bounded canonical
+JSON properties, and declared projected columns. Its schema and scalar encoding
+must be specified and covered by conformance tests before becoming an author
+contract.
 
-Map keys are strings and canonical output sorts them. Reject non-finite floats,
-invalid UTF-8 text, excessive depth, and oversized property values. Arrow carries
-declared timestamps as signed `int64`; public JSON APIs encode core-owned
+The shipped public JSON APIs encode core-owned
 nanoseconds and other unsafe 64-bit integers as decimal strings. This conversion
 is owned by the core, not reimplemented differently by each plugin. A key ending
 in `_ns` inside an opaque plug-in mapping is not thereby a core timestamp: the
