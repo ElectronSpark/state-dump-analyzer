@@ -13,6 +13,13 @@ operational guide is
 
 ## 1. Global rules
 
+`GET /v1/revisions/{revision_id}/capabilities` separates producer `limitations`
+from core-owned `host_services`. The latter contains the booleans
+`control_plane_configured` and `request_identity_configured`, derived from the
+application's attached services. A configured control plane adds durable import,
+catalog, review, and bounded inspection capabilities to `implemented`.
+Configuration is not a caller authorization or a service-health guarantee.
+
 - Every analysis-data read is scoped to one immutable `revision_id`; a response
   that accepts `latest` resolves it once and returns the concrete ID.
   Control-plane catalog/list/mutation routes are instead scoped by trusted

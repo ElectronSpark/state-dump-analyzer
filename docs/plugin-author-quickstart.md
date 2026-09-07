@@ -35,6 +35,10 @@ plug-ins, but this adds no tenant, queue, session, annotation, report, HTTP, or
 database hook to the plug-in contract. The demo publishes the same example
 through normal entry-point discovery and contains no application entry point.
 
+Describe evidence or parser limitations in plug-in metadata. Core reports which
+host services are configured; the example's synthetic-input warnings do not
+describe deployment availability.
+
 ## 1. Run the known-good example
 
 From the repository root, using Python 3.12 in the analyzer environment:

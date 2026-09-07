@@ -998,6 +998,12 @@ Mixed prototype semantics remain plug-in policy until their inputs and outputs
 become typed, protocol-neutral core contracts. A reusable-looking algorithm is
 not promoted merely because the demo currently exercises it.
 
+Fixture limitations describe producer evidence and coverage. Core capabilities
+combine declared analysis providers with application-owned service configuration;
+the demo does not maintain a second inventory of host uploads, persistence,
+identity, or process controls. Configuration flags remain distinct from caller
+authorization and live service health.
+
 Analysis loading is observable without moving device semantics into core. One
 application-owned `AnalysisLoadTracker` surrounds normalized dataset loads and
 publishes only closed generic stages and bounded counters at

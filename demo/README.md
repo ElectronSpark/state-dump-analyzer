@@ -1,5 +1,9 @@
 # Router State Lab example plug-in and fixture generator
 
+The review drawer's fixture limitations describe synthetic evidence, generated
+interval expectations, and declared forwarding scenarios. Core reports enabled
+host services separately from these producer limitations.
+
 This is the repository's one demo distribution. It has no application or
 console entry point; it registers only a plug-in discovery entry point. It
 contains:

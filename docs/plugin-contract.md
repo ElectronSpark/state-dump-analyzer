@@ -18,6 +18,12 @@ Core code never branches on plug-in kind, relation, source-type, source-group,
 or key-field names. The migration audit is recorded in
 `docs/core-plugin-boundary-audit-2026-07-22.md`.
 
+Producer-supplied limitation metadata describes input semantics, evidence
+quality, and declared scenario coverage. It must not claim that host discovery,
+uploads, persistence, authentication, or other deployment services are absent.
+Core derives configured host services from its application composition; those
+flags do not grant a caller permission or replace health checks.
+
 The executable reference types are in
 `src/router_dump_analyzer/plugin_api.py`.
 

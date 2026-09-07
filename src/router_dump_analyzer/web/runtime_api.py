@@ -923,7 +923,7 @@ def revision_multi_node_topology_capabilities(
 
 
 @api_router.get("/v1/revisions/{revision_id:path}/capabilities")
-def capabilities(revision_id: str) -> dict[str, Any]:
+def capabilities(revision_id: str, request: Request) -> dict[str, Any]:
     _require_revision(revision_id)
     dataset = load_dataset()
     session = current_runtime_session()
@@ -965,9 +965,25 @@ def capabilities(revision_id: str) -> dict[str, Any]:
         )
     if session.route_provider is not None:
         implemented.append("multi_node_route_tracing")
+    control_plane_configured = (
+        getattr(request.app.state, "control_plane", None) is not None
+    )
+    if control_plane_configured:
+        implemented.extend((
+            "durable_import_jobs",
+            "durable_revision_catalog",
+            "durable_review",
+            "bounded_durable_analysis_pages",
+        ))
     return {
         "revision_id": revision_id,
         "implemented": implemented,
+        "host_services": {
+            "control_plane_configured": control_plane_configured,
+            "request_identity_configured": callable(
+                getattr(request.app.state, "control_plane_identity_resolver", None)
+            ),
+        },
         "limitations": dataset.get("gaps", []),
         "disclosure": str(_analysis_metadata(dataset).get("disclosure") or ""),
     }

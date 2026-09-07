@@ -9,6 +9,8 @@ A bounded topology snapshot retains its original selection and clock basis;
 the core browser never reconstructs a replacement after a topology API error.
 Cross-node comparison policy associates local evidence without exporting its
 scenario or peer associations as raw node facts.
+Fixture limitations describe synthetic evidence and scenario coverage; host
+service availability remains a core application decision.
 
 The public entry point remains a normal installed ``AnalyzerPlugin`` and never
 depends on the generator or web application.

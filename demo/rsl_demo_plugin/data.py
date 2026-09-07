@@ -63,95 +63,39 @@ def demo_revision_scope(revision_id: str) -> Iterator[None]:
         _active_revision_id.reset(token)
 
 
+# Producer limitations describe evidence quality, never deployment services.
 DEMO_GAPS: list[dict[str, Any]] = [
     {
-        "id": "ingestion",
-        "area": "Ingestion",
-        "title": "Upload and safe nested-archive extraction",
-        "status": "missing",
-        "detail": (
-            "The server loads only the trusted assembly emitted by the demo "
-            "generator. Arbitrary upload and admission of untrusted archives "
-            "are not implemented."
-        ),
-    },
-    {
-        "id": "ctf",
-        "area": "Decoding",
-        "title": "Production Babeltrace/CTF decoding worker",
+        "id": "synthetic-input",
+        "area": "Evidence",
+        "title": "Synthetic device evidence",
         "status": "fixture-only",
         "detail": (
-            "The demo serves generated normalized records; production CTF "
-            "decoding remains isolated work."
-        ),
-    },
-    {
-        "id": "plugins",
-        "area": "Extensibility",
-        "title": "Third-party plugin discovery and sandboxing",
-        "status": "demo-only",
-        "detail": (
-            "The comprehensive corpus is synthesized offline by the installed "
-            "example plug-in's fixture policy. Runtime validates and loads its "
-            "immutable precomputed projections without replaying the tiny "
-            "conformance parser; production discovery and sandboxing remain "
-            "unimplemented."
+            "The bundled records are generated examples, not a validated corpus "
+            "of production vendor dumps or production CTF traces."
         ),
     },
     {
         "id": "reconstruction",
         "area": "Temporal model",
-        "title": "Runtime reconstruction from arbitrary dumps",
+        "title": "Generated interval expectations",
         "status": "fixture-only",
         "detail": (
-            "Intervals are deterministic generated expectations, not "
-            "reconstructed during the request."
+            "The comprehensive archive carries deterministic precomputed "
+            "intervals. It does not establish parser reconstruction accuracy "
+            "for arbitrary captured dumps."
         ),
     },
     {
         "id": "routing",
         "area": "Forwarding",
-        "title": "Production forwarding coordination",
+        "title": "Declared scenario coverage",
         "status": "demo-only",
         "detail": (
-            "The demo scenario evaluator executes its advertised IP, MPLS, SR, "
-            "VPN, recursion, and policy cases. Coordinating arbitrary "
-            "plugin-resolved production tables remains future work."
+            "The demo forwarding policy covers its declared IP, MPLS, SR, VPN, "
+            "recursion, and policy cases. These examples do not certify "
+            "unrepresented vendor tables or network conditions."
         ),
-    },
-    {
-        "id": "source-context",
-        "area": "Evidence",
-        "title": "Jump to decoded source context",
-        "status": "missing",
-        "detail": (
-            "Evidence locators are returned, but raw bytes cannot yet be "
-            "opened in context."
-        ),
-    },
-    {
-        "id": "persistence",
-        "area": "Operations",
-        "title": "Jobs, persistence and exports",
-        "status": "missing",
-        "detail": "The process serves one immutable in-memory revision.",
-    },
-    {
-        "id": "scale",
-        "area": "Scale",
-        "title": "1M+-event generated assembly",
-        "status": "implemented",
-        "detail": (
-            "The single demo generator emits at least 1M events and "
-            "5K-10K resources per node for the same browser and API paths."
-        ),
-    },
-    {
-        "id": "security",
-        "area": "Security",
-        "title": "Authentication, redaction, quotas and audit",
-        "status": "missing",
-        "detail": "The local synthetic demo has no production data controls.",
     },
 ]
 
