@@ -46,17 +46,23 @@ from .annotation_store import (
     ManualEventCorrelation,
     ReviewAnnotation,
     ReviewAnnotationKind,
+    ReviewOverlayError,
     ReviewOverlayStore,
-    ReviewRetentionCandidate,
     ReviewRetentionInventory,
     ReviewRetentionPolicy,
     ReviewRetentionResult,
     ReviewScope,
     ReviewSubject,
     ReviewSubjectKind,
-    _review_retention_policy_document as _review_policy_document,
+    _review_retention_inventory_document,
+    _review_retention_inventory_from_document,
+    _review_retention_result_document,
+    _review_retention_result_from_document,
     build_correlation_report,
     normalize_review_subjects,
+)
+from .annotation_store import (
+    _review_retention_policy_document as _review_policy_document,
 )
 from .canonical import canonical_json, strict_canonical_json
 from .capability_router import (
@@ -131,7 +137,6 @@ from .plugin_execution_plan import (
     primary_parser_execution_pin,
     snapshot_plugin_execution_plan,
 )
-from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .private_analysis import (
     DEFAULT_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_PAYLOAD_BYTES,
     MAX_PRIVATE_ANALYSIS_EVIDENCE_CORPUS_ENTRIES,
@@ -187,6 +192,7 @@ from .private_analysis_tool_service import (
     PrivateAnalysisToolService,
     PrivateAnalysisWorkspacePolicySnapshot,
 )
+from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .relationship_projection_materialization import (
     RelationshipProjectionMaterializationError,
     RelationshipProjectionMaterializationLimits,
@@ -197,7 +203,6 @@ from .session_store import (
     AnalysisRevisionDescriptor,
     AnalysisSession,
     CatalogArtifactRelease,
-    CatalogRetentionCandidate,
     CatalogRetentionInventory,
     CatalogRetentionPolicy,
     CatalogRetentionResult,
@@ -205,8 +210,14 @@ from .session_store import (
     IdempotencyConflict,
     RetentionSagaDescriptor,
     SessionStoreDeadlineExceeded,
+    SessionStoreError,
     SqliteSessionStore,
     WorkspaceDescriptor,
+    _catalog_artifact_release_from_document,
+    _catalog_inventory_document,
+    _catalog_inventory_from_document,
+    _catalog_result_document,
+    _catalog_result_from_document,
 )
 from .source_record_core import (
     project_source_record_for_log,
@@ -586,38 +597,22 @@ def _retention_saga_request_document(
     }
 
 
-def _review_candidate_document(
-    value: ReviewRetentionCandidate,
-) -> dict[str, Any]:
-    return {
-        "category": value.category,
-        "identifier": value.identifier,
-        "retention_value": value.retention_value,
-        "blockers": list(value.blockers),
-    }
-
-
 def _review_phase_document(
     value: ReviewRetentionInventory | ReviewRetentionResult,
 ) -> dict[str, Any]:
-    inventory = value.inventory if isinstance(value, ReviewRetentionResult) else value
+    if isinstance(value, ReviewRetentionResult):
+        inventory = value.inventory
+        kind = "result"
+        payload = _review_retention_result_document(value)
+    else:
+        inventory = value
+        kind = "inventory"
+        payload = {"inventory": _review_retention_inventory_document(value), "purged": []}
     return {
         "schema": _RETENTION_PHASE_SCHEMA,
-        "kind": "result" if isinstance(value, ReviewRetentionResult) else "inventory",
+        "kind": kind,
         "policy": _review_policy_document(inventory.policy),
-        "inventory": {
-            "total_candidate_count": inventory.total_candidate_count,
-            "candidates": [
-                _review_candidate_document(candidate)
-                for candidate in inventory.candidates
-            ],
-            "truncated": inventory.truncated,
-        },
-        "purged": (
-            [_review_candidate_document(candidate) for candidate in value.purged]
-            if isinstance(value, ReviewRetentionResult)
-            else []
-        ),
+        **payload,
     }
 
 
@@ -628,118 +623,50 @@ def _review_phase_from_document(
     try:
         if set(value) != {"schema", "kind", "policy", "inventory", "purged"}:
             raise ValueError
-        if value.get("schema") != _RETENTION_PHASE_SCHEMA:
+        if value["schema"] != _RETENTION_PHASE_SCHEMA:
             raise ValueError
         kind = value["kind"]
         policy_value = value["policy"]
-        inventory_value = value["inventory"]
-        purged_value = value["purged"]
-        if (
-            kind not in {"inventory", "result"}
-            or not isinstance(policy_value, dict)
-            or not isinstance(inventory_value, dict)
-            or not isinstance(purged_value, list)
-            or set(inventory_value)
-            != {"total_candidate_count", "candidates", "truncated"}
-            or not isinstance(inventory_value.get("candidates"), list)
-            or type(inventory_value.get("total_candidate_count")) is not int
-            or inventory_value["total_candidate_count"] < 0
-            or type(inventory_value.get("truncated")) is not bool
-        ):
+        if kind not in {"inventory", "result"} or not isinstance(policy_value, dict):
             raise ValueError
         policy = ReviewRetentionPolicy(**policy_value)
-
-        def candidate(item: object) -> ReviewRetentionCandidate:
-            if not isinstance(item, dict) or set(item) != {
-                "category",
-                "identifier",
-                "retention_value",
-                "blockers",
-            }:
-                raise TypeError
-            blockers = item.get("blockers")
-            if (
-                not isinstance(item["category"], str)
-                or not item["category"]
-                or not isinstance(item["identifier"], str)
-                or not item["identifier"]
-                or type(item["retention_value"]) is not int
-                or item["retention_value"] < 0
-                or not isinstance(blockers, list)
-                or any(not isinstance(blocker, str) for blocker in blockers)
-            ):
-                raise TypeError
-            return ReviewRetentionCandidate(
-                category=item["category"],
-                identifier=item["identifier"],
-                retention_value=item["retention_value"],
-                blockers=tuple(blockers),
+        if kind == "inventory":
+            if value["purged"] != []:
+                raise ValueError
+            return _review_retention_inventory_from_document(
+                value["inventory"], scope=scope, policy=policy
             )
-
-        inventory = ReviewRetentionInventory(
+        return _review_retention_result_from_document(
+            {"inventory": value["inventory"], "purged": value["purged"]},
             scope=scope,
             policy=policy,
-            total_candidate_count=inventory_value["total_candidate_count"],
-            candidates=tuple(candidate(item) for item in inventory_value["candidates"]),
-            truncated=inventory_value["truncated"],
         )
-        if kind == "inventory":
-            if purged_value:
-                raise ValueError
-            return inventory
-        purged = tuple(candidate(item) for item in purged_value)
-        if any(
-            item not in inventory.candidates or not item.eligible for item in purged
-        ):
-            raise ValueError
-        return ReviewRetentionResult(
-            inventory=inventory,
-            purged=purged,
-        )
-    except (KeyError, TypeError, ValueError) as error:
+    except (KeyError, TypeError, ValueError, ReviewOverlayError) as error:
         raise ControlPlaneError(
             "durable review retention phase result is invalid"
         ) from error
 
 
-def _catalog_candidate_document(
-    value: CatalogRetentionCandidate,
-) -> dict[str, Any]:
-    return {
-        "category": value.category,
-        "identifier": value.identifier,
-        "retention_value": value.retention_value,
-        "qualifier": value.qualifier,
-        "blockers": list(value.blockers),
-    }
-
-
 def _catalog_phase_document(
     value: CatalogRetentionInventory | CatalogRetentionResult,
 ) -> dict[str, Any]:
-    inventory = value.inventory if isinstance(value, CatalogRetentionResult) else value
+    if isinstance(value, CatalogRetentionResult):
+        inventory = value.inventory
+        kind = "result"
+        payload = _catalog_result_document(value)
+    else:
+        inventory = value
+        kind = "inventory"
+        payload = {
+            "inventory": _catalog_inventory_document(value),
+            "purged": [],
+            "artifact_releases": [],
+        }
     return {
         "schema": _RETENTION_PHASE_SCHEMA,
-        "kind": "result" if isinstance(value, CatalogRetentionResult) else "inventory",
+        "kind": kind,
         "policy": inventory.policy.as_dict(),
-        "inventory": {
-            "total_candidate_count": inventory.total_candidate_count,
-            "candidates": [
-                _catalog_candidate_document(candidate)
-                for candidate in inventory.candidates
-            ],
-            "truncated": inventory.truncated,
-        },
-        "purged": (
-            [_catalog_candidate_document(candidate) for candidate in value.purged]
-            if isinstance(value, CatalogRetentionResult)
-            else []
-        ),
-        "artifact_releases": (
-            [asdict(release) for release in value.artifact_releases]
-            if isinstance(value, CatalogRetentionResult)
-            else []
-        ),
+        **payload,
     }
 
 
@@ -749,111 +676,36 @@ def _catalog_phase_from_document(
 ) -> CatalogRetentionInventory | CatalogRetentionResult:
     try:
         if set(value) != {
-            "schema",
-            "kind",
-            "policy",
-            "inventory",
-            "purged",
-            "artifact_releases",
+            "schema", "kind", "policy", "inventory", "purged", "artifact_releases"
         }:
             raise ValueError
-        if value.get("schema") != _RETENTION_PHASE_SCHEMA:
+        if value["schema"] != _RETENTION_PHASE_SCHEMA:
             raise ValueError
         kind = value["kind"]
         policy_value = value["policy"]
-        inventory_value = value["inventory"]
-        purged_value = value["purged"]
-        releases_value = value["artifact_releases"]
-        if (
-            kind not in {"inventory", "result"}
-            or not isinstance(policy_value, dict)
-            or not isinstance(inventory_value, dict)
-            or not isinstance(purged_value, list)
-            or not isinstance(releases_value, list)
-            or set(inventory_value)
-            != {"total_candidate_count", "candidates", "truncated"}
-            or not isinstance(inventory_value.get("candidates"), list)
-            or type(inventory_value.get("total_candidate_count")) is not int
-            or inventory_value["total_candidate_count"] < 0
-            or type(inventory_value.get("truncated")) is not bool
-        ):
+        if kind not in {"inventory", "result"} or not isinstance(policy_value, dict):
             raise ValueError
         policy = CatalogRetentionPolicy(**policy_value)
-
-        def candidate(item: object) -> CatalogRetentionCandidate:
-            if not isinstance(item, dict) or set(item) != {
-                "category",
-                "identifier",
-                "retention_value",
-                "qualifier",
-                "blockers",
-            }:
-                raise TypeError
-            blockers = item.get("blockers")
-            if (
-                not isinstance(item["category"], str)
-                or not item["category"]
-                or not isinstance(item["identifier"], str)
-                or not item["identifier"]
-                or type(item["retention_value"]) is not int
-                or item["retention_value"] < 0
-                or not isinstance(blockers, list)
-                or any(not isinstance(blocker, str) for blocker in blockers)
-            ):
-                raise TypeError
-            qualifier = item.get("qualifier")
-            if qualifier is not None and not isinstance(qualifier, str):
+        if kind == "inventory":
+            if value["purged"] != [] or value["artifact_releases"] != []:
                 raise ValueError
-            return CatalogRetentionCandidate(
-                category=item["category"],
-                identifier=item["identifier"],
-                retention_value=item["retention_value"],
-                qualifier=qualifier,
-                blockers=tuple(blockers),
+            return _catalog_inventory_from_document(
+                value["inventory"],
+                tenant_id=scope.tenant_id,
+                workspace_id=scope.workspace_id,
+                policy=policy,
             )
-
-        inventory = CatalogRetentionInventory(
+        return _catalog_result_from_document(
+            {
+                "inventory": value["inventory"],
+                "purged": value["purged"],
+                "artifact_releases": value["artifact_releases"],
+            },
             tenant_id=scope.tenant_id,
             workspace_id=scope.workspace_id,
             policy=policy,
-            total_candidate_count=inventory_value["total_candidate_count"],
-            candidates=tuple(candidate(item) for item in inventory_value["candidates"]),
-            truncated=inventory_value["truncated"],
         )
-        if kind == "inventory":
-            if purged_value or releases_value:
-                raise ValueError
-            return inventory
-        releases = []
-        release_fields = {
-            "artifact_kind",
-            "artifact_ref",
-            "owner_operation_id",
-            "catalog_category",
-            "catalog_identifier",
-        }
-        for item in releases_value:
-            if (
-                not isinstance(item, dict)
-                or set(item) != release_fields
-                or any(
-                    not isinstance(item[field], str) or not item[field]
-                    for field in release_fields
-                )
-            ):
-                raise TypeError
-            releases.append(CatalogArtifactRelease(**item))
-        purged = tuple(candidate(item) for item in purged_value)
-        if any(
-            item not in inventory.candidates or not item.eligible for item in purged
-        ):
-            raise ValueError
-        return CatalogRetentionResult(
-            inventory=inventory,
-            purged=purged,
-            artifact_releases=tuple(releases),
-        )
-    except (KeyError, TypeError, ValueError) as error:
+    except (KeyError, TypeError, ValueError, SessionStoreError) as error:
         raise ControlPlaneError(
             "durable catalog retention phase result is invalid"
         ) from error
@@ -2170,27 +2022,12 @@ class ControlPlane:
 
     @staticmethod
     def _catalog_release(value: Mapping[str, Any]) -> CatalogArtifactRelease:
-        required = (
-            "artifact_kind",
-            "artifact_ref",
-            "owner_operation_id",
-            "catalog_category",
-            "catalog_identifier",
-        )
-        if any(
-            not isinstance(value.get(field), str) or not value[field]
-            for field in required
-        ):
+        try:
+            return _catalog_artifact_release_from_document(value)
+        except SessionStoreError as error:
             raise ControlPlaneError(
                 "catalog retention journal contains an invalid artifact release"
-            )
-        return CatalogArtifactRelease(
-            artifact_kind=str(value["artifact_kind"]),
-            artifact_ref=str(value["artifact_ref"]),
-            owner_operation_id=str(value["owner_operation_id"]),
-            catalog_category=str(value["catalog_category"]),
-            catalog_identifier=str(value["catalog_identifier"]),
-        )
+            ) from error
 
     def _reconcile_retention_artifact_releases(
         self,

@@ -751,19 +751,24 @@ def _review_retention_candidate_document(
     }
 
 
+def _review_retention_inventory_document(
+    inventory: ReviewRetentionInventory,
+) -> dict[str, Any]:
+    return {
+        "total_candidate_count": inventory.total_candidate_count,
+        "candidates": [
+            _review_retention_candidate_document(candidate)
+            for candidate in inventory.candidates
+        ],
+        "truncated": inventory.truncated,
+    }
+
+
 def _review_retention_result_document(
     result: ReviewRetentionResult,
 ) -> dict[str, Any]:
     return {
-        "schema_version": _REVIEW_RETENTION_RESULT_SCHEMA_VERSION,
-        "inventory": {
-            "total_candidate_count": result.inventory.total_candidate_count,
-            "candidates": [
-                _review_retention_candidate_document(candidate)
-                for candidate in result.inventory.candidates
-            ],
-            "truncated": result.inventory.truncated,
-        },
+        "inventory": _review_retention_inventory_document(result.inventory),
         "purged": [
             _review_retention_candidate_document(candidate)
             for candidate in result.purged
@@ -801,7 +806,10 @@ def _review_retention_candidate_from_document(
     except ReviewValidationError as error:
         raise ReviewOverlayError(f"stored {label} is invalid") from error
     blockers_value = value["blockers"]
-    if type(blockers_value) is not list:
+    if (
+        type(blockers_value) is not list
+        or len(blockers_value) > MAX_RETENTION_CANDIDATES
+    ):
         raise ReviewOverlayError(f"stored {label} blockers are invalid")
     try:
         blockers = tuple(
@@ -814,7 +822,7 @@ def _review_retention_candidate_from_document(
         )
     except ReviewValidationError as error:
         raise ReviewOverlayError(f"stored {label} blockers are invalid") from error
-    if len(blockers) > MAX_RETENTION_CANDIDATES or len(set(blockers)) != len(blockers):
+    if len(set(blockers)) != len(blockers):
         raise ReviewOverlayError(f"stored {label} blockers are invalid")
     return ReviewRetentionCandidate(
         category=category,
@@ -822,6 +830,84 @@ def _review_retention_candidate_from_document(
         retention_value=retention_value,
         blockers=blockers,
     )
+
+
+def _review_retention_inventory_from_document(
+    value: object,
+    *,
+    scope: ReviewScope,
+    policy: ReviewRetentionPolicy,
+) -> ReviewRetentionInventory:
+    if type(value) is not dict or set(value) != {
+        "total_candidate_count",
+        "candidates",
+        "truncated",
+    }:
+        raise ReviewOverlayError("stored retention inventory is invalid")
+    candidate_values = value["candidates"]
+    if (
+        type(candidate_values) is not list
+        or len(candidate_values) > policy.maximum_candidates
+    ):
+        raise ReviewOverlayError("stored retention inventory is invalid")
+    candidates = tuple(
+        _review_retention_candidate_from_document(
+            candidate,
+            label="retention candidate",
+        )
+        for candidate in candidate_values
+    )
+    try:
+        total_candidate_count = _exact_non_negative_int(
+            value["total_candidate_count"],
+            "stored retention total_candidate_count",
+        )
+    except ReviewValidationError as error:
+        raise ReviewOverlayError("stored retention inventory is invalid") from error
+    truncated = value["truncated"]
+    identities = {(candidate.category, candidate.identifier) for candidate in candidates}
+    if (
+        type(truncated) is not bool
+        or total_candidate_count < len(candidates)
+        or truncated != (total_candidate_count > len(candidates))
+        or len(identities) != len(candidates)
+    ):
+        raise ReviewOverlayError("stored retention inventory is invalid")
+    return ReviewRetentionInventory(
+        scope=scope,
+        policy=policy,
+        total_candidate_count=total_candidate_count,
+        candidates=candidates,
+        truncated=truncated,
+    )
+
+
+def _review_retention_result_from_document(
+    value: object,
+    *,
+    scope: ReviewScope,
+    policy: ReviewRetentionPolicy,
+) -> ReviewRetentionResult:
+    if type(value) is not dict or set(value) != {"inventory", "purged"}:
+        raise ReviewOverlayError("stored retention operation result is invalid")
+    inventory = _review_retention_inventory_from_document(
+        value["inventory"], scope=scope, policy=policy
+    )
+    purged_values = value["purged"]
+    if type(purged_values) is not list or len(purged_values) > policy.maximum_candidates:
+        raise ReviewOverlayError("stored retention operation result is invalid")
+    purged = tuple(
+        _review_retention_candidate_from_document(
+            candidate, label="purged retention candidate"
+        )
+        for candidate in purged_values
+    )
+    available = set(inventory.candidates)
+    if len(set(purged)) != len(purged) or any(
+        candidate.blockers or candidate not in available for candidate in purged
+    ):
+        raise ReviewOverlayError("stored purged retention candidate is invalid")
+    return ReviewRetentionResult(inventory=inventory, purged=purged)
 
 
 def _review_retention_result_from_json(
@@ -833,80 +919,17 @@ def _review_retention_result_from_json(
     try:
         document = json.loads(value)
     except (TypeError, json.JSONDecodeError) as error:
-        raise ReviewOverlayError(
-            "stored retention operation result is invalid"
-        ) from error
+        raise ReviewOverlayError("stored retention operation result is invalid") from error
     if type(document) is not dict or set(document) != {
-        "schema_version",
-        "inventory",
-        "purged",
+        "schema_version", "inventory", "purged"
     }:
         raise ReviewOverlayError("stored retention operation result is invalid")
-    if document["schema_version"] != _REVIEW_RETENTION_RESULT_SCHEMA_VERSION:
+    if document.pop("schema_version") != _REVIEW_RETENTION_RESULT_SCHEMA_VERSION:
         raise ReviewOverlayError(
             "stored retention operation result has an unsupported schema"
         )
-    inventory_value = document["inventory"]
-    if type(inventory_value) is not dict or set(inventory_value) != {
-        "total_candidate_count",
-        "candidates",
-        "truncated",
-    }:
-        raise ReviewOverlayError("stored retention inventory is invalid")
-    candidate_values = inventory_value["candidates"]
-    purged_values = document["purged"]
-    if type(candidate_values) is not list or type(purged_values) is not list:
-        raise ReviewOverlayError("stored retention operation result is invalid")
-    if (
-        len(candidate_values) > policy.maximum_candidates
-        or len(purged_values) > policy.maximum_candidates
-    ):
-        raise ReviewOverlayError("stored retention operation result is invalid")
-    candidates = tuple(
-        _review_retention_candidate_from_document(
-            candidate,
-            label="retention candidate",
-        )
-        for candidate in candidate_values
-    )
-    purged = tuple(
-        _review_retention_candidate_from_document(
-            candidate,
-            label="purged retention candidate",
-        )
-        for candidate in purged_values
-    )
-    try:
-        total_candidate_count = _exact_non_negative_int(
-            inventory_value["total_candidate_count"],
-            "stored retention total_candidate_count",
-        )
-    except ReviewValidationError as error:
-        raise ReviewOverlayError("stored retention inventory is invalid") from error
-    truncated = inventory_value["truncated"]
-    if type(truncated) is not bool:
-        raise ReviewOverlayError("stored retention inventory is invalid")
-    if truncated != (total_candidate_count > len(candidates)):
-        raise ReviewOverlayError("stored retention inventory is invalid")
-    if any(candidate.blockers for candidate in purged):
-        raise ReviewOverlayError("stored purged retention candidate is invalid")
-    available = list(candidates)
-    for candidate in purged:
-        try:
-            available.remove(candidate)
-        except ValueError as error:
-            raise ReviewOverlayError(
-                "stored purged retention candidate is not in its inventory"
-            ) from error
-    return ReviewRetentionResult(
-        inventory=ReviewRetentionInventory(
-            scope=scope,
-            policy=policy,
-            total_candidate_count=total_candidate_count,
-            candidates=candidates,
-            truncated=truncated,
-        ),
-        purged=purged,
+    return _review_retention_result_from_document(
+        document, scope=scope, policy=policy
     )
 
 
@@ -3030,7 +3053,10 @@ class ReviewOverlayStore:
                 for candidate in purged
             ]
             purged_json = _canonical_json(purged_document)
-            result_json = _canonical_json(_review_retention_result_document(result))
+            result_json = _canonical_json({
+                "schema_version": _REVIEW_RETENTION_RESULT_SCHEMA_VERSION,
+                **_review_retention_result_document(result),
+            })
             try:
                 cursor = connection.execute(
                     """

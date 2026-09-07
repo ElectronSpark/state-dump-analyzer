@@ -685,6 +685,12 @@ and explicit events for plan commit, replay, completion, failure, and every
 bounded scan source that truncated. These records intentionally cannot replace
 the per-item journal used for exact crash recovery.
 
+Review and catalog stores own their retention candidate, inventory, result,
+and release codecs. Saga recovery delegates to those same codecs and handles
+only phase/schema/policy envelopes. Both replay paths reject duplicate items,
+inconsistent counts/truncation, and malformed or oversized model fields while
+retaining the existing persisted journal and phase formats.
+
 Recursive artifact sizing happens during the advisory planning pass outside
 the publication fence. The authoritative fenced rebuild consumes those sizes
 but deliberately repeats database candidate selection, global reference and

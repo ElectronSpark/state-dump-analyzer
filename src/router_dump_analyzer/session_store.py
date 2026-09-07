@@ -827,18 +827,24 @@ def _catalog_candidate_document(
     }
 
 
+def _catalog_inventory_document(
+    inventory: CatalogRetentionInventory,
+) -> dict[str, Any]:
+    return {
+        "total_candidate_count": inventory.total_candidate_count,
+        "candidates": [
+            _catalog_candidate_document(candidate)
+            for candidate in inventory.candidates
+        ],
+        "truncated": inventory.truncated,
+    }
+
+
 def _catalog_result_document(
     result: CatalogRetentionResult,
 ) -> dict[str, Any]:
     return {
-        "inventory": {
-            "total_candidate_count": result.inventory.total_candidate_count,
-            "candidates": [
-                _catalog_candidate_document(candidate)
-                for candidate in result.inventory.candidates
-            ],
-            "truncated": result.inventory.truncated,
-        },
+        "inventory": _catalog_inventory_document(result.inventory),
         "purged": [
             _catalog_candidate_document(candidate) for candidate in result.purged
         ],
@@ -878,6 +884,8 @@ def _catalog_candidate_from_document(
         blockers = tuple(
             _bounded_identifier(item, "retention blocker") for item in blockers_value
         )
+        if len(set(blockers)) != len(blockers):
+            raise ValueError
     except ValueError as error:
         raise SessionStoreError("stored catalog retention result is invalid") from error
     return CatalogRetentionCandidate(
@@ -889,6 +897,68 @@ def _catalog_candidate_from_document(
     )
 
 
+def _catalog_inventory_from_document(
+    value: object,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    policy: CatalogRetentionPolicy,
+) -> CatalogRetentionInventory:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"total_candidate_count", "candidates", "truncated"}
+        or not isinstance(value["candidates"], list)
+        or len(value["candidates"]) > policy.maximum_candidates
+    ):
+        raise SessionStoreError("stored catalog retention inventory is invalid")
+    total = value["total_candidate_count"]
+    truncated = value["truncated"]
+    if (
+        type(total) is not int
+        or not 0 <= total <= _MAX_SQLITE_INTEGER
+        or type(truncated) is not bool
+    ):
+        raise SessionStoreError("stored catalog retention inventory is invalid")
+    candidates = tuple(
+        _catalog_candidate_from_document(item) for item in value["candidates"]
+    )
+    identities = {
+        (candidate.category, candidate.identifier, candidate.qualifier)
+        for candidate in candidates
+    }
+    if (
+        total < len(candidates)
+        or truncated != (total > len(candidates))
+        or len(identities) != len(candidates)
+    ):
+        raise SessionStoreError("stored catalog retention inventory is invalid")
+    return CatalogRetentionInventory(
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        policy=policy,
+        total_candidate_count=total,
+        candidates=candidates,
+        truncated=truncated,
+    )
+
+
+def _catalog_artifact_release_from_document(value: object) -> CatalogArtifactRelease:
+    fields = {
+        "artifact_kind",
+        "artifact_ref",
+        "owner_operation_id",
+        "catalog_category",
+        "catalog_identifier",
+    }
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != fields
+        or any(not isinstance(value[field], str) or not value[field] for field in fields)
+    ):
+        raise SessionStoreError("stored catalog artifact release is invalid")
+    return CatalogArtifactRelease(**value)
+
+
 def _catalog_result_from_document(
     value: Mapping[str, Any],
     *,
@@ -896,62 +966,37 @@ def _catalog_result_from_document(
     workspace_id: str,
     policy: CatalogRetentionPolicy,
 ) -> CatalogRetentionResult:
-    if set(value) != {"inventory", "purged", "artifact_releases"}:
+    if not isinstance(value, Mapping) or set(value) != {
+        "inventory", "purged", "artifact_releases"
+    }:
         raise SessionStoreError("stored catalog retention result is invalid")
-    inventory_value = value["inventory"]
+    inventory = _catalog_inventory_from_document(
+        value["inventory"], tenant_id=tenant_id, workspace_id=workspace_id, policy=policy
+    )
     purged_value = value["purged"]
     releases_value = value["artifact_releases"]
     if (
-        not isinstance(inventory_value, dict)
-        or set(inventory_value) != {"total_candidate_count", "candidates", "truncated"}
-        or not isinstance(inventory_value["candidates"], list)
-        or not isinstance(purged_value, list)
+        not isinstance(purged_value, list)
         or not isinstance(releases_value, list)
-        or len(inventory_value["candidates"]) > _MAX_RETENTION_CANDIDATES
-        or len(purged_value) > _MAX_RETENTION_CANDIDATES
-        or len(releases_value) > _MAX_RETENTION_CANDIDATES
+        or len(purged_value) > policy.maximum_candidates
+        or len(releases_value) > policy.maximum_candidates
     ):
         raise SessionStoreError("stored catalog retention result is invalid")
-    total = inventory_value["total_candidate_count"]
-    truncated = inventory_value["truncated"]
-    if type(total) is not int or total < 0 or type(truncated) is not bool:
-        raise SessionStoreError("stored catalog retention result is invalid")
-    candidates = tuple(
-        _catalog_candidate_from_document(item) for item in inventory_value["candidates"]
-    )
     purged = tuple(_catalog_candidate_from_document(item) for item in purged_value)
-    if total < len(candidates) or any(
-        candidate not in candidates or not candidate.eligible for candidate in purged
+    available = set(inventory.candidates)
+    if len(set(purged)) != len(purged) or any(
+        candidate not in available or not candidate.eligible for candidate in purged
     ):
         raise SessionStoreError("stored catalog retention result is invalid")
-    releases: list[CatalogArtifactRelease] = []
-    release_fields = {
-        "artifact_kind",
-        "artifact_ref",
-        "owner_operation_id",
-        "catalog_category",
-        "catalog_identifier",
-    }
-    for item in releases_value:
-        if not isinstance(item, dict) or set(item) != release_fields:
-            raise SessionStoreError("stored catalog retention result is invalid")
-        if any(
-            not isinstance(item[field], str) or not item[field]
-            for field in release_fields
-        ):
-            raise SessionStoreError("stored catalog retention result is invalid")
-        releases.append(CatalogArtifactRelease(**item))
+    releases = tuple(
+        _catalog_artifact_release_from_document(item) for item in releases_value
+    )
+    if len(set(releases)) != len(releases):
+        raise SessionStoreError("stored catalog retention result is invalid")
     return CatalogRetentionResult(
-        inventory=CatalogRetentionInventory(
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            policy=policy,
-            total_candidate_count=total,
-            candidates=candidates,
-            truncated=truncated,
-        ),
+        inventory=inventory,
         purged=purged,
-        artifact_releases=tuple(releases),
+        artifact_releases=releases,
     )
 
 
