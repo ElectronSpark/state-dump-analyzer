@@ -1,5 +1,10 @@
 import {
   api,
+  replaceAbortController,
+  ControlPlaneRequestError,
+  listControlPlaneCollection,
+} from "./browser_transport.js";
+import {
   byId,
   createAnalysisLoadProgressController,
   escapeHtml,
@@ -21,7 +26,6 @@ import {
   durableReviewControlAvailability,
   graphStatusClass,
   rangeSummaryFacts,
-  replaceAbortController,
   routePayloadForwardingPresentation,
   stateChipClassName,
   statusClassPresentation,
@@ -51,7 +55,6 @@ import {
   resourceEffectStatusClass,
 } from "./timeline_models.js";
 import {
-  ControlPlaneRequestError,
   DurableReviewJournalCapacityError,
   DurableReviewJournalError,
   StaleDurableReviewConnectionError,
@@ -70,7 +73,6 @@ import {
   loadPendingReviewMutations,
   finishReviewOperation,
   listAllDurableAnnotations,
-  listControlPlaneCollection,
   loadThenCommitConfirmedState,
   loadDurableReviewConfig,
   reconcileControlPlaneVersionConflict,

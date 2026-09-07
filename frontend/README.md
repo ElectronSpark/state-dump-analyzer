@@ -14,6 +14,12 @@ resource icons, labels, dashboards, table layouts, source-record controls,
 topology projections, and route presentation declarations that this frontend
 renders through core-owned components.
 
+`assets/browser_transport.js` owns shared JSON requests, bounded collection
+pagination, request errors, and abort-controller replacement. Controllers keep
+their own scope, mutation policy, and stale-response checks. Compatibility
+exports preserve existing function and error identity; the shared transport
+does not depend on durable review.
+
 Range summaries show loading or unavailable when their server request has no
 answer; cached events cannot establish complete counts or endpoint differences.
 An explicit node snapshot may show a labeled summary of its loaded evidence.

@@ -1,7 +1,7 @@
 import {
   ControlPlaneRequestError,
   requestControlPlane,
-} from "./durable_review_controller.js";
+} from "./browser_transport.js";
 
 export const CONTROL_PLANE_PREFIX = "/v1/control-plane";
 export const PRIVATE_ANALYSIS_MAX_REVISIONS = 128;

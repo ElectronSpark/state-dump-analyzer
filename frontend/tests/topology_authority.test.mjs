@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { replaceAbortController } from "../assets/view_models.js";
+import { replaceAbortController } from "../assets/browser_transport.js";
 
 const source = readFileSync(new URL("../assets/app.js", import.meta.url), "utf8");
 function functionSource(name) {

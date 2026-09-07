@@ -787,7 +787,5 @@ export function rangeSummaryFacts(summary, { fallbackFailureCount = 0 } = {}) {
   };
 }
 
-export function replaceAbortController(previous, createController = () => new AbortController()) {
-  previous?.abort();
-  return createController();
-}
+// Compatibility export for existing browser imports.
+export { replaceAbortController } from "./browser_transport.js";

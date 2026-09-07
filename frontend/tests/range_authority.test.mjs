@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { api, escapeHtml, titleCase, toBigInt } from "../assets/shared.js";
+import { api, replaceAbortController } from "../assets/browser_transport.js";
+import { escapeHtml, titleCase, toBigInt } from "../assets/shared.js";
 import { eventFailed } from "../assets/timeline_models.js";
-import { rangeSummaryFacts, replaceAbortController } from "../assets/view_models.js";
+import { rangeSummaryFacts } from "../assets/view_models.js";
 
 const source = readFileSync(new URL("../assets/app.js", import.meta.url), "utf8");
 function functionSource(name) {

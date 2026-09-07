@@ -20,7 +20,6 @@ import {
   rangeSummaryFacts,
   reconstructionTimelineModel,
   reconstructionTimelineValueAtPosition,
-  replaceAbortController,
   routeEndpointSeedValue,
   routePayloadForwardingPresentation,
   stateChipClassName,
@@ -545,15 +544,6 @@ test("bounded range facts preserve affected and evaluated populations", () => {
   assert.equal(facts.evaluatedEndpointCount, 500);
   assert.equal(facts.omittedEndpointCount, 7_002);
   assert.deepEqual(facts.truncatedKinds, ["endpoint_diff", "relationship_changes"]);
-});
-
-test("request replacement aborts the prior signal and preserves explicit cancellation", () => {
-  const previous = new AbortController();
-  const next = replaceAbortController(previous);
-  assert.equal(previous.signal.aborted, true);
-  assert.equal(next.signal.aborted, false);
-  next.abort();
-  assert.equal(next.signal.aborted, true);
 });
 
 test("dashboard lookup preserves explicit null and envelope precedence", () => {

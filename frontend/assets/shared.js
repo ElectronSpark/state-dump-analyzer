@@ -1,8 +1,11 @@
 // Framework-free helpers shared by both core browser workspaces.
 //
-// Keep this module limited to generic presentation and transport behavior.
+// Keep this module limited to generic presentation behavior.
 // Node, topology, route, and plug-in semantics belong in their respective
 // entry points.
+
+// Compatibility export for existing browser imports.
+export { api } from "./browser_transport.js";
 
 export const byId = (id) => document.getElementById(id);
 
@@ -34,24 +37,6 @@ export function toBigInt(value, fallback = 0n) {
   } catch (_error) {
     return fallback;
   }
-}
-
-export async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
-  if (!response.ok) {
-    let message = `${response.status} ${response.statusText}`;
-    try {
-      const body = await response.json();
-      message = body.detail || body.error?.message || message;
-    } catch (_error) {
-      // Keep the HTTP status when the body is not JSON.
-    }
-    throw new Error(message);
-  }
-  return response.json();
 }
 
 const ANALYSIS_LOAD_STATES = new Set(["waiting", "running", "ready", "failed"]);

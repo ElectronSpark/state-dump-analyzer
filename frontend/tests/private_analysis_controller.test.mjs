@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ControlPlaneRequestError } from "../assets/durable_review_controller.js";
+import { ControlPlaneRequestError } from "../assets/browser_transport.js";
 import {
   StalePrivateAnalysisResponseError,
   acceptPrivateAnalysisDecisionEnvelope,

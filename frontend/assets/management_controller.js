@@ -1,4 +1,4 @@
-import { requestControlPlane } from "./durable_review_controller.js";
+import { requestControlPlane } from "./browser_transport.js";
 
 export const MANAGEMENT_PREFIX = "/v1/control-plane";
 export const MANAGEMENT_PAGE_SIZE = 50;

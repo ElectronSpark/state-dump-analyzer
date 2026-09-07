@@ -1,5 +1,8 @@
 import {
   api,
+  replaceAbortController,
+} from "./browser_transport.js";
+import {
   byId,
   createAnalysisLoadProgressController,
   escapeHtml,
@@ -13,7 +16,6 @@ import {
   declaredHealthPresentation,
   reconstructionTimelineModel,
   reconstructionTimelineValueAtPosition,
-  replaceAbortController,
   routeEndpointSeedValue,
   topologyResolutionLabel,
 } from "./view_models.js";
