@@ -1352,6 +1352,23 @@ selected revision-set member. Every successful result retains a detached produce
 reference with catalog revision, member, node, source basis, plan digest, and
 full pin. Cross-provider aggregation remains an explicit federation concern.
 
+Within core, `MultiNodeRouteService` consumes the `RouteTopologyAccess` protocol
+from `route_topology`, rather than topology's private caches or selector helpers.
+Topology owns node and projection selection, including ambiguity and perspective
+validation. `RouteProjectionSelection` retains the selected plug-in set and
+ordered plug-in/projection/perspective identities. Invalid requests use the
+shared `MultiNodeTopologyRequestError`, also available at its original
+`multi_node_topology` import path.
+
+Context lookup returns a retained immutable snapshot, or `None` after eviction.
+Node/catalog lookup reuses immutable metadata without copying projection facts;
+a new catalog revision requires a new service. HTTP-facing queries and context
+member responses remain detached mutable JSON. Alternate core topology services
+can implement this interface without reproducing private storage, while provider
+registration, exact executable attestation, and federation admission retain
+their existing owners. `tests.test_route_topology_access` exercises an alternate
+implementation, snapshot isolation, expired contexts, and selector mismatches.
+
 `PluginCompositionPolicy` is the deployment-owned admission rule that creates
 those multi-provider plans. The durable selector still chooses exactly one
 primary parser. A rule matches that parser's instance ID and content-addressed

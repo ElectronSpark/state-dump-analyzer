@@ -32,6 +32,10 @@ from router_dump_analyzer.plugin_api import (
     StatusPerspectiveRef,
     TopologyEndpointReference,
 )
+from router_dump_analyzer.route_topology import (
+    MultiNodeTopologyRequestError,
+    RouteTopologyAccess,
+)
 from router_dump_analyzer.route_trace_core import (
     EndpointReachabilityPairEvaluation,
     ForwardingPacketTraceEvaluation,
@@ -46,13 +50,9 @@ from router_dump_analyzer.route_trace_core import (
 from router_dump_analyzer.topology_core import (
     resolve_connectivity_domain_reference,
 )
-from router_dump_analyzer.value_core import parse_decimal_integer
+from router_dump_analyzer.value_core import mutable_json_value, parse_decimal_integer
 
 from .canonical import CanonicalValueError, packet_value_json
-from .multi_node_topology import (
-    MultiNodeTopologyRequestError,
-    MultiNodeTopologyService,
-)
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 
 
@@ -101,12 +101,12 @@ class MultiNodeRouteService:
 
     def __init__(
         self,
-        topology: MultiNodeTopologyService,
+        topology: RouteTopologyAccess,
         *,
         projections: RouteProjectionSet,
         policy: RouteServicePolicy,
     ) -> None:
-        self.topology: MultiNodeTopologyService = topology
+        self.topology: RouteTopologyAccess = topology
         self.policy: RouteServicePolicy = policy
         try:
             packet_transition_builder = policy.packet_transition_builder
@@ -147,7 +147,8 @@ class MultiNodeRouteService:
         self._generated_provider_by_node: dict[str, dict[str, Any]] = {}
         self._generated_resource_owner_by_id: dict[str, str] = {}
         for node_id, raw_projection in projections.projections_by_node.items():
-            if node_id not in topology.nodes_by_id:
+            node_descriptor = topology.node_contract(node_id)
+            if node_descriptor is None:
                 raise MultiNodeRouteRequestError(
                     f"route projection names unknown topology node: {node_id}"
                 )
@@ -163,16 +164,12 @@ class MultiNodeRouteService:
                     f"route projection for {node_id} "
                     "lacks its plug-in manifest"
                 )
-            node_descriptor = topology.nodes_by_id.get(
-                node_id,
-                {},
-            )
             plugin_descriptors = [
                 plugin
                 for plugin_set in node_descriptor.get("plugin_sets", [])
-                if isinstance(plugin_set, dict)
+                if isinstance(plugin_set, Mapping)
                 for plugin in plugin_set.get("plugins", [])
-                if isinstance(plugin, dict)
+                if isinstance(plugin, Mapping)
                 and plugin.get("plugin_id") == manifest.get("plugin_id")
             ]
             plugin_descriptor = (
@@ -181,7 +178,7 @@ class MultiNodeRouteService:
             projection_descriptors = [
                 projection
                 for projection in plugin_descriptor.get("projections", [])
-                if isinstance(projection, dict)
+                if isinstance(projection, Mapping)
             ]
             projection_descriptor = (
                 projection_descriptors[0]
@@ -4016,7 +4013,7 @@ class MultiNodeRouteService:
 
         router = self._router(node_id)
         member_id = str(
-            self.topology.nodes_by_id.get(node_id, {}).get("member_id")
+            (self.topology.node_contract(node_id) or {}).get("member_id")
             or f"member:{node_id}"
         )
         route_entry_id = str(
@@ -4455,7 +4452,7 @@ class MultiNodeRouteService:
             if row.get("node_id")
         }
         result: list[dict[str, Any]] = []
-        for node in self.topology.contract["nodes"]:
+        for node in self.topology.route_catalog()["nodes"]:
             roles = [str(item) for item in node.get("roles", []) if item]
             node_id = str(node["node_id"])
             if node_id not in route_node_ids:
@@ -4618,14 +4615,14 @@ class MultiNodeRouteService:
         routed_nodes = self._generated_routed_nodes()
         return {
             "router_count": len(routed_nodes),
-            "assembly_node_count": len(self.topology.contract["nodes"]),
+            "assembly_node_count": len(self.topology.route_catalog()["nodes"]),
             "physical_topology": "generated_plugin_projection",
             "physical_connectivity_source": (
                 "generated_topology_segment_claims"
             ),
             "network_segment_matchers": [
-                dict(item)
-                for item in self.topology.contract[
+                mutable_json_value(item)
+                for item in self.topology.route_catalog()[
                     "network_segment_matchers"
                 ]
             ],
@@ -4985,12 +4982,12 @@ class MultiNodeRouteService:
             )
         requested_context_id = next(iter(context_aliases), None)
         if requested_context_id is not None:
-            snapshot = self.topology._contexts.get(requested_context_id)
+            snapshot = self.topology.context_snapshot(requested_context_id)
             if snapshot is None:
                 raise MultiNodeRouteRequestError(
                     "unknown or expired topology context"
                 )
-            effective_basis = snapshot["resolved_basis"]["requested"]
+            effective_basis = mutable_json_value(snapshot["resolved_basis"]["requested"])
             effective_clock_policy = snapshot["resolved_basis"]["clock_policy"]
             if (
                 body.get("basis") is not None
@@ -5028,7 +5025,7 @@ class MultiNodeRouteService:
             if "node_queries" in body:
                 topology_request["node_queries"] = body["node_queries"]
             snapshot = self.topology.query(topology_request)
-            effective_basis = snapshot["resolved_basis"]["requested"]
+            effective_basis = mutable_json_value(snapshot["resolved_basis"]["requested"])
             effective_clock_policy = snapshot["resolved_basis"]["clock_policy"]
 
         filters = self._optional_object(body, "filters")
@@ -5195,7 +5192,7 @@ class MultiNodeRouteService:
                         if resolved_time.get("resolution") == "exact"
                         else "best_effort"
                     ),
-                    "resolved_time": resolved_time,
+                    "resolved_time": mutable_json_value(resolved_time),
                     "topology_context_id": snapshot["context_id"],
                 }
             )
@@ -5257,7 +5254,7 @@ class MultiNodeRouteService:
                     "member_id": node["member_id"],
                     "label": node["label"],
                     "plugin_set_id": node["plugin_set_id"],
-                    "resolved_time": node.get("resolved_time"),
+                    "resolved_time": mutable_json_value(node.get("resolved_time")),
                     "available": node.get("available", True),
                     "complete": node.get("complete", False),
                     "entry_count": len(node_rows),
@@ -5286,12 +5283,12 @@ class MultiNodeRouteService:
                 "filters": filters,
                 "page": {"limit": limit, "cursor": cursor, "offset": offset},
             },
-            "resolved_basis": snapshot["resolved_basis"],
+            "resolved_basis": mutable_json_value(snapshot["resolved_basis"]),
             "capture_vector": [
                 {
                     "node_id": item["node_id"],
                     "member_id": item["member_id"],
-                    "resolved_time": item.get("resolved_time"),
+                    "resolved_time": mutable_json_value(item.get("resolved_time")),
                     "complete": item.get("complete", False),
                 }
                 for item in snapshot["nodes"]
@@ -5380,7 +5377,7 @@ class MultiNodeRouteService:
             for field in ("node_ids", "node_queries")
             if field in body
         }
-        requested = self.topology._node_queries(selection_body)
+        requested = self.topology.normalize_node_queries(selection_body)
         cached_nodes = {
             str(item["node_id"]): item for item in snapshot.get("nodes", [])
         }
@@ -5399,7 +5396,6 @@ class MultiNodeRouteService:
         for request in requested:
             node_id = str(request["node_id"])
             cached = cached_nodes[node_id]
-            node = self.topology._node(node_id)
             for field in ("member_id", "revision_id"):
                 if (
                     request.get(field) is not None
@@ -5410,39 +5406,13 @@ class MultiNodeRouteService:
                         "topology context"
                     )
 
-            plugin_set_id = str(
-                request.get("plugin_set_id", node["active_plugin_set_id"])
-            )
-            if plugin_set_id != str(cached.get("plugin_set_id")):
+            selected = self.topology.normalize_projection_selection(node_id, request)
+            if selected.plugin_set_id != str(cached.get("plugin_set_id")):
                 raise MultiNodeRouteRequestError(
                     f"plugin_set_id for node {node_id} disagrees with the selected "
                     "topology context"
                 )
-            plugin_set = next(
-                (
-                    item
-                    for item in node["plugin_sets"]
-                    if item["plugin_set_id"] == plugin_set_id
-                ),
-                None,
-            )
-            if plugin_set is None:
-                raise MultiNodeRouteRequestError(
-                    f"unknown plugin_set_id {plugin_set_id} for node {node_id}"
-                )
-            requested_selections = self.topology._projection_selections(
-                node,
-                plugin_set,
-                request,
-            )
-            requested_projection_ids = [
-                (
-                    str(item["plugin"]["plugin_id"]),
-                    str(item["projection"]["projection_id"]),
-                    str(item["status_perspective_id"]),
-                )
-                for item in requested_selections
-            ]
+            requested_projection_ids = list(selected.projection_ids)
             cached_projection_ids = [
                 (
                     str(item["plugin_id"]),
@@ -6237,12 +6207,12 @@ class MultiNodeRouteService:
             if field in body:
                 topology_request[field] = body[field]
         if requested_context_id:
-            snapshot = self.topology._contexts.get(requested_context_id)
+            snapshot = self.topology.context_snapshot(requested_context_id)
             if snapshot is None:
                 raise MultiNodeRouteRequestError(
                     "unknown or expired topology context"
                 )
-            cached_basis = snapshot["resolved_basis"]["requested"]
+            cached_basis = mutable_json_value(snapshot["resolved_basis"]["requested"])
             cached_clock_policy = snapshot["resolved_basis"]["clock_policy"]
             if (
                 body.get("basis") is not None
@@ -6587,7 +6557,7 @@ class MultiNodeRouteService:
                 "resolved_context_id": snapshot["context_id"],
                 "validated": requested_context_id is None
                 or requested_context_id == snapshot["context_id"]
-                or requested_context_id in self.topology._contexts,
+                or self.topology.context_snapshot(requested_context_id) is not None,
             },
             "scenario": dict(scenario),
             "generated_projection": generated_projection,
@@ -6648,7 +6618,7 @@ class MultiNodeRouteService:
             "completeness_policy": resolution_mode,
             "max_hops": max_hops,
             "max_recursion": max_recursion,
-            "resolved_basis": snapshot["resolved_basis"],
+            "resolved_basis": mutable_json_value(snapshot["resolved_basis"]),
             "multipath": {
                 "mode": multipath_mode,
                 "selection_owner": "node_plugins",
@@ -6724,11 +6694,11 @@ class MultiNodeRouteService:
             },
             "topology_snapshot": {
                 "context_id": snapshot["context_id"],
-                "resolved_basis": snapshot["resolved_basis"],
+                "resolved_basis": mutable_json_value(snapshot["resolved_basis"]),
                 "node_count": snapshot["counts"]["nodes"],
                 "inter_node_link_count": snapshot["counts"]["inter_node_links"],
                 "complete": snapshot["complete"],
-                "deep_link": snapshot["deep_links"]["self"],
+                "deep_link": mutable_json_value(snapshot["deep_links"]["self"]),
             },
             "route_resolution_evidence": {
                 "context_id": route_evidence["context_id"],
@@ -6772,8 +6742,8 @@ class MultiNodeRouteService:
                 "core_does_not_infer_overlay_from_protocol_or_address_fields": True,
             },
             "deep_links": {
-                "topology": snapshot["deep_links"]["self"],
-                "individual_nodes": snapshot["deep_links"]["individual_nodes"],
+                "topology": mutable_json_value(snapshot["deep_links"]["self"]),
+                "individual_nodes": mutable_json_value(snapshot["deep_links"]["individual_nodes"]),
             },
         }
 
@@ -9590,7 +9560,7 @@ class MultiNodeRouteService:
         if link:
             link_target_id = self._link_target(link, targets)
             target_ids.append(link_target_id)
-        linker = dict(self.topology.contract["federation_plugin"])
+        linker = dict(self.topology.route_catalog()["federation_plugin"])
         provider = {
             "ownership": "federation_linker_plugin",
             "plugin_id": linker["plugin_id"],

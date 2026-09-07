@@ -74,6 +74,10 @@ from router_dump_analyzer.plugin_api import (
 from router_dump_analyzer.process_control import (
     PROCESS_CONTROL_EXCEPTIONS as _PROCESS_CONTROL_EXCEPTIONS,
 )
+from router_dump_analyzer.route_topology import (
+    MultiNodeTopologyRequestError,
+    RouteProjectionSelection,
+)
 from router_dump_analyzer.temporal_core import (
     RESOURCE_CREATION_OPERATIONS,
     RESOURCE_DELETION_OPERATIONS,
@@ -92,10 +96,7 @@ from router_dump_analyzer.topology_federation import (
     TopologyProjectionInvocation,
     TopologyProjectionSelection,
 )
-
-
-class MultiNodeTopologyRequestError(ValueError):
-    """A multi-node request cannot be executed by the advertised providers."""
+from router_dump_analyzer.value_core import mutable_json_value, snapshot_json_value
 
 
 def _invoke_topology_projection_state_provider(
@@ -747,7 +748,16 @@ class MultiNodeTopologyService:
             str(item["node_id"]): index
             for index, item in enumerate(self.contract["nodes"])
         }
-        self._contexts: dict[str, dict[str, Any]] = {}
+        self._contexts: dict[str, Mapping[str, Any]] = {}
+        self._route_catalog_snapshot: Mapping[str, Any] = snapshot_json_value({
+            "nodes": [self._route_node_metadata(node) for node in self.contract["nodes"]],
+            "network_segment_matchers": self.contract.get("network_segment_matchers", []),
+            "federation_plugin": self.contract.get("federation_plugin", {}),
+        })
+        self._route_nodes_by_id: dict[str, Mapping[str, Any]] = {
+            str(node["node_id"]): node
+            for node in self._route_catalog_snapshot["nodes"]
+        }
         if topology_federation is not None and type(
             topology_federation
         ) is not TopologyFederationCoordinator:
@@ -771,7 +781,109 @@ class MultiNodeTopologyService:
     ) -> dict[str, Any]:
         """Return the canonical form used in contexts and cross-API comparisons."""
 
+        if isinstance(basis, Mapping):
+            basis = mutable_json_value(basis)
         return _canonical_topology_basis(basis, field)
+
+    def context_snapshot(self, context_id: str) -> Mapping[str, Any] | None:
+        """Return the retained immutable context without copying it per lookup."""
+        return self._contexts.get(context_id)
+
+    @staticmethod
+    def _route_node_metadata(node: dict[str, Any]) -> dict[str, Any]:
+        """Retain route identity and selector declarations, excluding facts."""
+        metadata = {
+            key: node[key]
+            for key in (
+                "node_id",
+                "member_id",
+                "revision_id",
+                "label",
+                "site",
+                "roles",
+                "device_family",
+                "available",
+                "active_plugin_set_id",
+                "default_selected",
+            )
+            if key in node
+        }
+        metadata["plugin_sets"] = [
+            {
+                key: plugin_set[key]
+                for key in ("plugin_set_id", "label", "active")
+                if key in plugin_set
+            }
+            | {
+                "plugins": [
+                    {
+                        key: plugin[key]
+                        for key in (
+                            "plugin_id",
+                            "plugin_instance_id",
+                            "plugin_run_id",
+                            "version",
+                            "active",
+                        )
+                        if key in plugin
+                    }
+                    | {
+                        "projections": [
+                            {
+                                key: projection[key]
+                                for key in (
+                                    "projection_id",
+                                    "default_status_perspective_id",
+                                    "supported_status_perspective_ids",
+                                    "default_enabled",
+                                )
+                                if key in projection
+                            }
+                            for projection in plugin.get("projections", [])
+                        ]
+                    }
+                    for plugin in plugin_set.get("plugins", [])
+                ]
+            }
+            for plugin_set in node.get("plugin_sets", [])
+        ]
+        return metadata
+
+    def route_catalog(self) -> Mapping[str, Any]:
+        """Expose only the normalized catalog metadata needed by route services."""
+        return self._route_catalog_snapshot
+
+    def node_contract(self, node_id: str) -> Mapping[str, Any] | None:
+        return self._route_nodes_by_id.get(node_id)
+
+    def normalize_node_queries(
+        self, body: Mapping[str, Any]
+    ) -> tuple[Mapping[str, Any], ...]:
+        """Resolve node scope with the same rules used by topology queries."""
+        return tuple(
+            snapshot_json_value(item)
+            for item in self._node_queries(mutable_json_value(body))
+        )
+
+    def normalize_projection_selection(
+        self, node_id: str, request: Mapping[str, Any]
+    ) -> RouteProjectionSelection:
+        """Apply topology-owned plug-in-set, projection and perspective rules."""
+        node = self._node(node_id)
+        plugin_set_id, selections = self._select_node_projections(
+            node, mutable_json_value(request)
+        )
+        return RouteProjectionSelection(
+            plugin_set_id,
+            tuple(
+                (
+                    str(item["plugin"]["plugin_id"]),
+                    str(item["projection"]["projection_id"]),
+                    str(item["status_perspective_id"]),
+                )
+                for item in selections
+            ),
+        )
 
     def capabilities(self) -> dict[str, Any]:
         profiles = [dict(item) for item in self.topology_profiles]
@@ -779,7 +891,7 @@ class MultiNodeTopologyService:
             self.topology_metadata.get("default_profile_id")
             or profiles[0]["profile_id"]
         )
-        return {
+        return mutable_json_value({
             "api_version": "v1",
             "topology_id": self.topology_id,
             "assembly_id": self.assembly_id,
@@ -962,7 +1074,7 @@ class MultiNodeTopologyService:
             "data_disclosure": str(
                 self.topology_metadata.get("data_disclosure") or ""
             ),
-        }
+        })
 
     def node_capabilities(self, node_id: str) -> dict[str, Any]:
         node = self._node(node_id)
@@ -993,7 +1105,7 @@ class MultiNodeTopologyService:
             raise MultiNodeTopologyRequestError(
                 f"member {member_id} is not part of topology context {context_id}"
             )
-        return {
+        return mutable_json_value({
             "api_version": "v1",
             "assembly_id": self.assembly_id,
             "topology_id": self.topology_id,
@@ -1019,7 +1131,7 @@ class MultiNodeTopologyService:
                 if member["member_id"] in segment["observed_member_ids"]
             ],
             "navigation": result["deep_links"],
-        }
+        })
 
     def query_node(self, node_id: str, body: dict[str, Any]) -> dict[str, Any]:
         node = self._node(node_id)
@@ -1406,7 +1518,7 @@ class MultiNodeTopologyService:
                 "segment_grouping_and_pagination": "core",
             },
         }
-        self._contexts[context_id] = response
+        self._contexts[context_id] = snapshot_json_value(response)
         while len(self._contexts) > 32:
             self._contexts.pop(next(iter(self._contexts)))
         return response
@@ -1483,22 +1595,7 @@ class MultiNodeTopologyService:
         resource_limit: int,
         context_id: str,
     ) -> dict[str, Any]:
-        plugin_set_id = str(
-            request.get("plugin_set_id", node["active_plugin_set_id"])
-        )
-        plugin_set = next(
-            (
-                item
-                for item in node["plugin_sets"]
-                if item["plugin_set_id"] == plugin_set_id
-            ),
-            None,
-        )
-        if plugin_set is None:
-            raise MultiNodeTopologyRequestError(
-                f"unknown plugin_set_id {plugin_set_id} for node {node['node_id']}"
-            )
-        selections = self._projection_selections(node, plugin_set, request)
+        plugin_set_id, selections = self._select_node_projections(node, request)
         plugin_results: list[dict[str, Any]] = []
         resolved_times: list[dict[str, Any]] = []
         resources: list[dict[str, Any]] = []
@@ -1694,6 +1791,25 @@ class MultiNodeTopologyService:
             "_typed_invocations_complete": typed_invocations_complete,
             "_typed_resources": typed_resources,
         }
+
+    def _select_node_projections(
+        self, node: dict[str, Any], request: dict[str, Any]
+    ) -> tuple[str, list[dict[str, Any]]]:
+        plugin_set_id = str(request.get("plugin_set_id", node["active_plugin_set_id"]))
+        plugin_set = next(
+            (
+                item
+                for item in node["plugin_sets"]
+                if item["plugin_set_id"] == plugin_set_id
+            ),
+            None,
+        )
+        if plugin_set is None:
+            raise MultiNodeTopologyRequestError(
+                f"unknown plugin_set_id {plugin_set_id} for node {node['node_id']}"
+            )
+        selections = self._projection_selections(node, plugin_set, request)
+        return plugin_set_id, selections
 
     def _projection_selections(
         self,
