@@ -3,18 +3,18 @@ from __future__ import annotations
 import ast
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import rsl_demo_generator as generated_fixture
 from fastapi.testclient import TestClient
+from rsl_demo_generator import COVERAGE_CASES, DEMO_NODES
 
+from tests.support.fixed_fixture_topology import FixedFixtureTopologyMemoizer
 from tests.support.generated_demo import (
     configure_generated_demo_for_tests,
     generated_demo_application,
     query_all_route_table_rows,
 )
-
-import rsl_demo_generator as generated_fixture
-from rsl_demo_generator import COVERAGE_CASES, DEMO_NODES
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOTS = (
@@ -831,12 +831,24 @@ class MultiNodeRouteRegressionTests(unittest.TestCase):
         self.assertFalse(payload["page"]["truncated"])
         self.assertEqual(payload["counts"]["total"], len(payload["items"]))
 
-        for row in payload["items"]:
-            with self.subTest(route_entry_id=row["route_entry_id"]):
-                response = self.client.post(
-                    "/v1/topologies/routes/trace", json=row["trace_query"]
-                )
-                self.assertEqual(response.status_code, 200, response.text)
+        # Every row still traverses the HTTP route handler and core route service.
+        # Repeated reconstruction of this fixed topology is covered by the other
+        # live-provider tests, so retain its exact immutable query results here.
+        provider = self.client.app.state.runtime_session.route_provider
+        self.assertIsNotNone(provider)
+        route = provider.get()
+        original_topology = route.topology
+        memoizer = FixedFixtureTopologyMemoizer(original_topology)
+        with patch.object(route, "topology", memoizer):
+            for row in payload["items"]:
+                with self.subTest(route_entry_id=row["route_entry_id"]):
+                    response = self.client.post(
+                        "/v1/topologies/routes/trace", json=row["trace_query"]
+                    )
+                    self.assertEqual(response.status_code, 200, response.text)
+        self.assertIs(route.topology, original_topology)
+        self.assertGreater(memoizer.query_hits, 0)
+        self.assertGreater(memoizer.query_misses, 0)
 
 
 if __name__ == "__main__":
