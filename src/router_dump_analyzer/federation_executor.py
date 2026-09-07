@@ -905,7 +905,6 @@ class FederationLinkerRegistry:
                 )
             by_plugin_id[plugin_id] = registration
             policies.extend(registration.policies)
-        self._registrations = tuple(registrations)
         self._by_plugin_id = MappingProxyType(by_plugin_id)
         self._identities = tuple(item.identity for item in registrations)
         self._policies = tuple(
