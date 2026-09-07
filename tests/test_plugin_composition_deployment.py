@@ -44,7 +44,7 @@ def _registries() -> tuple[
     primary = LoadedPlugin(
         _DEPLOYMENT_PRIMARY_PLUGIN,
         process_module_target=(
-            "tests.test_plugin_composition_deployment:_DEPLOYMENT_PRIMARY_PLUGIN"
+            f"{__name__}:_DEPLOYMENT_PRIMARY_PLUGIN"
         ),
     ).register(
         primary_registry,
@@ -55,7 +55,7 @@ def _registries() -> tuple[
     alternate = LoadedPlugin(
         _DEPLOYMENT_ALTERNATE_PLUGIN,
         process_module_target=(
-            "tests.test_plugin_composition_deployment:_DEPLOYMENT_ALTERNATE_PLUGIN"
+            f"{__name__}:_DEPLOYMENT_ALTERNATE_PLUGIN"
         ),
     ).register(
         second_registry,
@@ -347,7 +347,7 @@ class PluginCompositionDeploymentTests(unittest.TestCase):
         duplicate = LoadedPlugin(
             _DEPLOYMENT_PRIMARY_PLUGIN,
             process_module_target=(
-                "tests.test_plugin_composition_deployment:_DEPLOYMENT_PRIMARY_PLUGIN"
+                f"{__name__}:_DEPLOYMENT_PRIMARY_PLUGIN"
             ),
         ).register(
             duplicate_registry,
