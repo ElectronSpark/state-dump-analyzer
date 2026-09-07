@@ -90,6 +90,9 @@ number rounding. Invalid seeds produce an error instead of being clamped.
 Generating a dump exports derived evidence and preserves the unsaved-project
 flag. Save the source JSON to mark authoring edits saved; a generated TGZ cannot
 replace that source file.
+Pending New/Open requests cannot replace later edits, undo history, or a newer
+project load. The latest request wins only while the current project remains
+unchanged; stale responses are discarded.
 
 To work on the bundled Router State Lab scenario, click **Open** and choose
 `demo/router-state-lab-default.scenario.json` from the repository checkout.

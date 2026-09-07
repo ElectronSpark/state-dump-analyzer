@@ -102,6 +102,8 @@ let panZoom = { x: 0, y: 0, scale: 1 };
 let history = [];
 let future = [];
 let dirty = false;
+let projectLoadRequestId = 0;
+let projectEditVersion = 0;
 let eventDurationMs = 60_000;
 const pointers = new Map();
 
@@ -577,35 +579,57 @@ function makeId(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-async function loadBlankProject() {
-  try {
-    const response = await fetch(API.create, { headers: { Accept: "application/json" } });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    scenario = normalizeScenario(payload.scenario || payload);
-    scenario._captureTimeExplicit = false;
-    if (scenario.id === "untitled-scenario") scenario.id = makeId("scenario");
-  } catch {
-    scenario = fallbackScenario();
-  }
+function beginProjectLoad() {
+  return { requestId: ++projectLoadRequestId, editVersion: projectEditVersion };
+}
+
+function ownsProjectLoad(request) {
+  return request.requestId === projectLoadRequestId && request.editVersion === projectEditVersion;
+}
+
+function installLoadedProject(project) {
+  scenario = project;
+  projectEditVersion += 1;
   history = [];
   future = [];
   dirty = false;
   selection = null;
   selectedEventId = null;
+  dragState = null;
+  pointers.clear();
   panZoom = { x: 0, y: 0, scale: 1 };
   eventDurationMs = scenario.duration_ms;
   loadPropagationControls(scenario.defaults?.propagation || {});
   renderAll();
 }
 
+async function loadBlankProject() {
+  const request = beginProjectLoad();
+  let project;
+  try {
+    const response = await fetch(API.create, { headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    project = normalizeScenario(payload.scenario || payload);
+    project._captureTimeExplicit = false;
+    if (project.id === "untitled-scenario") project.id = makeId("scenario");
+  } catch {
+    project = fallbackScenario();
+  }
+  if (!ownsProjectLoad(request)) return false;
+  installLoadedProject(project);
+  return true;
+}
+
 function bindProjectActions() {
   dom["new-project"].addEventListener("click", async () => {
     if (dirty && !globalThis.confirm("Discard the unsaved scenario and start again?")) return;
-    await loadBlankProject();
-    toast("Started a blank scenario.");
+    if (await loadBlankProject()) toast("Started a blank scenario.");
   });
-  dom["open-project"].addEventListener("click", () => dom["project-file"].click());
+  dom["open-project"].addEventListener("click", () => {
+    projectLoadRequestId += 1;
+    dom["project-file"].click();
+  });
   dom["project-file"].addEventListener("change", handleProjectFile);
   dom["save-project"].addEventListener("click", saveProject);
   dom.undo.addEventListener("click", undo);
@@ -871,6 +895,7 @@ function linkCount(nodeId) {
 }
 
 function transact(mutator, { render = true } = {}) {
+  projectEditVersion += 1;
   history.push(structuredClone(scenario));
   if (history.length > 80) history.shift();
   future = [];
@@ -887,6 +912,7 @@ function transact(mutator, { render = true } = {}) {
 
 function undo() {
   if (!history.length) return;
+  projectEditVersion += 1;
   future.push(structuredClone(scenario));
   scenario = history.pop();
   dirty = true;
@@ -896,6 +922,7 @@ function undo() {
 
 function redo() {
   if (!future.length) return;
+  projectEditVersion += 1;
   history.push(structuredClone(scenario));
   scenario = future.pop();
   dirty = true;
@@ -1204,6 +1231,7 @@ function canvasPointerMove(event) {
     node.position.x = dragState.origin.x + point.x - dragState.start.x;
     node.position.y = dragState.origin.y + point.y - dragState.start.y;
     dragState.changed = true;
+    projectEditVersion += 1;
     dirty = true;
     renderCanvas();
   } else if (dragState.kind === "pan") {
@@ -2363,27 +2391,27 @@ async function handleProjectFile(event) {
   const [file] = event.target.files;
   event.target.value = "";
   if (!file) return;
+  const request = beginProjectLoad();
   try {
     const payload = JSON.parse(await file.text());
     const project = payload.scenario && isPlainObject(payload.scenario) ? payload.scenario : payload;
-    scenario = normalizeScenario(project);
-    selection = null;
-    selectedEventId = null;
-    history = [];
-    future = [];
-    eventDurationMs = scenario.duration_ms;
-    loadPropagationControls(scenario.defaults?.propagation || {});
-    dirty = false;
-    panZoom = { x: 0, y: 0, scale: 1 };
-    renderAll();
-    requestAnimationFrame(fitCanvas);
+    const normalized = normalizeScenario(project);
+    if (!ownsProjectLoad(request)) return false;
+    installLoadedProject(normalized);
+    requestAnimationFrame(() => {
+      if (scenario === normalized) fitCanvas();
+    });
     toast(`Loaded ${file.name}.`, "success");
+    return true;
   } catch (error) {
+    if (!ownsProjectLoad(request)) return false;
     toast(`Could not open project: ${error.message}`, "error");
+    return false;
   }
 }
 
 function saveProject() {
+  projectEditVersion += 1;
   scenario.name = dom["project-name"].value.trim() || scenario.name;
   scenario.updated_at = new Date().toISOString();
   try {

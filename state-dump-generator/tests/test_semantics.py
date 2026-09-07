@@ -348,6 +348,176 @@ Promise.resolve(vm.runInContext('(async () => {' + request.code + '})()', contex
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
+    def run_project_load(self, code: str, value: dict | None = None) -> object:
+        return self.run_web("""
+scenario = normalizeScenario(input.scenario || input);
+const actions = {};
+const requests = [];
+const ui = {renders:0, pickers:0, downloads:0, messages:[]};
+for (const id of ['new-project','open-project','project-file','save-project','undo','redo',
+  'validate-project','generate-dumps','project-name']) {
+  dom[id] = {value:scenario.name,
+    addEventListener(type, handler) { actions[`${id}:${type}`] = handler; },
+    click() { ui.pickers += 1; },
+  };
+}
+globalThis.addEventListener = () => {};
+globalThis.confirm = () => true;
+globalThis.requestAnimationFrame = callback => callback();
+globalThis.Blob = class Blob {};
+globalThis.fetch = () => new Promise((resolve, reject) => requests.push({resolve, reject}));
+loadPropagationControls = () => {};
+renderAll = () => { ui.renders += 1; dom['project-name'].value = scenario.name; };
+renderCanvas = () => {};
+fitCanvas = () => {};
+downloadBlob = () => { ui.downloads += 1; };
+toast = (message, kind) => ui.messages.push({message, kind});
+bindProjectActions();
+function startLoad(kind, name) {
+  if (kind === 'new') {
+    const index = requests.length;
+    const pending = actions['new-project:click']();
+    return {pending,
+      resolve:project => requests[index].resolve({ok:true, json:async () => project}),
+      reject:error => requests[index].reject(error),
+    };
+  }
+  let resolveText, rejectText;
+  const text = new Promise((resolve, reject) => { resolveText=resolve; rejectText=reject; });
+  const pending = actions['project-file:change']({target:{value:'selected',files:[{
+    name, text:() => text,
+  }]}});
+  return {pending, resolve:project => resolveText(JSON.stringify(project)), reject:rejectText};
+}
+function currentState() {
+  return {scenario, dirty, history, future, selection, selectedEventId};
+}
+""" + code, value)
+
+    def test_latest_new_or_open_handler_owns_project_replacement(self) -> None:
+        for first in ("new", "open"):
+            for second in ("new", "open"):
+                for first_fails in (False, True):
+                    with self.subTest(first=first, second=second, first_fails=first_fails):
+                        result = self.run_project_load("""
+transact(() => { scenario.name = 'Unsaved original'; }, {render:false});
+const older = startLoad(input.first, 'older.json');
+const newer = startLoad(input.second, 'newer.json');
+const winner = {...input.scenario, name:'Winning project'};
+newer.resolve(winner);
+await newer.pending;
+const before = JSON.stringify(currentState());
+if (input.first_fails) older.reject(new Error('stale load failure'));
+else older.resolve({...input.scenario, name:'Stale project'});
+await older.pending;
+return {unchanged:JSON.stringify(currentState()) === before,
+  name:scenario.name, dirty, historyLength:history.length, futureLength:future.length, ui};
+""", {"scenario": scenario(), "first": first, "second": second, "first_fails": first_fails})
+                        self.assertTrue(result["unchanged"])
+                        self.assertEqual(result["name"], "Winning project")
+                        self.assertFalse(result["dirty"])
+                        self.assertEqual(result["historyLength"], 0)
+                        self.assertEqual(result["futureLength"], 0)
+                        self.assertEqual(result["ui"]["renders"], 1)
+                        self.assertEqual(len(result["ui"]["messages"]), 1)
+                        self.assertNotIn("stale", json.dumps(result["ui"]).lower())
+
+    def test_startup_or_file_load_cannot_replace_intervening_edits(self) -> None:
+        for kind in ("startup", "open"):
+            for failed in (False, True):
+                with self.subTest(kind=kind, failed=failed):
+                    result = self.run_project_load("""
+const loading = input.kind === 'startup' ? {
+  pending:loadBlankProject(),
+  resolve:project => requests[0].resolve({ok:true, json:async () => project}),
+  reject:error => requests[0].reject(error),
+} : startLoad('open', 'pending.json');
+transact(() => { scenario.description = 'Keep my edit'; }, {render:false});
+selection = {type:'node', id:scenario.nodes[0].id};
+selectedEventId = scenario.events[0].id;
+const before = JSON.stringify(currentState());
+if (input.failed) loading.reject(new Error('stale read failure'));
+else loading.resolve({...input.scenario, name:'Stale replacement'});
+await loading.pending;
+return {unchanged:JSON.stringify(currentState()) === before, dirty,
+  historyLength:history.length, ui};
+""", {"scenario": scenario(), "kind": kind, "failed": failed})
+                    self.assertTrue(result["unchanged"])
+                    self.assertTrue(result["dirty"])
+                    self.assertEqual(result["historyLength"], 1)
+                    self.assertEqual(result["ui"]["renders"], 0)
+                    self.assertEqual(result["ui"]["messages"], [])
+
+    def test_undo_redo_save_and_active_drag_invalidate_pending_load(self) -> None:
+        for edit in ("undo", "redo", "save", "drag"):
+            with self.subTest(edit=edit):
+                result = self.run_project_load("""
+transact(() => { scenario.name = 'Current project'; }, {render:false});
+if (input.edit === 'redo') undo();
+const loading = startLoad('new', 'pending');
+if (input.edit === 'undo') undo();
+else if (input.edit === 'redo') redo();
+else if (input.edit === 'save') {
+  dom['project-name'].value = scenario.name;
+  actions['save-project:click']();
+} else {
+  const node = scenario.nodes[0];
+  pointers.set(1, {x:0,y:0});
+  dragState = {kind:'node', pointerId:1, id:node.id,
+    start:{x:0,y:0}, origin:{...node.position}, changed:false};
+  clientToWorld = (x,y) => ({x,y});
+  canvasPointerMove({pointerId:1,clientX:20,clientY:30});
+}
+const before = JSON.stringify(currentState());
+const rendersBefore = ui.renders;
+loading.resolve({...input.scenario, name:'Stale project'});
+await loading.pending;
+return {unchanged:JSON.stringify(currentState()) === before,
+  extraRenders:ui.renders-rendersBefore, dirty,
+  historyLength:history.length, futureLength:future.length, ui};
+""", {"scenario": scenario(), "edit": edit})
+                self.assertTrue(result["unchanged"])
+                self.assertEqual(result["extraRenders"], 0)
+                self.assertEqual(result["dirty"], edit != "save")
+                if edit == "undo":
+                    self.assertEqual(result["futureLength"], 1)
+                self.assertFalse(any("Started" in item["message"] for item in result["ui"]["messages"]))
+
+    def test_open_picker_cancels_an_older_blank_load_before_file_selection(self) -> None:
+        result = self.run_project_load("""
+const loading = startLoad('new', 'pending');
+const before = JSON.stringify(currentState());
+actions['open-project:click']();
+loading.resolve({...input, name:'Stale project'});
+await loading.pending;
+return {unchanged:JSON.stringify(currentState()) === before, ui};
+""")
+        self.assertTrue(result["unchanged"])
+        self.assertEqual(result["ui"]["pickers"], 1)
+        self.assertEqual(result["ui"]["messages"], [])
+
+    def test_current_load_failure_has_explicit_new_and_open_behavior(self) -> None:
+        for kind in ("new", "open"):
+            with self.subTest(kind=kind):
+                result = self.run_project_load("""
+transact(() => { scenario.name = 'Unsaved original'; }, {render:false});
+const before = JSON.stringify(currentState());
+const loading = startLoad(input.kind, 'broken.json');
+loading.reject(new Error('current failure'));
+await loading.pending;
+return {unchanged:JSON.stringify(currentState()) === before, dirty,
+  nodes:scenario.nodes.length, historyLength:history.length, ui};
+""", {"scenario": scenario(), "kind": kind})
+                if kind == "open":
+                    self.assertTrue(result["unchanged"])
+                    self.assertTrue(result["dirty"])
+                    self.assertEqual(result["ui"]["messages"][0]["kind"], "error")
+                else:
+                    self.assertFalse(result["dirty"])
+                    self.assertEqual(result["nodes"], 0)
+                    self.assertEqual(result["historyLength"], 0)
+                    self.assertIn("Started", result["ui"]["messages"][0]["message"])
+
     def test_attachment_identity_defaults_survive_browser_round_trip(self) -> None:
         for port, declared in (("p", None), ("interface:p", None), ("local:a/xe0", None), ("interface:p", "local:a-p")):
             with self.subTest(port=port, declared=declared):
