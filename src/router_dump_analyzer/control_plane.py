@@ -3338,9 +3338,13 @@ class ControlPlane:
                     try:
                         loaded = flight.result(timeout=0.05)
                     except FutureTimeoutError:
-                        if flight.done():
-                            raise
-                        continue
+                        if not flight.done():
+                            continue
+                        # Completion can win immediately after the timed wait
+                        # expires. Read its result instead of rethrowing that
+                        # obsolete wait timeout (or recover the owner's actual
+                        # TimeoutError when that was the completed outcome).
+                        loaded = flight.result()
                     checkpoint()
                     return loaded
             except PrivateAnalysisRevisionEvidenceCancelled:

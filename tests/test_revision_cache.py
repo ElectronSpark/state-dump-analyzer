@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import unittest
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from unittest.mock import patch
 
@@ -94,6 +94,29 @@ class RevisionCacheTests(unittest.TestCase):
         self.assertFalse(self.control._revision_loads)
         self.assertFalse(self.control._cache)
         self.assertTrue(self.control.load_revision_dataset(self.scope, self.revision)["events"])
+
+    def test_completed_load_wins_a_timed_wait_completion_race(self) -> None:
+        loaded = self.control._load_revision(self.scope, self.revision)
+        self.control._cache.clear()
+        self.control._cache_weights.clear()
+        flight = Future()
+        key = f"tenant-a\x1f{self.revision}"
+        self.control._revision_loads[key] = flight
+        real_result = flight.result
+
+        def timed_result(timeout=None):
+            if timeout is not None:
+                # The wait expired, then the owner completed before done().
+                flight.set_result(loaded)
+                raise TimeoutError()
+            return real_result()
+
+        try:
+            with patch.object(flight, "result", side_effect=timed_result):
+                result = self.control._load_revision(self.scope, self.revision)
+            self.assertIs(result, loaded)
+        finally:
+            self.control._revision_loads.pop(key)
 
     def test_waiter_can_cancel_without_cancelling_the_shared_load(self) -> None:
         entered = threading.Event()
