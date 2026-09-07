@@ -27,7 +27,6 @@ import {
   loadPendingReviewMutations,
   reconcileControlPlaneVersionConflict,
   reconcilePendingReviewMutations,
-  replaceConfirmedSet,
   reservePendingReviewMutation,
   requestControlPlane,
   requestDurableReview,
@@ -660,7 +659,7 @@ test("repeated annotation watermark drift fails without replacing confirmed stat
 });
 
 test("annotation marker index validates the complete replacement before commit", async () => {
-  const confirmed = new Set(["event:old"]);
+  let confirmed = new Set(["event:old"]);
   const valid = {
     annotation_id: "annotation-a",
     kind: "marker",
@@ -694,7 +693,7 @@ test("annotation marker index validates the complete replacement before commit",
           "revision-a",
           (subject) => `${subject.kind}:${subject.subject_id}`,
         );
-        replaceConfirmedSet(confirmed, replacement.markedEntryIds);
+        confirmed = replacement.markedEntryIds;
       },
     ),
     /bounded subjects array/,
@@ -1213,7 +1212,7 @@ test("explicit journal reset removes persisted unresolved identities", () => {
 });
 
 test("confirmed marker orchestration preserves old state when bounded hydration fails", async () => {
-  const confirmed = new Set(["event:a", "event:b"]);
+  let confirmed = new Set(["event:a", "event:b"]);
   let committed = false;
   await assert.rejects(
     loadThenCommitConfirmedState(
@@ -1222,7 +1221,7 @@ test("confirmed marker orchestration preserves old state when bounded hydration 
       },
       (values) => {
         committed = true;
-        replaceConfirmedSet(confirmed, values);
+        confirmed = new Set(values);
       },
     ),
     (error) => error instanceof ControlPlaneRequestError && error.status === 409,
@@ -1232,7 +1231,7 @@ test("confirmed marker orchestration preserves old state when bounded hydration 
 
   await loadThenCommitConfirmedState(
     async () => ["event:b", "event:c"],
-    (values) => replaceConfirmedSet(confirmed, values),
+    (values) => { confirmed = new Set(values); },
   );
   assert.deepEqual([...confirmed], ["event:b", "event:c"]);
 });

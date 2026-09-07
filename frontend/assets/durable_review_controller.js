@@ -1133,14 +1133,6 @@ export function reconcilePendingReviewMutations(
   return reconciled;
 }
 
-export function replaceConfirmedSet(target, confirmedValues) {
-  if (!(target instanceof Set)) throw new TypeError("target must be a Set");
-  const replacement = new Set(confirmedValues);
-  target.clear();
-  replacement.forEach((value) => target.add(value));
-  return target;
-}
-
 /**
  * Validate a complete annotation snapshot and build its marker projection
  * without touching the currently confirmed UI state. Callers can therefore
