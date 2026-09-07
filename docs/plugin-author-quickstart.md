@@ -949,6 +949,13 @@ diagnostics. A missing capability raises
 the one exception to the world wrapper: the caller supplies the already
 bounded/indexed `CorrelationReader`, and the executor validates its exact
 bounded `CorrelationWindow` and outputs.
+Reducer, correlation, and forwarding-projection outputs are detached and
+revalidated before core accepts them. Reusing an output dictionary for a later
+yield cannot rewrite an earlier result; returned mappings are read-only and
+in-process `Value` sequences are tuples. Each call also shares the bounded
+`PluginCapabilityLimits.max_output_snapshot_units` budget (default 1,000,000).
+Run `python -m unittest tests.test_capability_executor -v` for output ownership
+and aggregate-limit conformance.
 
 An explicit scan limit equal to the remaining read quota is valid: core returns
 at most that many items without probing beyond your requested slice. A request

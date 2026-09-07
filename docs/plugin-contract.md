@@ -619,6 +619,15 @@ read-only facade that charges `state_of()`, `iter_states()`, `related()`, and
 `CorrelationReader`; the executor validates the exact `CorrelationWindow` and
 the returned stream. It closes every plug-in output iterator.
 
+Reducer, correlation, and forwarding-projection results are detached into
+core-owned snapshots and revalidated before return or iterator advancement.
+Later producer mutation, including generator cleanup, cannot change accepted
+values. Nested mappings are read-only; typed `Value` sequences remain tuples.
+`PluginCapabilityLimits.max_output_snapshot_units` bounds each complete call
+(default 1,000,000; configurable from 1 through 1,000,000), including stream
+diagnostics. Exceeding it fails the call without a partial result. Snapshot
+construction only invokes an exact allowlist of core contract types.
+
 All requests, outputs, resource keys, property roots, relationships, causal
 types, status perspectives, topology projection/perspective pairs, forwarding
 IR versions, references, evidence, and diagnostic envelopes are validated

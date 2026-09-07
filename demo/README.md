@@ -410,6 +410,10 @@ It recognizes `minimal-status.jsonl` and maps each accepted row to a typed
 The core owns windowed timeline reconstruction: an empty query window never
 borrows this fixture's final snapshot. Core's `has_lifecycle_history` lane flag
 preserves known absence versus missing lifecycle evidence.
+Optional semantic output hooks use core-owned snapshots: reusing a local
+dictionary cannot mutate an admitted result. In-process `Value` sequences are
+tuples. Run `python -m unittest tests.test_capability_executor -v` for ownership
+and aggregate-budget conformance before adding a capability.
 Its `oper_status` condition is intentionally public. When adapting the schema,
 private parent/relative paths also hide descendant conditions and literal dotted
 keys. Verify publication with

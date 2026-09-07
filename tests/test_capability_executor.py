@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, Self
 from unittest.mock import patch
 from uuid import UUID
@@ -1193,8 +1193,8 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
         plugin.apply_output = changes
         plugin.revert_output = changes
 
-        self.assertIs(executor.apply(EVENT, _World()), changes)  # type: ignore[arg-type]
-        self.assertIs(executor.revert(EVENT, _World()), changes)  # type: ignore[arg-type]
+        self.assertEqual(executor.apply(EVENT, _World()), changes)  # type: ignore[arg-type]
+        self.assertEqual(executor.revert(EVENT, _World()), changes)  # type: ignore[arg-type]
 
         plugin.apply_output = object()
         with self.assertRaisesRegex(
@@ -1202,6 +1202,224 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
             "exact ChangeSet",
         ):
             executor.apply(EVENT, _World())  # type: ignore[arg-type]
+
+    def test_reducers_return_detached_change_sets(self) -> None:
+        for hook_name in ("apply", "revert"):
+            with self.subTest(hook=hook_name):
+                properties = {"state": ({"nested": "before"},)}
+                evidence = replace(EVIDENCE)
+                resource = replace(RESOURCE)
+                mutation = replace(
+                    _state_mutation(),
+                    resource=resource,
+                    after=PropertyPatch(set_values=properties),
+                    evidence=(evidence,),
+                )
+                changes = ChangeSet(state=(mutation,))
+                plugin = _Plugin()
+                setattr(plugin, f"{hook_name}_output", changes)
+                result = getattr(PluginCapabilityExecutor(plugin), hook_name)(
+                    EVENT, _World()
+                )
+
+                properties["state"][0]["nested"] = "after"
+                object.__setattr__(resource, "kind", "undeclared")
+                object.__setattr__(evidence, "locator", "after")
+                self.assertIsNot(result, changes)
+                self.assertEqual(result.state[0].after.set_values["state"], ({"nested": "before"},))
+                self.assertEqual(result.state[0].resource.kind, RESOURCE.kind)
+                self.assertEqual(result.state[0].evidence[0].locator, EVIDENCE.locator)
+                with self.assertRaises(TypeError):
+                    result.state[0].after.set_values["state"][0]["nested"] = "forbidden"
+
+    def test_correlation_outputs_are_detached_before_advancing_the_stream(self) -> None:
+        properties = {"nested": ({"value": "before"},)}
+        evidence = replace(EVIDENCE)
+        source = replace(RESOURCE)
+        mutation = replace(
+            _relationship_mutation(),
+            source=source,
+            attributes=PropertyPatch(set_values=properties),
+            evidence=(evidence,),
+        )
+
+        def outputs() -> Iterable[Any]:
+            try:
+                yield mutation
+                properties["nested"][0]["value"] = object()
+                object.__setattr__(source, "kind", "undeclared")
+            finally:
+                object.__setattr__(evidence, "locator", "changed-on-close")
+
+        plugin = _Plugin()
+        plugin.correlation_output = outputs()
+        result = PluginCapabilityExecutor(plugin).correlate(
+            object(), CorrelationWindow(0, 2, max_events=10)  # type: ignore[arg-type]
+        )
+        detached = result.relationship_mutations[0]
+        self.assertIsNot(detached, mutation)
+        self.assertEqual(detached.attributes.set_values["nested"], ({"value": "before"},))
+        self.assertEqual(detached.source.kind, RESOURCE.kind)
+        self.assertEqual(detached.evidence[0].locator, EVIDENCE.locator)
+        with self.assertRaises(TypeError):
+            detached.attributes.set_values["nested"][0]["value"] = "forbidden"  # type: ignore[index]
+
+    def test_forwarding_outputs_are_detached_before_advancing_the_stream(self) -> None:
+        mutation = _forwarding_mutation()
+        basis = replace(BASIS)
+        properties = {"nested": ({"value": "before"},)}
+        mutation = replace(
+            mutation,
+            record=replace(mutation.record, attributes=properties),  # type: ignore[arg-type]
+            basis=basis,
+        )
+
+        def outputs() -> Iterable[Any]:
+            yield mutation
+            properties["nested"][0]["value"] = object()
+            object.__setattr__(basis, "quality", "invalid")
+
+        plugin = _Plugin()
+        plugin.forwarding_output = outputs()
+        result = PluginCapabilityExecutor(plugin).project_forwarding(
+            _projection_request(), _World()  # type: ignore[arg-type]
+        )
+        detached = result.mutations[0]
+        self.assertIsNot(detached, mutation)
+        self.assertEqual(detached.record.attributes["nested"], ({"value": "before"},))  # type: ignore[union-attr]
+        self.assertEqual(detached.basis.quality, BASIS.quality)
+        with self.assertRaises(TypeError):
+            detached.record.attributes["nested"][0]["value"] = "forbidden"  # type: ignore[union-attr, index]
+
+    def test_mutation_payloads_preserve_the_existing_typed_value_domain(self) -> None:
+        # The typed API represents sequences as tuples. Lists belong to the
+        # normalized JSON transport and have never been admitted by these hooks.
+        invalid_values = (
+            ([{"value": "nested-list"}], "unsupported type list"),
+            ({"": "empty-key"}, "mapping keys"),
+            ({"x" * 257: "long-key"}, "mapping keys"),
+            ({"nul\x00key": "nul-key"}, "mapping keys"),
+        )
+        for value, error in invalid_values:
+            plugin = _Plugin()
+            plugin.correlation_output = (
+                replace(
+                    _relationship_mutation(),
+                    attributes=PropertyPatch(set_values={"value": value}),
+                ),
+            )
+            forwarding = _forwarding_mutation()
+            plugin.forwarding_output = (
+                replace(
+                    forwarding,
+                    record=replace(forwarding.record, attributes={"value": value}),  # type: ignore[arg-type]
+                ),
+            )
+            executor = PluginCapabilityExecutor(plugin)
+            with self.subTest(hook="correlation", value=value), self.assertRaisesRegex(
+                PluginCapabilityOutputError, error
+            ):
+                executor.correlate(
+                    object(), CorrelationWindow(0, 2, max_events=10)  # type: ignore[arg-type]
+                )
+            with self.subTest(hook="forwarding", value=value), self.assertRaisesRegex(
+                PluginCapabilityOutputError, error
+            ):
+                executor.project_forwarding(_projection_request(), _World())  # type: ignore[arg-type]
+
+    def test_mutation_stream_snapshot_budget_is_aggregate_and_closes_outputs(self) -> None:
+        for hook_name in ("correlation", "forwarding"):
+            with self.subTest(hook=hook_name):
+                mutation = (
+                    _relationship_mutation()
+                    if hook_name == "correlation"
+                    else _forwarding_mutation()
+                )
+                closed: list[bool] = []
+
+                def outputs(
+                    item: Any = mutation,
+                    closed_items: list[bool] = closed,
+                ) -> Iterable[Any]:
+                    try:
+                        yield item
+                        yield item
+                    finally:
+                        closed_items.append(True)
+
+                plugin = _Plugin()
+                executor = PluginCapabilityExecutor(
+                    plugin, limits=PluginCapabilityLimits(max_output_snapshot_units=300)
+                )
+
+                def invoke(
+                    selected_hook: str = hook_name,
+                    selected_executor: PluginCapabilityExecutor = executor,
+                ) -> Any:
+                    if selected_hook == "correlation":
+                        return selected_executor.correlate(
+                            object(), CorrelationWindow(0, 2, max_events=10)  # type: ignore[arg-type]
+                        )
+                    return selected_executor.project_forwarding(_projection_request(), _World())  # type: ignore[arg-type]
+
+                setattr(plugin, f"{hook_name}_output", (mutation,))
+                invoke()
+                setattr(plugin, f"{hook_name}_output", outputs())
+                with self.assertRaisesRegex(
+                    PluginCapabilityOutputError, "aggregate snapshot-unit limit"
+                ):
+                    invoke()
+                self.assertEqual(closed, [True])
+
+    def test_mutation_snapshot_rejects_values_that_change_during_copy(self) -> None:
+        plugin = _Plugin()
+        plugin.correlation_output = (
+            replace(
+                _relationship_mutation(),
+                attributes=PropertyPatch(set_values=_ChangingMapping()),
+            ),
+        )
+        with self.assertRaisesRegex(PluginCapabilityOutputError, "non-finite"):
+            PluginCapabilityExecutor(plugin).correlate(
+                object(), CorrelationWindow(0, 2, max_events=10)  # type: ignore[arg-type]
+            )
+
+    def test_reducer_snapshot_limit_rejects_the_complete_change_set(self) -> None:
+        plugin = _Plugin()
+        plugin.apply_output = ChangeSet(state=(_state_mutation(),))
+        plugin.revert_output = plugin.apply_output
+        executor = PluginCapabilityExecutor(
+            plugin, limits=PluginCapabilityLimits(max_output_snapshot_units=10)
+        )
+        for hook_name in ("apply", "revert"):
+            with self.subTest(hook=hook_name), self.assertRaisesRegex(
+                PluginCapabilityOutputError, "aggregate snapshot-unit limit"
+            ):
+                getattr(executor, hook_name)(EVENT, _World())
+
+    def test_output_detachment_never_constructs_plugin_owned_dataclasses(self) -> None:
+        constructions: list[bool] = []
+
+        @dataclass(frozen=True)
+        class PluginValue:
+            text: str
+
+            def __post_init__(self) -> None:
+                constructions.append(True)
+
+        mutation = _forwarding_mutation()
+        plugin = _Plugin()
+        plugin.forwarding_output = (
+            replace(
+                mutation,
+                record=replace(mutation.record, name=PluginValue("value")),  # type: ignore[arg-type]
+            ),
+        )
+        with self.assertRaises(PluginCapabilityOutputError):
+            PluginCapabilityExecutor(plugin).project_forwarding(
+                _projection_request(), _World()  # type: ignore[arg-type]
+            )
+        self.assertEqual(constructions, [True])
 
     def test_all_capability_temporal_coordinates_are_signed_64_bit(self) -> None:
         plugin = _Plugin()
@@ -1213,7 +1431,7 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
             plugin.apply_output = ChangeSet(
                 state=(replace(_state_mutation(), effective_time_ns=value),),
             )
-            self.assertIs(executor.apply(EVENT, _World()), plugin.apply_output)  # type: ignore[arg-type]
+            self.assertEqual(executor.apply(EVENT, _World()), plugin.apply_output)  # type: ignore[arg-type]
         plugin.apply_output = ChangeSet(
             state=(
                 replace(

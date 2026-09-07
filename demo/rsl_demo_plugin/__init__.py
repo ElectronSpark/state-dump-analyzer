@@ -1829,6 +1829,8 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
                     kind="INTERFACE",
                     parts=(("ifindex", ifindex),),
                 )
+                # In-process Value sequences are tuples; core snapshots
+                # emitted property mappings before advancing the producer.
                 properties = {
                     "name": name,
                     "admin_status": admin_status,

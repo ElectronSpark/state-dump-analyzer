@@ -47,10 +47,13 @@ from .plugin_api import (
     FailoverGroup,
     FibEntry,
     FindingResult,
+    ForwardingCandidateConstraint,
+    ForwardingMember,
     ForwardingMutation,
     ForwardingOperation,
     ForwardingPacketLayer,
     ForwardingPacketState,
+    ForwardingPolicyScope,
     ForwardingProjectionRequest,
     ForwardingSizeObservation,
     ForwardingSteeringRule,
@@ -78,9 +81,11 @@ from .plugin_api import (
     RelationshipOperation,
     RelationshipView,
     RelativeToWatermarkSelector,
+    ResolutionContribution,
     ResolvedNodeBasis,
     ResourceKey,
     ResourceStateView,
+    RoutePresentationDescriptor,
     StateMutation,
     StatusPerspectiveRef,
     TopologyEndpointRecord,
@@ -169,6 +174,7 @@ class PluginCapabilityLimits:
     max_consistency_resource_references: int = 100_000
     max_consistency_evidence_references: int = 100_000
     max_consistency_basis_variants: int = 8
+    max_output_snapshot_units: int = 1_000_000
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -231,6 +237,7 @@ class PluginCapabilityLimits:
                 "max_consistency_basis_variants",
                 self.max_consistency_basis_variants,
             ),
+            ("max_output_snapshot_units", self.max_output_snapshot_units),
         ):
             if type(value) is not int or not 1 <= value <= 1_000_000:
                 raise ValueError(f"{name} must be an integer between 1 and 1000000")
@@ -539,6 +546,129 @@ class _AggregateValueBudget:
         self.units += max(amount, 1)
         if self.units > self.maximum:
             raise ValueError(f"{label} exceeds the aggregate snapshot-unit limit")
+
+
+_OUTPUT_SNAPSHOT_TYPES = frozenset(
+    {
+        AbsoluteTimeSelector,
+        Adjacency,
+        CaptureRange,
+        CausalLink,
+        ChangeSet,
+        ClockAnchor,
+        Evidence,
+        FailoverGroup,
+        FibEntry,
+        ForwardingCandidateConstraint,
+        ForwardingMember,
+        ForwardingMutation,
+        ForwardingPolicyScope,
+        InterfaceForwardingState,
+        KeyAtom,
+        NextHop,
+        NextHopGroup,
+        PluginDiagnostic,
+        PropertyPatch,
+        ReconstructionCoverage,
+        ReconstructionWatermark,
+        RelationshipMutation,
+        RelativeToWatermarkSelector,
+        ResolvedNodeBasis,
+        ResolutionContribution,
+        ResourceKey,
+        RoutePresentationDescriptor,
+        StateMutation,
+        StatusPerspectiveRef,
+        TopologyEndpointReference,
+        TopologyMatchReference,
+        TunnelAction,
+        UnknownChange,
+        UnknownField,
+        VrfForwardingState,
+        WatermarkScope,
+        WorldBasis,
+    }
+)
+
+
+def _snapshot_capability_output(
+    value: Any,
+    label: str,
+    *,
+    budget: _AggregateValueBudget,
+    depth: int = 0,
+    active: set[int] | None = None,
+) -> Any:
+    """Transfer validated DTOs into a bounded graph owned entirely by core.
+
+    Only exact, explicitly listed core DTO constructors may run here. A stream
+    may reuse mutable dictionaries or even its DTO instances after yielding;
+    no part of that graph is retained in the returned value.
+    """
+
+    budget.charge(1, label)
+    if depth > 24:
+        raise ValueError(f"{label} exceeds 24 output container levels")
+    value_type = type(value)
+    if value is None or value_type is bool or isinstance(value, Enum):
+        return value
+    if value_type is int:
+        if value.bit_length() > 4_096:
+            raise ValueError(f"{label} contains an integer exceeding 4096 bits")
+        budget.charge(max(1, (value.bit_length() + 7) // 8), label)
+        return value
+    if value_type is float:
+        if not isfinite(value):
+            raise ValueError(f"{label} contains a non-finite float")
+        return value
+    if value_type in (str, bytes):
+        if len(value) > 65_536:
+            raise ValueError(f"{label} contains an atom exceeding 65536 units")
+        budget.charge(len(value), label)
+        return value
+    if value_type is UUID:
+        budget.charge(16, label)
+        return UUID(bytes=value.bytes)
+    path = active if active is not None else set()
+    identity = id(value)
+    if identity in path:
+        raise ValueError(f"{label} contains a reference cycle")
+    path.add(identity)
+
+    def detach(item: Any, item_label: str) -> Any:
+        return _snapshot_capability_output(
+            item, item_label, budget=budget, depth=depth + 1, active=path
+        )
+
+    try:
+        if isinstance(value, Mapping):
+            detached: dict[str, Any] = {}
+            for index, (key, item) in enumerate(value.items()):
+                if index >= 1_024:
+                    raise ValueError(f"{label} contains a mapping exceeding 1024 items")
+                if (
+                    type(key) is not str
+                    or not key
+                    or len(key) > 256
+                    or "\x00" in key
+                ):
+                    raise ValueError(f"{label} contains an invalid mapping key")
+                budget.charge(len(key), label)
+                detached[key] = detach(item, f"{label}.{key}")
+            return MappingProxyType(detached)
+        if value_type in (tuple, frozenset):
+            items = (detach(item, f"{label}[{index}]") for index, item in enumerate(value))
+            return tuple(items) if value_type is tuple else frozenset(items)
+        if value_type in _OUTPUT_SNAPSHOT_TYPES:
+            return value_type(
+                **{
+                    item.name: detach(getattr(value, item.name), f"{label}.{item.name}")
+                    for item in fields(value)
+                }
+            )
+    finally:
+        path.remove(identity)
+    raise ValueError(f"{label} contains unsupported type {value_type.__name__}")
 
 
 def _evidence_analysis_json_projection(value: Any) -> Any:
@@ -2668,6 +2798,22 @@ class PluginCapabilityExecutor:
         self._evidence(value.evidence, f"{label}.evidence")
         return value
 
+    def _detached_change_set(
+        self,
+        value: Any,
+        capability: PluginCapability,
+    ) -> ChangeSet:
+        validated = self._change_set(value, capability)
+        try:
+            detached = _snapshot_capability_output(
+                validated,
+                "ChangeSet",
+                budget=_AggregateValueBudget(self.limits.max_output_snapshot_units),
+            )
+        except (TypeError, ValueError) as error:
+            raise self._error(capability, str(error)) from error
+        return self._change_set(detached, capability)
+
     def apply(self, event: DomainEvent, world: ReadOnlyWorld) -> ChangeSet:
         capability = PluginCapability.EVENT_REDUCTION
         self._validate_caller_input(
@@ -2690,7 +2836,7 @@ class PluginCapabilityExecutor:
         except BaseException as error:
             raise self._error(capability, "apply() failed inside plug-in") from error
         try:
-            return self._change_set(result, capability)
+            return self._detached_change_set(result, capability)
         except PluginCapabilityExecutionError:
             raise
         except PROCESS_CONTROL_EXCEPTIONS:
@@ -2727,7 +2873,7 @@ class PluginCapabilityExecutor:
         except BaseException as error:
             raise self._error(capability, "revert() failed inside plug-in") from error
         try:
-            return self._change_set(result, capability)
+            return self._detached_change_set(result, capability)
         except PluginCapabilityExecutionError:
             raise
         except PROCESS_CONTROL_EXCEPTIONS:
@@ -2856,6 +3002,7 @@ class PluginCapabilityExecutor:
         )
         hook = self._require(capability, "correlate")
         maximum = min(window.max_events, self.limits.max_correlation_outputs)
+        snapshot_budget = _AggregateValueBudget(self.limits.max_output_snapshot_units)
         try:
             outputs = hook(reader, window)
             values, diagnostics = self._consume(
@@ -2864,6 +3011,12 @@ class PluginCapabilityExecutor:
                 maximum=maximum,
                 allowed=(CausalLink, RelationshipMutation, ClockAnchor),
                 validator=self._validate_correlation_output,
+                detacher=lambda value: _snapshot_capability_output(
+                    value, "correlation output", budget=snapshot_budget
+                ),
+                diagnostic_handler=lambda value, label: self._diagnostic(
+                    value, label, aggregate_budget=snapshot_budget
+                ),
             )
         except PluginCapabilityExecutionError:
             raise
@@ -4435,6 +4588,7 @@ class PluginCapabilityExecutor:
         hook = self._require(capability, "project_forwarding")
         maximum = min(request.max_records, self.limits.max_forwarding_outputs)
         hook_request = _snapshot_forwarding_projection_request(request, "request")
+        snapshot_budget = _AggregateValueBudget(self.limits.max_output_snapshot_units)
         try:
             outputs = hook(hook_request, bounded_world)
             values, diagnostics = self._consume(
@@ -4446,6 +4600,12 @@ class PluginCapabilityExecutor:
                     request,
                     value,
                     label,
+                ),
+                detacher=lambda value: _snapshot_capability_output(
+                    value, "forwarding output", budget=snapshot_budget
+                ),
+                diagnostic_handler=lambda value, label: self._diagnostic(
+                    value, label, aggregate_budget=snapshot_budget
                 ),
             )
         except PluginCapabilityExecutionError:

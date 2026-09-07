@@ -1133,6 +1133,11 @@ not its overridable `supports()` helper.
 Correlation receives the caller's bounded/indexed reader and an independently
 validated window. Typed result envelopes retain recoverable diagnostics;
 non-recoverable or invalid output fails the call without a partial result.
+Reducer, correlation, and forwarding-projection admission transfers each output
+into a bounded core-owned graph before iterator advancement, then revalidates it.
+A shared exact core-DTO allowlist prevents arbitrary constructor execution;
+read-only nested mappings and one aggregate snapshot budget prevent retained
+producer aliases or output splitting from bypassing admission.
 This executor makes the hook protocol testable but does not install runtime-v2
 temporal, topology, or route providers.
 
