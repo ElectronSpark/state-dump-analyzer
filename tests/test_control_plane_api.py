@@ -673,7 +673,7 @@ class ControlPlaneApiTests(unittest.TestCase):
             instance_id="tests.event-plugin.configured",
             configuration_digest="sha256:" + ("2" * 64),
             plugin_process_module_target=(
-                "tests.test_control_plane_api:_CONFIGURED_PLUGIN_NS_EVENT_PLUGIN"
+                f"{__name__}:_CONFIGURED_PLUGIN_NS_EVENT_PLUGIN"
             ),
         )
         self.assertEqual(configured.package_hash, existing.package_hash)
