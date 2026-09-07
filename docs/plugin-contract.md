@@ -2449,7 +2449,15 @@ The manifest advertises supported core forwarding IR versions. IR v1 is a
 discriminated union of `VrfForwardingState`, `FibEntry`, `NextHopGroup`,
 `NextHop`, `FailoverGroup`, `Adjacency`, `TunnelAction`, and
 `InterfaceForwardingState`. Cross-record references are canonical typed keys;
-addresses/prefixes and allowed target kinds are core-validated. A mutation has
+each reference must be an exact schema-declared `ResourceKey`, and core validates
+every record variant's field types and IP address/prefix syntax. Required VRF
+references cannot be omitted, flags are exact booleans or `None`, and selection
+ranks are tuples of bounded exact integers. Interface addresses may be plain
+IP addresses or IP/prefix strings. Validation preserves supplied address text.
+Plug-in kind names remain opaque: the executor does not infer an IR role from a
+kind name or require a referenced object to appear in the current delta batch.
+A host retaining the complete IR index owns reference-existence and target-role
+checks across batches. A mutation has
 an IR version, operation, effective time/uncertainty, provenance, quality, and
 evidence plus the world basis. `upsert` requires a same-key record and `delete`
 forbids one; there is no forwarding `unknown` operation (unknowns live in record

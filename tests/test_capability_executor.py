@@ -22,6 +22,7 @@ from router_dump_analyzer.plugin_api import (
     FORWARDING_IR_VERSION,
     MAX_TIMESTAMP_NS,
     MIN_TIMESTAMP_NS,
+    Adjacency,
     AnalyzerPluginBase,
     CausalLink,
     CausalLinkTypeDescriptor,
@@ -40,18 +41,27 @@ from router_dump_analyzer.plugin_api import (
     EvidenceAnalysisKind,
     EvidenceAnalysisObservation,
     EvidenceAnalysisRequest,
+    FailoverGroup,
+    FibEntry,
     FindingResult,
+    ForwardingCandidateConstraint,
+    ForwardingConstraintKind,
+    ForwardingMember,
     ForwardingMutation,
     ForwardingOperation,
     ForwardingPacketDisposition,
     ForwardingPacketState,
     ForwardingPacketTransition,
+    ForwardingPolicyScope,
     ForwardingProjectionRequest,
     ForwardingSteeringRule,
     ForwardingStepRequest,
     ForwardingStepResult,
     ForwardingTransitionOrigin,
+    InterfaceForwardingState,
     MutationOperation,
+    NextHop,
+    NextHopGroup,
     Outcome,
     PluginCapability,
     PluginDiagnostic,
@@ -83,6 +93,7 @@ from router_dump_analyzer.plugin_api import (
     TopologyProjectionRequest,
     TopologyResourceRecord,
     TopologyUsability,
+    TunnelAction,
     VrfForwardingState,
     WorldBasis,
     WorldBasisKind,
@@ -743,6 +754,24 @@ def _forwarding_mutation() -> ForwardingMutation:
         quality=Quality.EXACT,
         basis=BASIS,
         ir_version=FORWARDING_IR_VERSION,
+    )
+
+
+def _forwarding_records() -> tuple[Any, ...]:
+    return (
+        VrfForwardingState(RESOURCE, "opaque", None, {}),
+        FibEntry(
+            RESOURCE, RESOURCE, "192.0.2.0/24", (10, -1), None,
+            None, None, OTHER_RESOURCE, {},
+        ),
+        NextHopGroup(RESOURCE, (ForwardingMember(OTHER_RESOURCE),), None, {}),
+        NextHop(RESOURCE, "2001:db8::1", None, None, None, None, {}),
+        FailoverGroup(RESOURCE, OTHER_RESOURCE, None, None, None, {}),
+        Adjacency(RESOURCE, OTHER_RESOURCE, "192.0.2.1", None, None, {}),
+        TunnelAction(RESOURCE, "opaque.action", None, {"opaque": ({"v": "value"},)}),
+        InterfaceForwardingState(
+            RESOURCE, None, False, ("192.0.2.1/24", "2001:db8::1/64", "203.0.113.1"), {}
+        ),
     )
 
 
@@ -2705,6 +2734,124 @@ class PluginCapabilityExecutorTests(unittest.TestCase):
 
         self.assertIsNot(observed_request, request)
         self.assertEqual(request.ir_version, FORWARDING_IR_VERSION)
+
+    def test_forwarding_admits_all_ir_variants_with_opaque_schema_keys(self) -> None:
+        plugin = _Plugin()
+        records = _forwarding_records()
+        # Every role intentionally uses the unrelated opaque.item vocabulary.
+        # The executor must validate its schema without guessing vendor kinds.
+        plugin.forwarding_output = tuple(
+            replace(_forwarding_mutation(), record=record) for record in records
+        )
+        result = PluginCapabilityExecutor(plugin).project_forwarding(
+            _projection_request(), _World()  # type: ignore[arg-type]
+        )
+        self.assertEqual(tuple(item.record for item in result.mutations), records)
+
+    def test_forwarding_validates_each_ir_field_role(self) -> None:
+        malformed_fields: dict[type[Any], dict[str, Any]] = {
+            VrfForwardingState: {"name": 17, "active": "false", "attributes": ()},
+            FibEntry: {
+                "vrf": None, "prefix": False, "selection_rank": (True,),
+                "selected": "false", "multipath_group": 17,
+                "next_hop_group": "not-a-resource", "direct_interface": "not-a-resource",
+                "unresolved_dependencies": ("not-a-resource",),
+                "presentations": [],
+            },
+            NextHopGroup: {"members": ("not-a-member",), "hash_policy": 17},
+            NextHop: {
+                "address": "not-an-ip", "interface": "not-a-resource",
+                "adjacency": "not-a-resource", "tunnel": "not-a-resource",
+                "recursive_target": "not-a-resource",
+            },
+            FailoverGroup: {
+                "primary": "not-a-resource", "backup": "not-a-resource",
+                "selected": "not-a-resource", "revertive": "false",
+            },
+            Adjacency: {
+                "vrf": None, "address": False, "interface": "not-a-resource",
+                "resolved": "false",
+            },
+            TunnelAction: {"action_type": 17, "next_object": "not-a-resource", "parameters": ()},
+            InterfaceForwardingState: {"admin_up": "false", "oper_up": 1, "addresses": (False,)},
+        }
+        for record in _forwarding_records():
+            for field_name, invalid in malformed_fields[type(record)].items():
+                malformed = replace(record)
+                object.__setattr__(malformed, field_name, invalid)
+                plugin = _Plugin()
+                plugin.forwarding_output = (replace(_forwarding_mutation(), record=malformed),)
+                with self.subTest(record=type(record).__name__, field=field_name), self.assertRaises(
+                    PluginCapabilityOutputError
+                ):
+                    PluginCapabilityExecutor(plugin).project_forwarding(
+                        _projection_request(), _World()  # type: ignore[arg-type]
+                    )
+
+    def test_forwarding_rejects_bad_prefix_rank_and_undeclared_references(self) -> None:
+        fib = next(item for item in _forwarding_records() if type(item) is FibEntry)
+        invalid_fields = (
+            ("prefix", "192.0.2.0/99"),
+            ("selection_rank", ("not-an-int",)),
+            ("selection_rank", (1 << 4096,)),
+            ("selection_rank", (1,) * 4097),
+            ("vrf", replace(RESOURCE, kind="opaque.undeclared")),
+            ("direct_interface", replace(RESOURCE, parts=(("wrong", "key"),))),
+            ("unresolved_dependencies", (OTHER_RESOURCE, OTHER_RESOURCE)),
+        )
+        for field_name, invalid in invalid_fields:
+            malformed = replace(fib, **{field_name: invalid})
+            plugin = _Plugin()
+            plugin.forwarding_output = (replace(_forwarding_mutation(), record=malformed),)
+            with self.subTest(field=field_name, value=invalid), self.assertRaises(
+                PluginCapabilityOutputError
+            ):
+                PluginCapabilityExecutor(plugin).project_forwarding(
+                    _projection_request(), _World()  # type: ignore[arg-type]
+                )
+
+    def test_forwarding_accepts_ipv6_prefixes_and_rejects_bad_interface_addresses(self) -> None:
+        fib = next(item for item in _forwarding_records() if type(item) is FibEntry)
+        plugin = _Plugin()
+        plugin.forwarding_output = (
+            replace(_forwarding_mutation(), record=replace(fib, prefix="2001:db8::/32")),
+        )
+        result = PluginCapabilityExecutor(plugin).project_forwarding(
+            _projection_request(), _World()  # type: ignore[arg-type]
+        )
+        self.assertEqual(result.mutations[0].record.prefix, "2001:db8::/32")  # type: ignore[union-attr]
+        interface = next(
+            item for item in _forwarding_records() if type(item) is InterfaceForwardingState
+        )
+        plugin.forwarding_output = (
+            replace(_forwarding_mutation(), record=replace(interface, addresses=("not-an-ip/24",))),
+        )
+        with self.assertRaisesRegex(PluginCapabilityOutputError, "valid IP address"):
+            PluginCapabilityExecutor(plugin).project_forwarding(
+                _projection_request(), _World()  # type: ignore[arg-type]
+            )
+
+    def test_forwarding_validates_nested_members_and_retains_opaque_constraints(self) -> None:
+        constraint = ForwardingCandidateConstraint(
+            constraint_id="opaque.constraint",
+            kind=ForwardingConstraintKind.EXCLUDE_EXACT_SCOPE,
+            candidate_scope=ForwardingPolicyScope("opaque.scope", (("key", "value"),)),
+            traffic_classes=frozenset({"opaque.traffic"}),
+        )
+        member = ForwardingMember(OTHER_RESOURCE, policy_constraints=(constraint,))
+        record = NextHopGroup(RESOURCE, (member,), None, {})
+        plugin = _Plugin()
+        plugin.forwarding_output = (replace(_forwarding_mutation(), record=record),)
+        executor = PluginCapabilityExecutor(plugin)
+        result = executor.project_forwarding(_projection_request(), _World())  # type: ignore[arg-type]
+        self.assertEqual(result.mutations[0].record, record)
+        for field_name, invalid in (("eligible", "false"), ("weight", True), ("target", "not-a-resource")):
+            malformed_member = replace(member)
+            object.__setattr__(malformed_member, field_name, invalid)
+            malformed_record = replace(record, members=(malformed_member,))
+            plugin.forwarding_output = (replace(_forwarding_mutation(), record=malformed_record),)
+            with self.subTest(field=field_name), self.assertRaises(PluginCapabilityOutputError):
+                executor.project_forwarding(_projection_request(), _World())  # type: ignore[arg-type]
 
     def test_forwarding_step_requires_exact_result_and_matching_before_state(
         self,

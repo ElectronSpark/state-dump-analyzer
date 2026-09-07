@@ -1882,7 +1882,12 @@ This is an optional advanced capability. Keep it separate from status parsing
 and follow this order:
 
 1. Implement and test `FORWARDING_PROJECTION` first so the plug-in exposes
-   stable canonical forwarding objects at a qualified perspective.
+   stable canonical forwarding objects at a qualified perspective. Required and
+   optional references use actual schema-declared `ResourceKey` values, never
+   display strings. Core checks each IR variant's flags, tuple ranks, mappings,
+   dependencies, and IP address/prefix syntax. Unknown flags use `None`, not a
+   string such as `"false"`. Resource kind names remain plug-in-owned; a host
+   with a complete retained IR index checks cross-batch target roles.
 2. Declare `FORWARDING_TRACE` only when
    `resolve_forwarding_step(request, world)` returns a bounded,
    node-local `ForwardingStepResult`. Do not return an end-to-end route or read

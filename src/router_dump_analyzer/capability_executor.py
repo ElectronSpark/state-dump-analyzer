@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
+from ipaddress import ip_address, ip_interface, ip_network
 from math import isfinite
 from types import MappingProxyType
 from typing import Any, cast
@@ -4467,7 +4468,7 @@ class PluginCapabilityExecutor:
         if isinstance(value, Mapping):
             _validate_value(value, label)
             return
-        if isinstance(value, tuple):
+        if isinstance(value, (tuple, frozenset)):
             if len(value) > 4_096:
                 raise ValueError(f"{label} exceeds 4096 items")
             for index, item in enumerate(value):
@@ -4488,6 +4489,129 @@ class PluginCapabilityExecutor:
                 )
             return
         raise ValueError(f"{label} contains unsupported type {type(value).__name__}")
+
+    def _forwarding_record(self, value: Any, label: str) -> None:
+        """Validate IR field roles without assigning roles to plug-in kind IDs."""
+
+        record_type = type(value)
+        required_references: tuple[str, ...] = ()
+        optional_references: tuple[str, ...] = ()
+        optional_booleans: tuple[str, ...] = ()
+        if record_type is FibEntry:
+            required_references = ("vrf",)
+            optional_references = ("next_hop_group", "direct_interface")
+            optional_booleans = ("selected",)
+        elif record_type is NextHop:
+            optional_references = (
+                "interface", "adjacency", "tunnel", "recursive_target"
+            )
+        elif record_type is FailoverGroup:
+            optional_references = ("primary", "backup", "selected")
+            optional_booleans = ("revertive",)
+        elif record_type is Adjacency:
+            required_references = ("vrf",)
+            optional_references = ("interface",)
+            optional_booleans = ("resolved",)
+        elif record_type is TunnelAction:
+            optional_references = ("next_object",)
+        elif record_type is InterfaceForwardingState:
+            optional_booleans = ("admin_up", "oper_up")
+        elif record_type is VrfForwardingState:
+            optional_booleans = ("active",)
+        elif record_type is not NextHopGroup:
+            raise ValueError(f"{label} is not a supported forwarding record")
+
+        for field_name in required_references + optional_references:
+            resource = getattr(value, field_name)
+            if resource is None and field_name in optional_references:
+                continue
+            self._resource(resource, f"{label}.{field_name}")
+        for field_name in optional_booleans:
+            flag = getattr(value, field_name)
+            if flag is not None and type(flag) is not bool:
+                raise ValueError(f"{label}.{field_name} must be a boolean or None")
+
+        payload_name = "parameters" if record_type is TunnelAction else "attributes"
+        payload = getattr(value, payload_name)
+        if not isinstance(payload, Mapping):
+            raise TypeError(f"{label}.{payload_name} must be a mapping")
+        _validate_value(payload, f"{label}.{payload_name}")
+        if record_type not in (InterfaceForwardingState, VrfForwardingState):
+            dependencies = value.unresolved_dependencies
+            if type(dependencies) is not tuple or len(dependencies) > min(
+                4_096, self.limits.max_resource_references
+            ):
+                raise ValueError(
+                    f"{label}.unresolved_dependencies must be a bounded exact tuple"
+                )
+            for index, resource in enumerate(dependencies):
+                self._resource(resource, f"{label}.unresolved_dependencies[{index}]")
+            if len(dependencies) != len(set(dependencies)):
+                raise ValueError(f"{label}.unresolved_dependencies must be unique")
+
+        def text(field_name: str, *, optional: bool = False) -> None:
+            item = getattr(value, field_name)
+            if item is None and optional:
+                return
+            if type(item) is not str or len(item) > 65_536:
+                raise ValueError(f"{label}.{field_name} must be bounded text")
+
+        def address(item: Any, field_label: str, *, interface: bool = False) -> None:
+            if type(item) is not str or len(item) > 65_536:
+                raise ValueError(f"{field_label} must be an IP address string")
+            try:
+                (ip_interface if interface else ip_address)(item)
+            except ValueError as error:
+                raise ValueError(f"{field_label} must contain a valid IP address") from error
+
+        if record_type is FibEntry:
+            text("prefix")
+            try:
+                # Validate syntax without rewriting the plug-in's supplied text.
+                ip_network(value.prefix, strict=False)
+            except ValueError as error:
+                raise ValueError(f"{label}.prefix must contain a valid IP prefix") from error
+            ranks = value.selection_rank
+            if type(ranks) is not tuple or len(ranks) > 4_096:
+                raise ValueError(f"{label}.selection_rank must be a bounded exact tuple")
+            if any(type(rank) is not int or rank.bit_length() > 4_096 for rank in ranks):
+                raise ValueError(f"{label}.selection_rank must contain bounded exact integers")
+            text("multipath_group", optional=True)
+        elif record_type is NextHopGroup:
+            if type(value.members) is not tuple or len(value.members) > 4_096:
+                raise ValueError(f"{label}.members must be a bounded exact tuple")
+            if any(type(member) is not ForwardingMember for member in value.members):
+                raise ValueError(f"{label}.members must contain exact ForwardingMember values")
+            for index, member in enumerate(value.members):
+                self._resource(member.target, f"{label}.members[{index}].target")
+            text("hash_policy", optional=True)
+        elif record_type is NextHop:
+            if value.address is not None:
+                address(value.address, f"{label}.address")
+        elif record_type is Adjacency:
+            address(value.address, f"{label}.address")
+        elif record_type is TunnelAction:
+            text("action_type")
+        elif record_type is InterfaceForwardingState:
+            if type(value.addresses) is not tuple or len(value.addresses) > 4_096:
+                raise ValueError(f"{label}.addresses must be a bounded exact tuple")
+            for index, item in enumerate(value.addresses):
+                address(item, f"{label}.addresses[{index}]", interface=True)
+        elif record_type is VrfForwardingState:
+            text("name")
+
+        if record_type in (FibEntry, TunnelAction):
+            if type(value.presentations) is not tuple or len(value.presentations) > 64:
+                raise ValueError(f"{label}.presentations must be a bounded exact tuple")
+            if any(
+                type(item) is not RoutePresentationDescriptor
+                for item in value.presentations
+            ):
+                raise ValueError(
+                    f"{label}.presentations must contain exact RoutePresentationDescriptor values"
+                )
+
+        self._nested_contract(value, label)
 
     def _forwarding_mutation(
         self,
@@ -4515,7 +4639,7 @@ class PluginCapabilityExecutor:
             assert value.record is not None
             if value.record.key != value.key:
                 raise ValueError(f"{label}.record key does not match mutation key")
-            self._nested_contract(value.record, f"{label}.record")
+            self._forwarding_record(value.record, f"{label}.record")
         elif value.record is not None:
             raise ValueError(f"{label} delete must not include a record")
         self._optional_time(value.effective_time_ns, f"{label}.effective_time_ns")

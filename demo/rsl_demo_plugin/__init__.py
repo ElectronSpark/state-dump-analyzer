@@ -1822,6 +1822,8 @@ class ExampleRouterPlugin(AnalyzerPluginBase):
                     clock_domain=DEVICE_CLOCK,
                     excerpt_sha256=fallback_evidence.excerpt_sha256,
                 )
+                # References retain this typed identity; optional forwarding
+                # IR must not replace it with a display string or infer its role.
                 resource = ResourceKey(
                     namespace=PLUGIN_ID,
                     node=spec.node,

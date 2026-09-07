@@ -414,6 +414,9 @@ Optional semantic output hooks use core-owned snapshots: reusing a local
 dictionary cannot mutate an admitted result. In-process `Value` sequences are
 tuples. Run `python -m unittest tests.test_capability_executor -v` for ownership
 and aggregate-budget conformance before adding a capability.
+Forwarding IR extensions must use typed resource references, exact optional
+booleans, bounded tuple ranks, and valid IP address/prefix strings; malformed
+dataclass fields are rejected by the same capability conformance suite.
 Its `oper_status` condition is intentionally public. When adapting the schema,
 private parent/relative paths also hide descendant conditions and literal dotted
 keys. Verify publication with

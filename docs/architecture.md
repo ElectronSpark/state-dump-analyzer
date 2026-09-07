@@ -1929,6 +1929,11 @@ state into a core-versioned, discriminated forwarding IR. Version 1 contains
 typed `VrfForwardingState`, `FibEntry`, `NextHopGroup`, `NextHop`,
 `FailoverGroup`, `Adjacency`, `TunnelAction`, and `InterfaceForwardingState`
 records. References use canonical typed resource keys, not display strings.
+Admission validates each variant's required/optional fields, exact flags and
+ranks, payload mappings, dependency tuples, and IP address/prefix syntax.
+Resource kind IDs remain opaque. The executor validates references against the
+schema; a host with the complete retained IR index checks existence and target
+roles across projection batches rather than inferring them from kind names.
 Individual IR records preserve the unresolved references and attributes that
 their type declares; the enclosing `ForwardingMutation` carries provenance,
 quality, and evidence for the projected change.
