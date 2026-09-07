@@ -360,6 +360,13 @@ frontend host, page templates, assets, and interactions.
 - `revision_id(dataset)` returns its exact stable revision identity; and
 - `indexed_history(dataset)` returns a structural `IndexedHistory` or `None`.
 
+A runtime temporal provider forwards that source-selected index as
+`TemporalTopologyService(..., indexed_history=index)`. It must belong to the
+same exact revision as the dataset. Omitted or explicit `None` selects the
+ordinary normalized arrays. The core temporal service never discovers an
+index through private dataset keys; compatibility lookup belongs in the
+source adapter. The runnable demo provider exercises this forwarding path.
+
 `NormalizedDataPolicy` has exactly five operations:
 
 - `analysis_metadata(dataset)` returns opaque plug-in analysis metadata;

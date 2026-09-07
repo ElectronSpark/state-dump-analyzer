@@ -4,6 +4,11 @@ The review drawer's fixture limitations describe synthetic evidence, generated
 interval expectations, and declared forwarding scenarios. Core reports enabled
 host services separately from these producer limitations.
 
+The example temporal provider passes the exact revision's source-selected
+history index explicitly to the core temporal service. Its dataset adapter
+contains the compatibility lookup; the core service also works from plain
+normalized arrays when no index is supplied.
+
 This is the repository's one demo distribution. It has no application or
 console entry point; it registers only a plug-in discovery entry point. It
 contains:

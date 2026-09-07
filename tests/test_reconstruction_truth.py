@@ -105,6 +105,7 @@ def _temporal_views(dataset, *, center=30, minimum=30, maximum=30):
         dataset,
         data.resource_state_at,
         data.relationships_at,
+        indexed_history=data.history_runtime(dataset),
         contract={"nodes": []},
         temporal_metadata={
             "revision_id": "revision",

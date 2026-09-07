@@ -62,6 +62,7 @@ def _fixture(rows, *, indexed=False, named=False, events=(), qualified_reader=Tr
         dataset,
         data.resource_state_at,
         data.relationships_at,
+        indexed_history=data.history_runtime(dataset),
         perspective_state_reader=(
             lambda rid, time, ref: data.resource_state_at(
                 rid, time, perspective_ref=ref

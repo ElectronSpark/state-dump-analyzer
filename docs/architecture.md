@@ -1034,6 +1034,12 @@ translation of `RevisionQueryRequestError` into the existing safe 422 response.
 Headless execution and parity with each HTTP query family are exercised by
 `tests/test_revision_queries.py`.
 
+`TemporalTopologyService` likewise accepts an explicit optional `IndexedHistory`.
+Providers forward the normalized source's index for that exact dataset/revision;
+absence selects array traversal. Private dataset-key compatibility remains in
+the source adapter, keeping the temporal engine reusable with independent
+normalized sources.
+
 The standard parsing contract is the normal hosted path. An ordinary parser
 plug-in exposes no `runtime` attribute. Core validates the selected host input,
 creates the safe artifact inventory, calls `describe()`, `probe()`, and

@@ -1355,6 +1355,11 @@ class MyDataPolicy:
 `indexed_history()` may return `None`; it is an optimization, not a second
 semantic model. The two route methods above are the correct no-route
 implementation. Core owns all resource/event traversal after these callbacks.
+
+When implementing an optional temporal provider, pass the index selected by
+`data_service.history_runtime(dataset)` explicitly as `indexed_history` to
+`TemporalTopologyService`, as `demo/rsl_demo_plugin/session.py` does. `None`
+uses normalized arrays; core does not inspect private dataset keys for an index.
 `open()` must be a context manager so the core application lifespan can close
 stores, indexes, and caches exactly once.
 

@@ -23,7 +23,11 @@ from collections.abc import Callable
 from typing import Any
 
 from .contract_validation import strict_integer
-from .normalized_data import active_interval, state_intervals_for_perspective
+from .normalized_data import (
+    IndexedHistory,
+    active_interval,
+    state_intervals_for_perspective,
+)
 from .plugin_api import StatusPerspectiveRef
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .temporal_core import (
@@ -187,7 +191,13 @@ def _relationship_key(item: dict[str, Any]) -> str:
 
 
 class TemporalTopologyService:
-    """Generic temporal orchestration over a plug-in-supplied descriptor."""
+    """Generic temporal orchestration over a plug-in-supplied descriptor.
+
+    The caller supplies an optional exact index for the selected dataset and
+    revision. Omitted or explicit ``None`` selects ordinary normalized arrays;
+    private dataset keys are never consulted. Input adapters own any legacy
+    index discovery through ``NormalizedDatasetSource.indexed_history``.
+    """
 
     def __init__(
         self,
@@ -198,6 +208,7 @@ class TemporalTopologyService:
         contract: dict[str, Any],
         temporal_metadata: dict[str, Any],
         perspective_state_reader: PerspectiveStateReader | None = None,
+        indexed_history: IndexedHistory | None = None,
     ) -> None:
         if not isinstance(contract, dict):
             raise TemporalTopologyRequestError(
@@ -240,7 +251,7 @@ class TemporalTopologyService:
         self._perspective_event_cache: dict[
             tuple[str, str, str | None, str | None], list[dict[str, Any]]
         ] = {}
-        self.runtime: Any = dataset.get("_scale_runtime")
+        self.runtime: IndexedHistory | None = indexed_history
         self._resource_history_cache: dict[
             str, tuple[list[dict[str, Any]], list[dict[str, Any]]]
         ] = {}

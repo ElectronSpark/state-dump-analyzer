@@ -268,7 +268,7 @@ class DemoDataPolicy:
 class DemoTemporalProvider:
     """Construct request-owned revision-scoped temporal query services.
 
-    A service retains its dataset generation and private history runtime.
+    A service retains its dataset generation and optional history index.
     Keeping services in a second provider cache would therefore defeat the
     revision store's memory bound and could retain a generation after LRU
     eviction. The returned service lives only as long as its core query.
@@ -321,6 +321,7 @@ class DemoTemporalProvider:
             contract=build_demo_plugin_contract(dataset),
             temporal_metadata=build_temporal_metadata(dataset),
             perspective_state_reader=perspective_state_reader,
+            indexed_history=data_service.history_runtime(dataset),
         )
 
     def reset(self) -> None:
