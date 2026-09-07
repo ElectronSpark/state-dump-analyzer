@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from router_dump_analyzer import canonical, ingestion_pipeline, plugin_execution_plan
-from router_dump_analyzer import private_analysis_run_store, value_core
+from router_dump_analyzer import plugin_registration, private_analysis_run_store, value_core
 from router_dump_analyzer.private_analysis import contracts, evidence
 from tests.test_private_ai_architecture import _private_analysis_import_violations
 
@@ -127,7 +127,11 @@ class SharedDecoderSnapshotTests(unittest.TestCase):
         self,
     ):
         snapshot = plugin_execution_plan._snapshot_decoder_identity
-        self.assertIs(ingestion_pipeline._plan_snapshot_decoder_identity, snapshot)
+        self.assertIs(plugin_registration._plan_snapshot_decoder_identity, snapshot)
+        self.assertIs(
+            ingestion_pipeline._snapshot_decoder_identity,
+            plugin_registration._snapshot_decoder_identity,
+        )
         original = plugin_execution_plan.DecoderIdentity(
             "decoder", "1", "sha256:" + "a" * 64
         )
