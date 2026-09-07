@@ -26,11 +26,18 @@ class SingleNodeDashboardFrontendTests(unittest.TestCase):
         request = javascript_function(self.script, "requestRangeSummary")
 
         self.assertIn("if (isTopologyNodeSnapshot())", request)
-        self.assertIn("state.rangeSummary = localRangeSummary()", request)
-        self.assertLess(
-            request.index("if (isTopologyNodeSnapshot())"),
-            request.index('api(revisionPath("range/summary")'),
+        self.assertIn(
+            'state.rangeSummary = { ...localRangeSummary(), source: "local_node_snapshot" }',
+            request,
         )
+        self.assertLess(
+            request.index("return requestId === state.rangeRequestId;"),
+            request.index('analysisRuntimeApi(revisionPath("range/summary")'),
+        )
+        failure = request.split("} catch (error) {", 1)[1].split("} finally {", 1)[0]
+        self.assertIn('source: "unavailable"', failure)
+        self.assertIn("requestWasAborted(error, controller)", failure)
+        self.assertNotIn("localRangeSummary()", failure)
 
     def test_node_snapshot_route_requires_explicit_node_scoped_plugin_payload(self) -> None:
         local = javascript_function(self.script, "localNodeRouteResponse")
@@ -47,8 +54,16 @@ class SingleNodeDashboardFrontendTests(unittest.TestCase):
         self.assertIn("global revision resolver", resolve)
         self.assertLess(
             resolve.index("if (isTopologyNodeSnapshot())"),
-            resolve.index('api(revisionPath("routes/resolve")'),
+            resolve.index('analysisRuntimeApi(revisionPath("routes/resolve")'),
         )
+        snapshot_branch = resolve.split("if (isTopologyNodeSnapshot()) {", 1)[1].split(
+            'result.setAttribute("aria-busy", "true")', 1
+        )[0]
+        self.assertIn("localNodeRouteResponse(requestContext)", snapshot_branch)
+        self.assertTrue(snapshot_branch.rstrip().endswith("return;\n  }"))
+        self.assertNotIn("analysisRuntimeApi(", snapshot_branch)
+        self.assertIn("signal: controller.signal", resolve)
+        self.assertIn("if (requestId !== state.routeRequestId) return;", resolve)
 
     def test_dashboard_request_is_separate_temporal_authoritative_query(self) -> None:
         request = javascript_function(self.script, "requestDashboards")
