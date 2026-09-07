@@ -578,6 +578,11 @@ The parser-only browser run uses the fixture's validated timeline bounds,
 capture coordinate, time basis, and clock domain. It opens at capture with all
 three resources present despite having no semantic events; no artificial
 zero-based timeline is needed.
+Enable Status input in the event log to see all four retained records. Its
+window-only observation has Unknown time, sorts after known timestamps, and
+remains available for inspection and copying. Selecting it never fabricates a
+timeline cursor or point marker. Exact source sequence and stable record
+identity resolve equal-time ties in both browser and server selection.
 
 Core owns safe artifact access, validation, stable record identity, persistence,
 temporal reconstruction, application composition, APIs, selection budgets, and

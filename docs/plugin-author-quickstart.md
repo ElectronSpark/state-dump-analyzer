@@ -53,6 +53,10 @@ though this status-only input emits no semantic events. Stop the server with `Ct
 [core demo walkthrough](demo-core-coverage.md) exercises durable review in more
 detail.
 
+In the event log, enable Status input to inspect the four retained records.
+The window-only observation displays Unknown time and remains selectable;
+it does not create a point on the timeline.
+
 ## 2. Inspect and copy the teaching slice
 
 Read these files together:

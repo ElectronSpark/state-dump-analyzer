@@ -210,6 +210,12 @@ def project_source_record_for_log(record: dict[str, Any]) -> dict[str, Any]:
         timestamp_ns=timestamp_ns if timestamp_ns is not None else 0,
     )
     projection["timestamp_ns"] = str(timestamp_ns) if timestamp_ns is not None else None
+    sequence = temporal_integer(
+        record.get("source_sequence", 0), "source_sequence"
+    )
+    projection["source_sequence"] = (
+        sequence if abs(sequence) <= MAX_JSON_SAFE_INTEGER else str(sequence)
+    )
     return projection
 
 

@@ -639,6 +639,7 @@ function timelinePercent(value) {
 }
 
 function timelinePointVisible(value) {
+  if (value === null || value === undefined) return false;
   const [startNs, endNs] = timelineWindowBounds();
   const candidate = toNs(value);
   return candidate >= startNs && candidate <= endNs;
@@ -697,6 +698,7 @@ function formatDuration(value) {
 }
 
 function formatOffset(value, precision = 3) {
+  if (value === null || value === undefined) return "Unknown";
   const delta = toNs(value) - state.viewStartNs;
   const sign = delta < 0n ? "-" : "+";
   const abs = delta < 0n ? -delta : delta;
@@ -1668,7 +1670,7 @@ function hydrateDurableReviewProjections(report, connectionToken) {
       entry_id: entryId,
       stream_kind: "event",
       uid,
-      timestamp_ns: String(entry.time_ns ?? entry.timestamp_ns ?? entry.start_ns ?? "0"),
+      timestamp_ns: eventTime(entry)?.toString() ?? null,
       resource_ids: eventResourceRefs(entry),
       entry,
     });
@@ -1681,7 +1683,7 @@ function hydrateDurableReviewProjections(report, connectionToken) {
       entry_id: entryId,
       stream_kind: "source",
       uid,
-      timestamp_ns: String(entry.time_ns ?? entry.timestamp_ns ?? "0"),
+      timestamp_ns: sourceRecordTime(entry)?.toString() ?? null,
       resource_ids: [],
       entry,
     });
@@ -2045,7 +2047,7 @@ function eventSubject(event) {
 }
 
 function eventTime(event) {
-  return toNs(event?.time_ns ?? event?.timestamp_ns ?? event?.start_ns, state.viewStartNs);
+  return toNs(event?.time_ns ?? event?.timestamp_ns ?? event?.start_ns, null);
 }
 
 function sourceRecordUid(record) {
@@ -2053,7 +2055,7 @@ function sourceRecordUid(record) {
 }
 
 function sourceRecordTime(record) {
-  return toNs(record?.time_ns ?? record?.timestamp_ns, state.viewStartNs);
+  return toNs(record?.time_ns ?? record?.timestamp_ns, null);
 }
 
 function sourceRecordMatchedEventUids(record) {
@@ -2282,7 +2284,7 @@ function normalizeMark(raw, lane) {
   return {
     kind: "event",
     eventUid: uid,
-    timeNs: toNs(raw?.time_ns ?? raw?.timestamp_ns ?? event.timestamp_ns ?? event.time_ns, state.viewStartNs),
+    timeNs: toNs(raw?.time_ns ?? raw?.timestamp_ns ?? event.timestamp_ns ?? event.time_ns, null),
     eventType: raw?.event_type || event.event_type || "event",
     action: raw?.operation || raw?.action || event.action || event.operation || effect?.effect_type || "unknown",
     outcome: normalizedEventOutcome({
@@ -2705,6 +2707,7 @@ function rangeBounds() {
 }
 
 function inSelectedRange(value) {
+  if (value === null || value === undefined) return false;
   const bounds = rangeBounds();
   if (!bounds) return false;
   const candidate = toNs(value);
@@ -3033,7 +3036,7 @@ function localDensityHistogram(binCount) {
   const bins = new Map();
   for (const event of state.eventByUid.values()) {
     const time = eventTime(event);
-    if (time < state.viewStartNs || time > state.viewEndNs) continue;
+    if (time === null || time < state.viewStartNs || time > state.viewEndNs) continue;
     const index = timelineDensityBinIndex({
       timeNs: time,
       startNs: state.viewStartNs,
@@ -4320,7 +4323,7 @@ function selectEvent(eventUid, moveCursor = false, resourceId = null) {
     }
   }
   renderEventInspector(event);
-  if (moveCursor) setCursor(eventTime(event));
+  if (moveCursor && eventTime(event) !== null) setCursor(eventTime(event));
   renderTimeline();
   renderEventTable();
   if (focusResourceId && !moveCursor) requestGraph();
@@ -4339,7 +4342,7 @@ function selectSourceRecord(recordUid, moveCursor = false) {
   state.selectedEventResourceId = null;
   pruneServerEventLogOwnedCaches();
   renderSourceRecordInspector(record);
-  if (moveCursor) setCursor(sourceRecordTime(record));
+  if (moveCursor && sourceRecordTime(record) !== null) setCursor(sourceRecordTime(record));
   renderTimeline();
   renderEventTable();
 }
@@ -4444,6 +4447,11 @@ async function jumpSourceRecordToTimeline(recordUid) {
     await jumpToTimelineEvent(String(record.matched_event_uid));
     return;
   }
+  if (sourceRecordTime(record) === null) {
+    selectSourceRecord(recordUid);
+    showToast("This source record has no known time to reveal in the timeline.");
+    return;
+  }
   const movedViewport = moveTimelineWindowToReveal(sourceRecordTime(record));
   if (movedViewport) await refreshTimelineForNavigation();
   const lane = await ensureSourceRecordLane(record);
@@ -4477,6 +4485,11 @@ function eventLaneFor(eventUid) {
 async function jumpToTimelineEvent(eventUid) {
   const event = eventOrMark(eventUid);
   if (!event) return;
+  if (eventTime(event) === null) {
+    selectEvent(eventUid);
+    showToast("This event has no known time to reveal in the timeline.");
+    return;
+  }
   let lane = eventLaneFor(eventUid);
   const resourceId = lane?.resourceId || eventResourceRefs(event)[0] || null;
   if (resourceId) state.hiddenTimelineResourceIds.delete(resourceId);
@@ -4623,7 +4636,7 @@ function renderEventInspector(event) {
   byId("selected-event-title").textContent = titleCase(event.event_type || event.label || "event");
   byId("selected-event-summary").textContent = `${humanLayer(resourceLayerName)} / ${resourceText} / ${operation} -> ${eventOutcomeText(event)}`;
   const fields = [
-    ["Time", `${formatOffset(eventTime(event))} (${eventTime(event)} ns)`],
+    ["Time", eventTime(event) === null ? "Unknown" : `${formatOffset(eventTime(event))} (${eventTime(event)} ns)`],
     ["Operation", operation],
     ["Outcome", eventOutcomeText(event)],
     ["Resulting status", formatValue(selectedCondition ?? eventStatus(event, canonicalId))],
@@ -4648,7 +4661,7 @@ function renderSourceRecordInspector(record) {
     + String(record.source_name || "source") + " / "
     + (matchedEventUids.length ? "linked to normalized event" : "unmatched");
   const fields = [
-    ["Time", formatOffset(sourceRecordTime(record)) + " (" + sourceRecordTime(record) + " ns)"],
+    ["Time", sourceRecordTime(record) === null ? "Unknown" : formatOffset(sourceRecordTime(record)) + " (" + sourceRecordTime(record) + " ns)"],
     ["Source type", descriptor.label],
     ["Source", record.source_name || "unknown"],
     ["Layer", humanLayer(record.layer || "unknown")],
@@ -4662,7 +4675,7 @@ function renderSourceRecordInspector(record) {
   byId("selected-event-fields").innerHTML = fields
     .map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd>`)
     .join("");
-  byId("selected-event-evidence").innerHTML = `<strong>Retained source record</strong><br>${escapeHtml(sourceRecordUid(record))}<br><span>Plug-in decoded; core timestamped, indexed, and linked.</span>`;
+  byId("selected-event-evidence").innerHTML = `<strong>Retained source record</strong><br>${escapeHtml(sourceRecordUid(record))}<br><span>Plug-in decoded; core indexed and linked.</span>`;
 }
 
 function renderEmptyEventInspector() {
@@ -4705,7 +4718,7 @@ function eventHoverHtml(mark, lane, occurrenceLanes = [lane]) {
       : "<dt>Timeline</dt><dd>Not in the loaded lanes<small>Use Reveal in timeline to load its resource lane.</small></dd>";
   return `<div class="hover-heading"><div><span>${mark.failure ? "FAILED EVENT" : "EVENT"}</span><strong>${escapeHtml(mark.label)}</strong></div><button class="hover-close" type="button" aria-label="Close">x</button></div>
     <dl class="hover-facts">
-      <dt>When</dt><dd>${escapeHtml(formatOffset(mark.timeNs))}<small>${mark.timeNs} ns</small></dd>
+      <dt>When</dt><dd>${escapeHtml(formatOffset(mark.timeNs))}${mark.timeNs === null ? "" : `<small>${mark.timeNs} ns</small>`}</dd>
       <dt>Resource</dt><dd>${escapeHtml(lane.label)}<small>${escapeHtml(humanResourceType(lane.kind))}</small></dd>
       <dt>Operation</dt><dd>${escapeHtml(mark.action)}</dd>
       <dt>Outcome</dt><dd class="${eventOutcomeCssClass({ outcome: mark.outcome })}">${escapeHtml(mark.outcome)}</dd>
@@ -4835,7 +4848,7 @@ function sourceRecordHoverHtml(mark) {
   const matched = matchedEventUids.length > 0;
   return `<div class="hover-heading"><div><span>${matched ? "MATCHED SOURCE RECORD" : "UNMATCHED SOURCE RECORD"}</span><strong>${escapeHtml(mark.recordName)}</strong></div><button class="hover-close" type="button" aria-label="Close">x</button></div>
     <dl class="hover-facts">
-      <dt>When</dt><dd>${escapeHtml(formatOffset(mark.timeNs))}<small>${mark.timeNs} ns</small></dd>
+      <dt>When</dt><dd>${escapeHtml(formatOffset(mark.timeNs))}${mark.timeNs === null ? "" : `<small>${mark.timeNs} ns</small>`}</dd>
       <dt>Source</dt><dd>${escapeHtml(descriptor.label)}<small>${escapeHtml(mark.sourceName)}</small></dd>
       <dt>Layer</dt><dd>${escapeHtml(humanLayer(record.layer || "unknown"))}</dd>
       <dt>Normalization</dt><dd class="${matched ? "success-text" : "failure-text"}">${matched ? "matched" : "unmatched"}</dd>
@@ -5017,7 +5030,7 @@ function localRangeSummary() {
   const [start, end] = rangeBounds();
   const events = [...state.eventByUid.values()].filter((event) => {
     const time = eventTime(event);
-    return time >= start && time <= end;
+    return time !== null && time >= start && time <= end;
   });
   const affected = new Set(events.flatMap(eventResourceRefs));
   const relationshipChanges = (state.dataset.relationship_mutations || []).filter((item) => {
@@ -7996,10 +8009,8 @@ function incidentCausalPath() {
   const roots = links.filter((link) => !incoming.has(link.source));
   const candidates = roots.length ? roots : links;
   candidates.sort((left, right) => {
-    const leftTime = eventTime(state.eventByUid.get(left.source));
-    const rightTime = eventTime(state.eventByUid.get(right.source));
-    if (leftTime !== rightTime) return leftTime < rightTime ? -1 : 1;
-    return left.source.localeCompare(right.source) || String(left.link_type || "").localeCompare(String(right.link_type || ""));
+    return compareLogEntries(state.eventByUid.get(left.source), state.eventByUid.get(right.source))
+      || compareLogEntryIds(String(left.link_type || ""), String(right.link_type || ""));
   });
   const outgoing = new Map();
   links.forEach((link) => {
@@ -8007,10 +8018,8 @@ function incidentCausalPath() {
     outgoing.get(link.source).push(link);
   });
   outgoing.forEach((items) => items.sort((left, right) => {
-    const leftTime = eventTime(state.eventByUid.get(left.target));
-    const rightTime = eventTime(state.eventByUid.get(right.target));
-    if (leftTime !== rightTime) return leftTime < rightTime ? -1 : 1;
-    return left.target.localeCompare(right.target) || String(left.link_type || "").localeCompare(String(right.link_type || ""));
+    return compareLogEntries(state.eventByUid.get(left.target), state.eventByUid.get(right.target))
+      || compareLogEntryIds(String(left.link_type || ""), String(right.link_type || ""));
   }));
 
   const pathEvents = [state.eventByUid.get(candidates[0].source)];
@@ -8031,12 +8040,7 @@ function incidentCausalPath() {
 async function requestFailureIncidentPreview() {
   const deterministicFailures = () => [...state.eventByUid.values()]
     .filter(eventFailed)
-    .sort((left, right) => {
-      const leftTime = eventTime(left);
-      const rightTime = eventTime(right);
-      if (leftTime !== rightTime) return leftTime < rightTime ? -1 : 1;
-      return String(left.event_uid || left.event_id || "").localeCompare(String(right.event_uid || right.event_id || ""));
-    })
+    .sort(compareLogEntries)
     .slice(0, 3);
   if (!usesServerWindowedHistory()) {
     state.failureIncidentPreview = deterministicFailures();
@@ -8046,12 +8050,7 @@ async function requestFailureIncidentPreview() {
     const payload = await analysisRuntimeApi(revisionPath("events?outcome=failure&limit=3"));
     const events = (Array.isArray(payload?.items) ? payload.items : [])
       .slice()
-      .sort((left, right) => {
-        const leftTime = eventTime(left);
-        const rightTime = eventTime(right);
-        if (leftTime !== rightTime) return leftTime < rightTime ? -1 : 1;
-        return String(left.event_uid || left.event_id || "").localeCompare(String(right.event_uid || right.event_id || ""));
-      })
+      .sort(compareLogEntries)
       .slice(0, 3);
     events.forEach((event) => {
       const uid = String(event?.event_uid || event?.event_id || "");
@@ -9023,12 +9022,7 @@ function filteredEvents() {
       && (!needle || JSON.stringify(event).toLowerCase().includes(needle))
     ));
   if (isScaleMode()) return filtered;
-  return filtered.sort((left, right) => {
-    const leftTime = eventTime(left);
-    const rightTime = eventTime(right);
-    if (leftTime !== rightTime) return leftTime < rightTime ? -1 : 1;
-    return String(left.event_uid || left.event_id).localeCompare(String(right.event_uid || right.event_id));
-  });
+  return filtered.sort(compareLogEntries);
 }
 
 function filteredSourceRecords() {
@@ -9062,6 +9056,31 @@ function logEntryId(entry) {
 
 function logEntryTime(entry) {
   return isSourceLogEntry(entry) ? sourceRecordTime(entry) : eventTime(entry);
+}
+
+function compareLogEntryIds(left, right) {
+  // Python orders Unicode code points; localeCompare and UTF-16 ordering differ.
+  let leftIndex = 0;
+  let rightIndex = 0;
+  while (leftIndex < left.length && rightIndex < right.length) {
+    const leftPoint = left.codePointAt(leftIndex);
+    const rightPoint = right.codePointAt(rightIndex);
+    if (leftPoint !== rightPoint) return leftPoint < rightPoint ? -1 : 1;
+    leftIndex += leftPoint > 0xffff ? 2 : 1;
+    rightIndex += rightPoint > 0xffff ? 2 : 1;
+  }
+  return leftIndex < left.length ? 1 : rightIndex < right.length ? -1 : 0;
+}
+
+function compareLogEntries(left, right) {
+  const leftTime = logEntryTime(left);
+  const rightTime = logEntryTime(right);
+  if ((leftTime === null) !== (rightTime === null)) return leftTime === null ? 1 : -1;
+  if (leftTime !== rightTime) return leftTime < rightTime ? -1 : 1;
+  const leftSequence = toNs(left.source_sequence, 0n);
+  const rightSequence = toNs(right.source_sequence, 0n);
+  if (leftSequence !== rightSequence) return leftSequence < rightSequence ? -1 : 1;
+  return compareLogEntryIds(logEntryId(left), logEntryId(right));
 }
 
 function normalizeEventLogSelectionRanges(ranges) {
@@ -9179,33 +9198,9 @@ function applyEventLogSelectionGesture(index, {
 
 function mergeLogEntries(events, sourceRecords) {
   const normalized = state.eventLogInclude.normalized ? events : [];
-  const retained = sourceRecords;
-  if (!normalized.length) return retained;
-  if (!retained.length) return normalized;
-  const merged = [];
-  let eventIndex = 0;
-  let sourceIndex = 0;
-  while (eventIndex < normalized.length || sourceIndex < retained.length) {
-    const eventEntry = normalized[eventIndex];
-    const sourceEntry = retained[sourceIndex];
-    const eventTimeNs = eventEntry ? eventTime(eventEntry) : null;
-    const sourceTimeNs = sourceEntry ? sourceRecordTime(sourceEntry) : null;
-    if (!sourceEntry || (eventEntry && (
-      eventTimeNs < sourceTimeNs
-      || (
-        eventTimeNs === sourceTimeNs
-        && normalizedLogEntryId(eventEntry.event_uid || eventEntry.event_id)
-          .localeCompare(sourceLogEntryId(sourceRecordUid(sourceEntry))) <= 0
-      )
-    ))) {
-      merged.push(eventEntry);
-      eventIndex += 1;
-    } else {
-      merged.push(sourceEntry);
-      sourceIndex += 1;
-    }
-  }
-  return merged;
+  // Embedded streams need not arrive in query order. Use the server's complete
+  // ordering tuple before assigning any index-based selection identifiers.
+  return [...normalized, ...sourceRecords].sort(compareLogEntries);
 }
 
 function renderEventLayerFilter() {
@@ -10128,7 +10123,9 @@ function rememberTimelineEntryProjection(item) {
     entryId,
     streamKind: kind,
     uid,
-    timeNs: toNs(item.timestamp_ns, logEntryTime(normalizedEntry)),
+    timeNs: Object.hasOwn(item, "timestamp_ns")
+      ? toNs(item.timestamp_ns, null)
+      : logEntryTime(normalizedEntry),
     resourceIds: (item.resource_ids || []).map(String),
     entry: normalizedEntry,
   };
@@ -12280,12 +12277,7 @@ async function initialize() {
       (state.dataset.source_record_descriptors || state.dataset.schema?.source_record_types || [])
         .map((descriptor) => [String(descriptor.source_type), descriptor]),
     );
-    state.sourceRecords = [...(state.dataset.source_records || [])]
-      .sort((left, right) => {
-        const leftTime = sourceRecordTime(left);
-        const rightTime = sourceRecordTime(right);
-        return leftTime < rightTime ? -1 : leftTime > rightTime ? 1 : sourceRecordUid(left).localeCompare(sourceRecordUid(right));
-      });
+    state.sourceRecords = [...(state.dataset.source_records || [])].sort(compareLogEntries);
     state.sourceRecordByUid = new Map(
       state.sourceRecords.map((record) => [sourceRecordUid(record), record]),
     );
@@ -12300,7 +12292,8 @@ async function initialize() {
     for (const record of state.dataset.resources || []) registerResource(record);
     state.resourceCatalogLanes = state.dataset.resources || [];
     for (const event of state.dataset.events || []) state.eventByUid.set(String(event.event_uid || event.event_id), event);
-    const times = isScaleMode() ? [] : [...state.eventByUid.values()].map(eventTime);
+    const times = isScaleMode() ? [] : [...state.eventByUid.values()]
+      .map(eventTime).filter((time) => time !== null);
     const declaredStartNs = workspace.timeline_start_ns ?? timeBounds.start_ns;
     const declaredEndNs = workspace.timeline_end_ns ?? timeBounds.end_ns;
     const declaredCaptureNs = workspace.capture_ns ?? timeBounds.capture_ns ?? declaredEndNs;

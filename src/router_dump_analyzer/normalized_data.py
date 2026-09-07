@@ -2472,6 +2472,12 @@ def redact_event_for_client(
                 result[key] = _safe_status_class(nested)
             elif sensitive_condition and name in {"status", "condition"}:
                 result[key] = "unknown"
+            elif (
+                name == "source_sequence"
+                and type(nested) is int
+                and abs(nested) > _CLIENT_JSON_SAFE_INTEGER_MAX
+            ):
+                result[key] = str(nested)
             else:
                 public = _safe_public_scalar(nested)
                 if public is not _DROP_CLIENT_FIELD:

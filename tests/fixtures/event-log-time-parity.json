@@ -1,0 +1,1011 @@
+{
+  "dataset": {
+    "demo": {
+      "revision_id": "untimed/revision",
+      "timeline_start_ns": "-5",
+      "timeline_end_ns": "5",
+      "capture_ns": "5"
+    },
+    "kind_descriptors": [],
+    "lifecycle_intervals": [],
+    "source_record_descriptors": [
+      {
+        "source_type": "trace"
+      }
+    ],
+    "resources": [],
+    "events": [
+      {
+        "event_uid": "untimed-event",
+        "timestamp_ns": null,
+        "source_sequence": 4,
+        "event_type": "observation",
+        "layer": "opaque",
+        "subjects": [],
+        "outcome": "success"
+      },
+      {
+        "event_uid": "large-seq-high",
+        "timestamp_ns": "0",
+        "source_sequence": "9007199254740993",
+        "event_type": "observation",
+        "layer": "opaque",
+        "subjects": [],
+        "outcome": "success"
+      },
+      {
+        "event_uid": "𐀀",
+        "timestamp_ns": "0",
+        "source_sequence": 3,
+        "event_type": "observation",
+        "layer": "opaque",
+        "subjects": [],
+        "outcome": "success"
+      },
+      {
+        "event_uid": "",
+        "timestamp_ns": "0",
+        "source_sequence": 3,
+        "event_type": "observation",
+        "layer": "opaque",
+        "subjects": [],
+        "outcome": "success"
+      },
+      {
+        "event_uid": "zero-event",
+        "timestamp_ns": "0",
+        "source_sequence": 2,
+        "event_type": "observation",
+        "layer": "opaque",
+        "subjects": [],
+        "outcome": "success"
+      },
+      {
+        "event_uid": "negative-event",
+        "timestamp_ns": "-5",
+        "source_sequence": 2,
+        "event_type": "observation",
+        "layer": "opaque",
+        "subjects": [],
+        "outcome": "success"
+      }
+    ],
+    "state_intervals": [],
+    "source_records": [
+      {
+        "source_record_uid": "unknown-seq",
+        "timestamp_ns": null,
+        "source_type": "trace",
+        "source_name": "source",
+        "layer": "unknown",
+        "record_name": "unknown-seq",
+        "message": "unknown-seq",
+        "matched_event_uid": null,
+        "matched_event_uids": [],
+        "matched": false,
+        "source_sequence": 1
+      },
+      {
+        "source_record_uid": "unknown-b",
+        "timestamp_ns": null,
+        "source_type": "trace",
+        "source_name": "source",
+        "layer": "unknown",
+        "record_name": "unknown-b",
+        "message": "unknown-b",
+        "matched_event_uid": null,
+        "matched_event_uids": [],
+        "matched": false,
+        "source_sequence": 3
+      },
+      {
+        "source_record_uid": "unknown-a",
+        "timestamp_ns": null,
+        "source_type": "trace",
+        "source_name": "source",
+        "layer": "unknown",
+        "record_name": "unknown-a",
+        "message": "unknown-a",
+        "matched_event_uid": null,
+        "matched_event_uids": [],
+        "matched": false,
+        "source_sequence": 3
+      },
+      {
+        "source_record_uid": "large-seq-low",
+        "timestamp_ns": "0",
+        "source_type": "trace",
+        "source_name": "source",
+        "layer": "unknown",
+        "record_name": "large-seq-low",
+        "message": "large-seq-low",
+        "matched_event_uid": null,
+        "matched_event_uids": [],
+        "matched": false,
+        "source_sequence": "9007199254740992"
+      },
+      {
+        "source_record_uid": "positive-source",
+        "timestamp_ns": "5",
+        "source_type": "trace",
+        "source_name": "source",
+        "layer": "unknown",
+        "record_name": "positive-source",
+        "message": "positive-source",
+        "matched_event_uid": null,
+        "matched_event_uids": [],
+        "matched": false,
+        "source_sequence": 1
+      },
+      {
+        "source_record_uid": "zero-source",
+        "timestamp_ns": "0",
+        "source_type": "trace",
+        "source_name": "source",
+        "layer": "unknown",
+        "record_name": "zero-source",
+        "message": "zero-source",
+        "matched_event_uid": null,
+        "matched_event_uids": [],
+        "matched": false,
+        "source_sequence": 1
+      },
+      {
+        "source_record_uid": "negative-source",
+        "timestamp_ns": "-5",
+        "source_type": "trace",
+        "source_name": "source",
+        "layer": "unknown",
+        "record_name": "negative-source",
+        "message": "negative-source",
+        "matched_event_uid": null,
+        "matched_event_uids": [],
+        "matched": false,
+        "source_sequence": 1
+      }
+    ],
+    "workspace": {
+      "workspace_id": "test:untimed/revision",
+      "revision_id": "untimed/revision",
+      "scope": "node",
+      "workspace_kind": "node",
+      "history_mode": "embedded-history",
+      "capabilities": {
+        "historical_state": true,
+        "server_windowed_history": false
+      },
+      "node_id": "test-node",
+      "node_label": "Test node",
+      "label": "Test workspace",
+      "event_count": 6,
+      "matched_event_count": 6,
+      "resource_count": 0,
+      "source_record_count": 7
+    },
+    "route_resolution": {
+      "available": false,
+      "routes": []
+    }
+  },
+  "cases": [
+    {
+      "selected_range": null,
+      "response": {
+        "revision_id": "untimed/revision",
+        "selected_range": null,
+        "include_normalized": true,
+        "source_types": null,
+        "layers": [],
+        "total_count": 13,
+        "inside_count": 0,
+        "outside_count": 13,
+        "returned_count": 13,
+        "offset": 0,
+        "limit": 100,
+        "next_offset": null,
+        "located_display_index": null,
+        "items": [
+          {
+            "display_index": 0,
+            "stream_kind": "source",
+            "uid": "negative-source",
+            "timestamp_ns": "-5",
+            "membership": "all",
+            "in_selected_range": null,
+            "entry": {
+              "source_record_uid": "negative-source",
+              "timestamp_ns": "-5",
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "negative-source",
+              "message": "negative-source",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": 1
+            }
+          },
+          {
+            "display_index": 1,
+            "stream_kind": "event",
+            "uid": "negative-event",
+            "timestamp_ns": "-5",
+            "membership": "all",
+            "in_selected_range": null,
+            "entry": {
+              "event_uid": "negative-event",
+              "timestamp_ns": "-5",
+              "source_sequence": 2,
+              "event_type": "observation",
+              "layer": "opaque",
+              "subjects": [],
+              "outcome": "success"
+            }
+          },
+          {
+            "display_index": 2,
+            "stream_kind": "source",
+            "uid": "zero-source",
+            "timestamp_ns": "0",
+            "membership": "all",
+            "in_selected_range": null,
+            "entry": {
+              "source_record_uid": "zero-source",
+              "timestamp_ns": "0",
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "zero-source",
+              "message": "zero-source",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": 1
+            }
+          },
+          {
+            "display_index": 3,
+            "stream_kind": "event",
+            "uid": "zero-event",
+            "timestamp_ns": "0",
+            "membership": "all",
+            "in_selected_range": null,
+            "entry": {
+              "event_uid": "zero-event",
+              "timestamp_ns": "0",
+              "source_sequence": 2,
+              "event_type": "observation",
+              "layer": "opaque",
+              "subjects": [],
+              "outcome": "success"
+            }
+          },
+          {
+            "display_index": 4,
+            "stream_kind": "event",
+            "uid": "",
+            "timestamp_ns": "0",
+            "membership": "all",
+            "in_selected_range": null,
+            "entry": {
+              "event_uid": "",
+              "timestamp_ns": "0",
+              "source_sequence": 3,
+              "event_type": "observation",
+              "layer": "opaque",
+              "subjects": [],
+              "outcome": "success"
+            }
+          },
+          {
+            "display_index": 5,
+            "stream_kind": "event",
+            "uid": "𐀀",
+            "timestamp_ns": "0",
+            "membership": "all",
+            "in_selected_range": null,
+            "entry": {
+              "event_uid": "𐀀",
+              "timestamp_ns": "0",
+              "source_sequence": 3,
+              "event_type": "observation",
+              "layer": "opaque",
+              "subjects": [],
+              "outcome": "success"
+            }
+          },
+          {
+            "display_index": 6,
+            "stream_kind": "source",
+            "uid": "large-seq-low",
+            "timestamp_ns": "0",
+            "membership": "all",
+            "in_selected_range": null,
+            "entry": {
+              "source_record_uid": "large-seq-low",
+              "timestamp_ns": "0",
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "large-seq-low",
+              "message": "large-seq-low",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": "9007199254740992"
+            }
+          },
+          {
+            "display_index": 7,
+            "stream_kind": "event",
+            "uid": "large-seq-high",
+            "timestamp_ns": "0",
+            "membership": "all",
+            "in_selected_range": null,
+            "entry": {
+              "event_uid": "large-seq-high",
+              "timestamp_ns": "0",
+              "source_sequence": "9007199254740993",
+              "event_type": "observation",
+              "layer": "opaque",
+              "subjects": [],
+              "outcome": "success"
+            }
+          },
+          {
+            "display_index": 8,
+            "stream_kind": "source",
+            "uid": "positive-source",
+            "timestamp_ns": "5",
+            "membership": "all",
+            "in_selected_range": null,
+            "entry": {
+              "source_record_uid": "positive-source",
+              "timestamp_ns": "5",
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "positive-source",
+              "message": "positive-source",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": 1
+            }
+          },
+          {
+            "display_index": 9,
+            "stream_kind": "source",
+            "uid": "unknown-seq",
+            "timestamp_ns": null,
+            "membership": "all",
+            "in_selected_range": null,
+            "entry": {
+              "source_record_uid": "unknown-seq",
+              "timestamp_ns": null,
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "unknown-seq",
+              "message": "unknown-seq",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": 1
+            }
+          },
+          {
+            "display_index": 10,
+            "stream_kind": "source",
+            "uid": "unknown-a",
+            "timestamp_ns": null,
+            "membership": "all",
+            "in_selected_range": null,
+            "entry": {
+              "source_record_uid": "unknown-a",
+              "timestamp_ns": null,
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "unknown-a",
+              "message": "unknown-a",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": 3
+            }
+          },
+          {
+            "display_index": 11,
+            "stream_kind": "source",
+            "uid": "unknown-b",
+            "timestamp_ns": null,
+            "membership": "all",
+            "in_selected_range": null,
+            "entry": {
+              "source_record_uid": "unknown-b",
+              "timestamp_ns": null,
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "unknown-b",
+              "message": "unknown-b",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": 3
+            }
+          },
+          {
+            "display_index": 12,
+            "stream_kind": "event",
+            "uid": "untimed-event",
+            "timestamp_ns": null,
+            "membership": "all",
+            "in_selected_range": null,
+            "entry": {
+              "event_uid": "untimed-event",
+              "timestamp_ns": null,
+              "source_sequence": 4,
+              "event_type": "observation",
+              "layer": "opaque",
+              "subjects": [],
+              "outcome": "success"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "selected_range": [
+        0,
+        0
+      ],
+      "response": {
+        "revision_id": "untimed/revision",
+        "selected_range": {
+          "start_ns": "0",
+          "end_ns": "0"
+        },
+        "include_normalized": true,
+        "source_types": null,
+        "layers": [],
+        "total_count": 13,
+        "inside_count": 6,
+        "outside_count": 7,
+        "returned_count": 13,
+        "offset": 0,
+        "limit": 100,
+        "next_offset": null,
+        "located_display_index": null,
+        "items": [
+          {
+            "display_index": 0,
+            "stream_kind": "source",
+            "uid": "zero-source",
+            "timestamp_ns": "0",
+            "membership": "inside",
+            "in_selected_range": true,
+            "entry": {
+              "source_record_uid": "zero-source",
+              "timestamp_ns": "0",
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "zero-source",
+              "message": "zero-source",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": 1
+            }
+          },
+          {
+            "display_index": 1,
+            "stream_kind": "event",
+            "uid": "zero-event",
+            "timestamp_ns": "0",
+            "membership": "inside",
+            "in_selected_range": true,
+            "entry": {
+              "event_uid": "zero-event",
+              "timestamp_ns": "0",
+              "source_sequence": 2,
+              "event_type": "observation",
+              "layer": "opaque",
+              "subjects": [],
+              "outcome": "success"
+            }
+          },
+          {
+            "display_index": 2,
+            "stream_kind": "event",
+            "uid": "",
+            "timestamp_ns": "0",
+            "membership": "inside",
+            "in_selected_range": true,
+            "entry": {
+              "event_uid": "",
+              "timestamp_ns": "0",
+              "source_sequence": 3,
+              "event_type": "observation",
+              "layer": "opaque",
+              "subjects": [],
+              "outcome": "success"
+            }
+          },
+          {
+            "display_index": 3,
+            "stream_kind": "event",
+            "uid": "𐀀",
+            "timestamp_ns": "0",
+            "membership": "inside",
+            "in_selected_range": true,
+            "entry": {
+              "event_uid": "𐀀",
+              "timestamp_ns": "0",
+              "source_sequence": 3,
+              "event_type": "observation",
+              "layer": "opaque",
+              "subjects": [],
+              "outcome": "success"
+            }
+          },
+          {
+            "display_index": 4,
+            "stream_kind": "source",
+            "uid": "large-seq-low",
+            "timestamp_ns": "0",
+            "membership": "inside",
+            "in_selected_range": true,
+            "entry": {
+              "source_record_uid": "large-seq-low",
+              "timestamp_ns": "0",
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "large-seq-low",
+              "message": "large-seq-low",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": "9007199254740992"
+            }
+          },
+          {
+            "display_index": 5,
+            "stream_kind": "event",
+            "uid": "large-seq-high",
+            "timestamp_ns": "0",
+            "membership": "inside",
+            "in_selected_range": true,
+            "entry": {
+              "event_uid": "large-seq-high",
+              "timestamp_ns": "0",
+              "source_sequence": "9007199254740993",
+              "event_type": "observation",
+              "layer": "opaque",
+              "subjects": [],
+              "outcome": "success"
+            }
+          },
+          {
+            "display_index": 6,
+            "stream_kind": "source",
+            "uid": "negative-source",
+            "timestamp_ns": "-5",
+            "membership": "outside",
+            "in_selected_range": false,
+            "entry": {
+              "source_record_uid": "negative-source",
+              "timestamp_ns": "-5",
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "negative-source",
+              "message": "negative-source",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": 1
+            }
+          },
+          {
+            "display_index": 7,
+            "stream_kind": "event",
+            "uid": "negative-event",
+            "timestamp_ns": "-5",
+            "membership": "outside",
+            "in_selected_range": false,
+            "entry": {
+              "event_uid": "negative-event",
+              "timestamp_ns": "-5",
+              "source_sequence": 2,
+              "event_type": "observation",
+              "layer": "opaque",
+              "subjects": [],
+              "outcome": "success"
+            }
+          },
+          {
+            "display_index": 8,
+            "stream_kind": "source",
+            "uid": "positive-source",
+            "timestamp_ns": "5",
+            "membership": "outside",
+            "in_selected_range": false,
+            "entry": {
+              "source_record_uid": "positive-source",
+              "timestamp_ns": "5",
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "positive-source",
+              "message": "positive-source",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": 1
+            }
+          },
+          {
+            "display_index": 9,
+            "stream_kind": "source",
+            "uid": "unknown-seq",
+            "timestamp_ns": null,
+            "membership": "outside",
+            "in_selected_range": false,
+            "entry": {
+              "source_record_uid": "unknown-seq",
+              "timestamp_ns": null,
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "unknown-seq",
+              "message": "unknown-seq",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": 1
+            }
+          },
+          {
+            "display_index": 10,
+            "stream_kind": "source",
+            "uid": "unknown-a",
+            "timestamp_ns": null,
+            "membership": "outside",
+            "in_selected_range": false,
+            "entry": {
+              "source_record_uid": "unknown-a",
+              "timestamp_ns": null,
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "unknown-a",
+              "message": "unknown-a",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": 3
+            }
+          },
+          {
+            "display_index": 11,
+            "stream_kind": "source",
+            "uid": "unknown-b",
+            "timestamp_ns": null,
+            "membership": "outside",
+            "in_selected_range": false,
+            "entry": {
+              "source_record_uid": "unknown-b",
+              "timestamp_ns": null,
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "unknown-b",
+              "message": "unknown-b",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": 3
+            }
+          },
+          {
+            "display_index": 12,
+            "stream_kind": "event",
+            "uid": "untimed-event",
+            "timestamp_ns": null,
+            "membership": "outside",
+            "in_selected_range": false,
+            "entry": {
+              "event_uid": "untimed-event",
+              "timestamp_ns": null,
+              "source_sequence": 4,
+              "event_type": "observation",
+              "layer": "opaque",
+              "subjects": [],
+              "outcome": "success"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "selected_range": [
+        -5,
+        0
+      ],
+      "response": {
+        "revision_id": "untimed/revision",
+        "selected_range": {
+          "start_ns": "-5",
+          "end_ns": "0"
+        },
+        "include_normalized": true,
+        "source_types": null,
+        "layers": [],
+        "total_count": 13,
+        "inside_count": 8,
+        "outside_count": 5,
+        "returned_count": 13,
+        "offset": 0,
+        "limit": 100,
+        "next_offset": null,
+        "located_display_index": null,
+        "items": [
+          {
+            "display_index": 0,
+            "stream_kind": "source",
+            "uid": "negative-source",
+            "timestamp_ns": "-5",
+            "membership": "inside",
+            "in_selected_range": true,
+            "entry": {
+              "source_record_uid": "negative-source",
+              "timestamp_ns": "-5",
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "negative-source",
+              "message": "negative-source",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": 1
+            }
+          },
+          {
+            "display_index": 1,
+            "stream_kind": "event",
+            "uid": "negative-event",
+            "timestamp_ns": "-5",
+            "membership": "inside",
+            "in_selected_range": true,
+            "entry": {
+              "event_uid": "negative-event",
+              "timestamp_ns": "-5",
+              "source_sequence": 2,
+              "event_type": "observation",
+              "layer": "opaque",
+              "subjects": [],
+              "outcome": "success"
+            }
+          },
+          {
+            "display_index": 2,
+            "stream_kind": "source",
+            "uid": "zero-source",
+            "timestamp_ns": "0",
+            "membership": "inside",
+            "in_selected_range": true,
+            "entry": {
+              "source_record_uid": "zero-source",
+              "timestamp_ns": "0",
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "zero-source",
+              "message": "zero-source",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": 1
+            }
+          },
+          {
+            "display_index": 3,
+            "stream_kind": "event",
+            "uid": "zero-event",
+            "timestamp_ns": "0",
+            "membership": "inside",
+            "in_selected_range": true,
+            "entry": {
+              "event_uid": "zero-event",
+              "timestamp_ns": "0",
+              "source_sequence": 2,
+              "event_type": "observation",
+              "layer": "opaque",
+              "subjects": [],
+              "outcome": "success"
+            }
+          },
+          {
+            "display_index": 4,
+            "stream_kind": "event",
+            "uid": "",
+            "timestamp_ns": "0",
+            "membership": "inside",
+            "in_selected_range": true,
+            "entry": {
+              "event_uid": "",
+              "timestamp_ns": "0",
+              "source_sequence": 3,
+              "event_type": "observation",
+              "layer": "opaque",
+              "subjects": [],
+              "outcome": "success"
+            }
+          },
+          {
+            "display_index": 5,
+            "stream_kind": "event",
+            "uid": "𐀀",
+            "timestamp_ns": "0",
+            "membership": "inside",
+            "in_selected_range": true,
+            "entry": {
+              "event_uid": "𐀀",
+              "timestamp_ns": "0",
+              "source_sequence": 3,
+              "event_type": "observation",
+              "layer": "opaque",
+              "subjects": [],
+              "outcome": "success"
+            }
+          },
+          {
+            "display_index": 6,
+            "stream_kind": "source",
+            "uid": "large-seq-low",
+            "timestamp_ns": "0",
+            "membership": "inside",
+            "in_selected_range": true,
+            "entry": {
+              "source_record_uid": "large-seq-low",
+              "timestamp_ns": "0",
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "large-seq-low",
+              "message": "large-seq-low",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": "9007199254740992"
+            }
+          },
+          {
+            "display_index": 7,
+            "stream_kind": "event",
+            "uid": "large-seq-high",
+            "timestamp_ns": "0",
+            "membership": "inside",
+            "in_selected_range": true,
+            "entry": {
+              "event_uid": "large-seq-high",
+              "timestamp_ns": "0",
+              "source_sequence": "9007199254740993",
+              "event_type": "observation",
+              "layer": "opaque",
+              "subjects": [],
+              "outcome": "success"
+            }
+          },
+          {
+            "display_index": 8,
+            "stream_kind": "source",
+            "uid": "positive-source",
+            "timestamp_ns": "5",
+            "membership": "outside",
+            "in_selected_range": false,
+            "entry": {
+              "source_record_uid": "positive-source",
+              "timestamp_ns": "5",
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "positive-source",
+              "message": "positive-source",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": 1
+            }
+          },
+          {
+            "display_index": 9,
+            "stream_kind": "source",
+            "uid": "unknown-seq",
+            "timestamp_ns": null,
+            "membership": "outside",
+            "in_selected_range": false,
+            "entry": {
+              "source_record_uid": "unknown-seq",
+              "timestamp_ns": null,
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "unknown-seq",
+              "message": "unknown-seq",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": 1
+            }
+          },
+          {
+            "display_index": 10,
+            "stream_kind": "source",
+            "uid": "unknown-a",
+            "timestamp_ns": null,
+            "membership": "outside",
+            "in_selected_range": false,
+            "entry": {
+              "source_record_uid": "unknown-a",
+              "timestamp_ns": null,
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "unknown-a",
+              "message": "unknown-a",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": 3
+            }
+          },
+          {
+            "display_index": 11,
+            "stream_kind": "source",
+            "uid": "unknown-b",
+            "timestamp_ns": null,
+            "membership": "outside",
+            "in_selected_range": false,
+            "entry": {
+              "source_record_uid": "unknown-b",
+              "timestamp_ns": null,
+              "source_type": "trace",
+              "source_name": "source",
+              "layer": "unknown",
+              "record_name": "unknown-b",
+              "message": "unknown-b",
+              "matched_event_uid": null,
+              "matched_event_uids": [],
+              "matched": false,
+              "source_sequence": 3
+            }
+          },
+          {
+            "display_index": 12,
+            "stream_kind": "event",
+            "uid": "untimed-event",
+            "timestamp_ns": null,
+            "membership": "outside",
+            "in_selected_range": false,
+            "entry": {
+              "event_uid": "untimed-event",
+              "timestamp_ns": null,
+              "source_sequence": 4,
+              "event_type": "observation",
+              "layer": "opaque",
+              "subjects": [],
+              "outcome": "success"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

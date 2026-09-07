@@ -463,6 +463,10 @@ The browser workspace retains these validated bounds, capture coordinate,
 basis, and optional clock domain. A status-only parser needs no synthetic
 events to initialize the timeline. The minimal fixture opens at its recorded
 capture time with all three resources present.
+Its window-only source observation retains a null point timestamp in the log.
+Core displays Unknown, preserves its selection identity, and creates no
+timeline point from the observation window. Retain source sequence values so
+equal-time records keep the same order in browser and server queries.
 
 Use the standard `PluginCapability` enum. A capability is a promise that its
 hook is implemented. `AnalyzerPluginBase` raises instead of silently ignoring

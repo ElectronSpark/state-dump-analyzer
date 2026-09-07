@@ -4206,6 +4206,20 @@ insert their own group headers. Ordering, range partitioning, pagination,
 redaction-before-search, and locating are core responsibilities. Event,
 resource, layer, and source-type values remain plug-in vocabulary.
 
+Within each range group, known timestamps sort in ascending order, followed
+by records with no point timestamp. Equal-time or untimed ties use exact
+`source_sequence` (zero when absent), then the Unicode code-point order of
+the stable prefixed `entry_id` (`event:` or `source:`). The embedded streams,
+virtual log, and index-based selection share this ordering. Sequence values
+beyond JavaScript's safe integer range use decimal strings.
+
+A window-only source record keeps `timestamp_ns: null` in query and selection
+responses. It remains selectable and searchable under Other records when a
+range is selected, contributes to `outside_count`, and never contributes to
+`inside_count` or claims to precede or follow the range. The browser displays
+Unknown and does not place a point marker or move the cursor for that record.
+Its observation window is not converted into a point timestamp.
+
 Bulk log actions use query-scoped inclusive data-index ranges, not DOM rows or
 thousands of client-retained IDs:
 

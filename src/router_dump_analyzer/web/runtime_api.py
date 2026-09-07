@@ -1728,7 +1728,11 @@ def event_log_selection(
                         "display_index": int(item.get("display_index", 0)),
                         "stream_kind": kind,
                         "uid": uid,
-                        "timestamp_ns": str(item.get("timestamp_ns", "0")),
+                        "timestamp_ns": (
+                            str(item["timestamp_ns"])
+                            if item.get("timestamp_ns") is not None
+                            else None
+                        ),
                         "resource_ids": (
                             _event_resource_ids(entry) if kind == "event" else []
                         ),

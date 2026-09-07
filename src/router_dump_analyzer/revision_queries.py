@@ -1521,14 +1521,20 @@ class RevisionQueryService:
         # id, stream kind, raw uid, membership, raw entry. Event projections are
         # deliberately not retained for all 100K+ rows; they are redacted before
         # search and again only for the bounded return page.
-        candidates: list[tuple[int, int, int, str, str, str, str, dict[str, Any]]] = []
+        candidates: list[
+            tuple[int, int | None, int, str, str, str, str, dict[str, Any]]
+        ] = []
         inside_count = 0
+
+        def optional_timestamp(entry: Mapping[str, Any]) -> int | None:
+            value = entry.get("timestamp_ns")
+            return None if value is None else temporal_integer(value, "timestamp_ns")
 
         def append_candidate(
             *,
             stream_kind: str,
             uid: str,
-            timestamp_ns: int,
+            timestamp_ns: int | None,
             entry: dict[str, Any],
         ) -> None:
             nonlocal inside_count
@@ -1536,7 +1542,10 @@ class RevisionQueryService:
                 membership = "all"
                 group_rank = 0
             else:
-                in_range = selected_range[0] <= timestamp_ns <= selected_range[1]
+                in_range = (
+                    timestamp_ns is not None
+                    and selected_range[0] <= timestamp_ns <= selected_range[1]
+                )
                 membership = "inside" if in_range else "outside"
                 group_rank = 0 if in_range else 1
                 if in_range:
@@ -1600,10 +1609,7 @@ class RevisionQueryService:
                 append_candidate(
                     stream_kind="event",
                     uid=uid,
-                    timestamp_ns=temporal_integer(
-                        event.get("timestamp_ns", 0),
-                        "timestamp_ns",
-                    ),
+                    timestamp_ns=optional_timestamp(event),
                     entry=event,
                 )
 
@@ -1626,14 +1632,22 @@ class RevisionQueryService:
                 append_candidate(
                     stream_kind="source",
                     uid=uid,
-                    timestamp_ns=temporal_integer(
-                        record.get("timestamp_ns", 0),
-                        "timestamp_ns",
-                    ),
+                    timestamp_ns=optional_timestamp(record),
                     entry=record,
                 )
 
-        candidates.sort(key=lambda item: item[:4])
+        # Untimed rows remain selectable after all timed rows in their group.
+        # The sort-only zero is never exposed as a timestamp or used for range
+        # membership; negative revision-relative instants retain their order.
+        candidates.sort(
+            key=lambda item: (
+                item[0],
+                item[1] is None,
+                item[1] if item[1] is not None else 0,
+                item[2],
+                item[3],
+            )
+        )
         total_count = len(candidates)
         outside_count = total_count - inside_count
         located_display_index = None
@@ -1672,7 +1686,9 @@ class RevisionQueryService:
                     "display_index": display_index,
                     "stream_kind": stream_kind,
                     "uid": uid,
-                    "timestamp_ns": str(timestamp_ns),
+                    "timestamp_ns": str(timestamp_ns)
+                    if timestamp_ns is not None
+                    else None,
                     "membership": membership,
                     "in_selected_range": (
                         None if selected_range is None else membership == "inside"

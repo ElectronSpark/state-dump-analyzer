@@ -1115,7 +1115,7 @@ Mapped `DomainEvent` records retain the core `SourceRecordRef` (source, trace,
 stream, packet, and message ordinal); a plugin must not hide source identity only
 inside a human locator.
 
-The core may retain any timestamped decoder input as a generic `SourceRecord`,
+The core may retain timestamped or window-only decoder input as a generic `SourceRecord`,
 including CTF messages, syslog lines, agent callbacks, and records decoded from
 status text. Parser hooks yield `SourceRecordEmission` with the plug-in-owned
 `source_type`, decoded record name/message, attributes, evidence, and optional
@@ -1125,6 +1125,12 @@ persists the resulting `SourceRecord`. No match is also a first-class result:
 unmatched records remain queryable and can appear on dedicated timeline lanes.
 The core owns stable source-record IDs, timestamp normalization, storage,
 pagination, range membership, and source-to-domain links.
+
+A source record without a known point timestamp retains `null` through log
+query and selection. Core displays it as Unknown, after timed entries in the
+same range group, and does not invent a cursor or marker position from zero or
+an observation-window boundary. Ties use exact `source_sequence` and then the
+stable prefixed entry ID; producers should retain their original sequence.
 
 `SourceRecordEmission.copy_text` is an optional plug-in-materialized safe
 plain-text export of that source item. It is separate from the bounded
