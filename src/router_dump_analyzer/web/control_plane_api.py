@@ -21,10 +21,10 @@ import ipaddress
 import json
 import math
 import secrets
-import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from concurrent.futures import Future
 from dataclasses import dataclass, fields, is_dataclass
 from dataclasses import field as dataclass_field
 from enum import Enum
@@ -195,7 +195,6 @@ from router_dump_analyzer.value_core import (
 )
 from router_dump_analyzer.web.service_api import control_plane_service_health
 
-MAX_UPLOAD_SPOOL_MEMORY = 8 * 1024 * 1024
 MAX_CONTROL_PLANE_JSON_BODY_BYTES = 1024 * 1024
 MAX_PAGE_LIMIT = 5_000
 MAX_RETENTION_AUDIT_LIMIT = 500
@@ -4285,6 +4284,57 @@ def list_imports(
         _raise_api_error(error)
 
 
+class _RequestUploadIterator(Iterator[bytes]):
+    """Pull one ASGI chunk from the event loop only when the spool needs it."""
+
+    def __init__(self, request: Request, *, maximum: int, expected: int | None) -> None:
+        self._stream = request.stream()
+        self._loop = asyncio.get_running_loop()
+        self._maximum = maximum
+        self._expected = expected
+        self._byte_count = 0
+        self._lock = threading.Lock()
+        self._pending: Future[bytes | None] | None = None
+        self._cancelled = False
+
+    async def _read(self) -> bytes | None:
+        return await anext(self._stream, None)
+
+    def __next__(self) -> bytes:
+        with self._lock:
+            if self._cancelled:
+                raise IngestionPipelineError("upload was interrupted")
+            pending = asyncio.run_coroutine_threadsafe(self._read(), self._loop)
+            self._pending = pending
+        try:
+            chunk = pending.result()
+        finally:
+            with self._lock:
+                self._pending = None
+        if chunk is None:
+            if self._expected is not None and self._byte_count != self._expected:
+                raise _ControlPlaneHTTPResponse(
+                    status_code=400, detail="upload does not match Content-Length"
+                )
+            raise StopIteration
+        self._byte_count += len(chunk)
+        if self._byte_count > self._maximum:
+            raise _ControlPlaneHTTPResponse(
+                status_code=413, detail="upload is too large"
+            )
+        if self._expected is not None and self._byte_count > self._expected:
+            raise _ControlPlaneHTTPResponse(
+                status_code=400, detail="upload does not match Content-Length"
+            )
+        return chunk
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._cancelled = True
+            if self._pending is not None:
+                self._pending.cancel()
+
+
 @control_plane_router.post(
     "/projects/{project_id}/workspaces/{workspace_id}/imports",
     status_code=202,
@@ -4403,52 +4453,50 @@ async def upload_import(
         project_id,
         workspace_id,
     )
-    # The object must remain open while ``to_thread`` consumes its iterator;
-    # the explicit finally below closes it on every disconnect/error path.
-    spool = tempfile.SpooledTemporaryFile(  # noqa: SIM115
-        max_size=min(
-            MAX_UPLOAD_SPOOL_MEMORY,
-            control_plane.ingestion.limits.max_upload_bytes,
-        ),
-        mode="w+b",
+    chunks = _RequestUploadIterator(
+        request,
+        maximum=control_plane.ingestion.limits.max_upload_bytes,
+        expected=announced,
     )
-    byte_count = 0
+    # The synchronous worker reserves capacity before its first iterator read.
+    # Its canonical spool is the only body buffer, and file locks are acquired
+    # and released on that same worker thread.
+    worker = asyncio.create_task(
+        asyncio.to_thread(
+            control_plane.ingestion.submit_chunks,
+            scope,
+            chunks,
+            original_name=selected_original_name,
+            content_type=selected_content_type,
+            idempotency_key=selected_idempotency_key,
+            auto_select=auto_select,
+            preferred_plugin_id=selected_preferred_plugin_id,
+            node_hint=selected_node_hint,
+            metadata=import_metadata,
+            expected_bytes=announced,
+        )
+    )
     try:
-        async for chunk in request.stream():
-            byte_count += len(chunk)
-            if byte_count > control_plane.ingestion.limits.max_upload_bytes:
-                raise _ControlPlaneHTTPResponse(
-                    status_code=413, detail="upload is too large"
-                )
-            # SpooledTemporaryFile rolls over to synchronous disk I/O.  Keep
-            # that work away from the server event loop for large uploads.
-            await asyncio.to_thread(spool.write, chunk)
-        await asyncio.to_thread(spool.seek, 0)
-
-        def chunks() -> Any:
-            while block := spool.read(
-                control_plane.ingestion.limits.upload_chunk_bytes
-            ):
-                yield block
-
-        try:
-            result = await asyncio.to_thread(
-                control_plane.ingestion.submit_chunks,
-                scope,
-                chunks(),
-                original_name=selected_original_name,
-                content_type=selected_content_type,
-                idempotency_key=selected_idempotency_key,
-                auto_select=auto_select,
-                preferred_plugin_id=selected_preferred_plugin_id,
-                node_hint=selected_node_hint,
-                metadata=import_metadata,
-            )
-            return result.as_dict()
-        except Exception as error:
-            _raise_api_error(error)
+        result = await asyncio.shield(worker)
+        return result.as_dict()
+    except asyncio.CancelledError:
+        chunks.cancel()
+        # Cancelling to_thread alone leaves its thread running. Interrupt its
+        # outstanding read and wait for the pipeline's spool/lock cleanup.
+        while True:
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                if not worker.done():
+                    continue
+            except Exception:  # noqa: S110 - preserve the original cancellation
+                pass
+            break
+        raise
+    except Exception as error:
+        _raise_api_error(error)
     finally:
-        await asyncio.to_thread(spool.close)
+        chunks.cancel()
 
 
 def _selected_import(

@@ -325,11 +325,30 @@ closed, and a current installation is never substituted for a retained pin.
 
 An HTTP upload is the raw request body. Supply `original_name` as a query
 parameter and the media type in `Content-Type`; multipart parsing is not used.
-The endpoint spools at most 8 MiB in memory before using a temporary file, then
-streams fixed-size chunks into content-addressed storage. The default total
-upload limit is 8 GiB. Optional `X-Node-Hint` and a JSON-object
+The endpoint pulls chunks into one pipeline-owned spool after reserving a
+logical byte budget and upload slot. It creates no second system-temporary
+copy. The default total upload limit is 8 GiB. Optional `X-Node-Hint` and a JSON-object
 `X-Import-Metadata` header supply the same plug-in-visible parsing inputs as
 the headless flags. They never replace the trusted tenant/principal headers.
+
+`PipelineLimits.max_concurrent_uploads` defaults to 8 and `max_staging_bytes`
+to 16 GiB across processes sharing the state directory. Known lengths reserve
+their exact bytes before reading; an unknown-length stream reserves the
+available allowance under upload, staging, tenant, and workspace limits. It
+cannot grow past that allowance. `submit_chunks(..., expected_bytes=n)` exposes
+the same optional exact-length contract to headless callers; `submit_bytes`
+supplies it automatically. Capacity/quota rejection occurs before consuming
+the iterator. Retries still need staging capacity to hash and verify their
+bytes, but one logical idempotency group does not consume duplicate admission
+quota.
+
+Reservations remain until spool cleanup succeeds. Crash recovery reclaims only
+canonical spool names whose activity lock is unowned; live uploads retain their
+capacity. Request cancellation interrupts further body reads and waits for the
+worker's cleanup. Size the state volume for these spools plus durable blobs,
+fixture views, extracted artifacts, and copy fallbacks. The staging budget does
+not reserve filesystem free space or cover all durable storage; unrelated
+artifact orphans remain subject to explicit retention policy.
 
 The queue:
 

@@ -302,6 +302,15 @@ SELECTED -> PARSING -> NORMALIZING -> ALIGNING -> RECONSTRUCTING
 Failures stay attached to an unpublished revision with structured diagnostics.
 Send only job IDs and artifact references through the queue, never dump bytes.
 
+The durable host reserves upload slots and spool bytes in SQLite before reading
+input. HTTP pulls ASGI chunks on demand into the same pipeline spool used by
+headless submission. Reservation/admission transitions share the quota
+transaction; scoped idempotency groups avoid duplicate logical charges.
+Reservations survive failed cleanup and are reclaimed only with canonical path
+and unowned activity-lock proof. This host-local budget bounds staging, while
+durable blobs, fixture copies, and extracted artifacts have separate retention
+and capacity requirements.
+
 ### Stage details
 
 The numbered flow is the production target. The executable local subset and

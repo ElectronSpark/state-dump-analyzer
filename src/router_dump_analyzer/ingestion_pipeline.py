@@ -239,6 +239,10 @@ if TYPE_CHECKING:
     from .capability_router import CapabilityProviderRegistry
 
 MAX_IMPORT_ID_LENGTH = 128
+
+_LIVE_UPLOAD_RESERVATIONS: set[tuple[int, str]] = set()
+_LIVE_UPLOAD_RESERVATIONS_LOCK = threading.Lock()
+
 MAX_FILENAME_LENGTH = 512
 MAX_CONTENT_TYPE_LENGTH = 256
 MAX_NODE_HINT_LENGTH = MAX_EXECUTION_IDENTITY_LENGTH
@@ -493,8 +497,20 @@ class PipelineLimits:
     plugin_execution_timeout_seconds: float = 300.0
     publisher_execution_timeout_seconds: float | None = None
     stalled_import_seconds: float = 900.0
+    max_concurrent_uploads: int = 8
+    max_staging_bytes: int = 16 * 1024 * 1024 * 1024
 
     def __post_init__(self) -> None:
+        if (
+            type(self.max_concurrent_uploads) is not int
+            or not 1 <= self.max_concurrent_uploads <= 1_024
+        ):
+            raise ValueError("max_concurrent_uploads must be between 1 and 1024")
+        if (
+            type(self.max_staging_bytes) is not int
+            or not 1 <= self.max_staging_bytes <= 2**63 - 1
+        ):
+            raise ValueError("max_staging_bytes must be between 1 and 2**63 - 1")
         if self.max_upload_bytes < 1:
             raise ValueError("max_upload_bytes must be positive")
         if not 4_096 <= self.upload_chunk_bytes <= 16 * 1024 * 1024:
@@ -3428,6 +3444,15 @@ class DurableIngestionPipeline:
                 connection.commit()
             connection.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS ingestion_upload_reservations (
+                    reservation_id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    idempotency_key TEXT,
+                    reserved_bytes INTEGER NOT NULL CHECK (reserved_bytes >= 0),
+                    admitted INTEGER NOT NULL DEFAULT 0 CHECK (admitted IN (0, 1))
+                );
                 CREATE TABLE IF NOT EXISTS ingestion_imports (
                     import_id TEXT PRIMARY KEY,
                     tenant_id TEXT NOT NULL,
@@ -4270,16 +4295,60 @@ class DurableIngestionPipeline:
     def _scope_predicate(scope: ImportScope) -> tuple[str, str, str]:
         return (scope.tenant_id, scope.project_id, scope.workspace_id)
 
-    def _enforce_admission_quotas(
+    def _pending_upload_usage(
         self,
         connection: sqlite3.Connection,
         scope: ImportScope,
         *,
-        incoming_bytes: int,
-    ) -> None:
-        """Apply logical tenant/workspace quotas in the caller transaction."""
+        reservation_id: str | None = None,
+    ) -> tuple[int, int, int, int]:
+        """Count each outstanding idempotency group as one eventual import."""
 
-        policy = self.retention_policy
+        rows = connection.execute(
+            """
+            SELECT r.* FROM ingestion_upload_reservations AS r
+            WHERE r.admitted = 0 AND NOT EXISTS (
+                SELECT 1 FROM ingestion_imports AS i
+                WHERE i.tenant_id = r.tenant_id AND i.project_id = r.project_id
+                  AND i.workspace_id = r.workspace_id
+                  AND i.idempotency_key = r.idempotency_key
+            )
+            """
+        ).fetchall()
+        groups: dict[tuple[str, str, str, bool, str], int] = {}
+        excluded = None
+        for row in rows:
+            key = (
+                str(row["tenant_id"]),
+                str(row["project_id"]),
+                str(row["workspace_id"]),
+                row["idempotency_key"] is not None,
+                str(row["idempotency_key"] or row["reservation_id"]),
+            )
+            groups[key] = max(groups.get(key, 0), int(row["reserved_bytes"]))
+            if row["reservation_id"] == reservation_id:
+                excluded = key
+        if excluded is not None:
+            groups.pop(excluded)
+        tenant_count = tenant_bytes = workspace_count = workspace_bytes = 0
+        for key, byte_count in groups.items():
+            if key[0] == scope.tenant_id:
+                tenant_count += 1
+                tenant_bytes += byte_count
+                if key[:3] == self._scope_predicate(scope):
+                    workspace_count += 1
+                    workspace_bytes += byte_count
+        return tenant_count, tenant_bytes, workspace_count, workspace_bytes
+
+    def _admission_usage(
+        self,
+        connection: sqlite3.Connection,
+        scope: ImportScope,
+        *,
+        reservation_id: str | None = None,
+    ) -> tuple[int, int, int, int]:
+        """Include both retained imports and uploads reserved by any process."""
+
         tenant = connection.execute(
             """
             SELECT COUNT(*) AS import_count,
@@ -4298,25 +4367,49 @@ class DurableIngestionPipeline:
             self._scope_predicate(scope),
         ).fetchone()
         assert tenant is not None and workspace is not None
+        pending = self._pending_upload_usage(
+            connection, scope, reservation_id=reservation_id
+        )
+        return (
+            int(tenant["import_count"]) + pending[0],
+            int(tenant["stored_bytes"]) + pending[1],
+            int(workspace["import_count"]) + pending[2],
+            int(workspace["stored_bytes"]) + pending[3],
+        )
+
+    def _enforce_admission_quotas(
+        self,
+        connection: sqlite3.Connection,
+        scope: ImportScope,
+        *,
+        incoming_bytes: int,
+        reservation_id: str | None = None,
+    ) -> None:
+        """Apply logical tenant/workspace quotas in the caller transaction."""
+
+        policy = self.retention_policy
+        tenant_count, tenant_bytes, workspace_count, workspace_bytes = (
+            self._admission_usage(connection, scope, reservation_id=reservation_id)
+        )
         checks = (
             (
                 "tenant import-row",
-                int(tenant["import_count"]) + 1,
+                tenant_count + 1,
                 policy.max_tenant_imports,
             ),
             (
                 "workspace import-row",
-                int(workspace["import_count"]) + 1,
+                workspace_count + 1,
                 policy.max_workspace_imports,
             ),
             (
                 "tenant byte",
-                int(tenant["stored_bytes"]) + incoming_bytes,
+                tenant_bytes + incoming_bytes,
                 policy.max_tenant_bytes,
             ),
             (
                 "workspace byte",
-                int(workspace["stored_bytes"]) + incoming_bytes,
+                workspace_bytes + incoming_bytes,
                 policy.max_workspace_bytes,
             ),
         )
@@ -4325,6 +4418,152 @@ class DurableIngestionPipeline:
                 raise ImportQuotaExceededError(
                     f"{label} quota exceeded ({proposed} > {maximum})"
                 )
+
+    def _enforce_active_import_limit(
+        self,
+        connection: sqlite3.Connection,
+        scope: ImportScope,
+        *,
+        reservation_id: str,
+    ) -> None:
+        active_count = (
+            int(
+                connection.execute(
+                    """
+                SELECT COUNT(*) FROM ingestion_imports
+                WHERE tenant_id = ? AND project_id = ? AND workspace_id = ?
+                  AND state NOT IN (?, ?, ?)
+                """,
+                    (
+                        *self._scope_predicate(scope),
+                        ImportState.COMPLETED.value,
+                        ImportState.FAILED.value,
+                        ImportState.CANCELLED.value,
+                    ),
+                ).fetchone()[0]
+            )
+            + self._pending_upload_usage(
+                connection, scope, reservation_id=reservation_id
+            )[2]
+        )
+        if active_count >= self.limits.max_active_imports_per_workspace:
+            raise ImportConflictError(
+                "workspace active import limit reached "
+                f"({self.limits.max_active_imports_per_workspace})"
+            )
+
+    def _recover_upload_reservations(self, connection: sqlite3.Connection) -> None:
+        """Reclaim only canonical spools whose owner has released its lock."""
+
+        for row in connection.execute(
+            "SELECT reservation_id FROM ingestion_upload_reservations"
+        ).fetchall():
+            reservation_id = str(row["reservation_id"])
+            if re.fullmatch(r"[0-9a-f]{32}", reservation_id) is None:
+                raise IngestionPipelineError("invalid persisted upload reservation")
+            temporary = self.spool_root / f"{reservation_id}.partial"
+            with _LIVE_UPLOAD_RESERVATIONS_LOCK:
+                if (os.getpid(), str(temporary)) in _LIVE_UPLOAD_RESERVATIONS:
+                    # The file-lock primitive permits same-thread reentry;
+                    # nested submissions must not reclaim their caller's spool.
+                    continue
+            lock_path = temporary.with_name(f".{temporary.name}.active.lock")
+            # Match retention's database -> namespace lock ordering. Never
+            # block on the dynamic lock while its owner may need this gate.
+            with exclusive_file_lock(self._spool_namespace_lock_path):
+                if lock_path.exists():
+                    with try_existing_exclusive_file_lock(lock_path) as acquired:
+                        if not acquired:
+                            continue
+                        temporary.unlink(missing_ok=True)
+                    lock_path.unlink(missing_ok=True)
+                else:
+                    temporary.unlink(missing_ok=True)
+                connection.execute(
+                    "DELETE FROM ingestion_upload_reservations WHERE reservation_id = ?",
+                    (reservation_id,),
+                )
+
+    def _reserve_upload(
+        self,
+        scope: ImportScope,
+        *,
+        reservation_id: str,
+        expected_bytes: int | None,
+        idempotency_key: str | None,
+    ) -> int:
+        """Reserve a byte allowance and an upload slot before iterator access."""
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._recover_upload_reservations(connection)
+                usage = connection.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(reserved_bytes), 0) "
+                    "FROM ingestion_upload_reservations"
+                ).fetchone()
+                if int(usage[0]) >= self.limits.max_concurrent_uploads:
+                    raise ImportQuotaExceededError("concurrent upload capacity reached")
+                allowance = min(
+                    self.limits.max_upload_bytes,
+                    self.limits.max_staging_bytes - int(usage[1]),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO ingestion_upload_reservations (
+                        reservation_id, tenant_id, project_id, workspace_id,
+                        idempotency_key, reserved_bytes
+                    ) VALUES (?, ?, ?, ?, ?, 0)
+                    """,
+                    (reservation_id, *self._scope_predicate(scope), idempotency_key),
+                )
+                replay = (
+                    idempotency_key is not None
+                    and connection.execute(
+                        """
+                    SELECT 1 FROM ingestion_imports WHERE tenant_id = ?
+                      AND project_id = ? AND workspace_id = ? AND idempotency_key = ?
+                    """,
+                        (*self._scope_predicate(scope), idempotency_key),
+                    ).fetchone()
+                    is not None
+                )
+                if not replay:
+                    self._enforce_admission_quotas(
+                        connection,
+                        scope,
+                        incoming_bytes=0,
+                        reservation_id=reservation_id,
+                    )
+                    self._enforce_active_import_limit(
+                        connection, scope, reservation_id=reservation_id
+                    )
+                    usage = self._admission_usage(
+                        connection, scope, reservation_id=reservation_id
+                    )
+                    for maximum, stored in (
+                        (self.retention_policy.max_tenant_bytes, usage[1]),
+                        (self.retention_policy.max_workspace_bytes, usage[3]),
+                    ):
+                        if maximum is not None:
+                            allowance = min(allowance, maximum - stored)
+                reserved = (
+                    allowance if expected_bytes is None else max(1, expected_bytes)
+                )
+                if reserved < 1 or reserved > allowance:
+                    raise ImportQuotaExceededError(
+                        "upload staging byte capacity exceeded"
+                    )
+                connection.execute(
+                    "UPDATE ingestion_upload_reservations SET reserved_bytes = ? "
+                    "WHERE reservation_id = ?",
+                    (reserved, reservation_id),
+                )
+                connection.commit()
+                return reserved
+            except BaseException:
+                connection.rollback()
+                raise
 
     def _recover_expired_jobs(self) -> None:
         now = self._now_ns()
@@ -5215,6 +5454,7 @@ class DurableIngestionPipeline:
         return self.submit_chunks(
             scope,
             (content,),
+            expected_bytes=len(content),
             original_name=original_name,
             content_type=content_type,
             idempotency_key=idempotency_key,
@@ -5236,7 +5476,15 @@ class DurableIngestionPipeline:
         preferred_plugin_id: str | None = None,
         node_hint: str | None = None,
         metadata: Mapping[str, Any] | None = None,
+        expected_bytes: int | None = None,
     ) -> ImportDescriptor:
+        if expected_bytes is not None:
+            if type(expected_bytes) is not int or expected_bytes < 0:
+                raise ValueError(
+                    "expected_bytes must be a non-negative integer or None"
+                )
+            if expected_bytes > self.limits.max_upload_bytes:
+                raise IngestionPipelineError("upload exceeds the configured byte limit")
         original_name = _bounded_text(
             original_name,
             "original_name",
@@ -5293,7 +5541,8 @@ class DurableIngestionPipeline:
         if not defer_fixture_basename_validation:
             self._validate_fixture_basename_path_budget(safe_name)
 
-        temporary = self.spool_root / f"{uuid4().hex}.partial"
+        reservation_id = uuid4().hex
+        temporary = self.spool_root / f"{reservation_id}.partial"
         temporary_lock = temporary.with_name(f".{temporary.name}.active.lock")
         digest = hashlib.sha256()
         byte_count = 0
@@ -5302,8 +5551,17 @@ class DurableIngestionPipeline:
         prepared_fixture: _PreparedFixtureView | None = None
         replayed_row: sqlite3.Row | None = None
         operation_stack = ExitStack()
+        live_key = (os.getpid(), str(temporary))
+        with _LIVE_UPLOAD_RESERVATIONS_LOCK:
+            _LIVE_UPLOAD_RESERVATIONS.add(live_key)
         try:
             operation_stack.enter_context(self._spool_active_file_lock(temporary_lock))
+            reserved_bytes = self._reserve_upload(
+                scope,
+                reservation_id=reservation_id,
+                expected_bytes=expected_bytes,
+                idempotency_key=idempotency_key,
+            )
             with temporary.open("xb") as stream:
                 for chunk in chunks:
                     if not isinstance(chunk, bytes):
@@ -5315,10 +5573,20 @@ class DurableIngestionPipeline:
                         raise IngestionPipelineError(
                             "upload exceeds the configured byte limit"
                         )
+                    if expected_bytes is not None and byte_count > expected_bytes:
+                        raise IngestionPipelineError(
+                            "upload does not match expected_bytes"
+                        )
+                    if byte_count > reserved_bytes:
+                        raise ImportQuotaExceededError(
+                            "upload exceeds reserved staging byte allowance"
+                        )
                     digest.update(chunk)
                     stream.write(chunk)
                 if byte_count == 0:
                     raise IngestionPipelineError("upload must not be empty")
+                if expected_bytes is not None and byte_count != expected_bytes:
+                    raise IngestionPipelineError("upload does not match expected_bytes")
                 stream.flush()
                 os.fsync(stream.fileno())
             content_sha256 = digest.hexdigest()
@@ -5359,15 +5627,6 @@ class DurableIngestionPipeline:
                 # genuinely new fixture bypass the pathname budget.
                 if defer_fixture_basename_validation:
                     self._validate_fixture_basename_path_budget(safe_name)
-
-            # Fail obvious quota exhaustion before publishing filesystem
-            # artifacts.  The check is repeated under BEGIN IMMEDIATE below.
-            with self._connect() as connection:
-                self._enforce_admission_quotas(
-                    connection,
-                    scope,
-                    incoming_bytes=byte_count,
-                )
 
             import_id = f"import-{uuid4().hex}"
             fixture_id = f"fixture-{uuid4().hex}"
@@ -5432,32 +5691,11 @@ class DurableIngestionPipeline:
                                 connection,
                                 scope,
                                 incoming_bytes=byte_count,
+                                reservation_id=reservation_id,
                             )
-                            active_count = int(
-                                connection.execute(
-                                    """
-                                    SELECT COUNT(*)
-                                    FROM ingestion_imports
-                                    WHERE tenant_id = ? AND project_id = ?
-                                      AND workspace_id = ?
-                                      AND state NOT IN (?, ?, ?)
-                                    """,
-                                    (
-                                        *self._scope_predicate(scope),
-                                        ImportState.COMPLETED.value,
-                                        ImportState.FAILED.value,
-                                        ImportState.CANCELLED.value,
-                                    ),
-                                ).fetchone()[0]
+                            self._enforce_active_import_limit(
+                                connection, scope, reservation_id=reservation_id
                             )
-                            if (
-                                active_count
-                                >= self.limits.max_active_imports_per_workspace
-                            ):
-                                raise ImportConflictError(
-                                    "workspace active import limit reached "
-                                    f"({self.limits.max_active_imports_per_workspace})"
-                                )
 
                             connection.execute(
                                 """
@@ -5516,6 +5754,11 @@ class DurableIngestionPipeline:
                                 },
                                 now=now,
                             )
+                            connection.execute(
+                                "UPDATE ingestion_upload_reservations SET admitted = 1 "
+                                "WHERE reservation_id = ?",
+                                (reservation_id,),
+                            )
                             admitted_row = connection.execute(
                                 "SELECT * FROM ingestion_imports WHERE import_id = ?",
                                 (import_id,),
@@ -5555,10 +5798,25 @@ class DurableIngestionPipeline:
                 self._remove_fixture_view(fixture_directory)
             raise
         finally:
-            self._discard_prepared_fixture_view(prepared_fixture)
-            self._discard_prepared_content_file(prepared_content)
-            temporary.unlink(missing_ok=True)
-            operation_stack.close()
+            try:
+                self._discard_prepared_fixture_view(prepared_fixture)
+                self._discard_prepared_content_file(prepared_content)
+                temporary.unlink(missing_ok=True)
+                # Retain the reservation if spool cleanup fails. A later
+                # request may reclaim it only after proving the lock unowned.
+                with self._connect() as connection:
+                    connection.execute(
+                        "DELETE FROM ingestion_upload_reservations "
+                        "WHERE reservation_id = ?",
+                        (reservation_id,),
+                    )
+                    connection.commit()
+            finally:
+                try:
+                    operation_stack.close()
+                finally:
+                    with _LIVE_UPLOAD_RESERVATIONS_LOCK:
+                        _LIVE_UPLOAD_RESERVATIONS.discard(live_key)
         self._wake.set()
         return self._descriptor(admitted_row)
 

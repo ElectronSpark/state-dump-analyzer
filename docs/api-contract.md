@@ -1915,6 +1915,15 @@ An import upload is **not multipart**. Its request body is the artifact bytes;
 optionally supplies a bounded JSON object. Only those caller-supplied parsing
 inputs are visible to plug-in inventory/probe and parsing; tenant, project,
 workspace, fixture, import, and principal coordinates remain core-private.
+
+The host reserves one upload slot and a byte allowance before consuming the
+body. Defaults are 8 concurrent uploads and 16 GiB aggregate reserved staging
+bytes across one shared state directory. Capacity/quota exhaustion returns
+`409`. `Content-Length`, when present, must match the received bytes; a mismatch
+returns `400`, and the independent upload-size ceiling still returns `413`.
+Without a length, the request receives a bounded available allowance and fails
+with `409` if it exceeds it. No second system-temporary body copy is created.
+
 It returns `202` with an `ImportDescriptor`. Import states are the closed
 values:
 
@@ -2128,6 +2137,10 @@ transactional and occurs after an exact upload-idempotency lookup, so retrying
 an already admitted request remains valid at the cap. `completed`, `failed`,
 and `cancelled` history does not consume it. A new request at the configured
 cap conflicts.
+
+Pending upload reservations participate in admission quotas atomically, grouped
+by scoped idempotency key. Conversion to an admitted row does not double charge
+them. Exact retries remain subject to the separate temporary staging budget.
 
 Project, workspace, fixture, revision, session, and snapshot collections use
 `limit`/`offset`, default to 1,000, cap at 5,000, and return `next_offset`.

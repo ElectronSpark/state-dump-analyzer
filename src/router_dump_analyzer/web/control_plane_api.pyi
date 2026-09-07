@@ -1,4 +1,4 @@
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field as dataclass_field
 from fastapi import APIRouter, HTTPException as FastAPIHTTPException, Request
 from fastapi.routing import APIRoute
@@ -83,3 +83,8 @@ class _ApiErrorPolicy:
     status_code: int
     public_detail: str
     expose_message: bool = ...
+
+class _RequestUploadIterator(Iterator[bytes]):
+    def __init__(self, request: Request, *, maximum: int, expected: int | None) -> None: ...
+    def __next__(self) -> bytes: ...
+    def cancel(self) -> None: ...
