@@ -1,0 +1,39 @@
+from .plugin_execution_plan import PluginExecutionPlan
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+__all__ = ['IngestionPipelineError', 'CatalogExecutionTimeoutError', 'ImportScope', 'PublisherCallContext', 'CatalogPublisherProcessBootstrap', 'RevisionCatalogPublisher']
+
+class IngestionPipelineError(RuntimeError): ...
+class CatalogExecutionTimeoutError(IngestionPipelineError): ...
+
+@dataclass(frozen=True, slots=True)
+class ImportScope:
+    tenant_id: str
+    project_id: str
+    workspace_id: str
+    def __post_init__(self) -> None: ...
+
+@dataclass(frozen=True, slots=True)
+class PublisherCallContext:
+    operation_id: str
+    attempt_number: int
+    started_monotonic_ns: int
+    deadline_monotonic_ns: int
+    def __post_init__(self) -> None: ...
+    @property
+    def remaining_seconds(self) -> float: ...
+    def raise_if_expired(self) -> None: ...
+
+@dataclass(frozen=True, slots=True)
+class CatalogPublisherProcessBootstrap:
+    loader_kind: str
+    target: str | None = ...
+    constructor_args: tuple[str, ...] = ...
+    schema_version: str = ...
+    def __post_init__(self) -> None: ...
+
+class RevisionCatalogPublisher(Protocol):
+    def admit_fixture(self, scope: ImportScope, *, operation_id: str, fixture_id: str, content_sha256: str, byte_count: int, original_name: str, content_type: str, blob_ref: str, node_hint: str | None, metadata: Mapping[str, Any], call_context: PublisherCallContext) -> None: ...
+    def publish_revision(self, scope: ImportScope, *, operation_id: str, fixture_id: str, source_revision_id: str, node_id: str, plugin_id: str, plugin_version: str, dataset_ref: str, dataset_sha256: str, event_count: int, source_record_count: int, resource_count: int, execution_plan: PluginExecutionPlan | None, call_context: PublisherCallContext) -> str | None: ...

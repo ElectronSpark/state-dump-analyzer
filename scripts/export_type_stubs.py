@@ -28,6 +28,16 @@ PACKAGE_ROOTS = (
     / "state_dump_generator",
 )
 STUB_SUPPLEMENTS = {
+    Path("router_dump_analyzer/ingestion_pipeline.pyi"): (
+        "\n# Preserve the original typed import paths for moved bootstrap records.\n"
+        "from .plugin_registration import (\n"
+        "    _IdentityBoundTraceDecoder as _IdentityBoundTraceDecoder,\n"
+        "    _PinnedManifestPlugin as _PinnedManifestPlugin,\n"
+        "    _PluginProcessBootstrap as _PluginProcessBootstrap,\n"
+        "    _ProcessTargetIdentityUnavailable as _ProcessTargetIdentityUnavailable,\n"
+        "    _ProcessTargetKind as _ProcessTargetKind,\n"
+        ")\n"
+    ),
     Path("router_dump_analyzer/runtime.pyi"): (
         "\n# Private type variable used by a public generic method signature.\n"
         "from typing import TypeVar\n"

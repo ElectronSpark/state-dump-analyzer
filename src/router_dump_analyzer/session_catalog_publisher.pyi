@@ -1,0 +1,16 @@
+from .ingestion_contracts import CatalogPublisherProcessBootstrap, ImportScope, PublisherCallContext, RevisionCatalogPublisher
+from .plugin_execution_plan import PluginExecutionPlan
+from .session_store import SqliteSessionStore
+from collections.abc import Mapping
+from typing import Any
+
+__all__ = ['SessionCatalogPublisher']
+
+class SessionCatalogPublisher(RevisionCatalogPublisher):
+    sessions: SqliteSessionStore
+    def __init__(self, sessions: SqliteSessionStore) -> None: ...
+    def process_bootstrap(self) -> CatalogPublisherProcessBootstrap: ...
+    @staticmethod
+    def catalog_revision_id(scope: ImportScope, *, fixture_id: str, source_revision_id: str, dataset_sha256: str) -> str: ...
+    def admit_fixture(self, scope: ImportScope, *, operation_id: str, fixture_id: str, content_sha256: str, byte_count: int, original_name: str, content_type: str, blob_ref: str, node_hint: str | None, metadata: Mapping[str, Any], call_context: PublisherCallContext) -> None: ...
+    def publish_revision(self, scope: ImportScope, *, operation_id: str, fixture_id: str, source_revision_id: str, node_id: str, plugin_id: str, plugin_version: str, dataset_ref: str, dataset_sha256: str, event_count: int, source_record_count: int, resource_count: int, execution_plan: PluginExecutionPlan | None, call_context: PublisherCallContext) -> str: ...

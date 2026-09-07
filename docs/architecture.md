@@ -185,6 +185,15 @@ distribution coordinates; direct-module loading uses an explicit
 `direct-module` / `0` sentinel. A decoder pin appears in the revision plan only
 when that decoder was actually used.
 
+Registration authority lives in `plugin_registration`, below both the queue
+and capability router. `ingestion_contracts` owns their shared scope,
+publication, deadline, and bootstrap records. The SQLite publication adapter
+lives in `session_catalog_publisher`, outside the `ControlPlane` composition
+root; shared control-plane errors have a separate lower-level owner. Existing
+imports from `ingestion_pipeline` and `control_plane` remain aliases to the
+same classes, including compatibility lookups for saved process bootstraps.
+These ownership boundaries preserve exact types and executable revalidation.
+
 Parser probing and capability routing are deliberately separate. The durable
 ingestion registry selects one primary parser for an upload. A deployment-owned
 `CapabilityProviderRegistry` may hold many configured instances, including

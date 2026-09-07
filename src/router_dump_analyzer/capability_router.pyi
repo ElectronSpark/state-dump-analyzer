@@ -1,7 +1,7 @@
 from .capability_executor import ConsistencyExecutionResult, CorrelationExecutionResult, EvidenceAnalysisExecutionResult, ForwardingProjectionExecutionResult, ForwardingStepExecutionResult, PluginCapabilityLimits, RelationshipProjectionExecutionResult, TopologyExecutionResult
-from .ingestion_pipeline import PluginRegistry, RegisteredPlugin
 from .plugin_api import ChangeSet, CorrelationReader, CorrelationWindow, DomainEvent, EvidenceAnalysisRequest, ForwardingProjectionRequest, ForwardingStepRequest, PluginCapability, ReadOnlyWorld, TopologyProjectionRequest
 from .plugin_execution_plan import PluginExecutionPin, PluginExecutionPlan
+from .plugin_registration import PluginRegistry, RegisteredPlugin
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum

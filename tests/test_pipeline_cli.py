@@ -609,11 +609,11 @@ class PipelineCliTests(unittest.TestCase):
         package_identity = "package-sha256:" + "7" * 64
         with (
             patch(
-                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
                 return_value=package_identity,
             ),
             patch(
-                "router_dump_analyzer.ingestion_pipeline."
+                "router_dump_analyzer.plugin_registration."
                 "executable_module_target_fingerprint",
                 side_effect=PluginExecutableIdentityError(
                     "target attestation unavailable"
@@ -625,7 +625,7 @@ class PipelineCliTests(unittest.TestCase):
                 instance_id="inline-only-auxiliary",
             )
         with patch(
-            "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+            "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
             side_effect=lambda plugin: (
                 package_identity
                 if plugin is auxiliary.plugin

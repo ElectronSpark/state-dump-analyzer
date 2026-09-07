@@ -1,12 +1,14 @@
 from .annotation_store import CorrelationReport, ManualCorrelationEdge, ManualEventCorrelation, ReviewAnnotation, ReviewAnnotationKind, ReviewOverlayStore, ReviewRetentionInventory, ReviewRetentionPolicy, ReviewRetentionResult, ReviewScope, ReviewSubject
 from .capability_router import CapabilityProviderRegistry, PlanBoundCapabilityRouter, RevisionSetCapabilityRouter
-from .ingestion_pipeline import CatalogPublisherProcessBootstrap, DurableIngestionPipeline, ImportScope, PipelineLimits, PluginRegistry, PublisherCallContext, RetentionPolicy, RetentionReport, RevisionCatalogPublisher
+from .control_plane_errors import ControlPlaneError as ControlPlaneError, ControlPlaneScopeError as ControlPlaneScopeError, DatasetIntegrityError as DatasetIntegrityError, SubjectResolutionError as SubjectResolutionError
+from .ingestion_pipeline import DurableIngestionPipeline, ImportScope, PipelineLimits, PluginRegistry, RetentionPolicy, RetentionReport
 from .plugin_composition import PluginCompositionPolicy
 from .plugin_execution_plan import PluginExecutionPlan
 from .private_analysis_execution import PrivateAnalysisExecutionCoordinator, PrivateAnalysisExecutionLimits, PrivateAnalysisRunnerRegistration
 from .private_analysis_promotion import PrivateAnalysisProposalReviewService, SqliteProposalReviewStore
 from .private_analysis_run_store import SqlitePrivateAnalysisRunStore
 from .private_analysis_service import PrivateAnalysisDeploymentCeilings, PrivateAnalysisService
+from .session_catalog_publisher import SessionCatalogPublisher as SessionCatalogPublisher
 from .session_store import AnalysisRevisionDescriptor, CatalogRetentionInventory, CatalogRetentionPolicy, CatalogRetentionResult, SqliteSessionStore, WorkspaceDescriptor
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -14,13 +16,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Self
 
-__all__ = ['ControlPlaneError', 'ControlPlaneScopeError', 'DatasetIntegrityError', 'SubjectResolutionError', 'ControlPlaneLimits', 'RevisionConsistencyFindingsPage', 'relationship_subject_id', 'SessionCatalogPublisher', 'ControlPlane', 'validate_revision_consistency_dataset']
-
-class ControlPlaneError(RuntimeError): ...
-class ControlPlaneScopeError(ValueError, ControlPlaneError): ...
-class DatasetIntegrityError(ControlPlaneError): ...
-class SubjectResolutionError(ValueError, ControlPlaneError): ...
-class HiddenSubjectResolutionError(KeyError, SubjectResolutionError): ...
+__all__ = ['ControlPlaneError', 'ControlPlaneScopeError', 'DatasetIntegrityError', 'SubjectResolutionError', 'SessionCatalogPublisher', 'ControlPlaneLimits', 'RevisionConsistencyFindingsPage', 'relationship_subject_id', 'ControlPlane', 'validate_revision_consistency_dataset']
 
 class RetentionObservationMode(StrEnum):
     BEST_EFFORT_PREVIEW = 'best_effort_preview'
@@ -80,15 +76,6 @@ class ControlPlaneRetentionResult:
     replayed_artifact_releases: int = ...
 
 def relationship_subject_id(value: Mapping[str, Any]) -> str: ...
-
-class SessionCatalogPublisher(RevisionCatalogPublisher):
-    sessions: SqliteSessionStore
-    def __init__(self, sessions: SqliteSessionStore) -> None: ...
-    def process_bootstrap(self) -> CatalogPublisherProcessBootstrap: ...
-    @staticmethod
-    def catalog_revision_id(scope: ImportScope, *, fixture_id: str, source_revision_id: str, dataset_sha256: str) -> str: ...
-    def admit_fixture(self, scope: ImportScope, *, operation_id: str, fixture_id: str, content_sha256: str, byte_count: int, original_name: str, content_type: str, blob_ref: str, node_hint: str | None, metadata: Mapping[str, Any], call_context: PublisherCallContext) -> None: ...
-    def publish_revision(self, scope: ImportScope, *, operation_id: str, fixture_id: str, source_revision_id: str, node_id: str, plugin_id: str, plugin_version: str, dataset_ref: str, dataset_sha256: str, event_count: int, source_record_count: int, resource_count: int, execution_plan: PluginExecutionPlan | None, call_context: PublisherCallContext) -> str: ...
 
 class ControlPlane:
     root: Path

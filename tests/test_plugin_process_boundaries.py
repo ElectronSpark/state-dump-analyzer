@@ -35,7 +35,10 @@ _CENSUS_FLOOR_BY_MODULE = {
     # removed a core snapshot access, not a plug-in invocation boundary.
     "src/router_dump_analyzer/capability_executor.py": 11,
     "src/router_dump_analyzer/ingestion.py": 7,
-    "src/router_dump_analyzer/ingestion_pipeline.py": 7,
+    # Registration moved intact out of the queue. Keep independent floors
+    # for its six manifest/probe boundaries and the queue's three boundaries.
+    "src/router_dump_analyzer/ingestion_pipeline.py": 3,
+    "src/router_dump_analyzer/plugin_registration.py": 6,
     "src/router_dump_analyzer/multi_node_route.py": 2,
     "src/router_dump_analyzer/normalized_data.py": 3,
     "src/router_dump_analyzer/plugin_loading.py": 3,

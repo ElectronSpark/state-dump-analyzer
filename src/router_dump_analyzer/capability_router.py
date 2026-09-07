@@ -30,14 +30,6 @@ from .capability_executor import (
     RelationshipProjectionExecutionResult,
     TopologyExecutionResult,
 )
-from .ingestion_pipeline import (
-    PluginRegistry,
-    RegisteredPlugin,
-    _registered_plugin_is_process_capable,
-    _registered_plugin_is_trusted_inline_capable,
-    _require_no_inline_only_plugin_compatibility,
-    registered_plugin_matches_execution_pin,
-)
 from .plugin_api import (
     ChangeSet,
     CorrelationReader,
@@ -59,6 +51,14 @@ from .plugin_execution_plan import (
     primary_parser_execution_pin,
     snapshot_plugin_execution_pin,
     snapshot_plugin_execution_plan,
+)
+from .plugin_registration import (
+    PluginRegistry,
+    RegisteredPlugin,
+    _registered_plugin_is_process_capable,
+    _registered_plugin_is_trusted_inline_capable,
+    _require_no_inline_only_plugin_compatibility,
+    registered_plugin_matches_execution_pin,
 )
 from .plugin_schema_identity import plugin_schema_digest
 from .process_control import PROCESS_CONTROL_EXCEPTIONS

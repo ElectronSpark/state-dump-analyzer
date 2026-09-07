@@ -844,7 +844,7 @@ class PluginCompositionTests(unittest.TestCase):
                             return executable_plugin_fingerprint(value)
 
                         with patch(
-                            "router_dump_analyzer.ingestion_pipeline."
+                            "router_dump_analyzer.plugin_registration."
                             "executable_plugin_fingerprint",
                             side_effect=drifted_fingerprint,
                         ):
@@ -1152,7 +1152,7 @@ class PluginCompositionTests(unittest.TestCase):
             with (
                 self.subTest(mode=mode, drift="executable"),
                 patch(
-                    "router_dump_analyzer.ingestion_pipeline."
+                    "router_dump_analyzer.plugin_registration."
                     "executable_plugin_fingerprint",
                     return_value="package-sha256:" + "0" * 64,
                 ),
@@ -1183,11 +1183,11 @@ class PluginCompositionTests(unittest.TestCase):
         package_identity = "package-sha256:" + "9" * 64
         with (
             patch(
-                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
                 return_value=package_identity,
             ),
             patch(
-                "router_dump_analyzer.ingestion_pipeline."
+                "router_dump_analyzer.plugin_registration."
                 "executable_module_target_fingerprint",
                 side_effect=PluginExecutableIdentityError(
                     "target attestation unavailable"
@@ -1200,7 +1200,7 @@ class PluginCompositionTests(unittest.TestCase):
             )
 
         with patch(
-            "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+            "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
             return_value=package_identity,
         ):
             providers = CapabilityProviderRegistry((auxiliary,))
@@ -1236,7 +1236,7 @@ class PluginCompositionTests(unittest.TestCase):
                 freeze()
 
         with patch(
-            "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+            "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
             return_value=package_identity,
         ):
             trusted_pin = _auxiliary_execution_pin(
@@ -1262,7 +1262,7 @@ class PluginCompositionTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch(
-                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
                 return_value=package_identity,
             ),
         ):
@@ -1303,12 +1303,12 @@ class PluginCompositionTests(unittest.TestCase):
             auxiliary_plugin = _AuxiliaryPlugin()
             with (
                 patch(
-                    "router_dump_analyzer.ingestion_pipeline."
+                    "router_dump_analyzer.plugin_registration."
                     "executable_plugin_fingerprint",
                     return_value=package_identity,
                 ),
                 patch(
-                    "router_dump_analyzer.ingestion_pipeline."
+                    "router_dump_analyzer.plugin_registration."
                     "executable_module_target_fingerprint",
                     side_effect=PluginExecutableIdentityError(
                         "target attestation unavailable"
@@ -1320,7 +1320,7 @@ class PluginCompositionTests(unittest.TestCase):
                     instance_id="late-inline-only-auxiliary",
                 )
             with patch(
-                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
                 return_value=package_identity,
             ):
                 providers.add_registered(auxiliary)

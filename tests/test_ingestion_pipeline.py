@@ -3389,11 +3389,11 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         changed_package_identity = "package-sha256:" + ("5" * 64)
         with (
             patch(
-                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
                 return_value=package_identity,
             ) as package_attestation,
             patch(
-                "router_dump_analyzer.ingestion_pipeline."
+                "router_dump_analyzer.plugin_registration."
                 "executable_module_target_fingerprint",
                 side_effect=PluginExecutableIdentityError(
                     "target attestation unavailable"
@@ -3458,11 +3458,11 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         package_identity = "package-sha256:" + ("6" * 64)
         with (
             patch(
-                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
                 return_value=package_identity,
             ),
             patch(
-                "router_dump_analyzer.ingestion_pipeline."
+                "router_dump_analyzer.plugin_registration."
                 "executable_module_target_fingerprint",
                 side_effect=PluginExecutableIdentityError(
                     "target attestation unavailable"
@@ -3477,11 +3477,11 @@ class DurableIngestionPipelineTests(unittest.TestCase):
 
         with (
             patch(
-                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
                 return_value=package_identity,
             ),
             patch(
-                "router_dump_analyzer.ingestion_pipeline."
+                "router_dump_analyzer.plugin_registration."
                 "executable_module_target_fingerprint",
                 side_effect=RuntimeError("unexpected evaluator failure"),
             ),
@@ -3496,10 +3496,10 @@ class DurableIngestionPipelineTests(unittest.TestCase):
 
         with (
             patch(
-                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint"
+                "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint"
             ) as package_attestation,
             patch(
-                "router_dump_analyzer.ingestion_pipeline."
+                "router_dump_analyzer.plugin_registration."
                 "executable_module_target_fingerprint",
                 side_effect=PluginExecutableIdentityError(
                     "target attestation unavailable"
@@ -3523,7 +3523,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             with (
                 self.subTest(target_kind=target_kind),
                 patch(
-                    "router_dump_analyzer.ingestion_pipeline."
+                    "router_dump_analyzer.plugin_registration."
                     "executable_module_target_fingerprint",
                     side_effect=PluginExecutableIdentityError(
                         "private evaluator detail"
@@ -3561,11 +3561,11 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         )
         with (
             patch(
-                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
                 return_value=package_identity,
             ),
             patch(
-                "router_dump_analyzer.ingestion_pipeline."
+                "router_dump_analyzer.plugin_registration."
                 "executable_module_target_fingerprint",
                 side_effect=evaluator_failure,
             ),
@@ -3584,11 +3584,11 @@ class DurableIngestionPipelineTests(unittest.TestCase):
 
         with (
             patch(
-                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
                 return_value="package-sha256:" + ("a" * 64),
             ),
             patch(
-                "router_dump_analyzer.ingestion_pipeline."
+                "router_dump_analyzer.plugin_registration."
                 "executable_module_target_fingerprint",
                 side_effect=DerivedIdentityUnavailable("unavailable"),
             ),
@@ -3613,11 +3613,11 @@ class DurableIngestionPipelineTests(unittest.TestCase):
     ) -> None:
         with (
             patch(
-                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
                 return_value="package-sha256:" + ("8" * 64),
             ),
             patch(
-                "router_dump_analyzer.ingestion_pipeline."
+                "router_dump_analyzer.plugin_registration."
                 "executable_module_target_fingerprint",
                 side_effect=PluginExecutableIdentityError(
                     "target attestation unavailable"
@@ -3661,7 +3661,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch(
-                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
                 return_value="package-sha256:" + ("8" * 64),
             ),
         ):
@@ -3696,7 +3696,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch(
-                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
                 return_value="package-sha256:" + ("8" * 64),
             ),
         ):
@@ -3771,12 +3771,12 @@ class DurableIngestionPipelineTests(unittest.TestCase):
             self.assertIsNot(pipeline.registry, registry)
             with (
                 patch(
-                    "router_dump_analyzer.ingestion_pipeline."
+                    "router_dump_analyzer.plugin_registration."
                     "executable_plugin_fingerprint",
                     return_value=package_identity,
                 ),
                 patch(
-                    "router_dump_analyzer.ingestion_pipeline."
+                    "router_dump_analyzer.plugin_registration."
                     "executable_module_target_fingerprint",
                     side_effect=PluginExecutableIdentityError(
                         "target attestation unavailable"
@@ -3811,11 +3811,11 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         plugin = ParseOnlyPlugin()
         with (
             patch(
-                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
                 return_value=package_identity,
             ),
             patch(
-                "router_dump_analyzer.ingestion_pipeline."
+                "router_dump_analyzer.plugin_registration."
                 "executable_module_target_fingerprint",
                 side_effect=PluginExecutableIdentityError(
                     "target attestation unavailable"
@@ -3861,7 +3861,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         registry = PluginRegistry((ParseOnlyPlugin(),))
         with (
             patch(
-                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
                 return_value="package-sha256:" + ("0" * 64),
             ),
             self.assertRaisesRegex(
@@ -3876,14 +3876,14 @@ class DurableIngestionPipelineTests(unittest.TestCase):
         second = "module-sha256:" + ("2" * 64)
         registry = PluginRegistry()
         with patch(
-            "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+            "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
             return_value=first,
         ):
             record = registry.register(ParseOnlyPlugin())
         self.assertTrue(record.verify_package_bytes)
         with (
             patch(
-                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
                 return_value=second,
             ),
             self.assertRaisesRegex(
@@ -3920,7 +3920,7 @@ class DurableIngestionPipelineTests(unittest.TestCase):
 
             with (
                 patch(
-                    "router_dump_analyzer.ingestion_pipeline."
+                    "router_dump_analyzer.plugin_registration."
                     "executable_plugin_fingerprint",
                     return_value="package-sha256:" + ("0" * 64),
                 ),
@@ -4208,11 +4208,11 @@ class DurableIngestionPipelineTests(unittest.TestCase):
 
         with (
             patch(
-                "router_dump_analyzer.ingestion_pipeline.executable_plugin_fingerprint",
+                "router_dump_analyzer.plugin_registration.executable_plugin_fingerprint",
                 return_value=bootstrap.package_hash,
             ) as package_fingerprint,
             patch(
-                "router_dump_analyzer.ingestion_pipeline."
+                "router_dump_analyzer.plugin_registration."
                 "executable_module_target_fingerprint",
                 side_effect=(
                     bootstrap.plugin_target_executable_identity,
