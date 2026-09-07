@@ -388,7 +388,8 @@ returns a verified `ControlPlaneIdentity` containing tenant, principal,
 roles, and optional project/workspace allowlists. The router checks the
 headers against that resolved identity, requires `control-plane:read` or
 `control-plane:write`, and hides disallowed project/workspace scope as `404`.
-Retention routes additionally require `control-plane:admin`. The CLI's
+Retention routes require `control-plane:admin` instead of the ordinary read or
+write role; those roles need not be granted as well. The CLI's
 explicit local adapter trusts headers and grants exactly read, write, and
 admin by default; it is not authentication. On a loopback listener only,
 `--grant-instance-operator` explicitly adds the distinct
