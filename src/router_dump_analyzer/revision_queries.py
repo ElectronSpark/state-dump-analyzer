@@ -285,11 +285,11 @@ class RevisionQueryService:
             raise ValueError("revision_id must be a non-empty string")
         if cancellation_probe is not None and not callable(cancellation_probe):
             raise TypeError("cancellation_probe must be callable or None")
-        self.data_service = data_service
-        self.revision_id = revision_id
-        self.dataset = dataset
-        self.indexed_history = indexed_history
-        self.cancellation_probe = cancellation_probe
+        self.data_service: NormalizedDataService = data_service
+        self.revision_id: str = revision_id
+        self.dataset: Mapping[str, Any] = dataset
+        self.indexed_history: IndexedHistory | None = indexed_history
+        self.cancellation_probe: Callable[[], bool] | None = cancellation_probe
 
     def _checkpoint(self) -> None:
         check_cancellation_probe(

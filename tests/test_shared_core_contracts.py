@@ -12,7 +12,12 @@ from unittest.mock import patch
 
 from starlette.requests import Request
 
-from router_dump_analyzer import canonical, normalized_data, temporal_core
+from router_dump_analyzer import (
+    canonical,
+    normalized_data,
+    revision_queries,
+    temporal_core,
+)
 from router_dump_analyzer.access_control_contract import (
     ACCESS_DENIAL_REASONS_BY_PHASE,
     ACCESS_DENIAL_WIRE_REASONS,
@@ -30,7 +35,7 @@ from router_dump_analyzer.materialization_contract import (
     RELATIONSHIP_PROJECTION_MATERIALIZATION_SCHEMA_VERSION,
 )
 from router_dump_analyzer.value_core import require_bounded_integer
-from router_dump_analyzer.web import control_plane_api, runtime_api
+from router_dump_analyzer.web import control_plane_api
 
 
 class SharedDeploymentTests(unittest.TestCase):
@@ -135,9 +140,9 @@ class SharedValueTests(unittest.TestCase):
 
     def test_temporal_adapters_share_half_open_predicate(self) -> None:
         self.assertIs(normalized_data.overlaps_range, temporal_core.overlaps_range)
-        self.assertIs(runtime_api._overlaps_window, temporal_core.overlaps_range)
+        self.assertIs(revision_queries._overlaps_window, temporal_core.overlaps_range)
         self.assertFalse(normalized_data.overlaps_range("0", "10", 10, 20))
-        self.assertTrue(runtime_api._overlaps_window(None, None, 10, 20))
+        self.assertTrue(revision_queries._overlaps_window(None, None, 10, 20))
 
     def test_materialization_projection_versions_share_producer_contract(self) -> None:
         from router_dump_analyzer import consistency_materialization as consistency

@@ -6,7 +6,6 @@ from .plugin_api import MAX_TIMESTAMP_NS as MAX_TIMESTAMP_NS, MIN_TIMESTAMP_NS a
 from .source_record_core import project_source_record_for_log as project_source_record_for_log, record_lanes_for_window as record_lanes_for_window, source_record_haystack as source_record_haystack
 from .temporal_core import TEMPORAL_ORDER_VERSION as TEMPORAL_ORDER_VERSION, possible_relationship_presence as possible_relationship_presence, relationship_presence as relationship_presence, temporal_integer as temporal_integer, temporal_order_key as temporal_order_key
 from .value_core import MAX_JSON_SAFE_INTEGER as MAX_JSON_SAFE_INTEGER, mutable_json_value as mutable_json_value, snapshot_json_value as snapshot_json_value
-from _typeshed import Incomplete
 from collections import Counter
 from collections.abc import Callable as Callable, Mapping
 from dataclasses import dataclass
@@ -82,11 +81,11 @@ class TimelineQuery:
     def __post_init__(self) -> None: ...
 
 class RevisionQueryService:
-    data_service: Incomplete
-    revision_id: Incomplete
-    dataset: Incomplete
-    indexed_history: Incomplete
-    cancellation_probe: Incomplete
+    data_service: NormalizedDataService
+    revision_id: str
+    dataset: Mapping[str, Any]
+    indexed_history: IndexedHistory | None
+    cancellation_probe: Callable[[], bool] | None
     def __init__(self, data_service: NormalizedDataService, *, revision_id: str, dataset: Mapping[str, Any], indexed_history: IndexedHistory | None = None, cancellation_probe: Callable[[], bool] | None = None) -> None: ...
     def graph(self, timestamp_ns: int) -> dict[str, Any]: ...
     def correlation(self, query: CorrelationQuery) -> dict[str, Any]: ...

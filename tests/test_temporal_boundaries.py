@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from router_dump_analyzer.normalized_data import overlaps_range
+from router_dump_analyzer.revision_queries import _overlaps_window
 from router_dump_analyzer.temporal_core import (
     MAX_TEMPORAL_NS,
     MIN_TEMPORAL_NS,
@@ -15,7 +16,6 @@ from router_dump_analyzer.temporal_topology import (
     TemporalTopologyService,
     _ns,
 )
-from router_dump_analyzer.web.runtime_api import _overlaps_window
 
 
 class TemporalBoundaryTests(unittest.TestCase):
