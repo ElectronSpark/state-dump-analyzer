@@ -512,7 +512,9 @@ Run the linear, copy-paste
 workflow to verify the fixture, validate the installed entry point, and execute
 the golden test. That guide is the canonical validation procedure and then
 shows exactly which plug-in, fixture, test, and entry-point pieces to copy into
-a new independently installable distribution. A production plug-in depends on
+a new independently installable distribution. Use the
+[detailed author guide](../docs/plugin-author-guide.md) for optional capability
+implementations and focused conformance commands. A production plug-in depends on
 `router-dump-analyzer-core`, not on this demo package.
 
 Both demo import roots, `rsl_demo_plugin` and `rsl_demo_generator`, ship

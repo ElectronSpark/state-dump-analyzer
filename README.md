@@ -424,10 +424,11 @@ behavior and remaining work.
 
 ## Build a device plug-in
 
-For the shortest working path, use these three resources:
+For the shortest working path, use these resources:
 
 - **Start:** [Plug-in author quickstart](docs/plugin-author-quickstart.md)
 - **Copy:** [Demo plug-in teaching slice](demo/README.md)
+- **Extend:** [Detailed author guide](docs/plugin-author-guide.md)
 - **Reference:** [Normative plug-in contract](docs/plugin-contract.md)
 
 The quickstart is the single copy-paste workflow for installing and validating

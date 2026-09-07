@@ -31,7 +31,8 @@ If this is your first plug-in, start with
 `docs/plugin-author-quickstart.md` and the runnable
 `demo/rsl_demo_plugin/__init__.py` teaching slice. This document is
 the normative reference, not the recommended reading order for a first
-implementation.
+implementation. The [detailed author guide](plugin-author-guide.md) explains
+optional capabilities and their executable conformance checks.
 
 ## 1. Packaging and discovery
 

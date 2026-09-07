@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import tomllib
+import shlex
+import subprocess
+import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -60,12 +64,6 @@ class PluginAuthoringDocumentationTests(unittest.TestCase):
             "InputParserKind.STATUS",
             "SourceRecordEmission",
             "derive_event_uid",
-            "ForwardingCandidateConstraint",
-            "ForwardingTraversalStateKey",
-            "ForwardingPolicyEvaluation",
-            "ForwardingTraversalEvaluation",
-            "ingress_scopes_complete=True",
-            "policy_scopes_complete",
             "python -m pip install -e demo",
             "router-dump-plugin-validate demo_router",
             "--artifact demo/fixtures/minimal-status.jsonl",
@@ -82,6 +80,52 @@ class PluginAuthoringDocumentationTests(unittest.TestCase):
         self.assertIn("router-dump-plugin-validate demo_router", readme)
         self.assertNotIn("examples/minimal_plugin", readme)
 
+    def test_quickstart_smoke_commands_execute(self) -> None:
+        document = (ROOT / "docs/plugin-author-quickstart.md").read_text(
+            encoding="utf-8"
+        )
+        block = document.split("<!-- quickstart-smoke:start -->", 1)[1].split(
+            "<!-- quickstart-smoke:end -->", 1
+        )[0].strip()
+        self.assertTrue(block.startswith("```text\n") and block.endswith("```"))
+        commands = block.removeprefix("```text\n").removesuffix("```").splitlines()
+        self.assertGreaterEqual(len(commands), 4)
+        with tempfile.TemporaryDirectory(prefix="rda-author-") as state_dir:
+            for line in commands:
+                with self.subTest(command=line):
+                    command = shlex.split(line)
+                    if command[0] == "python":
+                        command[0] = sys.executable
+                    elif command[0] == "router-dump-plugin-validate":
+                        command[:1] = [
+                            sys.executable, "-X", "utf8", "-m",
+                            "router_dump_analyzer.plugin_validation",
+                        ]
+                    else:
+                        self.fail(f"Unexpected smoke executable: {command[0]}")
+                    command = [
+                        state_dir if value == ".runtime/plugin-author-state" else value
+                        for value in command
+                    ]
+                    result = subprocess.run(
+                        command, cwd=ROOT, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=180, check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_detailed_guide_preserves_advanced_contracts(self) -> None:
+        guide = (ROOT / "docs/plugin-author-guide.md").read_text(encoding="utf-8")
+        for required in (
+            "ForwardingCandidateConstraint", "ForwardingTraversalStateKey",
+            "ForwardingPolicyEvaluation", "ForwardingTraversalEvaluation",
+            "ingress_scopes_complete=True", "policy_scopes_complete",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, guide)
+        self.assertIn("docs/plugin-author-guide.md", (ROOT / "AGENTS.md").read_text(
+            encoding="utf-8"
+        ))
+
     def test_demo_example_points_advanced_forwarding_back_to_contract(self) -> None:
         example = (ROOT / "demo" / "README.md").read_text(encoding="utf-8")
         self.assertIn("ForwardingCandidateConstraint", example)
@@ -90,7 +134,7 @@ class PluginAuthoringDocumentationTests(unittest.TestCase):
         self.assertIn("plugin-author-quickstart.md", example)
 
     def test_forwarding_docs_keep_trace_start_distinct_from_flow_source(self) -> None:
-        quickstart = (ROOT / "docs" / "plugin-author-quickstart.md").read_text(
+        quickstart = (ROOT / "docs" / "plugin-author-guide.md").read_text(
             encoding="utf-8"
         )
         contract = (ROOT / "docs" / "plugin-contract.md").read_text(
@@ -229,7 +273,7 @@ class PluginAuthoringDocumentationTests(unittest.TestCase):
     def test_docs_keep_revision_and_profile_transport_boundaries_explicit(
         self,
     ) -> None:
-        quickstart = (ROOT / "docs" / "plugin-author-quickstart.md").read_text(
+        quickstart = (ROOT / "docs" / "plugin-author-guide.md").read_text(
             encoding="utf-8"
         )
         contract = (ROOT / "docs" / "plugin-contract.md").read_text(
@@ -263,7 +307,7 @@ class PluginAuthoringDocumentationTests(unittest.TestCase):
     def test_docs_make_the_core_the_only_web_entry_point(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         example = (ROOT / "demo" / "README.md").read_text(encoding="utf-8")
-        quickstart = (ROOT / "docs" / "plugin-author-quickstart.md").read_text(
+        quickstart = (ROOT / "docs" / "plugin-author-guide.md").read_text(
             encoding="utf-8"
         )
         contract = (ROOT / "docs" / "plugin-contract.md").read_text(
@@ -302,7 +346,7 @@ class PluginAuthoringDocumentationTests(unittest.TestCase):
             for path in (
                 "README.md",
                 "demo/README.md",
-                "docs/plugin-author-quickstart.md",
+                "docs/plugin-author-guide.md",
                 "docs/plugin-contract.md",
                 "docs/api-contract.md",
                 "docs/architecture.md",

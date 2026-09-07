@@ -9,6 +9,7 @@ plug-in authoring materials unless the user explicitly asks them to do so.
 The maintained authoring set is:
 
 - `docs/plugin-author-quickstart.md`
+- `docs/plugin-author-guide.md`
 - `docs/plugin-contract.md`
 - the minimal runnable plug-in example and its README
 - the plug-in-authoring links and commands in `README.md`
