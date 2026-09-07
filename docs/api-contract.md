@@ -1,7 +1,7 @@
 # API payload contract
 
 Status: normative `/v1` contract with implemented-surface notes
-Encoding: UTF-8 JSON; Arrow/Parquet exports use equivalent typed columns
+Encoding: UTF-8 JSON for the shipped API; columnar exports are a design target
 
 The endpoint list in `architecture.md` is intentionally compact. This document
 fixes the payload rules other tools need. Sections that describe a target
