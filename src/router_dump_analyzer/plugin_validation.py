@@ -11,7 +11,6 @@ import argparse
 import mimetypes
 from collections.abc import Iterable
 from dataclasses import dataclass
-from importlib import metadata
 from inspect import getattr_static
 from itertools import islice
 from pathlib import Path, PurePosixPath
@@ -38,7 +37,7 @@ from .plugin_api import (
     validate_plugin_diagnostic,
     validate_probe_report,
 )
-from .plugin_loading import load_plugin_entry_point
+from .plugin_loading import installed_plugin_entry_points, load_plugin_entry_point
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 from .public_text import bounded_public_error_detail
 
@@ -484,16 +483,10 @@ def validate_plugin(
         )
 
 
-def _entry_points() -> tuple[metadata.EntryPoint, ...]:
-    return tuple(
-        metadata.entry_points().select(group=PLUGIN_ENTRY_POINT_GROUP)
-    )
-
-
 def load_entry_point(name: str) -> Any:
     """Load exactly one installed analyzer plug-in by entry-point name."""
 
-    return load_plugin_entry_point(name, candidates=_entry_points())
+    return load_plugin_entry_point(name, candidates=installed_plugin_entry_points())
 
 
 def _inventory_from_arguments(
@@ -581,7 +574,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     if arguments.list:
-        for entry_point in sorted(_entry_points(), key=lambda item: item.name):
+        for entry_point in sorted(installed_plugin_entry_points(), key=lambda item: item.name):
             distribution = (
                 entry_point.dist.name
                 if entry_point.dist is not None

@@ -1,5 +1,5 @@
 from .plugin_api import AnalyzerPluginBase as AnalyzerPluginBase, ArtifactInfo as ArtifactInfo, CORE_PLUGIN_API_VERSION as CORE_PLUGIN_API_VERSION, DiagnosticOrigin as DiagnosticOrigin, DiagnosticStage as DiagnosticStage, DumpInventory as DumpInventory, INPUT_PARSER_HOOKS as INPUT_PARSER_HOOKS, InputSpec as InputSpec, PLUGIN_CAPABILITY_HOOKS as PLUGIN_CAPABILITY_HOOKS, PLUGIN_ENTRY_POINT_GROUP as PLUGIN_ENTRY_POINT_GROUP, PluginCapability as PluginCapability, PluginDiagnostic as PluginDiagnostic, PluginManifest as PluginManifest, PluginSchema as PluginSchema, ProbeMatchKind as ProbeMatchKind, ReconstructionSupport as ReconstructionSupport, validate_plugin_diagnostic as validate_plugin_diagnostic, validate_probe_report as validate_probe_report
-from .plugin_loading import load_plugin_entry_point as load_plugin_entry_point
+from .plugin_loading import installed_plugin_entry_points as installed_plugin_entry_points, load_plugin_entry_point as load_plugin_entry_point
 from .process_control import PROCESS_CONTROL_EXCEPTIONS as PROCESS_CONTROL_EXCEPTIONS
 from .public_text import bounded_public_error_detail as bounded_public_error_detail
 from dataclasses import dataclass

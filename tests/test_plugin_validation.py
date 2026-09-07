@@ -567,7 +567,7 @@ class PluginValidationTests(unittest.TestCase):
     def test_cli_reports_missing_entry_point_without_traceback(self) -> None:
         output = io.StringIO()
         with patch(
-            "router_dump_analyzer.plugin_validation._entry_points",
+            "router_dump_analyzer.plugin_validation.installed_plugin_entry_points",
             return_value=(),
         ), redirect_stdout(output):
             return_code = main(["missing"])
@@ -583,7 +583,7 @@ class PluginValidationTests(unittest.TestCase):
 
         output = io.StringIO()
         with patch(
-            "router_dump_analyzer.plugin_validation._entry_points",
+            "router_dump_analyzer.plugin_validation.installed_plugin_entry_points",
             return_value=(BrokenEntryPoint(),),
         ), redirect_stdout(output):
             return_code = main(["broken"])
@@ -617,7 +617,7 @@ class PluginValidationTests(unittest.TestCase):
             with (
                 self.subTest(supplied=repr(supplied[:40])),
                 patch(
-                    "router_dump_analyzer.plugin_validation._entry_points",
+                    "router_dump_analyzer.plugin_validation.installed_plugin_entry_points",
                     return_value=(BrokenEntryPoint(supplied),),
                 ),
                 redirect_stdout(output),
@@ -640,7 +640,7 @@ class PluginValidationTests(unittest.TestCase):
 
         output = io.StringIO()
         with patch(
-            "router_dump_analyzer.plugin_validation._entry_points",
+            "router_dump_analyzer.plugin_validation.installed_plugin_entry_points",
             return_value=(BrokenEntryPoint(),),
         ), redirect_stdout(output):
             return_code = main(["broken"])
@@ -846,7 +846,7 @@ plugin = P()
 
         output = io.StringIO()
         with patch(
-            "router_dump_analyzer.plugin_validation._entry_points",
+            "router_dump_analyzer.plugin_validation.installed_plugin_entry_points",
             return_value=(InstalledEntryPoint(),),
         ), redirect_stdout(output):
             return_code = main(
