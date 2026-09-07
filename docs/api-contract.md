@@ -4496,7 +4496,9 @@ Resource `state` and typed `key` objects are allowlist projections: only fields
 declared by that kind's `PropertyDescriptor` (or explicit `key_fields`) may
 appear. `sensitive`, `client_visible: false`, and undeclared fields are omitted
 recursively and cannot contribute to public search text. If such a property is
-the kind's `condition_field`, returned status is `unknown`.
+the kind's `condition_field`, returned status is `unknown`. This includes
+private ancestors and relative paths within the condition path, even when a
+descendant has its own public descriptor or uses a literal dotted key.
 Connector-like presentation comes from descriptor tags and never from a core
 check for a resource name. An optional descriptor `icon` carries validated SVG
 path geometry (`path`, four-number `view_box`, `render_mode`, and

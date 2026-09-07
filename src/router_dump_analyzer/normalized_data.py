@@ -625,8 +625,15 @@ def descriptor_sensitive_condition(
     if not descriptor or not descriptor.get("condition_field"):
         return False
     condition = str(descriptor["condition_field"])
-    rule = descriptor_property_rules(descriptor).get(condition, {})
-    return bool(rule.get("sensitive") or rule.get("client_visible", True) is False)
+    private_fields = frozenset(
+        name
+        for name, rule in descriptor_property_rules(descriptor).items()
+        if rule.get("sensitive") or rule.get("client_visible", True) is False
+    )
+    hidden, _branches = _advance_sensitive_path(
+        condition, _sensitive_path_trie(private_fields), (),
+    )
+    return hidden
 
 
 @lru_cache(maxsize=256)
@@ -645,61 +652,58 @@ def _sensitive_path_trie(
     return root
 
 
-def _redact_relative_paths(
-    value: Any,
-    branch: Mapping[object, Any],
-) -> Any:
-    if isinstance(value, list):
-        return [_redact_relative_paths(item, branch) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_redact_relative_paths(item, branch) for item in value)
-    if not isinstance(value, Mapping):
-        return value
-    result: dict[Any, Any] = {}
-    for key, nested in value.items():
-        child = branch.get(str(key))
-        if isinstance(child, Mapping) and child.get(_SENSITIVE_PATH_TERMINAL):
-            continue
-        result[key] = (
-            _redact_relative_paths(nested, child)
-            if isinstance(child, Mapping)
-            else nested
-        )
-    return result
+def _advance_sensitive_path(
+    name: str,
+    path_trie: Mapping[object, Any],
+    branches: tuple[Mapping[object, Any], ...],
+) -> tuple[bool, tuple[Mapping[object, Any], ...]]:
+    """Match private paths across nested mappings and literal dotted keys.
+
+    A rule may start at every logical property segment, matching recursive
+    payload redaction. Active branches retain matches started by ancestor
+    keys; their count is bounded by the declared trie depth. Reaching a private
+    ancestor hides all descendants, even when a child is declared public.
+    """
+
+    for part in name.split("."):
+        following: list[Mapping[object, Any]] = []
+        for branch in (path_trie, *branches):
+            child = branch.get(part)
+            if not isinstance(child, Mapping):
+                continue
+            if child.get(_SENSITIVE_PATH_TERMINAL):
+                return True, ()
+            following.append(child)
+        branches = tuple(following)
+    return False, branches
 
 
 def _redact_sensitive_tree(
     value: Any,
     *,
-    exact_names: frozenset[str],
     path_trie: Mapping[object, Any],
+    branches: tuple[Mapping[object, Any], ...] = (),
 ) -> Any:
     if isinstance(value, Mapping):
         result: dict[Any, Any] = {}
         for key, nested in value.items():
-            name = str(key)
-            if name in exact_names:
-                continue
-            child = path_trie.get(name)
-            if isinstance(child, Mapping) and child.get(_SENSITIVE_PATH_TERMINAL):
-                continue
-            projected = _redact_sensitive_tree(
-                nested,
-                exact_names=exact_names,
-                path_trie=path_trie,
+            hidden, following = _advance_sensitive_path(
+                str(key), path_trie, branches,
             )
-            result[key] = (
-                _redact_relative_paths(projected, child)
-                if isinstance(child, Mapping)
-                else projected
+            if hidden:
+                continue
+            result[key] = _redact_sensitive_tree(
+                nested,
+                path_trie=path_trie,
+                branches=following,
             )
         return result
     if isinstance(value, list):
         return [
             _redact_sensitive_tree(
                 nested,
-                exact_names=exact_names,
                 path_trie=path_trie,
+                branches=branches,
             )
             for nested in value
         ]
@@ -707,8 +711,8 @@ def _redact_sensitive_tree(
         return tuple(
             _redact_sensitive_tree(
                 nested,
-                exact_names=exact_names,
                 path_trie=path_trie,
+                branches=branches,
             )
             for nested in value
         )
@@ -721,7 +725,6 @@ def redact_sensitive_tree(value: Any, sensitive_fields: set[str]) -> Any:
     exact_names = frozenset(str(field) for field in sensitive_fields)
     return _redact_sensitive_tree(
         value,
-        exact_names=exact_names,
         path_trie=_sensitive_path_trie(exact_names),
     )
 
@@ -1623,12 +1626,9 @@ def _project_relationship_property_value(
 
     exact_names = frozenset(str(field) for field in sensitive_fields)
     path_trie = _sensitive_path_trie(exact_names)
-    initial = path_trie.get(root_property)
-    initial_branches = (
-        (initial,)
-        if isinstance(initial, Mapping) and not initial.get(_SENSITIVE_PATH_TERMINAL)
-        else ()
-    )
+    hidden, initial_branches = _advance_sensitive_path(root_property, path_trie, ())
+    if hidden:
+        return _DROP_CLIENT_FIELD
 
     def project(nested: Any, branches: tuple[Mapping[object, Any], ...]) -> Any:
         if not isinstance(nested, Mapping) or type(nested.get("type")) is not str:
@@ -1676,22 +1676,10 @@ def _project_relationship_property_value(
         projected_entries: dict[str, Any] = {}
         for raw_name, item in entries.items():
             name = str(raw_name)
-            if name in exact_names:
-                continue
-            next_branches: list[Mapping[object, Any]] = []
-            candidates = (path_trie, *branches)
-            hidden = False
-            for branch in candidates:
-                child = branch.get(name)
-                if not isinstance(child, Mapping):
-                    continue
-                if child.get(_SENSITIVE_PATH_TERMINAL):
-                    hidden = True
-                    break
-                next_branches.append(child)
+            hidden, next_branches = _advance_sensitive_path(name, path_trie, branches)
             if hidden:
                 continue
-            projected_item = project(item, tuple(next_branches))
+            projected_item = project(item, next_branches)
             if projected_item is not _DROP_CLIENT_FIELD:
                 projected_entries[name] = projected_item
         return {"type": "mapping", "entries": projected_entries}

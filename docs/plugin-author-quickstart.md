@@ -48,6 +48,7 @@ router-dump-plugin-validate demo_router --artifact demo/fixtures/minimal-status.
 python -m unittest discover -s demo/tests -v
 python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_relationship_projection_materialization tests.test_relationship_projection_ingestion tests.test_consistency_materialization tests.test_consistency_ingestion tests.test_revision_world -v
 python -m unittest tests.test_reconstruction_boundaries tests.test_public_reconstruction_reads tests.test_shared_core_contracts -v
+python -m unittest tests.test_property_visibility tests.test_resource_property_policy tests.test_normalized_data_service -v
 python -m unittest discover -s state-dump-generator/tests -p "test_runtime_v2_vectors.py" -v
 python -X utf8 -m router_dump_analyzer.pipeline_cli --plugin demo_router --state-dir .runtime/plugin-author-state --tenant author-smoke --project example --workspace first-run --input demo/fixtures/minimal-status.jsonl --node-hint router-1 --pretty
 ```
@@ -490,6 +491,10 @@ Set `client_visible=False` for a declared property
 that reducers or server-side analysis need but the browser must not receive;
 set `sensitive=True` for secret material. Either setting also prevents that
 property from becoming a search oracle or a public `condition_field` value.
+Privacy also applies through ancestor paths: a public `credentials.state`
+declaration cannot expose its value when `credentials` is private. Core masks
+both the payload and any copied condition/status, including literal dotted
+keys. Keep the example's `oper_status` public when it is intended for display.
 `client_visible` defaults to `True` for compatibility, so the declaration
 itself is the allowlist.
 

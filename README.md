@@ -490,6 +490,7 @@ router-dump-plugin-validate demo_router `
   --metadata software_version=1
 python -m unittest tests.test_artifact_core tests.test_ingestion tests.test_capability_executor tests.test_capability_router tests.test_relationship_projection_materialization tests.test_relationship_projection_ingestion tests.test_consistency_materialization tests.test_consistency_ingestion tests.test_revision_world -v
 python -m unittest tests.test_reconstruction_boundaries tests.test_shared_core_contracts tests.test_reconstruction_truth tests.test_route_packet_projection -v
+python -m unittest tests.test_property_visibility tests.test_resource_property_policy tests.test_normalized_data_service -v
 python -m unittest discover -s demo/tests -v
 python -m unittest discover -s state-dump-generator/tests `
   -p "test_runtime_v2_vectors.py" -v

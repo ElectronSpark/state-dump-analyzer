@@ -407,6 +407,10 @@ The teaching implementation is
 [`rsl_demo_plugin/__init__.py`](rsl_demo_plugin/__init__.py).
 It recognizes `minimal-status.jsonl` and maps each accepted row to a typed
 `INTERFACE` snapshot plus a retained source record.
+Its `oper_status` condition is intentionally public. When adapting the schema,
+private parent/relative paths also hide descendant conditions and literal dotted
+keys. Verify publication with
+`python -m unittest tests.test_property_visibility tests.test_resource_property_policy tests.test_normalized_data_service -v`.
 Its manifest explicitly declares `TimelineTimeBasis.ABSOLUTE_UNIX_NS` because
 the fixture's `captured_at_ns` values are UTC/Unix nanoseconds; the conformance
 test asserts that declaration. This is semantic input, not presentation: a

@@ -1473,6 +1473,9 @@ A sensitive or non-client-visible condition remains the generic value
 `unknown` in resources, intervals, event effects, and aggregate keys. The same
 projection governs bootstrap, resource, search, range, interval, and event
 responses so one endpoint cannot become a publication bypass.
+Condition privacy follows the same relative-path and ancestor rules as payload
+redaction, including literal dotted keys; a public child cannot override a
+private ancestor.
 
 ### 5.3 Core tables
 

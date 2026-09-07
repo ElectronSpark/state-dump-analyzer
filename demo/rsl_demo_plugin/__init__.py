@@ -1436,6 +1436,8 @@ def _interface_schema() -> PluginSchema:
                     "oper_status",
                     "description",
                 ),
+                # This display condition is public. A private ancestor or
+                # matching relative property path also hides copied status.
                 condition_field="oper_status",
                 presentation_tags=("interface",),
             ),

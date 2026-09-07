@@ -1944,6 +1944,10 @@ If `condition_field` names a sensitive or non-client-visible property, the core
 reports the generic condition as `unknown` in resource views, intervals, event
 effects, and top-level event condition/status fields rather than copying that
 value into `status`.
+The same restriction applies when the condition path crosses a private ancestor
+or matches a private relative path inside the payload. A public descendant does
+not override that restriction. Nested paths and literal dotted keys follow the
+same policy; similarly prefixed names in different path segments remain distinct.
 
 When constructing a normalized revision, core-generated resource labels and
 event-subject labels use only key fields retained by the same publication
