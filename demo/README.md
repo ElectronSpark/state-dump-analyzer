@@ -96,6 +96,39 @@ The generator save format stays protocol-neutral. Focused conformance:
 python -m pytest -p no:cacheprovider tests/test_demo_vpn_topology.py demo/tests/test_scenario_source.py -q
 ```
 
+### Cross-node inconsistency samples
+
+In **Route trace**, choose either of these **Trace scenario** entries and press
+**Trace route**:
+
+| Scenario | Evidence to compare |
+| --- | --- |
+| Cross-node MPLS label handoff mismatch | PE-A's outgoing label `16011` and P1's expected ingress label `16012` |
+| Cross-node VXLAN service binding mismatch | PE-A's VNI `50100` and PE-B's expected service VNI `50200` |
+
+Select the forward path and inspect **Findings** and **Resolution steps** for
+the sender/receiver values and node/revision/resource provenance. The reverse
+observations are independently consistent. A valid-looking drawn path does not
+prove that both routers agree about forwarding it; this differs from the
+existing local control/FIB example and from harmless path asymmetry.
+
+The values are node-local resources in the canonical scenario save, carried
+into the generated dumps. The example plug-in rechecks the persisted
+observations when building its route projection. Matching values remove the
+mismatch; missing or incomplete evidence stays unproven rather than being
+treated as a conflicting value. These comparisons do not manufacture a broken
+packet-state chain or silently merge the two routers' resource identities.
+
+Core still binds declared findings to paths and renders their explanations;
+the example plug-in owns MPLS/VNI meaning and the comparison rule. The main
+VPN topology membership examples remain unchanged.
+
+Focused conformance (from the repository root):
+
+```text
+python -m pytest -p no:cacheprovider tests/test_demo_cross_node_consistency.py -q
+```
+
 ### Launcher behavior
 
 The setup script creates or updates the `router-dump-analyzer-demo` Conda
@@ -830,8 +863,8 @@ one current usable attachment on each side match. It performs no prefix, VLAN,
 address, label, or node-pair inference.
 
 `coverage.json` is generated from the versioned `COVERAGE_CASES` registry. The
-current registry contains 39 cases: 18 route, twelve packet, four topology, and
-five temporal. The 30 route and packet entries map to executable route
+current registry contains 41 cases: 20 route, twelve packet, four topology, and
+five temporal. The 32 route and packet entries map to executable route
 scenarios with node/revision-qualified route and forwarding evidence; packet
 entries also carry a generated packet declaration. Validation rejects missing
 or mismatched evidence rather than falling back to a separate hand-written

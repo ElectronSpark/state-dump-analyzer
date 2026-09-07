@@ -27,7 +27,7 @@ fabric's revision merely because their node names match.
 
 ## Existing coverage to retain
 
-The expanded catalog contains 18 route, twelve packet, four topology and five
+The expanded catalog contains 20 route, twelve packet, four topology and five
 temporal cases. Reuse its normal IP, SR-MPLS/PHP, SRv6, VPN nesting, ECMP,
 failover, asymmetric/transit-start reachability, loop, split-horizon, historical
 attachment and stale-update scenarios rather than building another fabric.
@@ -40,6 +40,11 @@ The [VPN topology samples](../demo/README.md#vpn-topology-samples) add Blue and
 Red MPLS L3VPN domains plus Blue EVPN/VXLAN membership to the same fabric. Their
 evidence comes from the authoring save's local resources and PE-E's historical
 service changes; physical media and route transport paths remain unchanged.
+
+The [cross-node inconsistency samples](../demo/README.md#cross-node-inconsistency-samples)
+compare saved sender/receiver MPLS label and VXLAN VNI observations. They are
+configuration-evidence disagreements, not inferred packet loss or a requirement
+that forward and return use identical paths.
 
 ## Honest boundaries
 

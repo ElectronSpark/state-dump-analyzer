@@ -11,6 +11,7 @@ from router_dump_analyzer.multi_node_route import (
 
 from .advanced_trace import STEERING_PROFILES, build_packet_transitions
 from .assembly_store import DemoAssemblyStore
+from .cross_node_consistency import revalidate_boundary_coverage
 from .scenario_registry import SCENARIO_BY_ID
 from .vpn_topology import vpn_domain_key
 
@@ -288,7 +289,12 @@ def build_route_projection_set(
     return RouteProjectionSet(
         projections_by_node=projections_by_node,
         revision_ids_by_node=revision_ids_by_node,
-        coverage=dict(revision_store.coverage),
+        coverage=revalidate_boundary_coverage(
+            revision_store.coverage,
+            projections_by_node,
+            revision_ids_by_node,
+            SCENARIO_BY_ID,
+        ),
     )
 
 

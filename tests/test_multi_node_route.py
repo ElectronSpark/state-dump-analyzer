@@ -3809,6 +3809,42 @@ class MultiNodeRouteTests(unittest.TestCase):
         self.assertEqual(len(strict_reverse["paths"]), 1)
         self.assertFalse(strict_reverse["reachable"])
 
+    def test_explicit_plugin_findings_control_consistency_without_catalog_failure(self) -> None:
+        materialize = MultiNodeRouteService._materialize_generated_findings
+        for affects in (True, False):
+            with self.subTest(affects_consistency=affects):
+                def declared_findings(paths, projection, issues):
+                    detached = dict(projection)
+                    detached["consistency_findings"] = [{
+                        "finding_id": "test:declared-observation",
+                        "issue_id": "issue:test:declared-observation",
+                        "category": "vendor_specific_comparison",
+                        "finding_type": "opaque_configuration_comparison",
+                        "summary": "Provider-declared observation",
+                        "candidate_ids": [path["generated_candidate_id"] for path in paths],
+                        "path_ids": [path["path_id"] for path in paths],
+                        "affects_consistency": affects,
+                    }]
+                    materialize(paths, detached, issues)
+
+                with patch.object(
+                    MultiNodeRouteService,
+                    "_materialize_generated_findings",
+                    side_effect=declared_findings,
+                ):
+                    response = self.client.post(
+                        "/v1/topologies/routes/trace",
+                        json={"scenario_id": "router-to-router"},
+                    )
+                self.assertEqual(response.status_code, 200, response.text)
+                payload = response.json()
+                self.assertEqual(payload["consistency"]["consistent"], not affects)
+                self.assertEqual(
+                    "issue:test:declared-observation" in payload["consistency"]["issue_refs"],
+                    affects,
+                )
+                self.assertTrue(payload["reachable"])
+
     def test_cross_layer_disagreement_retains_both_paths_and_marks_issues(self) -> None:
         response = self.client.post(
             "/v1/topologies/routes/trace",

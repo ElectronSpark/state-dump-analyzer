@@ -2242,6 +2242,14 @@ plug-in-declared terminal exactly satisfies the directional endpoint goal.
 Likewise, forward/return path symmetry is never used as a proxy for
 reachability or consistency.
 
+Materialized route findings use the declared `affects_consistency` flag to
+aggregate disagreement, including plug-in-specific categories. The core does
+not interpret vendor label/VNI comparison rules. The demo compares separately
+captured boundary observations with both resources' provenance; corrected
+observations clear the disagreement, while missing observations remain
+unknown rather than proving a mismatch. These findings do not relax the
+packet-transition invariant or substitute inconsistency for unreachability.
+
 Under `strict`, a missing required member, unsupported perspective, unaligned
 clock, unknown required status, or ambiguous/unresolved boundary prevents a
 complete path. Partial prefixes may be returned for diagnosis, but `result`

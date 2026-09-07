@@ -3868,6 +3868,13 @@ results and describes next-hop, egress-interface, destination, encapsulation,
 reachability, or update-lag differences. The server never splices preferred
 steps from multiple layers into a synthetic path.
 
+For materialized route scenarios, a finding with explicit
+`affects_consistency: true` contributes to the inconsistent verdict and
+`consistency.issue_refs` independently of its plug-in-owned category. Explicit
+`false` remains informational. This does not change packet continuity checks
+or turn a configuration disagreement into proof that a reachable path drops
+traffic; direction and affected path references still scope the finding.
+
 With `completeness_policy: "strict"`, an unavailable required member,
 unsupported status perspective, unknown required status, unaligned clock, or
 ambiguous/unresolved boundary makes the trace incomplete. Diagnostic path

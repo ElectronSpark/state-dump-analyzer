@@ -107,6 +107,72 @@ BASE_ROUTE_TRACE_SCENARIOS: tuple[dict[str, Any], ...] = (
         destination_role="blue_service",
     ),
     _scenario(
+        "cross-node-mpls-label-mismatch",
+        "Cross-node MPLS label handoff mismatch",
+        (
+            "PE-A's emitted transport label disagrees with P1's independently "
+            "captured ingress binding. The explicitly authored return bindings "
+            "agree; this is not a control/FIB comparison or path asymmetry."
+        ),
+        route_type="mpls_transport",
+        vrf="default",
+        route_family="mpls_labeled_unicast",
+        address_family="mpls",
+        cross_node_rule={
+            "contract_id": "demo.mpls-label-handoff.v1",
+            "field_label": "MPLS label handoff",
+            "finding_type": "mpls_label_handoff",
+            "sender_field": "outgoing_label",
+            "receiver_field": "expected_incoming_label",
+            "resource_type": "MPLS_BINDING",
+            "resource_layer": "hardware-driver-plane",
+            "expected_finding_result": {"forward": "mismatch", "reverse": "equal"},
+            "participants": {
+                "forward": {
+                    "sender": {"node_id": "node-a", "source_resource_id": "consistency:mpls-handoff:forward"},
+                    "receiver": {"node_id": "transit-p-1", "source_resource_id": "consistency:mpls-handoff:forward"},
+                },
+                "reverse": {
+                    "sender": {"node_id": "transit-p-1", "source_resource_id": "consistency:mpls-handoff:reverse"},
+                    "receiver": {"node_id": "node-a", "source_resource_id": "consistency:mpls-handoff:reverse"},
+                },
+            },
+        },
+    ),
+    _scenario(
+        "cross-node-vxlan-vni-mismatch",
+        "Cross-node VXLAN service binding mismatch",
+        (
+            "PE-A's emitted VNI disagrees with PE-B's independently captured "
+            "binding for this diagnostic service. Explicit return observations "
+            "agree. Ordinary Blue VPN configuration remains unchanged."
+        ),
+        route_type="evpn_service",
+        vrf="blue",
+        route_family="l2vpn_evpn",
+        address_family="l2vpn",
+        cross_node_rule={
+            "contract_id": "demo.vxlan-vni-handoff.v1",
+            "field_label": "VXLAN VNI service binding",
+            "finding_type": "vxlan_vni_handoff",
+            "sender_field": "outgoing_vni",
+            "receiver_field": "expected_incoming_vni",
+            "resource_type": "VPN_BINDING",
+            "resource_layer": "hardware-driver-plane",
+            "expected_finding_result": {"forward": "mismatch", "reverse": "equal"},
+            "participants": {
+                "forward": {
+                    "sender": {"node_id": "node-a", "source_resource_id": "consistency:vxlan-handoff:forward"},
+                    "receiver": {"node_id": "node-b", "source_resource_id": "consistency:vxlan-handoff:forward"},
+                },
+                "reverse": {
+                    "sender": {"node_id": "node-b", "source_resource_id": "consistency:vxlan-handoff:reverse"},
+                    "receiver": {"node_id": "node-a", "source_resource_id": "consistency:vxlan-handoff:reverse"},
+                },
+            },
+        },
+    ),
+    _scenario(
         "cross-layer-inconsistent",
         "Control/forwarding path mismatch",
         (

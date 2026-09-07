@@ -6407,6 +6407,10 @@ class MultiNodeRouteService:
             generated_projection,
             issues,
         )
+        # Declared findings are authoritative independently of a fixture's
+        # expected outcome or the plug-in's open category vocabulary.
+        if any(item.get("affects_consistency") is True for item in issues):
+            consistency_state = "inconsistent"
         if self._materialize_control_plane_only_issue(paths, issues):
             consistency_state = "control_plane_only_not_forwarding"
         self._decorate_route_presentations(paths, routing_context)
@@ -6682,9 +6686,12 @@ class MultiNodeRouteService:
                 "issue_refs": [
                     item["issue_id"]
                     for item in issues
-                    if item["category"]
-                    in {"cross_layer", "boundary", "directional", "forwarding"}
-                    and item.get("affects_consistency", True) is not False
+                    if item.get("affects_consistency") is True
+                    or (
+                        item["category"]
+                        in {"cross_layer", "boundary", "directional", "forwarding"}
+                        and item.get("affects_consistency", True) is not False
+                    )
                 ],
                 "compared_status_perspectives": sorted(
                     {

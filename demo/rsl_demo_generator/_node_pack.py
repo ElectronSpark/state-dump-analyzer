@@ -123,6 +123,8 @@ def _resource_table_destination(
         return "underlay-agent", "VIRTUAL_INTERFACES"
     if kind in {"ADJACENCY", "NEIGHBOR"}:
         return "underlay-agent", "NEIGHBORS"
+    if kind in {"MPLS_BINDING", "VPN_BINDING"}:
+        return "forwarding-single-home", "FORWARDING_RESOURCES"
     if kind in {"ETG", "DTE", "ETE"}:
         index = _service_index(service_id)
         if index is None:

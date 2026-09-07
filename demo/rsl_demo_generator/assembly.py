@@ -41,6 +41,7 @@ from rsl_demo_plugin.archive import (
     NORMALIZED_SCALE_PREFIX,
     RELATIONSHIP_MUTATIONS_MEMBER_NAME,
 )
+from rsl_demo_plugin.cross_node_consistency import evaluate_boundary_findings
 from rsl_demo_plugin.scenario_registry import (
     ROUTE_PROTOCOL_BY_TYPE,
     ROUTE_RESOLUTION_LAYERS_BY_TYPE,
@@ -878,6 +879,28 @@ def _source_resource_id(
         f"{node_id}/{_source_layer(resource_type)}/"
         f"{resource_type.upper()}/{local_resource_id}"
     )
+
+
+def _source_boundary_observations(
+    node: NodeSpec, scenario_id: str, direction: str,
+) -> list[dict[str, Any]]:
+    """Project authored local declarations without inventing comparison values."""
+
+    observations = []
+    for resource in DEFAULT_SCENARIO_SOURCE.resources_at(node.node_id):
+        properties = resource.properties
+        if properties.get("scenario_id") != scenario_id or properties.get("direction") != direction:
+            continue
+        observations.append({
+            **properties,
+            "node_id": node.node_id,
+            "revision_id": node.revision_id,
+            "resource_type": resource.resource_type.upper(),
+            "resource_id": _source_resource_id(node.node_id, resource.resource_type, resource.resource_id),
+            "source_resource_id": resource.resource_id,
+            "observed_at_ns": str(resource.updated_at_ns + node.clock_offset_ns),
+        })
+    return observations
 
 
 def _source_status_class(status: str | None) -> str:
@@ -1957,6 +1980,10 @@ def _case_candidate_paths(
                 route_type,
                 semantic_ordinal,
             )
+            if semantics.get("cross_node_rule"):
+                # These cases compare independent local lookup declarations.
+                # A synthetic path-wide label/VNI would imply an unobserved agreement.
+                label_payload = {}
             semantic_payload = _route_semantic_payload(
                 route_type,
                 spec.sequence[-1],
@@ -2354,6 +2381,20 @@ def _case_materialization(
                 "semantic_owner": "plugin",
             }
         )
+    cross_node_rule = semantics.get("cross_node_rule")
+    if isinstance(cross_node_rule, Mapping):
+        consistency_findings.extend(evaluate_boundary_findings(
+            case.case_id,
+            cross_node_rule,
+            candidate_paths,
+            [
+                observation
+                for node in node_catalog.values()
+                for direction in ("forward", "reverse")
+                for observation in _source_boundary_observations(node, case.case_id, direction)
+            ],
+            {node.node_id: node.revision_id for node in node_catalog.values()},
+        ))
     topology_evidence_node_ids = [
         node_id
         for selector in case.topology_evidence
@@ -4051,6 +4092,16 @@ def _projection_rows(
     for case_index, case in enumerate(COVERAGE_CASES):
         if "route_resolution" not in case.required_capabilities:
             continue
+        cross_node_rule = scenario_semantics(case.case_id).get("cross_node_rule")
+        boundary_observations = {
+            direction: _source_boundary_observations(node, case.case_id, direction)
+            if cross_node_rule else []
+            for direction in ("forward", "reverse")
+        }
+        case_evidence_resource_ids = list(dict.fromkeys([
+            evidence_resource_id,
+            *(item["resource_id"] for items in boundary_observations.values() for item in items),
+        ]))
         candidate_paths = _case_candidate_paths(case)
         node_occurrences = [
             (path, visit_index)
@@ -4162,6 +4213,22 @@ def _projection_rows(
                     ),
                 }
             )
+            if cross_node_rule:
+                decision = directional_decisions[path["direction"]][-1]
+                observations = boundary_observations[path["direction"]]
+                decision["boundary_observations"] = observations
+                # Do not synthesize label operations for a diagnostic lookup.
+                decision["forwarding_actions"] = []
+                decision["resolution_text"] += (
+                    " Diagnostic node-local binding observations (not packet transitions): "
+                    + "; ".join(
+                        f"{item.get('field', 'unknown field')}={item.get('value', 'unknown')} from {item['resource_id']} "
+                        f"at {item['observed_at_ns']} ns"
+                        for item in observations
+                    )
+                    if observations else
+                    " This node has no participant declaration for this diagnostic handoff."
+                )
         selected_decision = next(
             item
             for item in directional_decisions[selected_path["direction"]]
@@ -4367,7 +4434,7 @@ def _projection_rows(
                 "forward": dict(forward_context),
                 "reverse": dict(reverse_context),
             },
-            "evidence_resource_ids": [evidence_resource_id],
+            "evidence_resource_ids": case_evidence_resource_ids,
             "semantic_owner": "plugin",
             **_route_semantic_payload(
                 route_type,
@@ -4376,6 +4443,12 @@ def _projection_rows(
             ),
             **_route_label_payload(route_type, case_index),
         }
+        if cross_node_rule:
+            for field_name in ("label_stack", "outgoing_label_stack", "encapsulation"):
+                route.pop(field_name, None)
+            route["forwarding_actions"] = []
+            route["boundary_observations"] = selected_decision["boundary_observations"]
+            route["resolution_text"] = selected_decision["resolution_text"]
         default_start = semantics.get("default_start")
         if default_start and traceable and route_direction == "forward":
             route["trace_query"]["starting_point"] = {
@@ -4429,7 +4502,7 @@ def _projection_rows(
                     "forward": dict(forward_context),
                     "reverse": dict(reverse_context),
                 },
-                "resolution_text": (
+                "resolution_text": route.get("resolution_text") or (
                     f"The {node.node_id} example plug-in resolves "
                     f"{route_type} for {case.case_id} "
                     + (
@@ -4442,7 +4515,7 @@ def _projection_rows(
                 ),
                 "packet_profile_id": case.packet_profile_id,
                 "expected_outcome": case.expected_outcome,
-                "evidence_resource_ids": [evidence_resource_id],
+                "evidence_resource_ids": case_evidence_resource_ids,
                 "forced_rule_allowed": (
                     case.case_id == "packet-forced-steering"
                 ),

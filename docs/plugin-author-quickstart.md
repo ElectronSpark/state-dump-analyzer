@@ -76,6 +76,14 @@ plug-in interprets local VRF/RT/VNI evidence, while core renders a separate VPN
 plane without creating physical shortcuts. Run its focused regression with
 `python -m pytest -p no:cacheprovider tests/test_demo_vpn_topology.py -q`.
 
+The [cross-node disagreement examples](../demo/README.md#cross-node-inconsistency-samples)
+show a separate lesson: compare independent node-local observations in the
+plug-in's semantic layer, retain both evidence identities, and distinguish
+unknown evidence from an actual mismatch. Do not represent conflicting
+configuration observations as an invalid complete packet transition chain.
+Run the evidence and runtime-revalidation checks with
+`python -m pytest -p no:cacheprovider tests/test_demo_cross_node_consistency.py -q`.
+
 The installed core also exposes a complete PEP 561 typing surface. Every
 `router_dump_analyzer` Python module has a sibling `.pyi`, and the package ships
 `py.typed`, so editors and type checkers resolve `AnalyzerPlugin`,

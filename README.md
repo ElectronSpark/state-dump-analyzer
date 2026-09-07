@@ -47,6 +47,7 @@ cross-layer inconsistency.
 | Learn what to inspect | [What to try](#what-to-try) |
 | Exercise durable workflows and offline evidence tooling | [Core demo walkthrough and validation](docs/demo-core-coverage.md) |
 | Compare physical connectivity with VPN membership | [VPN topology samples](demo/README.md#vpn-topology-samples) |
+| Inspect conflicting observations from different routers | [Cross-node inconsistency samples](demo/README.md#cross-node-inconsistency-samples) |
 | Build a device plug-in | [Plug-in author quickstart](docs/plugin-author-quickstart.md) |
 | Use the Python API from a typed client | [Typed Python API](#typed-python-api) |
 | Run durable uploads, sessions, or review | [Durable control plane](docs/control-plane.md) |

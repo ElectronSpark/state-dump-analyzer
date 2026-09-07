@@ -243,6 +243,20 @@ COVERAGE_CASES: tuple[CoverageCaseSpec, ...] = (
         ),
     ),
     _case(
+        "cross-node-mpls-label-mismatch",
+        "Cross-node MPLS label handoff mismatch",
+        required_capabilities=(
+            "route_resolution", "topology_projection", "consistency_evaluation",
+        ),
+    ),
+    _case(
+        "cross-node-vxlan-vni-mismatch",
+        "Cross-node VXLAN service binding mismatch",
+        required_capabilities=(
+            "route_resolution", "topology_projection", "consistency_evaluation",
+        ),
+    ),
+    _case(
         "cross-layer-inconsistent",
         "Cross-layer forwarding inconsistency",
         expected_outcome="inconsistent",

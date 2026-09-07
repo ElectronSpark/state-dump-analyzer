@@ -2596,6 +2596,14 @@ supplied linear chain; a suffix after it is a contract error. A chain ending
 only in `continue` is
 `continuation_required`, not delivered or resolved.
 
+Conflicting sender/receiver configuration or capture observations remain
+independent evidence. A plug-in-owned consistency rule may compare them and
+declare a finding with both provenances; it must not bypass the complete-chain
+invariant by presenting inconsistent snapshots as one packet's continuous
+history. Missing evidence is not proof of disagreement. The optional
+[cross-node demo examples](../demo/README.md#cross-node-inconsistency-samples)
+exercise this distinction without adding a new device hook.
+
 Packet size comparison is exact-basis only. A plug-in may attach a
 `ForwardingSizeObservation` to the packet state and a
 `ForwardingMtuConstraint` to a transition. Both name an opaque
