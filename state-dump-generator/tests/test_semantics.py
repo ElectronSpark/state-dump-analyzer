@@ -496,6 +496,92 @@ return {downloads, dirty, messages};
         self.assertIn("Could not save project", result["messages"][0]["message"])
         self.assertIn("safe identifier characters", result["messages"][0]["message"])
 
+    def test_generating_dump_keeps_project_unsaved_until_source_save(self) -> None:
+        result = self.run_web("""
+scenario = normalizeScenario(input);
+dirty = true;
+dom['generation-dialog'] = {open:true};
+dom['retry-generation'] = {};
+dom['project-name'] = {value:scenario.name};
+const states = [];
+const downloads = [];
+setGenerationState = kind => states.push(kind);
+toast = () => {};
+downloadBlob = (blob, filename) => downloads.push({blob, filename});
+globalThis.Blob = class Blob { constructor(parts) { this.parts = parts; } };
+globalThis.fetch = async () => ({
+  ok:true, headers:{get:() => 'attachment; filename="generated.tgz"'},
+  blob:async () => ({generated:true}),
+});
+await generateDumps();
+const dirtyAfterGeneration = dirty;
+saveProject();
+return {dirtyAfterGeneration, dirtyAfterSave:dirty, states,
+  filenames:downloads.map(item => item.filename),
+  saved:JSON.parse(downloads[1].blob.parts.join(''))};
+""")
+        self.assertTrue(result["dirtyAfterGeneration"])
+        self.assertFalse(result["dirtyAfterSave"])
+        self.assertEqual(result["states"], ["working", "success"])
+        self.assertEqual(result["filenames"][0], "generated.tgz")
+        self.assertTrue(result["filenames"][1].endswith(".scenario.json"))
+        self.assertEqual(compile_scenario(result["saved"]), compile_scenario(scenario()))
+
+    def test_generation_success_and_failures_preserve_existing_dirty_state(self) -> None:
+        for initially_dirty in (False, True):
+            for result_kind in ("success", "http-error", "network-error"):
+                with self.subTest(initially_dirty=initially_dirty, result_kind=result_kind):
+                    result = self.run_web("""
+scenario = normalizeScenario(input.scenario);
+dirty = input.initially_dirty;
+dom['generation-dialog'] = {open:true};
+dom['retry-generation'] = {};
+const states = [];
+let downloads = 0;
+setGenerationState = kind => states.push(kind);
+downloadBlob = () => { downloads += 1; };
+globalThis.fetch = async () => {
+  if (input.result_kind === 'network-error') throw new Error('network unavailable');
+  if (input.result_kind === 'http-error') return {
+    ok:false, status:422, json:async () => ({error:'invalid scenario'}),
+  };
+  return {ok:true, headers:{get:() => null}, blob:async () => ({generated:true})};
+};
+await generateDumps();
+return {dirty, downloads, states, retryHidden:dom['retry-generation'].hidden};
+""", {"scenario": scenario(), "initially_dirty": initially_dirty, "result_kind": result_kind})
+                    succeeded = result_kind == "success"
+                    self.assertEqual(result["dirty"], initially_dirty)
+                    self.assertEqual(result["downloads"], int(succeeded))
+                    self.assertEqual(result["states"], ["working", "success" if succeeded else "error"])
+                    self.assertEqual(result["retryHidden"], succeeded)
+
+    def test_edits_during_outstanding_generation_remain_unsaved(self) -> None:
+        result = self.run_web("""
+scenario = normalizeScenario(input);
+dirty = false;
+dom['generation-dialog'] = {open:true};
+dom['retry-generation'] = {};
+setGenerationState = () => {};
+downloadBlob = () => {};
+let resolveResponse;
+let submitted;
+globalThis.fetch = (_url, options) => {
+  submitted = JSON.parse(options.body).scenario;
+  return new Promise(resolve => { resolveResponse = resolve; });
+};
+const running = generateDumps();
+transact(() => { scenario.description = 'Edited during generation'; }, {render:false});
+resolveResponse({ok:true, headers:{get:() => null}, blob:async () => ({generated:true})});
+await running;
+return {dirty, description:scenario.description,
+  submittedDescription:submitted.metadata.description, historyLength:history.length};
+""")
+        self.assertTrue(result["dirty"])
+        self.assertEqual(result["description"], "Edited during generation")
+        self.assertEqual(result["submittedDescription"], "")
+        self.assertEqual(result["historyLength"], 1)
+
     def test_partial_multiaccess_pattern_uses_all_local_attachments(self) -> None:
         value = scenario()
         value["events"] = []

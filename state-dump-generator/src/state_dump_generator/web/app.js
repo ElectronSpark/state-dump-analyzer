@@ -2456,7 +2456,6 @@ async function generateDumps() {
       "State dump files generated",
       "Downloaded a bundle of node-local final snapshots and past logs. Authoring ground truth was excluded.",
     );
-    dirty = false;
   } catch (error) {
     setGenerationState("error", "Generation failed", error.message);
     dom["retry-generation"].hidden = false;
