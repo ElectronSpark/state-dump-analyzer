@@ -104,6 +104,7 @@ Repository contributors verify both stub drift and a strict consumer with:
 python -m pip install -e ".[test,web]" -e demo -e state-dump-generator
 python scripts/export_type_stubs.py --check
 python -m mypy --python-version 3.12 --strict --no-incremental tests/typing/public_api.py state-dump-generator/tests/typing/generator_public_api.py
+python -m mypy --python-version 3.12 --strict --no-incremental src/router_dump_analyzer demo/rsl_demo_plugin demo/rsl_demo_generator state-dump-generator/src/state_dump_generator
 ```
 
 For an intentional exported-signature change, run

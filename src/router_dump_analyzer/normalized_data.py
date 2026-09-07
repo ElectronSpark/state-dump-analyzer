@@ -4302,4 +4302,5 @@ __all__ = [
     "resource_id",
     "resource_label",
     "resource_search_text",
+    "state_intervals_for_perspective",
 ]
