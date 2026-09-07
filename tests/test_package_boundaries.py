@@ -42,9 +42,11 @@ DEMO_IMPORT_ROOTS = frozenset(
 DEMO_PLUGIN_POLICY_MODULES = frozenset(
     {
         "__init__.py",
+        "_identity.py",
         "archive.py",
         "advanced_trace.py",
         "assembly_store.py",
+        "cross_node_consistency.py",
         "data.py",
         "route_policy.py",
         "scenario_registry.py",
@@ -54,6 +56,24 @@ DEMO_PLUGIN_POLICY_MODULES = frozenset(
         "source_records.py",
         "temporal_contract.py",
         "topology_contract.py",
+        "typed_topology.py",
+        "vpn_topology.py",
+    }
+)
+# These opt-in factories compose retained plug-in/provider or runner records.
+# They are deployment wiring, not node-local semantic policy or a web host.
+DEMO_PLUGIN_DEPLOYMENT_MODULES = frozenset(
+    {
+        "deployment.py",
+        "offline_analysis.py",
+    }
+)
+DEMO_PLUGIN_DEPLOYMENT_IMPORTS = frozenset(
+    {
+        "rsl_demo_plugin.deployment",
+        "rsl_demo_plugin.offline_analysis",
+        "router_dump_analyzer.plugin_composition_deployment",
+        "router_dump_analyzer.private_analysis_deployment",
     }
 )
 WEB_RUNTIME_IMPORT_ROOTS = frozenset({"fastapi", "starlette", "uvicorn"})
@@ -114,6 +134,50 @@ def _relative_import_root(import_name: str) -> str | None:
         return None
     relative_name = import_name.lstrip(".")
     return relative_name.split(".", 1)[0] if relative_name else None
+
+
+def _demo_plugin_import_violations(path: Path, module_name: str) -> list[str]:
+    if module_name not in (
+        DEMO_PLUGIN_POLICY_MODULES | DEMO_PLUGIN_DEPLOYMENT_MODULES
+    ):
+        return [f"{module_name}: unclassified demo plug-in module"]
+    imports = set(_literal_imports(path))
+    # Include imported members so `from . import deployment` and
+    # `from router_dump_analyzer import private_analysis_deployment` cannot
+    # bypass the same check applied to direct module imports.
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            prefix = "." * node.level + (node.module or "")
+            separator = "" if prefix.endswith(".") else "."
+            imports.update(
+                (node.lineno, prefix + separator + alias.name)
+                for alias in node.names
+            )
+    violations = []
+    for line, import_name in sorted(imports):
+        absolute_root = _absolute_import_root(import_name)
+        if absolute_root in {
+            "generator",
+            "rsl_demo_generator",
+            "router_dump_analyzer_demo",
+            "router_dump_analyzer_demo_plugins",
+            "router_dump_analyzer_demo_generator",
+        }:
+            violations.append(f"{module_name}:{line}: {import_name}")
+        if module_name in DEMO_PLUGIN_POLICY_MODULES:
+            absolute_name = (
+                "rsl_demo_plugin." + import_name.lstrip(".")
+                if import_name.startswith(".")
+                else import_name
+            )
+            if any(
+                absolute_name == forbidden
+                or absolute_name.startswith(forbidden + ".")
+                for forbidden in DEMO_PLUGIN_DEPLOYMENT_IMPORTS
+            ):
+                violations.append(f"{module_name}:{line}: {import_name}")
+    return violations
 
 
 def _dependency_name(requirement: str) -> str:
@@ -475,34 +539,68 @@ class PackageBoundaryTests(unittest.TestCase):
             "frameworks:\n" + "\n".join(violations),
         )
 
-    def test_demo_plugin_policy_modules_do_not_import_application_composition(
+    def test_demo_plugin_modules_have_exhaustive_disjoint_roles(self) -> None:
+        self.assertFalse(
+            DEMO_PLUGIN_POLICY_MODULES & DEMO_PLUGIN_DEPLOYMENT_MODULES,
+            "a module must have one explicit policy/support or deployment role",
+        )
+        self.assertEqual(
+            {
+                path.relative_to(DEMO_PLUGIN).as_posix()
+                for path in _python_files(DEMO_PLUGIN)
+            },
+            DEMO_PLUGIN_POLICY_MODULES | DEMO_PLUGIN_DEPLOYMENT_MODULES,
+            "classify every demo plug-in module explicitly; unknown modules "
+            "must not bypass dependency checks",
+        )
+
+    def test_demo_plugin_modules_respect_policy_and_deployment_dependencies(
         self,
     ) -> None:
         violations: list[str] = []
-        policy_modules = _python_files(DEMO_PLUGIN)
-        self.assertEqual(
-            {path.name for path in policy_modules},
-            set(DEMO_PLUGIN_POLICY_MODULES),
-        )
-        for path in policy_modules:
-            for line, import_name in _literal_imports(path):
-                absolute_root = _absolute_import_root(import_name)
-                if absolute_root in {
-                    "generator",
-                    "rsl_demo_generator",
-                    "router_dump_analyzer_demo",
-                    "router_dump_analyzer_demo_plugins",
-                    "router_dump_analyzer_demo_generator",
-                }:
-                    violations.append(
-                        f"{path.relative_to(ROOT)}:{line}: {import_name}"
-                    )
+        for path in _python_files(DEMO_PLUGIN):
+            violations.extend(
+                _demo_plugin_import_violations(
+                    path, path.relative_to(DEMO_PLUGIN).as_posix()
+                )
+            )
         self.assertEqual(
             violations,
             [],
-            "demo plug-in policy depends on demo application composition:\n"
+            "demo plug-in imports violate their architectural roles:\n"
             + "\n".join(violations),
         )
+
+    def test_demo_plugin_role_guard_keeps_deployment_exceptions_narrow(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "module.py"
+            for statement in (
+                "import rsl_demo_plugin.deployment",
+                "from rsl_demo_plugin import deployment",
+                "from . import offline_analysis",
+                "from .deployment import build_plugin_deployment",
+                "from router_dump_analyzer import private_analysis_deployment",
+                "from router_dump_analyzer.plugin_composition_deployment "
+                "import PluginCompositionDeployment",
+            ):
+                with self.subTest(statement=statement):
+                    path.write_text(statement, encoding="utf-8")
+                    self.assertTrue(
+                        _demo_plugin_import_violations(path, "vpn_topology.py")
+                    )
+                    self.assertEqual(
+                        _demo_plugin_import_violations(path, "deployment.py"), []
+                    )
+            for module_name in (
+                "typed_topology.py", "deployment.py", "offline_analysis.py"
+            ):
+                path.write_text("import rsl_demo_generator", encoding="utf-8")
+                self.assertTrue(_demo_plugin_import_violations(path, module_name))
+            path.write_text("import math", encoding="utf-8")
+            for module_name in ("new_module.py", "nested/vpn_topology.py"):
+                self.assertTrue(_demo_plugin_import_violations(path, module_name))
 
     def test_demo_has_no_packaged_static_presentation_fallback(self) -> None:
         self.assertFalse(
