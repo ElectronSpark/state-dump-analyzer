@@ -635,7 +635,7 @@ against the immutable schema and manifest. The default executor ceilings are
 50,000 world reads, 50,000 change items, 50,000 correlation outputs, 50,000
 relationship-projection outputs, 10,000 consistency outputs, 100,000 topology
 outputs, 100,000 forwarding outputs,
-1,000 evidence-analysis outputs, 1 MiB each of aggregate evidence-analysis
+1,000 evidence-analysis outputs, 1,000,000 bytes each of aggregate evidence-analysis
 input and output, 1,000 diagnostics, 64 evidence items per output, and 4,096
 resource references. World-basis validation separately permits at most 100,000
 capture ranges, 100,000 node resolutions, and 100,000 basis evidence items.
