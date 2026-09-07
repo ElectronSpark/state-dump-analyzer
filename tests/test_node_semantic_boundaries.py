@@ -12,7 +12,6 @@ PLUGIN_API_PY = CORE_SOURCE / "plugin_api.py"
 APP_JS = ROOT / "frontend" / "assets" / "app.js"
 TIMELINE_MODELS_JS = ROOT / "frontend" / "assets" / "timeline_models.js"
 TEMPORAL_TOPOLOGY_PY = ROOT / "src" / "router_dump_analyzer" / "temporal_topology.py"
-CORE_RUNTIME_API_PY = ROOT / "src" / "router_dump_analyzer" / "web" / "runtime_api.py"
 
 # These names have device-, protocol-, or fixture-owned meaning.  They may
 # appear in contract docstrings, but not in executable core literals/imports.
@@ -1553,26 +1552,6 @@ class NodeSemanticBoundaryTests(unittest.TestCase):
             )
         ]
         self.assertNotIn("if native and exists is None", state_projection)
-
-    def test_node_workspace_adapter_preserves_plugin_vocabulary(self) -> None:
-        source = CORE_RUNTIME_API_PY.read_text(encoding="utf-8")
-        adapter = source[
-            source.index("def _node_workspace_dataset(") : source.index(
-                '@api_router.get("/v1/nodes/{node_id}/workspace")'
-            )
-        ]
-
-        self.assertNotIn('or "RESOURCE"', adapter)
-        self.assertNotIn('or "observed"', adapter)
-        self.assertNotIn('or "related_to"', adapter)
-        self.assertNotRegex(
-            adapter,
-            r"(?:kind|relation_type|projection_id|perspective_id)\.replace\(",
-        )
-        self.assertIn('item.get("kind") or "unknown"', adapter)
-        self.assertIn('item.get("status_perspective_label")', adapter)
-        self.assertIn('selection.get("projection_label")', adapter)
-        self.assertIn('selection.get("status_perspective_label")', adapter)
 
     def test_structural_guard_detects_opaque_and_raw_payload_decisions(
         self,

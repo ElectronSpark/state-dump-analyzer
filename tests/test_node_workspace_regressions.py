@@ -4,7 +4,11 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,13 +16,19 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "demo"))
 
 from router_dump_analyzer.web import runtime_api
+from router_dump_analyzer.normalized_data import NormalizedDataService
+from router_dump_analyzer.revision_store import AssemblyDescriptor, RevisionDescriptor
+from router_dump_analyzer.runtime import CoreRuntimeSession
+from router_dump_analyzer.web.runtime_context import activate_runtime_session
 from rsl_demo_plugin.data import REVISION_ID
 from rsl_demo_plugin.scale_data import ScaleRuntime
 from router_dump_analyzer.source_record_core import record_lanes_for_window
 from tests.support.generated_demo import (
     configure_generated_demo_for_tests,
+    generated_demo_client,
     generated_demo_runtime_session,
 )
+from tests.support.normalized_data import StaticDataPolicy, StaticDatasetSource
 
 
 APP_JS = ROOT / "frontend" / "assets" / "app.js"
@@ -354,35 +364,73 @@ class NodeWorkspaceRegressionTests(unittest.TestCase):
             with self.subTest(pattern=pattern):
                 self.assertRegex(self.script, pattern)
 
-    def test_topology_member_deep_link_bootstraps_its_own_plugin_snapshot(self) -> None:
-        with generated_demo_runtime_session():
-            payload = runtime_api._node_workspace_dataset("node-b", {})
+    def test_topology_member_deep_link_bootstraps_its_exact_revision(self) -> None:
+        with generated_demo_client() as client:
+            session = client.app.state.runtime_session
+            descriptor = session.revision_store.revision_for_node("node-b")
+            response = client.get("/v1/nodes/node-b/workspace")
+            self.assertEqual(response.status_code, 200, response.text)
+            payload = response.json()
+            expected = session.data_service.client_dataset(node_id="node-b")
+            default = client.get("/v1/nodes/node-a/workspace")
+            self.assertEqual(default.status_code, 200, default.text)
+            resource_ids = {item["resource_id"] for item in payload["resources"]}
+            requested_ids = sorted(resource_ids)[:3]
+            timeline = client.post(
+                f"/v1/revisions/{descriptor.revision_id}/timeline/query",
+                json={
+                    "start_ns": payload["workspace"]["timeline_start_ns"],
+                    "end_ns": payload["workspace"]["timeline_end_ns"],
+                    "resource_ids": requested_ids,
+                },
+            )
+            self.assertEqual(timeline.status_code, 200, timeline.text)
 
-        self.assertNotIn("demo", payload)
         self.assertEqual(
             payload["workspace"]["workspace_kind"],
-            "point-in-time-snapshot",
+            "node",
         )
+        self.assertEqual(payload["workspace"]["history_mode"], "server-windowed")
+        self.assertEqual(payload["workspace"]["revision_id"], descriptor.revision_id)
+        self.assertEqual(payload["workspace"]["node_id"], "node-b")
+        self.assertEqual(payload["workspace"]["resource_count"], descriptor.resource_count)
+        self.assertEqual(payload["workspace"]["event_count"], descriptor.event_count)
+        self.assertEqual(payload["node_snapshot"]["revision_id"], descriptor.revision_id)
+        self.assertEqual(payload["node_snapshot"]["source"], "plugin-revision-store")
         self.assertTrue(payload["resources"])
+        self.assertEqual(payload["resources"], expected["resources"])
         self.assertEqual(
-            {item["node_id"] for item in payload["resources"]},
-            {"node-b"},
+            payload["kind_descriptors"], expected["kind_descriptors"]
         )
-        self.assertNotIn(
-            "node-a",
-            {item["node_id"] for item in payload["resources"]},
+        self.assertEqual(
+            payload["schema"], expected["schema"]
         )
-        resource_ids = {item["resource_id"] for item in payload["resources"]}
+        self.assertTrue(
+            resource_ids.isdisjoint(
+                item["resource_id"] for item in default.json()["resources"]
+            )
+        )
+        # A bounded bootstrap does not manufacture all-time history; use the
+        # selected revision's actual timeline route for interval evidence.
+        for field in ("events", "state_intervals", "lifecycle_intervals", "relationship_intervals"):
+            self.assertEqual(payload[field], [])
+        self.assertEqual(
+            payload["history_transport"]["events"]["total_count"],
+            descriptor.event_count,
+        )
+        timeline_payload = timeline.json()
         self.assertTrue(
             all(
                 item["source"] in resource_ids and item["target"] in resource_ids
-                for item in payload["relationship_intervals"]
+                for item in timeline_payload["relationship_intervals"]
             )
         )
         self.assertEqual(
-            {lane["resource_id"] for lane in payload["timeline"]["lanes"]},
-            resource_ids,
+            {lane["resource_id"] for lane in timeline_payload["lanes"]},
+            set(requested_ids),
         )
+
+    def test_topology_member_navigation_requests_the_node_workspace_route(self) -> None:
         bootstrap = javascript_function(self.script, "bootstrapDatasetPath")
         self.assertIn('return "/v1/workspace"', bootstrap)
         self.assertIn('/v1/nodes/${encodeURIComponent(navigationContext.nodeId)}/workspace', bootstrap)
@@ -391,6 +439,97 @@ class NodeWorkspaceRegressionTests(unittest.TestCase):
             "state.dataset = await analysisRuntimeApi(bootstrapDatasetPath());",
             initialize,
         )
+
+    def test_node_workspace_http_preserves_plugin_vocabulary_and_disclosure(self) -> None:
+        kind = "vendor.opaque_kind-v7"
+        perspective = "vendor.observation-x9"
+        projection = "vendor.projection-y8"
+        relation = "vendor.raw_relation-z6"
+        descriptor = RevisionDescriptor(
+            node_id="opaque-node", revision_id="opaque/revision", label="Literal node",
+            event_count=0, resource_count=1,
+        )
+        dataset = {
+            "workspace": {"revision_id": descriptor.revision_id},
+            "resources": [{
+                "resource_id": "opaque-id", "kind": kind, "layer": perspective,
+                "label": "Literal resource", "exists": None, "status": "not-ready!",
+                "state": {"mode": "not-ready!", "secret": "private-sentinel"},
+            }],
+            "kind_descriptors": [{
+                "kind": kind, "label": "Literal kind", "condition_field": "mode",
+                "properties": [
+                    {"name": "mode", "type": "string", "client_visible": True},
+                    {"name": "secret", "type": "string", "sensitive": True},
+                ],
+            }],
+            "relationship_descriptors": [{
+                "relation_type": relation, "label": "Literal relation", "directed": False,
+            }],
+            "topology_capabilities": {
+                "projections": [{
+                    "projection_id": projection, "label": "Literal projection",
+                    "supported_status_perspective_ids": [perspective],
+                }],
+                "status_perspectives": [{
+                    "status_perspective_id": perspective, "label": "Literal perspective",
+                }],
+                "defaults": {"projection_id": projection, "status_perspective_id": perspective},
+            },
+            "lifecycle_intervals": [], "state_intervals": [],
+            "relationship_intervals": [], "events": [],
+            "_private_cache": {"secret": "cache-sentinel"},
+        }
+        selections = []
+
+        class SelectedNodeSource(StaticDatasetSource):
+            def load_dataset(self, revision_id=None, **selection):
+                selections.append(selection)
+                return super().load_dataset(revision_id, **selection)
+
+        source = SelectedNodeSource(dataset)
+        store = SimpleNamespace(
+            assembly=AssemblyDescriptor("opaque-assembly", (descriptor,)),
+            revision_for_node=lambda node_id: {descriptor.node_id: descriptor}[node_id],
+        )
+        session = CoreRuntimeSession(
+            plugin_session=SimpleNamespace(revision_store=store),
+            data_service=NormalizedDataService(source, StaticDataPolicy()),
+        )
+        application = FastAPI()
+        application.include_router(runtime_api.api_router)
+
+        @application.middleware("http")
+        async def bind_session(request, call_next):
+            with activate_runtime_session(session):
+                return await call_next(request)
+
+        selectors = {
+            "plugin_set_id": "vendor.set", "plugin_id": "vendor.plugin",
+            "projection_id": projection, "status_perspective_id": perspective,
+        }
+        with TestClient(application) as client:
+            response = client.get("/v1/nodes/opaque-node/workspace", params=selectors)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertIn({"node_id": descriptor.node_id}, selections)
+            unknown = client.get("/v1/nodes/unknown-node/workspace")
+            self.assertEqual(unknown.status_code, 404, unknown.text)
+        payload = response.json()
+        self.assertEqual(payload["workspace"]["revision_id"], descriptor.revision_id)
+        self.assertEqual(payload["workspace"]["history_mode"], "embedded-history")
+        self.assertEqual(payload["node_snapshot"]["plugin_selection"], selectors)
+        self.assertEqual(payload["resources"][0]["kind"], kind)
+        self.assertEqual(payload["resources"][0]["layer"], perspective)
+        self.assertEqual(payload["resources"][0]["status"], "not-ready!")
+        self.assertIsNone(payload["resources"][0]["exists"])
+        self.assertEqual(payload["resources"][0]["state"], {"mode": "not-ready!"})
+        for field in ("kind_descriptors", "relationship_descriptors", "topology_capabilities"):
+            self.assertEqual(payload[field], dataset[field])
+        for field in ("lifecycle_intervals", "state_intervals", "relationship_intervals"):
+            self.assertEqual(payload[field], [])
+        self.assertNotIn("timeline", payload)
+        self.assertNotIn("private-sentinel", response.text)
+        self.assertNotIn("cache-sentinel", response.text)
 
     def test_node_history_workspace_uses_runtime_identity_and_counts(self) -> None:
         detection = javascript_function(self.script, "isTopologyNodeSnapshot")
