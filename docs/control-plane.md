@@ -1809,11 +1809,26 @@ The strict checked defaults are two queue-coordination worker threads, killable
 spawned child processes for plug-in probe and ingestion, a 300-second child
 deadline, 300-second renewable leases, three attempts, at most 1,000 active
 imports per workspace, 1 MiB upload chunks, an 8 GiB upload limit, a 2 GiB
-reopened dataset limit, four loaded-dataset cache entries, and reports bounded
+reopened dataset limit, at most four loaded-dataset cache entries within a
+256 MiB estimated decoded-memory budget, and reports bounded
 to 128 revisions, 8 GiB of aggregate serialized datasets, 20,000 selected
 manual correlation edges, and 10,000 client-safe observations. Applications
 may lower supported constructor limits; HTTP and store-level validation still
 applies.
+
+`ControlPlaneLimits.dataset_cache_bytes` budgets retained Python datasets and
+indexes, counting shared objects once within each revision. Either a zero byte
+budget or zero `dataset_cache_entries` disables retention. Oversized revisions
+remain readable but are not cached; eligible entries use least-recently-used
+eviction under both limits. Concurrent cold readers of the same scoped revision
+share one verified decode/index operation, and waiting readers can cancel
+independently. Management inspection borrows verified data internally and
+detaches only its bounded response page. The legacy whole-dataset load method
+still returns a full detached copy for callers that explicitly need it.
+
+The cache budget is an estimate of retained Python memory, not a process RSS or
+peak decoding limit. Temporary UTF-8/JSON allocations, distinct simultaneous
+revision loads, and explicit full copies still need deployment headroom.
 
 Mutable review subject admission uses the store's shared bounded normalizer
 before any dataset reads: annotations accept 1–5,000 subjects, correlations

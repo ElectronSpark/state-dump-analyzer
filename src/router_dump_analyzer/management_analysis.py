@@ -12,6 +12,7 @@ import json
 from collections import defaultdict
 from collections.abc import Iterator, Mapping
 from contextlib import nullcontext
+from copy import deepcopy
 from dataclasses import dataclass
 from itertools import chain
 from types import MappingProxyType
@@ -702,7 +703,10 @@ def query_management_analysis(
         }
     )
     selection, vector, member = _selection(control_plane, scope, query)
-    dataset = control_plane.load_revision_dataset(scope, member["revision_id"])
+    # This core-owned projector only reads the verified revision. Borrow its
+    # cached data and detach the bounded result below, rather than copying every
+    # event/source record before selecting a small page.
+    dataset = control_plane._load_revision(scope, member["revision_id"]).dataset
     for field in _COLLECTIONS:
         collection = dataset.get(field, [])
         if not isinstance(collection, list) or any(
@@ -829,7 +833,7 @@ def query_management_analysis(
         raise ManagementAnalysisRequestError(
             "analysis page exceeds the 1 MiB response limit; request fewer rows"
         )
-    return result
+    return deepcopy(result)
 
 
 __all__ = [

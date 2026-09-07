@@ -6,6 +6,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import FastAPI
@@ -28,8 +29,10 @@ from router_dump_analyzer.web.control_plane_api import (
     ControlPlaneIdentity,
     control_plane_router,
 )
+from tests.support.relationship_projection_plugin import (
+    RelationshipProjectionParsePlugin,
+)
 from tests.test_ingestion import ParseOnlyPlugin
-from tests.support.relationship_projection_plugin import RelationshipProjectionParsePlugin
 
 
 def _dataset(label="visible-port"):
@@ -212,11 +215,11 @@ class ManagementAnalysisTests(unittest.TestCase):
         self.datasets[(tenant, revision)] = _dataset(label)
 
     def _load(self, scope, revision):
-        return deepcopy(self.datasets[(scope.tenant_id, revision)])
+        return SimpleNamespace(dataset=self.datasets[(scope.tenant_id, revision)])
 
     def _post(self, body=None, *, tenant="tenant-a", path=None):
         with patch.object(
-            self.control, "load_revision_dataset", side_effect=self._load
+            self.control, "_load_revision", side_effect=self._load
         ):
             return self.client.post(
                 path or self.path,
@@ -266,7 +269,7 @@ class ManagementAnalysisTests(unittest.TestCase):
         )
 
     def test_tenant_and_workspace_isolation_precede_dataset_load(self):
-        with patch.object(self.control, "load_revision_dataset") as loader:
+        with patch.object(self.control, "_load_revision") as loader:
             for selector in (
                 {"revision_ids": ["revision-b"]},
                 {"revision_ids": ["revision-other"]},
@@ -304,7 +307,7 @@ class ManagementAnalysisTests(unittest.TestCase):
         self.assertEqual(
             snapshot_response.json()["revision_vector"], payload["revision_vector"]
         )
-        with patch.object(self.control, "load_revision_dataset") as loader:
+        with patch.object(self.control, "_load_revision") as loader:
             foreign = self.client.post(
                 self.path, headers={"X-Tenant-ID": "tenant-b"}, json=body
             )
@@ -703,12 +706,25 @@ class ManagementAnalysisTests(unittest.TestCase):
         self.assertIsNone(response.json()["next_offset"])
         self.assertEqual(project.call_count, 2)
 
+    def test_bounded_result_does_not_mutate_or_alias_borrowed_revision(self):
+        before = deepcopy(self.datasets[("tenant-a", "revision-a")])
+        query = parse_management_analysis_query(
+            {"selector": {"revision_ids": ["revision-a"]}, "section": "resources"}
+        )
+        with patch.object(self.control, "_load_revision", side_effect=self._load):
+            result = query_management_analysis(
+                self.control, ReviewScope("tenant-a", "p", "w"), query,
+            )
+        self.assertEqual(self.datasets[("tenant-a", "revision-a")], before)
+        result["items"][0].clear()
+        self.assertEqual(self.datasets[("tenant-a", "revision-a")], before)
+
     def test_concurrent_scopes_do_not_share_selection(self):
         query = parse_management_analysis_query(
             {"selector": {"revision_ids": ["revision-a"]}, "section": "resources"}
         )
         with (
-            patch.object(self.control, "load_revision_dataset", side_effect=self._load),
+            patch.object(self.control, "_load_revision", side_effect=self._load),
             ThreadPoolExecutor(max_workers=2) as executor,
         ):
             futures = [

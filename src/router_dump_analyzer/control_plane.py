@@ -26,15 +26,19 @@ import json
 import os
 import secrets
 import stat
+import sys
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from enum import StrEnum
 from itertools import islice
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import Any, Self
 from uuid import UUID
 
@@ -415,8 +419,11 @@ class ControlPlaneLimits:
     )
     max_subject_revisions: int = _DEFAULT_MAX_REPORT_REVISIONS
     max_subject_dataset_bytes: int = _DEFAULT_MAX_REPORT_DATASET_BYTES
+    dataset_cache_bytes: int = 256 * 1024 * 1024
 
     def __post_init__(self) -> None:
+        if type(self.dataset_cache_bytes) is not int or self.dataset_cache_bytes < 0:
+            raise ValueError("dataset_cache_bytes must be a non-negative integer")
         if (
             type(self.max_subject_revisions) is not int
             or not 1 <= self.max_subject_revisions <= MAX_ANNOTATION_SUBJECTS
@@ -538,6 +545,47 @@ class _LoadedRevision:
     descriptor: AnalysisRevisionDescriptor
     dataset: Mapping[str, Any]
     index: _DatasetIndex
+
+
+def _retained_revision_bytes(
+    value: _LoadedRevision,
+    maximum: int,
+    checkpoint: Callable[[], None] | None = None,
+) -> int:
+    """Estimate retained Python memory, stopping once caching is disallowed.
+
+    Shared objects count once. Mapping proxies include a conservative estimate
+    of their otherwise invisible backing dictionary. This is a cache budget,
+    not a bound on temporary decoding allocations or process RSS.
+    """
+    seen: set[int] = set()
+    pending = [iter((value,))]
+    total = 0
+    while pending:
+        try:
+            item = next(pending[-1])
+        except StopIteration:
+            pending.pop()
+            continue
+        identity = id(item)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if checkpoint is not None and len(seen) % 256 == 0:
+            checkpoint()
+        total += sys.getsizeof(item)
+        if type(item) is MappingProxyType:
+            total += 64 + 72 * len(item)
+        if total > maximum:
+            return total
+        if isinstance(item, Mapping):
+            pending.append(iter(item.keys()))
+            pending.append(iter(item.values()))
+        elif isinstance(item, (list, tuple, set, frozenset)):
+            pending.append(iter(item))
+        elif is_dataclass(item) and not isinstance(item, type):
+            pending.append(iter([getattr(item, field.name) for field in fields(item)]))
+    return total
 
 
 @dataclass(frozen=True, slots=True)
@@ -1117,6 +1165,8 @@ class ControlPlane:
         self._closed = False
         self._started = False
         self._cache: OrderedDict[str, _LoadedRevision] = OrderedDict()
+        self._cache_weights: dict[str, int] = {}
+        self._revision_loads: dict[str, Future[_LoadedRevision]] = {}
         self._retention_review_lock_path = self.root / ".review-catalog-retention.lock"
         self._private_run_store_binding_path = (
             self.root / _PRIVATE_RUN_STORE_BINDING_NAME
@@ -1317,6 +1367,7 @@ class ControlPlane:
                         self.sessions.close()
             self._closed = True
             self._cache.clear()
+            self._cache_weights.clear()
             self._started = False
 
     def __enter__(self) -> Self:
@@ -2127,6 +2178,9 @@ class ControlPlane:
                         self._cache.pop(
                             f"{scope.tenant_id}\x1f{candidate.identifier}",
                             None,
+                        )
+                        self._cache_weights.pop(
+                            f"{scope.tenant_id}\x1f{candidate.identifier}", None,
                         )
 
             import_scope = ImportScope(
@@ -3262,14 +3316,77 @@ class ControlPlane:
         checkpoint()
         descriptor = self._revision(scope, revision_id)
         cache_key = f"{scope.tenant_id}\x1f{revision_id}"
-        with self._lock:
-            if self._closed:
-                raise ControlPlaneError("control plane is closed")
-            cached = self._cache.get(cache_key)
-            if cached is not None:
-                self._cache.move_to_end(cache_key)
+        while True:
+            with self._lock:
+                if self._closed:
+                    raise ControlPlaneError("control plane is closed")
+                cached = self._cache.get(cache_key)
+                if cached is not None:
+                    self._cache.move_to_end(cache_key)
+                    checkpoint()
+                    return cached
+                flight = self._revision_loads.get(cache_key)
+                owner = flight is None
+                if flight is None:
+                    flight = Future()
+                    self._revision_loads[cache_key] = flight
+            if owner:
+                break
+            try:
+                while True:
+                    checkpoint()
+                    try:
+                        loaded = flight.result(timeout=0.05)
+                    except FutureTimeoutError:
+                        if flight.done():
+                            raise
+                        continue
+                    checkpoint()
+                    return loaded
+            except PrivateAnalysisRevisionEvidenceCancelled:
+                # A cancelled loader does not cancel an independent caller.
                 checkpoint()
-                return cached
+
+        try:
+            loaded = self._read_revision(descriptor, checkpoint)
+            checkpoint()
+            weight = (
+                _retained_revision_bytes(
+                    loaded, self.limits.dataset_cache_bytes, checkpoint,
+                )
+                if self.limits.dataset_cache_entries and self.limits.dataset_cache_bytes
+                else self.limits.dataset_cache_bytes + 1
+            )
+            checkpoint()
+            with self._lock:
+                if self._closed:
+                    raise ControlPlaneError("control plane is closed")
+                if weight <= self.limits.dataset_cache_bytes:
+                    self._cache[cache_key] = loaded
+                    self._cache_weights[cache_key] = weight
+                    self._cache.move_to_end(cache_key)
+                    while (
+                        len(self._cache) > self.limits.dataset_cache_entries
+                        or sum(self._cache_weights.values()) > self.limits.dataset_cache_bytes
+                    ):
+                        evicted, _ = self._cache.popitem(last=False)
+                        self._cache_weights.pop(evicted, None)
+                flight.set_result(loaded)
+            return loaded
+        except BaseException as error:
+            flight.set_exception(error)
+            raise
+        finally:
+            with self._lock:
+                if self._revision_loads.get(cache_key) is flight:
+                    del self._revision_loads[cache_key]
+
+    def _read_revision(
+        self,
+        descriptor: AnalysisRevisionDescriptor,
+        checkpoint: Callable[[], None],
+    ) -> _LoadedRevision:
+        """Decode and index one admitted load; concurrent readers share it."""
 
         metadata = descriptor.metadata
         if metadata.get("dataset_format") != _DATASET_FORMAT:
@@ -3342,14 +3459,7 @@ class ControlPlane:
             parsed,
             construction_checkpoint=checkpoint,
         )
-        loaded = _LoadedRevision(descriptor, parsed, index)
-        with self._lock:
-            if self.limits.dataset_cache_entries:
-                self._cache[cache_key] = loaded
-                self._cache.move_to_end(cache_key)
-                while len(self._cache) > self.limits.dataset_cache_entries:
-                    self._cache.popitem(last=False)
-        return loaded
+        return _LoadedRevision(descriptor, parsed, index)
 
     def load_revision_dataset(
         self,
