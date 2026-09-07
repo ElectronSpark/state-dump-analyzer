@@ -303,7 +303,16 @@ CORE_ASYNCIO_ATTRIBUTE_ALLOWLIST = {
     "cli.py": frozenset({"Runner", "run"}),
     "control_plane_server.py": frozenset({"to_thread"}),
     "runtime.py": frozenset({"to_thread"}),
-    "web/control_plane_api.py": frozenset({"sleep", "to_thread"}),
+    # Local streamed-upload handoff, backpressure, and cancellation only.
+    "web/control_plane_api.py": frozenset({
+        "CancelledError",
+        "create_task",
+        "get_running_loop",
+        "run_coroutine_threadsafe",
+        "shield",
+        "sleep",
+        "to_thread",
+    }),
 }
 PUBLIC_MODEL_ENDPOINT_MARKERS = (
     "api.anthropic.com",
