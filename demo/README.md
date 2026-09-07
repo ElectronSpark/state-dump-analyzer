@@ -574,6 +574,10 @@ At one timestamp, `source_sequence` establishes producer order before the
 stable record identity tie-breaker. The checked fixture includes create,
 modify, and window-only observations; shared temporal replay also treats
 `insert` as a creation operation.
+The parser-only browser run uses the fixture's validated timeline bounds,
+capture coordinate, time basis, and clock domain. It opens at capture with all
+three resources present despite having no semantic events; no artificial
+zero-based timeline is needed.
 
 Core owns safe artifact access, validation, stable record identity, persistence,
 temporal reconstruction, application composition, APIs, selection budgets, and

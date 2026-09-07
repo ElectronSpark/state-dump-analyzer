@@ -459,6 +459,11 @@ coordinates or a relative span larger than signed 64-bit nanoseconds. Changing
 the declaration changes the frozen execution identity, plan, and revision
 identity.
 
+The browser workspace retains these validated bounds, capture coordinate,
+basis, and optional clock domain. A status-only parser needs no synthetic
+events to initialize the timeline. The minimal fixture opens at its recorded
+capture time with all three resources present.
+
 Use the standard `PluginCapability` enum. A capability is a promise that its
 hook is implemented. `AnalyzerPluginBase` raises instead of silently ignoring
 a declared-but-missing hook.

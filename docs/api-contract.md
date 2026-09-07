@@ -138,6 +138,12 @@ Recorded false/null existence and null clock bounds remain unchanged.
 
 Counts describe the whole workspace, not the current page or DOM window.
 `time_bounds` may repeat the three timestamp fields as a convenience.
+Runtime-v2 workspaces publish the validated `timeline_start_ns`,
+`timeline_end_ns`, and `capture_ns` even when a parser emits status observations
+without semantic events. They also retain `timeline_time_basis` and the
+nullable `timeline_clock_domain`. These are the ingestion coordinates, with
+no rebasing or invented padding for a single observation; the browser uses
+them to initialize the timeline and capture cursor.
 `initial_resource_ids` and `initial_focus_resource_id` are generic bootstrap
 hints whose values remain plug-in-owned resource identities. The coordinator
 owns this envelope; plug-ins supply the node label, descriptors, counts, and

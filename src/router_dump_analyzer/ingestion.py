@@ -3985,6 +3985,11 @@ class IngestedDataPolicy:
             "node_label": str(
                 metadata.get("node_label") or metadata.get("node_id") or "Unknown node"
             ),
+            "timeline_start_ns": metadata["timeline_start_ns"],
+            "timeline_end_ns": metadata["timeline_end_ns"],
+            "capture_ns": metadata["capture_ns"],
+            "timeline_time_basis": metadata["timeline_time_basis"],
+            "timeline_clock_domain": metadata["timeline_clock_domain"],
             "label": str(metadata.get("name") or "Parsed dump"),
             "event_count": len(dataset.get("events", ())),
             "matched_event_count": int(metadata.get("matched_event_count") or 0),

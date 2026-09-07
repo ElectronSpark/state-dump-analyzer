@@ -65,6 +65,12 @@ The declaration is part of registered execution identity and revision
 fingerprinting, and the parent re-attests child output against the frozen
 manifest before publication.
 
+Core carries the validated timeline bounds, capture coordinate, time basis,
+and optional clock domain into the browser workspace. Status observations
+contribute those bounds even when no semantic events are emitted. A single
+known coordinate remains a single coordinate; core does not invent an origin
+or expand the recorded interval for display.
+
 Install a candidate distribution in the analyzer environment, run
 `router-dump-plugin-validate` against a representative plug-in-owned synthetic
 artifact, and run that distribution's golden tests. The exact known-good

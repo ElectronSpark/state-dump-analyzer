@@ -47,7 +47,9 @@ python -X utf8 -m router_dump_analyzer.cli --plugin-module rsl_demo_plugin:parse
 ```
 
 Open `http://127.0.0.1:8876`. The core owns `router-dump-analyzer`, its web
-application, and runtime-v2 ingestion. Stop the server with `Ctrl+C`. The
+application, and runtime-v2 ingestion. The timeline uses the fixture's recorded
+nanosecond bounds and opens at capture with all three resources present, even
+though this status-only input emits no semantic events. Stop the server with `Ctrl+C`. The
 [core demo walkthrough](demo-core-coverage.md) exercises durable review in more
 detail.
 
