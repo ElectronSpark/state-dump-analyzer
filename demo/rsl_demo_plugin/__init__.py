@@ -2062,7 +2062,7 @@ class ExampleEvidenceAnalysisPlugin(AnalyzerPluginBase):
 
 
 class RuntimeAttachedExampleRouterPlugin(AnalyzerPlugin, Protocol):
-    """Public type of the installed live entry point with core runtime v2."""
+    """Public type of the installed entry point with the archive runtime v1."""
 
     runtime: Any
 
@@ -2080,6 +2080,10 @@ plugin: RuntimeAttachedExampleRouterPlugin = cast(
     _entry_plugin,
 )
 evidence_plugin: AnalyzerPlugin = ExampleEvidenceAnalysisPlugin()
+
+# This ordinary parser instance uses the core runtime-v2 adapter. Its source
+# revision can be matched to the same input admitted by the durable pipeline.
+parser_plugin: AnalyzerPlugin = ExampleRouterPlugin()
 
 
 __all__ = [
@@ -2119,6 +2123,7 @@ __all__ = [
     "RuntimeAttachedExampleRouterPlugin",
     "TopologyProfileSpec",
     "evidence_plugin",
+    "parser_plugin",
     "plugin",
     "render_conformance_status_fixture",
 ]

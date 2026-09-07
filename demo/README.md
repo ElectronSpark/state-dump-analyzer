@@ -233,7 +233,29 @@ loopback validation without starting a server or generating an archive:
 python -m unittest tests.test_demo_launchers -v
 ```
 
-On the node page, expand **Durable review** above the normalized event log.
+The large generated assembly uses a compatibility runtime and has no supported
+durable-ingestion adapter. Its browser markers remain local. For a working
+durable review, use the parser example below.
+
+### Durable review with the parser example
+
+Run these commands from the repository root in the installed demo environment.
+They use the ordinary `parser_plugin` instance for both admission and browsing;
+keep the input and its default node selection identical in both commands.
+
+```powershell
+python -m router_dump_analyzer.pipeline_cli --plugin-module rsl_demo_plugin:parser_plugin --state-dir .runtime/parser-review --tenant review --project demo --workspace example --input demo/fixtures/minimal-status.jsonl --pretty
+python -m router_dump_analyzer.cli --plugin-module rsl_demo_plugin:parser_plugin --input demo/fixtures/minimal-status.jsonl --control-plane-dir .runtime/parser-review --port 8876 --no-browser
+```
+
+Open `http://127.0.0.1:8876/node`. Expand **Durable review** above the normalized
+log and connect with tenant `review`, project `demo`, workspace `example`, and
+a reviewer ID. Select a retained source row to persist a marker. This fixture
+has source records and resources; it does not supply semantic event pairs for
+manual correlations. `python -m unittest tests.test_demo_durable_review -v`
+verifies browser/durable revision matching and annotation subjects.
+
+On a matching parser node page, expand **Durable review** above the normalized event log.
 Enter explicit tenant, project, workspace, and reviewer IDs; the UI labels
 this as trusted-header local development and stores those values only in the
 browser. The active dump must already have been published into that explicit

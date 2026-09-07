@@ -230,6 +230,9 @@ revision pointer only after validation succeeds.
 The shipped runtime-v2 revision fingerprint includes the normalized plug-in
 manifest, schema/input selection, and artifact content identity. The durable
 queue separately pins the exact registered executable identity during selection.
+The demo's `parser_plugin` exercises matching that runtime source revision to
+the same input in the durable catalog. Its generated assembly compatibility
+runtime has no durable admission adapter and cannot borrow a parser revision.
 Trusted loaders may provide an immutable package/artifact digest; otherwise
 core derives a bounded `package-sha256:<digest>` from the complete regular- or
 namespace-package import scope. Any scope with a preceding PEP 420 namespace

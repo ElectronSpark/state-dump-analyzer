@@ -2606,6 +2606,11 @@ exercise this distinction without adding a new device hook.
 Their raw node records omit scenario and peer associations. The comparison
 policy supplies those associations using the declared local resource identities.
 
+The example's separate `rsl_demo_plugin:parser_plugin` instance demonstrates
+ordinary core runtime-v2 ingestion and durable review. The generated assembly's
+runtime-v1 path has no durable admission adapter; publishing the small parser
+fixture cannot authorize review writes for an assembly revision.
+
 Packet size comparison is exact-basis only. A plug-in may attach a
 `ForwardingSizeObservation` to the packet state and a
 `ForwardingMtuConstraint` to a transition. Both name an opaque

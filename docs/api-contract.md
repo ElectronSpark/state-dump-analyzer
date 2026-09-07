@@ -374,6 +374,11 @@ relationship intervals or API payloads in this document.
 
 ### 1.3 Durable control-plane boundary
 
+Browser review requires an exact runtime/source-revision match in the selected
+durable workspace. The generated demo assembly has no admission adapter; use
+the [parser review example](../demo/README.md#durable-review-with-the-parser-example)
+to exercise supported admission and browser identity matching.
+
 The implemented control-plane router is independent of the initial
 single-input browser workspace. It is mounted at `/v1/control-plane` when the
 server is started with `--control-plane-dir PATH`; otherwise its routes return

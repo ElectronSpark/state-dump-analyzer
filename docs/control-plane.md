@@ -75,11 +75,12 @@ the selected plug-in as its allowlist, installs the explicit
 http://127.0.0.1:8765/v1/control-plane
 ```
 
-Enabling the routes does not implicitly admit the startup input. Use
-`router-dump-ingest` or the upload endpoint to publish it into an explicit
-project/workspace before a browser review can resolve that runtime revision
-to durable subjects. No match or an ambiguous match keeps browser markers
-local and produces no durable write.
+Enabling the routes does not implicitly admit the startup input. The generated
+assembly has no durable-ingestion adapter, so that demo's markers stay local.
+Use the [parser review example](../demo/README.md#durable-review-with-the-parser-example)
+to admit and browse the same supported input in an explicit project/workspace.
+The core resolves its runtime revision to durable subjects; no match or an
+ambiguous match keeps browser markers local and produces no durable write.
 
 When `--control-plane-dir` is omitted, those routes return `503`; the existing
 single-input runtime remains unchanged. The built-in adapter trusts the caller

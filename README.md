@@ -282,9 +282,10 @@ rejects that option for `0.0.0.0`, `::`, and every other non-loopback bind.
 8. **Look for disagreement.** Review delayed or failed updates, changing next
    hops, asymmetric forwarding, and differences between control-plane,
    forwarding, and hardware-layer reachability.
-9. **Persist a review.** First admit the active dump through
-   `router-dump-ingest` into the intended project and workspace; starting the
-   browser server does not publish its startup input into the durable catalog.
+9. **Persist a review.** Use the [runnable parser review example](demo/README.md#durable-review-with-the-parser-example).
+   The large generated assembly has no durable-ingestion adapter; its markers
+   remain browser-local. The parser example admits and opens the same small
+   input in one project/workspace; starting a browser does not publish inputs.
    Then expand **Durable review** above the normalized event log and enter
    explicit tenant, project, workspace, and reviewer IDs. The page labels this
    as trusted-header local development and resolves its active runtime

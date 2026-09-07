@@ -1260,6 +1260,11 @@ whose declared capability and hook agree, validates every output, assigns
 stable identities, reconstructs the normalized dataset, and exposes the basic
 node workspace through a core-owned `router_dump_analyzer.runtime.v2` session.
 
+The runnable example exports `rsl_demo_plugin:parser_plugin` without a runtime
+attribute for this path. The [durable review walkthrough](../demo/README.md#durable-review-with-the-parser-example)
+admits and browses the same fixture and verifies the resulting revision and
+annotation identities with `python -m unittest tests.test_demo_durable_review -v`.
+
 The current v2 session intentionally supplies only the normalized data
 workspace. Its `temporal_provider`, `topology_provider`, and `route_provider`
 are `None`, its history source has no optional structural index, and its route
