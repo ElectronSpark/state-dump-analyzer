@@ -2603,6 +2603,8 @@ invariant by presenting inconsistent snapshots as one packet's continuous
 history. Missing evidence is not proof of disagreement. The optional
 [cross-node demo examples](../demo/README.md#cross-node-inconsistency-samples)
 exercise this distinction without adding a new device hook.
+Their raw node records omit scenario and peer associations. The comparison
+policy supplies those associations using the declared local resource identities.
 
 Packet size comparison is exact-basis only. A plug-in may attach a
 `ForwardingSizeObservation` to the packet state and a

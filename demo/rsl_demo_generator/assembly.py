@@ -886,13 +886,26 @@ def _source_boundary_observations(
 ) -> list[dict[str, Any]]:
     """Project authored local declarations without inventing comparison values."""
 
+    rule = scenario_semantics(scenario_id).get("cross_node_rule", {})
+    participants = rule.get("participants", {}).get(direction, {})
     observations = []
     for resource in DEFAULT_SCENARIO_SOURCE.resources_at(node.node_id):
         properties = resource.properties
-        if properties.get("scenario_id") != scenario_id or properties.get("direction") != direction:
+        participant = participants.get(properties.get("role"), {})
+        if (
+            participant.get("node_id") != node.node_id
+            or participant.get("source_resource_id") != resource.resource_id
+            or resource.resource_type.upper() != rule.get("resource_type")
+            or properties.get("direction") != direction
+        ):
             continue
+        peer_role = "receiver" if properties.get("role") == "sender" else "sender"
         observations.append({
             **properties,
+            # Case and peer association belong to plug-in analysis policy,
+            # never to exported node-local evidence or authoring truth.
+            "scenario_id": scenario_id,
+            "peer_node_id": participants[peer_role]["node_id"],
             "node_id": node.node_id,
             "revision_id": node.revision_id,
             "resource_type": resource.resource_type.upper(),

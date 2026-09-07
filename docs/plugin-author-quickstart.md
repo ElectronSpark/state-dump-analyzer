@@ -81,6 +81,8 @@ show a separate lesson: compare independent node-local observations in the
 plug-in's semantic layer, retain both evidence identities, and distinguish
 unknown evidence from an actual mismatch. Do not represent conflicting
 configuration observations as an invalid complete packet transition chain.
+Keep scenario and peer associations in comparison policy; the example's raw
+node evidence contains local values and resource identities only.
 Run the evidence and runtime-revalidation checks with
 `python -m pytest -p no:cacheprovider tests/test_demo_cross_node_consistency.py -q`.
 

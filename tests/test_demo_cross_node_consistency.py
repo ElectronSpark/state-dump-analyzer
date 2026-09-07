@@ -362,7 +362,16 @@ class PersistedBoundaryCoverageTests(unittest.TestCase):
             (node.node_id, resource.resource_id): (node, resource)
             for node in self.config.nodes
             for resource in DEFAULT_SCENARIO_SOURCE.resources_at(node.node_id)
-            if resource.properties.get("scenario_id") in CASE_IDS
+            if any(
+                resource.resource_type.upper() == SCENARIO_BY_ID[case_id]["cross_node_rule"]["resource_type"]
+                and any(
+                    participant["node_id"] == node.node_id
+                    and participant["source_resource_id"] == resource.resource_id
+                    for pair in SCENARIO_BY_ID[case_id]["cross_node_rule"]["participants"].values()
+                    for participant in pair.values()
+                )
+                for case_id in CASE_IDS
+            )
         }
         self.assertEqual(len(authored), 8)
         seen = set()
@@ -378,6 +387,8 @@ class PersistedBoundaryCoverageTests(unittest.TestCase):
                         self.assertNotIn(identity, seen)
                         seen.add(identity)
                         node, resource = authored[identity]
+                        self.assertNotIn("scenario_id", resource.properties)
+                        self.assertNotIn("peer_node_id", resource.properties)
                         for field, value in resource.properties.items():
                             self.assertEqual(observation[field], value)
                         self.assertEqual(observation["revision_id"], node.revision_id)

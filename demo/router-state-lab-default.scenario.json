@@ -26,25 +26,25 @@
           "resource_id": "consistency:mpls-handoff:forward",
           "resource_type": "MPLS_BINDING",
           "status": "up",
-          "properties": {"scenario_id": "cross-node-mpls-label-mismatch", "direction": "forward", "role": "sender", "boundary_id": "diagnostic:mpls:forward", "contract_id": "demo.mpls-label-handoff.v1", "peer_node_id": "transit-p-1", "field": "outgoing_label", "value": 16011, "complete": true}
+          "properties": {"direction": "forward", "role": "sender", "boundary_id": "diagnostic:mpls:forward", "contract_id": "demo.mpls-label-handoff.v1", "field": "outgoing_label", "value": 16011, "complete": true}
         },
         {
           "resource_id": "consistency:mpls-handoff:reverse",
           "resource_type": "MPLS_BINDING",
           "status": "up",
-          "properties": {"scenario_id": "cross-node-mpls-label-mismatch", "direction": "reverse", "role": "receiver", "boundary_id": "diagnostic:mpls:reverse", "contract_id": "demo.mpls-label-handoff.v1", "peer_node_id": "transit-p-1", "field": "expected_incoming_label", "value": 16021, "complete": true}
+          "properties": {"direction": "reverse", "role": "receiver", "boundary_id": "diagnostic:mpls:reverse", "contract_id": "demo.mpls-label-handoff.v1", "field": "expected_incoming_label", "value": 16021, "complete": true}
         },
         {
           "resource_id": "consistency:vxlan-handoff:forward",
           "resource_type": "VPN_BINDING",
           "status": "up",
-          "properties": {"scenario_id": "cross-node-vxlan-vni-mismatch", "direction": "forward", "role": "sender", "boundary_id": "diagnostic:vxlan:forward", "contract_id": "demo.vxlan-vni-handoff.v1", "peer_node_id": "node-b", "field": "outgoing_vni", "value": 50100, "complete": true}
+          "properties": {"direction": "forward", "role": "sender", "boundary_id": "diagnostic:vxlan:forward", "contract_id": "demo.vxlan-vni-handoff.v1", "field": "outgoing_vni", "value": 50100, "complete": true}
         },
         {
           "resource_id": "consistency:vxlan-handoff:reverse",
           "resource_type": "VPN_BINDING",
           "status": "up",
-          "properties": {"scenario_id": "cross-node-vxlan-vni-mismatch", "direction": "reverse", "role": "receiver", "boundary_id": "diagnostic:vxlan:reverse", "contract_id": "demo.vxlan-vni-handoff.v1", "peer_node_id": "node-b", "field": "expected_incoming_vni", "value": 50300, "complete": true}
+          "properties": {"direction": "reverse", "role": "receiver", "boundary_id": "diagnostic:vxlan:reverse", "contract_id": "demo.vxlan-vni-handoff.v1", "field": "expected_incoming_vni", "value": 50300, "complete": true}
         },
         {
           "resource_id": "vpn:blue-l3vpn",
@@ -80,13 +80,13 @@
           "resource_id": "consistency:vxlan-handoff:forward",
           "resource_type": "VPN_BINDING",
           "status": "up",
-          "properties": {"scenario_id": "cross-node-vxlan-vni-mismatch", "direction": "forward", "role": "receiver", "boundary_id": "diagnostic:vxlan:forward", "contract_id": "demo.vxlan-vni-handoff.v1", "peer_node_id": "node-a", "field": "expected_incoming_vni", "value": 50200, "complete": true}
+          "properties": {"direction": "forward", "role": "receiver", "boundary_id": "diagnostic:vxlan:forward", "contract_id": "demo.vxlan-vni-handoff.v1", "field": "expected_incoming_vni", "value": 50200, "complete": true}
         },
         {
           "resource_id": "consistency:vxlan-handoff:reverse",
           "resource_type": "VPN_BINDING",
           "status": "up",
-          "properties": {"scenario_id": "cross-node-vxlan-vni-mismatch", "direction": "reverse", "role": "sender", "boundary_id": "diagnostic:vxlan:reverse", "contract_id": "demo.vxlan-vni-handoff.v1", "peer_node_id": "node-a", "field": "outgoing_vni", "value": 50300, "complete": true}
+          "properties": {"direction": "reverse", "role": "sender", "boundary_id": "diagnostic:vxlan:reverse", "contract_id": "demo.vxlan-vni-handoff.v1", "field": "outgoing_vni", "value": 50300, "complete": true}
         },
         {
           "resource_id": "vpn:blue-l3vpn",
@@ -217,13 +217,13 @@
           "resource_id": "consistency:mpls-handoff:forward",
           "resource_type": "MPLS_BINDING",
           "status": "up",
-          "properties": {"scenario_id": "cross-node-mpls-label-mismatch", "direction": "forward", "role": "receiver", "boundary_id": "diagnostic:mpls:forward", "contract_id": "demo.mpls-label-handoff.v1", "peer_node_id": "node-a", "field": "expected_incoming_label", "value": 16012, "complete": true}
+          "properties": {"direction": "forward", "role": "receiver", "boundary_id": "diagnostic:mpls:forward", "contract_id": "demo.mpls-label-handoff.v1", "field": "expected_incoming_label", "value": 16012, "complete": true}
         },
         {
           "resource_id": "consistency:mpls-handoff:reverse",
           "resource_type": "MPLS_BINDING",
           "status": "up",
-          "properties": {"scenario_id": "cross-node-mpls-label-mismatch", "direction": "reverse", "role": "sender", "boundary_id": "diagnostic:mpls:reverse", "contract_id": "demo.mpls-label-handoff.v1", "peer_node_id": "node-a", "field": "outgoing_label", "value": 16021, "complete": true}
+          "properties": {"direction": "reverse", "role": "sender", "boundary_id": "diagnostic:mpls:reverse", "contract_id": "demo.mpls-label-handoff.v1", "field": "outgoing_label", "value": 16021, "complete": true}
         }
       ]
     },

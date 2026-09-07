@@ -98,6 +98,10 @@ python -m pytest -p no:cacheprovider tests/test_demo_vpn_topology.py demo/tests/
 
 ### Cross-node inconsistency samples
 
+Node-local records contain the observed binding values and resource identity.
+The plug-in's comparison rules attach scenario and peer associations during
+analysis; those authoring associations are absent from standalone node dumps.
+
 In **Route trace**, choose either of these **Trace scenario** entries and press
 **Trace route**:
 
