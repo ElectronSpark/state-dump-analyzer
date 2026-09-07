@@ -5166,6 +5166,7 @@ def update_correlation(
             updates["tags"] = _iterable_strings(body, "tags")
         if "confidence" in body:
             updates["confidence"] = body["confidence"]
+            updates["replace_confidence"] = True
         result = _control_plane(request).update_correlation(
             scope,
             correlation_id,

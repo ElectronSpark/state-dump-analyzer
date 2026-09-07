@@ -2194,6 +2194,9 @@ A manual correlation has two to 1,024 event subjects and one to 4,096 edges.
 An edge names distinct subject-array ordinals, a plug-in/user-owned
 `link_type`, and optional `directed` (default `true`). The object also accepts
 `rationale`, tags, and optional finite `confidence` from zero through one.
+On PATCH, omitting `confidence` preserves its value, explicit `null` clears it,
+and a number replaces it. Invalid supplied values return `422` without changing
+the object or its version; the existing `If-Match` requirement still applies.
 
 Report selection is exactly one of explicit revisions, one current session,
 or one immutable snapshot:

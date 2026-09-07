@@ -4391,6 +4391,94 @@ class ControlPlaneApiTests(unittest.TestCase):
             )
             self.assertEqual(invalid.status_code, 422, invalid.text)
 
+    def test_correlation_confidence_patch_replaces_clears_and_preserves_omission(
+        self,
+    ) -> None:
+        self._provision_scope(self.tenant_a)
+        self._upload(
+            _fixture_bytes(ifindex=7),
+            original_name="status.jsonl",
+            idempotency_key="confidence-upload",
+        )
+        revision = self._catalog_revisions()[0]
+        scope = self.control_plane.scope(
+            self.tenant_a, self.project_id, self.workspace_id,
+        )
+        dataset = self.control_plane.load_revision_dataset(scope, revision["revision_id"])
+        subjects = [
+            {
+                "revision_id": revision["revision_id"],
+                "kind": "event",
+                "subject_id": event["event_uid"],
+                "node_id": revision["node_id"],
+            }
+            for event in dataset["events"][:2]
+        ]
+        correlation_path = f"{self.workspace_path}/correlations/confidence-test"
+        created = self.client.post(
+            f"{self.workspace_path}/correlations",
+            headers=self._write_headers(self.tenant_a, idempotency_key="confidence-create"),
+            json={
+                "correlation_id": "confidence-test",
+                "subjects": subjects,
+                "edges": [{
+                    "source_ordinal": 0,
+                    "target_ordinal": 1,
+                    "link_type": "user.same-change",
+                }],
+                "confidence": 0.25,
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        etag = created.headers["etag"]
+        accepted = (
+            ({"confidence": 0.9}, 0.9),
+            ({"rationale": "Preserve omitted confidence"}, 0.9),
+            ({"confidence": 0}, 0.0),
+            ({"confidence": None}, None),
+            ({"rationale": "Keep confidence cleared"}, None),
+            ({"confidence": 1}, 1.0),
+        )
+        for version, (payload, expected_confidence) in enumerate(accepted, start=2):
+            with self.subTest(payload=payload):
+                updated = self.client.patch(
+                    correlation_path,
+                    headers={**self._write_headers(self.tenant_a), "If-Match": etag},
+                    json=payload,
+                )
+                self.assertEqual(updated.status_code, 200, updated.text)
+                self.assertEqual(updated.json()["confidence"], expected_confidence)
+                self.assertEqual(updated.json()["version"], version)
+                self.assertEqual(updated.headers["etag"], f'"{version}"')
+                etag = updated.headers["etag"]
+                retained = self.client.get(
+                    correlation_path, headers=self._read_headers(self.tenant_a),
+                )
+                self.assertEqual(retained.status_code, 200, retained.text)
+                self.assertEqual(retained.json()["confidence"], expected_confidence)
+                self.assertEqual(retained.headers["etag"], etag)
+
+        for invalid in (-0.1, 1.1, True, "0.5", [], {}):
+            with self.subTest(invalid_confidence=invalid):
+                rejected = self.client.patch(
+                    correlation_path,
+                    headers={**self._write_headers(self.tenant_a), "If-Match": etag},
+                    json={"confidence": invalid},
+                )
+                self.assertEqual(rejected.status_code, 422, rejected.text)
+                retained = self.client.get(
+                    correlation_path, headers=self._read_headers(self.tenant_a),
+                )
+                self.assertEqual(retained.json()["confidence"], 1.0)
+                self.assertEqual(retained.headers["etag"], etag)
+
+        stale = self.client.patch(
+            correlation_path,
+            headers={**self._write_headers(self.tenant_a), "If-Match": created.headers["etag"]},
+            json={"confidence": 0.5},
+        )
+        self.assertEqual(stale.status_code, 409, stale.text)
+
     def test_exact_annotations_correlation_and_deterministic_report(self) -> None:
         self._provision_scope(self.tenant_a)
         self._provision_scope(self.tenant_b)
