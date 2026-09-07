@@ -4516,6 +4516,11 @@ recursively and cannot contribute to public search text. If such a property is
 the kind's `condition_field`, returned status is `unknown`. This includes
 private ancestors and relative paths within the condition path, even when a
 descendant has its own public descriptor or uses a literal dotted key.
+Dotted public/searchable fields and `display_name_fields` traverse nested
+mappings, sequence elements, and literal dotted keys. Projection retains only
+matching sequence elements in order, so their array indexes may change. A
+public parent includes its subtree subject to privacy rules; unselected or
+non-searchable sibling fields cannot contribute to resource search text.
 Connector-like presentation comes from descriptor tags and never from a core
 check for a resource name. An optional descriptor `icon` carries validated SVG
 path geometry (`path`, four-number `view_box`, `render_mode`, and

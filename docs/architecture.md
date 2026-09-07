@@ -1486,6 +1486,12 @@ Condition privacy follows the same relative-path and ancestor rules as payload
 redaction, including literal dotted keys; a public child cannot override a
 private ancestor.
 
+Public field selection and resource search share the declared-path traversal
+for nested mappings, list/tuple elements, and literal dotted keys. A selected
+parent retains its subtree after privacy projection; a selected descendant
+retains only matching sequence elements, preserving order but not original
+indexes. Search collects selected values without serializing sibling branches.
+
 ### 5.3 Core tables
 
 | Table | Essential purpose |

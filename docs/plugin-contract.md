@@ -1980,6 +1980,14 @@ or matches a private relative path inside the payload. A public descendant does
 not override that restriction. Nested paths and literal dotted keys follow the
 same policy; similarly prefixed names in different path segments remain distinct.
 
+Client-visible property selection and resource search also traverse declared
+dotted paths through mappings, list/tuple elements, and literal dotted keys.
+Only matching sequence elements are retained, in their original order; their
+array indexes can change. Selecting a public parent includes its subtree subject
+to private-field redaction. Search uses the selected `searchable` and
+`display_name_fields` values, so an undeclared or non-searchable sibling cannot
+become a search match merely by sharing a parent container.
+
 When constructing a normalized revision, core-generated resource labels and
 event-subject labels use only key fields retained by the same publication
 policy; if none remain, the label is the resource kind. Raw typed keys and
@@ -1989,7 +1997,7 @@ plug-in-supplied label is intentional public presentation, so authors MUST NOT
 copy private property values into it.
 
 A dotted property name is a relative path inside plug-in-owned property
-payloads. Redaction follows that path through nested mappings and lists and
+payloads. Redaction follows that path through nested mappings, lists, and tuples and
 also removes an exact literal dotted key. The property policy is never applied
 as a global key blacklist. Core-owned structural fields such as
 `revision_id`, `node_id`, `resource_id`, `kind`, `label`, `action`,

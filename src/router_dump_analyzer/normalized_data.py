@@ -390,7 +390,7 @@ _PUBLIC_STATUS_CLASSES = frozenset(
         "unknown",
     }
 )
-_SENSITIVE_PATH_TERMINAL = object()
+_PROPERTY_PATH_TERMINAL = object()
 _DROP_CLIENT_FIELD = object()
 
 
@@ -631,24 +631,24 @@ def descriptor_sensitive_condition(
         if rule.get("sensitive") or rule.get("client_visible", True) is False
     )
     hidden, _branches = _advance_sensitive_path(
-        condition, _sensitive_path_trie(private_fields), (),
+        condition, _property_path_trie(private_fields), (),
     )
     return hidden
 
 
 @lru_cache(maxsize=256)
-def _sensitive_path_trie(
-    sensitive_fields: frozenset[str],
+def _property_path_trie(
+    field_names: frozenset[str],
 ) -> dict[object, Any]:
     root: dict[object, Any] = {}
-    for field in sensitive_fields:
+    for field in field_names:
         parts = tuple(part for part in str(field).split(".") if part)
         if not parts:
             continue
         branch = root
         for part in parts:
             branch = branch.setdefault(part, {})
-        branch[_SENSITIVE_PATH_TERMINAL] = True
+        branch[_PROPERTY_PATH_TERMINAL] = True
     return root
 
 
@@ -671,7 +671,7 @@ def _advance_sensitive_path(
             child = branch.get(part)
             if not isinstance(child, Mapping):
                 continue
-            if child.get(_SENSITIVE_PATH_TERMINAL):
+            if child.get(_PROPERTY_PATH_TERMINAL):
                 return True, ()
             following.append(child)
         branches = tuple(following)
@@ -725,7 +725,7 @@ def redact_sensitive_tree(value: Any, sensitive_fields: set[str]) -> Any:
     exact_names = frozenset(str(field) for field in sensitive_fields)
     return _redact_sensitive_tree(
         value,
-        path_trie=_sensitive_path_trie(exact_names),
+        path_trie=_property_path_trie(exact_names),
     )
 
 
@@ -889,30 +889,70 @@ def _sanitize_plugin_payload_tree(
     return value
 
 
+def _select_declared_field_value(
+    value: Any,
+    path_trie: Mapping[object, Any],
+    matches: list[Any] | None = None,
+) -> Any:
+    """Visit only declared paths, preserving nested and literal-key shapes.
+
+    A selected parent retains its complete value. Otherwise mappings follow
+    the remaining path and sequences retain matching elements in order. The
+    same traversal optionally collects selected values for search, without
+    serializing undeclared sibling branches.
+    """
+
+    if path_trie.get(_PROPERTY_PATH_TERMINAL):
+        if matches is not None:
+            matches.append(value)
+        return value
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        for raw_key, nested in value.items():
+            branch: Any = path_trie
+            for part in str(raw_key).split("."):
+                if branch.get(_PROPERTY_PATH_TERMINAL):
+                    break
+                branch = branch.get(part)
+                if not isinstance(branch, Mapping):
+                    break
+            if not isinstance(branch, Mapping):
+                continue
+            selected = _select_declared_field_value(nested, branch, matches)
+            if selected is not _DROP_CLIENT_FIELD:
+                result[raw_key] = selected
+        return result if result else _DROP_CLIENT_FIELD
+    if isinstance(value, (list, tuple)):
+        selected_items: list[Any] = []
+        for item in value:
+            selected = _select_declared_field_value(item, path_trie, matches)
+            if selected is not _DROP_CLIENT_FIELD:
+                selected_items.append(selected)
+        if selected_items:
+            return tuple(selected_items) if isinstance(value, tuple) else selected_items
+    return _DROP_CLIENT_FIELD
+
+
 def _project_declared_fields(
     value: Any,
     field_names: set[str],
 ) -> dict[str, Any]:
-    """Project a mapping through descriptor-declared dotted field paths."""
+    """Project declared paths through mappings, sequences, and dotted keys."""
 
     if not isinstance(value, Mapping) or not field_names:
         return {}
-    result: dict[str, Any] = {}
-    for raw_key, nested in value.items():
-        key = str(raw_key)
-        if key in field_names:
-            result[raw_key] = nested
-            continue
-        descendants = {
-            field[len(key) + 1 :]
-            for field in field_names
-            if field.startswith(f"{key}.")
-        }
-        if descendants and isinstance(nested, Mapping):
-            projected = _project_declared_fields(nested, descendants)
-            if projected:
-                result[raw_key] = projected
-    return result
+    result = _select_declared_field_value(
+        value, _property_path_trie(frozenset(field_names)),
+    )
+    return {} if result is _DROP_CLIENT_FIELD else result
+
+
+def _declared_field_values(value: Any, name: str) -> list[Any]:
+    matches: list[Any] = []
+    _select_declared_field_value(
+        value, _property_path_trie(frozenset({name})), matches,
+    )
+    return matches
 
 
 def _client_visible_property_names(
@@ -1035,12 +1075,17 @@ def redact_resource_view(
             ),
             sensitive,
         )
-        for name in visible_properties:
-            if "." not in name and name in raw_record:
-                safe_record[name] = redact_sensitive_tree(
-                    {name: raw_record[name]},
-                    sensitive,
-                ).get(name)
+        safe_record.update(redact_sensitive_tree(
+            _project_declared_fields(
+                {
+                    name: nested
+                    for name, nested in raw_record.items()
+                    if str(name) not in _CLIENT_RESOURCE_ENVELOPE_FIELDS
+                },
+                visible_properties,
+            ),
+            sensitive,
+        ))
         if descriptor_sensitive_condition(descriptor):
             if "status" in safe_record:
                 safe_record["status"] = "unknown"
@@ -1625,7 +1670,7 @@ def _project_relationship_property_value(
     """
 
     exact_names = frozenset(str(field) for field in sensitive_fields)
-    path_trie = _sensitive_path_trie(exact_names)
+    path_trie = _property_path_trie(exact_names)
     hidden, initial_branches = _advance_sensitive_path(root_property, path_trie, ())
     if hidden:
         return _DROP_CLIENT_FIELD
@@ -2574,15 +2619,15 @@ def resource_search_text(
                 or not rule.get("searchable")
             ):
                 continue
-            if isinstance(state, Mapping) and name in state:
-                values.append(state[name])
-            elif name in public_record:
-                values.append(public_record[name])
+            matches = _declared_field_values(state, name)
+            values.extend(matches or _declared_field_values(public_record, name))
         for name in descriptor.get("display_name_fields", ()) if descriptor else ():
-            if isinstance(state, Mapping) and name in state:
-                values.append(state[name])
-            elif isinstance(key, Mapping) and name in key:
-                values.append(key[name])
+            matches = _declared_field_values(state, name)
+            values.extend(
+                matches
+                or _declared_field_values(key, name)
+                or _declared_field_values(public_record, name)
+            )
     return " ".join(
         json.dumps(value, sort_keys=True, ensure_ascii=False)
         if isinstance(value, (Mapping, list, tuple))

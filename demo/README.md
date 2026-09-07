@@ -428,6 +428,9 @@ Its `oper_status` condition is intentionally public. When adapting the schema,
 private parent/relative paths also hide descendant conditions and literal dotted
 keys. Verify publication with
 `python -m unittest tests.test_property_visibility tests.test_resource_property_policy tests.test_normalized_data_service -v`.
+That suite also exercises dotted public/searchable fields in nested maps,
+lists, tuples, and literal dotted keys. Sequence projection keeps only matching
+elements in order, while private or unselected siblings stay out of search.
 Its manifest explicitly declares `TimelineTimeBasis.ABSOLUTE_UNIX_NS` because
 the fixture's `captured_at_ns` values are UTC/Unix nanoseconds; the conformance
 test asserts that declaration. This is semantic input, not presentation: a

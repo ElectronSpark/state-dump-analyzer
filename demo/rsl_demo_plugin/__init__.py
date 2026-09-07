@@ -1426,6 +1426,8 @@ def _interface_schema() -> PluginSchema:
                         name="description",
                         label="Description",
                         value_type="string",
+                        # Dotted names can select nested searchable leaves;
+                        # core applies visibility before building search text.
                         searchable=True,
                         client_visible=True,
                     ),

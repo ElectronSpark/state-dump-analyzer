@@ -498,6 +498,14 @@ keys. Keep the example's `oper_status` public when it is intended for display.
 `client_visible` defaults to `True` for compatibility, so the declaration
 itself is the allowlist.
 
+Declare `neighbors.name` to publish or search just that nested field, including
+objects inside lists or tuples and literal dotted keys. Only matching sequence
+elements are retained, in order, so their array indexes can change. A declared
+public parent includes its subtree subject to private-field redaction. Dotted
+`searchable` and `display_name_fields` declarations use the same selection;
+unselected siblings do not contribute search text. The property-visibility
+conformance command in the smoke workflow exercises these representations.
+
 Core-generated resource and event-subject labels use only admitted key parts,
 or the resource kind when all parts are hidden. Plug-in-supplied labels are
 public presentation: do not embed private fields in them. Existing revisions
