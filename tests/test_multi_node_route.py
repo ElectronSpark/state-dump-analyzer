@@ -3208,10 +3208,7 @@ class MultiNodeRouteTests(unittest.TestCase):
         self.assertEqual(by_type["ipv6_unicast"]["forwarding_actions"], [])
 
     def test_every_route_type_has_an_executable_route_table_trace_action(self) -> None:
-        table = self.client.post(
-            "/v1/topologies/routes/tables/query",
-            json={"page": {"limit": 500}},
-        ).json()
+        table = query_all_route_table_rows(self.client)
         expected_types = {
             item["route_type"]
             for item in self.client.get(
