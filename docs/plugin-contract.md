@@ -34,6 +34,9 @@ the normative reference, not the recommended reading order for a first
 implementation. The [detailed author guide](plugin-author-guide.md) explains
 optional capabilities and their executable conformance checks.
 
+The [API validation map](plugin-api-validation.md) indexes every analyzer hook,
+supporting protocol, and combined workflow by runnable conformance group.
+
 ## 1. Packaging and discovery
 
 Each plugin is an independently versioned Python distribution with an entry

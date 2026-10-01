@@ -1,0 +1,4 @@
+interface:
+  display_name: "Router Plug-in Author"
+  short_description: "Implement device plug-ins against core contracts"
+  default_prompt: "Use $router-plugin-author to implement and validate the requested device plug-in capability."

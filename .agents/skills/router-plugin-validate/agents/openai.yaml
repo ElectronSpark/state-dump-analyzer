@@ -1,0 +1,4 @@
+interface:
+  display_name: "Router Plug-in Validation"
+  short_description: "Audit individual and combined plug-in API behavior"
+  default_prompt: "Use $router-plugin-validate to audit plug-in contracts and verify their combined workflows."

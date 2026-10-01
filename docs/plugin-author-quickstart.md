@@ -8,6 +8,12 @@ The [detailed author guide](plugin-author-guide.md) covers optional capabilities
 and their conformance commands. The [plug-in contract](plugin-contract.md) is
 the normative reference.
 
+For a specific hook or combined workflow, use the
+[API validation map](plugin-api-validation.md). Repository agents can use
+[`router-plugin-author`](../.agents/skills/router-plugin-author/SKILL.md) for
+implementation and [`router-plugin-validate`](../.agents/skills/router-plugin-validate/SKILL.md)
+for conformance audits.
+
 ## 1. Run the known-good example
 
 Install the core and the one runnable example distribution:
@@ -104,5 +110,5 @@ Core owns artifact safety, persistence, APIs, and the generic frontend. Plug-ins
 supply device meaning and declarative domain presentation. Producer limitation
 metadata describes input and evidence quality; core reports configured host
 services. Optional topology and forwarding hooks are introduced in the
-[author guide](plugin-author-guide.md#4-optional-hooks), with focused tests for
+[author guide](plugin-author-guide.md#4-know-which-hooks-are-optional), with focused tests for
 each boundary.

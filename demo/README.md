@@ -21,6 +21,14 @@ contains:
   and
 - plug-in-owned conformance fixtures and tests.
 
+For the small parser teaching slice, start with the
+[plug-in author quickstart](../docs/plugin-author-quickstart.md). The
+[API validation map](../docs/plugin-api-validation.md) links the repository
+skills and checks for individual hooks and combined workflows. Run a focused
+group from the repository root with
+`python scripts/check_plugin_conformance.py --group foundation`, or use
+`--group combined` for the demo's durable and cross-node integrations.
+
 The minimal parser intentionally emits one unqualified status view. When
 extending it with intended/programmed/observed perspectives, keep them explicit:
 core reconstructs each independently and never merges their fields. A singular

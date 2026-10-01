@@ -5,6 +5,11 @@ working parser. This guide preserves the detailed implementation walkthrough,
 optional capabilities, and their focused conformance commands. The
 [plug-in contract](plugin-contract.md) is the normative reference.
 
+Use the [API validation map](plugin-api-validation.md) to find each hook,
+supporting protocol, and combined workflow's conformance group. The repository
+authoring and validation skills linked there load only the relevant contract
+sections.
+
 ## What this guide produces
 
 The example plug-in:
@@ -947,8 +952,13 @@ Everything else is capability-gated:
 | `FORWARDING_TRACE` | `resolve_forwarding_step()` | one bounded node-local packet transition |
 | `EVIDENCE_ANALYSIS` | `analyze_evidence()` | citation-scoped advisory observations over already-authorized evidence |
 
-Inherit undeclared hooks from `AnalyzerPluginBase`; they return safe empty
-results. Do not copy placeholder implementations into a new plug-in.
+Inherit undeclared hooks from `AnalyzerPluginBase`. Iterable hooks return empty
+results, and `apply()` / `revert()` return an empty `ChangeSet`.
+`resolve_forwarding_step()` instead raises `NotImplementedError`: a packet
+transition has no empty result. The capability executor rejects an undeclared
+`FORWARDING_TRACE` call before invoking that hook. Any declared hook that is
+not overridden raises `NotImplementedError`. Do not copy placeholder
+implementations into a new plug-in.
 
 Declaring a capability does not mean ingestion schedules it. Ordinary ingestion
 parses inputs and stores validated observations, intervals, and events. It does

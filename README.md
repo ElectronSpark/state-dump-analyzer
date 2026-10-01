@@ -49,6 +49,7 @@ cross-layer inconsistency.
 | Compare physical connectivity with VPN membership | [VPN topology samples](demo/README.md#vpn-topology-samples) |
 | Inspect conflicting observations from different routers | [Cross-node inconsistency samples](demo/README.md#cross-node-inconsistency-samples) |
 | Build a device plug-in | [Plug-in author quickstart](docs/plugin-author-quickstart.md) |
+| Validate individual and combined plug-in APIs | [API validation map and repository skills](docs/plugin-api-validation.md) |
 | Use the Python API from a typed client | [Typed Python API](#typed-python-api) |
 | Run durable uploads, sessions, or review | [Durable control plane](docs/control-plane.md) |
 | Integrate with the API | [API payload contract](docs/api-contract.md) |
