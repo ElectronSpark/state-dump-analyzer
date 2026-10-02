@@ -1466,6 +1466,11 @@ arrays. Core supplies `has_lifecycle_history` from the complete revision; only
 within the returned half-open query window can that flag establish absence
 without a matching live interval. The plug-in does not emit this transport flag
 and clients MUST NOT reconstruct missing intervals from snapshots or previews.
+When `lifecycle_intervals_truncated` is true, omitted lifecycle detail MUST
+remain unknown; it cannot prove absence. Dense timeline lanes may return
+bounded state detail plus `status_interval_summary` and explicit counts.
+These are core query projections, not new plug-in emissions. Summaries MUST
+preserve disclosure policy and distinguish omitted detail from known health.
 A failed topology API query MUST remain unavailable; cached resources, event
 previews, and undeclared layer names do not authorize a substitute projection.
 A bounded node snapshot may display only its exact recorded member/revision,

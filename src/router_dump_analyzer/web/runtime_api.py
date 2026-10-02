@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractContextManager
@@ -72,6 +73,7 @@ from router_dump_analyzer.revision_queries import (
     CorrelationQuery,
     EventDensityQuery,
     EventLogQuery,
+    RevisionQueryCancellationError,
     RevisionQueryRequestError,
     RevisionQueryService,
     TimelineQuery,
@@ -97,6 +99,10 @@ from router_dump_analyzer.value_core import (
     parse_decimal_integer,
 )
 from router_dump_analyzer.web.runtime_context import current_runtime_session
+from router_dump_analyzer.web._query_cancellation import (
+    current_query_cancellation_probe,
+    query_cancellation_scope,
+)
 from router_dump_analyzer.web.service_api import service_router
 
 
@@ -248,6 +254,9 @@ class _RuntimeApiErrorPolicy:
 _RUNTIME_API_ERROR_POLICY_BY_CLASS: Mapping[type[Exception], _RuntimeApiErrorPolicy] = (
     MappingProxyType(
         {
+            RevisionQueryCancellationError: _RuntimeApiErrorPolicy(
+                499, "revision query was cancelled"
+            ),
             RevisionQueryRequestError: _RuntimeApiErrorPolicy(
                 422,
                 "revision query was rejected",
@@ -385,7 +394,12 @@ class _BoundedRuntimeApiRoute(APIRoute):
 
         async def bounded(request: Request) -> Any:
             try:
+                if self.name in {"event_density_query", "timeline_query"}:
+                    async with query_cancellation_scope(request):
+                        return await original(request)
                 return await original(request)
+            except asyncio.CancelledError:
+                raise
             except PROCESS_CONTROL_EXCEPTIONS:
                 raise
             except Exception as error:  # noqa: BLE001 - closed boundary policy
@@ -686,6 +700,7 @@ def _revision_queries(
             if indexed_history is _DEFAULT_QUERY_INDEX
             else indexed_history
         ),
+        cancellation_probe=current_query_cancellation_probe(),
     )
 
 

@@ -131,6 +131,50 @@ without guessed percentages. Browser timeout bounds waiting and does not
 prove synchronous backend execution stopped. Run the relevant frontend tests
 and browse the resulting integration before claiming UI readiness.
 
+## Zoom and history query validation
+
+Timeline and density aggregation are core services, not new plug-in hooks.
+Use `RevisionQueryService` with an explicitly scoped dataset and optional
+`IndexedHistory`; the HTTP adapter supplies revision authority and cancellation.
+The API contract's [timeline](api-contract.md#6-timeline-and-cluster-expansion)
+and density sections describe response semantics. Ordinary parsers still emit
+normalized observations/events and schema descriptors through ingestion.
+
+Validate wide, narrow, empty, and same-timestamp windows against the same raw
+synthetic evidence. Keep integer nanosecond boundaries exact, including negative
+coordinates and inclusive event endpoints. Preserve stable temporal ordering,
+selected events, count/failure totals and redaction through cluster drill-down.
+State summaries are incomplete detail, never evidence that a resource was absent
+or healthy. Type summaries must retain enough information for exact merged
+counts; combining only each child's top types is not exact.
+
+A bounded response alone does not establish scalability. Count event visits,
+detail projections, and index operations for cold and warm calls. Exercise a
+busy single resource as well as many lanes. Keep caches bounded by retained
+work/size and entries, scoped to live immutable revision identity, isolated
+across revision replacement, and safe under concurrent calls. Cancellation
+must not publish partial results or incomplete indexes. A browser abort only
+stops backend work where a cooperative checkpoint observes the disconnect.
+
+Use these focused checks after changes to this path:
+
+```text
+python -m unittest tests.test_zoom_timeline tests.test_zoom_density tests.test_zoom_cancellation tests.test_revision_queries tests.test_timeline_cluster_detail tests.test_scale_history_stream_api tests.test_scale_history_frontend -v
+npm --prefix frontend run check
+```
+
+Add a small combined scenario entering the real query/HTTP boundary. For parser
+work, ingest the fixture before querying it. Validate exact revision identity,
+coarse counts, detail membership, and sensitive-field omission, not only HTTP
+success. Browser checks should include rapid zoom/pan, a late old response,
+revision replacement, retained selection, and honest cached/refining indicators.
+Report operation-count evidence separately from wall time and peak memory;
+a million timestamps alone does not benchmark a million rich event objects.
+Include both low and high event-type cardinality: per-bin bisection can beat a
+full sweep for dense types but regress when almost every event has a distinct
+type. Also check the unindexed fallback independently; rebuilding transient
+per-resource lists can defeat cache identity and multiply full-history scans.
+
 ## Every analyzer hook
 
 Exact signatures and typed values are in

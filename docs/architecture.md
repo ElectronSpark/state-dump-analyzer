@@ -1053,6 +1053,24 @@ translation of `RevisionQueryRequestError` into the existing safe 422 response.
 Headless execution and parity with each HTTP query family are exercised by
 `tests/test_revision_queries.py`.
 
+Zoom queries keep bounded private indexes on the normalized-data service.
+Per-resource timestamp and interval indexes select narrow windows; coarse event
+clusters are counted before projecting/redacting bounded previews. Density
+summaries retain exact type counters and reuse aligned time cells across levels.
+State/lifecycle response limits carry explicit summary/truncation metadata so
+omission is not interpreted as absence. These are core query optimizations;
+the plug-in boundary and device semantics are unchanged. Cold index construction
+and the runtime's initial history materialization remain separate costs.
+Without `IndexedHistory`, timeline selection retains one full event-window
+scan plus per-lane checks of matching events. Transient filtered lists are
+not retained as reusable revision indexes.
+
+The HTTP timeline/density wrapper drains the request body before monitoring
+disconnects, then binds a thread-safe cancellation probe for core checkpoints.
+It cannot interrupt arbitrary synchronous plug-in or archive work. The browser
+aborts obsolete requests, uses revision/bounds-scoped aligned density pages,
+and refines explicitly labelled cached summaries after gestures settle.
+
 `TemporalTopologyService` likewise accepts an explicit optional `IndexedHistory`.
 Providers forward the normalized source's index for that exact dataset/revision;
 absence selects array traversal. Private dataset-key compatibility remains in

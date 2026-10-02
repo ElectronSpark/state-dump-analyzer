@@ -1303,6 +1303,8 @@ the demo guide owns the current projection and evidence contract.
 | [Private AI analysis boundary](docs/private-ai-analysis.md) | Local-only model transport, default-deny workspace disclosure policy, full-fidelity private evidence, advisory provenance, and explicit human proposal-review rules |
 | [Durable control plane](docs/control-plane.md) | Local durable ingestion, catalogs, sessions, annotations, reports, routes, and operations |
 | [API payload contract](docs/api-contract.md) | External state, topology, history, timeline, correlation, and route APIs |
+| [Zoom-query validation](docs/plugin-api-validation.md#zoom-and-history-query-validation) | Dense history summaries, exact drill-down, cache identity, and cancellation checks |
+| [Zoom performance results](docs/zoom-improvements-2026-10-02.md) | Implementation checklist, measured comparisons, and GPT-6.1 Sol skill trials |
 | [Plug-in author quickstart](docs/plugin-author-quickstart.md) | A linear, copy-paste path to a first plug-in |
 | [Plug-in contract and lifecycle](docs/plugin-contract.md) | Normative hooks, identity, provenance, topology, routes, and conformance |
 | [Public sample-input catalog](docs/public-sample-catalog.md) | Open-source traces and other useful test inputs |

@@ -502,6 +502,11 @@ unavailable; the browser does not synthesize state or aligned clocks. Run
 The core owns windowed timeline reconstruction: an empty query window never
 borrows this fixture's final snapshot. Core's `has_lifecycle_history` lane flag
 preserves known absence versus missing lifecycle evidence.
+For dense histories, core limits interval detail and reports exact summary
+counts. Truncated lifecycle arrays do not establish absence. Zoom aggregation,
+cached density pages and query cancellation require no extra demo plug-in hook;
+the [zoom conformance checks](../docs/plugin-api-validation.md#zoom-and-history-query-validation)
+exercise these paths with synthetic bursts, including a million timestamp index.
 Optional semantic output hooks use core-owned snapshots: reusing a local
 dictionary cannot mutate an admitted result. In-process `Value` sequences are
 tuples. Run `python -m unittest tests.test_capability_executor -v` for ownership

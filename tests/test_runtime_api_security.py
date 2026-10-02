@@ -78,6 +78,7 @@ class RuntimeApiErrorPolicyTests(unittest.TestCase):
             "MultiNodeRouteRequestError": 422,
             "MultiNodeTopologyRequestError": 422,
             "RevisionQueryRequestError": 422,
+            "RevisionQueryCancellationError": 499,
             "SourceRecordRequestError": 422,
             "TemporalTopologyRequestError": 422,
             "TimeoutError": 504,

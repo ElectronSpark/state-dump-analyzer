@@ -236,6 +236,15 @@ it changes the reconstructed moment, not the viewport position.
 
 ### Frontend checks
 
+Density zoom uses stable power-of-two resolution levels and aligned pages.
+Cache identity includes the revision endpoint, bootstrap context and exact
+capture bounds. During a gesture, cached bins keep their original boundaries
+and counts and are labelled as cached/partial while finer data is pending.
+After settling, the current viewport requests its exact page; superseded
+requests are aborted and late responses cannot commit. Timeline interval
+summaries disclose omitted detail without treating it as absence or health.
+`density_viewport.test.mjs` exercises this lifecycle and production rendering.
+
 Use `npm --prefix frontend run check` to validate the manifest, local asset
 references, JavaScript syntax, single-source frontend boundary, and the
 framework-free helper tests under `frontend/tests/`, without installing

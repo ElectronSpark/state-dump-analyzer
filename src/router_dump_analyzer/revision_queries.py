@@ -9,12 +9,16 @@ normalized-data service used for safe resource/event projections.
 from __future__ import annotations
 
 import json
+import heapq
 from bisect import bisect_left, bisect_right
-from collections import Counter
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
+from threading import Lock
+
+from .zoom_density import DensityIndex, adaptive_type_counts
 
 from .cancellation import check_cancellation_probe
 from .history_search_core import HistorySearchCapacityError
@@ -28,7 +32,7 @@ from .normalized_data import (
     redact_resource_view,
     resource_id,
 )
-from .plugin_api import MAX_TIMESTAMP_NS, MIN_TIMESTAMP_NS
+from .plugin_api import MAX_TIMESTAMP_NS, MIN_TIMESTAMP_NS, ConditionClass
 from .source_record_core import (
     project_source_record_for_log,
     record_lanes_for_window,
@@ -53,11 +57,139 @@ from .value_core import (
     snapshot_json_value,
 )
 
+_DENSITY_CACHE_LOCK = Lock()
+
+
+def _density_index(
+    owner: Any, revision: str, runtime: Any, checkpoint: Callable[[], None]
+) -> DensityIndex:
+    # Keep two histories at most; identity prevents reuse across reloads.
+    key = (revision, id(runtime))
+    with _DENSITY_CACHE_LOCK:
+        cache = getattr(owner, "_density_query_indexes", None)
+        if cache is None:
+            cache = OrderedDict()
+            owner._density_query_indexes = cache
+        entry = cache.get(key)
+        if entry is not None and entry[0] is runtime:
+            cache.move_to_end(key)
+            return cast(DensityIndex, entry[1])
+    failures, types = density_secondary_indexes(runtime, checkpoint=checkpoint)
+    index = DensityIndex(runtime.event_times, failures, types)
+    checkpoint()
+    with _DENSITY_CACHE_LOCK:
+        entry = cache.get(key)
+        if entry is not None and entry[0] is runtime:
+            return cast(DensityIndex, entry[1])
+        cache[key] = (runtime, index)
+        while len(cache) > 2:
+            cache.popitem(last=False)
+    return index
+
+
 MAX_CORRELATION_NODES = 500
 MAX_TIMELINE_RESOURCE_LANES = 100
 MAX_TIMELINE_GLYPHS = 10_000
 MAX_TIMELINE_VIEWPORT_PIXELS = 100_000
 MAX_TIMELINE_CLUSTER_DETAIL = 50
+MAX_TIMELINE_INTERVAL_DETAILS = 2_000
+MAX_TIMELINE_INDEX_UNITS = 8_000_000
+
+
+_TIMELINE_CACHE_LOCK = Lock()
+
+
+def _cooperative_sorted(
+    items: Iterable[Any], key: Callable[[Any], Any], checkpoint: Callable[[], None]
+) -> list[Any]:
+    """Bound uninterrupted sorting to small chunks and merge cooperatively."""
+    chunks = []
+    chunk = []
+    for position, item in enumerate(items):
+        if position % 256 == 0:
+            checkpoint()
+        chunk.append(item)
+        if len(chunk) == 4096:
+            chunks.append(sorted(chunk, key=key))
+            chunk = []
+            checkpoint()
+    if chunk:
+        chunks.append(sorted(chunk, key=key))
+    result = []
+    for position, item in enumerate(heapq.merge(*chunks, key=key)):
+        if position % 256 == 0:
+            checkpoint()
+        result.append(item)
+    checkpoint()
+    return result
+
+
+def _timeline_cache(owner: Any, name: str) -> Any:
+    # Called only under the cache lock; expensive builds happen outside it.
+    cache = getattr(owner, name, None)
+    if cache is None:
+        cache = OrderedDict()
+        setattr(owner, name, cache)
+    return cache
+
+
+def _timeline_index(
+    owner: Any,
+    revision: Any,
+    identifier: str,
+    events: Any,
+    states: Any,
+    checkpoint: Callable[[], None],
+    *,
+    retain: bool = True,
+) -> Any:
+    key = (revision, identifier)
+    if retain:
+        with _TIMELINE_CACHE_LOCK:
+            cache = _timeline_cache(owner, "_timeline_query_indexes")
+            cached = cache.get(key)
+            if cached is not None and cached[0] is events and cached[1] is states:
+                cache.move_to_end(key)
+                return cached[2]
+    ordered = _cooperative_sorted(
+        events,
+        lambda event: temporal_order_key(
+            event, time_field="timestamp_ns", identifier_fields=("event_uid",)
+        ),
+        checkpoint,
+    )
+    times: list[int] = []
+    uids: dict[str, int] = {}
+    failures = [0]
+    for position, event in enumerate(ordered):
+        if position % 256 == 0:
+            checkpoint()
+        times.append(int(event["timestamp_ns"]))
+        uids[str(event["event_uid"])] = position
+        failures.append(failures[-1] + (event.get("outcome") == "failure"))
+    changes = _cooperative_sorted(
+        (
+            int(item["valid_from_ns"])
+            for item in states
+            if item.get("valid_from_ns") is not None
+        ),
+        lambda time: time,
+        checkpoint,
+    )
+    value = (ordered, times, failures, changes, uids)
+    checkpoint()
+    units = len(ordered) * 4 + len(changes)
+    if retain and units <= MAX_TIMELINE_INDEX_UNITS:
+        with _TIMELINE_CACHE_LOCK:
+            cache[key] = (events, states, value, units)
+            while (
+                len(cache) > MAX_TIMELINE_RESOURCE_LANES * 2
+                or sum(item[3] for item in cache.values()) > MAX_TIMELINE_INDEX_UNITS
+            ):
+                cache.popitem(last=False)
+    return value
+
+
 MAX_DENSITY_BINS = 4_096
 MAX_EVENT_LOG_LIMIT = 500
 MAX_EVENT_LOG_OFFSET = 10_000_000
@@ -560,7 +692,7 @@ class RevisionQueryService:
 
     def _indexed_correlation_payload(
         self,
-        dataset: dict[str, Any],
+        dataset: Mapping[str, Any],
         query: CorrelationQuery,
     ) -> dict[str, Any]:
         """Return a bounded, time-valid neighborhood from the scale indexes."""
@@ -738,10 +870,10 @@ class RevisionQueryService:
 
     def _indexed_event_search_documents(
         self,
-        dataset: dict[str, Any],
+        dataset: Mapping[str, Any],
         runtime: Any,
         policy: Any,
-    ):
+    ) -> Iterator[str]:
         """Yield the exact case-folded, client-safe event search projection."""
 
         for event in self._checked(runtime.events):
@@ -753,14 +885,16 @@ class RevisionQueryService:
                 separators=(",", ":"),
             ).casefold()
 
-    def _warm_event_search(self, dataset: dict[str, Any]) -> None:
+    def _warm_event_search(self, dataset: Mapping[str, Any]) -> None:
         """Build one immutable revision's safe corpus under tracked indexing."""
 
         runtime = self.indexed_history
         if runtime is None:
             return
         policy = self._event_redaction_policy(dataset)
-        with self.data_service._loading_operation(AnalysisLoadStage.INDEXING):
+        with getattr(self.data_service, "_loading_operation")(
+            AnalysisLoadStage.INDEXING
+        ):
             try:
                 runtime.event_search.ensure(
                     lambda: self._indexed_event_search_documents(
@@ -776,16 +910,18 @@ class RevisionQueryService:
 
     def _query_event_search(
         self,
-        dataset: dict[str, Any],
+        dataset: Mapping[str, Any],
         runtime: Any,
         policy: Any,
         search: str,
-    ):
+    ) -> Any:
         """Run a first-use corpus build and query as one visible core operation."""
 
         capacity_error: HistorySearchCapacityError | None = None
         matches = None
-        with self.data_service._loading_operation(AnalysisLoadStage.INDEXING):
+        with getattr(self.data_service, "_loading_operation")(
+            AnalysisLoadStage.INDEXING
+        ):
             try:
                 matches = runtime.event_search.query(
                     search,
@@ -806,7 +942,7 @@ class RevisionQueryService:
         self,
         *,
         revision_id: str,
-        dataset: dict[str, Any],
+        dataset: Mapping[str, Any],
         runtime: Any,
         search: str,
         layers: set[str],
@@ -955,7 +1091,7 @@ class RevisionQueryService:
         self,
         *,
         revision_id: str,
-        dataset: dict[str, Any],
+        dataset: Mapping[str, Any],
         runtime: Any,
         selected_range: tuple[int, int] | None,
         offset: int,
@@ -1084,7 +1220,7 @@ class RevisionQueryService:
 
     def _effective_relationship_intervals(
         self,
-        dataset: dict[str, Any],
+        dataset: Mapping[str, Any],
         lane_ids: set[str],
         query_start_ns: int,
         query_end_ns: int,
@@ -1093,7 +1229,9 @@ class RevisionQueryService:
 
         runtime = self.indexed_history
         if runtime is not None:
-            lifecycle_by_resource = runtime.lifecycle_by_resource
+            lifecycle_by_resource = cast(
+                dict[str, list[dict[str, Any]]], runtime.lifecycle_by_resource
+            )
             candidate_map: dict[str, dict[str, Any]] = {}
             for identifier in self._checked(lane_ids):
                 for relationship in self._checked(
@@ -1114,11 +1252,11 @@ class RevisionQueryService:
                     candidate_map[key] = relationship
             relationship_candidates = list(candidate_map.values())
         else:
-            lifecycle_by_resource: dict[str, list[dict[str, Any]]] = {}
+            lifecycle_by_resource = {}
             for lifecycle in self._checked(dataset["lifecycle_intervals"]):
-                lifecycle_by_resource.setdefault(lifecycle["resource"], []).append(
-                    lifecycle
-                )
+                if lifecycle["resource"] not in lifecycle_by_resource:
+                    lifecycle_by_resource[lifecycle["resource"]] = []
+                lifecycle_by_resource[lifecycle["resource"]].append(lifecycle)
             relationship_candidates = dataset["relationship_intervals"]
         descriptors = {
             item["relation_type"]: item
@@ -1250,7 +1388,7 @@ class RevisionQueryService:
 
     def _relationship_mutations_in_window(
         self,
-        dataset: dict[str, Any],
+        dataset: Mapping[str, Any],
         lane_ids: set[str],
         query_start_ns: int,
         query_end_ns: int,
@@ -1309,67 +1447,38 @@ class RevisionQueryService:
         dataset = self.dataset
         runtime = self.indexed_history
         if runtime is not None:
-            failure_event_times, event_times_by_type = density_secondary_indexes(
-                runtime
+            density = _density_index(
+                self.data_service, revision_id, runtime, self._checkpoint
             )
-            left = bisect_left(runtime.event_times, start_ns)
-            right = bisect_right(runtime.event_times, end_ns)
-            total_count = right - left
-            page_start_ns = start_ns + (integer_span * bin_start_index) // bin_count
-            page_end_exclusive = start_ns + (integer_span * bin_end_index) // bin_count
-            type_counts_by_bin = density_type_counts_by_bin(
-                event_times_by_type,
-                page_start_ns=page_start_ns,
-                page_end_exclusive=page_end_exclusive,
+            total_count = bisect_right(runtime.event_times, end_ns) - bisect_left(
+                runtime.event_times, start_ns
+            )
+            summaries = density.page(
                 start_ns=start_ns,
                 integer_span=integer_span,
                 bin_count=bin_count,
                 bin_start_index=bin_start_index,
                 bin_end_index=bin_end_index,
+                checkpoint=self._checkpoint,
             )
             response_bins: list[dict[str, Any]] = []
-            for index in self._checked(range(bin_start_index, bin_end_index)):
+            for index, summary in self._checked(summaries.items()):
                 bin_start_ns, bin_end_ns = density_bin_bounds(
-                    start_ns,
-                    integer_span,
-                    bin_count,
-                    index,
+                    start_ns, integer_span, bin_count, index
                 )
-                bin_end_exclusive = bin_end_ns + 1
-                bin_left = bisect_left(
-                    runtime.event_times,
-                    bin_start_ns,
-                    left,
-                    right,
-                )
-                bin_right = bisect_left(
-                    runtime.event_times,
-                    bin_end_exclusive,
-                    bin_left,
-                    right,
-                )
-                count = bin_right - bin_left
-                if not count:
-                    continue
-                failure_count = bisect_left(
-                    failure_event_times,
-                    bin_end_exclusive,
-                ) - bisect_left(failure_event_times, bin_start_ns)
                 response_bins.append(
                     {
                         "index": index,
                         "start_ns": str(bin_start_ns),
                         "end_ns": str(bin_end_ns),
-                        "count": count,
-                        "failure_count": failure_count,
+                        "count": summary.count,
+                        "failure_count": summary.failure_count,
                         "top_types": [
-                            {"event_type": event_type, "count": type_count}
-                            for event_type, type_count in self._checked(
-                                sorted(
-                                    type_counts_by_bin.get(index, {}).items(),
-                                    key=lambda item: (-item[1], item[0]),
-                                )[:4]
-                            )
+                            {"event_type": name, "count": amount}
+                            for name, amount in sorted(
+                                summary.type_counts.items(),
+                                key=lambda item: (-item[1], item[0]),
+                            )[:4]
                         ],
                     }
                 )
@@ -1822,8 +1931,12 @@ class RevisionQueryService:
         search = query.search.casefold()
         if runtime is not None:
             filtered: list[dict[str, Any]] = []
-            lifecycle_by_resource = runtime.lifecycle_by_resource
-            state_by_resource = runtime.state_by_resource
+            lifecycle_by_resource = cast(
+                dict[str, list[dict[str, Any]]], runtime.lifecycle_by_resource
+            )
+            state_by_resource = cast(
+                dict[str, list[dict[str, Any]]], runtime.state_by_resource
+            )
             resource_candidates = [
                 runtime.resource_by_id[identifier]
                 for identifier in self._checked(requested_id_values)
@@ -1831,8 +1944,8 @@ class RevisionQueryService:
             ]
         else:
             filtered = self.data_service.events_in_range(start_ns, end_ns)
-            lifecycle_by_resource: dict[str, list[dict[str, Any]]] = {}
-            state_by_resource: dict[str, list[dict[str, Any]]] = {}
+            lifecycle_by_resource = {}
+            state_by_resource = {}
             for item in self._checked(dataset["lifecycle_intervals"]):
                 lifecycle_by_resource.setdefault(item["resource"], []).append(item)
             for item in self._checked(dataset["state_intervals"]):
@@ -1845,7 +1958,12 @@ class RevisionQueryService:
             if isinstance(item, dict) and item.get("kind")
         }
         lanes: list[dict[str, Any]] = []
-        all_marks: list[dict[str, Any]] = []
+        event_windows = []
+        index_scope = (self.revision_id, id(dataset), id(runtime))
+        interval_budget = max(
+            1, MAX_TIMELINE_INTERVAL_DETAILS // max(1, len(resource_candidates))
+        )
+        glyph_budget = min(query.max_glyphs, max(1, query.viewport_pixels * 4))
         for order, resource in self._checked(enumerate(resource_candidates)):
             identifier = resource["resource_id"]
             descriptor = descriptor_by_kind.get(str(resource.get("kind", "UNKNOWN")))
@@ -1868,68 +1986,118 @@ class RevisionQueryService:
                 continue
             if search and search not in str(safe_resource).casefold():
                 continue
-            lifecycles = [
-                item
-                for item in self._checked(lifecycle_by_resource.get(identifier, []))
-                if (
-                    item.get("valid_to_ns") is None
-                    or int(item["valid_to_ns"]) > start_ns
-                )
-                and (
-                    item.get("valid_from_ns") is None
-                    or int(item["valid_from_ns"]) < end_ns
-                )
-            ]
-            statuses = [
-                item
-                for item in self._checked(state_by_resource.get(identifier, []))
-                if (
-                    item.get("valid_to_ns") is None
-                    or int(item["valid_to_ns"]) > start_ns
-                )
-                and (
-                    item.get("valid_from_ns") is None
-                    or int(item["valid_from_ns"]) < end_ns
-                )
-            ]
-            if runtime is not None:
-                resource_events = [
-                    item
-                    for item in self._checked(
-                        runtime.events_by_resource.get(identifier, [])
-                    )
-                    if start_ns <= int(item["timestamp_ns"]) <= end_ns
-                ]
-            else:
-                resource_events = [
+            lifecycles = _timeline_intervals(
+                self.data_service,
+                index_scope,
+                identifier + "::lifecycle",
+                lifecycle_by_resource.get(identifier, []),
+                start_ns,
+                end_ns,
+                self._checkpoint,
+            )
+            statuses = _timeline_intervals(
+                self.data_service,
+                index_scope,
+                identifier + "::state",
+                state_by_resource.get(identifier, []),
+                start_ns,
+                end_ns,
+                self._checkpoint,
+            )
+            # The unindexed fallback scans the revision once for its window,
+            # then checks only those matches per lane; transient windows are uncached.
+            event_source = (
+                runtime.events_by_resource.get(identifier, [])
+                if runtime is not None
+                else [
                     item
                     for item in self._checked(filtered)
                     if identifier in event_resource_ids(item)
                 ]
-            resource_events = [
-                self._redact_event_for_client(item, dataset)
-                for item in self._checked(resource_events)
-            ]
-            if only_with_activity and not (lifecycles or statuses or resource_events):
-                continue
-            change_times = sorted(
-                int(item["valid_from_ns"])
-                for item in self._checked(state_by_resource.get(identifier, []))
-                if item.get("valid_from_ns") is not None
             )
-            marks = []
-            for event in self._checked(resource_events):
-                next_change = next(
-                    (
-                        time
-                        for time in self._checked(change_times)
-                        if time > int(event["timestamp_ns"])
-                    ),
-                    None,
+            (
+                indexed_events,
+                event_times,
+                failure_prefix,
+                change_times,
+                event_positions,
+            ) = _timeline_index(
+                self.data_service,
+                index_scope,
+                identifier,
+                event_source,
+                state_by_resource.get(identifier, ()),
+                self._checkpoint,
+                retain=runtime is not None,
+            )
+            left = bisect_left(event_times, start_ns)
+            right = bisect_right(event_times, end_ns)
+            if only_with_activity and not (lifecycles or statuses or right > left):
+                continue
+            event_windows.append((indexed_events, left, right))
+
+            def project(
+                position: int,
+                indexed_events: Any = indexed_events,
+                change_times: Any = change_times,
+                identifier: str = identifier,
+            ) -> dict[str, Any]:
+                self._checkpoint()
+                event = self._redact_event_for_client(indexed_events[position], dataset)
+                next_position = bisect_right(change_times, int(event["timestamp_ns"]))
+                next_change = (
+                    change_times[next_position]
+                    if next_position < len(change_times)
+                    else None
                 )
-                mark = timeline_mark(event, identifier, next_change)
-                marks.append(mark)
-                all_marks.append(mark)
+                return timeline_mark(event, identifier, next_change)
+
+            # Keep raw indexes until the global lane budget is allocated.
+            marks: list[dict[str, Any]] = []
+            resource_events: list[dict[str, Any]] = []
+            raw_window = (
+                indexed_events,
+                event_times,
+                failure_prefix,
+                left,
+                right,
+                project,
+                event_positions,
+            )
+            status_count = len(statuses)
+            condition_visible = (
+                redact_resource_view(
+                    {"state": {}, "status": "timeline-condition"}, descriptor
+                ).get("status")
+                == "timeline-condition"
+            )
+            status_counts = Counter(
+                str(item.get("status", "unknown")) if condition_visible else "unknown"
+                for item in self._checked(statuses)
+            )
+            class_counts = Counter(
+                str(item.get("status_class", "unknown")).casefold()
+                if str(item.get("status_class", "unknown")).casefold()
+                in {member.value for member in ConditionClass}
+                else "unknown"
+                for item in self._checked(statuses)
+            )
+            returned_status_counts = dict(status_counts.most_common(32))
+            status_summary = {
+                "interval_count": status_count,
+                "properties_omitted": status_count > interval_budget,
+                "start_ns": str(start_ns),
+                "end_ns": str(end_ns),
+                "status_counts": returned_status_counts,
+                "status_counts_truncated": len(status_counts)
+                > len(returned_status_counts),
+                "omitted_status_interval_count": sum(status_counts.values())
+                - sum(returned_status_counts.values()),
+                "status_class_counts": dict(class_counts),
+            }
+            statuses = statuses[:interval_budget]
+            lifecycle_count = len(lifecycles)
+            lifecycles = lifecycles[:interval_budget]
             lifecycle_payload = [
                 {
                     **item,
@@ -1945,7 +2113,9 @@ class RevisionQueryService:
             ]
             status_payload = [
                 {
-                    **item,
+                    **self.data_service.redact_state_interval_for_client(
+                        identifier, item, dataset
+                    ),
                     "properties": redact_resource_view(
                         {"state": dict(item.get("properties", {}))},
                         descriptor,
@@ -1976,18 +2146,46 @@ class RevisionQueryService:
                     "has_lifecycle_history": bool(
                         lifecycle_by_resource.get(identifier)
                     ),
+                    "lifecycle_interval_count": lifecycle_count,
+                    "lifecycle_intervals_truncated": lifecycle_count > len(lifecycles),
                     "lifecycle_intervals": lifecycle_payload,
                     "status_intervals": status_payload,
+                    "_raw_window": raw_window,
+                    "status_interval_summary": status_summary,
+                    "status_interval_count": status_count,
+                    "status_intervals_truncated": status_count > len(statuses),
+                    "status_interval_mode": "summary-with-bounded-details"
+                    if status_count > len(statuses)
+                    else "detail",
                     "event_marks": marks,
                     "events": resource_events,
                 }
             )
 
+        if len(event_windows) == 1:
+            event_count = event_windows[0][2] - event_windows[0][1]
+        elif runtime is None:
+            event_count = len(
+                {
+                    str(events[position]["event_uid"])
+                    for events, left, right in event_windows
+                    for position in self._checked(range(left, right))
+                }
+            )
+        else:
+            event_count = _timeline_unique_count(
+                self.data_service,
+                index_scope,
+                [events for events, _, _ in event_windows],
+                start_ns,
+                end_ns,
+                self._checkpoint,
+            )
         cluster_window_ns = query.cluster_window_ns
         requested_max_glyphs, viewport_pixels = query.max_glyphs, query.viewport_pixels
         glyph_budget = min(requested_max_glyphs, max(1, viewport_pixels * 4))
         selected_event_uid = query.selected_event_uid
-        clusters, glyph_meta = bounded_timeline_clusters(
+        clusters, glyph_meta = indexed_timeline_clusters(
             lanes,
             start_ns=start_ns,
             end_ns=end_ns,
@@ -2055,10 +2253,8 @@ class RevisionQueryService:
             "relationship_mutation_count": len(relationship_mutations),
             "relationship_type_descriptors": dataset["relationship_descriptors"],
             "relationship_descriptors": dataset["relationship_descriptors"],
-            "event_count": len(
-                {item["event_uid"] for item in self._checked(all_marks)}
-            ),
-            "mark_count": len(all_marks),
+            "event_count": event_count,
+            "mark_count": glyph_meta["mark_count"],
             "returned_mark_detail_count": glyph_meta["returned_mark_detail_count"],
             "requested_resource_ids": originally_requested_ids,
             "relationship_history_roots": history_roots,
@@ -2150,6 +2346,8 @@ def event_layer_values(event: dict[str, Any]) -> set[str]:
 
 def density_secondary_indexes(
     runtime: Any,
+    *,
+    checkpoint: Callable[[], None] | None = None,
 ) -> tuple[list[int], Mapping[str, list[int]]]:
     """Resolve optional density indexes without extending IndexedHistory.
 
@@ -2170,7 +2368,9 @@ def density_secondary_indexes(
 
     fallback_failure_times: list[int] = []
     fallback_times_by_type: dict[str, list[int]] = {}
-    for event in runtime.events:
+    for position, event in enumerate(runtime.events):
+        if checkpoint is not None and position % 256 == 0:
+            checkpoint()
         timestamp_ns = int(event.get("timestamp_ns", 0))
         if str(event.get("outcome", "")) == "failure":
             fallback_failure_times.append(timestamp_ns)
@@ -2226,34 +2426,15 @@ def density_type_counts_by_bin(
     bin_start_index: int,
     bin_end_index: int,
 ) -> dict[int, Counter[str]]:
-    """Sweep each event-type index once for one bounded density page.
-
-    The previous nested loop bisected every event-type list for every populated
-    bin, making work proportional to ``bins * distinct_types``.  This sweep is
-    proportional to the number of distinct types plus matching event points.
-    """
-
-    counts_by_bin: dict[int, Counter[str]] = {}
-    for raw_event_type, timestamps in event_times_by_type.items():
-        event_type = str(raw_event_type)
-        type_left = bisect_left(timestamps, page_start_ns)
-        type_right = bisect_left(
-            timestamps,
-            page_end_exclusive,
-            type_left,
-        )
-        for position in range(type_left, type_right):
-            timestamp_ns = timestamps[position]
-            index = density_bin_index(
-                timestamp_ns,
-                start_ns,
-                integer_span,
-                bin_count,
-            )
-            if index < bin_start_index or index >= bin_end_index:
-                continue
-            counts_by_bin.setdefault(index, Counter())[event_type] += 1
-    return counts_by_bin
+    """Choose dense bisections or a sparse sweep independently for each type."""
+    return adaptive_type_counts(
+        event_times_by_type,
+        start_ns=start_ns,
+        integer_span=integer_span,
+        bin_count=bin_count,
+        bin_start_index=bin_start_index,
+        bin_end_index=bin_end_index,
+    )
 
 
 def event_resource_ids(event: dict[str, Any]) -> list[str]:
@@ -2293,7 +2474,7 @@ def interval_duration(start: Any, end: Any) -> str | None:
 def timeline_mark(
     event: dict[str, Any], resource_identifier: str, next_change_ns: int | None
 ) -> dict[str, Any]:
-    effect = next(
+    effect: dict[str, Any] = next(
         (
             item
             for item in event.get("effects", [])
@@ -2515,3 +2696,246 @@ def bounded_timeline_clusters(
         "detail_truncated": detail_truncated,
         "omitted_mark_detail_count": max(0, mark_count - returned_mark_count),
     }
+
+
+def indexed_timeline_clusters(
+    lanes: list[dict[str, Any]],
+    *,
+    start_ns: int,
+    end_ns: int,
+    glyph_budget: int,
+    cluster_window_ns: int,
+    selected_event_uid: str | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    counts = [lane["_raw_window"][4] - lane["_raw_window"][3] for lane in lanes]
+    if sum(counts) <= glyph_budget:
+        for lane in lanes:
+            events, times, failures, left, right, project, event_positions = lane.pop(
+                "_raw_window"
+            )
+            lane["event_marks"] = [project(position) for position in range(left, right)]
+            lane["events"] = [mark["event"] for mark in lane["event_marks"]]
+        return bounded_timeline_clusters(
+            lanes,
+            start_ns=start_ns,
+            end_ns=end_ns,
+            glyph_budget=glyph_budget,
+            cluster_window_ns=cluster_window_ns,
+            selected_event_uid=selected_event_uid,
+        )
+    # Allocate on counts without constructing one mark per event.
+    allocations = [0] * len(lanes)
+    remaining = glyph_budget
+    while remaining:
+        progressed = False
+        for index, count in enumerate(counts):
+            if allocations[index] < count:
+                allocations[index] += 1
+                remaining -= 1
+                progressed = True
+                if not remaining:
+                    break
+        if not progressed:
+            break
+    if selected_event_uid:
+        for index, lane in enumerate(lanes):
+            position = lane["_raw_window"][6].get(selected_event_uid)
+            if (
+                position is not None
+                and lane["_raw_window"][3] <= position < lane["_raw_window"][4]
+                and allocations[index] == 0
+            ):
+                donor = next(
+                    (other for other, value in enumerate(allocations) if value > 0),
+                    None,
+                )
+                if donor is not None:
+                    allocations[donor] -= 1
+                    allocations[index] = 1
+                break
+    clusters = []
+    details = glyphs = 0
+    span = max(1, end_ns - start_ns + 1)
+    for lane, allocation, count in zip(lanes, allocations, counts, strict=True):
+        events, times, failures, left, right, project, event_positions = lane.pop(
+            "_raw_window"
+        )
+        lane["event_mark_count"] = count
+        lane["event_marks_truncated"] = allocation < count
+        lane_glyphs = 0
+        selected_position = event_positions.get(selected_event_uid)
+        for index in range(allocation):
+            low = start_ns + (span * index + allocation - 1) // allocation
+            high = start_ns + (span * (index + 1) + allocation - 1) // allocation
+            group_left = bisect_left(times, low, left, right)
+            group_right = bisect_left(times, high, group_left, right)
+            size = group_right - group_left
+            if not size:
+                continue
+            lane_glyphs += 1
+            if size == 1:
+                lane["event_marks"].append(project(group_left))
+                details += 1
+                continue
+            positions = list(
+                range(
+                    group_left,
+                    min(group_right, group_left + MAX_TIMELINE_CLUSTER_DETAIL - 1),
+                )
+            )
+            if (
+                selected_position is not None
+                and group_left <= selected_position < group_right
+                and selected_position not in positions
+            ):
+                positions[-1] = selected_position
+            if group_right - 1 not in positions:
+                positions.append(group_right - 1)
+            preview = [project(position) for position in positions]
+            first, last = events[group_left], events[group_right - 1]
+            clusters.append(
+                {
+                    "cluster_id": f"{lane['lane_id']}::server-v{TEMPORAL_ORDER_VERSION}::{index}::{times[group_left]}::{times[group_right - 1]}",
+                    "lane_id": lane["lane_id"],
+                    "start_ns": str(times[group_left]),
+                    "end_ns": str(times[group_right - 1]),
+                    "count": size,
+                    "failure_count": failures[group_right] - failures[group_left],
+                    "event_uids": [mark["event_uid"] for mark in preview],
+                    "first_event_uid": first["event_uid"],
+                    "last_event_uid": last["event_uid"],
+                    "items": preview,
+                    "detail_count": len(preview),
+                    "detail_truncated": len(preview) < size,
+                    "scrollable": True,
+                }
+            )
+            details += len(preview)
+        lane["glyph_count"] = lane_glyphs
+        glyphs += lane_glyphs
+    total = sum(counts)
+    return clusters, {
+        "requested_max_glyphs": glyph_budget,
+        "glyph_count": glyphs,
+        "mark_count": total,
+        "returned_mark_detail_count": details,
+        "cluster_count": len(clusters),
+        "clustered": bool(clusters),
+        "detail_truncated": True,
+        "omitted_mark_detail_count": max(0, total - details),
+    }
+
+
+def _timeline_intervals(
+    owner: Any,
+    revision: Any,
+    identifier: str,
+    intervals: Any,
+    start: int,
+    end: int,
+    checkpoint: Callable[[], None],
+) -> list[Any]:
+    key = (revision, identifier)
+    with _TIMELINE_CACHE_LOCK:
+        cache = _timeline_cache(owner, "_timeline_interval_indexes")
+        entry = cache.get(key)
+        if entry is not None and entry[0] is intervals:
+            cache.move_to_end(key)
+            indexed = entry[1]
+        else:
+            indexed = None
+    if indexed is None:
+        ordered = _cooperative_sorted(
+            intervals,
+            lambda item: (
+                int(item["valid_from_ns"])
+                if item.get("valid_from_ns") is not None
+                else MIN_TIMESTAMP_NS - 1
+            ),
+            checkpoint,
+        )
+        starts: list[int] = []
+        max_ends: list[int] = []
+        running_end = MIN_TIMESTAMP_NS - 1
+        for position, item in enumerate(ordered):
+            if position % 256 == 0:
+                checkpoint()
+            starts.append(
+                int(item["valid_from_ns"])
+                if item.get("valid_from_ns") is not None
+                else MIN_TIMESTAMP_NS - 1
+            )
+            running_end = max(
+                running_end,
+                int(item["valid_to_ns"])
+                if item.get("valid_to_ns") is not None
+                else MAX_TIMESTAMP_NS + 1,
+            )
+            max_ends.append(running_end)
+        indexed = ordered, starts, max_ends
+        checkpoint()
+        units = len(ordered) * 3
+        if units <= MAX_TIMELINE_INDEX_UNITS:
+            with _TIMELINE_CACHE_LOCK:
+                cache[key] = (intervals, indexed, units)
+                while (
+                    len(cache) > MAX_TIMELINE_RESOURCE_LANES * 2
+                    or sum(item[2] for item in cache.values())
+                    > MAX_TIMELINE_INDEX_UNITS
+                ):
+                    cache.popitem(last=False)
+    ordered, starts, max_ends = indexed
+    left = bisect_right(max_ends, start)
+    right = bisect_left(starts, end)
+    result = []
+    for position in range(left, right):
+        if position % 256 == 0:
+            checkpoint()
+        item = ordered[position]
+        if item.get("valid_to_ns") is None or int(item["valid_to_ns"]) > start:
+            result.append(item)
+    return result
+
+
+def _timeline_unique_count(
+    owner: Any,
+    revision: Any,
+    sources: list[Any],
+    start: int,
+    end: int,
+    checkpoint: Callable[[], None],
+) -> int:
+    """Index the exact event union once per immutable lane selection."""
+    key = (revision, tuple(id(source) for source in sources))
+    with _TIMELINE_CACHE_LOCK:
+        cache = _timeline_cache(owner, "_timeline_union_indexes")
+        entry = cache.get(key)
+        if entry is not None and all(
+            old is new for old, new in zip(entry[0], sources, strict=True)
+        ):
+            cache.move_to_end(key)
+            times = entry[1]
+        else:
+            times = None
+    if times is None:
+        timestamp_by_uid = {}
+        for source in sources:
+            for position, event in enumerate(source):
+                if position % 256 == 0:
+                    checkpoint()
+                timestamp_by_uid[str(event["event_uid"])] = int(event["timestamp_ns"])
+        times = _cooperative_sorted(
+            timestamp_by_uid.values(), lambda time: time, checkpoint
+        )
+        checkpoint()
+        units = sum(len(source) * 4 for source in sources) + len(times)
+        if units <= MAX_TIMELINE_INDEX_UNITS:
+            with _TIMELINE_CACHE_LOCK:
+                cache[key] = (tuple(sources), times, units)
+                while (
+                    len(cache) > 16
+                    or sum(item[2] for item in cache.values())
+                    > MAX_TIMELINE_INDEX_UNITS
+                ):
+                    cache.popitem(last=False)
+    return bisect_right(times, end) - bisect_left(times, start)

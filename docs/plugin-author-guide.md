@@ -841,6 +841,11 @@ the legacy final-record fallback.
 This fallback never fills empty server timeline lanes in the browser. Core adds
 `has_lifecycle_history` to each lane so an empty half-open query window preserves
 known absence versus unknown lifecycle; authors emit observations, not this flag.
+At dense zoom levels core also reports interval counts, truncation flags and
+state summaries. Omitted lifecycle detail remains unknown. Authors do not
+implement zoom buckets or cancellation hooks; see the
+[zoom validation guidance](plugin-api-validation.md#zoom-and-history-query-validation)
+when changing indexed history or presentation behavior.
 Run `python -m unittest tests.test_single_node_api_bounds -v` for the transport
 conformance cases.
 Unqualified observations remain valid for examples that declare no perspective.

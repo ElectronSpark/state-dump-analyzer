@@ -1,4 +1,9 @@
 import {
+  createDensityViewportController,
+  densityPageQuery,
+  densityResolution,
+} from "./density_viewport.js";
+import {
   api,
   replaceAbortController,
   ControlPlaneRequestError,
@@ -112,7 +117,6 @@ const MAX_TOTAL_PENDING_REVIEW_MUTATIONS = 256;
 const CONTROL_PLANE_COLLECTION_PAGE_SIZE = 5_000;
 const MAX_CONTROL_PLANE_COLLECTION_RECORDS = 20_000;
 const MAX_DURABLE_REPORT_REVISIONS = 128;
-const DENSITY_PAGE_CACHE_LIMIT = 12;
 const MAX_RESOURCE_ROWS = 500;
 const MAX_LANE_PICKER_ROWS = 300;
 const MAX_SCALE_TIMELINE_LANES = 100;
@@ -309,13 +313,23 @@ const state = {
   hoverGuideNs: null,
   hoverGuideClientX: null,
   densityRenderTimer: null,
-  densityRequestTimer: null,
-  densityRequestId: 0,
-  densityPendingKey: null,
-  densityPageCache: new Map(),
   densityLocalCache: null,
-  densityErrorKey: null,
 };
+
+const densityViewport = createDensityViewportController({
+  fetchPage: (query, signal) => analysisRuntimeApi(query.url, {
+    method: "POST",
+    signal,
+    body: JSON.stringify({
+      start_ns: query.startNs.toString(),
+      end_ns: query.endNs.toString(),
+      bin_count: query.binCount,
+      bin_start_index: query.globalStart,
+      bin_end_index: query.globalEnd,
+    }),
+  }),
+  onChange: () => refreshDensityLaneForScroll(),
+});
 
 const analysisLoadProgress = createAnalysisLoadProgressController({
   fetchSnapshot: () => api("/v1/analysis-load", { cache: "no-store", timeoutMs: 10_000 }),
@@ -2505,6 +2519,10 @@ function normalizeTimeline(payload) {
     lane.historyWindowStartNs = toNs(payload?.start_ns, state.viewStartNs);
     lane.historyWindowEndNs = toNs(payload?.end_ns, state.viewEndNs);
     lane.hasLifecycleHistory = raw.has_lifecycle_history === true;
+    lane.lifecycleDetailsTruncated = raw.lifecycle_intervals_truncated === true;
+    lane.statusDetailsTruncated = raw.status_intervals_truncated === true;
+    lane.statusIntervalCount = Number(raw.status_interval_count ?? raw.status_intervals?.length ?? 0);
+    lane.statusIntervalSummary = raw.status_interval_summary || null;
     for (const interval of raw.lifecycle_intervals || raw.lifecycle || raw.existence_intervals || []) {
       lane.lifecycle.push(normalizeInterval(interval, "lifecycle", lane));
     }
@@ -3060,98 +3078,18 @@ function localDensityHistogram(binCount) {
 }
 
 function densityServerQuery(binCount, renderWindow) {
-  return {
-    key: `${state.viewStartNs}:${state.viewEndNs}:${binCount}:${renderWindow.start}:${renderWindow.end}`,
-    binCount,
-    globalStart: renderWindow.start,
-    globalEnd: renderWindow.end,
+  const [windowStartNs, windowEndNs] = timelineWindowBounds();
+  return densityPageQuery({
+    context: bootstrapDatasetPath(),
+    url: revisionPath("events/density/query"),
     startNs: state.viewStartNs,
     endNs: state.viewEndNs,
-  };
-}
-
-function cachedDensityPage(query) {
-  for (const [key, page] of state.densityPageCache) {
-    if (page.binCount !== query.binCount
-      || page.globalStart > query.globalStart
-      || page.globalEnd < query.globalEnd) continue;
-    state.densityPageCache.delete(key);
-    state.densityPageCache.set(key, page);
-    return page;
-  }
-  return null;
-}
-
-function normalizeDensityPage(payload, query) {
-  const bins = (payload?.bins || []).map((raw) => {
-    const startNs = toNs(raw.start_ns, query.startNs);
-    const endNs = toNs(raw.end_ns, query.endNs);
-    // Paged responses retain the immutable global bin index. Adjacent and
-    // overlapping pages therefore use identical boundaries even when the
-    // inclusive capture span is not evenly divisible by the resolution.
-    const index = Math.max(0, Math.min(
-      query.binCount - 1,
-      Number(raw.index || 0),
-    ));
-    return {
-      index,
-      startNs,
-      endNs,
-      count: Number(raw.count || 0),
-      failures: Number(raw.failure_count ?? raw.failures ?? 0),
-      topTypes: new Map((raw.top_types || []).map((item) => [
-        String(item.event_type || item.type || "event"),
-        Number(item.count || 0),
-      ])),
-    };
-  }).filter((bin) => bin.count > 0);
-  return {
-    key: query.key,
-    binCount: query.binCount,
-    globalStart: query.globalStart,
-    globalEnd: query.globalEnd,
-    totalCount: Number(payload?.total_count ?? displayedHistoryEventCount()),
-    bins,
-  };
-}
-
-function rememberDensityPage(page) {
-  state.densityPageCache.delete(page.key);
-  state.densityPageCache.set(page.key, page);
-  while (state.densityPageCache.size > DENSITY_PAGE_CACHE_LIMIT) {
-    state.densityPageCache.delete(state.densityPageCache.keys().next().value);
-  }
-}
-
-function scheduleDensityPageRequest(query) {
-  if (cachedDensityPage(query) || state.densityPendingKey === query.key) return;
-  window.clearTimeout(state.densityRequestTimer);
-  const requestId = ++state.densityRequestId;
-  state.densityPendingKey = query.key;
-  state.densityErrorKey = null;
-  state.densityRequestTimer = window.setTimeout(async () => {
-    try {
-      const payload = await analysisRuntimeApi(revisionPath("events/density/query"), {
-        method: "POST",
-        body: JSON.stringify({
-          start_ns: query.startNs.toString(),
-          end_ns: query.endNs.toString(),
-          bin_count: query.binCount,
-          bin_start_index: query.globalStart,
-          bin_end_index: query.globalEnd,
-        }),
-      });
-      if (requestId !== state.densityRequestId) return;
-      rememberDensityPage(normalizeDensityPage(payload, query));
-      state.densityPendingKey = null;
-      refreshDensityLaneForScroll();
-    } catch (_error) {
-      if (requestId !== state.densityRequestId) return;
-      state.densityPendingKey = null;
-      state.densityErrorKey = query.key;
-      refreshDensityLaneForScroll();
-    }
-  }, 40);
+    binCount,
+    windowStartNs,
+    windowEndNs,
+    globalStart: renderWindow.start,
+    globalEnd: renderWindow.end,
+  });
 }
 
 function eventDensityLane(trackWidth = state.trackWidth) {
@@ -3161,40 +3099,34 @@ function eventDensityLane(trackWidth = state.trackWidth) {
   for (const key of state.hoverModels.keys()) {
     if (String(key).startsWith("density:")) state.hoverModels.delete(key);
   }
-  const captureSlots = state.viewEndNs - state.viewStartNs + 1n;
-  const maximumUsefulBins = Number(
-    captureSlots > BigInt(Number.MAX_SAFE_INTEGER)
-      ? BigInt(Number.MAX_SAFE_INTEGER)
-      : captureSlots,
-  );
-  const requestedBins = 180 * state.zoom;
-  const binCount = Math.max(1, Math.min(
-    maximumUsefulBins,
-    Number.isFinite(requestedBins) ? Math.round(requestedBins) : maximumUsefulBins,
-  ));
+  const binCount = densityResolution(state.zoom, state.viewStartNs, state.viewEndNs);
   const renderWindow = densityRenderWindow(binCount, trackWidth);
   const bins = new Map();
   let loading = false;
   let failed = false;
   let sourceBins;
+  let densityView = null;
   if (usesServerWindowedHistory()) {
-    const query = densityServerQuery(binCount, renderWindow);
-    const page = cachedDensityPage(query);
-    sourceBins = page?.bins || [];
-    loading = !page && state.densityErrorKey !== query.key;
-    failed = !page && state.densityErrorKey === query.key;
-    if (!page && !failed) scheduleDensityPageRequest(query);
+    densityViewport.setGesture(state.timelineWheelBurstActive);
+    densityView = densityViewport.view(densityServerQuery(binCount, renderWindow));
+    sourceBins = densityView.page?.bins || [];
+    loading = !densityView.exact && !densityView.failed;
+    failed = densityView.failed;
   } else {
     sourceBins = localDensityHistogram(binCount).values();
   }
   for (const bin of sourceBins) {
     const index = bin.index;
-    if (index < renderWindow.start || index >= renderWindow.end) continue;
+    if (!densityView || densityView.exact) {
+      if (index < renderWindow.start || index >= renderWindow.end) continue;
+    }
     bins.set(index, bin);
   }
   const populatedBins = [...bins.values()];
   const bars = populatedBins.map((bin) => {
-    const fallbackBounds = timelineDensityBinBounds({
+    const fallbackBounds = bin.startNs !== undefined && bin.endNs !== undefined
+      ? bin
+      : timelineDensityBinBounds({
       index: bin.index,
       startNs: state.viewStartNs,
       endNs: state.viewEndNs,
@@ -3207,15 +3139,17 @@ function eventDensityLane(trackWidth = state.trackWidth) {
     // it using its real inclusive end before projecting end+1 for width.
     if (!timelinePointIntervalVisible(startNs, endNs)) return "";
     const endExclusiveNs = endNs + 1n;
-    const key = `density:${bin.index}:${binCount}`;
+    const key = `density:${bin.index}:${densityView?.page?.binCount || binCount}`;
     const topTypes = bin.topTypes instanceof Map ? bin.topTypes : new Map();
     state.hoverModels.set(key, { type: "density", bin: { ...bin, startNs, endNs, topTypes } });
     const precision = offsetPrecisionForSpan(endExclusiveNs - startNs);
     return `<button class="density-bin${bin.failures ? " has-failures" : ""}${inclusiveIntervalIntersectsRange(startNs, endNs) ? " in-range" : ""}" type="button" data-hover-key="${escapeHtml(key)}" data-range-start-ns="${startNs}" data-range-end-ns="${endNs}" data-range-semantics="inclusive" style="${barStyle({ startNs, endNs: endExclusiveNs }, { inclusiveEndpoints: true })};--density-height:${densityBinHeight(bin.count)}px;--failure-height:${bin.count ? (bin.failures / bin.count) * 100 : 0}%" aria-label="${bin.count} events from ${escapeHtml(formatOffset(startNs, precision))} to ${escapeHtml(formatOffset(endNs, precision))}"></button>`;
   }).join("");
-  const transportState = loading ? " · loading visible bins"
-    : failed ? " · density unavailable"
-      : usesServerWindowedHistory() ? " · server-windowed" : "";
+  const transportState = densityView?.page && !densityView.exact
+    ? ` · cached ${densityView.page.binCount.toLocaleString()}-bin view${densityView.coverageComplete ? "" : " · partial coverage"}${failed ? " · refinement unavailable" : densityView.gesture ? " · refinement after gesture" : " · refining"}`
+    : loading ? (densityView?.gesture ? " · density after gesture" : " · loading visible bins")
+      : failed ? " · density unavailable"
+        : usesServerWindowedHistory() ? " · server-windowed" : "";
   return `<div class="timeline-row density-row" data-density-bin-count="${binCount}" data-density-window-start="${renderWindow.start}" data-density-window-end="${renderWindow.end}" style="grid-template-columns:${timelineLaneWidth()}px ${trackWidth}px;--layer-color:var(--cyan)">
     <div class="lane-label density-lane-label"><span class="density-icon" aria-hidden="true"></span><span class="lane-copy"><strong>Event density</strong><span class="lane-meta"><span class="lane-type">${displayedHistoryEventCount().toLocaleString()} events · ${binCount.toLocaleString()} logical bins${transportState}</span></span></span></div>
     <div class="lane-track density-track">${bars}</div>
@@ -3496,6 +3430,17 @@ function renderTimeline() {
   content.innerHTML = expansionNotice + densityLane + reviewMarkers + sourceLanes + visible.map((instance) => {
     const lane = instance.lane;
     const compact = lane.tags.has("compact") || lane.tags.has("connector");
+    const [visibleStartNs, visibleEndNs] = timelineWindowBounds();
+    const cachedWindow = lane.authoritativeHistory && (
+      lane.historyWindowStartNs !== visibleStartNs || lane.historyWindowEndNs !== visibleEndNs
+    );
+    const retainedWindowNote = cachedWindow ? " · cached window" : "";
+    const intervalDetailNote = lane.statusDetailsTruncated || lane.lifecycleDetailsTruncated
+      ? ` · history summary (${lane.statusIntervalCount.toLocaleString()} state intervals)`
+      : "";
+    const summaryTitle = lane.statusDetailsTruncated
+      ? Object.entries(lane.statusIntervalSummary?.status_counts || {}).map(([status, count]) => `${status}: ${count} intervals`).join("; ")
+      : "";
     const kindLabel = humanResourceType(lane.kind);
     const layerLabel = humanLayer(lane.layer);
     const bounds = rangeBounds();
@@ -3562,7 +3507,7 @@ function renderTimeline() {
         ${treeGuides}
         <span class="lane-tree-toggle" aria-hidden="true"></span>
         ${customIcon || '<span class="lane-dot" aria-hidden="true"></span>'}
-        <span class="lane-copy" title="${escapeHtml(`${lane.label} / ${kindLabel} / ${layerLabel}`)}"><strong>${escapeHtml(lane.label)}</strong><span class="lane-meta">${instance.relationship ? `<span class="lane-relation ${relationDirection}">${relationshipDirectionSymbol(instance.relationship.type, relationDirection)} ${escapeHtml(relationshipDisplayLabel(instance.relationship.type))}</span><span class="lane-separator" aria-hidden="true">·</span>` : ""}<span class="lane-type" title="Resource type: ${escapeHtml(kindLabel)}">${escapeHtml(kindLabel)}</span><span class="lane-separator" aria-hidden="true">·</span><span class="lane-layer">${escapeHtml(layerLabel)}</span></span></span>
+        <span class="lane-copy" title="${escapeHtml(`${lane.label} / ${kindLabel} / ${layerLabel}`)}"><strong>${escapeHtml(lane.label)}</strong><span class="lane-meta">${instance.relationship ? `<span class="lane-relation ${relationDirection}">${relationshipDirectionSymbol(instance.relationship.type, relationDirection)} ${escapeHtml(relationshipDisplayLabel(instance.relationship.type))}</span><span class="lane-separator" aria-hidden="true">·</span>` : ""}<span class="lane-type" title="Resource type: ${escapeHtml(kindLabel)}">${escapeHtml(kindLabel)}</span><span class="lane-separator" aria-hidden="true">·</span><span class="lane-layer" title="${escapeHtml(summaryTitle)}">${escapeHtml(layerLabel)}${retainedWindowNote}${intervalDetailNote}</span></span></span>
         ${instance.truncatedChildren ? `<span class="tree-depth-note" title="${instance.omittedChildCount} deeper relationship branches omitted">+${instance.omittedChildCount} deeper</span>` : ""}
         ${compact ? '<span class="compact-tag">connector</span>' : ""}
         </button>
@@ -5016,7 +4961,7 @@ function statusAtLane(lane, time) {
   const status = lane.statuses.find(contains);
   if (lane.authoritativeHistory) {
     const insideReturnedWindow = time >= lane.historyWindowStartNs && time < lane.historyWindowEndNs;
-    const exists = life ? true : lane.hasLifecycleHistory && insideReturnedWindow ? false : null;
+    const exists = life ? true : lane.hasLifecycleHistory && !lane.lifecycleDetailsTruncated && insideReturnedWindow ? false : null;
     return {
       exists,
       status: exists === false ? "absent" : exists === null ? "unknown" : status?.status || "unknown",
@@ -5408,6 +5353,10 @@ function invalidatePendingTimelineWindowRequest() {
 
 function scheduleTimelineWindowRefresh(delayMs = 140) {
   if (!state.dataset || isTopologyNodeSnapshot()) return;
+  if (!state.timelineWheelBurstActive) {
+    densityViewport.setGesture(false);
+    refreshDensityLaneForScroll();
+  }
   window.clearTimeout(state.timelineWindowRequestTimer);
   state.timelineWindowRequestTimer = window.setTimeout(async () => {
     state.timelineWindowRequestTimer = null;

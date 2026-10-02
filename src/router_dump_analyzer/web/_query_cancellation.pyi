@@ -1,0 +1,6 @@
+from collections.abc import Callable as Callable
+from contextlib import AbstractAsyncContextManager
+from starlette.requests import Request as Request
+
+def current_query_cancellation_probe() -> Callable[[], bool] | None: ...
+def query_cancellation_scope(request: Request) -> AbstractAsyncContextManager[None]: ...

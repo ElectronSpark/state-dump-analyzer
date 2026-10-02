@@ -65,6 +65,9 @@ detail.
 In the event log, enable Status input to inspect the four retained records.
 The window-only observation displays Unknown time and remains selectable;
 it does not create a point on the timeline.
+Zooming and bounded history summaries are core behavior; this parser needs no
+zoom hook. The [zoom conformance checks](plugin-api-validation.md#zoom-and-history-query-validation)
+exercise dense event histories beyond this small status fixture.
 
 ## 2. Inspect and copy the teaching slice
 

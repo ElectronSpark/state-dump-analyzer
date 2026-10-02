@@ -21,6 +21,7 @@ class ScaleHistoryFrontendTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.script = APP_JS.read_text(encoding="utf-8")
         cls.index = INDEX_HTML.read_text(encoding="utf-8")
+        cls.density = (APP_JS.parent / "density_viewport.js").read_text(encoding="utf-8")
 
     def test_server_history_mode_is_transport_declared_and_snapshot_safe(self) -> None:
         detection = javascript_function(self.script, "usesServerWindowedHistory")
@@ -29,43 +30,29 @@ class ScaleHistoryFrontendTests(unittest.TestCase):
         self.assertIn("!isTopologyNodeSnapshot()", detection)
         self.assertIn('history_transport?.mode === "server-windowed"', detection)
 
-    def test_density_uses_bounded_generation_safe_server_pages_and_local_cache(self) -> None:
+    def test_density_controller_is_wired_to_server_transport_and_local_cache(self) -> None:
         render = javascript_function(self.script, "eventDensityLane")
-        schedule = javascript_function(self.script, "scheduleDensityPageRequest")
+        query = javascript_function(self.script, "densityServerQuery")
         local = javascript_function(self.script, "localDensityHistogram")
-        height = javascript_function(self.script, "densityBinHeight")
 
+        # Races, cache identity, aligned pages, and exact partitions are exercised
+        # by frontend/tests/density_viewport.test.mjs. Keep this check at the
+        # application/module wiring boundary rather than duplicating internals.
+        self.assertIn('from "./density_viewport.js"', self.script)
+        self.assertIn("createDensityViewportController({", self.script)
         self.assertIn("usesServerWindowedHistory()", render)
-        self.assertIn("densityServerQuery(binCount, renderWindow)", render)
-        self.assertIn("cachedDensityPage(query)", render)
-        self.assertIn("scheduleDensityPageRequest(query)", render)
+        self.assertIn("densityViewport.view(densityServerQuery(binCount, renderWindow))", render)
+        self.assertIn("densityResolution(state.zoom", render)
+        self.assertIn('revisionPath("events/density/query")', query)
         self.assertIn("localDensityHistogram(binCount)", render)
         self.assertNotIn("state.eventByUid.values()", render)
-        self.assertIn('revisionPath("events/density/query")', schedule)
-        self.assertIn("const requestId = ++state.densityRequestId", schedule)
-        self.assertGreaterEqual(schedule.count("requestId !== state.densityRequestId"), 2)
-        self.assertIn("start_ns: query.startNs.toString()", schedule)
-        self.assertIn("bin_count: query.binCount", schedule)
-        self.assertIn("bin_start_index: query.globalStart", schedule)
-        self.assertIn("bin_end_index: query.globalEnd", schedule)
         self.assertIn("state.densityLocalCache?.key === key", local)
-        self.assertIn("state.eventByUid.values()", local)
         self.assertIn("timelineDensityBinIndex", local)
-        self.assertIn("timelineDensityBinIndex", javascript_function(self.script, "densityRenderWindow"))
-        self.assertIn("timelineDensityBinBounds", render)
-        self.assertIn("Math.log2", height)
-        self.assertIn("const requestedBins = 180 * state.zoom", render)
-        self.assertIn("captureSlots", render)
-        self.assertIn("Number.MAX_SAFE_INTEGER", render)
-        self.assertNotRegex(render, r"Math\.min\(\s*\d[\d_]*\s*,\s*requestedBins")
 
-    def test_density_pages_keep_server_global_indices_and_bound_hover_models(self) -> None:
-        normalize = javascript_function(self.script, "normalizeDensityPage")
+    def test_density_helper_owns_normalization_and_renderer_bounds_hover_models(self) -> None:
         render = javascript_function(self.script, "eventDensityLane")
 
-        self.assertIn("Number(raw.index || 0)", normalize)
-        self.assertNotIn("query.globalStart +", normalize)
-        self.assertNotIn("startNs - state.viewStartNs", normalize)
+        self.assertIn("export function normalizeDensityPage(", self.density)
         self.assertIn('startsWith("density:")', render)
         self.assertIn("state.hoverModels.delete(key)", render)
 
@@ -148,7 +135,7 @@ class ScaleHistoryFrontendTests(unittest.TestCase):
         self.assertIn("usesServerWindowedHistory()", jump)
         self.assertIn("locateServerEventLogEntry(entryId)", jump)
 
-    def test_filters_are_debounced_and_failure_preview_precedes_first_render(self) -> None:
+    def test_filters_are_debounced_and_failure_preview_remains_wired(self) -> None:
         preview = javascript_function(self.script, "requestFailureIncidentPreview")
         controls = javascript_function(self.script, "bindControls")
         initialize = self.script[self.script.index("async function initialize()") :]
@@ -157,10 +144,9 @@ class ScaleHistoryFrontendTests(unittest.TestCase):
         self.assertIn("state.eventByUid.set", preview)
         self.assertIn("EVENT_LOG_FILTER_DELAY_MS", controls)
         self.assertIn("state.eventLogFilterTimer", controls)
-        self.assertLess(
-            initialize.index("await requestFailureIncidentPreview()"),
-            initialize.index("renderIncidentSummary()"),
-        )
+        # Progressive startup and late-preview selection safety are covered by
+        # frontend/tests/node_startup_progressive.test.mjs.
+        self.assertIn("requestFailureIncidentPreview()", initialize)
 
     def test_event_log_selection_uses_query_scoped_ranges_and_common_gestures(self) -> None:
         normalize = javascript_function(

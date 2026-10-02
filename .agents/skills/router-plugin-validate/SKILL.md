@@ -71,6 +71,12 @@ Compare cold and warm behavior, including changed inputs and failed or
 superseded requests. A faster successful call does not establish unchanged
 identity enforcement, archive safety, or browser readiness.
 
+For timeline/density changes, follow
+[zoom-query validation](../../../docs/plugin-api-validation.md#zoom-and-history-query-validation).
+Check both coarse summaries and exact drill-down with the same evidence;
+separate bounded output from bounded computation, and verify warm-cache
+identity, disclosure, cancellation, and concurrent requests.
+
 ## Report accurately
 
 Record the API inventory, reproducible findings, edits, commands, pass/fail/skip

@@ -75,6 +75,12 @@ while building an index and `READING_ARCHIVE` while processing an archive;
 simple fixture reads can retain the core's `LOADING_REVISION` stage. Counting
 records alone does not establish that an index was built.
 
+For timeline or history scale work, use the map's
+[zoom-query guidance](../../../docs/plugin-api-validation.md#zoom-and-history-query-validation).
+Keep zoom aggregation in core; a display limit must also bound detail work,
+and a summary must preserve exact counts and distinguish omitted state from
+absence. Retain revision identity, disclosure policy, and exact timestamp bounds.
+
 ## Verify and finish
 
 Run the plug-in's golden tests and relevant existing boundary tests from the

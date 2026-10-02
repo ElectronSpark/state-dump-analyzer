@@ -4022,6 +4022,21 @@ failed programming callback remains visible without splitting the status bar.
 Unknown snapshot boundaries are open or hatched; they are not converted into
 fabricated create/delete events.
 
+Dense lanes bound state and lifecycle detail independently of event glyphs.
+Each lane includes `status_interval_count`, `status_intervals_truncated`,
+`status_interval_mode` (`detail` or `summary-with-bounded-details`), and
+`status_interval_summary` with exact interval/status counts for the window.
+Sensitive condition labels remain undisclosed. Summary `status_counts` retains
+up to 32 labels; `status_counts_truncated` and `omitted_status_interval_count`
+disclose additional labels, while normalized `status_class_counts` remains
+complete. `lifecycle_interval_count` and
+`lifecycle_intervals_truncated` similarly describe lifecycle detail. The core
+currently budgets at most 2,000 state and 2,000 lifecycle details across indexed
+lanes, allocating per lane. These counts measure intervals, not time spent in
+each state. A truncated array cannot establish absence or health; narrow the
+window to inspect the omitted detail. Existing event-cluster detail remains
+paged and preserves selected-event identity and disclosure policy.
+
 `has_lifecycle_history` is core-owned and reports whether that resource has any
 lifecycle evidence in the full revision, before filtering this query window.
 Clients MUST preserve empty returned lifecycle/status arrays. Within the
@@ -4538,6 +4553,17 @@ and may consume optional failure and event-type secondary indexes. Those
 secondary indexes are accelerators, not additions to the public
 `IndexedHistory` contract: an older conforming adapter without them receives a
 one-pass derivation from its normalized indexed events and is never mutated.
+Core retains bounded, revision/runtime-scoped density summaries and reuses
+aligned cells across zoom levels. Exact counts and all type counters underpin
+merged summaries; response `top_types` remains the highest four. Cold derivation
+can still visit the whole history; a page limit alone is not a bound on that
+initial work. Timestamp indexes and summaries assume the revision is immutable.
+
+Timeline and density HTTP queries monitor disconnection after reading the JSON
+body and pass a cooperative cancellation probe into core. A cancelled query
+does not return partial data; if a response can still be delivered, it uses
+499 with a bounded cancellation message. Cancellation occurs at checkpoints,
+not by forcibly interrupting arbitrary plug-in code or cold archive loading.
 
 ## 7. Point-in-time resource tables and selected ranges
 
