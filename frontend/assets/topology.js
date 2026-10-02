@@ -83,6 +83,9 @@ const state = {
   resizeFrame: null,
   resizeTargets: new Set(),
   routeCapabilities: null,
+  routeCapabilitiesPromise: null,
+  routeCapabilitiesPending: false,
+  routeTableAbortController: null,
   routeCapabilityError: "",
   routeBundle: null,
   routeTraces: { forward: null, reverse: null },
@@ -152,7 +155,7 @@ const state = {
 };
 
 const analysisLoadProgress = createAnalysisLoadProgressController({
-  fetchSnapshot: () => api("/v1/analysis-load", { cache: "no-store" }),
+  fetchSnapshot: () => api("/v1/analysis-load", { cache: "no-store", timeoutMs: 10_000 }),
   render: (snapshot) => renderAnalysisLoadProgress(
     byId("analysis-load-progress"),
     snapshot,
@@ -2696,7 +2699,7 @@ async function queryRouteTables(query, signal) {
       const raw = await fetchRouteTablePages(endpoint, body, signal);
       return normalizeRouteTableSnapshot(raw, "context-query");
     } catch (error) {
-      if (isAbortError(error)) throw error;
+      if (isAbortError(error) || error.name === "TimeoutError") throw error;
       failures.push(`${endpoint}: ${error.message}`);
     }
   }
@@ -2715,6 +2718,8 @@ async function loadRouteTables(query, generation, signal) {
   state.focusedRouteEntryRef = null;
   renderRouteTables();
   try {
+    await state.routeCapabilitiesPromise;
+    if (signal?.aborted || generation !== state.topologyRequestGeneration) return;
     const snapshot = await queryRouteTables(query, signal);
     if (generation !== state.topologyRequestGeneration) return;
     state.routeTableSnapshot = snapshot;
@@ -2724,6 +2729,7 @@ async function loadRouteTables(query, generation, signal) {
   } finally {
     if (generation !== state.topologyRequestGeneration) return;
     state.routeTablePending = false;
+    state.routeTableAbortController = null;
     renderRouteTables();
   }
 }
@@ -2739,6 +2745,7 @@ async function discoverCapabilities() {
     try {
       return normalizeCapabilities(await api(route.path), route.mode);
     } catch (error) {
+      if (isAbortError(error) || error.name === "TimeoutError") throw error;
       failures.push(`${route.path}: ${error.message}`);
     }
   }
@@ -2764,7 +2771,7 @@ async function reconstruct(request, signal) {
       const raw = await api(route.path, { method: "POST", body: JSON.stringify(route.body), signal });
       return normalizeQuery(raw, request, route.mode);
     } catch (error) {
-      if (isAbortError(error)) throw error;
+      if (isAbortError(error) || error.name === "TimeoutError") throw error;
       failures.push(`${route.path}: ${error.message}`);
     }
   }
@@ -4341,6 +4348,12 @@ function renderControls() {
   syncBasisFields();
 }
 
+function routeCapabilityEmptyMarkup() {
+  return state.routeCapabilitiesPending
+    ? "<strong>Loading route capabilities.</strong><span>Topology reconstruction is available while the route resolver loads.</span>"
+    : `<strong>Route tracing is not advertised by this assembly.</strong><span>${escapeHtml(state.routeCapabilityError || "The topology remains available without a route resolver.")}</span>`;
+}
+
 function renderRouteControls() {
   const status = byId("mn-route-api-status");
   const scenarioSelect = byId("mn-route-scenario");
@@ -4357,7 +4370,7 @@ function renderRouteControls() {
   renderRouteBudgetControls();
   if (!state.routeCapabilities) {
     renderRouteScenarioGuide(null);
-    status.textContent = "tracer unavailable";
+    status.textContent = state.routeCapabilitiesPending ? "loading tracer" : "tracer unavailable";
     status.classList.add("is-warning");
     scenarioSelect.innerHTML = '<option value="">Unavailable</option>';
     scenarioSelect.disabled = true;
@@ -4371,7 +4384,9 @@ function renderRouteControls() {
     steeringSelect.disabled = true;
     validationSelect.disabled = true;
     run.disabled = true;
-    byId("mn-route-empty").innerHTML = `<strong>Route tracing is not advertised by this assembly.</strong><span>${escapeHtml(state.routeCapabilityError || "The topology remains available without a route resolver.")}</span>`;
+    byId("mn-route-empty").innerHTML = state.routeCapabilitiesPending
+      ? "<strong>Loading route capabilities.</strong><span>Topology reconstruction is available while the route resolver loads.</span>"
+      : `<strong>Route tracing is not advertised by this assembly.</strong><span>${escapeHtml(state.routeCapabilityError || "The topology remains available without a route resolver.")}</span>`;
     return;
   }
   const params = new URLSearchParams(location.search);
@@ -5133,7 +5148,9 @@ function renderRouteTrace() {
     if (mapPanel) mapPanel.hidden = true;
     empty.hidden = false;
     content.hidden = true;
-    empty.innerHTML = '<strong>Choose a trace start and traffic endpoints.</strong><span>Trace the route to compare forward, return, primary, and alternate paths.</span>';
+    empty.innerHTML = state.routeCapabilities
+      ? '<strong>Choose a trace start and traffic endpoints.</strong><span>Trace the route to compare forward, return, primary, and alternate paths.</span>'
+      : routeCapabilityEmptyMarkup();
     return;
   }
   if (!trace.paths.length) {
@@ -9790,6 +9807,8 @@ async function runQuery(event) {
   const generation = ++state.topologyRequestGeneration;
   const controller = replaceAbortController(state.topologyAbortController);
   state.topologyAbortController = controller;
+  const tableController = replaceAbortController(state.routeTableAbortController);
+  state.routeTableAbortController = tableController;
   state.routeRequestGeneration += 1;
   state.routeAbortController?.abort();
   state.routeAbortController = null;
@@ -9816,7 +9835,6 @@ async function runQuery(event) {
   renderSourceBanner();
   renderCapabilityNodeIndex();
   renderRouteTables();
-  let succeeded = false;
   try {
     const query = await reconstruct(request, controller.signal);
     if (generation !== state.topologyRequestGeneration) return;
@@ -9832,9 +9850,8 @@ async function runQuery(event) {
       state.topologyFocusedNodeKey = "";
     }
     byId("mn-revision").textContent = state.query.context_id || state.bootstrap?.workspace?.revision_id || "multi-revision query";
-    await loadRouteTables(state.query, generation, controller.signal);
-    if (generation !== state.topologyRequestGeneration) return;
-    succeeded = true;
+    // Route data uses the committed reconstruction context, but does not delay its display.
+    void loadRouteTables(state.query, generation, tableController.signal);
   } catch (queryError) {
     if (isAbortError(queryError) || generation !== state.topologyRequestGeneration) return;
     error.textContent = queryError.message;
@@ -9844,6 +9861,8 @@ async function runQuery(event) {
     state.queryControlsDirty = false;
     state.routeTablePending = false;
     state.routeTableError = "Route tables were not queried because topology reconstruction failed.";
+    tableController.abort();
+    state.routeTableAbortController = null;
   } finally {
     analysisLoadProgress.end(loadProgressLease);
     if (generation !== state.topologyRequestGeneration) return;
@@ -9855,15 +9874,7 @@ async function runQuery(event) {
     syncUrl();
     renderAll();
   }
-  if (succeeded && generation === state.topologyRequestGeneration && state.routeCapabilities && state.query?.nodes?.length) {
-    const scopeIssue = routeEndpointScopeIssue(selectedRouteEndpoint("source"), selectedRouteEndpoint("destination"));
-    const startScopeIssue = routeUsesForwardStart() ? routeStartScopeIssue(selectedRouteStart()) : "";
-    if (scopeIssue || startScopeIssue) {
-      byId("mn-route-error").textContent = `${scopeIssue || startScopeIssue} The topology was reconstructed successfully; route tracing is paused until the requested flow and trace start are in scope.`;
-    } else {
-      await runRouteTrace();
-    }
-  }
+
 }
 
 function bindControls() {
@@ -10130,11 +10141,16 @@ async function initialize() {
     state.apiMode = state.capabilities.source_mode;
     renderControls();
     initializeNodeSelection();
-    try {
-      state.routeCapabilities = await discoverRouteCapabilities();
-    } catch (routeError) {
-      state.routeCapabilityError = routeError.message;
-    }
+    state.routeCapabilitiesPending = true;
+    state.routeCapabilitiesPromise = discoverRouteCapabilities()
+      .then((capabilities) => { state.routeCapabilities = capabilities; })
+      .catch((routeError) => { state.routeCapabilityError = routeError.message; })
+      .finally(() => {
+        state.routeCapabilitiesPending = false;
+        setFormBusy("mn-route-form", false);
+        renderRouteControls();
+        if (state.pending || state.routePending) setFormBusy("mn-route-form", true);
+      });
     renderRouteControls();
     bindControls();
     renderSourceBanner();
@@ -10144,8 +10160,17 @@ async function initialize() {
     state.pending = false;
     state.apiMode = "error";
     byId("mn-query-error").textContent = error.message;
+    byId("mn-revision").textContent = "Unavailable";
+    byId("mn-basis-readout").textContent = "Reconstruction unavailable";
+    byId("mn-node-selection-summary").textContent = "Devices unavailable";
+    byId("mn-route-api-status").textContent = "unavailable";
+    byId("mn-route-scenario-description").textContent = "Load topology to choose a route scenario.";
+    byId("mn-route-empty").textContent = "Route tracing is unavailable until topology loads.";
+    setFormBusy("mn-query-form", true);
+    setFormBusy("mn-route-form", true);
     byId("mn-source-banner").classList.add("is-fallback");
-    byId("mn-source-banner").innerHTML = `<span class="mn-spinner" aria-hidden="true"></span><strong>Topology page could not initialize.</strong><span>${escapeHtml(error.message)}</span>`;
+    byId("mn-source-banner").innerHTML = `<strong>Topology page could not initialize.</strong><span>${escapeHtml(error.message)}</span><button id="mn-startup-retry" type="button">Retry loading</button><a href="/node">Open node workspace</a>`;
+    byId("mn-startup-retry").addEventListener("click", () => location.reload());
   } finally {
     analysisLoadProgress.end(loadProgressLease);
   }

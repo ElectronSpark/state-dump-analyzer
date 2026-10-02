@@ -18,6 +18,7 @@ from dataclasses import dataclass, replace
 from itertools import pairwise
 from typing import Any
 
+from router_dump_analyzer.load_progress import AnalysisLoadStage, _analysis_load_stage
 from router_dump_analyzer.plugin_api import (
     Evidence,
     ForwardingCandidateConstraint,
@@ -4966,6 +4967,7 @@ class MultiNodeRouteService:
             "data_disclosure": self.policy.data_disclosure,
         }
 
+    @_analysis_load_stage(AnalysisLoadStage.QUERYING_ROUTE_TABLES)
     def route_tables(self, body: dict[str, Any]) -> dict[str, Any]:
         """Federate opaque plug-in route rows at one topology time context."""
 
@@ -5879,6 +5881,7 @@ class MultiNodeRouteService:
             return owner if owner in allowed else "mixed"
         return "mixed"
 
+    @_analysis_load_stage(AnalysisLoadStage.TRACING_ROUTES)
     def trace(self, body: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(body, dict):
             raise MultiNodeRouteRequestError("request body must be an object")

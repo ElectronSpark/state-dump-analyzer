@@ -1410,6 +1410,16 @@ safe no-op when this function is run by a conformance test outside the hosted
 runtime, and malformed optional progress cannot fail an otherwise-valid load.
 The generated demo's assembly and scale loaders are the executable reference.
 
+Core also reports `reading_archive`, `validating_providers`,
+`reconstructing_topology`, `querying_route_tables`, and `tracing_routes` around
+the real construction/query work. Same-tracker nested stages refine an active
+operation and restore its parent stage on success, retaining the failing stage
+on error. These stages require no new
+plug-in callback: keep optional fixture reports on the existing
+`report_analysis_load()` channel. The [runtime progress contract](api-contract.md#analysis-loading-progress)
+defines bounded browser waits and explicit retries; a browser timeout does not
+prove synchronous provider work stopped.
+
 This compatibility adapter supplies precomputed data and device policy, not an
 application. Do not return
 FastAPI, `APIRouter`, middleware, routes, page templates, assets, or browser

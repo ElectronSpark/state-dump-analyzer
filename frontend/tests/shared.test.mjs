@@ -89,6 +89,22 @@ test("analysis load presentation is visible only while running or after failure"
   assert.equal(failed.title, "Dump loading failed");
 });
 
+test("archive, provider and query work has distinct indeterminate progress", () => {
+  for (const [stage, title] of Object.entries({
+    reading_archive: "Reading archive contents",
+    validating_providers: "Validating providers",
+    reconstructing_topology: "Reconstructing topology",
+    querying_route_tables: "Loading route tables",
+    tracing_routes: "Tracing routes",
+  })) {
+    const presentation = analysisLoadProgressPresentation({ state: "running", stage });
+    assert.equal(presentation.title, title);
+    assert.equal(presentation.snapshot.stage, stage);
+    assert.equal(presentation.snapshot.determinate, false);
+    assert.equal(presentation.busy, true);
+  }
+});
+
 test("analysis load renderer leaves an unchanged live-region presentation untouched", () => {
   const mutations = [];
   const trackProperty = (target, name, initialValue) => {

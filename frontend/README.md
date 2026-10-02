@@ -41,6 +41,14 @@ The topology page links to the corresponding individual-node workspace. The
 node page links back to the fabric while preserving the available
 reconstruction context.
 
+Topology renders before route tables finish, and tracing starts only after
+**Trace route**. Independent node panels load concurrently. The core JSON
+transport `api()` waits at most 180 seconds by default, including response-body
+decoding; its `timeoutMs` override accepts 1–300,000 milliseconds. Progress
+polls use 10 seconds. Startup failures offer **Retry loading**, and query forms
+can be resubmitted explicitly. Timeouts do not replay through endpoint aliases
+or prove that synchronous server work stopped.
+
 The static pages do not advertise `/docs` because API documentation is closed
 by default. Operators who deliberately enable `--expose-api-docs` can open the
 URL above directly; enabling it is a server policy decision, not a browser

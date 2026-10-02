@@ -21,6 +21,7 @@ from .ingestion_contracts import (
     _bounded_identifier,
     _normalized_explicit_bootstrap_target,
 )
+from .load_progress import AnalysisLoadStage, _analysis_load_stage
 from .plugin_api import (
     AnalyzerPlugin,
     PluginCapability,
@@ -1040,6 +1041,7 @@ class PluginRegistry:
             + hashlib.sha256(canonical_json(material).encode("utf-8")).hexdigest()
         )
 
+    @_analysis_load_stage(AnalysisLoadStage.VALIDATING_PROVIDERS)
     def register(
         self,
         plugin: AnalyzerPlugin,
@@ -1744,6 +1746,7 @@ class PluginRegistry:
             )
 
     @classmethod
+    @_analysis_load_stage(AnalysisLoadStage.VALIDATING_PROVIDERS)
     def revalidate_registered_identity(cls, record: RegisteredPlugin) -> None:
         cls.revalidate_executable_identity(record)
         cls.revalidate_manifest_identity(record)

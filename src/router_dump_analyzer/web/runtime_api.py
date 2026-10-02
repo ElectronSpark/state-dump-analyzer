@@ -20,6 +20,7 @@ from router_dump_analyzer.control_plane import (
     DatasetIntegrityError,
     validate_revision_consistency_dataset,
 )
+from router_dump_analyzer.load_progress import AnalysisLoadStage
 from router_dump_analyzer.multi_node_route import MultiNodeRouteRequestError
 from router_dump_analyzer.multi_node_topology import MultiNodeTopologyRequestError
 from router_dump_analyzer.normalized_data import (
@@ -628,8 +629,25 @@ def _multi_node_route() -> Any:
     return service
 
 
-def _multi_node_call(operation: Callable[..., Any], *args: Any) -> Any:
-    return _runtime_api_call(operation, *args)
+def _multi_node_call(
+    operation: Callable[..., Any],
+    *args: Any,
+    stage: AnalysisLoadStage = AnalysisLoadStage.RECONSTRUCTING_TOPOLOGY,
+) -> Any:
+    response_error = None
+    result = None
+    with _data_service()._loading_operation(stage):
+        try:
+            result = _runtime_api_call(operation, *args)
+        except _RuntimeHTTPResponse as error:
+            # Only the core translator owns expected request errors. Provider
+            # HTTPException and genuine execution failures remain 5xx failures.
+            if type(error) is not _RuntimeHTTPResponse or not 400 <= error.status_code < 500:
+                raise
+            response_error = error
+    if response_error is not None:
+        raise response_error
+    return result
 
 
 def _require_topology_assembly(assembly_id: str) -> None:
@@ -1114,7 +1132,10 @@ def query_multi_node_route_tables(
     """Return time-bound, plug-in-owned route-table rows for selected nodes."""
 
     _require_topology_assembly(assembly_id or _active_topology_assembly_id())
-    return _multi_node_call(_multi_node_route().route_tables, body)
+    return _multi_node_call(
+        _multi_node_route().route_tables, body,
+        stage=AnalysisLoadStage.QUERYING_ROUTE_TABLES,
+    )
 
 
 @api_router.post("/v1/topologies/routes/trace")
@@ -1123,7 +1144,10 @@ def trace_route_across_default_topology(
 ) -> dict[str, Any]:
     """Trace all candidate paths across the default topology assembly."""
 
-    return _multi_node_call(_multi_node_route().trace, body)
+    return _multi_node_call(
+        _multi_node_route().trace, body,
+        stage=AnalysisLoadStage.TRACING_ROUTES,
+    )
 
 
 @api_router.post("/v1/topology-assemblies/{assembly_id}/routes/trace")
@@ -1134,7 +1158,10 @@ def trace_route_across_topology_assembly(
     """Trace all candidate paths across one named topology assembly."""
 
     _require_topology_assembly(assembly_id)
-    return _multi_node_call(_multi_node_route().trace, body)
+    return _multi_node_call(
+        _multi_node_route().trace, body,
+        stage=AnalysisLoadStage.TRACING_ROUTES,
+    )
 
 
 @api_router.get("/v1/topology-contexts/{context_id}/members/{member_id}")

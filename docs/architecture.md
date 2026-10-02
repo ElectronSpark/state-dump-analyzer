@@ -1022,6 +1022,16 @@ frontend host, the core-built runtime-v2 store defers ordinary parser ingestion
 until the first normalized workspace request; the HTML and progress endpoint
 can therefore render while that request parses the dump. Compatibility
 providers are tracked at their lazy topology/route construction boundaries.
+The same tracker also surrounds archive reading, provider validation,
+topology reconstruction, route-table queries, and explicit tracing with closed
+generic stages. A nested operation on that tracker temporarily refines the
+parent stage and restores it on success; failures retain their failing stage.
+Nesting does not finish the parent's work.
+No new plug-in hook is introduced: `report_analysis_load()` remains the optional
+advisory channel. Browser JSON waits default to 180 seconds (overrides are capped
+at 300 seconds), while progress observations wait at most 10 seconds. A timeout
+offers manual retry without automatic replay and does not establish that
+synchronous backend work stopped.
 There is no detached load thread: an API-only host loads and indexes its default
 revision synchronously before serving, preserving fail-fast and native
 process-control semantics. Plug-ins may refine the currently bound operation

@@ -65,6 +65,16 @@ emissions against the schema. When the task includes durable composition,
 assert the persisted revision, relationships, and findings. A manually assembled
 world checks hook composition but does not establish durable scheduling.
 
+For performance work in providers or compatibility adapters, read the
+[loading and performance boundaries](../../../docs/plugin-api-validation.md#loading-and-performance-boundaries).
+Keep core-owned identity checks and archive validation intact when reusing
+immutable work or deferring loads. Measure the actual user path and separate
+fixture preparation, backend readiness, and browser readiness.
+Tie each reported stage to work the adapter actually performs. Use `INDEXING`
+while building an index and `READING_ARCHIVE` while processing an archive;
+simple fixture reads can retain the core's `LOADING_REVISION` stage. Counting
+records alone does not establish that an index was built.
+
 ## Verify and finish
 
 Run the plug-in's golden tests and relevant existing boundary tests from the

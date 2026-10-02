@@ -26,7 +26,12 @@ from .dashboard_core import (
     evaluate_dashboards,
     validate_dashboard_descriptors,
 )
-from .load_progress import AnalysisLoadStage, AnalysisLoadTracker
+from .load_progress import (
+    AnalysisLoadStage,
+    AnalysisLoadTracker,
+    _analysis_load_stage,
+    _bound_analysis_load_operation,
+)
 from .materialization_contract import (
     CONSISTENCY_MATERIALIZATION_SCHEMA_VERSION as _CLIENT_CONSISTENCY_MATERIALIZATION_SCHEMA,
 )
@@ -2817,6 +2822,10 @@ class NormalizedDataService:
 
         if self._load_tracker is None:
             yield
+            return
+        if _bound_analysis_load_operation(self._load_tracker) is not None:
+            with _analysis_load_stage(stage):
+                yield
             return
         operation = self._load_tracker.begin(stage)
         try:

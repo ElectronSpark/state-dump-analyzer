@@ -50,6 +50,11 @@ const ANALYSIS_LOAD_STAGE_LABELS = Object.freeze({
   normalizing: "Normalizing router state",
   loading_revision: "Loading node revision",
   indexing: "Building query indexes",
+  reading_archive: "Reading archive contents",
+  validating_providers: "Validating providers",
+  reconstructing_topology: "Reconstructing topology",
+  querying_route_tables: "Loading route tables",
+  tracing_routes: "Tracing routes",
 });
 
 function analysisLoadCount(value) {

@@ -318,7 +318,7 @@ const state = {
 };
 
 const analysisLoadProgress = createAnalysisLoadProgressController({
-  fetchSnapshot: () => api("/v1/analysis-load", { cache: "no-store" }),
+  fetchSnapshot: () => api("/v1/analysis-load", { cache: "no-store", timeoutMs: 10_000 }),
   render: (snapshot) => renderAnalysisLoadProgress(
     byId("analysis-load-progress"),
     snapshot,
@@ -4192,7 +4192,7 @@ function updateCursorVisual() {
   });
 }
 
-function setCursor(value, schedule = true, selected = true) {
+function setCursor(value, schedule = true, selected = true, scheduleTopology = true) {
   state.cursorNs = clampNs(value);
   state.cursorSelected = selected;
   state.resourceOffset = 0;
@@ -4200,7 +4200,7 @@ function setCursor(value, schedule = true, selected = true) {
   updateFabricNavigationLink();
   markResourcesPending(state.cursorNs);
   markDashboardsPending(state.cursorNs);
-  scheduleTopologyRefreshFromCursor();
+  scheduleTopologyRefreshFromCursor(scheduleTopology);
   updateTimelineCommandAvailability();
   if (schedule) scheduleTemporalRefresh();
 }
@@ -4296,9 +4296,11 @@ function requestEventDetail(eventUid) {
   return request;
 }
 
-function selectEvent(eventUid, moveCursor = false, resourceId = null) {
+function selectEvent(eventUid, moveCursor = false, resourceId = null, { deferRequests = false } = {}) {
   const event = eventOrMark(eventUid);
   if (!event) return;
+  const previousCursorNs = state.cursorNs;
+  let laneAdded = false;
   const eventResourceId = resourceId || eventResourceRefs(event)[0] || null;
   const focusResourceId = resourceId || (moveCursor ? eventResourceId : null);
   state.selectedEventUid = eventUid;
@@ -4319,14 +4321,18 @@ function selectEvent(eventUid, moveCursor = false, resourceId = null) {
       state.laneMode = "custom";
       if (state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) state.explicitLaneIds.delete(state.explicitLaneIds.values().next().value);
       state.explicitLaneIds.add(focusResourceId);
-      refreshScaleTimeline();
+      laneAdded = true;
+      if (!deferRequests) refreshScaleTimeline();
     }
   }
   renderEventInspector(event);
-  if (moveCursor && eventTime(event) !== null) setCursor(eventTime(event));
+  if (moveCursor && eventTime(event) !== null) setCursor(eventTime(event), !deferRequests, true, !deferRequests);
+  if (deferRequests && isScaleMode() && (laneAdded || state.cursorNs !== previousCursorNs)) {
+    void refreshScaleTimeline();
+  }
   renderTimeline();
   renderEventTable();
-  if (focusResourceId && !moveCursor) requestGraph();
+  if (focusResourceId && !moveCursor && !deferRequests) requestGraph();
   requestEventDetail(eventUid).then((detail) => {
     if (!detail || state.selectedEventUid !== eventUid) return;
     renderEventInspector(detail);
@@ -7680,7 +7686,7 @@ function drawTimelineCorrelationOverlay() {
   content.appendChild(svg);
 }
 
-function selectResource(resourceId) {
+function selectResource(resourceId, { deferRequests = false } = {}) {
   resourceId = canonicalResourceId(resourceId);
   if (!resourceId) return;
   const focusChanged = state.selectedResourceId !== resourceId;
@@ -7692,7 +7698,7 @@ function selectResource(resourceId) {
     state.resourceOffset = 0;
     // The generic query is kind-scoped. Invalidate/reissue it through the
     // existing abort/latest-response controller; bundle selections stay put.
-    requestResources();
+    if (!deferRequests) requestResources();
   }
   if (focusChanged) {
     state.activeCorrelationEdges = [];
@@ -7709,7 +7715,7 @@ function selectResource(resourceId) {
   renderResourceTables();
   refreshDashboardSelectionPresentation();
   if (state.graph) renderGraph();
-  requestGraph();
+  if (!deferRequests) requestGraph();
   updateFabricNavigationLink();
 }
 
@@ -8786,13 +8792,13 @@ async function requestTopology(event) {
   renderTopologyResults();
 }
 
-function scheduleTopologyRefreshFromCursor() {
+function scheduleTopologyRefreshFromCursor(schedule = true) {
   const input = byId("topology-absolute-time");
   const basis = byId("topology-basis-kind");
   const follow = byId("topology-follow-cursor");
   if (!input || !basis || !follow || !follow.checked || basis.value !== "absolute_time") return;
   input.value = state.cursorNs.toString();
-  if (!state.topologyCapabilities) return;
+  if (!schedule || !state.topologyCapabilities) return;
   window.clearTimeout(state.topologyTimer);
   state.topologyTimer = window.setTimeout(() => requestTopology(), 260);
 }
@@ -12309,11 +12315,11 @@ async function initialize() {
       state.laneMode = "custom";
       state.explicitLaneIds = new Set(initialScaleLaneIds());
     }
+    const incidentPreview = requestFailureIncidentPreview().catch(() => null);
+    const topologyCapabilities = requestTopologyCapabilities().catch(() => null);
     await requestTimeline();
-    await requestFailureIncidentPreview();
     if (!isScaleMode()) state.explicitLaneIds = new Set(state.lanes.map((lane) => lane.resourceId));
     discoverPresentation();
-    await requestTopologyCapabilities();
     renderTopologyNavigationBanner();
     initializeDashboardLayout();
     markDashboardsPending(state.cursorNs);
@@ -12334,13 +12340,24 @@ async function initialize() {
     const initialFocusResourceId = linkedResourceId
       || (!hasTopologyNavigationContext() ? workspace.initial_focus_resource_id : "");
     if (initialFocusResourceId) {
-      selectResource(canonicalResourceId(initialFocusResourceId));
+      selectResource(canonicalResourceId(initialFocusResourceId), { deferRequests: true });
     } else if (incident && !hasTopologyNavigationContext()) {
-      selectEvent(String(incident.event_uid || incident.event_id), isScaleMode());
+      selectEvent(String(incident.event_uid || incident.event_id), isScaleMode(), null, { deferRequests: true });
     }
-    await Promise.allSettled([requestGraph(), requestResources(), requestDashboards(), requestTopology(), resolveRoute()]);
+    // Optional previews and topology discovery must not hold up usable node panels.
+    void incidentPreview.then(() => {
+      renderIncidentSummary();
+      if (initialFocusResourceId || incident || hasTopologyNavigationContext()
+          || state.selectedEventUid || state.selectedSourceRecordUid || state.selectedResourceId
+          || state.cursorSelected) return;
+      const previewIncident = state.failureIncidentPreview[0];
+      if (previewIncident) selectEvent(String(previewIncident.event_uid || previewIncident.event_id), isScaleMode());
+    }).catch(() => {});
+    void topologyCapabilities.then(() => requestTopology()).catch(() => {});
+    await Promise.allSettled([requestGraph(), requestResources(), requestDashboards(), resolveRoute()]);
   } catch (error) {
-    document.querySelector("main").innerHTML = `<section class="section-wrap"><div class="panel empty-state"><h1>Workspace could not load</h1><p>${escapeHtml(error.message)}</p></div></section>`;
+    document.querySelector("main").innerHTML = `<section class="section-wrap"><div class="panel empty-state"><h1>Workspace could not load</h1><p>${escapeHtml(error.message)}</p><button id="node-startup-retry" type="button">Retry loading</button></div></section>`;
+    byId("node-startup-retry").addEventListener("click", () => location.reload());
   }
 }
 

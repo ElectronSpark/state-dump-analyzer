@@ -115,6 +115,18 @@ python -m pytest -p no:cacheprovider tests/test_demo_vpn_topology.py demo/tests/
 
 ### Cross-node inconsistency samples
 
+The fabric appears as soon as reconstruction completes. Route capabilities and
+tables load independently. Choose **Trace route** to calculate a path; opening
+the page or reconstructing the fabric does not start a trace automatically.
+The core progress indicator follows archive reading, provider validation,
+reconstruction, route-table queries, and explicit traces. Fixture loaders may
+refine progress through the existing advisory `report_analysis_load()` reporter;
+the demo needs no additional progress hook. Browser requests wait up to 180
+seconds by default; progress observations use a separate 10-second wait. A
+timeout offers manual retry and does not prove synchronous backend work stopped.
+See the [runtime contract](../docs/api-contract.md#analysis-loading-progress)
+for bounded overrides and nested stages.
+
 Node-local records contain the observed binding values and resource identity.
 The plug-in's comparison rules attach scenario and peer associations during
 analysis; those authoring associations are absent from standalone node dumps.

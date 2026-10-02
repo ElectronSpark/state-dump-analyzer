@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import tarfile
 import tempfile
 import weakref
@@ -195,28 +196,34 @@ class DemoAssemblyStore:
         manifest_name = ASSEMBLY_MANIFEST_MEMBER
         coverage_name = ASSEMBLY_COVERAGE_MEMBER
         report_analysis_load(AnalysisLoadStage.INVENTORYING)
-        with tarfile.open(self.archive_path, mode="r:gz") as archive:
+        # Keep one descriptor across both passes so a path replacement cannot
+        # mix metadata from one assembly with node packs from another.
+        with self.archive_path.open("rb") as assembly_source:
             members: dict[str, tarfile.TarInfo] = {}
-            for archive_member in archive.getmembers():
-                _safe_member_name(archive_member.name)
-                if archive_member.name in members:
-                    raise DemoAssemblyError(
-                        f"duplicate assembly member: {archive_member.name}"
-                    )
-                if not archive_member.isfile() and not archive_member.isdir():
-                    raise DemoAssemblyError(
-                        f"assembly contains a non-regular member: {archive_member.name}"
-                    )
-                members[archive_member.name] = archive_member
+            metadata: dict[str, dict[str, Any]] = {}
+            with tarfile.open(fileobj=assembly_source, mode="r|gz") as archive:
+                for archive_member in archive:
+                    _safe_member_name(archive_member.name)
+                    if archive_member.name in members:
+                        raise DemoAssemblyError(
+                            f"duplicate assembly member: {archive_member.name}"
+                        )
+                    if not archive_member.isfile() and not archive_member.isdir():
+                        raise DemoAssemblyError(
+                            f"assembly contains a non-regular member: {archive_member.name}"
+                        )
+                    members[archive_member.name] = archive_member
+                    if archive_member.name in {manifest_name, coverage_name}:
+                        metadata[archive_member.name] = _read_json_member(
+                            archive, archive_member
+                        )
             try:
-                manifest_member = members[manifest_name]
-                coverage_member = members[coverage_name]
+                manifest = metadata[manifest_name]
+                coverage = metadata[coverage_name]
             except KeyError as error:
                 raise DemoAssemblyError(
                     "assembly must contain manifest.json and coverage.json"
                 ) from error
-            manifest = _read_json_member(archive, manifest_member)
-            coverage = _read_json_member(archive, coverage_member)
             if manifest.get("generator") != ASSEMBLY_GENERATOR:
                 raise DemoAssemblyError("unsupported demo assembly generator")
             if (
@@ -238,12 +245,13 @@ class DemoAssemblyStore:
                 raise DemoAssemblyError("assembly manifest nodes must be non-empty")
 
             descriptors: list[RevisionDescriptor] = []
+            node_members: dict[str, list[tuple[str, str, str, Path]]] = {}
             report_analysis_load(
                 AnalysisLoadStage.INVENTORYING,
                 completed=0,
                 total=len(raw_nodes),
             )
-            for node_ordinal, raw_node in enumerate(raw_nodes, start=1):
+            for raw_node in raw_nodes:
                 if not isinstance(raw_node, dict):
                     raise DemoAssemblyError(
                         "assembly manifest node entries must be objects"
@@ -287,27 +295,12 @@ class DemoAssemblyStore:
                     raise DemoAssemblyError(
                         f"nested node archive size/member mismatch: {node_id}"
                     )
-                source = archive.extractfile(member)
-                if source is None:
-                    raise DemoAssemblyError(
-                        f"cannot read nested node archive: {node_id}"
-                    )
                 target = (
                     Path(self._temporary_directory.name)
                     / f"{len(descriptors):03d}-{node_id}.tgz"
                 )
-                digest = hashlib.sha256()
-                with target.open("wb") as output:
-                    while chunk := source.read(1024 * 1024):
-                        digest.update(chunk)
-                        output.write(chunk)
-                if digest.hexdigest() != expected_sha256:
-                    target.unlink(missing_ok=True)
-                    raise DemoAssemblyError(
-                        f"nested node archive checksum mismatch: {node_id}"
-                    )
-                self._projections_by_node[node_id] = (
-                    self._read_plugin_projection(target, node_id, revision_id)
+                node_members.setdefault(expected_member_name, []).append(
+                    (node_id, revision_id, expected_sha256, target)
                 )
                 descriptor = RevisionDescriptor(
                     node_id=node_id,
@@ -338,11 +331,66 @@ class DemoAssemblyStore:
                 self._node_archive_paths[revision_id] = target
                 self._revisions_by_id[revision_id] = descriptor
                 self._revisions_by_node[node_id] = descriptor
-                report_analysis_load(
-                    AnalysisLoadStage.INVENTORYING,
-                    completed=node_ordinal,
-                    total=len(raw_nodes),
-                )
+
+            assembly_source.seek(0)
+            seen: set[str] = set()
+            completed = 0
+            with tarfile.open(fileobj=assembly_source, mode="r|gz") as archive:
+                for member in archive:
+                    _safe_member_name(member.name)
+                    original = members.get(member.name)
+                    if (
+                        member.name in seen
+                        or original is None
+                        or member.get_info() != original.get_info()
+                        or member.pax_headers != original.pax_headers
+                    ):
+                        raise DemoAssemblyError(
+                            f"assembly member changed between passes: {member.name}"
+                        )
+                    seen.add(member.name)
+                    if (
+                        member.name in metadata
+                        and _read_json_member(archive, member) != metadata[member.name]
+                    ):
+                        raise DemoAssemblyError(
+                            f"assembly metadata changed between passes: {member.name}"
+                        )
+                    selected = node_members.get(member.name)
+                    if not selected:
+                        continue
+                    source = archive.extractfile(member)
+                    if source is None:
+                        raise DemoAssemblyError(
+                            f"cannot read nested node archive: {selected[0][0]}"
+                        )
+                    # Several descriptors may name the same physical pack;
+                    # consume it once and preserve the existing identity checks.
+                    target = selected[0][3]
+                    digest = hashlib.sha256()
+                    with target.open("wb") as output:
+                        while chunk := source.read(1024 * 1024):
+                            digest.update(chunk)
+                            output.write(chunk)
+                    for node_id, revision_id, expected_sha256, node_target in selected:
+                        if digest.hexdigest() != expected_sha256:
+                            target.unlink(missing_ok=True)
+                            raise DemoAssemblyError(
+                                f"nested node archive checksum mismatch: {node_id}"
+                            )
+                        if node_target != target:
+                            shutil.copyfile(target, node_target)
+                        self._projections_by_node[node_id] = (
+                            self._read_plugin_projection(node_target, node_id, revision_id)
+                        )
+                        completed += 1
+                        report_analysis_load(
+                            AnalysisLoadStage.INVENTORYING,
+                            completed=completed,
+                            total=len(raw_nodes),
+                        )
+            if seen != members.keys():
+                raise DemoAssemblyError("assembly members changed between passes")
 
         coverage_cases = coverage.get("cases")
         if not isinstance(coverage_cases, list):

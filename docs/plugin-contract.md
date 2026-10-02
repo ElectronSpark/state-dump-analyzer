@@ -341,16 +341,27 @@ The session has six structural surfaces:
 | `route_provider` | `RuntimeRouteProvider` or `None`; a supported provider returns core `MultiNodeRouteService` from `get()`. |
 
 Dataset loading progress is a core-owned advisory channel, not a seventh
-session surface. `NormalizedDataService` automatically surrounds every
+session surface or a new plug-in hook. Core tracks provider attestation during
+construction and execution, topology reconstruction, route-table queries, and
+explicit route traces with `validating_providers`, `reconstructing_topology`,
+`querying_route_tables`, and `tracing_routes`. Nested operations using the same
+tracker refine the current operation and restore its parent stage on success,
+without completing the parent early; failures retain the failing stage.
+`NormalizedDataService` automatically surrounds every
 `data_source.load_dataset()` call with `loading_revision`. A compatibility
 fixture loader MAY refine the current operation by importing
-`AnalysisLoadStage` and `report_analysis_load` from `router_dump_analyzer`.
+`AnalysisLoadStage` and `report_analysis_load` from `router_dump_analyzer`,
+including `reading_archive` for actual archive work.
 It MUST use only the closed generic stages and JSON-safe non-negative counters,
 MUST omit `total` when the denominator is not known, and MUST NOT encode paths,
 resource identities, dump values, or device-specific phase names in progress.
 The reporter is a no-op outside a core-bound load and advisory reporting failure
 does not invalidate otherwise-correct parsing. A plug-in MUST NOT construct or
 retain the core tracker or infer progress by inspecting another provider.
+The browser's bounded wait is not a cancellation guarantee for synchronous
+provider work. A timeout MUST NOT cause automatic replay; the user may retry
+explicitly. See [analysis loading progress](api-contract.md#analysis-loading-progress)
+for the observation and browser wait contract.
 
 Core validates a compatibility session before serving, enters it for the FastAPI
 application lifespan, binds it request-locally, and closes the context once at

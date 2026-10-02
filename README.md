@@ -204,7 +204,7 @@ development-only `--trust-control-plane-headers` override.
 | `http://127.0.0.1:8765/manage` | Durable project/workspace catalog, imports, sessions, scoped revision inspection, and role-gated administration |
 | `http://127.0.0.1:8765/docs` | Interactive API documentation; available only after a loopback launch with `--expose-api-docs` |
 | `http://127.0.0.1:8765/health` | Server and fixture health |
-| `http://127.0.0.1:8765/v1/analysis-load` | Non-sensitive progress for active dump/revision parsing and indexing |
+| `http://127.0.0.1:8765/v1/analysis-load` | Non-sensitive progress for archive reading, revision loading/indexing, provider validation, topology reconstruction, route tables, and tracing |
 | `http://127.0.0.1:8765/v1/control-plane/health` | Session-independent durable worker and queue health |
 | `http://127.0.0.1:8765/v1/control-plane/diagnostics/operational-events` | Protected operational diagnostics; requires `control-plane:instance-operator` |
 | `http://127.0.0.1:8765/v1/control-plane/context` | Durable control-plane context; requires `X-Tenant-ID` and an enabled state directory (the bundled launcher enables one) |

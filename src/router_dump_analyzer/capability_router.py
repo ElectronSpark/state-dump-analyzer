@@ -30,6 +30,7 @@ from .capability_executor import (
     RelationshipProjectionExecutionResult,
     TopologyExecutionResult,
 )
+from .load_progress import AnalysisLoadStage, _analysis_load_stage
 from .plugin_api import (
     ChangeSet,
     CorrelationReader,
@@ -219,6 +220,7 @@ class CapabilityProviderRegistry:
         snapshot._sealed = True
         return snapshot
 
+    @_analysis_load_stage(AnalysisLoadStage.VALIDATING_PROVIDERS)
     def add_registered(self, provider: RegisteredPlugin) -> str:
         with self._mutation_lock:
             if self._sealed:
@@ -783,6 +785,7 @@ class PlanBoundCapabilityRouter:
                 "capability provider does not match the execution-plan pin"
             )
 
+    @_analysis_load_stage(AnalysisLoadStage.VALIDATING_PROVIDERS)
     def _validated_executor(
         self,
         pin: PluginExecutionPin,

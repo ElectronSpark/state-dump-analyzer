@@ -16,6 +16,7 @@ from router_dump_analyzer.load_progress import (
     AnalysisLoadStage,
     AnalysisLoadState,
     AnalysisLoadTracker,
+    _analysis_load_stage,
     report_analysis_load,
 )
 from router_dump_analyzer.multi_node_route import MultiNodeRouteService
@@ -26,6 +27,7 @@ from router_dump_analyzer.revision_queries import RevisionQueryService
 from router_dump_analyzer.runtime import CoreRuntimeSession
 from router_dump_analyzer.web.runtime_api import (
     _active_topology_assembly_id,
+    _multi_node_call,
     _multi_node_route,
     _multi_node_topology,
     _require_revision,
@@ -609,6 +611,124 @@ class AnalysisLoadProgressTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "")
         self.assertIs(raised.exception, interruption)
         self.assertEqual(tracker.snapshot().state, AnalysisLoadState.FAILED)
+
+
+    def test_nested_operations_share_lifecycle_restore_stage_and_preserve_records(self) -> None:
+        tracker = AnalysisLoadTracker()
+        service = NormalizedDataService(StaticDatasetSource({}), StaticDataPolicy(), load_tracker=tracker)
+        with service._loading_operation(AnalysisLoadStage.TRACING_ROUTES):
+            outer_id = tracker.snapshot().operation_id
+            report_analysis_load(AnalysisLoadStage.TRACING_ROUTES, records_processed=12)
+            with service._loading_operation(AnalysisLoadStage.RECONSTRUCTING_TOPOLOGY):
+                self.assertEqual(tracker.snapshot().active_operations, 1)
+                self.assertEqual(tracker.snapshot().operation_id, outer_id)
+                with _analysis_load_stage(AnalysisLoadStage.VALIDATING_PROVIDERS):
+                    self.assertEqual(tracker.snapshot().stage, AnalysisLoadStage.VALIDATING_PROVIDERS)
+                self.assertEqual(tracker.snapshot().stage, AnalysisLoadStage.RECONSTRUCTING_TOPOLOGY)
+                report_analysis_load(AnalysisLoadStage.READING_ARCHIVE, records_processed=0)
+                self.assertEqual(tracker.snapshot().stage, AnalysisLoadStage.READING_ARCHIVE)
+                self.assertEqual(tracker.snapshot().records_processed, 12)
+            self.assertEqual(tracker.snapshot().state, AnalysisLoadState.RUNNING)
+            self.assertEqual(tracker.snapshot().stage, AnalysisLoadStage.TRACING_ROUTES)
+        self.assertEqual(tracker.snapshot().state, AnalysisLoadState.READY)
+        self.assertEqual(tracker.snapshot().records_processed, 12)
+
+    def test_nested_operation_from_other_tracker_remains_independent(self) -> None:
+        first, second = AnalysisLoadTracker(), AnalysisLoadTracker()
+        a = NormalizedDataService(StaticDatasetSource({}), StaticDataPolicy(), load_tracker=first)
+        b = NormalizedDataService(StaticDatasetSource({}), StaticDataPolicy(), load_tracker=second)
+        with a._loading_operation(AnalysisLoadStage.TRACING_ROUTES):
+            with b._loading_operation(AnalysisLoadStage.READING_ARCHIVE):
+                self.assertEqual(second.snapshot().active_operations, 1)
+                self.assertNotEqual(first.snapshot().operation_id, second.snapshot().operation_id)
+            self.assertEqual(first.snapshot().state, AnalysisLoadState.RUNNING)
+        self.assertEqual(second.snapshot().state, AnalysisLoadState.READY)
+
+    def test_nested_failure_keeps_failure_stage_and_native_process_control(self) -> None:
+        tracker = AnalysisLoadTracker()
+        service = NormalizedDataService(StaticDatasetSource({}), StaticDataPolicy(), load_tracker=tracker)
+        interruption = KeyboardInterrupt("stop")
+        with (
+            self.assertRaises(KeyboardInterrupt) as raised,
+            service._loading_operation(AnalysisLoadStage.TRACING_ROUTES),
+            _analysis_load_stage(AnalysisLoadStage.VALIDATING_PROVIDERS),
+        ):
+            raise interruption
+        self.assertIs(raised.exception, interruption)
+        self.assertEqual(tracker.snapshot().stage, AnalysisLoadStage.VALIDATING_PROVIDERS)
+        self.assertEqual(tracker.snapshot().state, AnalysisLoadState.FAILED)
+
+    def test_query_work_is_tracked_and_expected_request_error_is_not_failure(self) -> None:
+        from router_dump_analyzer.multi_node_topology import (
+            MultiNodeTopologyRequestError,
+        )
+        tracker = AnalysisLoadTracker()
+        service = NormalizedDataService(StaticDatasetSource({}), StaticDataPolicy(), load_tracker=tracker)
+        session = CoreRuntimeSession(plugin_session=cast(Any, object()), data_service=service)
+        def query() -> None:
+            self.assertEqual(tracker.snapshot().state, AnalysisLoadState.RUNNING)
+            self.assertEqual(tracker.snapshot().stage, AnalysisLoadStage.QUERYING_ROUTE_TABLES)
+            raise MultiNodeTopologyRequestError("invalid query")
+        with activate_runtime_session(session), self.assertRaises(_RuntimeHTTPResponse) as raised:
+            _multi_node_call(query, stage=AnalysisLoadStage.QUERYING_ROUTE_TABLES)
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertEqual(tracker.snapshot().state, AnalysisLoadState.READY)
+
+    def test_provider_http_exception_still_marks_query_failed(self) -> None:
+        from fastapi import HTTPException
+        tracker = AnalysisLoadTracker()
+        service = NormalizedDataService(StaticDatasetSource({}), StaticDataPolicy(), load_tracker=tracker)
+        session = CoreRuntimeSession(plugin_session=cast(Any, object()), data_service=service)
+        def query() -> None:
+            raise HTTPException(status_code=404, detail="provider-controlled")
+        with activate_runtime_session(session), self.assertRaises(_RuntimeHTTPResponse) as raised:
+            _multi_node_call(query, stage=AnalysisLoadStage.TRACING_ROUTES)
+        self.assertEqual(raised.exception.status_code, 500)
+        self.assertEqual(tracker.snapshot().state, AnalysisLoadState.FAILED)
+        self.assertEqual(tracker.snapshot().stage, AnalysisLoadStage.TRACING_ROUTES)
+
+
+    def test_executor_attestation_reports_validation_then_restores_query(self) -> None:
+        from router_dump_analyzer.capability_executor import PluginCapabilityExecutor
+        from router_dump_analyzer.capability_router import PlanBoundCapabilityRouter
+        tracker = AnalysisLoadTracker()
+        operation = tracker.begin(AnalysisLoadStage.RECONSTRUCTING_TOPOLOGY)
+        router = object.__new__(PlanBoundCapabilityRouter)
+        router.member_id = "member"
+        router.limits = None
+        sentinel = object()
+        def attestation(*args: Any, **kwargs: Any) -> Any:
+            self.assertEqual(tracker.snapshot().stage, AnalysisLoadStage.VALIDATING_PROVIDERS)
+            return sentinel
+        with (
+            operation.bind(),
+            patch.object(PlanBoundCapabilityRouter, "_validate_static_pin"),
+            patch.object(PluginCapabilityExecutor, "for_execution_pin", side_effect=attestation),
+        ):
+            self.assertIs(router._validated_executor(cast(Any, object()), cast(Any, SimpleNamespace(execution_plugin=object()))), sentinel)
+            self.assertEqual(tracker.snapshot().stage, AnalysisLoadStage.RECONSTRUCTING_TOPOLOGY)
+        operation.complete()
+
+    def test_initial_registry_attestation_reports_validation(self) -> None:
+        from router_dump_analyzer.plugin_registration import PluginRegistry
+        tracker = AnalysisLoadTracker()
+        operation = tracker.begin(AnalysisLoadStage.RECONSTRUCTING_TOPOLOGY)
+        def attestation(*args: Any) -> None:
+            self.assertEqual(tracker.snapshot().stage, AnalysisLoadStage.VALIDATING_PROVIDERS)
+        with (
+            operation.bind(),
+            patch.object(PluginRegistry, "revalidate_executable_identity", side_effect=attestation),
+            patch.object(PluginRegistry, "revalidate_manifest_identity"),
+            patch("router_dump_analyzer.plugin_registration._registered_ingestion_limits"),
+            patch("router_dump_analyzer.plugin_registration._revalidate_process_target_executable_identities"),
+        ):
+            PluginRegistry.revalidate_registered_identity(cast(Any, SimpleNamespace(
+                coordinator=None, decoder_identity=None,
+                _decoder_implementation_snapshot=None,
+                _registered_execution_identity_snapshot=None,
+            )))
+            self.assertEqual(tracker.snapshot().stage, AnalysisLoadStage.RECONSTRUCTING_TOPOLOGY)
+        operation.complete()
 
 
 if __name__ == "__main__":

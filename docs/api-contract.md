@@ -4341,6 +4341,8 @@ shared health projection is total: a failing store/provider or malformed
 counter becomes a stable bounded observation error, never private exception
 text or an HTTP 500 from the health serializer.
 
+### Analysis loading progress
+
 The core browser uses a separate, non-cacheable load observation:
 
 ```http
@@ -4356,11 +4358,25 @@ count, not a denominator. The response also contains a random operation ID,
 bounded sequence/active-operation counts, decimal-string timestamps, and a
 closed path-free `error_code`; it contains no input name, host path, plug-in
 text, resource identity, or dump content. Both the node and multi-node pages
-poll this same core endpoint only while an analysis request may cause a cold
-revision load. Concurrent loads form one observation batch: the endpoint stays
+poll this same core endpoint while tracked analysis work remains active.
+Stages include `reading_archive`, `validating_providers`,
+`reconstructing_topology`, `querying_route_tables`, and `tracing_routes`, in
+addition to the existing revision parsing/indexing stages. Core records these
+at actual provider attestation, reconstruction, route-table and trace boundaries;
+fixture loaders report archive work through the existing advisory channel.
+Nested stages on the same tracker refine one operation and restore the parent
+stage on success, without ending that parent operation. Failures retain their
+failing stage. Concurrent loads form one observation batch: the endpoint stays
 `running` while any operation remains, and if any member fails the terminal
 batch state is `failed` even when a sibling completes successfully. A later
 non-overlapping load begins a fresh batch.
+
+The generic browser JSON transport waits up to 180 seconds by default, with a
+bounded per-request override of at most 300 seconds. Progress observations have
+a separate 10-second wait. A timed-out browser request offers an explicit manual
+retry; it is never automatically replayed. Aborting the browser wait does not
+prove that synchronous backend work has stopped. These are browser wait limits,
+not a killable execution deadline for a provider.
 
 When the reusable frontend is enabled, ordinary runtime-v2 ingestion is
 deferred to the first workspace request so this endpoint is reachable during

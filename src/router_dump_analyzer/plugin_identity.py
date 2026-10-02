@@ -17,12 +17,23 @@ import sys
 import threading
 import tokenize
 import weakref
+from collections import OrderedDict
 from dataclasses import dataclass, field, is_dataclass
 from dataclasses import fields as dataclass_fields
 from enum import Enum
 from pathlib import Path
 from types import CodeType, FunctionType, GenericAlias, MappingProxyType, ModuleType
 from typing import Any, cast
+
+# Only deterministic compilation artifacts cross attestation boundaries. Source
+# snapshots, runtime objects, and verification results always remain local.
+_DECLARED_COMPILATION_CACHE_MAX_ENTRIES = 16
+_DECLARED_COMPILATION_CACHE_MAX_SOURCE_BYTES = 1024 * 1024
+_DECLARED_COMPILATION_CACHE_MAX_ENTRY_SOURCE_BYTES = 256 * 1024
+_declared_compilation_cache: OrderedDict[
+    tuple[str, bytes, int], tuple[CodeType, ...]
+] = OrderedDict()
+_declared_compilation_cache_lock = threading.RLock()
 
 MAX_PLUGIN_PACKAGE_FILES = 4_096
 MAX_PLUGIN_PACKAGE_PATHS = 8_192
@@ -2664,6 +2675,32 @@ def _declared_code_objects(
         else None
     )
     if code_objects is None:
+        code_objects = _compiled_source_code_objects(module_name, source)
+        if batch_cache is not None:
+            batch_cache[batch_cache_key] = code_objects
+    budget.declared_code_cache[local_cache_key] = _DeclaredCodeCacheEntry(
+        source_identity=source_identity,
+        source_stat_identity=source_stat_identity,
+        code_objects=code_objects,
+    )
+    return tuple(
+        code
+        for code in code_objects
+        if code.co_qualname == qualified_name
+    )
+
+
+def _compiled_source_code_objects(
+    module_name: str, source: bytes
+) -> tuple[CodeType, ...]:
+    """Reuse bounded immutable declarations, never a live identity decision."""
+
+    key = (module_name, source, sys.flags.optimize)
+    with _declared_compilation_cache_lock:
+        cached = _declared_compilation_cache.get(key)
+        if cached is not None:
+            _declared_compilation_cache.move_to_end(key)
+            return cached
         try:
             module_code = compile(
                 source,
@@ -2677,18 +2714,16 @@ def _declared_code_objects(
                 "module target source cannot be compiled deterministically"
             ) from error
         code_objects = _walk_code_objects(module_code)
-        if batch_cache is not None:
-            batch_cache[batch_cache_key] = code_objects
-    budget.declared_code_cache[local_cache_key] = _DeclaredCodeCacheEntry(
-        source_identity=source_identity,
-        source_stat_identity=source_stat_identity,
-        code_objects=code_objects,
-    )
-    return tuple(
-        code
-        for code in code_objects
-        if code.co_qualname == qualified_name
-    )
+        if len(source) <= _DECLARED_COMPILATION_CACHE_MAX_ENTRY_SOURCE_BYTES:
+            _declared_compilation_cache[key] = code_objects
+            while (
+                len(_declared_compilation_cache)
+                > _DECLARED_COMPILATION_CACHE_MAX_ENTRIES
+                or sum(len(item[1]) for item in _declared_compilation_cache)
+                > _DECLARED_COMPILATION_CACHE_MAX_SOURCE_BYTES
+            ):
+                _declared_compilation_cache.popitem(last=False)
+        return code_objects
 
 
 def _walk_code_objects(root: CodeType) -> tuple[CodeType, ...]:

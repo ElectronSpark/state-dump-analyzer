@@ -43,6 +43,9 @@ teaching parser without the generated archive's compatibility runtime.
 
 The validator checks package and protocol shape. Golden tests check actual
 resource identities, values, relationships, evidence, and consistency findings.
+Core also supplies generic loading progress and bounded browser waits; the
+parser needs no progress hook. See the [runtime loading contract](api-contract.md#analysis-loading-progress)
+for stages, advisory fixture reporting, and manual retry behavior.
 The repository also executes this exact smoke block in a temporary state
 directory through `tests.test_plugin_authoring_docs`.
 

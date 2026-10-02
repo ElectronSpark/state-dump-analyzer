@@ -97,6 +97,40 @@ Keep identity verification enabled and preserve shared caches. A successful
 registration only clears that stage: check ingestion and publication afterward,
 and inspect retained failure diagnostics when the public job error is generic.
 
+## Loading and performance boundaries
+
+Measure the changed path with a fixed fixture and interpreter. Distinguish
+process-cold and warm provider calls from fixture generation, HTTP transport,
+and time to a usable browser view. Use a separate profiler run for attribution;
+instrumented seconds are not request latency. The
+[topology/route profiler](../scripts/profile_topology_routes.py) and its
+[method](topology-route-profile.md) cover direct providers. A small fixture
+does not establish full-scale archive performance.
+
+Core owns execution identity, request cancellation, and public loading state.
+A compilation cache may retain bounded immutable artifacts derived from exact
+source/compiler inputs; it must not retain a trust decision or replace fresh
+source reads, live dependency inspection, or before/after invocation checks.
+Exercise warm-cache source changes, runtime mutations, and eviction through
+the same core callers as cold execution. Use `tests.test_plugin_identity`,
+`tests.test_plugin_identity_runtime_imports`, `tests.test_capability_router`,
+and `tests.test_provider_execution_boundaries` for these boundaries.
+
+For archive changes, retain traversal of trailing members and rejection of
+unsafe names, duplicate members, nonregular entries, size/hash mismatches,
+and incorrect projection identity. Validate reordered archives as well as
+canonical generator output with `tests.test_demo_assembly_store` and
+`tests.test_demo_archive_safety`. Lazy loading may defer work but must not
+silently weaken validation or change the accepted data.
+
+For combined browser flows, distinguish core ingestion from durable
+materialization and the configured startup runtime. Test slow and failed
+secondary requests, cancellation, superseded responses, and partial rendering;
+only the current revision/context may publish. Report actual loading stages
+without guessed percentages. Browser timeout bounds waiting and does not
+prove synchronous backend execution stopped. Run the relevant frontend tests
+and browse the resulting integration before claiming UI readiness.
+
 ## Every analyzer hook
 
 Exact signatures and typed values are in

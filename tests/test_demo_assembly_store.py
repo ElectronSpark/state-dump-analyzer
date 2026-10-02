@@ -8,7 +8,7 @@ import json
 import tarfile
 import tempfile
 import unittest
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from threading import Event, Thread
 from unittest.mock import patch
@@ -303,6 +303,110 @@ def _scale_runtime(search: _CloseCountingSearch) -> ScaleRuntime:
 
 
 class DemoAssemblyStoreTests(unittest.TestCase):
+    @staticmethod
+    def _rewrite_outer(path: Path, mutate: Callable[[list[tuple[tarfile.TarInfo, bytes | None]]], None]) -> None:
+        with tarfile.open(path, "r:gz") as archive:
+            rows = [
+                (member, archive.extractfile(member).read() if member.isfile() else None)
+                for member in archive
+            ]
+        mutate(rows)
+        with tarfile.open(path, "w:gz") as archive:
+            for member, content in rows:
+                archive.addfile(member, io.BytesIO(content) if content is not None else None)
+
+    def test_outer_streams_twice_with_metadata_after_reordered_packs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "assembly.tgz"
+            _write_assembly(path)
+            self._rewrite_outer(path, lambda rows: rows.reverse())
+            with patch(
+                "rsl_demo_plugin.assembly_store.tarfile.open", wraps=tarfile.open
+            ) as opened, DemoAssemblyStore(path) as store:
+                self.assertEqual(
+                    [item.node_id for item in store.assembly.revisions],
+                    ["node-a", "node-b"],
+                )
+                self.assertEqual(store.projection_for_node("node-a")["routes"], [])
+            outer_calls = [call for call in opened.call_args_list if "fileobj" in call.kwargs]
+            self.assertEqual(len(outer_calls), 2)
+            self.assertTrue(all(call.kwargs["mode"] == "r|gz" for call in outer_calls))
+            self.assertIs(outer_calls[0].kwargs["fileobj"], outer_calls[1].kwargs["fileobj"])
+
+    def test_outer_rejects_headers_and_metadata_changed_between_passes(self) -> None:
+        for mutation in ("header", "metadata", "missing"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "assembly.tgz"
+                _write_assembly(path)
+                real_open = tarfile.open
+                calls = 0
+
+                def mutate(rows, mutation=mutation):
+                    if mutation == "header":
+                        rows[-1][0].mode ^= 1
+                    elif mutation == "missing":
+                        rows.pop()
+                    else:
+                        for index, (member, content) in enumerate(rows):
+                            if member.name.endswith("/manifest.json"):
+                                changed = json.loads(content)
+                                changed["assembly_id"] = "evil-assembly"
+                                content = _json_bytes(changed)
+                                member.size = len(content)
+                                rows[index] = (member, content)
+                                break
+
+                def open_pass(*args, path=path, mutate=mutate, real_open=real_open, **kwargs):
+                    nonlocal calls
+                    if "fileobj" in kwargs:
+                        calls += 1
+                        if calls == 2:
+                            with patch("rsl_demo_plugin.assembly_store.tarfile.open", real_open):
+                                self._rewrite_outer(path, mutate)
+                    return real_open(*args, **kwargs)
+
+                with (
+                    patch("rsl_demo_plugin.assembly_store.tarfile.open", side_effect=open_pass),
+                    self.assertRaisesRegex(DemoAssemblyError, "changed between passes"),
+                ):
+                    DemoAssemblyStore(path)
+
+    def test_outer_rejects_trailing_unsafe_and_duplicate_members(self) -> None:
+        for mutation in ("unsafe", "duplicate", "symlink", "checksum", "size", "missing-pack"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "assembly.tgz"
+                _write_assembly(path)
+
+                def mutate(rows, mutation=mutation):
+                    if mutation == "duplicate":
+                        rows.append(rows[0])
+                    elif mutation == "missing-pack":
+                        rows[:] = [row for row in rows if not row[0].name.endswith("node-a.tgz")]
+                    elif mutation == "size":
+                        for index, (member, content) in enumerate(rows):
+                            if member.name.endswith("/manifest.json"):
+                                changed = json.loads(content)
+                                changed["nodes"][0]["compressed_size"] += 1
+                                content = _json_bytes(changed)
+                                member.size = len(content)
+                                rows[index] = (member, content)
+                                break
+                    elif mutation == "checksum":
+                        for index, (member, content) in enumerate(rows):
+                            if member.name.endswith(".tgz"):
+                                rows[index] = (member, bytes([content[0] ^ 1]) + content[1:])
+                                break
+                    else:
+                        member = tarfile.TarInfo("../unsafe" if mutation == "unsafe" else "safe-link")
+                        if mutation == "symlink":
+                            member.type = tarfile.SYMTYPE
+                            member.linkname = "other"
+                        rows.append((member, b""))
+
+                self._rewrite_outer(path, mutate)
+                with self.assertRaises(DemoAssemblyError):
+                    DemoAssemblyStore(path)
+
     def test_outer_archive_reports_bounded_node_inventory_progress(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory) / "assembly.tgz"

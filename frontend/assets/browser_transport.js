@@ -6,21 +6,50 @@ const DEFAULT_AMBIGUOUS_STATUSES = Object.freeze(
 );
 
 export async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
-  if (!response.ok) {
-    let message = `${response.status} ${response.statusText}`;
-    try {
-      const body = await response.json();
-      message = body.detail || body.error?.message || message;
-    } catch (_error) {
-      // Keep the HTTP status when the body is not JSON.
-    }
-    throw new Error(message);
+  const { timeoutMs = 180_000, signal, ...fetchOptions } = options;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000) {
+    throw new RangeError("timeoutMs must be between 1 and 300000");
   }
-  return response.json();
+  if (signal?.aborted) throw signal.reason;
+  const controller = new AbortController();
+  let rejectWait;
+  const cancelled = new Promise((_resolve, reject) => { rejectWait = reject; });
+  const onAbort = () => {
+    rejectWait(signal.reason);
+    controller.abort(signal.reason);
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  const timer = setTimeout(() => {
+    const error = new Error(`Request timed out after ${timeoutMs / 1000} seconds. The server may still be working. Retry when ready.`);
+    error.name = "TimeoutError";
+    rejectWait(error);
+    controller.abort(error);
+  }, timeoutMs);
+  const readResponse = async () => {
+    const response = await fetch(path, {
+      headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) },
+      ...fetchOptions,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      let message = `${response.status} ${response.statusText}`;
+      try {
+        const body = await response.json();
+        message = body.detail || body.error?.message || message;
+      } catch (_error) {
+        // Keep the HTTP status when the body is not JSON.
+      }
+      throw new Error(message);
+    }
+    return response.json();
+  };
+  try {
+    // Bound body decoding too, even if a transport fails to settle on abort.
+    return await Promise.race([readResponse(), cancelled]);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  }
 }
 
 export function replaceAbortController(previous, createController = () => new AbortController()) {

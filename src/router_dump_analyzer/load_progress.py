@@ -44,6 +44,11 @@ class AnalysisLoadStage(StrEnum):
     NORMALIZING = "normalizing"
     LOADING_REVISION = "loading_revision"
     INDEXING = "indexing"
+    READING_ARCHIVE = "reading_archive"
+    VALIDATING_PROVIDERS = "validating_providers"
+    RECONSTRUCTING_TOPOLOGY = "reconstructing_topology"
+    QUERYING_ROUTE_TABLES = "querying_route_tables"
+    TRACING_ROUTES = "tracing_routes"
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +155,40 @@ _active_operation: ContextVar[AnalysisLoadOperation | None] = ContextVar(
     "router_dump_analyzer_analysis_load_operation",
     default=None,
 )
+
+
+def _bound_analysis_load_operation(
+    tracker: AnalysisLoadTracker,
+) -> AnalysisLoadOperation | None:
+    operation = _active_operation.get()
+    if operation is None or operation._closed or operation._tracker is not tracker:
+        return None
+    return operation
+
+
+@contextmanager
+def _analysis_load_stage(stage: AnalysisLoadStage) -> Iterator[None]:
+    """Temporarily report core work without creating a nested lifecycle.
+
+    Counters retain their operation-wide high water mark. Restore only on
+    success so failures retain the stage in which they occurred. Optional
+    telemetry must never change provider execution or exception behavior.
+    """
+    operation = _active_operation.get()
+    previous = None
+    if operation is not None and not operation._closed:
+        with operation._tracker._lock:
+            state = operation._tracker._operations.get(operation.operation_id)
+            if state is not None:
+                previous = (state.stage, state.completed, state.total)
+    report_analysis_load(stage)
+    try:
+        yield
+    except BaseException:
+        raise
+    else:
+        if previous is not None:
+            report_analysis_load(previous[0], completed=previous[1], total=previous[2])
 
 
 class AnalysisLoadTracker:
@@ -329,6 +368,12 @@ def report_analysis_load(
     if operation is None:
         return
     try:
+        if records_processed is not None:
+            selected_records = _count(records_processed, "records_processed")
+            with operation._tracker._lock:
+                state = operation._tracker._operations.get(operation.operation_id)
+                if state is not None:
+                    records_processed = max(selected_records, state.records_processed)
         operation.update(
             stage,
             completed=completed,

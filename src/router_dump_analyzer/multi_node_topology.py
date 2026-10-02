@@ -45,6 +45,7 @@ from router_dump_analyzer.corroboration import (
 from router_dump_analyzer.federation_executor import (
     FederationExecutionProvenance,
 )
+from router_dump_analyzer.load_progress import AnalysisLoadStage, _analysis_load_stage
 from router_dump_analyzer.normalized_data import contains_time
 from router_dump_analyzer.plugin_api import (
     Evidence,
@@ -1133,6 +1134,7 @@ class MultiNodeTopologyService:
             "navigation": result["deep_links"],
         })
 
+    @_analysis_load_stage(AnalysisLoadStage.RECONSTRUCTING_TOPOLOGY)
     def query_node(self, node_id: str, body: dict[str, Any]) -> dict[str, Any]:
         node = self._node(node_id)
         node_query = {
@@ -1183,6 +1185,7 @@ class MultiNodeTopologyService:
             },
         }
 
+    @_analysis_load_stage(AnalysisLoadStage.RECONSTRUCTING_TOPOLOGY)
     def query(self, body: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(body, dict):
             raise MultiNodeTopologyRequestError("request body must be an object")

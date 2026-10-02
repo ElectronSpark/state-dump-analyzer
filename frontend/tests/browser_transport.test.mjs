@@ -53,17 +53,82 @@ test("JSON api preserves fetch options and caller-owned cancellation", async (co
   });
   assert.deepEqual(await api("/ready"), { ready: true });
   assert.deepEqual(calls[0], {
-    path: "/ready", options: { headers: { "Content-Type": "application/json" } },
+    path: "/ready", options: { headers: { "Content-Type": "application/json" }, signal: calls[0].options.signal },
   });
+  assert.ok(calls[0].options.signal instanceof AbortSignal);
   const headers = { Accept: "application/json" };
   const body = '{"query":"test"}';
   await api("/query", { method: "POST", body, headers, signal: controller.signal, cache: "no-store" });
   assert.deepEqual(calls[1].options, {
-    headers, method: "POST", body, signal: controller.signal, cache: "no-store",
+    headers, method: "POST", body, signal: calls[1].options.signal, cache: "no-store",
   });
+  assert.ok(calls[1].options.signal instanceof AbortSignal);
+  assert.notEqual(calls[1].options.signal, controller.signal);
   const abort = Object.assign(new Error("caller cancelled"), { name: "AbortError" });
   context.mock.method(globalThis, "fetch", async () => { throw abort; });
   await assert.rejects(api("/query", { signal: controller.signal }), (error) => error === abort);
+});
+
+test("JSON deadline bounds both headers and body, aborts once, and never retries", async (context) => {
+  for (const pendingBody of [false, true]) {
+    let timeout;
+    let cleared = false;
+    let calls = 0;
+    let selectedSignal;
+    const caller = new AbortController();
+    context.mock.method(globalThis, "setTimeout", (callback, delay) => {
+      assert.equal(delay, 180_000);
+      timeout = callback;
+      return 19;
+    });
+    context.mock.method(globalThis, "clearTimeout", (timer) => { assert.equal(timer, 19); cleared = true; });
+    context.mock.method(globalThis, "fetch", async (_path, options) => {
+      calls++;
+      assert.equal(Object.hasOwn(options, "timeoutMs"), false);
+      selectedSignal = options.signal;
+      if (pendingBody) return { ...response(null), json: () => new Promise(() => {}) };
+      return new Promise(() => {});
+    });
+    const pending = api("/slow", { signal: caller.signal });
+    await Promise.resolve();
+    timeout();
+    await assert.rejects(pending, (error) => error.name === "TimeoutError" && /server may still be working/.test(error.message));
+    assert.equal(selectedSignal.aborted, true);
+    assert.equal(caller.signal.aborted, false);
+    assert.equal(cleared, true);
+    assert.equal(calls, 1);
+  }
+});
+
+test("JSON cancellation retains caller reason, cleans up, and rejects pre-aborted work before dispatch", async (context) => {
+  const caller = new AbortController();
+  const reason = new Error("selection replaced");
+  let selectedSignal;
+  let calls = 0;
+  let removed = false;
+  let cleared = false;
+  context.mock.method(caller.signal, "removeEventListener", () => { removed = true; });
+  context.mock.method(globalThis, "setTimeout", (_callback, delay) => { assert.equal(delay, 10_000); return 23; });
+  context.mock.method(globalThis, "clearTimeout", (timer) => { assert.equal(timer, 23); cleared = true; });
+  context.mock.method(globalThis, "fetch", async (_path, options) => {
+    selectedSignal = options.signal;
+    calls++;
+    return new Promise(() => {});
+  });
+  const pending = api("/slow", { signal: caller.signal, timeoutMs: 10_000 });
+  caller.abort(reason);
+  await assert.rejects(pending, (error) => error === reason);
+  assert.equal(selectedSignal.reason, reason);
+  assert.equal(removed && cleared, true);
+  await assert.rejects(api("/slow", { signal: caller.signal }), (error) => error === reason);
+  assert.equal(calls, 1);
+});
+
+test("JSON transport rejects invalid deadlines before dispatch", async (context) => {
+  context.mock.method(globalThis, "fetch", () => assert.fail("invalid request dispatched"));
+  for (const timeoutMs of [0, -1, NaN, Infinity, 1.5, 300_001, "1000"]) {
+    await assert.rejects(api("/query", { timeoutMs }), RangeError);
+  }
 });
 
 test("JSON api retains detail, nested error, status fallback and JSON decoding errors", async (context) => {

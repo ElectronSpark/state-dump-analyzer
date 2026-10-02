@@ -1844,6 +1844,8 @@ class PluginIdentityRuntimeImportTests(unittest.TestCase):
         source_path = Path(cast(str, module.__file__)).resolve(strict=True)
         original_source = source_path.read_bytes()
         initial_stat_identity = plugin_identity._stat_identity(source_path.lstat())
+        # Exercise final snapshot verification after a process-cache hit too.
+        executable_module_target_fingerprint(module_name, "callback", module.callback)
         actual_declared_code_objects = plugin_identity._declared_code_objects
         replacement_stat_identity: tuple[int, int, int, int, int] | None = None
 
@@ -1893,6 +1895,80 @@ class PluginIdentityRuntimeImportTests(unittest.TestCase):
             self.assertNotEqual(initial_stat_identity, replacement_stat_identity)
         finally:
             self._cleanup_modules(temporary, module_name)
+
+    def test_declared_compilation_cache_reuses_only_source_artifacts(self) -> None:
+        module_name = "_rda_identity_compilation_live_checks"
+        temporary, (module,) = self._import_modules(
+            {module_name: "value = 'first'\ndef callback(default='first'):\n    return value, default\ndef other():\n    return 'other'\n"},
+            module_name,
+        )
+        module = cast(ModuleType, module)
+        try:
+            with patch.object(plugin_identity, "compile", wraps=compile, create=True) as compiler:
+                first = executable_module_target_fingerprint(module_name, "callback", module.callback)
+                self.assertEqual(first, executable_module_target_fingerprint(module_name, "callback", module.callback))
+                self.assertEqual(compiler.call_count, 1)
+                module.value = "second"
+                self.assertNotEqual(first, executable_module_target_fingerprint(module_name, "callback", module.callback))
+                module.value = "first"
+                module.callback.__defaults__ = ("second",)
+                self.assertNotEqual(first, executable_module_target_fingerprint(module_name, "callback", module.callback))
+                module.callback.__code__ = module.other.__code__
+                with self.assertRaises(PluginExecutableIdentityError):
+                    executable_module_target_fingerprint(module_name, "callback", module.callback)
+                self.assertEqual(compiler.call_count, 1)
+        finally:
+            self._cleanup_modules(temporary, module_name)
+
+    def test_declared_compilation_cache_reads_changed_source_on_warm_hit(self) -> None:
+        module_name = "_rda_identity_compilation_source_checks"
+        temporary, (module,) = self._import_modules(
+            {module_name: "def callback():\n    return 'first'\n"}, module_name,
+        )
+        module = cast(ModuleType, module)
+        source_path = Path(cast(str, module.__file__))
+        try:
+            executable_module_target_fingerprint(module_name, "callback", module.callback)
+            original_stat = source_path.stat()
+            source_path.write_bytes(source_path.read_bytes().replace(b"first", b"other"))
+            os.utime(source_path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+            with patch.object(plugin_identity, "compile", wraps=compile, create=True) as compiler:
+                with self.assertRaises(PluginExecutableIdentityError):
+                    executable_module_target_fingerprint(module_name, "callback", module.callback)
+                self.assertEqual(compiler.call_count, 1)
+            source_path.unlink()
+            with self.assertRaises(PluginExecutableIdentityError):
+                executable_module_target_fingerprint(module_name, "callback", module.callback)
+        finally:
+            self._cleanup_modules(temporary, module_name)
+
+    def test_declared_compilation_cache_bounds_and_eviction(self) -> None:
+        with (
+            patch.object(plugin_identity, "_declared_compilation_cache", new=plugin_identity.OrderedDict()),
+            patch.object(plugin_identity, "_DECLARED_COMPILATION_CACHE_MAX_ENTRIES", 2),
+            patch.object(plugin_identity, "_DECLARED_COMPILATION_CACHE_MAX_SOURCE_BYTES", 70),
+            patch.object(plugin_identity, "_DECLARED_COMPILATION_CACHE_MAX_ENTRY_SOURCE_BYTES", 50),
+            patch.object(plugin_identity, "compile", wraps=compile, create=True) as compiler,
+        ):
+            compile_source = plugin_identity._compiled_source_code_objects
+            source = b"def callback():\n    return 1\n"
+            first = compile_source("one", source)
+            self.assertIs(first, compile_source("one", source))
+            compile_source("two", source)
+            compile_source("three", source)
+            self.assertEqual(len(plugin_identity._declared_compilation_cache), 2)
+            self.assertIsNot(first, compile_source("one", source))
+            self.assertEqual(compiler.call_count, 4)
+            large = source + b"#" + b"x" * 25
+            compile_source("large", large)
+            compile_source("large", large)
+            self.assertEqual(compiler.call_count, 6)
+            with patch.object(plugin_identity, "_DECLARED_COMPILATION_CACHE_MAX_SOURCE_BYTES", 30):
+                compile_source("four", source)
+                self.assertEqual(len(plugin_identity._declared_compilation_cache), 1)
+            with self.assertRaises(PluginExecutableIdentityError):
+                compile_source("invalid", b"def invalid(")
+            self.assertEqual(len(plugin_identity._declared_compilation_cache), 1)
 
     def test_declared_source_batch_cache_compiles_one_exact_snapshot(self) -> None:
         module_name = "_rda_identity_declared_source_batch"

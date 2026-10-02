@@ -65,6 +65,12 @@ repeat only the affected task with a fresh agent and the same minimal prompt.
 Avoid follow-up coaching that would hide a skill gap. If subagents are unavailable, report that limit and run the
 same scenarios locally.
 
+For loading or cache changes, use the map's
+[performance boundaries](../../../docs/plugin-api-validation.md#loading-and-performance-boundaries).
+Compare cold and warm behavior, including changed inputs and failed or
+superseded requests. A faster successful call does not establish unchanged
+identity enforcement, archive safety, or browser readiness.
+
 ## Report accurately
 
 Record the API inventory, reproducible findings, edits, commands, pass/fail/skip

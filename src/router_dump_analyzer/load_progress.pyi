@@ -21,6 +21,11 @@ class AnalysisLoadStage(StrEnum):
     NORMALIZING = 'normalizing'
     LOADING_REVISION = 'loading_revision'
     INDEXING = 'indexing'
+    READING_ARCHIVE = 'reading_archive'
+    VALIDATING_PROVIDERS = 'validating_providers'
+    RECONSTRUCTING_TOPOLOGY = 'reconstructing_topology'
+    QUERYING_ROUTE_TABLES = 'querying_route_tables'
+    TRACING_ROUTES = 'tracing_routes'
 
 @dataclass(frozen=True, slots=True)
 class AnalysisLoadSnapshot:
