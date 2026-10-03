@@ -29,7 +29,10 @@ the grouped test modules, so run the inventory check and any new scenario
 instead of repeating overlapping groups. Keep verbose logs for broad runs;
 small generated assemblies can still require several minutes of setup.
 
-Use one installed Python environment throughout. Prefer the documented
+Use one installed Python environment throughout. Verify its executable and
+required imports first; if dependencies are missing, inspect the configured
+environment via the map's troubleshooting steps before using source-only paths
+or reporting the dependency unavailable. Prefer the documented
 `unittest` runner: pytest's default assertion rewriting changes fixture plug-in
 bytecode and can fail executable-identity checks. If a focused pytest command
 is needed, use `--assert=plain -p no:cacheprovider`. A missing dependency, denied
@@ -70,6 +73,13 @@ For loading or cache changes, use the map's
 Compare cold and warm behavior, including changed inputs and failed or
 superseded requests. A faster successful call does not establish unchanged
 identity enforcement, archive safety, or browser readiness.
+
+For combined history changes, exercise cache retirement with an active
+reader, same-revision replacement, dense and sparse searches, refinement,
+paged layer filters, and cold narrow timeline windows against exact raw
+references. Check retained bytes and visited records, not only response
+limits. The performance map lists relevant tests and generation commands;
+a small fixture establishes correctness, not million-event performance.
 
 For timeline/density changes, follow
 [zoom-query validation](../../../docs/plugin-api-validation.md#zoom-and-history-query-validation).

@@ -147,7 +147,7 @@ class _ResourceSearchSnapshotCache:
             return built
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, weakref_slot=True)
 class ScaleRuntime:
     resources: list[dict[str, Any]]
     resource_by_id: dict[str, dict[str, Any]]
@@ -170,6 +170,8 @@ class ScaleRuntime:
     event_index_by_uid: dict[str, int] = field(default_factory=dict)
     event_search: HistorySearchCorpus = field(default_factory=HistorySearchCorpus)
     event_redaction_policy: Any | None = None
+    _revision_query_cache: Any | None = field(default=None, repr=False, compare=False)
+    ordered_events_by_resource: Mapping[str, list[dict[str, Any]]] | None = None
     resource_search: _ResourceSearchSnapshotCache = field(
         default_factory=_ResourceSearchSnapshotCache
     )
@@ -943,6 +945,13 @@ def load_scale_dataset(
                 identifier_fields=("event_uid", "event_id"),
             )
         )
+        for resource_events in events_by_resource.values():
+            resource_events.sort(
+                key=lambda item: temporal_order_key(
+                    item, time_field="timestamp_ns",
+                    identifier_fields=("event_uid", "event_id"),
+                )
+            )
     if not mutations_ordered:
         mutation_records.sort(
             key=lambda item: temporal_order_key(
@@ -1012,6 +1021,7 @@ def load_scale_dataset(
             if event.get("event_uid") or event.get("event_id")
         },
         events_by_resource=events_by_resource_index,
+        ordered_events_by_resource=events_by_resource_index,
         lifecycle_by_resource=lifecycle_by_resource,
         state_by_resource=state_by_resource,
         relationships=relationship_records,

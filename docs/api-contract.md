@@ -4341,8 +4341,22 @@ ordinals are unioned into every FTS candidate set because older SQLite trigram
 tokenizers may truncate text at NUL. `MATCH` never defines the result: every
 candidate and exception still passes a parameterized
 `instr(safe_text, search)` check, while empty, short, and parser-rejected needles
-take the exact scan
-path. Root `/health` exposes the non-sensitive serving state as
+take the exact scan path.
+
+`HistorySearchCorpus.query()` returns a read-only `Sequence[int]` of exact,
+ordered document ordinals. Consumers use length, indexing, iteration, and
+bounded slices rather than assuming an `array` or copying the whole result.
+Core chooses sparse ordinals, complement ordinals, or a bitmap with rank
+metadata; retained query results are bounded by query count and encoded bytes
+(`max_cached_bytes`, defaulting to four times `max_cached_ordinals`). An
+oversized result remains queryable without being retained. Candidate refinement
+must preserve literal case-folded substring semantics: only a cached shorter
+needle contained in the new needle can safely supply candidates, and every
+candidate still receives the exact substring check. Cold matching can share
+corpus construction or sidecar validation scans, but results publish only after
+complete identity, count, digest, and candidate-index validation succeeds.
+
+Root `/health` exposes the non-sensitive serving state as
 `history_search_backend` without disclosing the cache path or revision identity.
 It remains available without an opened analysis session, reports
 `analysis_ready=false` in that case, and includes the same durable worker/queue
@@ -4558,6 +4572,22 @@ aligned cells across zoom levels. Exact counts and all type counters underpin
 merged summaries; response `top_types` remains the highest four. Cold derivation
 can still visit the whole history; a page limit alone is not a bound on that
 initial work. Timestamp indexes and summaries assume the revision is immutable.
+
+Derived density, timeline, event-union, and redacted-event query caches belong
+to the exact immutable history generation. A service must not keep a retired
+generation alive through cached query values. Live leases may continue using
+that generation until release; a replacement with the same revision string
+must use its own derived state. Adapters that cannot carry generation-local
+state receive request-local derived state instead of a process-global cache.
+
+A compatibility history adapter may provide `ordered_events_by_resource` as
+an optional accelerator containing the same complete per-resource event
+sequences in canonical temporal order. Core can bisect these sequences before
+building a cold timeline window and count unique events from the selected
+window, preserving inclusive nanosecond bounds and stable event identity.
+This is not a new capability hook or a requirement for ordinary parsers.
+Adapters without it retain the existing complete-history fallback. Treat the
+sequences as immutable for the lifetime of their history generation.
 
 Timeline and density HTTP queries monitor disconnection after reading the JSON
 body and pass a cooperative cancellation probe into core. A cancelled query

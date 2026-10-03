@@ -1,4 +1,3 @@
-from _typeshed import Incomplete
 from collections import Counter
 from dataclasses import dataclass
 from typing import Callable, Mapping, Sequence
@@ -10,10 +9,10 @@ class DensitySummary:
     type_counts: Mapping[str, int]
 
 class DensityIndex:
-    event_times: Incomplete
-    failure_event_times: Incomplete
-    event_times_by_type: Incomplete
-    max_cache_units: Incomplete
+    event_times: Sequence[int]
+    failure_event_times: Sequence[int]
+    event_times_by_type: Mapping[str, Sequence[int]]
+    max_cache_units: int
     def __init__(self, event_times: Sequence[int], failure_event_times: Sequence[int], event_times_by_type: Mapping[str, Sequence[int]], *, max_cache_units: int = 32768) -> None: ...
     @property
     def cache_units(self) -> int: ...

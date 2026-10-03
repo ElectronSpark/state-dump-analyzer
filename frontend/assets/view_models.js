@@ -35,87 +35,64 @@ export function relationshipPresencePresentation(record) {
   };
 }
 
-function virtualScrollScale(rowCount, rowHeight, maximumHeight, viewportHeight) {
+function virtualScrollGeometry(rowCount, rowHeight, maximumHeight, viewportHeight, overscan) {
   exactBoundedInteger(rowCount, "rowCount");
   exactBoundedInteger(rowHeight, "rowHeight", { minimum: 1 });
   exactBoundedInteger(maximumHeight, "maximumHeight", { minimum: 1 });
   exactBoundedInteger(viewportHeight, "viewportHeight");
-  if (rowCount * rowHeight <= maximumHeight) return rowHeight;
-  return Math.max(
-    Number.EPSILON,
-    (maximumHeight - Math.min(viewportHeight, maximumHeight - 1))
-      / Math.max(1, rowCount - 1),
-  );
+  exactBoundedInteger(overscan, "overscan");
+  const logicalHeight = rowCount * rowHeight;
+  const totalHeight = Math.min(logicalHeight, maximumHeight);
+  const logicalRange = Math.max(0, logicalHeight - viewportHeight);
+  const physicalRange = Math.max(0, totalHeight - viewportHeight);
+  // Preserve real row spacing near both edges. Compress only the middle, so
+  // tail overscan and focus navigation cannot collide with a clamped spacer.
+  const edge = logicalHeight <= maximumHeight ? 0
+    : Math.min((Math.ceil(viewportHeight / rowHeight) + overscan + 2) * rowHeight,
+      physicalRange / 3);
+  const ratio = logicalHeight <= maximumHeight ? 1
+    : (physicalRange - 2 * edge) / Math.max(1, logicalRange - 2 * edge);
+  const map = (position, fromRange, toRange, factor) => {
+    const bounded = Math.max(0, Math.min(position, fromRange));
+    if (bounded <= edge) return bounded;
+    if (bounded >= fromRange - edge) return toRange - (fromRange - bounded);
+    return edge + (bounded - edge) * factor;
+  };
+  return {
+    totalHeight, scale: ratio * rowHeight,
+    logicalTop: (position) => map(position, physicalRange, logicalRange, 1 / ratio),
+    physicalTop: (position) => map(position, logicalRange, physicalRange, ratio),
+  };
 }
 
 export function virtualScrollWindow({
-  rowCount,
-  rowHeight,
-  maximumHeight,
-  viewportHeight,
-  scrollTop,
-  overscan = 0,
+  rowCount, rowHeight, maximumHeight, viewportHeight, scrollTop, overscan = 0,
 }) {
-  exactBoundedInteger(viewportHeight, "viewportHeight");
-  exactBoundedInteger(overscan, "overscan");
-  const scale = virtualScrollScale(
-    rowCount,
-    rowHeight,
-    maximumHeight,
-    viewportHeight,
-  );
-  const totalHeight = Math.min(rowCount * rowHeight, maximumHeight);
-  const visibleRows = Math.max(1, Math.ceil(viewportHeight / rowHeight));
-  const boundedScrollTop = Math.max(
-    0,
-    Math.min(Number(scrollTop) || 0, Math.max(0, totalHeight - viewportHeight)),
-  );
-  const anchor = Math.min(
-    Math.max(0, rowCount - 1),
-    Math.floor(boundedScrollTop / scale),
-  );
-  const windowSize = visibleRows + overscan * 2;
-  const start = Math.max(0, Math.min(
-    Math.max(0, rowCount - windowSize),
-    anchor - overscan,
-  ));
+  const geometry = virtualScrollGeometry(rowCount, rowHeight, maximumHeight, viewportHeight, overscan);
+  const { totalHeight, scale } = geometry;
+  const boundedScrollTop = Math.max(0, Math.min(Number(scrollTop) || 0,
+    Math.max(0, totalHeight - viewportHeight)));
+  const logicalTop = geometry.logicalTop(boundedScrollTop);
+  const anchor = Math.min(Math.max(0, rowCount - 1), Math.floor(logicalTop / rowHeight));
+  const windowSize = Math.max(1, Math.ceil(viewportHeight / rowHeight)) + overscan * 2 + 1;
+  const start = Math.max(0, Math.min(Math.max(0, rowCount - windowSize), anchor - overscan));
   const end = Math.min(rowCount, start + windowSize);
-  const rowsBeforeAnchor = Math.max(0, anchor - start);
-  const topHeight = Math.max(
-    0,
-    Math.min(totalHeight, boundedScrollTop - rowsBeforeAnchor * rowHeight),
-  );
   const renderedHeight = (end - start) * rowHeight;
+  const topHeight = Math.max(0, Math.min(totalHeight - renderedHeight,
+    boundedScrollTop - (logicalTop - start * rowHeight)));
   return {
-    start,
-    end,
-    topHeight,
+    start, end, topHeight,
     bottomHeight: Math.max(0, totalHeight - topHeight - renderedHeight),
-    totalHeight,
-    scale,
+    totalHeight, scale,
   };
 }
 
 export function virtualScrollTopForIndex({
-  index,
-  rowCount,
-  rowHeight,
-  maximumHeight,
-  viewportHeight,
+  index, rowCount, rowHeight, maximumHeight, viewportHeight, overscan = 0,
 }) {
   exactBoundedInteger(index, "index");
-  exactBoundedInteger(viewportHeight, "viewportHeight");
-  const scale = virtualScrollScale(
-    rowCount,
-    rowHeight,
-    maximumHeight,
-    viewportHeight,
-  );
-  const totalHeight = Math.min(rowCount * rowHeight, maximumHeight);
-  const target = rowCount * rowHeight <= maximumHeight
-    ? index * scale - (viewportHeight - rowHeight) / 2
-    : index * scale;
-  return Math.max(0, Math.min(Math.max(0, totalHeight - viewportHeight), target));
+  const geometry = virtualScrollGeometry(rowCount, rowHeight, maximumHeight, viewportHeight, overscan);
+  return geometry.physicalTop(index * rowHeight - (viewportHeight - rowHeight) / 2);
 }
 
 function exactBoundedInteger(value, label, { minimum = 0 } = {}) {

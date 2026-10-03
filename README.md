@@ -1262,6 +1262,8 @@ If the backend uses a nondefault port, tell the frontend server explicitly:
 npm --prefix frontend run serve -- --backend http://127.0.0.1:8876 --port 4174
 ```
 
+Derived query caches follow each immutable loaded history generation. Search retains exact adaptive postings under a byte budget, and the demo supplies ordered per-resource events for cold timeline windows. Validate lifecycle, search, and timeline behavior together with the [performance and query checks](docs/plugin-api-validation.md#loading-and-performance-boundaries); small fixtures establish correctness, while full-scale measurements establish loading and memory costs.
+
 ### Regenerate fixtures
 
 The launcher creates a missing assembly and safely replaces an exact

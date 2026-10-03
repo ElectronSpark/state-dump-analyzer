@@ -21,7 +21,7 @@ class _ResourceSearchSnapshotCache:
     def __init__(self, max_snapshots: int = 2) -> None: ...
     def get_or_build(self, timestamp_ns: int, builder: Callable[[], dict[str, str]]) -> dict[str, str]: ...
 
-@dataclass(slots=True)
+@dataclass(slots=True, weakref_slot=True)
 class ScaleRuntime:
     resources: list[dict[str, Any]]
     resource_by_id: dict[str, dict[str, Any]]
@@ -44,6 +44,8 @@ class ScaleRuntime:
     event_index_by_uid: dict[str, int] = field(default_factory=dict)
     event_search: HistorySearchCorpus = field(default_factory=HistorySearchCorpus)
     event_redaction_policy: Any | None = ...
+    _revision_query_cache: Any | None = ...
+    ordered_events_by_resource: Mapping[str, list[dict[str, Any]]] | None = ...
     resource_search: _ResourceSearchSnapshotCache = field(default_factory=_ResourceSearchSnapshotCache)
 
 class _ScaleTemporalIndex:

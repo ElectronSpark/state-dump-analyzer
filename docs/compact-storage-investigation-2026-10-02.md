@@ -111,6 +111,11 @@ boundaries and malformed blocks need dedicated conformance cases.
 
 ## Algorithmic follow-up
 
+Implementation and validation of the generation-cache, compact-result,
+candidate-reuse, fused-scan and narrow event-window work are recorded in
+[the algorithm improvement report](algorithm-improvements-2026-10-02.md).
+The findings below describe the state before that implementation.
+
 A subsequent source review identified work that can be avoided, beyond changing
 representation or compression:
 

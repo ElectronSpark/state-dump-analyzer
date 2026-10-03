@@ -1,5 +1,7 @@
+from ._query_generation import generation_queries as generation_queries
 from .cancellation import check_cancellation_probe as check_cancellation_probe
 from .history_search_core import HistorySearchCapacityError as HistorySearchCapacityError
+from .history_search_matches import MatchSet as MatchSet
 from .load_progress import AnalysisLoadStage as AnalysisLoadStage
 from .normalized_data import IndexedHistory as IndexedHistory, NormalizedDataCancellationError as NormalizedDataCancellationError, NormalizedDataService as NormalizedDataService, event_redaction_policy as event_redaction_policy, redact_event_for_client as redact_event_for_client, redact_resource_view as redact_resource_view, resource_id as resource_id
 from .plugin_api import ConditionClass as ConditionClass, MAX_TIMESTAMP_NS as MAX_TIMESTAMP_NS, MIN_TIMESTAMP_NS as MIN_TIMESTAMP_NS

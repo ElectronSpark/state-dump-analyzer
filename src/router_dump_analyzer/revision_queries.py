@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import heapq
+from array import array
 from bisect import bisect_left, bisect_right
 from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -19,9 +20,11 @@ from typing import Any, cast
 from threading import Lock
 
 from .zoom_density import DensityIndex, adaptive_type_counts
+from ._query_generation import generation_queries
 
 from .cancellation import check_cancellation_probe
 from .history_search_core import HistorySearchCapacityError
+from .history_search_matches import MatchSet
 from .load_progress import AnalysisLoadStage
 from .normalized_data import (
     IndexedHistory,
@@ -58,12 +61,15 @@ from .value_core import (
 )
 
 _DENSITY_CACHE_LOCK = Lock()
+_FILTER_CACHE_LOCK = Lock()
+
 
 
 def _density_index(
     owner: Any, revision: str, runtime: Any, checkpoint: Callable[[], None]
 ) -> DensityIndex:
-    # Keep two histories at most; identity prevents reuse across reloads.
+    # Derived state must not pin a retired history through its service owner.
+    owner = generation_queries(runtime)
     key = (revision, id(runtime))
     with _DENSITY_CACHE_LOCK:
         cache = getattr(owner, "_density_query_indexes", None)
@@ -71,17 +77,17 @@ def _density_index(
             cache = OrderedDict()
             owner._density_query_indexes = cache
         entry = cache.get(key)
-        if entry is not None and entry[0] is runtime:
+        if entry is not None:
             cache.move_to_end(key)
-            return cast(DensityIndex, entry[1])
+            return cast(DensityIndex, entry)
     failures, types = density_secondary_indexes(runtime, checkpoint=checkpoint)
     index = DensityIndex(runtime.event_times, failures, types)
     checkpoint()
     with _DENSITY_CACHE_LOCK:
         entry = cache.get(key)
-        if entry is not None and entry[0] is runtime:
-            return cast(DensityIndex, entry[1])
-        cache[key] = (runtime, index)
+        if entry is not None:
+            return cast(DensityIndex, entry)
+        cache[key] = index
         while len(cache) > 2:
             cache.popitem(last=False)
     return index
@@ -142,6 +148,7 @@ def _timeline_index(
     checkpoint: Callable[[], None],
     *,
     retain: bool = True,
+    ordered_window: tuple[int, int] | None = None,
 ) -> Any:
     key = (revision, identifier)
     if retain:
@@ -151,6 +158,15 @@ def _timeline_index(
             if cached is not None and cached[0] is events and cached[1] is states:
                 cache.move_to_end(key)
                 return cached[2]
+    if ordered_window is not None:
+        low, high = ordered_window
+        left = bisect_left(events, low, key=lambda item: int(item["timestamp_ns"]))
+        right = bisect_right(events, high, key=lambda item: int(item["timestamp_ns"]))
+        if (right - left) * 4 < len(events) or len(events) * 4 > MAX_TIMELINE_INDEX_UNITS:
+            # A trusted ordered resource index supports cold close-ups without
+            # reading or retaining the lane's complete event history.
+            events = events[left:right]
+            retain = False
     ordered = _cooperative_sorted(
         events,
         lambda event: temporal_order_key(
@@ -956,11 +972,29 @@ class RevisionQueryService:
 
         matches = self._query_event_search(dataset, runtime, policy, search)
         if layers:
-            filtered_matches = [
-                index
-                for index in self._checked(matches)
-                if event_layer_values(runtime.events[index]) & layers
-            ]
+            owner = generation_queries(runtime)
+            key = (revision_id, search, tuple(sorted(layers)))
+            with _FILTER_CACHE_LOCK:
+                cache = getattr(owner, "_event_layer_matches", None)
+                if cache is None:
+                    cache = OrderedDict()
+                    setattr(owner, "_event_layer_matches", cache)
+                filtered_matches = cache.get(key)
+                if filtered_matches is not None:
+                    cache.move_to_end(key)
+            if filtered_matches is None:
+                filtered_matches = MatchSet(
+                    array("I", (
+                        index for index in self._checked(matches)
+                        if event_layer_values(runtime.events[index]) & layers
+                    )), len(runtime.events),
+                )
+                self._checkpoint()
+                with _FILTER_CACHE_LOCK:
+                    if filtered_matches.nbytes <= 4 * 1024 * 1024:
+                        cache[key] = filtered_matches
+                        while len(cache) > 12 or sum(item.nbytes for item in cache.values()) > 4 * 1024 * 1024:
+                            cache.popitem(last=False)
         else:
             filtered_matches = matches
 
@@ -1959,7 +1993,8 @@ class RevisionQueryService:
         }
         lanes: list[dict[str, Any]] = []
         event_windows = []
-        index_scope = (self.revision_id, id(dataset), id(runtime))
+        cache_owner = generation_queries(runtime)
+        index_scope = (self.revision_id, id(runtime))
         interval_budget = max(
             1, MAX_TIMELINE_INTERVAL_DETAILS // max(1, len(resource_candidates))
         )
@@ -1987,7 +2022,7 @@ class RevisionQueryService:
             if search and search not in str(safe_resource).casefold():
                 continue
             lifecycles = _timeline_intervals(
-                self.data_service,
+                cache_owner,
                 index_scope,
                 identifier + "::lifecycle",
                 lifecycle_by_resource.get(identifier, []),
@@ -1996,7 +2031,7 @@ class RevisionQueryService:
                 self._checkpoint,
             )
             statuses = _timeline_intervals(
-                self.data_service,
+                cache_owner,
                 index_scope,
                 identifier + "::state",
                 state_by_resource.get(identifier, []),
@@ -2022,13 +2057,20 @@ class RevisionQueryService:
                 change_times,
                 event_positions,
             ) = _timeline_index(
-                self.data_service,
+                cache_owner,
                 index_scope,
                 identifier,
                 event_source,
                 state_by_resource.get(identifier, ()),
                 self._checkpoint,
                 retain=runtime is not None,
+                ordered_window=(start_ns, end_ns)
+                if (
+                    runtime is not None
+                    and (getattr(runtime, "ordered_events_by_resource", None) or {}).get(identifier)
+                    is event_source
+                )
+                else None,
             )
             left = bisect_left(event_times, start_ns)
             right = bisect_right(event_times, end_ns)
@@ -2174,12 +2216,13 @@ class RevisionQueryService:
             )
         else:
             event_count = _timeline_unique_count(
-                self.data_service,
+                cache_owner,
                 index_scope,
                 [events for events, _, _ in event_windows],
                 start_ns,
                 end_ns,
                 self._checkpoint,
+                windows=event_windows,
             )
         cluster_window_ns = query.cluster_window_ns
         requested_max_glyphs, viewport_pixels = query.max_glyphs, query.viewport_pixels
@@ -2904,6 +2947,8 @@ def _timeline_unique_count(
     start: int,
     end: int,
     checkpoint: Callable[[], None],
+    *,
+    windows: list[Any] | None = None,
 ) -> int:
     """Index the exact event union once per immutable lane selection."""
     key = (revision, tuple(id(source) for source in sources))
@@ -2918,6 +2963,22 @@ def _timeline_unique_count(
         else:
             times = None
     if times is None:
+        # A cold close-up must not build a union of whole lane histories. The
+        # lane indexes have already established exact inclusive window bounds.
+        window_size = sum(right - left for _, left, right in windows or ())
+        total_size = sum(len(source) for source in sources)
+        if windows is not None and (
+            window_size * 4 < total_size
+            or total_size * 5 > MAX_TIMELINE_INDEX_UNITS
+        ):
+            unique = set()
+            for events, left, right in windows:
+                for position in range(left, right):
+                    if position % 256 == 0:
+                        checkpoint()
+                    unique.add(str(events[position]["event_uid"]))
+            checkpoint()
+            return len(unique)
         timestamp_by_uid = {}
         for source in sources:
             for position, event in enumerate(source):

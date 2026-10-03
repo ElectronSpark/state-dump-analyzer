@@ -85,7 +85,49 @@ test("small virtual logs preserve one physical row per logical row", () => {
   assert.equal(model.scale, 44);
   assert.equal(model.totalHeight, 44_044);
   assert.equal(model.start, 490);
-  assert.equal(model.end, 520);
+  assert.equal(model.end, 521);
+});
+
+test("End fills the body viewport across the cap and filtered million-event tails", () => {
+  const rowHeight = 44;
+  const maximumHeight = 8_000_000;
+  // The observed 384px scroller includes a 32px sticky table header.
+  const viewportHeight = 384 - 32;
+  for (const rowCount of [181_818, 181_819, 354_506, 1_225_081, 1_250_006]) {
+    const totalHeight = Math.min(rowCount * rowHeight, maximumHeight);
+    const scrollTop = totalHeight - viewportHeight;
+    const model = virtualScrollWindow({
+      rowCount, rowHeight, maximumHeight, viewportHeight, scrollTop, overscan: 10,
+    });
+    assert.equal(model.end, rowCount);
+    assert.equal(model.bottomHeight, 0);
+    assert.equal(model.topHeight + (model.end - model.start) * rowHeight, totalHeight);
+    const lastRowTop = model.topHeight + (rowCount - 1 - model.start) * rowHeight;
+    assert.equal(lastRowTop - scrollTop, viewportHeight - rowHeight);
+    assert.ok(model.topHeight <= scrollTop);
+    assert.equal(virtualScrollTopForIndex({
+      index: rowCount - 1, rowCount, rowHeight, maximumHeight, viewportHeight,
+    }), scrollTop);
+  }
+});
+
+test("focus preserves full row visibility near compressed head and tail boundaries", () => {
+  for (const rowCount of [7, 1_001, 181_819, 354_506, 1_225_081, 1_250_006]) {
+    for (const viewportHeight of [44, 45, 352, 384, 738]) {
+      for (const overscan of [0, 1, 10]) {
+        const options = { rowCount, rowHeight: 44, maximumHeight: 8_000_000, viewportHeight, overscan };
+        for (const index of new Set([0, 1, Math.floor(rowCount / 2), rowCount - 12, rowCount - 2, rowCount - 1])) {
+          if (index < 0) continue;
+          const scrollTop = virtualScrollTopForIndex({ ...options, index });
+          const model = virtualScrollWindow({ ...options, scrollTop });
+          const rowTop = model.topHeight + (index - model.start) * 44;
+          assert.ok(index >= model.start && index < model.end);
+          assert.ok(rowTop >= scrollTop - 0.001, JSON.stringify({ ...options, index }));
+          assert.ok(rowTop + 44 <= scrollTop + viewportHeight + 0.001);
+        }
+      }
+    }
+  }
 });
 
 test("typed topology links require authoritative federation evidence", () => {

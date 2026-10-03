@@ -17,8 +17,11 @@ Read only the relevant section of the detailed author guide or normative
 contract linked there. The exact signatures live in `plugin_api.py` and its
 `.pyi`; do not load all of the long contract documents by default.
 
-Use the installed Python 3.12 environment for both CLI and tests. Setup commands
-are in the quickstart. The ordinary status-parser teaching instance is
+Use the installed Python 3.12 environment for both CLI and tests. Verify the
+selected interpreter and required imports before running; a source-only
+`PYTHONPATH` cannot replace dependencies. Find the configured environment using
+the API map's [environment troubleshooting](../../../docs/plugin-api-validation.md#executable-identity-troubleshooting).
+Setup commands are in the quickstart. The ordinary status-parser teaching instance is
 `rsl_demo_plugin:parser_plugin`; the full `demo_router` instance also has a
 generated-archive compatibility runtime. Start small and use synthetic inputs.
 
@@ -75,11 +78,33 @@ while building an index and `READING_ARCHIVE` while processing an archive;
 simple fixture reads can retain the core's `LOADING_REVISION` stage. Counting
 records alone does not establish that an index was built.
 
+For history caches and bulk search, keep derived work owned by the exact
+immutable generation. Consume exact search postings as `Sequence[int]`
+with bounded paging and byte budgets; candidate reuse and fused scans
+must preserve complete disclosure and integrity checks. An optional
+`ordered_events_by_resource` accelerator must contain complete lanes in
+canonical order. The performance map covers lifecycle and combined-query
+checks, including adapters that require request-local cache fallback.
+
 For timeline or history scale work, use the map's
 [zoom-query guidance](../../../docs/plugin-api-validation.md#zoom-and-history-query-validation).
 Keep zoom aggregation in core; a display limit must also bound detail work,
 and a summary must preserve exact counts and distinguish omitted state from
 absence. Retain revision identity, disclosure policy, and exact timestamp bounds.
+
+For generic virtual event-log rendering, keep the capped physical scroll range
+aligned with the last full logical viewport, rather than the last row. Measure
+the usable body viewport below sticky headers consistently for rendering and
+focus navigation. Verify tail spacer and row visibility on both sides of the
+height cap and with filtered large streams; fetching the final page alone does
+not establish that End displays it correctly. Exercise focus-navigation round
+trips with the renderer's overscan, fractional row offsets, and a one-row
+viewport, including targets just before the tail; spacer clamping can fix End
+while moving a nearby focus target outside the visible viewport.
+When virtual rows are replaced, retain the active row's identity and restore
+focus after replacement without scrolling. Exercise delayed scroll and page
+rerenders after keyboard navigation, and verify that background rerenders leave
+focus in search fields or other external controls intact.
 
 ## Verify and finish
 

@@ -69,6 +69,8 @@ Zooming and bounded history summaries are core behavior; this parser needs no
 zoom hook. The [zoom conformance checks](plugin-api-validation.md#zoom-and-history-query-validation)
 exercise dense event histories beyond this small status fixture.
 
+For compatibility adapters, derived query state follows the exact history generation. Optional ordered per-resource events accelerate cold windows; ordinary parsers need no additional hook. See the [combined loading and query checks](plugin-api-validation.md#loading-and-performance-boundaries) before claiming scale or retirement behavior.
+
 ## 2. Inspect and copy the teaching slice
 
 Read these files together:

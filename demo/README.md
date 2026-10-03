@@ -721,6 +721,22 @@ preserve the caller's current shallow top-level view and keep the shared
 generation alive; core still owns request/session lifecycle and query
 semantics.
 
+Derived density, timeline, event-union, and redacted-event query caches belong
+to the exact immutable history generation. A service must not keep a retired
+generation alive through cached query values. Live leases may continue using
+that generation until release; a replacement with the same revision string
+must use its own derived state. Adapters that cannot carry generation-local
+state receive request-local derived state instead of a process-global cache.
+
+A compatibility history adapter may provide `ordered_events_by_resource` as
+an optional accelerator containing the same complete per-resource event
+sequences in canonical temporal order. Core can bisect these sequences before
+building a cold timeline window and count unique events from the selected
+window, preserving inclusive nanosecond bounds and stable event identity.
+This is not a new capability hook or a requirement for ordinary parsers.
+Adapters without it retain the existing complete-history fallback. Treat the
+sequences as immutable for the lifetime of their history generation.
+
 The same loader exercises the core-owned analysis progress channel. Outer
 assembly extraction reports a bounded node count; cold scale materialization
 reports the declared resource, event, relationship, and mutation total in

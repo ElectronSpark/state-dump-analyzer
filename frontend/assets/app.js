@@ -9951,10 +9951,21 @@ function bindVisibleEventLogRows() {
   registerVisibleEventLogHoverModels();
 }
 
+// A sticky header consumes viewport space but is outside the virtual body.
+// Its height cancels from the body scroll origin, so scrollTop stays unchanged.
+function eventLogBodyViewportHeight(scroll) {
+  const headerHeight = scroll.querySelector("thead")?.getBoundingClientRect().height || 0;
+  return Math.max(0, Math.floor(scroll.clientHeight - headerHeight));
+}
+
 function renderEventTableWindow() {
   const scroll = byId("event-log-scroll");
   const body = byId("event-table-body");
   if (!scroll || !body) return;
+  const activeRow = document.activeElement;
+  const activeSelectionIndex = body.contains(activeRow)
+    && activeRow.matches("tr[data-selection-index]")
+    ? activeRow.dataset.selectionIndex : null;
   if (state.hoverKey?.startsWith("log:") && !state.hoverPinned) closeHover();
   state.eventLogHoverModels.clear();
   const total = state.eventLogRows.length;
@@ -9962,7 +9973,7 @@ function renderEventTableWindow() {
     rowCount: total,
     rowHeight: EVENT_LOG_ROW_HEIGHT,
     maximumHeight: EVENT_LOG_MAX_SCROLL_HEIGHT,
-    viewportHeight: scroll.clientHeight,
+    viewportHeight: eventLogBodyViewportHeight(scroll),
     scrollTop: scroll.scrollTop,
     overscan: EVENT_LOG_OVERSCAN,
   });
@@ -9993,6 +10004,10 @@ function renderEventTableWindow() {
     body.querySelector("tr[data-selection-index]")?.setAttribute("tabindex", "0");
   }
   bindVisibleEventLogRows();
+  if (activeSelectionIndex !== null) {
+    body.querySelector(`tr[data-selection-index="${activeSelectionIndex}"]`)
+      ?.focus({ preventScroll: true });
+  }
 }
 
 function renderEventTable(options = {}) {
@@ -10766,11 +10781,12 @@ function syncEventLogIncludeControls() {
 function focusServerEventLogTarget(entryId, virtualIndex) {
   const scroll = byId("event-log-scroll");
   scroll.scrollTop = virtualScrollTopForIndex({
+    overscan: EVENT_LOG_OVERSCAN,
     index: virtualIndex,
     rowCount: state.eventLogRows.length,
     rowHeight: EVENT_LOG_ROW_HEIGHT,
     maximumHeight: EVENT_LOG_MAX_SCROLL_HEIGHT,
-    viewportHeight: scroll.clientHeight,
+    viewportHeight: eventLogBodyViewportHeight(scroll),
   });
   renderEventTableWindow();
   byId("event-log").scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -10791,11 +10807,12 @@ function focusEventLogSelectionIndex(selectionIndex) {
     ? serverEventLogVirtualRowForDataIndex(index)
     : state.eventLogVirtualIndexBySelectionIndex[index] ?? index + 1;
   scroll.scrollTop = virtualScrollTopForIndex({
+    overscan: EVENT_LOG_OVERSCAN,
     index: virtualIndex,
     rowCount: state.eventLogRows.length,
     rowHeight: EVENT_LOG_ROW_HEIGHT,
     maximumHeight: EVENT_LOG_MAX_SCROLL_HEIGHT,
-    viewportHeight: scroll.clientHeight,
+    viewportHeight: eventLogBodyViewportHeight(scroll),
   });
   renderEventTableWindow();
   window.requestAnimationFrame(() => {
@@ -10875,11 +10892,12 @@ function jumpToLogEntry(entryId) {
   }
   const scroll = byId("event-log-scroll");
   scroll.scrollTop = virtualScrollTopForIndex({
+    overscan: EVENT_LOG_OVERSCAN,
     index,
     rowCount: state.eventLogRows.length,
     rowHeight: EVENT_LOG_ROW_HEIGHT,
     maximumHeight: EVENT_LOG_MAX_SCROLL_HEIGHT,
-    viewportHeight: scroll.clientHeight,
+    viewportHeight: eventLogBodyViewportHeight(scroll),
   });
   renderEventTableWindow();
   byId("event-log").scrollIntoView({ behavior: "smooth", block: "nearest" });

@@ -67,6 +67,16 @@ hook composition without verifying durable scheduling.
 
 ### Executable identity troubleshooting
 
+Before tests, print `sys.executable` and verify imports required by the selected
+suite. For demo/browser checks, this includes `router_dump_analyzer`,
+`rsl_demo_plugin`, `fastapi`, and `httpx`. A source-only `PYTHONPATH` does not
+supply missing dependencies. On Windows, the repository setup uses the Conda
+environment `router-dump-analyzer-demo`; find its interpreter with
+`conda env list --json` or the discovery logic in `scripts/launch_demo.ps1` and
+use that same executable for CLI, tests, and child processes. Inspect an
+existing configured environment before installing packages or reporting a
+dependency as unavailable. Custom environments remain supported.
+
 First confirm the interpreter and import paths used by both CLI and tests.
 Keep the plug-in in an importable module and disable pytest assertion rewriting
 as described above. If unchanged imported code still fails source identity,
@@ -130,6 +140,53 @@ only the current revision/context may publish. Report actual loading stages
 without guessed percentages. Browser timeout bounds waiting and does not
 prove synchronous backend execution stopped. Run the relevant frontend tests
 and browse the resulting integration before claiming UI readiness.
+
+Derived density, timeline, event-union, and redacted-event query caches belong
+to the exact immutable history generation. A service must not keep a retired
+generation alive through cached query values. Live leases may continue using
+that generation until release; a replacement with the same revision string
+must use its own derived state. Adapters that cannot carry generation-local
+state receive request-local derived state instead of a process-global cache.
+
+`HistorySearchCorpus.query()` returns a read-only `Sequence[int]` of exact,
+ordered document ordinals. Consumers use length, indexing, iteration, and
+bounded slices rather than assuming an `array` or copying the whole result.
+Core chooses sparse ordinals, complement ordinals, or a bitmap with rank
+metadata; retained query results are bounded by query count and encoded bytes
+(`max_cached_bytes`, defaulting to four times `max_cached_ordinals`). An
+oversized result remains queryable without being retained. Candidate refinement
+must preserve literal case-folded substring semantics: only a cached shorter
+needle contained in the new needle can safely supply candidates, and every
+candidate still receives the exact substring check. Cold matching can share
+corpus construction or sidecar validation scans, but results publish only after
+complete identity, count, digest, and candidate-index validation succeeds.
+
+A compatibility history adapter may provide `ordered_events_by_resource` as
+an optional accelerator containing the same complete per-resource event
+sequences in canonical temporal order. Core can bisect these sequences before
+building a cold timeline window and count unique events from the selected
+window, preserving inclusive nanosecond bounds and stable event identity.
+This is not a new capability hook or a requirement for ordinary parsers.
+Adapters without it retain the existing complete-history fallback. Treat the
+sequences as immutable for the lifetime of their history generation.
+
+Use the combined regressions for generation retirement, shallow-copy isolation,
+request-local fallback, cold ordered windows, window-local event unions, and
+paged layer-filter reuse, alongside exact search and archive lifecycle checks:
+
+```text
+python -m unittest tests.test_history_query_algorithms tests.test_history_search_algorithms tests.test_history_search_core tests.test_zoom_timeline tests.test_demo_assembly_store tests.test_demo_archive_safety -v
+```
+
+For skill trials requested by the user, exercise the changed author/validator
+skills on a combined bounded synthetic lifecycle, search, and timeline flow.
+Include active leases across eviction, released-generation collectibility,
+replacement identity, sparse/dense refinement, bounded pages, and exact narrow
+or same-timestamp windows. Record skill hashes and compare outputs with raw
+reference records; count visits and retained bytes. A small trial establishes
+correctness and work boundaries, not full-scale latency or peak memory. Report
+full-scale generation, deep validation, cold loading, and warm query costs
+separately when those measurements are available.
 
 ## Zoom and history query validation
 

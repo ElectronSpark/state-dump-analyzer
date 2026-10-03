@@ -368,6 +368,24 @@ listener. Core rejects that option for every non-loopback bind, including
 `ATTRIBUTE` defaults to `plugin`. The repository launch scripts generate the
 large assembly when it is absent.
 
+Derived density, timeline, event-union, and redacted-event query caches belong
+to the exact immutable history generation. A service must not keep a retired
+generation alive through cached query values. Live leases may continue using
+that generation until release; a replacement with the same revision string
+must use its own derived state. Adapters that cannot carry generation-local
+state receive request-local derived state instead of a process-global cache.
+
+A compatibility history adapter may provide `ordered_events_by_resource` as
+an optional accelerator containing the same complete per-resource event
+sequences in canonical temporal order. Core can bisect these sequences before
+building a cold timeline window and count unique events from the selected
+window, preserving inclusive nanosecond bounds and stable event identity.
+This is not a new capability hook or a requirement for ordinary parsers.
+Adapters without it retain the existing complete-history fallback. Treat the
+sequences as immutable for the lifetime of their history generation.
+
+See [loading and query validation](plugin-api-validation.md#loading-and-performance-boundaries) for exact search postings and combined lifecycle checks.
+
 ## 2. Copy the teaching slice, not the fixture runtime
 
 The runnable teaching slice is kept beside the real demo so there is only one

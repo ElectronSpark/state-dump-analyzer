@@ -1146,6 +1146,35 @@ A plugin bundle supplies:
   does not authenticate credentials. The CLI's explicit local adapter only
   trusts headers.
 
+Derived density, timeline, event-union, and redacted-event query caches belong
+to the exact immutable history generation. A service must not keep a retired
+generation alive through cached query values. Live leases may continue using
+that generation until release; a replacement with the same revision string
+must use its own derived state. Adapters that cannot carry generation-local
+state receive request-local derived state instead of a process-global cache.
+
+`HistorySearchCorpus.query()` returns a read-only `Sequence[int]` of exact,
+ordered document ordinals. Consumers use length, indexing, iteration, and
+bounded slices rather than assuming an `array` or copying the whole result.
+Core chooses sparse ordinals, complement ordinals, or a bitmap with rank
+metadata; retained query results are bounded by query count and encoded bytes
+(`max_cached_bytes`, defaulting to four times `max_cached_ordinals`). An
+oversized result remains queryable without being retained. Candidate refinement
+must preserve literal case-folded substring semantics: only a cached shorter
+needle contained in the new needle can safely supply candidates, and every
+candidate still receives the exact substring check. Cold matching can share
+corpus construction or sidecar validation scans, but results publish only after
+complete identity, count, digest, and candidate-index validation succeeds.
+
+A compatibility history adapter may provide `ordered_events_by_resource` as
+an optional accelerator containing the same complete per-resource event
+sequences in canonical temporal order. Core can bisect these sequences before
+building a cold timeline window and count unique events from the selected
+window, preserving inclusive nanosecond bounds and stable event identity.
+This is not a new capability hook or a requirement for ordinary parsers.
+Adapters without it retain the existing complete-history fallback. Treat the
+sequences as immutable for the lifetime of their history generation.
+
 The module-level entry-point target is an instance. Every plug-in has the
 required `describe`, `probe`, and `locate_inputs` hooks; standard
 `PluginCapability` values activate optional hooks, including the advisory

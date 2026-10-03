@@ -154,7 +154,8 @@ class ZoomTimelineTests(unittest.TestCase):
                 TimelineQuery(0, 29, resource_ids=("root",), max_glyphs=1)
             )
         assert result["event_count"] == 30
-        assert not service._timeline_query_indexes
+        from router_dump_analyzer._query_generation import generation_queries
+        assert not generation_queries(queries.indexed_history)._timeline_query_indexes
 
     def test_selected_event_gets_a_glyph_when_lane_budget_is_smaller_than_lane_count(
         self,

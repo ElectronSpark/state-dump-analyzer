@@ -29,6 +29,8 @@ GROUPS: dict[str, tuple[str, ...]] = {
     ),
     "presentation": (
         "dashboard_core", "dashboard_query_api", "history_search_core",
+        "history_search_algorithms", "history_query_algorithms",
+        "zoom_timeline", "zoom_density", "zoom_cancellation",
         "topology_core", "topology_federation", "federation_executor",
         "multi_node_topology", "resource_property_policy",
     ),

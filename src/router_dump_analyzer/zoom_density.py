@@ -25,10 +25,10 @@ class DensityIndex:
     def __init__(self, event_times: Sequence[int], failure_event_times: Sequence[int],
                  event_times_by_type: Mapping[str, Sequence[int]], *,
                  max_cache_units: int = 32768) -> None:
-        self.event_times = event_times
-        self.failure_event_times = failure_event_times
-        self.event_times_by_type = event_times_by_type
-        self.max_cache_units = max(0, max_cache_units)
+        self.event_times: Sequence[int] = event_times
+        self.failure_event_times: Sequence[int] = failure_event_times
+        self.event_times_by_type: Mapping[str, Sequence[int]] = event_times_by_type
+        self.max_cache_units: int = max(0, max_cache_units)
         self._cache: OrderedDict[tuple[int, int], DensitySummary] = OrderedDict()
         self._cache_units = 0
         self._stats: Counter[str] = Counter()
