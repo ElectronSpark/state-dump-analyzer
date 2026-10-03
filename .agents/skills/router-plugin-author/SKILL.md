@@ -86,6 +86,15 @@ must preserve complete disclosure and integrity checks. An optional
 canonical order. The performance map covers lifecycle and combined-query
 checks, including adapters that require request-local cache fallback.
 
+For core compressed search storage, preserve canonical UTF-8 document
+boundaries and ordered ordinals. Bound decompression before allocating its
+output; validate framing, counts, per-block and complete-corpus digests, format
+version and revision identity. Keep publication atomic and corruption fallback
+exact. Candidate refinements should decode only overlapping blocks; measure
+visited blocks as well as returned rows. Retain compact small-corpus storage
+and its accelerator when changing large-corpus page or compression policy.
+The performance map lists storage boundaries and focused regression cases.
+
 For timeline or history scale work, use the map's
 [zoom-query guidance](../../../docs/plugin-api-validation.md#zoom-and-history-query-validation).
 Keep zoom aggregation in core; a display limit must also bound detail work,

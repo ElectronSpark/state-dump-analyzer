@@ -469,6 +469,7 @@ class HistorySearchCorpusTests(unittest.TestCase):
                 try:
                     connection.execute(mutation)
                     connection.commit()
+                    connection.commit()
                 finally:
                     connection.close()
 
@@ -597,7 +598,7 @@ class HistorySearchCorpusTests(unittest.TestCase):
                     [0, 1],
                 )
             self.assertEqual(corpus.storage_mode, "sqlite")
-            self.assertEqual(corpus.candidate_backend, "sqlite-scan")
+            self.assertEqual(corpus.candidate_backend, "sqlite-zlib-blocks-v1")
             self.assertEqual(
                 list(corpus.query("ha r", lambda: documents)),
                 [0],
@@ -792,6 +793,154 @@ class HistorySearchCorpusTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(), b"must remain untouched")
             self.assertTrue(link.is_symlink())
             corpus.close()
+
+
+
+
+class CompressedHistorySearchTests(unittest.TestCase):
+    def test_block_round_trip_literals_and_candidate_reuse(self) -> None:
+        import sqlite3
+        from contextlib import closing
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "blocks.sqlite3"
+            docs = ("", "\u96ea alpha\0tail", "ends", "starts", "alpha beta", "\U0001f600 beta")
+            corpus = HistorySearchCorpus(sidecar_path=path, identity="blocks",
+                expected_documents=len(docs), max_eager_candidate_characters=1)
+            corpus.ensure(lambda: docs)
+            self.assertEqual(corpus.candidate_backend, "sqlite-zlib-blocks-v1")
+            with closing(sqlite3.connect(path)) as connection:
+                self.assertEqual(connection.execute("PRAGMA page_size").fetchone()[0], 65536)
+                self.assertEqual(connection.execute("SELECT count(*) FROM documents").fetchone()[0], 0)
+            for needle in ("alpha", "alpha beta", "", "\u96ea", "\0tail", "sstarts", "\U0001f600", "absent"):
+                self.assertEqual(list(corpus.query(needle, lambda: docs)),
+                    [i for i, text in enumerate(docs) if needle in text])
+            corpus.close()
+            reopened = HistorySearchCorpus(sidecar_path=path, identity="blocks", expected_documents=len(docs))
+            self.assertTrue(reopened.ready)
+            self.assertEqual(list(reopened.query("beta", lambda: self.fail("rebuilt valid blocks"))), [4, 5])
+            reopened.close()
+
+    def test_corrupt_blocks_rebuild_before_reuse_and_fallback_during_query(self) -> None:
+        import sqlite3
+        from contextlib import closing
+        for mutation in (
+            "UPDATE document_blocks SET payload=x'00'",
+            "UPDATE document_blocks SET raw_bytes=999999999",
+            "UPDATE document_blocks SET document_count=0",
+            "UPDATE document_blocks SET digest='bad'",
+            "UPDATE document_blocks SET first_ordinal=1",
+        ):
+            with self.subTest(mutation=mutation), TemporaryDirectory() as directory:
+                path = Path(directory) / "blocks.sqlite3"
+                docs = ("alpha", "beta")
+                corpus = HistorySearchCorpus(sidecar_path=path, identity="corruption", max_eager_candidate_characters=1)
+                corpus.ensure(lambda: docs)
+                with closing(sqlite3.connect(path)) as connection:
+                    connection.execute(mutation)
+                    connection.commit()
+                self.assertEqual(list(corpus.query("beta", lambda: docs)), [1])
+                self.assertEqual(corpus.storage_mode, "memory")
+                corpus.close()
+                reopened = HistorySearchCorpus(sidecar_path=path, identity="corruption", max_eager_candidate_characters=1)
+                self.assertFalse(reopened.ready)
+                self.assertEqual(list(reopened.query("alpha", lambda: docs)), [0])
+                self.assertEqual(reopened.storage_mode, "sqlite")
+                reopened.close()
+
+    def test_multiple_blocks_and_selective_refinement_only_decode_candidates(self) -> None:
+        import zlib
+        with TemporaryDirectory() as directory, patch.object(HistorySearchCorpus, "_BLOCK_TARGET_BYTES", 32):
+            docs = tuple("rare alpha" if i == 50 else "ordinary" * 3 for i in range(100))
+            path = Path(directory) / "blocks.sqlite3"
+            corpus = HistorySearchCorpus(sidecar_path=path, identity="refinement", max_eager_candidate_characters=1)
+            self.assertEqual(list(corpus.query("rare", lambda: docs)), [50])
+            with patch("router_dump_analyzer.history_search_core.zlib.decompressobj", wraps=zlib.decompressobj) as decoder:
+                self.assertEqual(list(corpus.query("rare alpha", lambda: docs)), [50])
+                self.assertEqual(decoder.call_count, 1)
+            corpus.close()
+
+    def test_empty_documents_and_large_single_document(self) -> None:
+        with TemporaryDirectory() as directory, patch.object(HistorySearchCorpus, "_BLOCK_TARGET_BYTES", 32), patch.object(HistorySearchCorpus, "_BLOCK_MAX_DOCUMENTS", 3):
+            docs = ("", "", "", "\u96ea" * 30, "tail", "", "", "", "")
+            path = Path(directory) / "blocks.sqlite3"
+            corpus = HistorySearchCorpus(sidecar_path=path, identity="framing", max_eager_candidate_characters=1)
+            self.assertEqual(list(corpus.query("", lambda: docs)), list(range(len(docs))))
+            corpus.close()
+            reopened = HistorySearchCorpus(sidecar_path=path, identity="framing")
+            self.assertTrue(reopened.ready)
+            self.assertEqual(list(reopened.query("tail", lambda: docs)), [4])
+            reopened.close()
+
+
+    def test_small_corpus_keeps_compact_plain_pages(self) -> None:
+        import sqlite3
+        from contextlib import closing
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "small.sqlite3"
+            docs = ("alpha route", "beta route", "backup")
+            corpus = HistorySearchCorpus(sidecar_path=path, identity="small")
+            corpus.ensure(lambda: docs)
+            with closing(sqlite3.connect(path)) as connection:
+                self.assertEqual(connection.execute("PRAGMA page_size").fetchone()[0], 4096)
+            self.assertLess(path.stat().st_size, 65536)
+            corpus.close()
+
+
+    def test_small_corpus_persists_under_small_database_budget(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "small.sqlite3"
+            corpus = HistorySearchCorpus(sidecar_path=path, identity="small-budget", max_database_bytes=65536)
+            self.assertEqual(list(corpus.query("alpha", lambda: ("alpha", "beta"))), [0])
+            self.assertEqual(corpus.storage_mode, "sqlite")
+            self.assertLessEqual(path.stat().st_size, 65536)
+            corpus.close()
+
+
+    def test_query_rejects_changed_block_with_recomputed_digest(self) -> None:
+        import sqlite3
+        import zlib
+        from contextlib import closing
+        from hashlib import sha256
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "mutation.sqlite3"
+            corpus = HistorySearchCorpus(sidecar_path=path, identity="pinned", max_eager_candidate_characters=1)
+            docs = ("alpha", "beta")
+            corpus.ensure(lambda: docs)
+            with closing(sqlite3.connect(path)) as connection:
+                payload = connection.execute("SELECT payload FROM document_blocks").fetchone()[0]
+                raw = zlib.decompress(payload).replace(b"alpha", b"omega")
+                connection.execute("UPDATE document_blocks SET payload=?, digest=?",
+                    (zlib.compress(raw, 1), sha256(raw).hexdigest()))
+                connection.commit()
+            self.assertEqual(list(corpus.query("alpha", lambda: docs)), [0])
+            self.assertEqual(corpus.storage_mode, "memory")
+            corpus.close()
+
+
+    def test_invalid_existing_cache_does_not_overwrite_rebuilt_generation_pins(self) -> None:
+        import sqlite3
+        import zlib
+        from contextlib import closing
+        from hashlib import sha256
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "existing.sqlite3"
+            docs = ("alpha", "beta")
+            original = HistorySearchCorpus(sidecar_path=path, identity="same", max_eager_candidate_characters=1)
+            original.ensure(lambda: docs)
+            original.close()
+            with closing(sqlite3.connect(path)) as connection:
+                payload = connection.execute("SELECT payload FROM document_blocks").fetchone()[0]
+                raw = zlib.decompress(payload).replace(b"alpha", b"omega")
+                connection.execute("UPDATE document_blocks SET payload=?, digest=?",
+                    (zlib.compress(raw, 1), sha256(raw).hexdigest()))
+                connection.commit()
+            current = HistorySearchCorpus(sidecar_path=path, identity="same", max_eager_candidate_characters=1)
+            self.assertFalse(current.ready)
+            current.ensure(lambda: docs)
+            self.assertEqual(current.storage_mode, "sqlite")
+            self.assertEqual(list(current.query("alpha", lambda: self.fail("rebuilt after valid publication"))), [0])
+            self.assertEqual(current.storage_mode, "sqlite")
+            current.close()
 
 
 if __name__ == "__main__":

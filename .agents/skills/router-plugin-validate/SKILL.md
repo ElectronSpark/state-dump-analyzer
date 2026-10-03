@@ -81,6 +81,15 @@ references. Check retained bytes and visited records, not only response
 limits. The performance map lists relevant tests and generation commands;
 a small fixture establishes correctness, not million-event performance.
 
+For compressed search storage, compare all ordered literal matches with an
+exact safe-text reference, including Unicode, NUL, empty needles/documents and
+cross-document boundaries. Exercise malformed framing, bounded decompression,
+block and corpus digests, format/revision identity, reopen and corruption
+fallback. Check that selective refinements decode only candidate blocks and
+that small sidecars retain compact storage. Separate these correctness and
+work-bound checks from fresh full-corpus size and CPU measurements; prototype
+measurements do not establish production performance.
+
 For timeline/density changes, follow
 [zoom-query validation](../../../docs/plugin-api-validation.md#zoom-and-history-query-validation).
 Check both coarse summaries and exact drill-down with the same evidence;

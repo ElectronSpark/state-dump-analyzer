@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import struct
+import zlib
 from array import array
+from bisect import bisect_left
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Sequence
 from hashlib import sha256
@@ -45,10 +48,13 @@ class HistorySearchCorpus:
     receives raw plug-in payloads.
     """
 
-    _FORMAT_VERSION = "history-search-sqlite-v6"
+    _FORMAT_VERSION = "history-search-sqlite-v7"
     _INSERT_BATCH_SIZE = 512
     _FTS5_BACKEND = "fts5-trigram"
     _SCAN_BACKEND = "sqlite-scan"
+    _BLOCK_BACKEND = "sqlite-zlib-blocks-v1"
+    _BLOCK_TARGET_BYTES = 256 * 1024
+    _BLOCK_MAX_DOCUMENTS = 65536
     _MAX_CANDIDATE_TERMS = 64
 
     def __init__(
@@ -105,6 +111,7 @@ class HistorySearchCorpus:
             raise ValueError("history search cache byte bound must be positive")
         self._condition = Condition(RLock())
         self._documents: tuple[str, ...] | None = None
+        self._block_digests: dict[int, tuple[int, int, str, str]] = {}
         self._sidecar_ready = False
         self._bypass_sidecar = False
         self._candidate_backend = "pending"
@@ -249,7 +256,7 @@ class HistorySearchCorpus:
             if (
                 format_version != self._FORMAT_VERSION
                 or identity != self._identity
-                or backend not in {self._FTS5_BACKEND, self._SCAN_BACKEND}
+                or backend not in {self._FTS5_BACKEND, self._SCAN_BACKEND, self._BLOCK_BACKEND}
                 or int(complete) != 1
                 or int(document_count) < 0
                 or int(character_count) < 0
@@ -257,7 +264,7 @@ class HistorySearchCorpus:
                 or int(character_count) > self._max_characters
                 or len(str(documents_digest)) != 64
                 or (backend == self._FTS5_BACKEND and len(str(candidate_digest)) != 64)
-                or (backend == self._SCAN_BACKEND and str(candidate_digest) != "")
+                or (backend != self._FTS5_BACKEND and str(candidate_digest) != "")
                 or (
                     self._expected_documents is not None
                     and int(document_count) != self._expected_documents
@@ -265,16 +272,11 @@ class HistorySearchCorpus:
             ):
                 return None
             digest = sha256()
+            validated_blocks: dict[int, tuple[int, int, str, str]] = {}
             actual_count = 0
             actual_character_count = 0
             for expected_ordinal, (ordinal, safe_text) in enumerate(
-                connection.execute(
-                    """
-                    SELECT ordinal, safe_text
-                    FROM documents
-                    ORDER BY ordinal
-                    """
-                )
+                self._iter_disk_documents(connection, str(backend), _validated_blocks=validated_blocks)
             ):
                 if int(ordinal) != expected_ordinal:
                     return None
@@ -350,6 +352,10 @@ class HistorySearchCorpus:
                 ):
                     return None
             validated = int(document_count), int(character_count), str(backend)
+            # Publish pins only after the complete canonical corpus and any
+            # candidate index have passed validation. A rejected existing cache
+            # must not replace the pins of our newly built temporary database.
+            self._block_digests = validated_blocks
         finally:
             connection.close()
         return validated
@@ -423,6 +429,7 @@ class HistorySearchCorpus:
         connection: sqlite3.Connection | None = None
         try:
             connection = sqlite3.connect(temporary)
+            connection.execute("PRAGMA page_size=4096")
             connection.execute("PRAGMA journal_mode=OFF")
             connection.execute("PRAGMA synchronous=FULL")
             connection.execute("PRAGMA temp_store=MEMORY")
@@ -461,72 +468,85 @@ class HistorySearchCorpus:
                 )
                 """
             )
+            connection.execute("""CREATE TABLE document_blocks (
+                first_ordinal INTEGER PRIMARY KEY, document_count INTEGER NOT NULL,
+                raw_bytes INTEGER NOT NULL, payload BLOB NOT NULL,
+                digest TEXT NOT NULL)""")
             documents_digest = sha256()
-            batch: list[tuple[int, str]] = []
-            exception_batch: list[tuple[int]] = []
-            for item in self._bounded_documents(documents):
+            pending: list[tuple[int, str]] = []
+            pending_characters = 0
+            compressed = False
+            block: list[bytes] = []
+            block_bytes = 0
+            block_first = 0
+
+            def flush_block() -> None:
+                nonlocal block_bytes
+                if not block:
+                    return
+                raw = b"".join(struct.pack(">I", len(item)) for item in block) + b"".join(block)
+                assert connection is not None
+                connection.execute("INSERT INTO document_blocks VALUES (?, ?, ?, ?, ?)",
+                    (block_first, len(block), len(raw), zlib.compress(raw, 1), sha256(raw).hexdigest()))
+                block.clear()
+                block_bytes = 0
+
+            def append_block(ordinal: int, encoded: bytes) -> None:
+                nonlocal block_first, block_bytes
+                if block and (block_bytes + len(encoded) + 4 > self._BLOCK_TARGET_BYTES
+                              or len(block) >= self._BLOCK_MAX_DOCUMENTS):
+                    flush_block()
+                if not block:
+                    block_first = ordinal
+                block.append(encoded)
+                block_bytes += len(encoded) + 4
+
+            for ordinal, text in self._bounded_documents(documents):
                 try:
-                    encoded = item[1].encode("utf-8")
+                    encoded = text.encode("utf-8")
                 except UnicodeEncodeError as error:
-                    raise _SidecarUnavailable(
-                        "safe search text is not a Unicode scalar string"
-                    ) from error
+                    raise _SidecarUnavailable("safe search text is not a Unicode scalar string") from error
                 if len(encoded) > self._max_document_bytes:
-                    raise _SidecarUnavailable(
-                        "one history search document exceeds the disk bound"
-                    )
-                self._update_documents_digest(
-                    documents_digest,
-                    item[0],
-                    encoded,
-                )
-                batch.append(item)
-                if "\0" in item[1]:
-                    # Some SQLite/FTS5 builds truncate text at NUL while the
-                    # ordinary TEXT column and Python input retain it. Those
-                    # documents must bypass the candidate accelerator and
-                    # receive the same exact ``instr`` recheck.
-                    exception_batch.append((item[0],))
-                if len(batch) >= self._INSERT_BATCH_SIZE:
-                    connection.executemany(
-                        "INSERT INTO documents(ordinal, safe_text) VALUES (?, ?)",
-                        batch,
-                    )
-                    batch.clear()
-                if len(exception_batch) >= self._INSERT_BATCH_SIZE:
-                    connection.executemany(
-                        """
-                        INSERT INTO documents_fts_exceptions(ordinal)
-                        VALUES (?)
-                        """,
-                        exception_batch,
-                    )
-                    exception_batch.clear()
-            if batch:
-                connection.executemany(
-                    "INSERT INTO documents(ordinal, safe_text) VALUES (?, ?)",
-                    batch,
-                )
-            if exception_batch:
-                connection.executemany(
-                    """
-                    INSERT INTO documents_fts_exceptions(ordinal)
-                    VALUES (?)
-                    """,
-                    exception_batch,
-                )
+                    raise _SidecarUnavailable("one history search document exceeds the disk bound")
+                self._update_documents_digest(documents_digest, ordinal, encoded)
+                if not compressed:
+                    pending.append((ordinal, text))
+                    pending_characters += len(text)
+                    if (pending_characters <= self._max_eager_candidate_characters
+                        and len(pending) < self._BLOCK_MAX_DOCUMENTS):
+                        continue
+                    compressed = True
+                    for pending_ordinal, pending_text in pending:
+                        append_block(pending_ordinal, pending_text.encode("utf-8"))
+                    pending.clear()
+                else:
+                    append_block(ordinal, encoded)
+            if compressed:
+                flush_block()
+            else:
+                connection.executemany("INSERT INTO documents VALUES (?, ?)", pending)
+                connection.executemany("INSERT INTO documents_fts_exceptions VALUES (?)",
+                    ((ordinal,) for ordinal, text in pending if "\0" in text))
+            pending.clear()
             # Persist the exact corpus first.  The FTS table is only a candidate
             # accelerator, so a SQLite build without FTS5/trigram support still
             # publishes a reusable, exact scan sidecar.
             connection.commit()
-            backend = self._SCAN_BACKEND
+            if not compressed:
+                connection.execute("DROP TABLE document_blocks")
+                connection.commit()
+            if compressed or self._character_count >= 1024 * 1024:
+                connection.execute("PRAGMA page_size=65536")
+                connection.execute("VACUUM")
+                connection.execute(f"PRAGMA max_page_count={max(1, self._max_database_bytes // 65536)}")
+            backend = self._BLOCK_BACKEND if compressed else self._SCAN_BACKEND
             candidate_digest = ""
             # Trigram indexing is O(total safe-text characters) and can dwarf
             # parsing for large immutable histories.  Exact SQLite substring
             # scans remain bounded and correct, so large corpora publish the
             # scan backend immediately instead of delaying availability for an
             # accelerator.  Smaller corpora retain the responsive FTS path.
-            if self._character_count <= self._max_eager_candidate_characters:
+            if not compressed:
                 try:
                     built_candidate_digest = self._build_fts5_candidate_index(
                         connection
@@ -564,6 +584,8 @@ class HistorySearchCorpus:
                 ),
             )
             connection.commit()
+            if compressed:
+                self._block_digests = {first: (count, size, digest, sha256(payload).hexdigest()) for first, count, size, digest, payload in connection.execute("SELECT first_ordinal, document_count, raw_bytes, digest, payload FROM document_blocks")}
             connection.close()
             connection = None
             if temporary.stat().st_size > self._max_database_bytes:
@@ -611,6 +633,84 @@ class HistorySearchCorpus:
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
+
+    def _iter_disk_documents(
+        self, connection: sqlite3.Connection, backend: str, candidates: Sequence[int] | None = None,
+        *, _matching_needle: bytes | None = None,
+        _validated_blocks: dict[int, tuple[int, int, str, str]] | None = None
+    ) -> Iterable[tuple[int, str]]:
+        if backend != self._BLOCK_BACKEND:
+            yield from connection.execute("SELECT ordinal, safe_text FROM documents ORDER BY ordinal")
+            return
+        expected = 0
+        validated_digests: dict[int, tuple[int, int, str, str]] = {}
+        maximum = max(self._BLOCK_TARGET_BYTES, self._max_document_bytes + 4)
+        try:
+            for first, count, size, payload_size, digest_size in connection.execute(
+                "SELECT first_ordinal, document_count, raw_bytes, length(payload), length(digest) FROM document_blocks ORDER BY first_ordinal"
+            ):
+                if (type(first) is not int or first != expected or type(count) is not int
+                    or not 1 <= count <= self._BLOCK_MAX_DOCUMENTS
+                    or expected + count > self._max_documents or type(size) is not int
+                    or not count * 4 <= size <= maximum
+                    or type(payload_size) is not int or not 0 < payload_size <= maximum + 1024
+                    or digest_size != 64):
+                    raise ValueError("invalid compressed search block framing")
+                if _matching_needle is not None:
+                    pinned = self._block_digests.get(first)
+                    if pinned is None or pinned[:2] != (count, size):
+                        raise ValueError("compressed search block framing changed")
+                if candidates is not None:
+                    candidate_index = bisect_left(candidates, first)
+                    if candidate_index == len(candidates) or candidates[candidate_index] >= first + count:
+                        expected += count
+                        continue
+                payload, digest = connection.execute(
+                    "SELECT payload, digest FROM document_blocks WHERE first_ordinal=?", (first,)
+                ).fetchone()
+                if not isinstance(payload, bytes) or len(payload) > maximum + 1024:
+                    raise ValueError("invalid compressed search block payload")
+                if _matching_needle is not None:
+                    pinned = self._block_digests.get(first)
+                    if (pinned is None or pinned[:3] != (count, size, digest)
+                        or not compare_digest(sha256(payload).hexdigest(), pinned[3])):
+                        raise ValueError("compressed search block generation changed")
+                decoder = zlib.decompressobj()
+                raw = decoder.decompress(payload, size + 1)
+                if (len(raw) != size or not decoder.eof or decoder.unused_data
+                    or decoder.unconsumed_tail or not isinstance(digest, str)):
+                    raise ValueError("invalid compressed search block stream")
+                if _matching_needle is None:
+                    if not compare_digest(sha256(raw).hexdigest(), digest):
+                        raise ValueError("invalid compressed search block digest")
+                    # Pin exact compressed bytes only after validating raw bytes.
+                    # Later queries verify this smaller immutable representation,
+                    # which decompresses to the already validated UTF-8 corpus.
+                    validated_digests[first] = (count, size, digest, sha256(payload).hexdigest())
+                offset = count * 4
+                lengths = struct.unpack_from(f">{count}I", raw)
+                for length in lengths:
+                    end = offset + length
+                    if length > self._max_document_bytes or end > size:
+                        raise ValueError("invalid compressed search document length")
+                    if _matching_needle is None:
+                        yield expected, raw[offset:end].decode("utf-8")
+                    else:
+                        # UTF-8 literal matching is equivalent to scalar substring
+                        # matching on validated UTF-8 and never crosses framing.
+                        if raw.find(_matching_needle, offset, end) >= 0:
+                            yield expected, ""
+                    offset = end
+                    expected += 1
+                if offset != size:
+                    raise ValueError("trailing compressed search document bytes")
+            declared_count = connection.execute("SELECT document_count FROM metadata WHERE singleton=1").fetchone()
+            if declared_count is None or declared_count[0] != expected:
+                raise ValueError("compressed search document count mismatch")
+            if _matching_needle is None and _validated_blocks is not None:
+                _validated_blocks.update(validated_digests)
+        except (ValueError, zlib.error, UnicodeError, struct.error) as error:
+            raise sqlite3.DatabaseError("corrupt compressed search corpus") from error
 
     @staticmethod
     def _fts5_capability_error(error: sqlite3.OperationalError) -> bool:
@@ -833,6 +933,24 @@ class HistorySearchCorpus:
         try:
             connection.execute("PRAGMA query_only=ON")
             connection.execute("PRAGMA cache_size=-8192")
+            metadata = connection.execute(
+                "SELECT format_version, identity, document_count, character_count, backend, complete FROM metadata WHERE singleton=1"
+            ).fetchone()
+            if metadata != (self._FORMAT_VERSION, self._identity, self._document_count,
+                            self._character_count, self._candidate_backend, 1):
+                raise sqlite3.DatabaseError("history search generation changed")
+            if self._candidate_backend == self._BLOCK_BACKEND:
+                matches = array("I")
+                for ordinal, _ in self._iter_disk_documents(
+                    connection, self._BLOCK_BACKEND, candidates,
+                    _matching_needle=needle.encode("utf-8"),
+                ):
+                    if candidates is not None:
+                        index = bisect_left(candidates, ordinal)
+                        if index == len(candidates) or candidates[index] != ordinal:
+                            continue
+                    matches.append(ordinal)
+                return matches
             if candidates is not None:
                 matches = array("I")
                 for start in range(0, len(candidates), self._INSERT_BATCH_SIZE):
@@ -1013,6 +1131,7 @@ class HistorySearchCorpus:
             self._candidate_backend = "pending"
             self._bypass_sidecar = False
             self._documents = None
+            self._block_digests.clear()
             self._document_count = 0
             self._character_count = 0
             self._results.clear()

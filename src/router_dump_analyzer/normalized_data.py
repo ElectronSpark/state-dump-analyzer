@@ -674,7 +674,9 @@ def _advance_sensitive_path(
         following: list[Mapping[object, Any]] = []
         for branch in (path_trie, *branches):
             child = branch.get(part)
-            if not isinstance(child, Mapping):
+            # Compiled tries contain only child dictionaries and the terminal
+            # sentinel; property-name lookups cannot return the sentinel.
+            if child is None:
                 continue
             if child.get(_PROPERTY_PATH_TERMINAL):
                 return True, ()
@@ -689,14 +691,17 @@ def _redact_sensitive_tree(
     path_trie: Mapping[object, Any],
     branches: tuple[Mapping[object, Any], ...] = (),
 ) -> Any:
-    if isinstance(value, Mapping):
+    if isinstance(value, dict) or isinstance(value, Mapping):
         result: dict[Any, Any] = {}
         for key, nested in value.items():
-            hidden, following = _advance_sensitive_path(
-                str(key), path_trie, branches,
-            )
-            if hidden:
-                continue
+            if path_trie or branches:
+                hidden, following = _advance_sensitive_path(
+                    str(key), path_trie, branches,
+                )
+                if hidden:
+                    continue
+            else:
+                following = ()
             result[key] = _redact_sensitive_tree(
                 nested,
                 path_trie=path_trie,
@@ -2431,11 +2436,10 @@ def _redact_event_nested_record(
         )
         if key not in projected:
             continue
-        result[key] = (
-            redact_sensitive_tree(projected[key], sensitive)
-            if name in payload_fields
-            else projected[key]
-        )
+        # The wrapper traversal already applied both this property's path and
+        # every nested path. Repeating it resets the same policy and only
+        # rebuilds the independent tree a second time.
+        result[key] = projected[key]
     return result
 
 

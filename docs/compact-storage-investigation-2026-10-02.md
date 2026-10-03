@@ -205,3 +205,31 @@ history agent ran the bounded memory probes. The search agent also reviewed the
 full storage harness and its interpretation. Their findings are incorporated
 above. Author-documentation drift check: no production or author-visible API
 behavior changed, so no skill, contract or runnable-example update is required.
+
+
+## Production implementation — 2026-10-03
+
+The search storage recommendation is now implemented in `HistorySearchCorpus`.
+Version 7 retains 4 KiB pages for plain corpora below 1 MiB and uses 64 KiB pages
+for larger plain corpora and zlib level-1 compressed blocks. It switches to
+blocks above the eager-candidate character budget or at 65,536 buffered
+documents. The existing small-corpus trigram accelerator, fused first-query
+matching and bounded adaptive query-result cache remain in use. Selective
+refinements decode only blocks containing candidate ordinals.
+
+The production path bounds decompression and validates document framing,
+UTF-8, counts, contiguous ordinals, per-block digests, revision metadata and the
+canonical corpus digest. Corrupt caches rebuild or fall back to safe memory
+without unlinking published storage held by other readers. Publication uses the
+existing same-directory temporary database and atomic replacement. Dedicated
+cases cover Unicode, NUL, empty needles/documents, cross-document boundaries,
+malformed blocks, reopening, selective decoder work, and small-sidecar size.
+These checks do not establish the prototype's full-corpus performance for the
+production implementation. The subsequent
+[production measurement and skill-validation report](search-storage-improvements-2026-10-03.md)
+records fresh full-corpus results, full-demo memory and latency, and remaining
+refinement/reopen costs.
+
+Author-documentation drift check: no plug-in API or device semantics changed.
+The performance validation map documents the core storage behavior; the
+quickstart, normative plug-in contract and runnable example need no changes.

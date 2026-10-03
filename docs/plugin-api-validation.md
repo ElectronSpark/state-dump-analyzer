@@ -73,7 +73,11 @@ suite. For demo/browser checks, this includes `router_dump_analyzer`,
 supply missing dependencies. On Windows, the repository setup uses the Conda
 environment `router-dump-analyzer-demo`; find its interpreter with
 `conda env list --json` or the discovery logic in `scripts/launch_demo.ps1` and
-use that same executable for CLI, tests, and child processes. Inspect an
+use that same executable for CLI, tests, and child processes. On Windows, use
+explicit UTF-8 when reading or writing generated source, tests and reports
+(`Path.read_text(encoding="utf-8")` and `Path.write_text(..., encoding="utf-8")`);
+the default code page may reject Unicode evidence after opening a file for
+writing. Inspect an
 existing configured environment before installing packages or reporting a
 dependency as unavailable. Custom environments remain supported.
 
@@ -140,6 +144,33 @@ only the current revision/context may publish. Report actual loading stages
 without guessed percentages. Browser timeout bounds waiting and does not
 prove synchronous backend execution stopped. Run the relevant frontend tests
 and browse the resulting integration before claiming UI readiness.
+
+The core safe-text sidecar uses versioned SQLite storage. Plain corpora below
+1 MiB retain 4 KiB pages; larger plain corpora and compressed corpora use
+64 KiB pages. Above the eager-candidate character budget (64 MiB by default),
+or once 65,536 buffered documents are reached, storage switches to zlib level-1
+blocks. Small corpora retain the optional trigram accelerator. Compression
+preserves complete UTF-8 documents and ordinals; matching never crosses document
+boundaries. Cached refinements fetch and decompress only blocks containing
+candidate ordinals, after scanning their bounded headers. The query-result
+cache and exact disclosure projection remain shared across storage modes.
+
+Block framing targets 256 KiB, allows a single document up to the configured
+document-byte limit, and caps each block at 65,536 documents. Reopening validates
+contiguous ordinals, counts, UTF-8, exact framing, bounded decompression, per-block
+SHA-256 and the complete canonical document digest against revision identity.
+Queries pin validated block framing, raw digests and compressed-payload SHA-256
+hashes to the generation. They recheck generation/framing metadata and verify
+compressed bytes against those pins before bounded decompression, preserving
+the validated UTF-8 corpus without rehashing its larger raw representation.
+Unreadable storage falls back to the safe projection. Publication remains atomic, and a
+reader does not unlink another process's published cache. Old format versions
+are derived caches and are rebuilt. Exercise `CompressedHistorySearchTests`
+alongside the existing search algorithm suite when changing this storage path.
+
+```text
+python -m unittest tests.test_history_search_core.CompressedHistorySearchTests -v
+```
 
 Derived density, timeline, event-union, and redacted-event query caches belong
 to the exact immutable history generation. A service must not keep a retired

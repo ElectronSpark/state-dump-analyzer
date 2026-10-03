@@ -4332,8 +4332,8 @@ the revision database and may implement literal candidates with PostgreSQL
 `pg_trgm` followed by exact substring verification.
 
 The demo may add an external-content, case-sensitive FTS5 trigram candidate index to
-that sidecar. Its metadata records whether the revision uses `fts5-trigram` or
-`sqlite-scan`; ordered safe-text digest, ordinal/size bounds, and a deterministic
+that sidecar. Its metadata records whether the revision uses `fts5-trigram`,
+`sqlite-scan`, or versioned `sqlite-zlib-blocks-v1` storage; ordered safe-text digest, ordinal/size bounds, and a deterministic
 candidate digest are checked before reuse, after a full source-aware FTS
 integrity check at publication. The digest covers both the FTS vocabulary and a
 small exception table for safe documents containing NUL. Those exception
@@ -4342,6 +4342,19 @@ tokenizers may truncate text at NUL. `MATCH` never defines the result: every
 candidate and exception still passes a parameterized
 `instr(safe_text, search)` check, while empty, short, and parser-rejected needles
 take the exact scan path.
+
+Large safe-text corpora can use zlib level-1 blocks with unchanged UTF-8 document
+boundaries and ordinals. Block framing and decompression are bounded, and reopen
+validation checks the complete canonical document digest, block digests and
+revision identity. Query readers pin validated block framing, raw digests and compressed-payload
+SHA-256 hashes to their generation. They verify persisted framing/raw-digest
+metadata and hash compressed payloads against those pins before bounded
+decompression and literal matching. Matching compressed bytes recover the
+already validated UTF-8 documents, avoiding repeated raw-byte hashing.
+Selective refinements read only blocks overlapping cached candidates. Small
+plain corpora retain 4 KiB SQLite pages and optional trigram acceleration;
+larger plain and compressed corpora use 64 KiB pages. Cache format changes
+rebuild this derived storage without changing disclosure or exact counts.
 
 `HistorySearchCorpus.query()` returns a read-only `Sequence[int]` of exact,
 ordered document ordinals. Consumers use length, indexing, iteration, and
