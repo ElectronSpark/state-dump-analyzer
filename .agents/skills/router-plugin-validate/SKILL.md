@@ -87,6 +87,12 @@ For reported search/import latency, follow the map's
 Separate complete user-path timings from instrumented attribution and tiny
 microbenchmarks. Check a reused dependency-analysis artifact against changed
 source and live targets; a warm cache must still reject those changes.
+Exercise exact-type boundaries with equality-spoofing and unhashable
+metaclasses, ordinary controls, and unsupported state. Check both public
+fingerprints after a callable's behavior changes; a private-helper check or a
+direct attribute read alone can miss a callable-global bypass. For projection
+fast paths, compare complete safe text and ordered matches, including generic
+mappings, subclasses, nested policies, Unicode and numeric distinctions.
 Preserve repeated phase occurrences when comparing benchmark results; count
 records as well as distinct phase names and include every occurrence in totals.
 For import/search cooperation, verify idle and same-thread searches never sleep,

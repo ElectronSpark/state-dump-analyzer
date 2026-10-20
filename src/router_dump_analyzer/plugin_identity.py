@@ -92,6 +92,8 @@ _MAX_TARGET_VALUE_NODES = 32_768
 _MAX_TARGET_VALUE_DEPTH = 64
 _MAX_TARGET_VALUE_BYTES = 32 * 1024 * 1024
 _MAX_TARGET_SOURCE_BYTES = 16 * 1024 * 1024
+# Test membership in type groups with identity comparisons: plug-in metaclasses
+# can spoof equality with built-ins or disable hashing entirely.
 _CANONICAL_HIDDEN_BUILTIN_TYPES = frozenset(
     {
         MappingProxyType,
@@ -627,7 +629,7 @@ def _static_import_target(module: ModuleType, attribute: str) -> object:
             return missing
         if candidate is missing:
             return missing
-        if type(candidate) in {classmethod, staticmethod}:
+        if type(candidate) is classmethod or type(candidate) is staticmethod:
             candidate = candidate.__func__
         elif isinstance(candidate, (classmethod, staticmethod)):
             raise PluginExecutableIdentityError(
@@ -707,7 +709,7 @@ def _update_runtime_closure_reference(
 ) -> None:
     """Bind one live closure cell without snapshotting operational state."""
 
-    if type(value) in {tuple, frozenset}:
+    if type(value) is tuple or type(value) is frozenset:
         _consume_target_budget(budget, depth=depth)
         _digest_field(digest, b"runtime-closure-container")
         _digest_field(digest, type(value).__name__.encode("ascii"))
@@ -735,7 +737,16 @@ def _update_runtime_closure_reference(
     if (
         value is None
         or value is NotImplemented
-        or type(value) in {bool, int, float, complex, str, bytes, dict, list}
+        or (
+            type(value) is bool
+            or type(value) is int
+            or type(value) is float
+            or type(value) is complex
+            or type(value) is str
+            or type(value) is bytes
+            or type(value) is dict
+            or type(value) is list
+        )
         or type(value) is FunctionType
         or isinstance(value, (ModuleType, Enum))
         or inspect.isclass(value)
@@ -1209,19 +1220,18 @@ def _is_identity_bound_receiver(value: object) -> bool:
     return not (
         value is None
         or value is NotImplemented
-        or type(value)
-        in {
-            bool,
-            int,
-            float,
-            complex,
-            str,
-            bytes,
-            tuple,
-            frozenset,
-            dict,
-            list,
-        }
+        or (
+            type(value) is bool
+            or type(value) is int
+            or type(value) is float
+            or type(value) is complex
+            or type(value) is str
+            or type(value) is bytes
+            or type(value) is tuple
+            or type(value) is frozenset
+            or type(value) is dict
+            or type(value) is list
+        )
     )
 
 
@@ -1878,7 +1888,10 @@ def _update_abc_class_contract(
         )
         generation_identity = generation_digest.digest()
         if (
-            selected in _CANONICAL_HIDDEN_BUILTIN_TYPES
+            any(
+                selected is builtin_type
+                for builtin_type in _CANONICAL_HIDDEN_BUILTIN_TYPES
+            )
             and selected_module == "builtins"
             and selected_source is None
         ):
@@ -2580,7 +2593,7 @@ def _update_enum_metaclass_dependency(
                 budget=budget,
                 depth=depth + 1,
             )
-        elif type(value) in {classmethod, staticmethod}:
+        elif type(value) is classmethod or type(value) is staticmethod:
             wrapped = value.__func__
             _digest_field(digest, type(value).__name__.encode("ascii"))
             if type(wrapped) is FunctionType:
@@ -3405,7 +3418,7 @@ def _resolve_static_attribute_path(
             retains_receiver or _is_executable_authority(candidate)
         ):
             authorities.append(candidate)
-        if type(candidate) in {classmethod, staticmethod}:
+        if type(candidate) is classmethod or type(candidate) is staticmethod:
             candidate = candidate.__func__
         elif isinstance(candidate, (classmethod, staticmethod)):
             raise PluginExecutableIdentityError(
@@ -3619,17 +3632,17 @@ def _update_source_dependency_leaf(
 ) -> None:
     """Bind one directly loaded dependency without expanding its internals."""
 
-    if value is None or value is NotImplemented or type(value) in {
-        bool,
-        int,
-        float,
-        complex,
-        str,
-        bytes,
-    }:
+    if value is None or value is NotImplemented or (
+        type(value) is bool
+        or type(value) is int
+        or type(value) is float
+        or type(value) is complex
+        or type(value) is str
+        or type(value) is bytes
+    ):
         _update_stable_value(digest, value, budget=budget, depth=depth)
         return
-    if type(value) in {tuple, frozenset}:
+    if type(value) is tuple or type(value) is frozenset:
         _consume_target_budget(budget, depth=depth)
         _digest_field(digest, b"dependency-container")
         _digest_field(digest, type(value).__name__.encode("ascii"))
@@ -4836,18 +4849,23 @@ def _update_dependency_class_shape_uncached(
                 continue
             if inspect.ismemberdescriptor(member) or inspect.isgetsetdescriptor(member):
                 continue
-            if member is None or member is NotImplemented or type(member) in {
-                bool,
-                int,
-                float,
-                complex,
-                str,
-                bytes,
-            }:
+            if member is None or member is NotImplemented or (
+                type(member) is bool
+                or type(member) is int
+                or type(member) is float
+                or type(member) is complex
+                or type(member) is str
+                or type(member) is bytes
+            ):
                 _digest_field(digest, name.encode("utf-8"))
                 _update_stable_value(digest, member, budget=budget, depth=depth + 1)
                 continue
-            if type(member) in {tuple, frozenset, dict, list}:
+            if (
+                type(member) is tuple
+                or type(member) is frozenset
+                or type(member) is dict
+                or type(member) is list
+            ):
                 _digest_field(digest, name.encode("utf-8"))
                 _update_source_dependency_leaf(
                     digest,
@@ -5141,16 +5159,16 @@ def _source_singleton_class_shape_identity(
                 _digest_field(digest, label.encode("ascii"))
                 _digest_field(digest, code_identity.encode("ascii"))
             continue
-        if member is None or member is NotImplemented or type(member) in {
-            bool,
-            int,
-            float,
-            complex,
-            str,
-            bytes,
-            tuple,
-            frozenset,
-        }:
+        if member is None or member is NotImplemented or (
+            type(member) is bool
+            or type(member) is int
+            or type(member) is float
+            or type(member) is complex
+            or type(member) is str
+            or type(member) is bytes
+            or type(member) is tuple
+            or type(member) is frozenset
+        ):
             _digest_field(digest, name.encode("utf-8"))
             _update_stable_value(digest, member, budget=budget, depth=depth + 1)
             continue
@@ -6497,7 +6515,14 @@ def _update_global_reference(
     if (
         value is None
         or value is NotImplemented
-        or type(value) in {bool, int, float, complex, str, bytes}
+        or (
+            type(value) is bool
+            or type(value) is int
+            or type(value) is float
+            or type(value) is complex
+            or type(value) is str
+            or type(value) is bytes
+        )
     ):
         _update_stable_value(digest, value, budget=budget, depth=depth)
         return
@@ -6516,7 +6541,7 @@ def _update_global_reference(
                 depth=depth + 1,
             )
         return
-    if type(value) in {tuple, frozenset}:
+    if type(value) is tuple or type(value) is frozenset:
         _consume_target_budget(budget, depth=depth)
         _digest_field(digest, type(value).__name__.encode("ascii"))
         encoded_items: list[bytes] = []
@@ -7649,10 +7674,16 @@ def _update_external_function_global_reference(
     if (
         (
             type(value) is object
-            or type(value) in _CANONICAL_HIDDEN_BUILTIN_TYPES
+            or any(
+                type(value) is builtin_type
+                for builtin_type in _CANONICAL_HIDDEN_BUILTIN_TYPES
+            )
             or (
                 inspect.isclass(value)
-                and value in _CANONICAL_HIDDEN_BUILTIN_TYPES
+                and any(
+                    value is builtin_type
+                    for builtin_type in _CANONICAL_HIDDEN_BUILTIN_TYPES
+                )
             )
         )
         and vars(module).get(name) is value
@@ -7852,18 +7883,16 @@ def _external_class_leaf_identity(
                 }
             ):
                 continue
-            primitive_member = value is None or value is NotImplemented or type(
-                value
-            ) in {
-                bool,
-                int,
-                float,
-                complex,
-                str,
-                bytes,
-                tuple,
-                frozenset,
-            }
+            primitive_member = value is None or value is NotImplemented or (
+                type(value) is bool
+                or type(value) is int
+                or type(value) is float
+                or type(value) is complex
+                or type(value) is str
+                or type(value) is bytes
+                or type(value) is tuple
+                or type(value) is frozenset
+            )
             if budget.bind_exact_object_tokens and not primitive_member:
                 # A same-process callback retains the exact external class
                 # member it inspected.  Its operational internals may change,

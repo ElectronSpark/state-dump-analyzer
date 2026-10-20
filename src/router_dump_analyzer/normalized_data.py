@@ -721,6 +721,17 @@ def _redact_sensitive_tree(
     path_trie: Mapping[object, Any],
     branches: tuple[Mapping[object, Any], ...] = (),
 ) -> Any:
+    value_type = type(value)
+    # Exact scalars cannot contain sensitive paths. Identity comparisons avoid
+    # invoking subclass metaclass equality and accidentally skipping a mapping.
+    if (
+        value is None
+        or value_type is str
+        or value_type is int
+        or value_type is float
+        or value_type is bool
+    ):
+        return value
     if isinstance(value, dict) or isinstance(value, Mapping):
         result: dict[Any, Any] = {}
         for key, nested in value.items():
@@ -2404,7 +2415,8 @@ def _event_resource_kinds(
         *,
         nested_resource: bool,
     ) -> None:
-        if not isinstance(value, Mapping):
+        # Keep the cheap dict check ahead of the generic Mapping ABC check.
+        if not (isinstance(value, dict) or isinstance(value, Mapping)):  # noqa: SIM101
             return
         if value.get("resource_kind"):
             kinds.add(str(value["resource_kind"]))
@@ -2443,7 +2455,8 @@ def _redact_event_nested_record(
     payload_fields: frozenset[str],
     sensitive_condition: bool,
 ) -> Any:
-    if not isinstance(value, Mapping):
+    # Keep the cheap dict check ahead of the generic Mapping ABC check.
+    if not (isinstance(value, dict) or isinstance(value, Mapping)):  # noqa: SIM101
         return redact_sensitive_tree(value, sensitive)
     result: dict[Any, Any] = {}
     for key, nested in value.items():

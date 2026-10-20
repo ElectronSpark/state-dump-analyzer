@@ -18,6 +18,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
     "foundation": (
         "plugin_api", "plugin_loading", "plugin_validation", "artifact_core",
         "canonical", "source_record_core", "contract_validation",
+        "plugin_identity", "plugin_identity_runtime_imports",
         "contract_validation_boundaries", "resource_property_policy",
         "property_visibility", "ingestion", "ingestion_execution_boundaries",
     ),
@@ -44,7 +45,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "private_analysis_revision_evidence", "control_plane_private_analysis_evidence",
     ),
     "runtime": (
-        "normalized_data_service", "runtime_execution_boundaries",
+        "normalized_data_service", "safe_projection_fast_paths", "runtime_execution_boundaries",
         "provider_execution_boundaries", "runtime_revision_scope",
         "runtime_capability_advertising", "web_execution_boundaries",
         "core_cli", "core_web_app",

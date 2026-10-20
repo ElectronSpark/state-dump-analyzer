@@ -111,6 +111,13 @@ Keep identity verification enabled and preserve shared caches. A successful
 registration only clears that stage: check ingestion and publication afterward,
 and inspect retained failure diagnostics when the public job error is generic.
 
+For isolated Windows tests, direct `TEMP` and `TMP` to a writable task directory
+before launching child processes. If HTTP test setup stalls, capture a bounded
+stack trace before attributing it to fixture generation. A stack in
+`socket.accept` / `_fallback_socketpair` while constructing the Proactor loop
+can be an execution-environment restriction; retry the same bounded test with
+the required execution permission instead of changing application behavior.
+
 ## Loading and performance boundaries
 
 Measure the changed path with a fixed fixture and interpreter. Distinguish
@@ -278,13 +285,34 @@ bounded by entries and bytes. Key by exact weak code identity rather than
 structural code equality; source reads, dependency resolution, target mutation
 checks, and invocation-boundary verification still run. Exercise collection,
 eviction, and live changes with `tests.test_plugin_identity_runtime_imports`.
+The `foundation` conformance group includes that module and
+`tests.test_plugin_identity`.
+
+Exact built-in type classification must use object identity, not equality-based
+set/tuple membership. A custom metaclass can spoof equality/hash or be
+unhashable. Audit direct guards and aliases to type groups, including hidden
+built-ins and descriptor classification. Exercise
+`executable_callable_fingerprint` and `executable_module_target_fingerprint`
+with a source-backed callback invoking a mutable callable global, mutate its
+state, and verify changed fingerprints or the declared fail-closed error.
+Include ordinary-class and real-container controls and unsupported opaque
+state. A direct attribute read may independently bind state and conceal a
+broken callable-global path; it is not a substitute for invocation coverage.
 
 Safe-text accelerators may cache bounded policy-path transitions, not mutable
 event projections. Preserve ancestor-sensitive paths, policy isolation, exact
 JSON encoding and case folding. Check the final corpus against an independent
 safe-projection reference. Index-build progress should advance during work,
 remain path/text-free, and never substitute a count for integrity validation.
-Relevant tests are `tests.test_normalized_data_service`,
+Scalar/dictionary fast paths must retain generic Mapping and subclass fallback,
+conservative unresolved-kind redaction, nested sensitive-path semantics, and
+exact JSON types. Include metaclass equality attacks, Unicode/NUL, and numeric
+distinctions in differential checks. Validate complete document digests and all
+ordered sparse/dense/absent matches rather than only the first result page.
+Measure the implemented production path again: a monkeypatched prototype's
+timing does not establish loaded RSS or A-to-B-to-A navigation peaks.
+Relevant tests are `tests.test_safe_projection_fast_paths` (also in the
+`runtime` conformance group), `tests.test_normalized_data_service`,
 `tests.test_revision_queries`, `tests.test_history_search_core`, and
 `tests.test_load_progress`.
 

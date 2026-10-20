@@ -141,6 +141,66 @@ class PluginIdentityRuntimeImportTests(unittest.TestCase):
         importlib.invalidate_caches()
         temporary.cleanup()
 
+    def test_exact_type_guards_bind_callable_state_and_implementation(self) -> None:
+        for metaclass in ("type", "SpoofTuple", "Unhashable"):
+            for wrapped in (False, True):
+                with self.subTest(metaclass=metaclass, wrapped=wrapped):
+                    name = "_rda_identity_exact_type_callable"
+                    source = (
+                        "class SpoofTuple(type):\n"
+                        "    def __hash__(cls): return hash(tuple)\n"
+                        "    def __eq__(cls, other): return other is tuple or cls is other\n"
+                        "class Unhashable(type):\n"
+                        "    __hash__ = None\n"
+                        "class Callable(metaclass=" + metaclass + "):\n"
+                        "    def __init__(self): self.state = 1\n"
+                        "    def __call__(self): return self.state\n"
+                        "    def __iter__(self): return iter(())\n"
+                        "def replacement(self): return self.state + 1\n"
+                        "VALUE = Callable()\n"
+                        + ("VALUES = (VALUE,)\n" if wrapped else "")
+                        + "def callback(): return "
+                        + ("VALUES[0]()\n" if wrapped else "VALUE()\n")
+                    )
+                    temporary, (module,) = self._import_modules({name: source}, name)
+                    try:
+
+                        def fingerprints(module=module, name=name):
+                            return (
+                                executable_callable_fingerprint(module.callback),
+                                executable_module_target_fingerprint(
+                                    name, "callback", module.callback
+                                ),
+                            )
+
+                        first = fingerprints()
+                        self.assertEqual(first, fingerprints())
+                        module.VALUE.state = 2
+                        self.assertEqual(module.callback(), 2)
+                        changed_state = fingerprints()
+                        for before, after in zip(first, changed_state):
+                            self.assertNotEqual(before, after)
+                        module.Callable.__call__ = module.replacement
+                        self.assertEqual(module.callback(), 3)
+                        for before, after in zip(changed_state, fingerprints()):
+                            self.assertNotEqual(before, after)
+                    finally:
+                        self._cleanup_modules(temporary, name)
+
+    def test_exact_type_guards_reject_unsafe_iterator_globals(self) -> None:
+        name = "_rda_identity_exact_type_iterator"
+        temporary, (module,) = self._import_modules(
+            {name: "VALUE = iter((1, 2))\ndef callback(): return next(VALUE)\n"},
+            name,
+        )
+        try:
+            with self.assertRaises(PluginExecutableIdentityError):
+                executable_callable_fingerprint(module.callback)
+            with self.assertRaises(PluginExecutableIdentityError):
+                executable_module_target_fingerprint(name, "callback", module.callback)
+        finally:
+            self._cleanup_modules(temporary, name)
+
     def test_local_import_binds_changed_external_helper_behavior(self) -> None:
         helper_name = "_rda_identity_local_helper"
         factory_name = "_rda_identity_local_factory"

@@ -79,6 +79,11 @@ An API warmup can hide browser-first-query work, and a tiny input can still incu
 fixed provider-verification costs. Reuse immutable dependency analysis, never
 an authorization or executable-trust decision; any code-object cache must use
 exact identity, bounded retention, and avoid keeping retired code alive.
+For exact built-in type guards, use identity comparisons; membership or
+equality can invoke a custom metaclass and misclassify mutable values. Audit
+aliased type groups too. Preserve general Mapping/subclass behavior when adding
+projection fast paths, and validate both public fingerprint entry points and
+exact safe search text as described in the performance map.
 For navigation caches, reclaim idle generations before destination allocation;
 protect active leases and resolve unknown destinations before eviction. Check
 the prepared destination's bounded size/checksum before reclamation without

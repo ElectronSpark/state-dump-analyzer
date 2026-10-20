@@ -1,6 +1,8 @@
 # Audit follow-up investigation — 2026-10-20
 
 This investigates the remaining findings after [the audit fixes](audit-fixes-2026-10-20.md).
+The identity repair and projection optimization were subsequently implemented;
+see [implementation and validation](identity-projection-2026-10-20.md).
 Production source and the running demo were left unchanged. GPT 6.1 Sol agents
 used the repository skills for isolated investigations; the parent reviewed the
 artifacts and independently reproduced the key correctness findings. These are
