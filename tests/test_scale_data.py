@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import unittest
+import json
+from copy import deepcopy
 from collections import defaultdict
+from collections.abc import Mapping
 
 from rsl_demo_plugin.scale_data import (
     MAX_HISTORY_SEARCH_DATABASE_BYTES,
@@ -14,6 +17,8 @@ from rsl_demo_plugin.scale_data import (
     _ScaleTemporalIndex,
     _add_history_only_resources,
     _compact_event,
+    _EventByUid,
+    _EventValuePool,
     _icon_descriptor,
     _resource_record,
     _scale_projection_capabilities,
@@ -23,6 +28,7 @@ from rsl_demo_plugin.temporal_contract import (
     build_demo_plugin_contract,
 )
 from rsl_demo_generator._scale import _plugin_schema
+from router_dump_analyzer.temporal_core import temporal_order_key
 
 
 RESOURCE_ID = "data-bridge-layer/DTE/blue/dte-000001"
@@ -30,6 +36,124 @@ SNAPSHOT_ID = "control-plane/EVPN_ES/es-00001"
 
 
 class MillionScaleBoundsTests(unittest.TestCase):
+    def test_all_retained_json_metadata_is_owned_and_recursively_immutable(self) -> None:
+        payload = {"items": [True, 1, 1.0, {"z": "α", "a": None}]}
+
+        def assert_frozen(value: object) -> None:
+            if isinstance(value, dict):
+                for nested in value.values():
+                    assert_frozen(nested)
+                with self.assertRaises(TypeError):
+                    value.clear()
+            elif isinstance(value, list):
+                for nested in value:
+                    assert_frozen(nested)
+                with self.assertRaises(TypeError):
+                    value.append(None)
+
+        for pool in (None, _EventValuePool()):
+            raw = {"event_uid": "owned", "timestamp_ns": "1", "resource_id": "r",
+                   **{name: deepcopy(payload) for name in (
+                       "action", "outcome", "layer", "phase", "burst_id",
+                       "resource_kind", "resource", "properties", "result")},
+                   "effects": [{"resource_id": "r", "state_changed": True,
+                                **{name: deepcopy(payload) for name in (
+                                    "kind", "effect_type", "condition", "condition_class",
+                                    "before", "after")}}]}
+            row = _compact_event(raw, value_pool=pool)
+            for name in ("action", "outcome", "layer", "phase", "burst_id", "resource_kind"):
+                self.assertEqual(json.dumps(row[name], ensure_ascii=False),
+                                 json.dumps(raw[name], ensure_ascii=False))
+            self.assertEqual(json.dumps(row["subject"]["raw_key"], ensure_ascii=False),
+                             json.dumps(raw["resource"], ensure_ascii=False))
+            for output_name, input_name in (("kind", "kind"), ("effect_type", "effect_type"),
+                                             ("condition", "condition"), ("status_class", "condition_class")):
+                self.assertEqual(json.dumps(row["effects"][0][output_name], ensure_ascii=False),
+                                 json.dumps(raw["effects"][0][input_name], ensure_ascii=False))
+            expected = json.dumps(dict(row), ensure_ascii=False)
+            for name in ("action", "outcome", "layer", "phase", "burst_id",
+                         "resource_kind", "resource", "properties", "result"):
+                raw[name]["items"][-1]["z"] = "changed"
+            for value in raw["effects"][0].values():
+                if isinstance(value, dict):
+                    value["items"][-1]["z"] = "changed"
+            self.assertEqual(json.dumps(dict(row), ensure_ascii=False), expected)
+            for value in row.values():
+                assert_frozen(value)
+            self.assertIs(row["subject"], row["subjects"][0])
+            self.assertIs(row["result"], row["attributes"]["result"])
+
+    def test_subject_pool_fallback_owns_non_string_container_values(self) -> None:
+        values = [{"layer": [1]}, [{"kind": True}], {"key": {"part": "α"}}]
+        subject, subjects = _EventValuePool().subject("r", *values)
+        expected = json.dumps(subject, ensure_ascii=False)
+        for value in values:
+            value.clear()
+        self.assertEqual(json.dumps(subject, ensure_ascii=False), expected)
+        self.assertIs(subjects[0], subject)
+        with self.assertRaises(TypeError):
+            subject["layer"]["layer"].append(2)
+        with self.assertRaises(TypeError):
+            subject["kind"][0].update(kind=False)
+        with self.assertRaises(TypeError):
+            subject["raw_key"]["key"].clear()
+
+    def test_value_reuse_is_owned_bounded_and_isolated_to_one_load(self) -> None:
+        raw = {"event_uid": "a", "timestamp_ns": "1", "resource_id": "r",
+               "layer": "l", "resource_kind": "k", "result": {"status": "ok"}}
+        pool = _EventValuePool(max_subjects=1, max_results=1)
+        first = _compact_event(raw, value_pool=pool)
+        second = _compact_event(raw, value_pool=pool)
+        independent = _compact_event(raw, value_pool=_EventValuePool())
+        for name in ("subject", "subjects", "result"):
+            self.assertIs(first[name], second[name])
+            self.assertIsNot(first[name], independent[name])
+        self.assertEqual(dict(first), dict(_compact_event(raw)))
+        raw["result"]["status"] = "changed"
+        raw["resource_id"] = "other"
+        changed = _compact_event(raw, value_pool=pool)
+        self.assertEqual(first["result"], {"status": "ok"})
+        self.assertEqual(changed["result"], {"status": "changed"})
+        self.assertEqual(changed["subject"]["resource_id"], "other")
+        self.assertEqual(len(pool._subjects), 1)
+        self.assertEqual(len(pool._results), 1)
+        for name in ("subject", "subjects", "result"):
+            with self.assertRaises(TypeError):
+                first[name].clear()
+
+    def test_value_reuse_preserves_json_types_order_and_equality_collisions(self) -> None:
+        pool = _EventValuePool()
+        for value in (True, 1, 1.0, "1", None, [1, {"nested": False}]):
+            raw = {"event_uid": "a", "timestamp_ns": "1", "layer": value,
+                   "result": {"status": value}, "resource_id": "r"}
+            pooled = _compact_event(raw, value_pool=pool)
+            ordinary = _compact_event(raw)
+            self.assertEqual(json.dumps(dict(pooled)), json.dumps(dict(ordinary)))
+            self.assertIs(type(pooled["result"]["status"]), type(ordinary["result"]["status"]))
+            self.assertIs(type(pooled["subject"]["layer"]), type(ordinary["subject"]["layer"]))
+        for result in ({"z": "last", "a": "first"}, {"a": "first", "z": "last"}):
+            row = _compact_event({"event_uid": "a", "timestamp_ns": "1", "result": result},
+                                 value_pool=pool)
+            self.assertEqual(list(row["result"]), list(result))
+        nested = {"status": [1, {"value": "original"}]}
+        row = _compact_event({"event_uid": "a", "timestamp_ns": "1", "result": nested},
+                             value_pool=pool)
+        nested["status"][1]["value"] = "changed"
+        self.assertEqual(row["result"]["status"][1]["value"], "original")
+        self.assertEqual(len(pool._subjects), 2)
+        self.assertEqual(len(pool._results), 1)
+
+    def test_trusted_compact_order_retains_exact_admission_and_generic_order(self) -> None:
+        for timestamp in (-(1 << 63), -1, 0, (1 << 63) - 1):
+            row = _compact_event({"event_uid": "uid-α", "timestamp_ns": str(timestamp),
+                                  "source_sequence": -7})
+            self.assertEqual(row._order_key(), temporal_order_key(
+                row, time_field="timestamp_ns", identifier_fields=("event_uid", "event_id")))
+        for field in ("timestamp_ns", "source_sequence"):
+            for invalid in (True, "01", "1.0", 1 << 63):
+                with self.assertRaises(ValueError):
+                    _compact_event({"event_uid": "a", "timestamp_ns": "0", field: invalid})
+
     def test_event_stream_and_search_have_specific_bounded_million_scale_limits(
         self,
     ) -> None:
@@ -41,6 +165,79 @@ class MillionScaleBoundsTests(unittest.TestCase):
             4 * 1024 * 1024 * 1024,
         )
 
+    def test_compact_rows_preserve_mapping_json_and_owned_immutable_values(self) -> None:
+        raw = {
+            "event_uid": "event-α", "timestamp_ns": "-10",
+            "resource_id": "r", "event_name": "update",
+            "properties": {"nested": [1, {"value": "original"}]},
+            "result": {"status": "ok"},
+            "effects": [{"resource_id": "r", "state_changed": True,
+                         "before": {"status": "down"}, "after": {"status": "up"}}],
+        }
+        row = _compact_event(raw)
+        self.assertNotIsInstance(row, dict)
+        self.assertEqual(row["timestamp_ns"], "-10")
+        self.assertIsNone(row.get("missing"))
+        self.assertEqual(row.get("missing", "fallback"), "fallback")
+        with self.assertRaises(KeyError):
+            row["missing"]
+        items = row.items()
+        self.assertEqual(len(items), len(row))
+        self.assertEqual(list(items), list(items))
+        self.assertIn(("event_uid", "event-α"), items)
+        self.assertEqual(dict(items), dict(row))
+        self.assertIs(row["subject"], row["subjects"][0])
+        self.assertIs(row["result"], row["attributes"]["result"])
+        self.assertIs(deepcopy(row), row)
+        raw["properties"]["nested"][1]["value"] = "changed"
+        self.assertEqual(row["attributes"]["properties"]["nested"][1]["value"], "original")
+        for mutate in (
+            lambda: row["effects"][0]["before"].update(status="changed"),
+            lambda: row["effects"].append({}),
+            lambda: row["subjects"].clear(),
+            lambda: row["result"].pop("status"),
+        ):
+            with self.assertRaises(TypeError):
+                mutate()
+        decoded = json.loads(json.dumps(dict(row)))
+        self.assertEqual(decoded, dict(row))
+
+    def test_uid_row_view_shares_canonical_ordinal_index(self) -> None:
+        rows = [_compact_event({"event_uid": uid, "timestamp_ns": timestamp})
+                for uid, timestamp in (("a", "-1"), ("b", "1"), ("a", "2"))]
+        positions = {row["event_uid"]: ordinal for ordinal, row in enumerate(rows)}
+        lookup = _EventByUid(rows, positions)
+        self.assertIs(lookup._positions, positions)
+        self.assertIs(lookup["a"], rows[positions["a"]])
+        self.assertEqual(list(lookup), ["a", "b"])
+        self.assertEqual(len(lookup), 2)
+        self.assertIsNone(lookup.get("missing"))
+
+    def test_unsorted_duplicate_keeps_arrival_lookup_and_canonical_locator(self) -> None:
+        arrival = [_compact_event({"event_uid": uid, "timestamp_ns": timestamp})
+                   for uid, timestamp in (("a", "20"), ("b", "15"), ("a", "10"))]
+        legacy_lookup = {row["event_uid"]: row for row in arrival}
+        canonical = sorted(arrival, key=lambda row: int(row["timestamp_ns"]))
+        positions = {row["event_uid"]: ordinal for ordinal, row in enumerate(canonical)}
+        overrides = {uid: row for uid, row in legacy_lookup.items()
+                     if row is not canonical[positions[uid]]}
+        lookup = _EventByUid(canonical, positions, overrides)
+        self.assertEqual(list(overrides), ["a"])
+        self.assertIs(lookup["a"], legacy_lookup["a"])
+        # Event-log locate uses the canonical ordinal, whereas detail lookup
+        # preserves the historical arrival-last duplicate behavior.
+        self.assertEqual(canonical[positions["a"]]["timestamp_ns"], "20")
+        self.assertEqual(lookup["a"]["timestamp_ns"], "10")
+
+    def test_empty_uid_keeps_row_lookup_without_gaining_a_locator_ordinal(self) -> None:
+        row = _compact_event({"event_uid": "", "timestamp_ns": "0"})
+        positions = {}
+        lookup = _EventByUid([row], positions, {"": row})
+        self.assertIs(lookup[""], row)
+        self.assertEqual(list(lookup), [""])
+        self.assertEqual(len(lookup), 1)
+        self.assertNotIn("", positions)
+
 
 def event(
     uid: str,
@@ -51,7 +248,7 @@ def event(
     after: dict[str, str],
     state_changed: bool = True,
     effect_fields: dict[str, object] | None = None,
-) -> dict[str, object]:
+) -> Mapping[str, object]:
     effect = {
         "resource_id": RESOURCE_ID,
         "kind": "DTE",

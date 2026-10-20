@@ -1166,6 +1166,11 @@ candidate still receives the exact substring check. Cold matching can share
 corpus construction or sidecar validation scans, but results publish only after
 complete identity, count, digest, and candidate-index validation succeeds.
 
+Indexed history accepts read-only event mappings and sequences. The generated
+demo shares its UID ordinal index with a compact row lookup view; the
+[storage contract](api-contract.md#windowed-scale-history) describes ownership and
+duplicate-UID compatibility. Ordinary parser emissions need no new hook.
+
 A compatibility history adapter may provide `ordered_events_by_resource` as
 an optional accelerator containing the same complete per-resource event
 sequences in canonical temporal order. Core can bisect these sequences before

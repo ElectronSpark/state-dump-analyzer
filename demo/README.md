@@ -29,6 +29,15 @@ group from the repository root with
 `python scripts/check_plugin_conformance.py --group foundation`, or use
 `--group combined` for the demo's durable and cross-node integrations.
 
+The generated archive adapter stores immutable compact event mappings and
+shares one UID ordinal index with its row lookup view. Bounded load-local
+pools reuse complete immutable subject and string-result values with exact
+JSON types; pools are discarded after loading. Accepted nested metadata and
+non-string subject values are also owned immutable snapshots, with unchanged
+JSON projections. The parser teaching
+slice retains ordinary `DomainEvent` emissions. Run
+`python -m unittest tests.test_scale_data -v` for storage compatibility checks.
+
 The minimal parser intentionally emits one unqualified status view. When
 extending it with intended/programmed/observed perspectives, keep them explicit:
 core reconstructs each independently and never merges their fields. A singular

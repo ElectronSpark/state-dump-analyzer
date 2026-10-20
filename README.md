@@ -1299,6 +1299,10 @@ the demo guide owns the current projection and evidence contract.
 
 ## Documentation
 
+For generated-history adapter storage checks, run
+`python -m unittest tests.test_scale_data -v`; see the
+[loading and performance boundaries](docs/plugin-api-validation.md#loading-and-performance-boundaries).
+
 | Document | Use it for |
 |---|---|
 | [Architecture and library decisions](docs/architecture.md) | System boundaries, temporal model, reconstruction, performance, and security |

@@ -2,7 +2,8 @@ from . import GENERATED_PROJECTION_POLICY as GENERATED_PROJECTION_POLICY
 from .archive import MANIFEST_MEMBER_NAME as MANIFEST_MEMBER_NAME, NODE_PACK_GENERATOR as NODE_PACK_GENERATOR, NODE_PACK_MANIFEST_MEMBER as NODE_PACK_MANIFEST_MEMBER, NODE_PACK_ROOT as NODE_PACK_ROOT, NORMALIZED_SCALE_PREFIX as NORMALIZED_SCALE_PREFIX, RELATIONSHIP_MUTATIONS_MEMBER_NAME as RELATIONSHIP_MUTATIONS_MEMBER_NAME, normalize_archive_member_name as normalize_archive_member_name
 from .scale import RESOURCE_TABLE_COLUMNS as RESOURCE_TABLE_COLUMNS, RESOURCE_TABLE_JSON_COLUMNS as RESOURCE_TABLE_JSON_COLUMNS
 from .source_records import RECORD_LANE_PRESETS as RECORD_LANE_PRESETS, SOURCE_RECORD_DESCRIPTORS as SOURCE_RECORD_DESCRIPTORS, SOURCE_RECORD_GROUP_DESCRIPTORS as SOURCE_RECORD_GROUP_DESCRIPTORS, build_demo_source_records as build_demo_source_records
-from collections.abc import Callable as Callable, Iterator, Mapping
+from _typeshed import Incomplete
+from collections.abc import Callable as Callable, ItemsView, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from router_dump_analyzer.history_search_core import HistorySearchCorpus
@@ -17,6 +18,57 @@ MAX_HISTORY_SEARCH_CHARACTERS: Final[int]
 MAX_HISTORY_SEARCH_DATABASE_BYTES: Final[int]
 HISTORY_SEARCH_PROJECTION_VERSION: bytes
 
+class _FrozenDict(dict[str, Any]):
+    __setitem__: Incomplete
+    __delitem__: Incomplete
+    clear: Incomplete
+    pop: Incomplete
+    popitem: Incomplete
+    setdefault: Incomplete
+    update: Incomplete
+    __ior__: Incomplete
+    def __deepcopy__(self, memo: dict[int, Any]) -> _FrozenDict: ...
+
+class _FrozenList(list[Any]):
+    __setitem__: Incomplete
+    __delitem__: Incomplete
+    append: Incomplete
+    clear: Incomplete
+    extend: Incomplete
+    insert: Incomplete
+    pop: Incomplete
+    remove: Incomplete
+    reverse: Incomplete
+    sort: Incomplete
+    __iadd__: Incomplete
+    __imul__: Incomplete
+    def __deepcopy__(self, memo: dict[int, Any]) -> _FrozenList: ...
+
+class _EventValuePool:
+    def __init__(self, max_subjects: int = 131072, max_results: int = 128) -> None: ...
+    def subject(self, resource_id: str, layer: Any, kind: Any, raw_key: Any) -> tuple[_FrozenDict, _FrozenList]: ...
+    def result(self, value: Any) -> Any: ...
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _CompactEvent(Mapping[str, Any]):
+    _values: tuple[Any, ...]
+    def __getitem__(self, key: str) -> Any: ...
+    def get(self, key: str, default: Any = None) -> Any: ...
+    def __iter__(self) -> Iterator[str]: ...
+    def __len__(self) -> int: ...
+    def items(self) -> ItemsView[str, Any]: ...
+    def __deepcopy__(self, memo: dict[int, Any]) -> _CompactEvent: ...
+
+class _CompactEventItems(ItemsView[str, Any]):
+    def __init__(self, row: _CompactEvent) -> None: ...
+    def __iter__(self) -> Iterator[tuple[str, Any]]: ...
+
+class _EventByUid(Mapping[str, Mapping[str, Any]]):
+    def __init__(self, events: Sequence[Mapping[str, Any]], positions: Mapping[str, int], duplicate_rows: Mapping[str, Mapping[str, Any]] | None = None) -> None: ...
+    def __getitem__(self, uid: str) -> Mapping[str, Any]: ...
+    def __iter__(self) -> Iterator[str]: ...
+    def __len__(self) -> int: ...
+
 class _ResourceSearchSnapshotCache:
     def __init__(self, max_snapshots: int = 2) -> None: ...
     def get_or_build(self, timestamp_ns: int, builder: Callable[[], dict[str, str]]) -> dict[str, str]: ...
@@ -27,10 +79,10 @@ class ScaleRuntime:
     resource_by_id: dict[str, dict[str, Any]]
     resources_by_kind: dict[str, list[dict[str, Any]]]
     resource_counts: dict[str, int]
-    events: list[dict[str, Any]]
-    event_by_uid: dict[str, dict[str, Any]]
+    events: Sequence[Mapping[str, Any]]
+    event_by_uid: Mapping[str, Mapping[str, Any]]
     event_times: list[int]
-    events_by_resource: dict[str, list[dict[str, Any]]]
+    events_by_resource: dict[str, list[Mapping[str, Any]]]
     lifecycle_by_resource: Mapping[str, list[dict[str, Any]]]
     state_by_resource: Mapping[str, list[dict[str, Any]]]
     relationships: list[dict[str, Any]]
@@ -45,11 +97,11 @@ class ScaleRuntime:
     event_search: HistorySearchCorpus = field(default_factory=HistorySearchCorpus)
     event_redaction_policy: Any | None = ...
     _revision_query_cache: Any | None = ...
-    ordered_events_by_resource: Mapping[str, list[dict[str, Any]]] | None = ...
+    ordered_events_by_resource: Mapping[str, list[Mapping[str, Any]]] | None = ...
     resource_search: _ResourceSearchSnapshotCache = field(default_factory=_ResourceSearchSnapshotCache)
 
 class _ScaleTemporalIndex:
-    def __init__(self, resource_by_id: dict[str, dict[str, Any]], events_by_resource: dict[str, list[dict[str, Any]]]) -> None: ...
+    def __init__(self, resource_by_id: dict[str, dict[str, Any]], events_by_resource: dict[str, list[Mapping[str, Any]]]) -> None: ...
     def lifecycle_intervals(self, identifier: str) -> list[dict[str, Any]]: ...
     def state_intervals(self, identifier: str) -> list[dict[str, Any]]: ...
 

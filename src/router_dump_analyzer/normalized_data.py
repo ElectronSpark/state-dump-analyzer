@@ -12,7 +12,7 @@ import json
 import re
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from functools import lru_cache, partial
 from hashlib import sha256
@@ -412,10 +412,10 @@ class IndexedHistory(Protocol):
     resource_by_id: Mapping[str, dict[str, Any]]
     resources_by_kind: Mapping[str, list[dict[str, Any]]]
     resource_counts: Mapping[str, int]
-    events: list[dict[str, Any]]
-    event_by_uid: Mapping[str, dict[str, Any]]
+    events: Sequence[Mapping[str, Any]]
+    event_by_uid: Mapping[str, Mapping[str, Any]]
     event_times: list[int]
-    events_by_resource: Mapping[str, list[dict[str, Any]]]
+    events_by_resource: Mapping[str, Sequence[Mapping[str, Any]]]
     lifecycle_by_resource: Mapping[str, list[dict[str, Any]]]
     state_by_resource: Mapping[str, list[dict[str, Any]]]
     relationships: list[dict[str, Any]]
@@ -3949,7 +3949,7 @@ class NormalizedDataService:
         self,
         start_ns: int,
         end_ns: int,
-    ) -> list[dict[str, Any]]:
+    ) -> Sequence[Mapping[str, Any]]:
         dataset = self.load_dataset()
         runtime = self.history_runtime(dataset)
         if runtime is not None:

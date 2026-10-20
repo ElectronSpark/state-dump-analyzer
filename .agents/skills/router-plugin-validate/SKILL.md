@@ -59,6 +59,11 @@ If the user asks for model-based validation of a skill, have fresh subagents
 isolated temporary directories without inherited conversation. Give them only
 the task, skill paths, and allowed outputs (plus any user-supplied fixture),
 without API hints, implementation steps, test names, or expected assertions.
+Explicitly exclude all prior trial artifacts, other agents' outputs, parent
+check logs and diagnoses from each trial's allowed inputs, even though agents
+share one workspace. A retry must start clean rather than copy or inspect an
+earlier attempt. Reading such material invalidates its independence; record
+that contamination and rerun cleanly with the same minimal task prompt.
 Keep each batch's skill version fixed and record the prompts and skill hashes.
 Use the user's requested
 model; otherwise preserve the configured model. Assign disjoint files and
@@ -103,3 +108,16 @@ counts, and remaining limits. Never turn a declaration inventory or a handful
 of passing tests into a claim of exhaustive coverage. Fix demonstrated issues
 within scope, preserve unrelated working-tree changes, and complete `AGENTS.md`'s
 plug-in documentation drift check before handoff.
+
+For compact indexed-history changes, verify read-only Mapping rows through
+generic queries and JSON projections. Check nested ownership, repeatable items
+views and UID/ordinal behavior after sorting. For duplicate UIDs, the ordinal
+must select canonical-sort-LAST (not FIRST/setdefault), while row lookup must
+select arrival-LAST through a sparse compatibility override when needed.
+An empty UID must retain row lookup without any ordinal. Independently assert
+all three rules using unsorted duplicates and an empty UID; agreement between
+row and ordinal lookups alone is insufficient. Use `tests.test_scale_data` alongside the API map history tests;
+measure focused construction/projection CPU and retained GC before full-scale
+trials. For bounded immutable reuse, verify complete value identity, JSON type
+and ordering fidelity (including bool/int/float equality collisions), pool
+bounds and isolation, and disposal of load-local pool indexes.

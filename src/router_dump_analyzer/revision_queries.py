@@ -13,7 +13,7 @@ import heapq
 from array import array
 from bisect import bisect_left, bisect_right
 from collections import Counter, OrderedDict
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, cast
@@ -1964,7 +1964,7 @@ class RevisionQueryService:
         requested_ids = set(requested_id_values)
         search = query.search.casefold()
         if runtime is not None:
-            filtered: list[dict[str, Any]] = []
+            filtered: Sequence[Mapping[str, Any]] = []
             lifecycle_by_resource = cast(
                 dict[str, list[dict[str, Any]]], runtime.lifecycle_by_resource
             )

@@ -1,7 +1,7 @@
 from .load_progress import AnalysisLoadTracker
 from .plugin_api import StatusPerspectiveRef
 from .temporal_core import contains_time as contains_time, overlaps_range as overlaps_range
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from types import TracebackType
 from typing import Any, Protocol
@@ -15,10 +15,10 @@ class IndexedHistory(Protocol):
     resource_by_id: Mapping[str, dict[str, Any]]
     resources_by_kind: Mapping[str, list[dict[str, Any]]]
     resource_counts: Mapping[str, int]
-    events: list[dict[str, Any]]
-    event_by_uid: Mapping[str, dict[str, Any]]
+    events: Sequence[Mapping[str, Any]]
+    event_by_uid: Mapping[str, Mapping[str, Any]]
     event_times: list[int]
-    events_by_resource: Mapping[str, list[dict[str, Any]]]
+    events_by_resource: Mapping[str, Sequence[Mapping[str, Any]]]
     lifecycle_by_resource: Mapping[str, list[dict[str, Any]]]
     state_by_resource: Mapping[str, list[dict[str, Any]]]
     relationships: list[dict[str, Any]]
@@ -95,6 +95,6 @@ class NormalizedDataService:
     def relationships_at(self, timestamp_ns: int) -> list[dict[str, Any]]: ...
     def redact_state_interval_for_client(self, resource_identifier: str, interval: Mapping[str, Any], dataset: Mapping[str, Any] | None = None) -> dict[str, Any]: ...
     def resources_at(self, timestamp_ns: int, *, kinds: set[str] | None = None, layers: set[str] | None = None, search: str | None = None, limit: int | None = None, offset: int = 0, view_id: str | None = None) -> dict[str, Any]: ...
-    def events_in_range(self, start_ns: int, end_ns: int) -> list[dict[str, Any]]: ...
+    def events_in_range(self, start_ns: int, end_ns: int) -> Sequence[Mapping[str, Any]]: ...
     def dashboard_query(self, timestamp_ns: int, *, dashboard_ids: Iterable[str] | None = None) -> dict[str, Any]: ...
     def range_summary(self, start_ns: int, end_ns: int) -> dict[str, Any]: ...

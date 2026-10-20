@@ -4310,6 +4310,31 @@ performs the actual clipboard write. Hide/show and review-marker actions in the
 demo are browser-local presentation state; they do not mutate the immutable
 revision. Core never assumes that a source type or group named `ctf` exists.
 
+Indexed history event rows are read-only `Mapping[str, Any]` values, held in
+`Sequence` collections; consumers must not require concrete dictionaries or
+mutate rows. The generated demo uses compact immutable rows, owns and freezes
+nested JSON values (including accepted container-valued event/effect metadata
+and non-string subject fields), and exposes a UID-to-row mapping view over its single
+UID-to-ordinal index. Canonical ordinal lookup and row lookup select the same
+row for unique UIDs. For previously accepted duplicate UIDs in unsorted input,
+a sparse override preserves arrival-last row lookup while event-log locate
+retains canonical-sort-last ordinal lookup. A previously accepted empty UID
+retains row lookup without acquiring a locator ordinal. Internal
+`events_in_range` results likewise expose read-only mappings and sequences.
+JSON responses and ordinary parser
+`DomainEvent` emissions retain their existing shapes. This adds no capability
+hook or parser requirement. The demo's load-local reuse pool shares complete
+immutable subject/subjects values only when all four identity values are exact
+strings (at most 131,072 entries), and result mappings only when they contain
+one exact string key/value pair (at most 128 entries). Other values follow the
+ordinary owned-freeze path. Pools stop admitting entries at their bounds and
+are discarded after one load; retained rows alone own the reused values.
+Exact-type guards preserve JSON distinctions such as `true`, `1`, and `1.0`;
+field ordering, temporal admission and duplicate/empty UID behavior are unchanged.
+The loader reuses temporal integers already admitted by its packed-row parser
+when indexing; generic query consumers retain the normal temporal contract.
+`tests.test_scale_data` covers this storage boundary.
+
 For immutable full-scale revisions, the core builds the literal-search corpus
 after plug-in descriptors and sensitivity rules are final. Frontend-hosted
 deployments do this synchronously on the first indexed search, under a visible

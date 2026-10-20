@@ -78,6 +78,22 @@ while building an index and `READING_ARCHIVE` while processing an archive;
 simple fixture reads can retain the core's `LOADING_REVISION` stage. Counting
 records alone does not establish that an index was built.
 
+For compact indexed-history storage, consume event rows through `Mapping` and
+sequences through `Sequence`; preserve JSON projections, nested ownership and
+immutable values. Share one UID-to-ordinal index with the UID-to-row view, and
+preserve duplicate-UID compatibility: the ordinal index selects the LAST row
+in canonical sorted order (assignment during enumeration, never setdefault),
+while UID-to-row lookup selects the LAST arrival using a sparse override when
+these differ. An empty UID retains row lookup but MUST NOT gain an ordinal.
+Test an unsorted duplicate pair and an empty UID against these explicit rules;
+checking only that both mappings agree would miss the required exception.
+Check mapping
+views and sorting, and measure small construction/projection CPU plus retained
+GC work. Reuse complete owned immutable values only in bounded load/generation-
+local pools; exact JSON types and field ordering must survive Python equality
+collisions such as bool/int. Verify pool bounds/isolation, and discard temporary
+pool indexes after loading without retaining another history generation.
+
 For history caches and bulk search, keep derived work owned by the exact
 immutable generation. Consume exact search postings as `Sequence[int]`
 with bounded paging and byte budgets; candidate reuse and fused scans

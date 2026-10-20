@@ -14,8 +14,9 @@ import sys
 import tarfile
 import unicodedata
 from hashlib import sha256
+from itertools import chain
 from collections import Counter, OrderedDict, defaultdict
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, ItemsView, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
 from operator import itemgetter
@@ -77,6 +78,188 @@ MAX_HISTORY_SEARCH_CHARACTERS: Final[int] = 3 * 1024 * 1024 * 1024
 MAX_HISTORY_SEARCH_DATABASE_BYTES: Final[int] = 4 * 1024 * 1024 * 1024
 HISTORY_SEARCH_PROJECTION_VERSION = b"redacted-sorted-json-casefold-fts5-v5"
 _LOAD_PROGRESS_RECORD_BATCH: Final[int] = 1024
+
+
+def _immutable_mutation(*args: Any, **kwargs: Any) -> Any:
+    raise TypeError("event rows are immutable")
+
+
+class _FrozenDict(dict[str, Any]):
+    """JSON-compatible owned mapping with no supported mutation operations."""
+
+    __slots__ = ()
+    __setitem__ = __delitem__ = clear = pop = popitem = setdefault = update = _immutable_mutation
+    __ior__ = _immutable_mutation
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> _FrozenDict:
+        return self
+
+
+class _FrozenList(list[Any]):
+    __slots__ = ()
+    __setitem__ = __delitem__ = append = clear = extend = insert = pop = remove = reverse = sort = _immutable_mutation
+    __iadd__ = __imul__ = _immutable_mutation
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> _FrozenList:
+        return self
+
+
+_EMPTY_EVENT_DICT = _FrozenDict()
+_EMPTY_EVENT_LIST = _FrozenList()
+_EVENT_JSON_CONTAINERS = (dict, list)
+
+
+def _freeze_event_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        if not value:
+            return _EMPTY_EVENT_DICT
+        result = _FrozenDict(value)
+        for key, item in value.items():
+            if isinstance(item, _EVENT_JSON_CONTAINERS):
+                # This row is still private to the builder. Copy scalars in C,
+                # then replace only nested containers before publication.
+                dict.__setitem__(result, key, _freeze_event_value(item))
+        return result
+    if isinstance(value, list):
+        if not value:
+            return _EMPTY_EVENT_LIST
+        return _FrozenList([
+            _freeze_event_value(item)
+            if isinstance(item, _EVENT_JSON_CONTAINERS) else item
+            for item in value
+        ])
+    return value
+
+
+class _EventValuePool:
+    """Bounded load-local reuse of complete immutable subject/result values.
+
+    Exact string guards avoid Python equality collisions between JSON scalars.
+    Unusual or nested values retain the ordinary owned-freeze path.
+    """
+
+    __slots__ = ("_subjects", "_results", "_max_subjects", "_max_results")
+
+    def __init__(self, max_subjects: int = 131_072, max_results: int = 128) -> None:
+        if max_subjects < 0 or max_results < 0:
+            raise ValueError("event value pool limits must be nonnegative")
+        self._max_subjects = max_subjects
+        self._max_results = max_results
+        self._subjects: dict[tuple[Any, ...], tuple[_FrozenDict, _FrozenList]] = {}
+        self._results: dict[tuple[str, str], _FrozenDict] = {}
+
+    def subject(
+        self, resource_id: str, layer: Any, kind: Any, raw_key: Any,
+    ) -> tuple[_FrozenDict, _FrozenList]:
+        key = (resource_id, layer, kind, raw_key)
+        share = (
+            type(resource_id) is str and type(layer) is str
+            and type(kind) is str and type(raw_key) is str
+        )
+        if share:
+            cached = self._subjects.get(key)
+            if cached is not None:
+                return cached
+        values = {
+            "resource_id": resource_id, "layer": layer,
+            "kind": kind, "raw_key": raw_key,
+        }
+        subject = _FrozenDict(values) if share else _freeze_event_value(values)
+        result = subject, _FrozenList([subject])
+        if share and len(self._subjects) < self._max_subjects:
+            self._subjects[key] = result
+        return result
+
+    def result(self, value: Any) -> Any:
+        if type(value) is dict and len(value) == 1:
+            name, item = next(iter(value.items()))
+            if type(name) is str and type(item) is str:
+                key = (name, item)
+                cached = self._results.get(key)
+                if cached is not None:
+                    return cached
+                frozen = _FrozenDict(value)
+                if len(self._results) < self._max_results:
+                    self._results[key] = frozen
+                return frozen
+        return _freeze_event_value(value)
+
+
+_EVENT_FIELDS = (
+    "event_uid", "timestamp_ns", "source_sequence", "event_type", "event_name",
+    "display_name", "action", "outcome", "state_changed", "layer", "phase",
+    "burst_id", "resource_id", "resource_kind", "subject", "subjects",
+    "affected_resources", "effects", "attributes", "result",
+)
+_EVENT_FIELD_POSITIONS = {key: position for position, key in enumerate(_EVENT_FIELDS)}
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _CompactEvent(Mapping[str, Any]):
+    """One immutable fixed-schema row; field positions are shared by all rows."""
+
+    _values: tuple[Any, ...]
+
+    def __getitem__(self, key: str) -> Any:
+        return self._values[_EVENT_FIELD_POSITIONS[key]]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        position = _EVENT_FIELD_POSITIONS.get(key)
+        return default if position is None else self._values[position]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(_EVENT_FIELDS)
+
+    def __len__(self) -> int:
+        return len(_EVENT_FIELDS)
+
+    def items(self) -> ItemsView[str, Any]:
+        return _CompactEventItems(self)
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> _CompactEvent:
+        return self
+
+    def _order_key(self) -> tuple[int, int, str]:
+        """Order the exact values already admitted by the packed-row parser."""
+
+        return int(self._values[1]), int(self._values[2]), str(self._values[0])
+
+
+class _CompactEventItems(ItemsView[str, Any]):
+    __slots__ = ("_row",)
+
+    def __init__(self, row: _CompactEvent) -> None:
+        super().__init__(row)
+        self._row = row
+
+    def __iter__(self) -> Iterator[tuple[str, Any]]:
+        return zip(_EVENT_FIELDS, self._row._values)
+
+
+class _EventByUid(Mapping[str, Mapping[str, Any]]):
+    """Resolve rows through the runtime's sole UID-to-ordinal index."""
+
+    __slots__ = ("_events", "_positions", "_duplicate_rows")
+
+    def __init__(self, events: Sequence[Mapping[str, Any]], positions: Mapping[str, int], duplicate_rows: Mapping[str, Mapping[str, Any]] | None = None) -> None:
+        self._events = events
+        self._positions = positions
+        self._duplicate_rows = duplicate_rows
+
+    def __getitem__(self, uid: str) -> Mapping[str, Any]:
+        if self._duplicate_rows is not None and uid in self._duplicate_rows:
+            return self._duplicate_rows[uid]
+        return self._events[self._positions[uid]]
+
+    def __iter__(self) -> Iterator[str]:
+        if self._duplicate_rows is not None and "" in self._duplicate_rows:
+            return chain(self._positions, ("",))
+        return iter(self._positions)
+
+    def __len__(self) -> int:
+        return len(self._positions) + int(
+            self._duplicate_rows is not None and "" in self._duplicate_rows
+        )
 
 
 def _from_json(value: bytes | bytearray | str) -> Any:
@@ -153,10 +336,10 @@ class ScaleRuntime:
     resource_by_id: dict[str, dict[str, Any]]
     resources_by_kind: dict[str, list[dict[str, Any]]]
     resource_counts: dict[str, int]
-    events: list[dict[str, Any]]
-    event_by_uid: dict[str, dict[str, Any]]
+    events: Sequence[Mapping[str, Any]]
+    event_by_uid: Mapping[str, Mapping[str, Any]]
     event_times: list[int]
-    events_by_resource: dict[str, list[dict[str, Any]]]
+    events_by_resource: dict[str, list[Mapping[str, Any]]]
     lifecycle_by_resource: Mapping[str, list[dict[str, Any]]]
     state_by_resource: Mapping[str, list[dict[str, Any]]]
     relationships: list[dict[str, Any]]
@@ -171,7 +354,7 @@ class ScaleRuntime:
     event_search: HistorySearchCorpus = field(default_factory=HistorySearchCorpus)
     event_redaction_policy: Any | None = None
     _revision_query_cache: Any | None = field(default=None, repr=False, compare=False)
-    ordered_events_by_resource: Mapping[str, list[dict[str, Any]]] | None = None
+    ordered_events_by_resource: Mapping[str, list[Mapping[str, Any]]] | None = None
     resource_search: _ResourceSearchSnapshotCache = field(
         default_factory=_ResourceSearchSnapshotCache
     )
@@ -208,7 +391,7 @@ class _ScaleTemporalIndex:
     def __init__(
         self,
         resource_by_id: dict[str, dict[str, Any]],
-        events_by_resource: dict[str, list[dict[str, Any]]],
+        events_by_resource: dict[str, list[Mapping[str, Any]]],
     ) -> None:
         self._resource_by_id = resource_by_id
         self._events_by_resource = events_by_resource
@@ -438,10 +621,16 @@ def _event_display_name(event_name: str) -> str:
     return event_name.replace("_", " ").title()
 
 
-def _compact_event(raw: dict[str, Any]) -> dict[str, Any]:
+def _compact_event(
+    raw: dict[str, Any], *, value_pool: _EventValuePool | None = None,
+) -> _CompactEvent:
     root_id = str(raw.get("resource_id") or "")
     raw_state_changed = bool(raw.get("state_changed", False))
+    # Unusual accepted metadata can contain JSON trees; ordinary strings need
+    # no container scan or copy. Preserve both forms without borrowing input.
     outcome = raw.get("outcome", "unknown")
+    if type(outcome) is not str and isinstance(outcome, _EVENT_JSON_CONTAINERS):
+        outcome = _freeze_event_value(outcome)
     effect_summaries: list[dict[str, Any]] = []
     affected: list[str] = []
     seen: set[str] = set()
@@ -476,72 +665,109 @@ def _compact_event(raw: dict[str, Any]) -> dict[str, Any]:
             status_class = effect.get("status_class")
         if status_class is None and condition_supplied:
             status_class = _status_class(condition)
+        effect_kind = effect.get("kind")
+        effect_type = effect.get("effect_type")
+        if type(effect_kind) is not str and isinstance(effect_kind, _EVENT_JSON_CONTAINERS):
+            effect_kind = _freeze_event_value(effect_kind)
+        if type(effect_type) is not str and isinstance(effect_type, _EVENT_JSON_CONTAINERS):
+            effect_type = _freeze_event_value(effect_type)
         summary = {
             "resource_id": identifier,
-            "kind": effect.get("kind"),
-            "effect_type": effect.get("effect_type"),
+            "kind": effect_kind,
+            "effect_type": effect_type,
             "state_changed": state_changed,
         }
         if isinstance(effect.get("before"), dict):
-            summary["before"] = effect["before"]
+            summary["before"] = _freeze_event_value(effect["before"])
         if condition_supplied:
-            summary["condition"] = condition
+            summary["condition"] = (
+                _freeze_event_value(condition)
+                if type(condition) is not str and isinstance(condition, _EVENT_JSON_CONTAINERS) else condition
+            )
         if class_supplied or status_class is not None:
-            summary["status_class"] = status_class
+            summary["status_class"] = (
+                _freeze_event_value(status_class)
+                if type(status_class) is not str and isinstance(status_class, _EVENT_JSON_CONTAINERS) else status_class
+            )
         if state_changed and effect.get("after"):
-            summary["after"] = effect["after"]
-        effect_summaries.append(summary)
+            summary["after"] = _freeze_event_value(effect["after"])
+        effect_summaries.append(_FrozenDict(summary))
         if identifier not in seen:
             seen.add(identifier)
             affected.append(identifier)
 
     layer = raw.get("layer", "unknown")
     resource_kind = raw.get("resource_kind", "UNKNOWN")
-    subject = {
-        "resource_id": root_id,
-        "layer": layer,
-        "kind": resource_kind,
-        "raw_key": raw.get("resource", root_id),
-    }
+    raw_key = raw.get("resource", root_id)
+    if type(layer) is not str and isinstance(layer, _EVENT_JSON_CONTAINERS):
+        layer = _freeze_event_value(layer)
+    if type(resource_kind) is not str and isinstance(resource_kind, _EVENT_JSON_CONTAINERS):
+        resource_kind = _freeze_event_value(resource_kind)
+    if type(raw_key) is not str and isinstance(raw_key, _EVENT_JSON_CONTAINERS):
+        raw_key = _freeze_event_value(raw_key)
+    if value_pool is None:
+        subject = _FrozenDict({
+            "resource_id": root_id,
+            "layer": layer,
+            "kind": resource_kind,
+            "raw_key": raw_key,
+        })
+        subjects = _FrozenList([subject])
+    else:
+        subject, subjects = value_pool.subject(
+            root_id, layer, resource_kind, raw_key,
+        )
     event_name = str(raw.get("event_name", "event"))
-    result = raw.get("result", {})
-    return {
-        "event_uid": str(raw["event_uid"]),
-        "timestamp_ns": str(
+    result = (
+        _freeze_event_value(raw.get("result", {})) if value_pool is None
+        else value_pool.result(raw.get("result", {}))
+    )
+    action = raw.get("action", "observe")
+    phase = raw.get("phase")
+    burst_id = raw.get("burst_id")
+    if type(action) is not str and isinstance(action, _EVENT_JSON_CONTAINERS):
+        action = _freeze_event_value(action)
+    if isinstance(phase, _EVENT_JSON_CONTAINERS):
+        phase = _freeze_event_value(phase)
+    if isinstance(burst_id, _EVENT_JSON_CONTAINERS):
+        burst_id = _freeze_event_value(burst_id)
+    return _CompactEvent((
+        str(raw["event_uid"]),
+        str(
             temporal_integer(raw["timestamp_ns"], "timestamp_ns")
         ),
-        "source_sequence": temporal_integer(
+        temporal_integer(
             raw.get("source_sequence", 0),
             "source_sequence",
         ),
-        "event_type": event_name,
-        "event_name": event_name,
-        "display_name": _event_display_name(event_name),
-        "action": raw.get("action", "observe"),
-        "outcome": outcome,
-        "state_changed": raw_state_changed,
-        "layer": layer,
-        "phase": raw.get("phase"),
-        "burst_id": raw.get("burst_id"),
-        "resource_id": root_id,
-        "resource_kind": resource_kind,
-        "subject": subject,
-        "subjects": [subject],
-        "affected_resources": affected,
-        "effects": effect_summaries,
-        "attributes": {
-            "properties": raw.get("properties", {}),
+        event_name,
+        event_name,
+        _event_display_name(event_name),
+        action,
+        outcome,
+        raw_state_changed,
+        layer,
+        phase,
+        burst_id,
+        root_id,
+        resource_kind,
+        subject,
+        subjects,
+        _FrozenList(affected),
+        _FrozenList(effect_summaries),
+        _FrozenDict({
+            "properties": _freeze_event_value(raw.get("properties", {})),
             "result": result,
-        },
-        "result": result,
-    }
+        }),
+        result,
+    ))
 
 
 def _add_history_only_resources(
     resources: list[dict[str, Any]],
     resource_by_id: dict[str, dict[str, Any]],
     resources_by_kind: defaultdict[str, list[dict[str, Any]]],
-    events_by_resource: dict[str, list[dict[str, Any]]],
+    events_by_resource: dict[str, list[Mapping[str, Any]]],
 ) -> None:
     """Catalog resources proven by history even when absent at capture time.
 
@@ -623,9 +849,12 @@ def load_scale_dataset(
     resources: list[dict[str, Any]] = []
     resource_by_id: dict[str, dict[str, Any]] = {}
     resources_by_kind: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    events: list[dict[str, Any]] = []
-    event_by_uid: dict[str, dict[str, Any]] = {}
-    events_by_resource: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    events: list[_CompactEvent] = []
+    event_times: list[int] = []
+    event_value_pool = _EventValuePool()
+    event_index_by_uid: dict[str, int] = {}
+    duplicate_event_rows: dict[str, Mapping[str, Any]] = {}
+    events_by_resource: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     relationship_records: list[dict[str, Any]] = []
     relationships_by_endpoint: dict[str, list[dict[str, Any]]] = defaultdict(list)
     mutation_records: list[dict[str, Any]] = []
@@ -827,19 +1056,20 @@ def load_scale_dataset(
                     if not line.strip():
                         continue
                     raw = _from_json(line)
-                    event = _compact_event(raw)
-                    event_key = temporal_order_key(
-                        event,
-                        time_field="timestamp_ns",
-                        identifier_fields=("event_uid", "event_id"),
-                    )
+                    event = _compact_event(raw, value_pool=event_value_pool)
+                    event_key = event._order_key()
                     if last_event_key is not None and event_key < last_event_key:
                         events_ordered = False
                     last_event_key = event_key
+                    uid = event_key[2]
+                    if not uid or uid in event_index_by_uid:
+                        duplicate_event_rows[uid] = event
+                    if uid:
+                        event_index_by_uid[uid] = len(events)
                     events.append(event)
-                    event_by_uid[event["event_uid"]] = event
-                    phase_counts[str(event.get("phase", "unknown"))] += 1
-                    failure_count += event["outcome"] == "failure"
+                    event_times.append(event_key[0])
+                    phase_counts[str(raw.get("phase"))] += 1
+                    failure_count += raw.get("outcome", "unknown") == "failure"
                     for identifier in event["affected_resources"]:
                         events_by_resource[identifier].append(event)
                     report_parsed_records()
@@ -938,13 +1168,8 @@ def load_scale_dataset(
     }
 
     if not events_ordered:
-        events.sort(
-            key=lambda item: temporal_order_key(
-                item,
-                time_field="timestamp_ns",
-                identifier_fields=("event_uid", "event_id"),
-            )
-        )
+        events.sort(key=_CompactEvent._order_key)
+        event_times.sort()
         for resource_events in events_by_resource.values():
             resource_events.sort(
                 key=lambda item: temporal_order_key(
@@ -990,36 +1215,37 @@ def load_scale_dataset(
         ),
     )
     initial_ids = _initial_resource_ids(walkthrough, resources_by_kind)
-    event_times: list[int] = []
     failure_event_times: list[int] = []
     event_times_by_type: defaultdict[str, list[int]] = defaultdict(list)
-    for event in events:
-        timestamp_ns = int(event["timestamp_ns"])
-        event_times.append(timestamp_ns)
-        if str(event.get("outcome", "")) == "failure":
+    for indexed_event, timestamp_ns in zip(events, event_times):
+        if str(indexed_event._values[7]) == "failure":
             failure_event_times.append(timestamp_ns)
         event_type = str(
-            event.get("event_type")
-            or event.get("event_name")
-            or "unknown"
+            indexed_event._values[3] or "unknown"
         )
         event_times_by_type[event_type].append(timestamp_ns)
 
+    if not events_ordered:
+        event_index_by_uid.clear()
+        event_index_by_uid.update(
+            (str(row["event_uid"]), index) for index, row in enumerate(events)
+            if row["event_uid"]
+        )
+    duplicate_event_rows = {
+        uid: row for uid, row in duplicate_event_rows.items()
+        if not uid or row is not events[event_index_by_uid[uid]]
+    }
     runtime = ScaleRuntime(
         resources=resources,
         resource_by_id=resource_by_id,
         resources_by_kind=dict(resources_by_kind),
         resource_counts={kind: len(items) for kind, items in resources_by_kind.items()},
         events=events,
-        event_by_uid=event_by_uid,
+        event_by_uid=_EventByUid(events, event_index_by_uid, duplicate_event_rows or None),
         event_times=event_times,
         failure_event_times=failure_event_times,
         event_times_by_type=dict(event_times_by_type),
-        event_index_by_uid={
-            str(event.get("event_uid") or event.get("event_id")): index
-            for index, event in enumerate(events)
-            if event.get("event_uid") or event.get("event_id")
-        },
+        event_index_by_uid=event_index_by_uid,
         events_by_resource=events_by_resource_index,
         ordered_events_by_resource=events_by_resource_index,
         lifecycle_by_resource=lifecycle_by_resource,

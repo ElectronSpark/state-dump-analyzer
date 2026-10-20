@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -179,7 +179,7 @@ def resources_at(*args: Any, **kwargs: Any) -> dict[str, Any]:
     return _data_service().resources_at(*args, **kwargs)
 
 
-def events_in_range(start_ns: int, end_ns: int) -> list[dict[str, Any]]:
+def events_in_range(start_ns: int, end_ns: int) -> Sequence[Mapping[str, Any]]:
     return _data_service().events_in_range(start_ns, end_ns)
 
 

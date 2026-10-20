@@ -7,6 +7,8 @@ fixture plug-in policy and deliberately live outside the timeline/query core.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 from typing import Any
 
 SOURCE_RECORD_GROUP_DESCRIPTORS: list[dict[str, Any]] = [
@@ -118,7 +120,7 @@ RECORD_LANE_PRESETS: list[dict[str, Any]] = [
 ]
 
 
-def _event_subject(event: dict[str, Any]) -> dict[str, Any]:
+def _event_subject(event: Mapping[str, Any]) -> dict[str, Any]:
     subject = event.get("subject")
     if isinstance(subject, dict):
         return subject
@@ -136,7 +138,7 @@ def _sample_indices(event_count: int, target: int = 1_250) -> list[int]:
 
 
 def demo_ctf_copy_text(
-    event: dict[str, Any],
+    event: Mapping[str, Any],
     *,
     sequence: int | None = None,
 ) -> str:
@@ -171,7 +173,7 @@ def demo_ctf_copy_text(
     )
 
 
-def lazy_demo_ctf_source_record(event: dict[str, Any]) -> dict[str, Any]:
+def lazy_demo_ctf_source_record(event: Mapping[str, Any]) -> dict[str, Any]:
     """Materialize an on-demand copy projection without growing bootstrap JSON."""
 
     event_uid = str(event.get("event_uid") or event.get("event_id") or "unknown")
@@ -202,7 +204,7 @@ def lazy_demo_ctf_source_record(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_demo_source_records(
-    events: list[dict[str, Any]],
+    events: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     """Synthesize representative presentation records from normalized events.
 
