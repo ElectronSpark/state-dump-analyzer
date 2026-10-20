@@ -79,7 +79,8 @@ a {
   top: 0;
   z-index: 50;
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto minmax(220px, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 16px;
   align-items: center;
   min-height: 68px;
   padding: 0 28px;
@@ -128,6 +129,9 @@ a {
 
 .topnav {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  min-width: 0;
   gap: 8px;
   padding: 5px;
   border: 1px solid var(--line-soft);
@@ -205,7 +209,7 @@ a {
 
 .analysis-load-progress {
   position: sticky;
-  top: 76px;
+  top: calc(var(--timeline-sticky-top, 68px) + 8px);
   z-index: 45;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

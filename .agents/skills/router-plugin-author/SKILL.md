@@ -73,10 +73,32 @@ For performance work in providers or compatibility adapters, read the
 Keep core-owned identity checks and archive validation intact when reusing
 immutable work or deferring loads. Measure the actual user path and separate
 fixture preparation, backend readiness, and browser readiness.
+For search or durable-import latency, use the map's
+[cold-path measurement checks](../../../docs/plugin-api-validation.md#cold-search-and-import-measurements).
+An API warmup can hide browser-first-query work, and a tiny input can still incur
+fixed provider-verification costs. Reuse immutable dependency analysis, never
+an authorization or executable-trust decision; any code-object cache must use
+exact identity, bounded retention, and avoid keeping retired code alive.
+For navigation caches, reclaim idle generations before destination allocation;
+protect active leases and resolve unknown destinations before eviction. Check
+the prepared destination's bounded size/checksum before reclamation without
+duplicate decompression; missing or changed input must preserve the idle cache.
+Keep a reserved slot while cold loading, including when active readers release.
+Verify reclamation inside the loader with weak references, failed-load retry and
+navigation back, concurrent hits/releases, and shutdown. A final cache-size
+assertion alone does not establish reduced peak memory.
 Tie each reported stage to work the adapter actually performs. Use `INDEXING`
 while building an index and `READING_ARCHIVE` while processing an archive;
 simple fixture reads can retain the core's `LOADING_REVISION` stage. Counting
 records alone does not establish that an index was built.
+Long core index builds should publish bounded progress while consuming the
+corpus, without exposing evidence text or declaring readiness before complete
+validation and atomic publication.
+Keep cooperative scheduling in core. Scope import activity through every
+success, failure, and cancellation exit; nested or concurrent imports must
+retain their own activity until they finish. Pause a background search only
+for another thread's active import, never for idle or same-thread work. Measure
+both search CPU/wall cost and import latency before choosing a bounded cadence.
 
 For compact indexed-history storage, consume event rows through `Mapping` and
 sequences through `Sequence`; preserve JSON projections, nested ownership and

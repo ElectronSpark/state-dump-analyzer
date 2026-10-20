@@ -6,11 +6,11 @@ const source = readFileSync(new URL("../assets/app.js", import.meta.url), "utf8"
 function functionSource(name) {
   const start = source.indexOf(`function ${name}(`);
   assert.notEqual(start, -1);
-  const end = /\r?\n\}/.exec(source.slice(start));
+  const end = /\r?\n\}(?=\r?\n)/.exec(source.slice(start));
   return source.slice(start, start + end.index + end[0].length);
 }
 
-function harness() {
+function harness({ actualSelection = false } = {}) {
   const state = {
     eventLogSelectionAnchor: null, eventLogSelectionFocus: null,
     eventLogSelectionRanges: [], eventLogSuppressClickUntil: 0,
@@ -34,7 +34,10 @@ function harness() {
     const byId = () => host;
     const window = { requestAnimationFrame: () => 1, cancelAnimationFrame() {} };
     const performance = { now: () => 1000 };
+    ${actualSelection ? ["normalizeEventLogSelectionRanges", "eventLogSelectionIncludes", "addEventLogSelectionRange", "removeEventLogSelectionRange", "setEventLogSelectionRanges", "applyEventLogSelectionGesture"].map(functionSource).join("\n") : `
     const setEventLogSelectionRanges = (ranges) => { state.eventLogSelectionRanges = ranges; };
+    const applyEventLogSelectionGesture = (index) => selections.push(index);
+    `}
     const eventLogDragRanges = (_, index) => [[1, index]];
     const visibleEventLogRowAtPoint = () => row;
     const runEventLogDragAutoScroll = () => {};
@@ -42,7 +45,6 @@ function harness() {
     const renderEventTableWindow = () => {};
     const registerVisibleEventLogHoverModels = () => {};
     const focusEventLogEntry = () => {};
-    const applyEventLogSelectionGesture = (index) => selections.push(index);
     ${["eventLogPointerDown", "eventLogPointerMove", "finishEventLogDrag", "bindVisibleEventLogRows"].map(functionSource).join("\n")}
     return { eventLogPointerDown, eventLogPointerMove, finishEventLogDrag, bindVisibleEventLogRows };
   `);
@@ -65,6 +67,41 @@ test("a source-row click keeps its row target and invokes selection", () => {
   if (clickTarget === h.row) h.handlers.get("click")(h.event());
   assert.deepEqual(h.selections, [1]);
   assert.equal(h.host.captured, null);
+});
+
+for (const modifier of ["ctrlKey", "metaKey"]) {
+  test(`${modifier} click adds and toggles one row without pointer capture`, () => {
+    const h = harness({ actualSelection: true });
+    h.state.eventLogSelectionRanges = [[0, 0]];
+    h.state.eventLogSelectionAnchor = 0;
+    for (const expected of [[[0, 1]], [[0, 0]]]) {
+      const event = h.event({ [modifier]: true });
+      h.eventLogPointerDown(event);
+      h.eventLogPointerMove(h.event({ [modifier]: true, clientX: 12 }));
+      assert.equal(h.host.captured, null);
+      h.finishEventLogDrag(event);
+      h.handlers.get("click")(event);
+      assert.deepEqual(h.state.eventLogSelectionRanges, expected);
+    }
+  });
+}
+
+test("single, Ctrl and Shift row clicks preserve the expected multi-selection", () => {
+  const h = harness({ actualSelection: true });
+  const click = (index, modifiers = {}) => {
+    h.row.dataset.selectionIndex = String(index);
+    h.bindVisibleEventLogRows();
+    const event = h.event(modifiers);
+    h.eventLogPointerDown(event);
+    h.finishEventLogDrag(event);
+    h.handlers.get("click")(event);
+  };
+  click(0);
+  assert.deepEqual(h.state.eventLogSelectionRanges, [[0, 0]]);
+  click(1, { ctrlKey: true });
+  assert.deepEqual(h.state.eventLogSelectionRanges, [[0, 1]]);
+  click(2, { ctrlKey: true, shiftKey: true });
+  assert.deepEqual(h.state.eventLogSelectionRanges, [[0, 2]]);
 });
 
 test("an actual drag captures the pointer and cancellation restores selection", () => {

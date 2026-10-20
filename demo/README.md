@@ -729,6 +729,14 @@ and cache hits remain usable while another generation loads. Lease copies
 preserve the caller's current shallow top-level view and keep the shared
 generation alive; core still owns request/session lifecycle and query
 semantics.
+Before allocating a cold destination, it checks the private pack's bounded size
+and checksum against its assembly descriptor, without decompression. A missing
+or changed pack leaves the cache intact. It then reserves a cache slot by closing idle
+LRU generations. Live readers remain pinned, so concurrent readers can exceed
+the cache bound; releasing a reader during a cold load preserves the reserved
+slot. Unknown revisions leave the cache untouched. If materialization
+fails after eviction, the prior idle node can be reloaded from its validated
+private archive; failed navigation does not delete those archives.
 
 Derived density, timeline, event-union, and redacted-event query caches belong
 to the exact immutable history generation. A service must not keep a retired

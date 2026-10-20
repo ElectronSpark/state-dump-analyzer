@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import unittest
@@ -172,6 +173,24 @@ def query_fixture(*, indexed: bool = False, cancellation_probe=None):
 
 
 class RevisionQueryTests(unittest.TestCase):
+    def test_search_documents_preserve_exact_safe_json_projection(self) -> None:
+        dataset, _, queries = query_fixture(indexed=True)
+        runtime = queries.indexed_history
+        runtime.events[0]["attributes"].update({
+            "unicode": "Straße 雪", "quoted": 'a"b\\c',
+            "truth": True, "number": 1, "empty": None,
+            "nested": {"secret": "private-sentinel", "visible": [1, "Ω"]},
+        })
+        policy = queries._event_redaction_policy(dataset)
+        expected = [json.dumps(
+            queries._redact_event_for_client(event, dataset, policy=policy),
+            sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+        ).casefold() for event in runtime.events]
+        self.assertEqual(list(queries._indexed_event_search_documents(
+            dataset, runtime, policy,
+        )), expected)
+        self.assertNotIn("private-sentinel", "".join(expected))
+
     def test_all_query_families_execute_with_web_imports_blocked(self) -> None:
         root = Path(__file__).resolve().parents[1]
         program = f"""

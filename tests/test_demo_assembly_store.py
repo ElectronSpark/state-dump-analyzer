@@ -8,6 +8,7 @@ import json
 import tarfile
 import tempfile
 import unittest
+import weakref
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from threading import Event, Thread
@@ -666,6 +667,186 @@ class DemoAssemblyStoreTests(unittest.TestCase):
                 reopened = store.dataset_for_node("node-a")
                 self.assertEqual(len(calls), 3)
                 reopened.release()
+
+    def test_idle_generation_is_freed_before_failed_navigation_and_reloads(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "demo.tgz"
+            _write_assembly(archive)
+            previous = None
+            fail_b = True
+            calls: list[str] = []
+
+            def load(path: Path, revision_id: str) -> dict[str, object]:
+                nonlocal previous, fail_b
+                calls.append(revision_id)
+                if revision_id == "revision:node-b":
+                    # Check reclamation inside the loader, before any new
+                    # generation allocation, rather than after publication.
+                    self.assertEqual(store.loaded_revision_ids(), ())
+                    self.assertIsNone(previous())
+                    if fail_b:
+                        fail_b = False
+                        raise ValueError("synthetic navigation failure")
+                search = _CloseCountingSearch()
+                previous = weakref.ref(search)
+                return {
+                    "demo": {
+                        "node": revision_id.removeprefix("revision:"),
+                        "revision_id": revision_id,
+                        "event_count": 3,
+                        "resource_count": 2,
+                    },
+                    "_scale_runtime": _scale_runtime(search),
+                }
+
+            with DemoAssemblyStore(
+                archive, cache_size=1, dataset_loader=load,
+            ) as store:
+                node_a = store.dataset_for_node("node-a")
+                del node_a
+                with self.assertRaisesRegex(KeyError, "unknown demo revision"):
+                    store.dataset_for_revision("revision:missing")
+                self.assertEqual(store.loaded_revision_ids(), ("revision:node-a",))
+                self.assertIsNotNone(previous())
+                self.assertEqual(previous().close_count, 0)
+                with self.assertRaisesRegex(ValueError, "navigation failure"):
+                    store.dataset_for_node("node-b")
+                self.assertEqual(store.loaded_revision_ids(), ())
+                node_a = store.dataset_for_node("node-a")
+                self.assertEqual(node_a["demo"]["node"], "node-a")
+                del node_a
+                node_b = store.dataset_for_node("node-b")
+                self.assertEqual(node_b["demo"]["node"], "node-b")
+                node_b.release()
+            self.assertEqual(calls, [
+                "revision:node-a", "revision:node-b",
+                "revision:node-a", "revision:node-b",
+            ])
+
+    def test_destination_pack_failures_preserve_idle_cache(self) -> None:
+        for corruption in ("missing", "size", "checksum"):
+            with self.subTest(corruption=corruption), tempfile.TemporaryDirectory() as directory:
+                archive = Path(directory) / "demo.tgz"
+                _write_assembly(archive)
+                calls: list[str] = []
+
+                def load(
+                    path: Path, revision_id: str, calls: list[str] = calls,
+                ) -> dict[str, object]:
+                    calls.append(revision_id)
+                    return {"demo": {
+                        "node": revision_id.removeprefix("revision:"),
+                        "revision_id": revision_id,
+                        "event_count": 3, "resource_count": 2,
+                    }}
+
+                with DemoAssemblyStore(archive, cache_size=1, dataset_loader=load) as store:
+                    original = store.dataset_for_node("node-a")
+                    original.release()
+                    pack = store._node_archive_paths["revision:node-b"]
+                    content = pack.read_bytes()
+                    if corruption == "missing":
+                        pack.unlink()
+                    elif corruption == "size":
+                        pack.write_bytes(content + b"x")
+                    else:
+                        pack.write_bytes(bytes([content[0] ^ 1]) + content[1:])
+                    with self.assertRaises(DemoAssemblyError):
+                        store.dataset_for_node("node-b")
+                    self.assertEqual(store.loaded_revision_ids(), ("revision:node-a",))
+                    self.assertEqual(calls, ["revision:node-a"])
+                    self.assertEqual(store._loads_in_progress, 0)
+                    self.assertEqual(store._reserved_load_slots, 0)
+                    pack.write_bytes(content)
+                    recovered = store.dataset_for_node("node-b")
+                    recovered.release()
+
+    def test_release_during_cold_load_preserves_reserved_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "demo.tgz"
+            _write_assembly(archive)
+            started, finish = Event(), Event()
+            searches: list[_CloseCountingSearch] = []
+            errors: list[BaseException] = []
+
+            def load(path: Path, revision_id: str) -> dict[str, object]:
+                if revision_id == "revision:node-b":
+                    started.set()
+                    if not finish.wait(10):
+                        raise TimeoutError("blocked loader was not released")
+                search = _CloseCountingSearch()
+                searches.append(search)
+                return {"demo": {
+                    "node": revision_id.removeprefix("revision:"),
+                    "revision_id": revision_id,
+                    "event_count": 3, "resource_count": 2,
+                }, "_scale_runtime": _scale_runtime(search)}
+
+            with DemoAssemblyStore(archive, cache_size=1, dataset_loader=load) as store:
+                original = store.dataset_for_node("node-a")
+
+                def navigate() -> None:
+                    try:
+                        lease = store.dataset_for_node("node-b")
+                        lease.release()
+                    except BaseException as error:  # noqa: BLE001 - report thread failures
+                        errors.append(error)
+
+                thread = Thread(target=navigate)
+                thread.start()
+                try:
+                    self.assertTrue(started.wait(10))
+                    hit = store.dataset_for_node("node-a")
+                    original.release()
+                    self.assertEqual(searches[0].close_count, 0)
+                    hit.release()
+                    self.assertEqual(store.loaded_revision_ids(), ())
+                    self.assertEqual(searches[0].close_count, 1)
+                finally:
+                    finish.set()
+                    thread.join(10)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(errors, [])
+                self.assertEqual(store._reserved_load_slots, 0)
+
+    def test_close_during_pack_validation_defers_archive_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "demo.tgz"
+            _write_assembly(archive)
+            store = DemoAssemblyStore(archive)
+            temporary_path = Path(store._temporary_directory.name)
+            errors: list[BaseException] = []
+            started, finish = Event(), Event()
+            validate = store._validate_node_archive
+
+            def blocked_validate(revision_id: str) -> None:
+                started.set()
+                if not finish.wait(10):
+                    raise TimeoutError("validation was not released")
+                validate(revision_id)
+
+            def navigate() -> None:
+                try:
+                    store.dataset_for_node("node-a")
+                except BaseException as error:  # noqa: BLE001 - report thread failures
+                    errors.append(error)
+
+            with patch.object(store, "_validate_node_archive", blocked_validate), patch.object(store, "_load_entry") as load:
+                thread = Thread(target=navigate)
+                thread.start()
+                try:
+                    self.assertTrue(started.wait(10))
+                    store.close()
+                    self.assertTrue(temporary_path.exists())
+                finally:
+                    finish.set()
+                    thread.join(10)
+                self.assertFalse(thread.is_alive())
+                load.assert_not_called()
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], RuntimeError)
+            self.assertEqual(store._loads_in_progress, 0)
+            self.assertFalse(temporary_path.exists())
 
     def test_live_leases_survive_eviction_and_revisits_close_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -35,6 +35,20 @@ _declared_compilation_cache: OrderedDict[
 ] = OrderedDict()
 _declared_compilation_cache_lock = threading.RLock()
 
+# Disassembly depends only on an immutable code graph. Weak identity keys avoid
+# retaining plug-in generations or trusting CodeType structural equality.
+_GLOBAL_DEPENDENCY_CACHE_MAX_ENTRIES = 256
+_GLOBAL_DEPENDENCY_CACHE_MAX_BYTES = 512 * 1024
+_global_dependency_cache: OrderedDict[
+    int,
+    tuple[
+        weakref.ReferenceType[CodeType],
+        tuple[tuple[str, ...], tuple[tuple[str, ...], ...], bool],
+        int,
+    ],
+] = OrderedDict()
+_global_dependency_cache_lock = threading.RLock()
+
 MAX_PLUGIN_PACKAGE_FILES = 4_096
 MAX_PLUGIN_PACKAGE_PATHS = 8_192
 MAX_PLUGIN_PACKAGE_BYTES: int = 128 * 1024 * 1024
@@ -2747,6 +2761,13 @@ def _loaded_global_dependencies(
 ) -> tuple[tuple[str, ...], tuple[tuple[str, ...], ...], bool]:
     """Collect one code graph's global names and attribute paths in one pass."""
 
+    key = builtins.id(root)
+    with _global_dependency_cache_lock:
+        cached = _global_dependency_cache.get(key)
+        if cached is not None and cached[0]() is root:
+            _global_dependency_cache.move_to_end(key)
+            return cached[1]
+
     names: set[str] = set()
     paths: set[tuple[str, ...]] = set()
     has_runtime_imports = False
@@ -2778,7 +2799,25 @@ def _loaded_global_dependencies(
             raise PluginExecutableIdentityError(
                 "module target bytecode cannot be inspected safely"
             ) from error
-    return tuple(sorted(names)), tuple(sorted(paths)), has_runtime_imports
+    result = tuple(sorted(names)), tuple(sorted(paths)), has_runtime_imports
+    # Conservatively charge every retained tuple/string, including shared names.
+    retained_bytes = sys.getsizeof(result) + sys.getsizeof(result[0])
+    retained_bytes += sum(sys.getsizeof(name) for name in names)
+    retained_bytes += sys.getsizeof(result[1]) + sum(
+        sys.getsizeof(path) + sum(sys.getsizeof(name) for name in path)
+        for path in paths
+    )
+    if retained_bytes <= _GLOBAL_DEPENDENCY_CACHE_MAX_BYTES:
+        with _global_dependency_cache_lock:
+            _global_dependency_cache[key] = weakref.ref(root), result, retained_bytes
+            _global_dependency_cache.move_to_end(key)
+            while (
+                len(_global_dependency_cache) > _GLOBAL_DEPENDENCY_CACHE_MAX_ENTRIES
+                or sum(entry[2] for entry in _global_dependency_cache.values())
+                > _GLOBAL_DEPENDENCY_CACHE_MAX_BYTES
+            ):
+                _global_dependency_cache.popitem(last=False)
+    return result
 
 
 def _function_dependency_analysis(

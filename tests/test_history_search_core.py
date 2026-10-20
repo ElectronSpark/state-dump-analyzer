@@ -14,6 +14,31 @@ from router_dump_analyzer.history_search_core import (
 
 
 class HistorySearchCorpusTests(unittest.TestCase):
+    def test_build_reports_bounded_indexing_progress_before_completion(self) -> None:
+        from router_dump_analyzer.load_progress import (
+            AnalysisLoadStage,
+            AnalysisLoadTracker,
+        )
+
+        tracker = AnalysisLoadTracker()
+        operation = tracker.begin(AnalysisLoadStage.INDEXING)
+        observations = []
+
+        def documents():
+            for ordinal in range(2050):
+                if ordinal in (1024, 2048):
+                    observations.append(tracker.snapshot())
+                yield f"safe-{ordinal}"
+
+        corpus = HistorySearchCorpus()
+        with operation.bind():
+            corpus.query("safe-2049", documents)
+            final = tracker.snapshot()
+        self.assertEqual([item.records_processed for item in observations], [1024, 2048])
+        self.assertTrue(all(item.stage == AnalysisLoadStage.INDEXING for item in observations))
+        self.assertEqual(final.records_processed, 2050)
+        operation.complete()
+
     def test_different_needles_reuse_one_safe_corpus_build(self) -> None:
         corpus = HistorySearchCorpus()
         build_calls = 0

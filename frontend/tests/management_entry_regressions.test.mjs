@@ -118,6 +118,31 @@ test("actual card and dropdown workspace changes clear prior import/session sele
   assert.match(app.content.textContent, /Upload a state dump/); assert.doesNotMatch(app.content.textContent, /Import details/);
 });
 
+test("rejected upload replaces adjacent progress and re-enables retry", async (t) => {
+  const app = await application(t, (path, options) => path.includes("/imports?") && options.method === "POST"
+    ? jsonResponse({ error: { code: "invalid_request", message: "Node hint cannot contain whitespace" } }, 400) : undefined);
+  await app.connect(); await app.tab("imports");
+  const form = descendants(app.content).find((node) => node.tagName === "FORM");
+  const file = descendants(form).find((node) => node.type === "file");
+  file.files = [{ name: "unsupported.txt", size: 115 }];
+  const hint = descendants(form).find((node) => node.placeholder === "router-1"); hint.value = "invalid node";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    form.emit("submit"); await settle();
+    assert.match(app.content.textContent, /Upload failed: .*whitespace/);
+    assert.doesNotMatch(app.content.textContent, /Uploading unsupported/);
+    assert.equal(app.findButton("Upload & queue").disabled, false);
+    assert.equal(descendants(app.content).filter((node) => node.tagName === "PROGRESS").length, 0);
+  }
+});
+
+test("successful member removal replaces an earlier mutation error", async (t) => {
+  const app = await application(t, (path, options) => path.endsWith("/sessions/shared-session/members/member") && options.method === "DELETE" ? jsonResponse({}) : undefined);
+  await app.connect(); await app.tab("sessions"); await app.click(app.findButton("Manage session"));
+  app.elements.get("management-message").textContent = "a session may contain each immutable revision only once";
+  await app.click(app.findButton("Remove member"));
+  assert.equal(app.elements.get("management-message").textContent, "Session member removed.");
+});
+
 test("card and dropdown refuse workspace changes while a real client mutation is pending", async (t) => {
   const write = deferred();
   const app = await application(t, (path, options) => options.method === "POST" && path.endsWith("/sessions/shared-session/snapshots") ? write.promise : undefined);

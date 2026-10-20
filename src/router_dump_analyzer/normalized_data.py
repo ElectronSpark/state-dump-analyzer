@@ -641,11 +641,23 @@ def descriptor_sensitive_condition(
     return hidden
 
 
+class _PropertyPathTrie(dict[object, Any]):
+    """Compiled rules with bounded root transitions for repeated field names."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Fixed slots keep the bound exact under concurrent readers/writers.
+        # A hash collision only replaces an optional accelerator entry.
+        self.root_transitions: list[
+            tuple[str, tuple[bool, tuple[Mapping[object, Any], ...]]] | None
+        ] = [None] * 256
+
+
 @lru_cache(maxsize=256)
 def _property_path_trie(
     field_names: frozenset[str],
 ) -> dict[object, Any]:
-    root: dict[object, Any] = {}
+    root: dict[object, Any] = _PropertyPathTrie()
     for field in field_names:
         parts = tuple(part for part in str(field).split(".") if part)
         if not parts:
@@ -670,6 +682,19 @@ def _advance_sensitive_path(
     ancestor hides all descendants, even when a child is declared public.
     """
 
+    # Only cache transitions starting at the root. Ancestor-dependent dotted
+    # paths still take the complete walk, and each compiled policy owns its
+    # cache. Keep both the number and size of retained names bounded.
+    cache = (
+        path_trie.root_transitions
+        if not branches and isinstance(path_trie, _PropertyPathTrie)
+        and len(name) <= 256 else None
+    )
+    if cache is not None:
+        slot = hash(name) & 255
+        cached = cache[slot]
+        if cached is not None and cached[0] == name:
+            return cached[1]
     for part in name.split("."):
         following: list[Mapping[object, Any]] = []
         for branch in (path_trie, *branches):
@@ -679,10 +704,15 @@ def _advance_sensitive_path(
             if child is None:
                 continue
             if child.get(_PROPERTY_PATH_TERMINAL):
+                if cache is not None:
+                    cache[slot] = (name, (True, ()))
                 return True, ()
             following.append(child)
         branches = tuple(following)
-    return False, branches
+    result = (False, branches)
+    if cache is not None:
+        cache[slot] = (name, result)
+    return result
 
 
 def _redact_sensitive_tree(

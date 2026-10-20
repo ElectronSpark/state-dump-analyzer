@@ -22,6 +22,39 @@ VALID_ARTIFACT_ID = "00000000-0000-0000-0000-000000000001"
 
 
 class NormalizedDataServiceTests(unittest.TestCase):
+    def test_sensitive_path_transition_cache_is_bounded_and_policy_local(self) -> None:
+        from router_dump_analyzer.normalized_data import (
+            _advance_sensitive_path,
+            _property_path_trie,
+            redact_sensitive_tree,
+        )
+
+        private = _property_path_trie(frozenset({"credentials.secret"}))
+        public = _property_path_trie(frozenset({"credentials.other"}))
+        for _ in range(2):
+            value = {"secret": "public-root", "credentials": {
+                "secret": "private-nested", "other": "other-value",
+            }, "credentials.secret": "private-dotted"}
+            self.assertEqual(redact_sensitive_tree(value, {"credentials.secret"}), {
+                "secret": "public-root", "credentials": {"other": "other-value"},
+            })
+            self.assertEqual(redact_sensitive_tree(value, {"credentials.other"}), {
+                "secret": "public-root", "credentials": {"secret": "private-nested"},
+                "credentials.secret": "private-dotted",
+            })
+        for index in range(300):
+            _advance_sensitive_path(f"bounded-{index}", private, ())
+        _advance_sensitive_path("x" * 257, private, ())
+        self.assertLessEqual(len(private.root_transitions), 256)
+        self.assertTrue(all(
+            item is None or len(item[0]) <= 256 for item in private.root_transitions
+        ))
+        self.assertIsNot(private.root_transitions, public.root_transitions)
+        with patch("router_dump_analyzer.normalized_data.hash", return_value=0, create=True):
+            for _ in range(2):
+                self.assertEqual(_advance_sensitive_path("credentials.secret", private, ()), (True, ()))
+                self.assertEqual(_advance_sensitive_path("visible", private, ()), (False, ()))
+
     def test_consistency_materialization_uses_an_exact_client_envelope(self) -> None:
         class UnknownBranchMustNotBeRead(dict):
             def items(self):

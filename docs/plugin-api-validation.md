@@ -137,6 +137,20 @@ canonical generator output with `tests.test_demo_assembly_store` and
 `tests.test_demo_archive_safety`. Lazy loading may defer work but must not
 silently weaken validation or change the accepted data.
 
+The demo assembly adapter first checks the prepared destination pack's bounded
+compressed size and SHA-256 against the assembly descriptor using streaming reads,
+without decompressing it again. Missing or changed packs preserve the existing
+cache. It then reserves a cold-load cache slot by closing idle LRU
+generations before calling the dataset loader. Releases during materialization
+also respect that reservation. Active leases remain usable and
+can temporarily exceed the cache bound. Verify reclamation inside the next
+loader, including a weak reference to the retired payload; checking the final
+cache size alone misses the transient overlap. Resolve unknown destinations
+before eviction. A failed load may discard an idle cached generation, but its
+validated private archive must remain available for retry and navigation back.
+Exercise concurrent cache hits, releases, shutdown, and close-once behavior
+with `python -m unittest tests.test_demo_assembly_store tests.test_demo_archive_safety -q`.
+
 For combined browser flows, distinguish core ingestion from durable
 materialization and the configured startup runtime. Test slow and failed
 secondary requests, cancellation, superseded responses, and partial rendering;
@@ -226,6 +240,61 @@ reference records; count visits and retained bytes. A small trial establishes
 correctness and work boundaries, not full-scale latency or peak memory. Report
 full-scale generation, deep validation, cold loading, and warm query costs
 separately when those measurements are available.
+
+### Cold search and import measurements
+
+Use a fresh process and empty search-cache directory for the first-query path.
+The browser deployment defers search-corpus construction; an API-only warmup
+can build it before a timer starts. Include the exact client-safe redaction and
+JSON projection, not just matching against an already constructed sidecar.
+Compare ordered matches, sidecar identity, cold/warm CPU, retained memory, and
+navigation peaks on the same fixture. Record browser completion separately
+from backend timings; process CPU excludes separate import workers.
+Preserve every phase occurrence in comparison scripts: repeated page requests
+can share a phase name, so a dictionary keyed only by that name silently drops
+measurements. Compare ordered phase sequences or use name-plus-occurrence keys.
+
+Measure tiny durable imports both alone and, when relevant to the finding,
+alongside cold search. Use the actual deployment composition, parser choice,
+worker isolation, and retained processing-event timestamps. Profile fixed
+registration, live executable identity, child startup, ingestion, and publication
+separately before attributing a delay to input size or a particular stage.
+Microbenchmark gains do not establish end-to-end improvement.
+If imports slow only during heavy queries, separate parent thread CPU from wall
+time, child work, and GC before attributing the delay. Profile overhead is not
+request latency. Scheduling experiments must measure both import responsiveness
+and search CPU/wall time; a faster import alone does not justify slowing every
+idle search or weakening invocation-boundary checks.
+The internal core import/search cooperation is exercised by
+`tests.test_import_scheduling`: claimed durable stages own scoped activity,
+and cold corpus construction offers a short scheduling window only when a
+different thread has an active import. Verify nested/concurrent scope cleanup,
+every stage's error/cancellation exit, exact results, capacity failures, and
+that the activity lock is released before a pause. Idle and same-thread searches
+must not sleep. This is core scheduling, not a plug-in hook or an identity cache.
+
+Dependency-disassembly reuse must retain only immutable derived names/paths,
+bounded by entries and bytes. Key by exact weak code identity rather than
+structural code equality; source reads, dependency resolution, target mutation
+checks, and invocation-boundary verification still run. Exercise collection,
+eviction, and live changes with `tests.test_plugin_identity_runtime_imports`.
+
+Safe-text accelerators may cache bounded policy-path transitions, not mutable
+event projections. Preserve ancestor-sensitive paths, policy isolation, exact
+JSON encoding and case folding. Check the final corpus against an independent
+safe-projection reference. Index-build progress should advance during work,
+remain path/text-free, and never substitute a count for integrity validation.
+Relevant tests are `tests.test_normalized_data_service`,
+`tests.test_revision_queries`, `tests.test_history_search_core`, and
+`tests.test_load_progress`.
+
+For a browser finding, verify both failure feedback and the next successful
+action. Check document overflow against the actual viewport and confirm local
+progress is cleared after rejection. Treat a modifier-click failure seen only
+through an automation tool as unconfirmed until the input path is reproduced;
+unit coverage of selection logic alone does not prove native pointer delivery.
+Keep upstream transport cleanup failures distinct from application exceptions;
+blanket exception suppression is not a fix.
 
 ## Zoom and history query validation
 

@@ -11936,10 +11936,13 @@ function resetTimelineView() {
 
 function bindTimelineStickyHeader() {
   const frame = byId("timeline-frame");
+  const progress = byId("analysis-load-progress");
   const topbar = document.querySelector(".topbar");
   if (!frame || !topbar) return;
   const updateOffset = () => {
-    frame.style.setProperty("--timeline-sticky-top", `${topbar.getBoundingClientRect().height}px`);
+    const height = `${topbar.getBoundingClientRect().height}px`;
+    frame.style.setProperty("--timeline-sticky-top", height);
+    progress?.style.setProperty("--timeline-sticky-top", height);
   };
   updateOffset();
   // CSS owns sticking/release. Observe only header resizing, not page scroll,

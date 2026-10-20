@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import stat
 import tarfile
 import tempfile
 import weakref
@@ -172,6 +173,7 @@ class DemoAssemblyStore:
             prefix="router-dump-plugin-assembly-"
         )
         self._node_archive_paths: dict[str, Path] = {}
+        self._node_archive_checks: dict[str, tuple[int, str]] = {}
         self._revisions_by_id: dict[str, RevisionDescriptor] = {}
         self._revisions_by_node: dict[str, RevisionDescriptor] = {}
         self._datasets: OrderedDict[str, _DatasetEntry] = OrderedDict()
@@ -182,6 +184,7 @@ class DemoAssemblyStore:
         self._lock = RLock()
         self._cold_load_lock = Lock()
         self._loads_in_progress = 0
+        self._reserved_load_slots = 0
         self._closed = False
         self._temporary_directory_cleaned = False
         self.coverage: dict[str, Any] = {}
@@ -329,6 +332,7 @@ class DemoAssemblyStore:
                 )
                 descriptors.append(descriptor)
                 self._node_archive_paths[revision_id] = target
+                self._node_archive_checks[revision_id] = (expected_size, expected_sha256)
                 self._revisions_by_id[revision_id] = descriptor
                 self._revisions_by_node[node_id] = descriptor
 
@@ -627,14 +631,25 @@ class DemoAssemblyStore:
                 self._loads_in_progress += 1
 
             try:
+                # Validate compressed bytes before changing the current cache.
+                # Keep this I/O outside bookkeeping, while the in-progress
+                # count protects private archives against concurrent close().
+                self._validate_node_archive(revision_id)
+                with self._lock:
+                    if self._closed:
+                        raise RuntimeError("demo assembly store is closed")
+                    self._reserved_load_slots = 1
+                    self._trim_cache_locked()
                 entry = self._load_entry(revision_id)
             except BaseException:
                 with self._lock:
+                    self._reserved_load_slots = 0
                     self._loads_in_progress -= 1
                     self._finish_close_locked()
                 raise
 
             with self._lock:
+                self._reserved_load_slots = 0
                 self._loads_in_progress -= 1
                 if self._closed:
                     # close() may race a materialization. Never publish into a
@@ -647,6 +662,31 @@ class DemoAssemblyStore:
                 leased = self._lease_view_locked(entry, entry.dataset)
                 self._trim_cache_locked()
                 return leased
+
+    def _validate_node_archive(self, revision_id: str) -> None:
+        path = self._node_archive_paths[revision_id]
+        expected_size, expected_digest = self._node_archive_checks[revision_id]
+        try:
+            if not stat.S_ISREG(path.lstat().st_mode):
+                raise DemoAssemblyError("prepared node archive is not a regular file")
+            with path.open("rb") as source:
+                if source.seek(0, 2) != expected_size:
+                    raise DemoAssemblyError("prepared node archive size mismatch")
+                source.seek(0)
+                digest = hashlib.sha256()
+                remaining = expected_size
+                while remaining:
+                    chunk = source.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        raise DemoAssemblyError("prepared node archive size mismatch")
+                    digest.update(chunk)
+                    remaining -= len(chunk)
+                if source.read(1):
+                    raise DemoAssemblyError("prepared node archive size mismatch")
+                if digest.hexdigest() != expected_digest:
+                    raise DemoAssemblyError("prepared node archive checksum mismatch")
+        except OSError as error:
+            raise DemoAssemblyError("prepared node archive is unavailable") from error
 
     def _load_entry(self, revision_id: str) -> _DatasetEntry:
         descriptor = self.revision(revision_id)
@@ -746,7 +786,8 @@ class DemoAssemblyStore:
         self._close_runtime(entry.dataset)
 
     def _trim_cache_locked(self) -> None:
-        while len(self._datasets) > self.cache_size:
+        limit = self.cache_size - self._reserved_load_slots
+        while len(self._datasets) > limit:
             evicted_revision: str | None = None
             for candidate_revision, entry in self._datasets.items():
                 if entry.lease_count == 0:

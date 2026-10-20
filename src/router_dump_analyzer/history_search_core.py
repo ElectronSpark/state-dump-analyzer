@@ -23,7 +23,10 @@ from threading import Condition, RLock
 from typing import Any
 from uuid import uuid4
 
+from ._import_scheduling import _cooperate_with_durable_import
 from .history_search_matches import MatchSet as _MatchSet
+from .load_progress import AnalysisLoadStage as _AnalysisLoadStage
+from .load_progress import report_analysis_load as _report_analysis_load
 
 
 class HistorySearchCapacityError(RuntimeError):
@@ -301,6 +304,11 @@ class HistorySearchCorpus:
                     _matches.append(expected_ordinal)
                 actual_count += 1
                 actual_character_count += len(safe_text)
+                if actual_count % 1024 == 0:
+                    _report_analysis_load(
+                        _AnalysisLoadStage.INDEXING,
+                        records_processed=actual_count,
+                    )
             if (
                 actual_count != int(document_count)
                 or actual_character_count != int(character_count)
@@ -387,6 +395,13 @@ class HistorySearchCorpus:
                     "history search corpus exceeds the character limit"
                 )
             yield document_count - 1, document
+            if document_count % 64 == 0:
+                _cooperate_with_durable_import()
+            if document_count % 1024 == 0:
+                _report_analysis_load(
+                    _AnalysisLoadStage.INDEXING,
+                    records_processed=document_count,
+                )
         if (
             self._expected_documents is not None
             and document_count != self._expected_documents
@@ -396,6 +411,9 @@ class HistorySearchCorpus:
             )
         self._document_count = document_count
         self._character_count = character_count
+        _report_analysis_load(
+            _AnalysisLoadStage.INDEXING, records_processed=document_count
+        )
 
     def _build_memory(
         self,

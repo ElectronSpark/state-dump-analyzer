@@ -75,9 +75,24 @@ same scenarios locally.
 
 For loading or cache changes, use the map's
 [performance boundaries](../../../docs/plugin-api-validation.md#loading-and-performance-boundaries).
+For navigation eviction, verify destination size/checksum validation precedes
+idle reclamation, missing/changed packs preserve current cache, and active-reader
+release during a blocked cold load still reserves the incoming slot. Exercise
+validation/load failure, retry, and concurrent close with exact cleanup counts.
 Compare cold and warm behavior, including changed inputs and failed or
 superseded requests. A faster successful call does not establish unchanged
 identity enforcement, archive safety, or browser readiness.
+For reported search/import latency, follow the map's
+[cold-path measurement checks](../../../docs/plugin-api-validation.md#cold-search-and-import-measurements).
+Separate complete user-path timings from instrumented attribution and tiny
+microbenchmarks. Check a reused dependency-analysis artifact against changed
+source and live targets; a warm cache must still reject those changes.
+Preserve repeated phase occurrences when comparing benchmark results; count
+records as well as distinct phase names and include every occurrence in totals.
+For import/search cooperation, verify idle and same-thread searches never sleep,
+nested/concurrent import scopes survive independent exits, and failures or
+cancellation clear activity. Check exact search results and compare both
+workloads' latency without relaxing source or invocation-boundary verification.
 
 For combined history changes, exercise cache retirement with an active
 reader, same-revision replacement, dense and sparse searches, refinement,

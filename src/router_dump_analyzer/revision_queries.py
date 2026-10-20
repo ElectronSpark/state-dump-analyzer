@@ -892,14 +892,12 @@ class RevisionQueryService:
     ) -> Iterator[str]:
         """Yield the exact case-folded, client-safe event search projection."""
 
+        encode = json.JSONEncoder(
+            sort_keys=True, ensure_ascii=False, separators=(",", ":")
+        ).encode
         for event in self._checked(runtime.events):
             projected = self._redact_event_for_client(event, dataset, policy=policy)
-            yield json.dumps(
-                projected,
-                sort_keys=True,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ).casefold()
+            yield encode(projected).casefold()
 
     def _warm_event_search(self, dataset: Mapping[str, Any]) -> None:
         """Build one immutable revision's safe corpus under tracked indexing."""

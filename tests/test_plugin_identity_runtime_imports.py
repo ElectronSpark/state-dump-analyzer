@@ -1942,6 +1942,38 @@ class PluginIdentityRuntimeImportTests(unittest.TestCase):
         finally:
             self._cleanup_modules(temporary, module_name)
 
+    def test_global_dependency_cache_is_weak_bounded_and_exact(self) -> None:
+        import gc
+        import weakref
+
+        with (
+            patch.object(plugin_identity, "_global_dependency_cache", new=plugin_identity.OrderedDict()),
+            patch.object(plugin_identity, "_GLOBAL_DEPENDENCY_CACHE_MAX_ENTRIES", 2),
+            patch.object(plugin_identity.dis, "get_instructions", wraps=plugin_identity.dis.get_instructions) as instructions,
+        ):
+            first = compile("value.member()", "first", "exec")
+            equivalent = compile("value.member()", "first", "exec")
+            expected = plugin_identity._loaded_global_dependencies(first)
+            self.assertEqual(expected[1], (("value", "member"),))
+            self.assertIs(expected, plugin_identity._loaded_global_dependencies(first))
+            self.assertEqual(instructions.call_count, 1)
+            self.assertIsNot(first, equivalent)
+            self.assertEqual(expected, plugin_identity._loaded_global_dependencies(equivalent))
+            self.assertEqual(instructions.call_count, 2)
+            third = compile("import os", "third", "exec")
+            self.assertTrue(plugin_identity._loaded_global_dependencies(third)[2])
+            self.assertEqual(len(plugin_identity._global_dependency_cache), 2)
+            plugin_identity._loaded_global_dependencies(first)
+            self.assertEqual(instructions.call_count, 4)
+            instructions.reset_mock()
+            reference = weakref.ref(first)
+            del first
+            gc.collect()
+            self.assertIsNone(reference())
+            with patch.object(plugin_identity, "_GLOBAL_DEPENDENCY_CACHE_MAX_BYTES", 1):
+                plugin_identity._loaded_global_dependencies(compile("other.member()", "large", "exec"))
+                self.assertEqual(len(plugin_identity._global_dependency_cache), 2)
+
     def test_declared_compilation_cache_bounds_and_eviction(self) -> None:
         with (
             patch.object(plugin_identity, "_declared_compilation_cache", new=plugin_identity.OrderedDict()),

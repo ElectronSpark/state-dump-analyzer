@@ -43,6 +43,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Self
 from uuid import uuid4
 
+from ._import_scheduling import _processing_durable_import
 from .artifact_core import ArtifactLimits
 from .canonical import canonical_json
 from .contract_validation import validate_bounded_json_value
@@ -9289,22 +9290,24 @@ class DurableIngestionPipeline:
     def _run_claimed_stage(self, row: sqlite3.Row) -> None:
         """Dispatch one claim only under its immutable composition policy."""
 
-        # This guard deliberately precedes every stage-specific method. In
-        # particular, admission and publication may call an external catalog
-        # and therefore must not run once a restarted worker has a different
-        # provider-composition policy from the admitted import.
-        self._require_composition_policy(row)
-        state = ImportState(str(row["state"]))
-        if state is ImportState.ADMITTING:
-            self._run_admission(row)
-        elif state is ImportState.PROBING:
-            self._run_probe(row)
-        elif state is ImportState.INGESTING:
-            self._run_ingestion(row)
-        elif state is ImportState.PUBLISHING:
-            self._run_publication(row)
-        else:  # pragma: no cover - _claim returns only active stage states
-            raise IngestionPipelineError("claimed import stage is invalid")
+        with _processing_durable_import():
+            # This guard deliberately precedes every stage-specific method. In
+            # particular, admission and publication may call an external catalog
+            # and therefore must not run once a restarted worker has a different
+            # provider-composition policy from the admitted import.
+            self._require_composition_policy(row)
+            state = ImportState(str(row["state"]))
+            if state is ImportState.ADMITTING:
+                self._run_admission(row)
+            elif state is ImportState.PROBING:
+                self._run_probe(row)
+            elif state is ImportState.INGESTING:
+                self._run_ingestion(row)
+            elif state is ImportState.PUBLISHING:
+                self._run_publication(row)
+            else:  # pragma: no cover - _claim returns only active stage states
+                raise IngestionPipelineError("claimed import stage is invalid")
+
 
     def _run_admission(self, row: sqlite3.Row) -> None:
         """Replay one durably staged fixture-catalog admission."""

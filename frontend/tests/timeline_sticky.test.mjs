@@ -10,11 +10,13 @@ const BINDING_SOURCE = APP_SOURCE.slice(start, end);
 
 function stickyHarness({ height = 68, hasObserver = true, hasFrame = true, hasTopbar = true } = {}) {
   const writes = [];
+  const progressWrites = [];
   const listeners = new Map();
   const observers = [];
   let measuredHeight = height;
   let measurements = 0;
   const frame = { style: { setProperty: (name, value) => writes.push({ name, value }) } };
+  const progress = { style: { setProperty: (name, value) => progressWrites.push({ name, value }) } };
   const topbar = { getBoundingClientRect: () => {
     measurements += 1;
     return { height: measuredHeight };
@@ -39,12 +41,12 @@ function stickyHarness({ height = 68, hasObserver = true, hasFrame = true, hasTo
     };
   }
   const bind = new Function("byId", "document", "window", `${BINDING_SOURCE}\nreturn bindTimelineStickyHeader;`)(
-    (id) => id === "timeline-frame" && hasFrame ? frame : null,
+    (id) => id === "analysis-load-progress" ? progress : id === "timeline-frame" && hasFrame ? frame : null,
     { querySelector: (selector) => selector === ".topbar" && hasTopbar ? topbar : null },
     window,
   );
   return {
-    bind, writes, listeners, observers, frame, topbar,
+    bind, writes, progressWrites, listeners, observers, frame, topbar,
     measurements: () => measurements,
     setHeight: (value) => { measuredHeight = value; },
     emit(type) { for (const listener of listeners.get(type) || []) listener.callback({ type }); },
@@ -55,6 +57,7 @@ test("sticky header immediately uses the measured topbar border-box height", () 
   const harness = stickyHarness({ height: 68.5 });
   harness.bind();
   assert.deepEqual(harness.writes, [{ name: "--timeline-sticky-top", value: "68.5px" }]);
+  assert.deepEqual(harness.progressWrites, harness.writes);
   assert.equal(harness.measurements(), 1);
   assert.equal(harness.observers.length, 1);
   assert.deepEqual(harness.observers[0].observed, [harness.topbar]);
@@ -67,6 +70,7 @@ test("topbar observation updates the offset after wrapping and responsive height
     harness.setHeight(height);
     harness.observers[0].callback([]);
     assert.deepEqual(harness.writes.at(-1), { name: "--timeline-sticky-top", value: `${height}px` });
+    assert.deepEqual(harness.progressWrites, harness.writes);
   }
   assert.equal(harness.measurements(), 4);
   assert.equal(harness.observers.length, 1);

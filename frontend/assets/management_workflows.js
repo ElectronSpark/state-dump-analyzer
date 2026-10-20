@@ -52,6 +52,9 @@ export async function renderImports(ui) {
       const query = new URLSearchParams({ original_name: selected.name, auto_select: auto.value });
       const record = await client.request(`${path("imports")}?${query}`, { method: "POST", file: selected, ...(nodeHint.value === "" ? {} : { nodeHint: nodeHint.value }) });
       state.importId = record.import_id; await show(); message("Upload admitted. Follow its durable status below; manual parser selection may be required.");
+    } catch (error) {
+      progress.textContent = `Upload failed: ${error.message || "Unable to upload the selected file."}`;
+      throw error;
     } finally { spinner.remove(); if (submit.isConnected) submit.disabled = !canWrite || client.uncertain; }
   }); });
   upload.append(form, progress); content.append(upload);
@@ -115,7 +118,7 @@ async function inspectSession(ui, id) {
   const record = await client.request(path("sessions", id)); if (!root.isConnected) return; const writable = state.context.can_write === true;
   root.append(el("h3", record.label), el("p", `${record.session_id} · version ${record.version}`));
   for (const member of record.members) root.append(ui.recordRow(member.member_id, `${member.node_id} · ${member.revision_id}${member.member_id === record.default_member_id ? " · default" : ""}`, [button("Remove member", async () => {
-    await client.request(path("sessions", id, "members", member.member_id), { method: "DELETE", version: record.version }); await show();
+    await client.request(path("sessions", id, "members", member.member_id), { method: "DELETE", version: record.version }); await show(); message("Session member removed.");
   }, !writable, true)]));
   if (!record.members.length) root.append(el("p", "No revisions selected yet."));
   root.append(button("Create immutable snapshot", async () => { const snapshot = await client.request(path("sessions", id, "snapshots"), { method: "POST", version: record.version }); message(`Snapshot created: ${snapshot.snapshot_id}. It protects this session from deletion.`); await show(); }, !writable || !record.members.length), button("Inspect session analysis", () => ui.openAnalysis({ session_id: id }), !record.members.length));
