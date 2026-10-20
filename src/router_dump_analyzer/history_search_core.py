@@ -23,6 +23,7 @@ from threading import Condition, RLock
 from typing import Any
 from uuid import uuid4
 
+from ._history_search_cache import _shared_results
 from ._import_scheduling import _cooperate_with_durable_import
 from .history_search_matches import MatchSet as _MatchSet
 from .load_progress import AnalysisLoadStage as _AnalysisLoadStage
@@ -124,6 +125,8 @@ class HistorySearchCorpus:
         self._closed = False
         self._error: Exception | None = None
         self._results: OrderedDict[str, _MatchSet] = OrderedDict()
+        self._reuse_identity: str | None = None
+        self._reuse_file_stamp: tuple[int, int, int] | None = None
         self._cached_ordinals = 0
         self._cached_bytes = 0
         # Hosts that explicitly warm the corpus later can defer the linear
@@ -364,6 +367,8 @@ class HistorySearchCorpus:
             # candidate index have passed validation. A rejected existing cache
             # must not replace the pins of our newly built temporary database.
             self._block_digests = validated_blocks
+            self._set_reuse_identity(str(documents_digest), int(document_count))
+            self._reuse_file_stamp = self._sidecar_stamp(path)
         finally:
             connection.close()
         return validated
@@ -419,7 +424,43 @@ class HistorySearchCorpus:
         self,
         documents: Callable[[], Iterable[str]],
     ) -> tuple[str, ...]:
+        # Memory-only histories keep their original construction cost. Reuse
+        # belongs to persistent corpora whose normal lifecycle already hashes
+        # and validates the complete safe projection.
+        self._reuse_identity = None
+        self._reuse_file_stamp = None
         return tuple(document for _, document in self._bounded_documents(documents))
+
+    def _set_reuse_identity(self, documents_digest: str, count: int) -> None:
+        digest = sha256()
+        for part in (self._FORMAT_VERSION, self._identity or "", documents_digest,
+                     str(count), "safe-folded-literal-v1"):
+            encoded = part.encode("utf-8", errors="surrogatepass")
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+        self._reuse_identity = digest.hexdigest()
+
+    @staticmethod
+    def _sidecar_stamp(path: Path) -> tuple[int, int, int] | None:
+        try:
+            stat = path.stat()
+            return stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+        except OSError:
+            return None
+
+    def _shared_match(self, needle: str) -> _MatchSet | None:
+        if self._reuse_identity is None:
+            return None
+        if (
+            self._sidecar_ready
+            and self._sidecar_path is not None
+            and (
+                self._reuse_file_stamp is None
+                or self._sidecar_stamp(self._sidecar_path) != self._reuse_file_stamp
+            )
+        ):
+            return None
+        return _shared_results.get(self._reuse_identity, needle)
 
     def _build_sidecar(
         self,
@@ -630,6 +671,8 @@ class HistorySearchCorpus:
                 temporary.unlink(missing_ok=True)
                 return existing
             os.replace(temporary, target)
+            self._set_reuse_identity(documents_digest.hexdigest(), self._document_count)
+            self._reuse_file_stamp = self._sidecar_stamp(target)
             # The just-committed database was built from the bounded source
             # iterator, and its exact document/accelerator digests were
             # computed in this process. Re-reading every document (and the
@@ -1067,7 +1110,9 @@ class HistorySearchCorpus:
         if cached is not None:
             self._results.move_to_end(needle)
             return cached
-        compact = _MatchSet(matches, self._document_count)
+        compact = self._shared_match(needle)
+        if compact is None:
+            compact = _MatchSet(matches, self._document_count)
         self._results[needle] = compact
         self._cached_bytes += compact.nbytes
         self._cached_ordinals += len(compact)
@@ -1105,6 +1150,10 @@ class HistorySearchCorpus:
             if cached is not None:
                 self._results.move_to_end(needle)
                 return cached
+            if self._reuse_identity is not None:
+                shared = self._shared_match(needle)
+                if shared is not None:
+                    return self._remember(needle, shared)
             try:
                 matches = self._query_ready(needle)
             except sqlite3.DatabaseError:
@@ -1114,6 +1163,7 @@ class HistorySearchCorpus:
                 self._sidecar_ready = False
                 self._candidate_backend = "pending"
                 self._documents = None
+                self._reuse_identity = None
                 self._document_count = 0
                 self._character_count = 0
                 self._results.clear()
@@ -1144,11 +1194,15 @@ class HistorySearchCorpus:
         with self._condition:
             while self._building:
                 self._condition.wait()
+            if self._reuse_identity is not None:
+                for needle, matches in self._results.items():
+                    _shared_results.put(self._reuse_identity, needle, matches)
             self._closed = True
             self._sidecar_ready = False
             self._candidate_backend = "pending"
             self._bypass_sidecar = False
             self._documents = None
+            self._reuse_identity = None
             self._block_digests.clear()
             self._document_count = 0
             self._character_count = 0

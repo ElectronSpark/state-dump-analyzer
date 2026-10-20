@@ -138,6 +138,14 @@ visited blocks as well as returned rows. Retain compact small-corpus storage
 and its accelerator when changing large-corpus page or compression policy.
 The performance map lists storage boundaries and focused regression cases.
 
+For reuse across retired search runtimes, retain only bounded compact results
+and index metadata keyed by validated corpus content and projection identity;
+never retain event rows, builders, service owners, or a cached trust decision.
+Validate a reopened corpus before admitting shared results. Keep literal cache
+keys exact without retaining caller subclass state. Evaluate optional
+large-corpus indexes against their build CPU and storage costs, block pruning,
+and exact fallback; the map's search-cache guidance covers those tradeoffs.
+
 For timeline or history scale work, use the map's
 [zoom-query guidance](../../../docs/plugin-api-validation.md#zoom-and-history-query-validation).
 Keep zoom aggregation in core; a display limit must also bound detail work,

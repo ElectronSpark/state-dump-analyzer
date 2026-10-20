@@ -168,7 +168,7 @@ and browse the resulting integration before claiming UI readiness.
 
 The core safe-text sidecar uses versioned SQLite storage. Plain corpora below
 1 MiB retain 4 KiB pages; larger plain corpora and compressed corpora use
-64 KiB pages. Above the eager-candidate character budget (64 MiB by default),
+64 KiB pages. Above the eager-candidate character budget (64 × 1024² characters by default),
 or once 65,536 buffered documents are reached, storage switches to zlib level-1
 blocks. Small corpora retain the optional trigram accelerator. Compression
 preserves complete UTF-8 documents and ordinals; matching never crosses document
@@ -212,6 +212,52 @@ needle contained in the new needle can safely supply candidates, and every
 candidate still receives the exact substring check. Cold matching can share
 corpus construction or sidecar validation scans, but results publish only after
 complete identity, count, digest, and candidate-index validation succeeds.
+
+For search-cache reuse across navigation, distinguish an immutable validated
+corpus from the runtime that owns event objects. A bounded core cache may retain
+compact exact postings or derived index metadata across runtime retirement only
+when their key binds the full corpus content, projection semantics and index
+format. A revision label or path alone is insufficient. Reopening must complete
+the existing corpus validation before sharing results; never cache authorization
+or executable trust. Check global entry/byte budgets (including keys), eviction,
+concurrent readers, distinct revisions with the same label, corruption fallback,
+and weak-reference collection of retired runtimes/builders.
+
+The core's process-local retired-result cache is bounded to 128 entries and
+16 MiB including keys and bookkeeping. `close()` publishes only the compact
+results still retained by that corpus; event rows and builders are released.
+Reopened corpora validate first, then may reuse results under the full content,
+projection, format and count identity. Non-exact string keys are not shared;
+subclass conversion, equality or hashing must not alter literal cache identity.
+Changed sidecar stamps suppress shared lookup. This cache does not persist
+between processes and does not avoid the full reopen integrity scan.
+Sharing is limited to successfully built or validated persistent sidecars,
+which already compute a complete corpus digest. Memory-only construction and
+disk-failure fallback keep their original no-hash path and never publish shared
+results; hashing all their text just for reuse adds avoidable first-query CPU.
+Exercise `tests.test_history_search_reuse` together with both existing search
+suites and the assembly navigation checks.
+
+An optional large-corpus candidate index must preserve the compressed corpus
+and exact UTF-8 literal matching. Candidates are a superset, followed by exact
+verification within document boundaries. Measure index construction CPU and peak
+memory, retained/disk bytes, and blocks visited for rare, common, absent, short,
+Unicode and NUL-containing terms. Block indexes can be ineffective when every
+block contains a match; use measured selectivity to retain scanning when cheaper.
+Compare compact document-level postings only if block pruning is insufficient
+for the target workload. Do not increase the small-corpus FTS threshold without
+measuring its impact on initial readiness and storage.
+
+Use `scripts/profile_history_search_indexes.py --sidecar <compressed-sidecar>`
+for a bounded offline comparison of block trigrams and document postings. Its
+defaults sample at most 32 blocks, 16 MiB of raw frames and 50,000 documents;
+it leaves production indexing unchanged. The report separates build, candidate
+selection and exact compressed-block verification. Serialized posting sizes
+are estimates: queries use resident bitsets/arrays, and the experiment excludes
+full-corpus validation, SQLite query I/O and production peak RSS. Run
+`python -m unittest tests.test_profile_history_search_indexes -v` after changing
+the comparison script. Full-scale CPU and memory still require the actual
+production query/navigation path.
 
 Indexed history accepts read-only event mappings and sequences. The generated
 demo shares its UID ordinal index with a compact row lookup view; the

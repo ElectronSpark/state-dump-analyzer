@@ -1,0 +1,9 @@
+from .history_search_matches import MatchSet as MatchSet
+
+class _SearchResultCache:
+    def __init__(self, max_entries: int = 128, max_bytes: int = ...) -> None: ...
+    def get(self, corpus: str, needle: str) -> MatchSet | None: ...
+    def put(self, corpus: str, needle: str, matches: MatchSet) -> None: ...
+
+# Private shared cache consumed by the core history query implementation.
+_shared_results: _SearchResultCache

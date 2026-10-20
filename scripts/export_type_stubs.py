@@ -28,6 +28,10 @@ PACKAGE_ROOTS = (
     / "state_dump_generator",
 )
 STUB_SUPPLEMENTS = {
+    Path("router_dump_analyzer/_history_search_cache.pyi"): (
+        "\n# Private shared cache consumed by the core history query implementation.\n"
+        "_shared_results: _SearchResultCache\n"
+    ),
     Path("router_dump_analyzer/ingestion_pipeline.pyi"): (
         "\n# Preserve the original typed import paths for moved bootstrap records.\n"
         "from .plugin_registration import (\n"

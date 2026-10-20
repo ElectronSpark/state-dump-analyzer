@@ -116,6 +116,13 @@ that small sidecars retain compact storage. Separate these correctness and
 work-bound checks from fresh full-corpus size and CPU measurements; prototype
 measurements do not establish production performance.
 
+For search reuse across navigation, check released-runtime collectibility,
+global byte/entry bounds, concurrent readers, and changed content or projection
+under the same revision label. Reopen validation must precede shared-result
+reuse. For candidate indexes, compare complete ordered matches and skipped
+blocks, including frequent and absent terms; report build/storage cost alongside
+query gains and preserve an exact scan when the accelerator is unavailable.
+
 For timeline/density changes, follow
 [zoom-query validation](../../../docs/plugin-api-validation.md#zoom-and-history-query-validation).
 Check both coarse summaries and exact drill-down with the same evidence;
