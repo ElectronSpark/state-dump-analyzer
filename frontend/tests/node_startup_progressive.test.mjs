@@ -68,10 +68,10 @@ test('late incident preview may focus an empty startup but cannot override user 
 test('deferred initial event selection refreshes scale timeline once using final cursor and focus', async () => {
   for (const loaded of [false, true]) {
     const event = { event_uid: 'e1' };
-    const state = { cursorNs: 10n, resourceById: new Map([['r1', { kind: 'port' }]]), correlatedResourceIds: new Set(), laneByResource: new Map(loaded ? [['r1', {}]] : []), explicitLaneIds: new Set(), selectedResourceId: null };
+    const state = { laneMode: 'all', lanes: loaded ? [{ resourceId: 'r1' }] : [], hiddenTimelineResourceIds: new Set(), cursorNs: 10n, resourceById: new Map([['r1', { kind: 'port' }]]), correlatedResourceIds: new Set(), laneByResource: new Map(loaded ? [['r1', {}]] : []), explicitLaneIds: new Set(), selectedResourceId: null };
     const effects = { graph: 0, resource: 0, temporal: 0, topology: 0, timelines: [] };
     const deps = {
-      state, eventOrMark: () => event, eventResourceRefs: () => ['r1'], resourceKind: () => 'port', isScaleMode: () => true, MAX_SCALE_TIMELINE_LANES: 10,
+      state, canonicalResourceId: value => value, eventOrMark: () => event, eventResourceRefs: () => ['r1'], resourceKind: () => 'port', isScaleMode: () => true, MAX_SCALE_TIMELINE_LANES: 10,
       pruneServerEventLogOwnedCaches() {}, renderEventInspector() {}, renderTimeline() {}, renderEventTable() {}, rerenderTimelinePreservingScroll() {},
       eventTime: () => 3n, requestEventDetail: async () => null,
       refreshScaleTimeline: async () => { effects.timelines.push({ cursor: state.cursorNs, resource: state.selectedResourceId }); },
@@ -79,7 +79,7 @@ test('deferred initial event selection refreshes scale timeline once using final
       clampNs: (value) => value, updateCursorVisual() {}, updateFabricNavigationLink() {}, markResourcesPending() {}, markDashboardsPending() {}, updateTimelineCommandAvailability() {},
       scheduleTemporalRefresh: () => { effects.temporal++; }, scheduleTopologyRefreshFromCursor: (schedule = true) => { if (schedule) effects.topology++; },
     };
-    const select = new Function(...Object.keys(deps), `${extract('setCursor')}\n${extract('selectEvent')}\nreturn selectEvent;`)(...Object.values(deps));
+    const select = new Function(...Object.keys(deps), `${extract('resourceHiddenFromTimeline')}\n${extract('laneSelectedByMode')}\n${extract('currentModeLaneIds')}\n${extract('setCursor')}\n${extract('selectEvent')}\nreturn selectEvent;`)(...Object.values(deps));
     select('e1', true, null, { deferRequests: true });
     assert.equal(state.selectedEventUid, 'e1');
     assert.equal(state.cursorSelected, true);
@@ -88,13 +88,13 @@ test('deferred initial event selection refreshes scale timeline once using final
   }
 });
 test('deferred resource selection establishes kind and lane without duplicate graph or resource queries', () => {
-  const state = { selectedResourceKind: 'old', selectedResourceViewId: null, resourceById: new Map([['r1', { kind: 'port' }]]), correlatedResourceIds: new Set(), laneByResource: new Map(), explicitLaneIds: new Set(), cursorNs: 3n };
+  const state = { laneMode: 'all', lanes: [], hiddenTimelineResourceIds: new Set(), selectedResourceKind: 'old', selectedResourceViewId: null, resourceById: new Map([['r1', { kind: 'port' }]]), correlatedResourceIds: new Set(), laneByResource: new Map(), explicitLaneIds: new Set(), cursorNs: 3n };
   const effects = { graph: 0, resources: 0, timeline: 0 };
   const deps = { state, canonicalResourceId: (value) => value, resourceKind: () => 'port', isScaleMode: () => true, MAX_SCALE_TIMELINE_LANES: 10,
     requestResources: () => { effects.resources++; }, requestGraph: () => { effects.graph++; }, refreshScaleTimeline: () => { effects.timeline++; },
     markCorrelationPending() {}, rerenderTimelinePreservingScroll() {}, renderResourceTables() {}, refreshDashboardSelectionPresentation() {}, renderGraph() {}, updateFabricNavigationLink() {},
   };
-  const select = new Function(...Object.keys(deps), `${extract('selectResource')}\nreturn selectResource;`)(...Object.values(deps));
+  const select = new Function(...Object.keys(deps), `${extract('resourceHiddenFromTimeline')}\n${extract('laneSelectedByMode')}\n${extract('currentModeLaneIds')}\n${extract('selectResource')}\nreturn selectResource;`)(...Object.values(deps));
   select('r1', { deferRequests: true });
   assert.equal(state.selectedResourceId, 'r1');
   assert.equal(state.selectedResourceKind, 'port');

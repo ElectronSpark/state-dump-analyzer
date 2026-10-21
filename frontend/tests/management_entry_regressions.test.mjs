@@ -143,6 +143,39 @@ test("successful member removal replaces an earlier mutation error", async (t) =
   assert.equal(app.elements.get("management-message").textContent, "Session member removed.");
 });
 
+test("corrected session rename replaces error feedback through the installed form handler", async (t) => {
+  let session = { session_id: "shared-session", label: "Original session", version: 1, members: [] };
+  const app = await application(t, (path, options) => {
+    if (!path.endsWith("/sessions/shared-session")) return undefined;
+    if (options.method === "PATCH") {
+      const body = JSON.parse(options.body);
+      if (body.label === "Rejected name") return jsonResponse({ error: { code: "invalid_request", message: "Session name was rejected" } }, 400);
+      session = { ...session, label: body.label, version: session.version + 1 };
+    }
+    return jsonResponse(session);
+  });
+  await app.connect(); await app.tab("sessions"); await app.click(app.findButton("Manage session"));
+  const form = app.findButton("Save name").parent;
+  const label = descendants(form).find((node) => node.name === "label");
+  label.value = "Rejected name"; form.emit("submit"); await settle();
+  const feedback = app.elements.get("management-message");
+  assert.match(feedback.textContent, /Session name was rejected/);
+  assert.equal(feedback.dataset.error, "true");
+  assert.equal(app.findButton("Save name").disabled, false);
+  assert.match(app.content.textContent, /Original session/);
+
+  label.value = "Corrected session"; form.emit("submit"); await settle();
+  assert.match(app.content.textContent, /Corrected session/);
+  assert.match(app.content.textContent, /shared-session · version 2/);
+  assert.equal(feedback.textContent, "Session renamed.");
+  assert.equal(feedback.dataset.error, "false");
+  assert.equal(app.findButton("Save name").disabled, false);
+  const renames = app.calls.filter((call) => call.method === "PATCH");
+  assert.equal(renames.length, 2);
+  assert.deepEqual(JSON.parse(renames[1].body), { label: "Corrected session" });
+  assert.equal(renames[1].headers["If-Match"], '"1"');
+});
+
 test("card and dropdown refuse workspace changes while a real client mutation is pending", async (t) => {
   const write = deferred();
   const app = await application(t, (path, options) => options.method === "POST" && path.endsWith("/sessions/shared-session/snapshots") ? write.promise : undefined);

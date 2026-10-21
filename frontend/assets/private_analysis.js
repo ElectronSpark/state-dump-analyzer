@@ -52,6 +52,11 @@ function renderSubmissionAvailability(snapshot) {
   }
 }
 
+function syncClockFields() {
+  timeField.hidden = clockSelect.value === "latest_per_revision";
+  element("pa-time").required = !timeField.hidden;
+}
+
 function selectedRevisionIds() {
   return [...revisionsHost.querySelectorAll("input[type=checkbox]:checked")]
     .map((input) => input.value);
@@ -414,8 +419,8 @@ const controller = createPrivateAnalysisController({
   onChange(snapshot) {
     showStatus(snapshot.message);
     renderSubmissionAvailability(snapshot);
-    if (snapshot.phase === "ready" && snapshot !== lastDiscovery) {
-      lastDiscovery = snapshot;
+    if (snapshot.phase === "ready" && snapshot.capabilities !== lastDiscovery) {
+      lastDiscovery = snapshot.capabilities;
       renderDiscovery(snapshot);
     }
     renderRun(snapshot.run, snapshot.cancelLocked);
@@ -433,10 +438,10 @@ scopeForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   compose.hidden = true;
   runForm.reset();
+  syncClockFields();
   revisionsHost.replaceChildren();
   taskSelect.replaceChildren();
   runnerSelect.replaceChildren();
-  timeField.hidden = true;
   lastDiscovery = null;
   try {
     await controller.connect({
@@ -455,6 +460,7 @@ element("pa-disconnect").addEventListener("click", () => {
   controller.disconnect();
   scopeForm.reset();
   runForm.reset();
+  syncClockFields();
   reloadForm.reset();
   compose.hidden = true;
   revisionsHost.replaceChildren();
@@ -463,10 +469,8 @@ element("pa-disconnect").addEventListener("click", () => {
   element("pa-tenant").focus();
 });
 
-clockSelect.addEventListener("change", () => {
-  timeField.hidden = clockSelect.value === "latest_per_revision";
-  element("pa-time").required = !timeField.hidden;
-});
+clockSelect.addEventListener("change", syncClockFields);
+syncClockFields();
 
 runForm.addEventListener("submit", async (event) => {
   event.preventDefault();

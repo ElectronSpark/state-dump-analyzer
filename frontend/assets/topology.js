@@ -5393,6 +5393,8 @@ function syncBasisFields() {
 
 function renderCapabilityNodeIndex() {
   const container = byId("mn-node-index");
+  const focusedToggleKey = container.contains(document.activeElement)
+    ? document.activeElement?.dataset?.nodeToggle : undefined;
   const needle = state.nodeFilter.trim().toLowerCase();
   const nodes = state.capabilities.nodes.filter((node) => {
     const result = selectedResultNodes().find((item) => item.key === node.key);
@@ -5400,11 +5402,11 @@ function renderCapabilityNodeIndex() {
     return !needle || [node.label, node.node_id, node.site, node.device_type, plan.plugin_set_id, plan.projection_id]
       .filter(Boolean).join(" ").toLowerCase().includes(needle);
   });
-  container.innerHTML = nodes.map((node, index) => {
+  container.innerHTML = nodes.map((node) => {
     const result = selectedResultNodes().find((item) => item.key === node.key) || node;
     const plan = result.plan || nodePlan(node);
     const health = nodeHealth(result);
-    const toggleId = `mn-node-toggle-${index}`;
+    const toggleId = `mn-node-toggle-${encodeURIComponent(node.key)}`;
     return `<div class="mn-node-index-item${state.focusedNodeKey === node.key ? " is-selected" : ""}${node.available === false ? " is-unavailable" : ""}" data-node-key="${escapeHtml(node.key)}">
       <input id="${toggleId}" type="checkbox" data-node-toggle="${escapeHtml(node.key)}" ${state.selectedNodeKeys.has(node.key) ? "checked" : ""} ${state.pending || node.available === false ? "disabled" : ""} />
       <label for="${toggleId}"><strong>${escapeHtml(node.label)}</strong><small>${escapeHtml(`${node.site} · ${node.device_type}`)}</small><code>${escapeHtml(`${plan.plugin_set_id} → ${plan.projection_id}`)}</code></label>
@@ -5425,6 +5427,11 @@ function renderCapabilityNodeIndex() {
     if (event.target.closest("input, label, a")) return;
     focusNode(row.dataset.nodeKey);
   }));
+  if (focusedToggleKey !== undefined) {
+    const toggle = [...container.querySelectorAll("[data-node-toggle]")]
+      .find((input) => input.dataset.nodeToggle === focusedToggleKey);
+    if (toggle && !toggle.disabled) toggle.focus({ preventScroll: true });
+  }
   const selectableNodes = state.capabilities.nodes.filter((node) => node.available !== false);
   const selectedCount = selectableNodes.filter((node) => state.selectedNodeKeys.has(node.key)).length;
   const unavailableCount = state.capabilities.nodes.length - selectableNodes.length;
@@ -9566,6 +9573,7 @@ function useRouteTableEntry(entryId) {
     byId("mn-route-scenario").value = query.scenario_id;
   }
   const steeringScenario = selectedRouteScenario();
+  renderRouteScenarioGuide(steeringScenario);
   const steeringProfileId = String(
     query.steering_profile_id
     ?? steeringScenario?.steering_profile_id

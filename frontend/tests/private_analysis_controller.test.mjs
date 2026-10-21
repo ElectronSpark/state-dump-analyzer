@@ -1101,6 +1101,93 @@ test("scope replacement aborts old requests and rejects their late response", as
   assert.equal(controller.snapshot().phase, "ready");
 });
 
+test("failed lookup releases submission and clears the previous report's review authority", async () => {
+  const calls = [];
+  const controller = createPrivateAnalysisController({
+    operationKey: () => "recovered-create",
+    request: async (path, options = {}) => {
+      calls.push({ path, options });
+      const found = discovery(path);
+      if (found) return found;
+      if (path.endsWith("/missing")) throw new ControlPlaneRequestError("run not found", 404);
+      if (path.endsWith("/run-a")) return response(run(4, { state: "completed", terminal: true }), '"4"');
+      if (path.endsWith("/run-a/report")) return response(resultReport(), '"4"');
+      if (path.includes("/proposal-decisions?")) return { items: [] };
+      if (path.endsWith("/private-analysis-runs")) return response(run(1), '"1"');
+      if (path.endsWith("/run-a/execute")) return response(run(4, { state: "completed", terminal: true }), '"4"');
+      throw new Error(`unexpected request ${path}`);
+    },
+  });
+  await controller.connect(scope);
+  await controller.reload("run-a");
+  assert.equal(controller.snapshot().reviewAvailable, true);
+  for (const runId of ["missing", ""]) {
+    await assert.rejects(controller.reload(runId));
+    const snapshot = controller.snapshot();
+    assert.equal(snapshot.phase, "ready");
+    assert.equal(privateAnalysisSubmissionAvailable(snapshot), true);
+    assert.equal(snapshot.run, null);
+    assert.equal(snapshot.etag, null);
+    assert.equal(snapshot.report, null);
+    assert.equal(snapshot.reviewAvailable, false);
+    assert.deepEqual(snapshot.decisions, []);
+    await assert.rejects(controller.decideProposal("proposal-a", { disposition: "reject" }), /load a review-enabled terminal report first/);
+  }
+  assert.equal(calls.filter((call) => call.options.method === "POST").length, 0);
+  await controller.submit({
+    revisionIds: ["revision-a"], runner: { runner_id: "local", runner_version: "1" },
+    taskKind: "route_trace_analysis", query: "Create after failed read.",
+  });
+  assert.equal(controller.snapshot().phase, "terminal");
+  assert.equal(calls.filter((call) => call.options.method === "POST").length, 2);
+});
+
+test("an old lookup failure cannot replace a newer scope or run generation", async () => {
+  for (const replacement of ["scope", "run"]) {
+    let rejectOld;
+    const oldRead = new Promise((_resolve, reject) => { rejectOld = reject; });
+    const controller = createPrivateAnalysisController({
+      request: async (path) => {
+        const found = discovery(path);
+        if (found) return found;
+        if (path.endsWith("/old-run")) return oldRead;
+        if (path.endsWith("/run-a")) return response(run(4, { state: "completed", terminal: true }), '"4"');
+        if (path.endsWith("/run-a/report")) return response(resultReport(), '"4"');
+        if (path.includes("/proposal-decisions?")) return { items: [] };
+        throw new Error(`unexpected request ${path}`);
+      },
+    });
+    await controller.connect(scope);
+    const oldLookup = controller.reload("old-run");
+    const rejected = assert.rejects(oldLookup, StalePrivateAnalysisResponseError);
+    if (replacement === "scope") await controller.connect({ ...scope, workspaceId: "new-workspace" });
+    else await controller.reload("run-a");
+    const settled = controller.snapshot();
+    rejectOld(new ControlPlaneRequestError("late lookup failure", 404));
+    await rejected;
+    assert.deepEqual(controller.snapshot(), settled, replacement);
+  }
+});
+
+test("a read failure after accepting an active run preserves its submission lock", async () => {
+  let reads = 0;
+  const controller = createPrivateAnalysisController({
+    request: async (path) => {
+      const found = discovery(path);
+      if (found) return found;
+      if (path.endsWith("/run-a") && reads++ === 0) {
+        return response(run(2, { state: "running" }), '"2"');
+      }
+      throw new ControlPlaneRequestError("state read unavailable", 503);
+    },
+  });
+  await controller.connect(scope);
+  await assert.rejects(controller.reload("run-a"), /state read unavailable/);
+  assert.equal(controller.snapshot().phase, "polling");
+  assert.equal(controller.snapshot().run.run_id, "run-a");
+  assert.equal(privateAnalysisSubmissionAvailable(controller.snapshot()), false);
+});
+
 test("submission body exposes only caller intent and preserves selected time as text", () => {
   const body = privateAnalysisSubmissionBody({
     revisionIds: ["revision-a"],

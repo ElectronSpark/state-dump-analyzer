@@ -2910,6 +2910,7 @@ function combinedAssociationLane(trackWidth = state.trackWidth) {
     state.correlationTimelineView !== "combined"
     || !state.selectedResourceId
     || resourceHiddenFromTimeline(state.selectedResourceId)
+    || !state.activeLayers.has(state.laneByResource.get(state.selectedResourceId)?.layer)
     || !state.correlationTimelineExpanded
   ) return "";
   const spans = temporalRelationshipSpans()
@@ -3372,6 +3373,7 @@ function timelineFocusDescriptor(element = document.activeElement) {
     value: element.dataset[identity],
     resourceId: row?.dataset.resourceId || null,
     sourceLaneId: row?.dataset.sourceLaneId || null,
+    treeKey: row?.dataset.treeKey || null,
   };
 }
 
@@ -3383,6 +3385,7 @@ function timelineElementForFocusDescriptor(descriptor) {
     element.dataset[descriptor.property] === descriptor.value
     && (!descriptor.resourceId || element.closest(".timeline-row")?.dataset.resourceId === descriptor.resourceId)
     && (!descriptor.sourceLaneId || element.closest(".timeline-row")?.dataset.sourceLaneId === descriptor.sourceLaneId)
+    && (!descriptor.treeKey || element.closest(".timeline-row")?.dataset.treeKey === descriptor.treeKey)
   )) || null;
 }
 
@@ -3402,9 +3405,10 @@ function renderTimeline() {
   if (!content) return;
   const focusDescriptor = timelineFocusDescriptor();
   const regularVisible = visibleTimelineLanes();
-  const selectedLane = resourceHiddenFromTimeline(state.selectedResourceId)
+  const focusedLane = state.laneByResource.get(state.selectedResourceId);
+  const selectedLane = resourceHiddenFromTimeline(state.selectedResourceId) || !state.activeLayers.has(focusedLane?.layer)
     ? null
-    : state.laneByResource.get(state.selectedResourceId);
+    : focusedLane;
   const visible = state.correlationTimelineView === "combined"
     ? selectedLane
       ? [{ lane: selectedLane, key: `root:${selectedLane.resourceId}`, depth: 0, parentResourceId: null, relationship: null, hasChildren: relationshipGroupsForResource(selectedLane.resourceId, new Set([selectedLane.resourceId])).length > 0 }]
@@ -3429,6 +3433,7 @@ function renderTimeline() {
 
   content.innerHTML = expansionNotice + densityLane + reviewMarkers + sourceLanes + visible.map((instance) => {
     const lane = instance.lane;
+    const hoverIdentity = { laneId: instance.key };
     const compact = lane.tags.has("compact") || lane.tags.has("connector");
     const [visibleStartNs, visibleEndNs] = timelineWindowBounds();
     const cachedWindow = lane.authoritativeHistory && (
@@ -3447,14 +3452,14 @@ function renderTimeline() {
     const lifecycle = lane.lifecycle.map((interval, index) => ({ interval, index })).filter(
       ({ interval }) => timelineIntervalVisible(interval.startNs, interval.endNs),
     ).map(({ interval, index }) => {
-      const key = hoverKey("life", lane, index);
+      const key = hoverKey("life", hoverIdentity, index);
       state.hoverModels.set(key, { type: "interval", interval, lane });
       return `<button class="lifecycle-bar${interval.openStart ? " open-start" : ""}${interval.openEnd ? " open-end" : ""}${intersectsRange(interval.startNs, interval.endNs) ? " in-range" : ""}" data-hover-key="${escapeHtml(key)}" data-range-start-ns="${interval.startNs}" data-range-end-ns="${interval.endNs}" style="${barStyle(interval)}" type="button" aria-label="Lifecycle ${escapeHtml(formatOffset(interval.startNs, visibleTimelineOffsetPrecision()))} to ${escapeHtml(formatOffset(interval.endNs, visibleTimelineOffsetPrecision()))}"></button>`;
     }).join("");
     const statuses = lane.statuses.map((interval, index) => ({ interval, index })).filter(
       ({ interval }) => timelineIntervalVisible(interval.startNs, interval.endNs),
     ).map(({ interval, index }) => {
-      const key = hoverKey("status", lane, index);
+      const key = hoverKey("status", hoverIdentity, index);
       state.hoverModels.set(key, { type: "interval", interval, lane });
       return `<button class="${statusSegmentClassName({ status_class: interval.statusClass })}${intersectsRange(interval.startNs, interval.endNs) ? " in-range" : ""}" data-hover-key="${escapeHtml(key)}" data-start-ns="${interval.startNs}" data-end-ns="${interval.endNs}" data-range-start-ns="${interval.startNs}" data-range-end-ns="${interval.endNs}" data-open-end="${interval.openEnd}" style="${barStyle(interval)};--segment-color:${escapeHtml(layerColor(lane.layer))}" type="button"><span>${escapeHtml(interval.status)}</span></button>`;
     }).join("");
@@ -3464,7 +3469,7 @@ function renderTimeline() {
         : timelinePointVisible(glyph.timeNs)
     )).map((glyph) => {
       if (glyph.kind === "cluster") {
-        const key = hoverKey("cluster", lane, glyph.clusterId);
+        const key = hoverKey("cluster", hoverIdentity, glyph.clusterId);
         state.hoverModels.set(key, { type: "cluster", cluster: glyph, lane });
         const selected = glyph.eventUids.includes(state.selectedEventUid);
         const time = glyph.startNs + (glyph.endNs - glyph.startNs) / 2n;
@@ -3482,7 +3487,7 @@ function renderTimeline() {
           : "";
         return `<button class="event-mark cluster${glyph.staleWindow ? " stale-window" : ""}${glyph.failureCount ? " has-failure" : ""}${selected ? " selected" : ""}${rangeState.className}" data-hover-key="${escapeHtml(key)}" data-cluster-id="${escapeHtml(glyph.clusterId)}" data-last-event-uid="${escapeHtml(lastEventUid)}" data-range-start-ns="${glyph.startNs}" data-range-end-ns="${glyph.endNs}" style="left:${timelinePercent(time)}%;--event-color:${glyph.failureCount ? "#ff6879" : layerColor(lane.layer)}" type="button" aria-label="${glyph.count} collapsed events${rangeDescription}${staleCopy}"><span>${glyph.staleWindow ? "~" : ""}${glyph.count}</span></button>`;
       }
-      const key = hoverKey("event", lane, glyph.eventUid);
+      const key = hoverKey("event", hoverIdentity, glyph.eventUid);
       state.hoverModels.set(key, { type: "event", mark: glyph, lane });
       return `<button class="event-mark ${eventMarkClass(glyph)}${glyph.eventUid === state.selectedEventUid ? " selected" : ""}${inSelectedRange(glyph.timeNs) ? " in-range" : ""}" data-event-uid="${escapeHtml(glyph.eventUid)}" data-hover-key="${escapeHtml(key)}" data-time-ns="${glyph.timeNs}" style="left:${timelinePercent(glyph.timeNs)}%;--event-color:${glyph.failure ? "#ff6879" : layerColor(lane.layer)}" type="button" aria-label="${escapeHtml(`${glyph.label} at ${formatOffset(glyph.timeNs, visibleTimelineOffsetPrecision())}`)}"></button>`;
     }).join("");
@@ -3634,7 +3639,7 @@ function bindTimelineInteractions() {
       }
       selectEvent(eventUid, true, resourceId);
       const replacement = [...timeline.querySelectorAll(".event-mark[data-event-uid]")]
-        .find((item) => item.dataset.eventUid === eventUid && item.closest(".lane-track")?.dataset.resourceId === resourceId);
+        .find((item) => item.dataset.eventUid === eventUid && item.dataset.hoverKey === key);
       showHover(key, replacement || mark, true);
     });
   });
@@ -3748,6 +3753,8 @@ function timelinePointerDown(event) {
       clusterId: mark.dataset.clusterId || null,
       hoverKey: mark.dataset.hoverKey || null,
       resourceId: mark.closest(".lane-track")?.dataset.resourceId || null,
+      treeKey: mark.closest(".timeline-row")?.dataset.treeKey || null,
+      sourceLaneId: mark.closest(".timeline-row")?.dataset.sourceLaneId || null,
       sourceRecordUid: mark.dataset.sourceRecordUid || null,
       sourceClusterId: mark.dataset.sourceClusterId || null,
       element: mark,
@@ -3899,26 +3906,30 @@ function activateShortGestureTarget(target) {
   if (target.eventUid) {
     selectEvent(target.eventUid, true, target.resourceId);
     const replacement = [...document.querySelectorAll(".event-mark[data-event-uid]")]
-      .find((item) => item.dataset.eventUid === target.eventUid && item.closest(".lane-track")?.dataset.resourceId === target.resourceId);
+      .find((item) => item.dataset.eventUid === target.eventUid && item.closest(".lane-track")?.dataset.resourceId === target.resourceId
+        && (!target.treeKey || item.closest(".timeline-row")?.dataset.treeKey === target.treeKey));
     showHover(target.hoverKey, replacement || target.element, true);
     return true;
   }
   if (target.clusterId) {
     const replacement = [...document.querySelectorAll(".event-mark[data-cluster-id]")]
-      .find((item) => item.dataset.clusterId === target.clusterId && item.closest(".lane-track")?.dataset.resourceId === target.resourceId);
+      .find((item) => item.dataset.clusterId === target.clusterId && item.closest(".lane-track")?.dataset.resourceId === target.resourceId
+        && (!target.treeKey || item.closest(".timeline-row")?.dataset.treeKey === target.treeKey));
     showHover(target.hoverKey, replacement || target.element, true);
     return true;
   }
   if (target.sourceRecordUid) {
     selectSourceRecord(target.sourceRecordUid, true);
     const replacement = [...document.querySelectorAll(".source-record-mark[data-source-record-uid]")]
-      .find((item) => item.dataset.sourceRecordUid === target.sourceRecordUid);
+      .find((item) => item.dataset.sourceRecordUid === target.sourceRecordUid
+        && (!target.sourceLaneId || item.closest(".timeline-row")?.dataset.sourceLaneId === target.sourceLaneId));
     showHover(target.hoverKey, replacement || target.element, true);
     return true;
   }
   if (target.sourceClusterId) {
     const replacement = [...document.querySelectorAll(".source-record-mark[data-source-cluster-id]")]
-      .find((item) => item.dataset.sourceClusterId === target.sourceClusterId);
+      .find((item) => item.dataset.sourceClusterId === target.sourceClusterId
+        && (!target.sourceLaneId || item.closest(".timeline-row")?.dataset.sourceLaneId === target.sourceLaneId));
     showHover(target.hoverKey, replacement || target.element, true);
     return true;
   }
@@ -4242,6 +4253,7 @@ function requestEventDetail(eventUid) {
 }
 
 function selectEvent(eventUid, moveCursor = false, resourceId = null, { deferRequests = false } = {}) {
+  state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   const event = eventOrMark(eventUid);
   if (!event) return;
   const previousCursorNs = state.cursorNs;
@@ -4263,9 +4275,14 @@ function selectEvent(eventUid, moveCursor = false, resourceId = null, { deferReq
       state.correlatedResourceIds.clear();
     }
     if (isScaleMode() && !state.laneByResource.has(focusResourceId)) {
-      state.laneMode = "custom";
-      if (state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) state.explicitLaneIds.delete(state.explicitLaneIds.values().next().value);
-      state.explicitLaneIds.add(focusResourceId);
+      if (!["selected", "correlated", "custom"].includes(state.laneMode)) {
+        state.explicitLaneIds = currentModeLaneIds();
+        state.laneMode = "custom";
+      }
+      if (state.laneMode === "custom") {
+        if (state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) state.explicitLaneIds.delete(state.explicitLaneIds.values().next().value);
+        state.explicitLaneIds.add(focusResourceId);
+      }
       laneAdded = true;
       if (!deferRequests) refreshScaleTimeline();
     }
@@ -4286,6 +4303,7 @@ function selectEvent(eventUid, moveCursor = false, resourceId = null, { deferReq
 }
 
 function selectSourceRecord(recordUid, moveCursor = false) {
+  state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   const record = state.sourceRecordByUid.get(String(recordUid));
   if (!record) return;
   state.selectedSourceRecordUid = String(recordUid);
@@ -4336,7 +4354,7 @@ function sourceRecordLaneFor(recordUid) {
   const uid = String(recordUid);
   return state.recordLanes.find((lane) => (
     lane.marks.some((mark) => mark.sourceRecordUid === uid)
-      || lane.clusters.some((cluster) => cluster.recordUids.includes(uid))
+      || (lane.clusters || []).some((cluster) => cluster.recordUids.includes(uid))
   )) || null;
 }
 
@@ -4359,13 +4377,13 @@ function moveTimelineWindowToReveal(timeNs) {
 async function refreshTimelineForNavigation() {
   window.clearTimeout(state.timelineWindowRequestTimer);
   state.timelineWindowRequestTimer = null;
-  const updated = await requestTimeline();
+  const updated = await requestTimeline({ navigationIntent: state.timelineNavigationIntent });
   if (!updated) return false;
   renderTimeline();
   return true;
 }
 
-async function ensureSourceRecordLane(record) {
+async function ensureSourceRecordLane(record, intent = state.timelineNavigationIntent) {
   const uid = sourceRecordUid(record);
   let lane = sourceRecordLaneFor(uid);
   if (lane) return lane;
@@ -4384,7 +4402,8 @@ async function ensureSourceRecordLane(record) {
     plugin_defined: false,
     transient: true,
   });
-  await requestTimeline();
+  await requestTimeline({ navigationIntent: intent });
+  if (intent !== state.timelineNavigationIntent) return null;
   renderTimeline();
   renderLanePicker();
   lane = sourceRecordLaneFor(uid);
@@ -4392,6 +4411,7 @@ async function ensureSourceRecordLane(record) {
 }
 
 async function jumpSourceRecordToTimeline(recordUid) {
+  let intent = state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   const record = state.sourceRecordByUid.get(String(recordUid));
   if (!record) return;
   if (record.matched_event_uid && eventOrMark(String(record.matched_event_uid))) {
@@ -4405,10 +4425,14 @@ async function jumpSourceRecordToTimeline(recordUid) {
   }
   const movedViewport = moveTimelineWindowToReveal(sourceRecordTime(record));
   if (movedViewport) await refreshTimelineForNavigation();
-  const lane = await ensureSourceRecordLane(record);
+  if (intent !== state.timelineNavigationIntent) return;
+  const lane = await ensureSourceRecordLane(record, intent);
+  if (intent !== state.timelineNavigationIntent) return;
   if (!lane) return;
   selectSourceRecord(recordUid, true);
+  intent = state.timelineNavigationIntent;
   window.requestAnimationFrame(() => {
+    if (intent !== state.timelineNavigationIntent) return;
     const target = [...document.querySelectorAll(".source-record-mark[data-source-record-uid]")]
       .find((item) => item.dataset.sourceRecordUid === String(recordUid));
     const clusterModel = [...state.hoverModels.values()].find((model) => model.type === "source-cluster"
@@ -4434,6 +4458,7 @@ function eventLaneFor(eventUid) {
 }
 
 async function jumpToTimelineEvent(eventUid) {
+  let intent = state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   const event = eventOrMark(eventUid);
   if (!event) return;
   if (eventTime(event) === null) {
@@ -4444,11 +4469,21 @@ async function jumpToTimelineEvent(eventUid) {
   let lane = eventLaneFor(eventUid);
   const resourceId = lane?.resourceId || eventResourceRefs(event)[0] || null;
   if (resourceId) state.hiddenTimelineResourceIds.delete(resourceId);
+  if (resourceId && ["selected", "correlated"].includes(state.laneMode)) {
+    state.selectedResourceId = resourceId;
+    state.activeCorrelationEdges = [];
+    state.correlatedResourceIds.clear();
+  }
   let addedScaleLane = false;
   if (isScaleMode() && resourceId && !lane) {
-    state.laneMode = "custom";
-    if (state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) state.explicitLaneIds.delete(state.explicitLaneIds.values().next().value);
-    state.explicitLaneIds.add(resourceId);
+    if (!["selected", "correlated", "custom"].includes(state.laneMode)) {
+      state.explicitLaneIds = currentModeLaneIds();
+      state.laneMode = "custom";
+    }
+    if (state.laneMode === "custom") {
+      if (state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) state.explicitLaneIds.delete(state.explicitLaneIds.values().next().value);
+      state.explicitLaneIds.add(resourceId);
+    }
     addedScaleLane = true;
   }
   const movedViewport = moveTimelineWindowToReveal(eventTime(event));
@@ -4460,11 +4495,12 @@ async function jumpToTimelineEvent(eventUid) {
   state.selectedEventResourceId = resourceId;
   if (movedViewport || addedScaleLane || !lane) {
     await refreshTimelineForNavigation();
+    if (intent !== state.timelineNavigationIntent) return;
     lane = eventLaneFor(eventUid) || state.laneByResource.get(resourceId);
   }
   if (lane) {
     state.activeLayers.add(lane.layer);
-    if (!laneSelectedByMode(lane.resourceId)) {
+    if (!["selected", "correlated"].includes(state.laneMode) && !laneSelectedByMode(lane.resourceId)) {
       if (state.laneMode !== "custom") state.explicitLaneIds = currentModeLaneIds();
       state.laneMode = "custom";
       state.explicitLaneIds.add(lane.resourceId);
@@ -4472,7 +4508,9 @@ async function jumpToTimelineEvent(eventUid) {
   }
   renderLayerToggles();
   selectEvent(eventUid, true, resourceId);
+  intent = state.timelineNavigationIntent;
   window.requestAnimationFrame(() => {
+    if (intent !== state.timelineNavigationIntent) return;
     const mark = [...document.querySelectorAll(".event-mark[data-event-uid]")]
       .find((item) => item.dataset.eventUid === eventUid
         && (!resourceId || item.closest(".lane-track")?.dataset.resourceId === resourceId));
@@ -4497,25 +4535,39 @@ async function jumpToTimelineEvent(eventUid) {
 }
 
 async function jumpToTimelineResource(resourceId) {
+  let intent = state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   resourceId = canonicalResourceId(resourceId);
   if (!resourceId) return;
   state.hiddenTimelineResourceIds.delete(resourceId);
+  if (["selected", "correlated"].includes(state.laneMode)) {
+    state.selectedResourceId = resourceId;
+    state.activeCorrelationEdges = [];
+    state.correlatedResourceIds.clear();
+  }
   if (isScaleMode() && !state.laneByResource.has(resourceId)) {
-    state.laneMode = "custom";
-    if (state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) state.explicitLaneIds.delete(state.explicitLaneIds.values().next().value);
-    state.explicitLaneIds.add(resourceId);
-    await refreshScaleTimeline();
+    if (!["selected", "correlated", "custom"].includes(state.laneMode)) {
+      state.explicitLaneIds = currentModeLaneIds();
+      state.laneMode = "custom";
+    }
+    if (state.laneMode === "custom") {
+      if (state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) state.explicitLaneIds.delete(state.explicitLaneIds.values().next().value);
+      state.explicitLaneIds.add(resourceId);
+    }
+    await refreshScaleTimeline({ navigationIntent: intent });
+    if (intent !== state.timelineNavigationIntent) return;
   }
   const lane = state.laneByResource.get(resourceId);
   if (lane) state.activeLayers.add(lane.layer);
-  if (state.correlationTimelineView === "separate" && !laneSelectedByMode(resourceId)) {
+  if (state.correlationTimelineView === "separate" && !["selected", "correlated"].includes(state.laneMode) && !laneSelectedByMode(resourceId)) {
     if (state.laneMode !== "custom") state.explicitLaneIds = currentModeLaneIds();
     state.laneMode = "custom";
     state.explicitLaneIds.add(resourceId);
   }
   renderLayerToggles();
   selectResource(resourceId);
+  intent = state.timelineNavigationIntent;
   window.requestAnimationFrame(() => {
+    if (intent !== state.timelineNavigationIntent) return;
     const row = [...document.querySelectorAll(".timeline-row[data-resource-id]")]
       .find((item) => item.dataset.resourceId === resourceId);
     if (!row) return;
@@ -5190,6 +5242,7 @@ function clearRangeSelection({ refreshEventLog = true } = {}) {
 }
 
 function clearTimelineSelection({ announce = true } = {}) {
+  state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   const hover = byId("timeline-hover");
   const hadHover = Boolean(hover && !hover.hidden);
   const hadSelection = Boolean(rangeBounds()) || Boolean(state.selectedEventUid) || Boolean(state.selectedSourceRecordUid) || state.cursorSelected;
@@ -5281,7 +5334,7 @@ function scaleTimelineResourceIds() {
   return [...state.explicitLaneIds].slice(0, MAX_SCALE_TIMELINE_LANES);
 }
 
-async function requestTimeline() {
+async function requestTimeline({ navigationIntent = null } = {}) {
   const requestId = ++state.timelineRequestId;
   abortLatestRequests("timelineAbortController");
   if (isTopologyNodeSnapshot()) {
@@ -5330,11 +5383,22 @@ async function requestTimeline() {
         allow_empty: isScaleMode() && state.laneMode === "custom" && scaleResourceIds.length === 0,
       }),
     });
-    if (requestId !== state.timelineRequestId) return false;
+    if (requestId !== state.timelineRequestId || (navigationIntent !== null && navigationIntent !== state.timelineNavigationIntent)) {
+      finishLatestRequest("timelineAbortController", controller);
+      return false;
+    }
+    if (isScaleMode() && (selectedRelationshipRoot !== canonicalResourceId(state.selectedResourceId)
+      || JSON.stringify(scaleResourceIds) !== JSON.stringify(scaleTimelineResourceIds()))) {
+      finishLatestRequest("timelineAbortController", controller);
+      return requestTimeline({ navigationIntent });
+    }
     state.timelinePayload = payload;
   } catch (error) {
     if (requestWasAborted(error, controller)) return false;
-    if (requestId !== state.timelineRequestId) return false;
+    if (requestId !== state.timelineRequestId || (navigationIntent !== null && navigationIntent !== state.timelineNavigationIntent)) {
+      finishLatestRequest("timelineAbortController", controller);
+      return false;
+    }
     showToast("Timeline query rejected: " + error.message);
     if (!state.timelinePayload) state.timelinePayload = { lanes: [], record_lanes: [] };
   }
@@ -6505,6 +6569,12 @@ function renderPluginDashboards() {
   const index = byId("dashboard-index");
   const modules = byId("dashboard-modules");
   if (!index || !modules) return;
+  const activeControl = document.activeElement;
+  const controlAttributes = ["data-dashboard-open", "data-dashboard-expand", "data-dashboard-close", "data-dashboard-move"];
+  const focusAttribute = (index.contains(activeControl) || modules.contains(activeControl))
+    ? controlAttributes.find((attribute) => activeControl.hasAttribute(attribute)) : null;
+  const focusValue = focusAttribute ? activeControl.getAttribute(focusAttribute) : null;
+  const focusDashboardId = activeControl?.dataset?.dashboardId;
   modules.setAttribute("aria-busy", String(state.dashboardPending));
   modules.classList.toggle("is-time-pending", state.dashboardPending);
   refreshDashboardTimePresentation();
@@ -6649,6 +6719,14 @@ function renderPluginDashboards() {
       state.draggedDashboardId = null;
     });
   });
+  if (focusAttribute) {
+    const candidates = [...index.querySelectorAll(`[${focusAttribute}]`), ...modules.querySelectorAll(`[${focusAttribute}]`)];
+    const replacement = candidates.find((control) => control.getAttribute(focusAttribute) === focusValue
+      && (!focusDashboardId || control.dataset.dashboardId === focusDashboardId));
+    const fallback = [...index.querySelectorAll("[data-dashboard-open]")].find((control) =>
+      control.dataset.dashboardOpen === (focusDashboardId || focusValue));
+    (replacement && !replacement.disabled ? replacement : fallback)?.focus({ preventScroll: true });
+  }
 }
 
 function refreshDashboardSelectionPresentation() {
@@ -7636,6 +7714,7 @@ function drawTimelineCorrelationOverlay() {
 }
 
 function selectResource(resourceId, { deferRequests = false } = {}) {
+  state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   resourceId = canonicalResourceId(resourceId);
   if (!resourceId) return;
   const focusChanged = state.selectedResourceId !== resourceId;
@@ -7654,9 +7733,14 @@ function selectResource(resourceId, { deferRequests = false } = {}) {
     state.correlatedResourceIds.clear();
   }
   if (isScaleMode() && !state.laneByResource.has(resourceId)) {
-    state.laneMode = "custom";
-    if (state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) state.explicitLaneIds.delete(state.explicitLaneIds.values().next().value);
-    state.explicitLaneIds.add(resourceId);
+    if (!["selected", "correlated", "custom"].includes(state.laneMode)) {
+      state.explicitLaneIds = currentModeLaneIds();
+      state.laneMode = "custom";
+    }
+    if (state.laneMode === "custom") {
+      if (state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) state.explicitLaneIds.delete(state.explicitLaneIds.values().next().value);
+      state.explicitLaneIds.add(resourceId);
+    }
     refreshScaleTimeline();
   }
   markCorrelationPending(state.cursorNs);
@@ -7683,11 +7767,13 @@ function currentModeLaneIds() {
   return new Set(state.lanes.filter((lane) => laneSelectedByMode(lane.resourceId)).map((lane) => lane.resourceId));
 }
 
-async function refreshScaleTimeline() {
-  await requestTimeline();
+async function refreshScaleTimeline({ navigationIntent = null } = {}) {
+  if (!await requestTimeline({ navigationIntent })) return;
   state.lanes.forEach((lane) => {
+    // Refreshing the window rediscovers existing layers; it must not undo
+    // the user's visibility choices. Only a newly discovered layer defaults on.
+    if (!state.layerMeta.has(lane.layer)) state.activeLayers.add(lane.layer);
     layerConfig(lane.layer);
-    state.activeLayers.add(lane.layer);
   });
   renderLayerToggles();
   renderTimeline();
@@ -7848,11 +7934,13 @@ function addRecordLane(event) {
 function renderLanePicker() {
   const list = byId("lane-picker-list");
   if (!list) return;
+  const focusedResourceId = list.contains(document.activeElement) ? document.activeElement?.dataset.laneResourceId : null;
   const visibleCount = visibleTimelineLanes().length;
   const combinedMode = state.correlationTimelineView === "combined";
   const combined = combinedMode
     && state.selectedResourceId
-    && !resourceHiddenFromTimeline(state.selectedResourceId);
+    && !resourceHiddenFromTimeline(state.selectedResourceId)
+    && state.activeLayers.has(state.laneByResource.get(state.selectedResourceId)?.layer);
   const hasCombinedAssociationLane = Boolean(
     combined
     && state.correlationTimelineExpanded
@@ -7913,6 +8001,10 @@ function renderLanePicker() {
     );
   });
   renderRecordLaneManager();
+  if (focusedResourceId && (!document.activeElement || document.activeElement === document.body)) {
+    [...list.querySelectorAll("[data-lane-resource-id]")]
+      .find((input) => input.dataset.laneResourceId === focusedResourceId)?.focus({ preventScroll: true });
+  }
 }
 
 function fillSummary() {
@@ -8649,7 +8741,10 @@ function renderTopologyConnectivity() {
     const source = topologyReferenceLabel(item.source_resource_id ?? item.source ?? item.from ?? item.endpoint_a);
     const target = topologyReferenceLabel(item.target_resource_id ?? item.target ?? item.to ?? item.match_reference ?? item.endpoint_b);
     const relation = item.relation_type || item.type || item.kind || item.inference?.rule_id || "related";
-    const relationPresentation = relationshipPresentation(typeof relation === "string" ? relation : null);
+    const relationPresentation = item.inferred ? {
+      displayLabel: item.label || item.inference?.label || String(relation),
+      directed: item.directed === true,
+    } : relationshipPresentation(typeof relation === "string" ? relation : null);
     const status = item.operational?.status ?? item.status?.value ?? item.status ?? item.state
       ?? (item.present === true ? "present" : item.present === false ? "absent" : "unknown");
     const statusDetail = item.operational?.reason && item.operational.reason !== status
@@ -8704,16 +8799,18 @@ function renderTopologyResults() {
 async function requestTopology(event) {
   event?.preventDefault();
   const errorTarget = byId("topology-query-error");
+  abortLatestRequests("topologyAbortController");
+  const requestId = ++state.topologyRequestId;
+  state.topologyQueryPending = false;
   let request;
   try {
     request = topologyRequestBody();
     errorTarget.textContent = "";
   } catch (error) {
     errorTarget.textContent = error.message;
+    renderTopologyQueryState();
     return;
   }
-  abortLatestRequests("topologyAbortController");
-  const requestId = ++state.topologyRequestId;
   state.topologyQueryPending = true;
   renderTopologyQueryState();
   let payload;
@@ -8781,7 +8878,8 @@ function explanationSteps(node, depth = 0, result = []) {
   if (!node) return result;
   const relation = node.relation_type === null || node.relation_type === undefined
     ? null
-    : relationshipDisplayLabel(typeof node.relation_type === "string" ? node.relation_type : null);
+    : node.relation_type === "candidate_next_hop" ? "Candidate next hop"
+      : relationshipDisplayLabel(typeof node.relation_type === "string" ? node.relation_type : null);
   result.push({ depth, text: [
     humanResourceType(typeof node.kind === "string" ? node.kind : "UNKNOWN"),
     formatValue(node.resource ?? node.resource_id),
@@ -9554,15 +9652,17 @@ function requestServerEventLogPage(offset = 0) {
   const queryId = state.eventLogServerQueryId;
   if (state.eventLogServerPages.has(safeOffset)) return Promise.resolve(null);
   if (state.eventLogServerRequests.has(safeOffset)) return state.eventLogServerRequests.get(safeOffset);
+  const controller = state.eventLogServerAbortController;
   const request = analysisRuntimeApi(revisionPath("event-log/query"), {
     method: "POST",
+    signal: controller?.signal,
     body: JSON.stringify(serverEventLogRequestBody(safeOffset)),
   }).then((payload) => {
     if (!applyServerEventLogPayload(payload, safeOffset, queryId)) return null;
     renderEventTableWindow();
     return payload;
   }).catch((error) => {
-    if (queryId !== state.eventLogServerQueryId) return null;
+    if (queryId !== state.eventLogServerQueryId || controller?.signal.aborted) return null;
     state.eventLogServerError = error.message;
     if (!state.eventLogServerSummary) {
       state.eventLogServerSummary = { totalCount: 0, insideCount: 0, outsideCount: 0 };
@@ -9598,6 +9698,9 @@ function prepareServerEventLogQuery({ resetScroll = false, requestFirstPage = tr
   bindEventLogSelectionToQuery(key);
   const changed = key !== state.eventLogServerKey;
   if (changed) {
+    state.eventLogKeyboardFocusIndex = null;
+    state.eventLogServerAbortController?.abort();
+    state.eventLogServerAbortController = new AbortController();
     state.eventLogServerKey = key;
     state.eventLogServerQueryId += 1;
     state.eventLogServerItems = new Map();
@@ -9894,6 +9997,7 @@ function bindVisibleEventLogRows() {
         event.preventDefault();
         return;
       }
+      state.eventLogKeyboardFocusIndex = selectionIndex;
       const additive = event.ctrlKey || event.metaKey;
       const extend = event.shiftKey;
       applyEventLogSelectionGesture(selectionIndex, {
@@ -9918,12 +10022,13 @@ function bindVisibleEventLogRows() {
         revealEventLogEntry(row);
         return;
       }
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
         event.preventDefault();
         const maximum = Math.max(0, state.eventLogSelectableCount - 1);
         const next = Math.max(
           0,
-          Math.min(maximum, selectionIndex + (event.key === "ArrowDown" ? 1 : -1)),
+          Math.min(maximum, event.key === "Home" ? 0 : event.key === "End" ? maximum
+            : selectionIndex + (event.key === "ArrowDown" ? 1 : -1)),
         );
         applyEventLogSelectionGesture(next, {
           additive: event.ctrlKey || event.metaKey,
@@ -10004,9 +10109,19 @@ function renderEventTableWindow() {
     body.querySelector("tr[data-selection-index]")?.setAttribute("tabindex", "0");
   }
   bindVisibleEventLogRows();
-  if (activeSelectionIndex !== null) {
+  const keyboardIndex = state.eventLogKeyboardFocusIndex;
+  const ownsKeyboardFocus = activeSelectionIndex !== null || document.activeElement === document.body;
+  if (keyboardIndex !== undefined && keyboardIndex !== null && ownsKeyboardFocus) {
+    const target = body.querySelector(`tr[data-selection-index="${keyboardIndex}"]`);
+    if (target) {
+      target.focus({ preventScroll: true });
+      state.eventLogKeyboardFocusIndex = null;
+    }
+  } else if (activeSelectionIndex !== null) {
     body.querySelector(`tr[data-selection-index="${activeSelectionIndex}"]`)
       ?.focus({ preventScroll: true });
+  } else {
+    state.eventLogKeyboardFocusIndex = null;
   }
 }
 
@@ -10779,6 +10894,7 @@ function syncEventLogIncludeControls() {
 }
 
 function focusServerEventLogTarget(entryId, virtualIndex) {
+  state.eventLogKeyboardFocusIndex = null;
   const scroll = byId("event-log-scroll");
   scroll.scrollTop = virtualScrollTopForIndex({
     overscan: EVENT_LOG_OVERSCAN,
@@ -10802,6 +10918,7 @@ function focusServerEventLogTarget(entryId, virtualIndex) {
 function focusEventLogSelectionIndex(selectionIndex) {
   const maximum = Math.max(0, state.eventLogSelectableCount - 1);
   const index = Math.max(0, Math.min(maximum, Math.trunc(Number(selectionIndex))));
+  state.eventLogKeyboardFocusIndex = index;
   const scroll = byId("event-log-scroll");
   const virtualIndex = usesServerWindowedHistory()
     ? serverEventLogVirtualRowForDataIndex(index)
@@ -10816,9 +10933,13 @@ function focusEventLogSelectionIndex(selectionIndex) {
   });
   renderEventTableWindow();
   window.requestAnimationFrame(() => {
-    const row = byId("event-table-body")
-      .querySelector(`tr[data-selection-index="${index}"]`);
-    row?.focus({ preventScroll: true });
+    if (state.eventLogKeyboardFocusIndex !== index) return;
+    const body = byId("event-table-body");
+    if (document.activeElement !== document.body && !body.contains(document.activeElement)) {
+      state.eventLogKeyboardFocusIndex = null;
+      return;
+    }
+    body.querySelector(`tr[data-selection-index="${index}"]`)?.focus({ preventScroll: true });
   });
 }
 
@@ -10846,6 +10967,7 @@ async function locateServerEventLogEntry(entryId) {
   try {
     const payload = await analysisRuntimeApi(revisionPath("event-log/query"), {
       method: "POST",
+      signal: state.eventLogServerAbortController?.signal,
       body: JSON.stringify(serverEventLogRequestBody(0, {
         kind: source ? "source" : "event",
         uid,
@@ -10872,6 +10994,7 @@ async function locateServerEventLogEntry(entryId) {
 }
 
 function jumpToLogEntry(entryId) {
+  state.eventLogKeyboardFocusIndex = null;
   if (usesServerWindowedHistory()) {
     locateServerEventLogEntry(entryId);
     return;
@@ -11905,6 +12028,7 @@ function scheduleTimelineZoom(event, { anchorNs = null } = {}) {
 }
 
 function resetTimelineView() {
+  state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   cancelScheduledTimelineZoom({ commitHistory: true });
   rememberTimelineView();
   closeTimelineContextMenu();

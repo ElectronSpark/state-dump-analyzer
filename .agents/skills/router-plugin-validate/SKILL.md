@@ -93,6 +93,9 @@ fingerprints after a callable's behavior changes; a private-helper check or a
 direct attribute read alone can miss a callable-global bypass. For projection
 fast paths, compare complete safe text and ordered matches, including generic
 mappings, subclasses, nested policies, Unicode and numeric distinctions.
+For compiled projection policy, check unknown-resource fallback, ancestor and
+literal dotted-key handling, policy isolation, output ownership and bounded
+metadata retention; a cached plan must not retain event values or runtimes.
 Preserve repeated phase occurrences when comparing benchmark results; count
 records as well as distinct phase names and include every occurrence in totals.
 For import/search cooperation, verify idle and same-thread searches never sleep,
@@ -122,12 +125,28 @@ under the same revision label. Reopen validation must precede shared-result
 reuse. For candidate indexes, compare complete ordered matches and skipped
 blocks, including frequent and absent terms; report build/storage cost alongside
 query gains and preserve an exact scan when the accelerator is unavailable.
+For process-local compressed validation records, verify every current payload
+and metadata field against previously validated content on the snapshot actually
+used by the reader. Exercise changed bytes with unchanged timestamps, replacement
+during opening, corruption in the last block, changed limits, eviction, and cold
+process fallback. Separate cached-query reopening from a new term's exact scan;
+compact record estimates do not establish total retained RSS.
 
 For timeline/density changes, follow
 [zoom-query validation](../../../docs/plugin-api-validation.md#zoom-and-history-query-validation).
 Check both coarse summaries and exact drill-down with the same evidence;
 separate bounded output from bounded computation, and verify warm-cache
 identity, disclosure, cancellation, and concurrent requests.
+
+For frontend state repairs, follow the map's
+[state and recovery checks](../../../docs/plugin-api-validation.md#frontend-state-and-recovery).
+Wait for asynchronous refreshes before judging retained choices, and exercise
+the next successful action after a failed operation through the actual UI.
+Include duplicate tree instances, uncached keyboard targets, and invalid input
+while an older read is pending. Verify selected presets, focus, popup anchors,
+and dependent guidance after the settled render. Use production-normalized
+source lanes and server-shaped inferred edges in composed regressions; invented
+optional fields can hide an integration mismatch. See the map for these checks.
 
 ## Report accurately
 

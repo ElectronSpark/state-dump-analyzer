@@ -24,6 +24,7 @@ from typing import Any
 from uuid import uuid4
 
 from ._history_search_cache import _shared_results
+from ._history_search_validation import _validated_compressed
 from ._import_scheduling import _cooperate_with_durable_import
 from .history_search_matches import MatchSet as _MatchSet
 from .load_progress import AnalysisLoadStage as _AnalysisLoadStage
@@ -126,7 +127,7 @@ class HistorySearchCorpus:
         self._error: Exception | None = None
         self._results: OrderedDict[str, _MatchSet] = OrderedDict()
         self._reuse_identity: str | None = None
-        self._reuse_file_stamp: tuple[int, int, int] | None = None
+        self._reuse_file_stamp: tuple[int, ...] | None = None
         self._cached_ordinals = 0
         self._cached_bytes = 0
         # Hosts that explicitly warm the corpus later can defer the linear
@@ -223,21 +224,26 @@ class HistorySearchCorpus:
         *,
         _needle: str | None = None,
         _matches: array[int] | None = None,
+        _shared_matches: list[_MatchSet] | None = None,
     ) -> tuple[int, int, str] | None:
         if not path.exists():
             return None
         if self._path_uses_link(path) or not path.is_file():
             raise OSError("history search sidecar must be a regular file")
-        if path.stat().st_size > self._max_database_bytes:
+        opening_stamp = self._sidecar_stamp(path)
+        if opening_stamp is None or opening_stamp[0] > self._max_database_bytes:
             return None
         connection = sqlite3.connect(
-            f"{path.as_uri()}?mode=ro&immutable=1",
+            f"{path.as_uri()}?mode=ro",
             uri=True,
             check_same_thread=False,
         )
         try:
             connection.execute("PRAGMA query_only=ON")
             connection.execute("PRAGMA cache_size=-8192")
+            # A read transaction binds metadata, payload checks and any fused
+            # matching to one SQLite snapshot. immutable=1 does not lock pages.
+            connection.execute("BEGIN")
             row = connection.execute(
                 """
                 SELECT format_version, identity, document_count,
@@ -279,10 +285,54 @@ class HistorySearchCorpus:
                 return None
             digest = sha256()
             validated_blocks: dict[int, tuple[int, int, str, str]] = {}
+            validated_maximum = [0]
+            # A cold process has no certified bytes to reuse. Its complete
+            # validator already hashes each compressed payload while pinning
+            # the blocks, so a speculative payload pass would repeat that work.
+            if backend == self._BLOCK_BACKEND and _validated_compressed:
+                fingerprint, snapshot_blocks = self._compressed_snapshot(connection, row)
+                previous_maximum = _validated_compressed.get(fingerprint)
+                if previous_maximum is not None and previous_maximum <= self._max_document_bytes:
+                    if self._sidecar_stamp(path) != opening_stamp:
+                        return None
+                    previous_blocks = self._block_digests
+                    previous_identity = self._reuse_identity
+                    self._block_digests = snapshot_blocks
+                    shared = None
+                    try:
+                        if _needle is not None and _matches is not None:
+                            self._set_reuse_identity(str(documents_digest), int(document_count))
+                            assert self._reuse_identity is not None
+                            shared = _shared_results.get(self._reuse_identity, _needle)
+                            if shared is not None and _shared_matches is None:
+                                _matches.extend(shared)
+                            elif shared is None:
+                                try:
+                                    encoded_needle = _needle.encode("utf-8")
+                                except UnicodeEncodeError:
+                                    encoded_needle = None
+                                if encoded_needle is not None:
+                                    _matches.extend(ordinal for ordinal, _ in self._iter_disk_documents(
+                                        connection, self._BLOCK_BACKEND,
+                                        _matching_needle=encoded_needle,
+                                    ))
+                        if self._sidecar_stamp(path) != opening_stamp:
+                            return None
+                    finally:
+                        self._block_digests = previous_blocks
+                        self._reuse_identity = previous_identity
+                    self._block_digests = snapshot_blocks
+                    self._set_reuse_identity(str(documents_digest), int(document_count))
+                    self._reuse_file_stamp = opening_stamp
+                    if shared is not None and _shared_matches is not None:
+                        _shared_matches.append(shared)
+                    return int(document_count), int(character_count), str(backend)
+                del snapshot_blocks
             actual_count = 0
             actual_character_count = 0
             for expected_ordinal, (ordinal, safe_text) in enumerate(
-                self._iter_disk_documents(connection, str(backend), _validated_blocks=validated_blocks)
+                self._iter_disk_documents(connection, str(backend), _validated_blocks=validated_blocks,
+                                          _validated_maximum=validated_maximum)
             ):
                 if int(ordinal) != expected_ordinal:
                     return None
@@ -363,15 +413,68 @@ class HistorySearchCorpus:
                 ):
                     return None
             validated = int(document_count), int(character_count), str(backend)
+            if self._sidecar_stamp(path) != opening_stamp:
+                return None
             # Publish pins only after the complete canonical corpus and any
             # candidate index have passed validation. A rejected existing cache
             # must not replace the pins of our newly built temporary database.
             self._block_digests = validated_blocks
             self._set_reuse_identity(str(documents_digest), int(document_count))
-            self._reuse_file_stamp = self._sidecar_stamp(path)
+            self._reuse_file_stamp = opening_stamp
+            if backend == self._BLOCK_BACKEND:
+                fingerprint = self._compressed_fingerprint(row, validated_blocks)
+                _validated_compressed.put(fingerprint, validated_maximum[0])
         finally:
             connection.close()
         return validated
+
+    def _compressed_snapshot(
+        self, connection: sqlite3.Connection, metadata: tuple[Any, ...],
+    ) -> tuple[str, dict[int, tuple[int, int, str, str]]]:
+        """Hash every bounded payload freshly inside the caller's transaction.
+
+        Stored raw digests are metadata only; the fingerprint also covers the
+        actual compressed bytes, ordered framing and complete metadata. Only a
+        prior full validator can associate that fingerprint with reusable facts.
+        """
+        blocks: dict[int, tuple[int, int, str, str]] = {}
+        expected = 0
+        maximum = max(self._BLOCK_TARGET_BYTES, self._max_document_bytes + 4)
+        for first, count, size, payload_size, digest_size in connection.execute(
+            "SELECT first_ordinal, document_count, raw_bytes, length(payload), length(digest) "
+            "FROM document_blocks ORDER BY first_ordinal"
+        ):
+            if (type(first) is not int or first != expected or type(count) is not int
+                or not 1 <= count <= self._BLOCK_MAX_DOCUMENTS
+                or expected + count > self._max_documents or type(size) is not int
+                or not count * 4 <= size <= maximum
+                or type(payload_size) is not int or not 0 < payload_size <= maximum + 1024
+                or digest_size != 64):
+                raise sqlite3.DatabaseError("invalid compressed search block framing")
+            payload, raw_digest = connection.execute(
+                "SELECT payload, digest FROM document_blocks WHERE first_ordinal=?", (first,),
+            ).fetchone()
+            if (type(payload) is not bytes or len(payload) != payload_size
+                or type(raw_digest) is not str):
+                raise sqlite3.DatabaseError("invalid compressed search block payload")
+            payload_digest = sha256(payload).hexdigest()
+            block = (count, size, raw_digest, payload_digest)
+            blocks[first] = block
+            expected += count
+        if expected != metadata[2]:
+            raise sqlite3.DatabaseError("compressed search document count mismatch")
+        return self._compressed_fingerprint(metadata, blocks), blocks
+
+    @staticmethod
+    def _compressed_fingerprint(
+        metadata: tuple[Any, ...], blocks: dict[int, tuple[int, int, str, str]],
+    ) -> str:
+        digest = sha256(repr(metadata).encode("utf-8"))
+        # Both callers collect blocks in canonical ordinal order. Full
+        # validation can use its existing compressed-byte pins directly.
+        for first, block in blocks.items():
+            digest.update(repr((first, *block)).encode("utf-8"))
+        return digest.hexdigest()
 
     @staticmethod
     def _update_documents_digest(
@@ -441,10 +544,27 @@ class HistorySearchCorpus:
         self._reuse_identity = digest.hexdigest()
 
     @staticmethod
-    def _sidecar_stamp(path: Path) -> tuple[int, int, int] | None:
+    def _sidecar_stamp(path: Path) -> tuple[int, ...] | None:
         try:
             stat = path.stat()
-            return stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+            stamp: tuple[int, ...] = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns,
+                                     stat.st_dev, stat.st_ino)
+            # A writer may switch a derived sidecar to WAL mode. Main-file
+            # timestamps alone would then miss committed page changes.
+            for suffix in ("-wal", "-journal"):
+                try:
+                    journal = path.with_name(path.name + suffix).stat()
+                except FileNotFoundError:
+                    stamp += (0, 0, 0, 0, 0)
+                else:
+                    if journal.st_size == 0:
+                        # Opening an otherwise unchanged WAL database can
+                        # create an empty WAL; it carries no page changes.
+                        stamp += (0, 0, 0, 0, 0)
+                    else:
+                        stamp += (journal.st_size, journal.st_mtime_ns, journal.st_ctime_ns,
+                                  journal.st_dev, journal.st_ino)
+            return stamp
         except OSError:
             return None
 
@@ -538,6 +658,8 @@ class HistorySearchCorpus:
             block: list[bytes] = []
             block_bytes = 0
             block_first = 0
+            maximum_document_bytes = 0
+            reusable_projection = True
 
             def flush_block() -> None:
                 nonlocal block_bytes
@@ -561,12 +683,16 @@ class HistorySearchCorpus:
                 block_bytes += len(encoded) + 4
 
             for ordinal, text in self._bounded_documents(documents):
+                reusable_projection = reusable_projection and type(text) is str
                 try:
                     encoded = text.encode("utf-8")
                 except UnicodeEncodeError as error:
                     raise _SidecarUnavailable("safe search text is not a Unicode scalar string") from error
-                if len(encoded) > self._max_document_bytes:
+                encoded_size = len(encoded)
+                if encoded_size > self._max_document_bytes:
                     raise _SidecarUnavailable("one history search document exceeds the disk bound")
+                if encoded_size > maximum_document_bytes:  # noqa: PLR1730 - avoid max() call overhead in this hot loop.
+                    maximum_document_bytes = encoded_size
                 self._update_documents_digest(documents_digest, ordinal, encoded)
                 if not compressed:
                     pending.append((ordinal, text))
@@ -644,7 +770,15 @@ class HistorySearchCorpus:
             )
             connection.commit()
             if compressed:
-                self._block_digests = {first: (count, size, digest, sha256(payload).hexdigest()) for first, count, size, digest, payload in connection.execute("SELECT first_ordinal, document_count, raw_bytes, digest, payload FROM document_blocks")}
+                metadata = connection.execute(
+                    "SELECT format_version, identity, document_count, character_count, "
+                    "documents_digest, backend, candidate_digest, complete "
+                    "FROM metadata WHERE singleton=1"
+                ).fetchone()
+                assert metadata is not None
+                fingerprint, self._block_digests = self._compressed_snapshot(connection, metadata)
+                if reusable_projection:
+                    _validated_compressed.put(fingerprint, maximum_document_bytes)
             connection.close()
             connection = None
             if temporary.stat().st_size > self._max_database_bytes:
@@ -698,7 +832,8 @@ class HistorySearchCorpus:
     def _iter_disk_documents(
         self, connection: sqlite3.Connection, backend: str, candidates: Sequence[int] | None = None,
         *, _matching_needle: bytes | None = None,
-        _validated_blocks: dict[int, tuple[int, int, str, str]] | None = None
+        _validated_blocks: dict[int, tuple[int, int, str, str]] | None = None,
+        _validated_maximum: list[int] | None = None,
     ) -> Iterable[tuple[int, str]]:
         if backend != self._BLOCK_BACKEND:
             yield from connection.execute("SELECT ordinal, safe_text FROM documents ORDER BY ordinal")
@@ -750,6 +885,10 @@ class HistorySearchCorpus:
                     validated_digests[first] = (count, size, digest, sha256(payload).hexdigest())
                 offset = count * 4
                 lengths = struct.unpack_from(f">{count}I", raw)
+                if _validated_maximum is not None:
+                    block_maximum = max(lengths)
+                    if block_maximum > _validated_maximum[0]:  # noqa: PLR1730 - avoid another max() call in this hot loop.
+                        _validated_maximum[0] = block_maximum
                 for length in lengths:
                     end = offset + length
                     if length > self._max_document_bytes or end > size:
@@ -897,6 +1036,7 @@ class HistorySearchCorpus:
 
         documents = collect_documents
         validation_matches = array("I")
+        shared_validation_matches: list[_MatchSet] = []
         try:
             if self._sidecar_path is not None and not self._bypass_sidecar:
                 try:
@@ -905,6 +1045,7 @@ class HistorySearchCorpus:
                             self._sidecar_path,
                             _needle=_needle,
                             _matches=validation_matches,
+                            _shared_matches=shared_validation_matches,
                         )
                     except sqlite3.DatabaseError:
                         if self._sidecar_path.is_symlink():
@@ -946,7 +1087,9 @@ class HistorySearchCorpus:
             self._candidate_backend = backend
             self._document_count = document_count
             self._character_count = character_count
-            result = self._remember(_needle, collected) if _needle is not None else None
+            result = self._remember(
+                _needle, shared_validation_matches[0] if shared_validation_matches else collected,
+            ) if _needle is not None else None
             self._building = False
             self._condition.notify_all()
             return result
@@ -986,14 +1129,18 @@ class HistorySearchCorpus:
             return array("I")
         if not self._sidecar_ready or self._sidecar_path is None:
             raise RuntimeError("history search corpus is not ready")
+        opening_stamp = self._sidecar_stamp(self._sidecar_path)
+        if opening_stamp is None or opening_stamp != self._reuse_file_stamp:
+            raise sqlite3.DatabaseError("history search generation changed")
         connection = sqlite3.connect(
-            f"{self._sidecar_path.as_uri()}?mode=ro&immutable=1",
+            f"{self._sidecar_path.as_uri()}?mode=ro",
             uri=True,
             check_same_thread=False,
         )
         try:
             connection.execute("PRAGMA query_only=ON")
             connection.execute("PRAGMA cache_size=-8192")
+            connection.execute("BEGIN")
             metadata = connection.execute(
                 "SELECT format_version, identity, document_count, character_count, backend, complete FROM metadata WHERE singleton=1"
             ).fetchone()
@@ -1071,6 +1218,8 @@ class HistorySearchCorpus:
             )
         finally:
             connection.close()
+            if self._sidecar_stamp(self._sidecar_path) != opening_stamp:
+                raise sqlite3.DatabaseError("history search generation changed")
 
     @classmethod
     def _fts5_candidate_expression(cls, needle: str) -> str | None:
@@ -1112,7 +1261,7 @@ class HistorySearchCorpus:
             return cached
         compact = self._shared_match(needle)
         if compact is None:
-            compact = _MatchSet(matches, self._document_count)
+            compact = matches if type(matches) is _MatchSet else _MatchSet(matches, self._document_count)
         self._results[needle] = compact
         self._cached_bytes += compact.nbytes
         self._cached_ordinals += len(compact)

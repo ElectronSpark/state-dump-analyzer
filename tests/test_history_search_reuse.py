@@ -154,7 +154,7 @@ class HistorySearchReuseTests(unittest.TestCase):
         gc.collect()
         self.assertIsNone(reference())
 
-    def test_compressed_corpus_revalidates_before_shared_reuse(self):
+    def test_compressed_corpus_rechecks_payloads_before_shared_reuse(self):
         documents = tuple(
             f"route-{ordinal} " + ("rare-δ\x00" if ordinal % 11 == 0 else "common")
             for ordinal in range(50)
@@ -181,7 +181,7 @@ class HistorySearchReuseTests(unittest.TestCase):
                 max_eager_candidate_characters=1, eager_validate_sidecar=False,
             )
             with patch.object(
-                reopened, "_iter_disk_documents", wraps=reopened._iter_disk_documents
+                reopened, "_compressed_snapshot", wraps=reopened._compressed_snapshot
             ) as validation, patch.object(
                 reopened, "_query_ready", side_effect=AssertionError("query scan")
             ):

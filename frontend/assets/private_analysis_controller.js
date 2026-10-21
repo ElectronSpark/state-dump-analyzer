@@ -1032,7 +1032,14 @@ export function createPrivateAnalysisController({
       decisionAttempts.clear();
       recoveryAttempts.clear();
       publish({ phase: "loading", run: null, etag: null, report: null, decisions: [], reviewAvailable: false, reviewingProposalIds: [], recoveringDecisionIds: [], cancelLocked: false, message: "Loading the opaque run ID from this workspace." });
-      const envelope = await getRun(token(runId, "runId", 512), expected);
+      let envelope;
+      try {
+        envelope = await getRun(token(runId, "runId", 512), expected);
+      } catch (error) {
+        assertGeneration(expected);
+        publish({ phase: "ready", message: "Run lookup failed. Load another run ID or create a new run." });
+        throw error;
+      }
       if (envelope.run.terminal && !envelope.run.cleanup_pending) {
         return getReport(envelope.run.run_id, expected);
       }

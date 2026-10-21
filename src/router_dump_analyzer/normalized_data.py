@@ -313,6 +313,9 @@ _CLIENT_EVENT_PAYLOAD_FIELDS = frozenset(
         "result",
     }
 )
+_CLIENT_EVENT_SUBJECT_PAYLOAD_FIELDS = _CLIENT_EVENT_PAYLOAD_FIELDS | frozenset(
+    {"key", "raw_key", "state"}
+)
 _CLIENT_EVENT_SUBJECT_CORE_FIELDS = frozenset(
     {
         "kind",
@@ -2449,7 +2452,7 @@ def _event_resource_kinds(
 
 def _redact_event_nested_record(
     value: Any,
-    sensitive: set[str],
+    path_trie: Mapping[object, Any],
     *,
     core_fields: frozenset[str],
     payload_fields: frozenset[str],
@@ -2457,7 +2460,7 @@ def _redact_event_nested_record(
 ) -> Any:
     # Keep the cheap dict check ahead of the generic Mapping ABC check.
     if not (isinstance(value, dict) or isinstance(value, Mapping)):  # noqa: SIM101
-        return redact_sensitive_tree(value, sensitive)
+        return _redact_sensitive_tree(value, path_trie=path_trie)
     result: dict[Any, Any] = {}
     for key, nested in value.items():
         name = str(key)
@@ -2473,17 +2476,28 @@ def _redact_event_nested_record(
             continue
         if name not in payload_fields:
             continue
-        projected = redact_sensitive_tree(
-            {key: nested},
-            sensitive,
-        )
-        if key not in projected:
-            continue
-        # The wrapper traversal already applied both this property's path and
-        # every nested path. Repeating it resets the same policy and only
-        # rebuilds the independent tree a second time.
-        result[key] = projected[key]
+        _redact_event_payload(result, key, name, nested, path_trie)
     return result
+
+
+def _redact_event_payload(
+    result: dict[Any, Any],
+    key: Any,
+    name: str,
+    value: Any,
+    path_trie: Mapping[object, Any],
+) -> None:
+    # Enter the property's path exactly as a one-field wrapper would, without
+    # allocating that wrapper or normalizing the effective policy again.
+    if path_trie:
+        hidden, branches = _advance_sensitive_path(name, path_trie, ())
+        if hidden:
+            return
+    else:
+        branches = ()
+    result[key] = _redact_sensitive_tree(
+        value, path_trie=path_trie, branches=branches,
+    )
 
 
 def redact_event_for_client(
@@ -2516,6 +2530,7 @@ def redact_event_for_client(
     sensitive_condition = any(
         sensitive_condition_by_kind.get(kind, False) for kind in kinds
     ) or (conservative_fallback and any(sensitive_condition_by_kind.values()))
+    path_trie = _property_path_trie(frozenset(str(field) for field in sensitive))
     result: dict[Any, Any] = {}
     for key, nested in event.items():
         name = str(key)
@@ -2537,10 +2552,9 @@ def redact_event_for_client(
         elif name == "subject":
             result[key] = _redact_event_nested_record(
                 nested,
-                sensitive,
+                path_trie,
                 core_fields=_CLIENT_EVENT_SUBJECT_CORE_FIELDS,
-                payload_fields=_CLIENT_EVENT_PAYLOAD_FIELDS
-                | frozenset({"key", "raw_key", "state"}),
+                payload_fields=_CLIENT_EVENT_SUBJECT_PAYLOAD_FIELDS,
                 sensitive_condition=sensitive_condition,
             )
         elif name == "affected_resources" and isinstance(
@@ -2552,10 +2566,9 @@ def redact_event_for_client(
                 projected = (
                     _redact_event_nested_record(
                         item,
-                        sensitive,
+                        path_trie,
                         core_fields=_CLIENT_EVENT_SUBJECT_CORE_FIELDS,
-                        payload_fields=_CLIENT_EVENT_PAYLOAD_FIELDS
-                        | frozenset({"key", "raw_key", "state"}),
+                        payload_fields=_CLIENT_EVENT_SUBJECT_PAYLOAD_FIELDS,
                         sensitive_condition=sensitive_condition,
                     )
                     if isinstance(item, Mapping)
@@ -2568,10 +2581,9 @@ def redact_event_for_client(
             result[key] = [
                 _redact_event_nested_record(
                     item,
-                    sensitive,
+                    path_trie,
                     core_fields=_CLIENT_EVENT_SUBJECT_CORE_FIELDS,
-                    payload_fields=_CLIENT_EVENT_PAYLOAD_FIELDS
-                    | frozenset({"key", "raw_key", "state"}),
+                    payload_fields=_CLIENT_EVENT_SUBJECT_PAYLOAD_FIELDS,
                     sensitive_condition=sensitive_condition,
                 )
                 for item in nested
@@ -2580,7 +2592,7 @@ def redact_event_for_client(
             result[key] = [
                 _redact_event_nested_record(
                     item,
-                    sensitive,
+                    path_trie,
                     core_fields=_CLIENT_EVENT_EFFECT_CORE_FIELDS,
                     payload_fields=_CLIENT_EVENT_EFFECT_PAYLOAD_FIELDS,
                     sensitive_condition=sensitive_condition,
@@ -2594,7 +2606,7 @@ def redact_event_for_client(
             result[key] = [
                 _redact_event_nested_record(
                     item,
-                    sensitive,
+                    path_trie,
                     core_fields=_CLIENT_RELATIONSHIP_EFFECT_CORE_FIELDS,
                     payload_fields=_CLIENT_EVENT_PAYLOAD_FIELDS,
                     sensitive_condition=False,
@@ -2616,9 +2628,7 @@ def redact_event_for_client(
             if public is not _DROP_CLIENT_FIELD:
                 result[key] = public
         elif name in _CLIENT_EVENT_PAYLOAD_FIELDS:
-            projected = redact_sensitive_tree({key: nested}, sensitive)
-            if key in projected:
-                result[key] = projected[key]
+            _redact_event_payload(result, key, name, nested, path_trie)
     return result
 
 

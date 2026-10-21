@@ -28,6 +28,10 @@ PACKAGE_ROOTS = (
     / "state_dump_generator",
 )
 STUB_SUPPLEMENTS = {
+    Path("router_dump_analyzer/_history_search_validation.pyi"): (
+        "\n# Private validation facts consumed by compressed history storage.\n"
+        "_validated_compressed: _ValidationCache\n"
+    ),
     Path("router_dump_analyzer/_history_search_cache.pyi"): (
         "\n# Private shared cache consumed by the core history query implementation.\n"
         "_shared_results: _SearchResultCache\n"

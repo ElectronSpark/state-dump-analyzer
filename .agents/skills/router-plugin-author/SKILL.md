@@ -84,6 +84,10 @@ equality can invoke a custom metaclass and misclassify mutable values. Audit
 aliased type groups too. Preserve general Mapping/subclass behavior when adding
 projection fast paths, and validate both public fingerprint entry points and
 exact safe search text as described in the performance map.
+Compile effective disclosure policy once per event projection and reuse only
+bounded immutable policy metadata. A path-aware helper may remove temporary
+wrappers, but must preserve ancestor and dotted-key rules, conservative unknown
+resource handling, and independently owned output containers.
 For navigation caches, reclaim idle generations before destination allocation;
 protect active leases and resolve unknown destinations before eviction. Check
 the prepared destination's bounded size/checksum before reclamation without
@@ -145,6 +149,12 @@ Validate a reopened corpus before admitting shared results. Keep literal cache
 keys exact without retaining caller subclass state. Evaluate optional
 large-corpus indexes against their build CPU and storage costs, block pruning,
 and exact fallback; the map's search-cache guidance covers those tradeoffs.
+For compressed validation reuse, a bounded process-local record may certify
+previously validated bytes only after freshly checking all compressed payloads,
+framing, metadata, current bounds and projection identity on a stable snapshot.
+Never substitute timestamps or stored unchecked digests for that byte check.
+Misses and changed content keep the full validator; retain no runtime or trust
+decision. The map describes snapshot lifetime and mutation validation.
 
 For timeline or history scale work, use the map's
 [zoom-query guidance](../../../docs/plugin-api-validation.md#zoom-and-history-query-validation).
@@ -165,6 +175,15 @@ When virtual rows are replaced, retain the active row's identity and restore
 focus after replacement without scrolling. Exercise delayed scroll and page
 rerenders after keyboard navigation, and verify that background rerenders leave
 focus in search fields or other external controls intact.
+
+For generic frontend repairs, use the map's
+[state and recovery checks](../../../docs/plugin-api-validation.md#frontend-state-and-recovery).
+Keep user choices separate from newly discovered data, and validate recovery
+through the real form or event handler as well as controller unit tests.
+Use stable control and tree-instance identities when replacing UI subtrees;
+carry keyboard and navigation intent through delayed data and invalid input.
+The map covers lane presets, derived source marks, inferred-edge presentation,
+programmatic form seeding, and superseded reads without adding plug-in hooks.
 
 ## Verify and finish
 

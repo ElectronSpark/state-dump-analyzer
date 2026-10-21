@@ -31,6 +31,88 @@ def _reference_redact(value, *, path_trie, branches=()):
 
 
 class SafeProjectionFastPathTests(unittest.TestCase):
+    def test_event_compiles_effective_paths_once_for_all_payloads(self):
+        policy = ({"PORT": frozenset({"secret", "state.credentials.token"})},
+                  {"port/1": "PORT"}, frozenset({"secret", "state.credentials.token"}),
+                  {"PORT": False})
+        payload = {"secret": "private", "visible": [True, 1, "雪\0Straße"],
+                   "credentials": {"token": "private", "label": "public"}}
+        subject = {"resource_id": "port/1", "state": payload, "attributes": payload}
+        event = {"subject": subject, "subjects": [subject],
+                 "affected_resources": [subject], "effects": [subject],
+                 "relationship_effects": [{"attributes": payload}],
+                 "attributes": payload, "properties": payload, "result": payload}
+        with patch.object(projection, "_property_path_trie",
+                          wraps=projection._property_path_trie) as compile_paths:
+            actual = projection.redact_event_for_client(event, {}, policy=policy)
+        self.assertEqual(compile_paths.call_count, 1)
+        self.assertNotIn("secret", actual["attributes"])
+        self.assertEqual(actual["subject"]["state"]["credentials"], {"label": "public"})
+        self.assertEqual(actual["subject"]["attributes"]["credentials"]["token"], "private")
+        actual["subject"]["state"]["visible"].append("changed")
+        self.assertEqual(actual["subjects"][0]["state"]["visible"], [True, 1, "雪\0Straße"])
+        self.assertEqual(payload["visible"], [True, 1, "雪\0Straße"])
+
+    def test_event_path_entry_matches_wrapper_reference(self):
+        rng = random.Random(20261021)
+
+        def wrapped_payload(result, key, name, value, path_trie):
+            result.update(_reference_redact({key: value}, path_trie=path_trie))
+
+        def tree(depth):
+            if not depth or rng.randrange(4) == 0:
+                return rng.choice([None, True, False, 0, 1, 1.5, "雪\0Straße"])
+            names = ("credentials", "token", "credentials.token", "visible")
+            values = [tree(depth - 1) for _ in names]
+            return rng.choice((dict, UserDict))(zip(names, values))
+
+        for index in range(250):
+            sensitive = frozenset(rng.sample([
+                "token", "credentials.token", "state.credentials", "attributes.token",
+                "result", "state.visible", "properties.credentials.token",
+            ], index % 5))
+            policy = ({"PORT": sensitive}, {"port/1": "PORT"}, sensitive, {"PORT": False})
+            subject = UserDict(resource_id="port/1", state=tree(3),
+                               attributes=tree(3), key=tree(3), raw_key=tree(3))
+            event = UserDict(subject=subject, subjects=[subject, tree(2)],
+                             affected_resources=[subject, "port/1"], effects=[subject],
+                             relationship_effects=[{"properties": tree(3)}],
+                             attributes=tree(3), properties=tree(3), result=tree(3))
+            actual = projection.redact_event_for_client(event, {}, policy=policy)
+            with patch.object(projection, "_redact_event_payload", wrapped_payload):
+                expected = projection.redact_event_for_client(event, {}, policy=policy)
+            self.assertEqual(json.dumps(actual, ensure_ascii=False),
+                             json.dumps(expected, ensure_ascii=False))
+
+    def test_event_policy_mutation_and_unknown_resource_remain_conservative(self):
+        policy = ({"PORT": frozenset({"port_secret"}),
+                   "OTHER": frozenset({"other_secret"})},
+                  {"port/1": "PORT"}, frozenset({"port_secret", "other_secret"}),
+                  {"PORT": False, "OTHER": True})
+        event = {"subject": {"resource_id": "port/1"}, "status": "up",
+                 "effects": [{"status": "up", "condition_class": "healthy"}],
+                 "attributes": {"port_secret": "private", "other_secret": "private",
+                                "visible": [1]}}
+        known = projection.redact_event_for_client(event, {}, policy=policy)
+        self.assertEqual(known["status"], "up")
+        self.assertEqual(known["attributes"], {"other_secret": "private", "visible": [1]})
+        for additions in ({"subjects": [{"resource_kind": "UNDECLARED"}]},
+                          {"affected_resources": ["missing"]},
+                          {"subject": {}},
+                          {"subjects": [{"resource_id": "missing"}]}):
+            candidate = {**event, **additions}
+            conservative = projection.redact_event_for_client(candidate, {}, policy=policy)
+            self.assertEqual(conservative["attributes"], {"visible": [1]})
+            self.assertEqual(conservative["status"], "unknown")
+            self.assertEqual(conservative["effects"][0]["status"], "unknown")
+        policy[0]["PORT"] = frozenset({"other_secret"})
+        policy[3]["PORT"] = True
+        changed = projection.redact_event_for_client(event, {}, policy=policy)
+        self.assertEqual(changed["attributes"], {"port_secret": "private", "visible": [1]})
+        self.assertEqual(changed["status"], "unknown")
+        policy[1]["port/1"] = "OTHER"
+        self.assertEqual(projection.redact_event_for_client(event, {}, policy=policy), changed)
+
     def test_recursive_projection_matches_reference_and_owns_containers(self):
         rng = random.Random(20261020)
 

@@ -177,13 +177,15 @@ candidate ordinals, after scanning their bounded headers. The query-result
 cache and exact disclosure projection remain shared across storage modes.
 
 Block framing targets 256 KiB, allows a single document up to the configured
-document-byte limit, and caps each block at 65,536 documents. Reopening validates
+document-byte limit, and caps each block at 65,536 documents. Full validation checks
 contiguous ordinals, counts, UTF-8, exact framing, bounded decompression, per-block
 SHA-256 and the complete canonical document digest against revision identity.
 Queries pin validated block framing, raw digests and compressed-payload SHA-256
 hashes to the generation. They recheck generation/framing metadata and verify
 compressed bytes against those pins before bounded decompression, preserving
 the validated UTF-8 corpus without rehashing its larger raw representation.
+Navigation may reuse the process-local compressed validation facts described
+below, after freshly hashing all compressed content in a read transaction.
 Unreadable storage falls back to the safe projection. Publication remains atomic, and a
 reader does not unlink another process's published cache. Old format versions
 are derived caches and are rebuilt. Exercise `CompressedHistorySearchTests`
@@ -218,7 +220,7 @@ corpus from the runtime that owns event objects. A bounded core cache may retain
 compact exact postings or derived index metadata across runtime retirement only
 when their key binds the full corpus content, projection semantics and index
 format. A revision label or path alone is insufficient. Reopening must complete
-the existing corpus validation before sharing results; never cache authorization
+corpus validation before sharing results; never cache authorization
 or executable trust. Check global entry/byte budgets (including keys), eviction,
 concurrent readers, distinct revisions with the same label, corruption fallback,
 and weak-reference collection of retired runtimes/builders.
@@ -230,13 +232,44 @@ Reopened corpora validate first, then may reuse results under the full content,
 projection, format and count identity. Non-exact string keys are not shared;
 subclass conversion, equality or hashing must not alter literal cache identity.
 Changed sidecar stamps suppress shared lookup. This cache does not persist
-between processes and does not avoid the full reopen integrity scan.
+between processes; result reuse alone does not avoid reopen validation.
 Sharing is limited to successfully built or validated persistent sidecars,
 which already compute a complete corpus digest. Memory-only construction and
 disk-failure fallback keep their original no-hash path and never publish shared
 results; hashing all their text just for reuse adds avoidable first-query CPU.
 Exercise `tests.test_history_search_reuse` together with both existing search
 suites and the assembly navigation checks.
+
+A bounded process-local validation record may avoid repeating decompression
+only for previously fully validated compressed content. Freshly hash every
+compressed payload and compare exact ordered framing, metadata and the current
+projection identity with that record. Recheck current document/character/byte
+bounds, including bounds on individual documents previously validated. A changed
+limit that cannot be established from the record requires full validation.
+Do not accept a digest merely because it is stored alongside the payload.
+Metadata, payload checks and subsequent reads must refer to the same stable
+generation; SQLite `immutable=1` is an assertion, not a lock or integrity proof.
+Bind the snapshot lifetime explicitly and fail/revalidate on replacement or
+mutation. Entries retain compact immutable validation facts, never event rows,
+builders, runtimes, authorization or executable trust. Bound total bytes and
+entries including keys/bookkeeping; eviction must be safe for active readers.
+Unknown content, cold processes and cache misses retain the complete validator
+and corruption fallback. Exercise same-size changes with restored timestamps,
+last-block corruption, replacement during open, revised limits, concurrent
+readers/close and retirement collection. Measure first-process validation and
+navigation reuse separately, with cached and uncached query terms.
+
+The implementation bounds these facts to 128 entries and 256 KiB including
+fingerprint keys and bookkeeping. Each record retains only the previously
+validated maximum document-byte length under a fingerprint of complete metadata,
+ordered block framing, raw-digest metadata and freshly hashed compressed bytes.
+It reconstructs reader-owned block pins while checking that fingerprint; it does
+not keep a global copy of the block map. Read transactions bind metadata and
+payload scans, and pre/post file stamps include file identity to reject observed
+replacement. No connection or file lock survives validation or a query. Cached
+first queries reuse compact results directly; new terms still scan exact framed
+bytes. Run `tests.test_history_search_validation` with the existing storage,
+reuse and navigation suites.
 
 An optional large-corpus candidate index must preserve the compressed corpus
 and exact UTF-8 literal matching. Candidates are a superset, followed by exact
@@ -350,6 +383,14 @@ event projections. Preserve ancestor-sensitive paths, policy isolation, exact
 JSON encoding and case folding. Check the final corpus against an independent
 safe-projection reference. Index-build progress should advance during work,
 remain path/text-free, and never substitute a count for integrity validation.
+Compile the effective policy once for an event and pass it through nested
+projection instead of repeatedly converting field sets. Bounded generation-local
+policy combinations may reuse unions and condition decisions, but must include
+conservative unresolved/unknown-kind handling and retain no event values. Avoid
+temporary one-property wrappers through a path-aware helper only when it applies
+the same ancestor/dotted-key transition before recursion. Hoist constant field
+sets and preserve exact scalar/subclass semantics when bypassing recursive calls.
+Check complete output ownership, policy mutation/isolation and retained key bytes.
 Scalar/dictionary fast paths must retain generic Mapping and subclass fallback,
 conservative unresolved-kind redaction, nested sensitive-path semantics, and
 exact JSON types. Include metaclass equality attacks, Unicode/NUL, and numeric
@@ -361,6 +402,66 @@ Relevant tests are `tests.test_safe_projection_fast_paths` (also in the
 `runtime` conformance group), `tests.test_normalized_data_service`,
 `tests.test_revision_queries`, `tests.test_history_search_core`, and
 `tests.test_load_progress`.
+
+## Frontend state and recovery
+
+Generic frontend behavior remains core-owned. Preserve an explicit user filter
+when refreshed data rediscovers existing options; distinguish discovery defaults
+from intentional reveal actions. Check the settled response after zoom or pan,
+not only the immediate render before asynchronous data arrives.
+
+Lane presets and explicit custom choices are different state. A selection or
+reveal must preserve the current preset's intent, rather than revive an old
+custom set; every layout must honor applicable layer and resource visibility.
+Guard a navigation intent across awaits and deferred focus/scroll callbacks,
+including newer targets that are already loaded and explicit clear actions.
+Rejecting stale query data alone does not prevent a stale continuation. Conversely,
+guarding only the continuation still allows an obsolete payload to replace the
+current lanes. Exercise the composed request, selection and normalization path.
+Keep navigation authority separate from ordinary window refinement: selecting an
+already-loaded resource must not strand an unrelated zoom request. If that request's
+resource/root context changes, refresh the current context before applying it.
+
+When a render replaces interactive elements, preserve the activated control's
+stable identity and its containing tree/module/device instance. An event UID
+plus resource ID is not unique when the same resource appears in several tree
+branches. Restore focus without stealing it from a newer user action, and keep
+popups anchored to the same instance. For virtual logs, carry the latest
+keyboard destination through an uncached page response and cover Home/End as
+well as Arrow keys; an animation-frame retry alone may precede data arrival.
+
+Exercise normalized source-lane construction together with lookup, hover and
+reveal. Display clusters may be derived from marks instead of stored on the
+lane; test a source in a later lane and one absent from current lanes. Keep
+untimed records explicitly untimed.
+
+Validate requests before sending them, but invalidate older response authority
+when a newer user intent fails validation. Cover enabled change handlers while
+submit is disabled. Programmatic form seeding must update dependent guidance
+and controls, not just values. Render explicit edge direction independently
+of descriptor availability; inference-rule identity is not a relationship type.
+Unknown vocabulary must remain honest without discarding other declared facts.
+
+Cancel superseded read requests where the transport supports it and retain
+generation checks for already-settled work. Do not report browser cancellation
+as proof that backend CPU work stopped without a cooperative cancellation check.
+
+Form resets restore values but not dynamically assigned validity constraints.
+Keep conditional visibility and native validation synchronized on initial load,
+reset, reconnect and clear. Exercise a real submit path after those transitions;
+a controller-only test cannot detect a hidden required field blocking submission.
+
+Read failures must settle local pending-operation state without replaying a
+mutation or letting an old request overwrite a newer generation. Verify that a
+failed lookup clears stale report authority and permits the appropriate next
+action, while an accepted active run retains its execution/cancellation rules.
+A successful management action should replace earlier error feedback. Test the
+failure-to-success transition through the installed event handlers.
+
+Run `npm --prefix frontend run check` after frontend changes. Keep transport or
+sandbox failures distinct from assertions; if loopback sockets are denied, rerun
+the affected checks with the necessary local execution permission. Browser
+validation must load the changed assets and record the final visible state.
 
 For a browser finding, verify both failure feedback and the next successful
 action. Check document overflow against the actual viewport and confirm local

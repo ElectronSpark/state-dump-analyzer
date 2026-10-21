@@ -45,6 +45,7 @@ function harness({ actualSelection = false } = {}) {
     const renderEventTableWindow = () => {};
     const registerVisibleEventLogHoverModels = () => {};
     const focusEventLogEntry = () => {};
+    const focusEventLogSelectionIndex = (index) => { state.keyboardTarget = index; };
     ${["eventLogPointerDown", "eventLogPointerMove", "finishEventLogDrag", "bindVisibleEventLogRows"].map(functionSource).join("\n")}
     return { eventLogPointerDown, eventLogPointerMove, finishEventLogDrag, bindVisibleEventLogRows };
   `);
@@ -117,4 +118,17 @@ test("an actual drag captures the pointer and cancellation restores selection", 
   assert.equal(h.host.captured, null);
   assert.equal(h.state.eventLogDrag, null);
   assert.ok(h.state.eventLogSuppressClickUntil > 1000);
+});
+
+
+test("Home and End navigate the entire log and preserve Shift range intent", () => {
+  const h = harness({ actualSelection: true });
+  h.state.eventLogSelectableCount = 5000;
+  h.state.eventLogSelectionAnchor = 1;
+  h.handlers.get("keydown")(h.event({key: "End", shiftKey: true}));
+  assert.equal(h.state.keyboardTarget, 4999);
+  assert.deepEqual(h.state.eventLogSelectionRanges, [[1, 4999]]);
+  h.handlers.get("keydown")(h.event({key: "Home"}));
+  assert.equal(h.state.keyboardTarget, 0);
+  assert.deepEqual(h.state.eventLogSelectionRanges, [[0, 0]]);
 });

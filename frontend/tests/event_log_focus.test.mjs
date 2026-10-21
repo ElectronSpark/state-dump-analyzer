@@ -70,3 +70,35 @@ test("background event-log rerenders leave external control focus intact", () =>
   h.render();
   assert.equal(h.document.activeElement, h.externalInput);
 });
+
+
+test("keyboard destination survives an uncached page and yields to external focus", () => {
+  const h = harness();
+  h.render();
+  h.state.eventLogKeyboardFocusIndex = 90;
+  h.render();
+  assert.equal(h.document.activeElement, h.document.body);
+  h.state.eventLogRows = Array.from({ length: 100 }, (_, index) => index);
+  h.scroll.scrollTop = 90 * 44;
+  h.render();
+  assert.equal(h.document.activeElement.dataset.selectionIndex, "90");
+  h.state.eventLogKeyboardFocusIndex = 91;
+  h.document.activeElement = h.externalInput;
+  h.render();
+  assert.equal(h.document.activeElement, h.externalInput);
+  assert.equal(h.state.eventLogKeyboardFocusIndex, null);
+});
+
+
+test("a completed keyboard destination does not override later mouse or reveal focus", () => {
+  const h = harness();
+  h.state.eventLogKeyboardFocusIndex = 8;
+  h.render();
+  assert.equal(h.document.activeElement.dataset.selectionIndex, "8");
+  assert.equal(h.state.eventLogKeyboardFocusIndex, null);
+  for (const index of [4, 12]) {
+    h.body.querySelector(`tr[data-selection-index="${index}"]`).focus({ preventScroll: true });
+    h.render();
+    assert.equal(h.document.activeElement.dataset.selectionIndex, String(index));
+  }
+});

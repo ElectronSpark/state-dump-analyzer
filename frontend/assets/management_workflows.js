@@ -122,7 +122,7 @@ async function inspectSession(ui, id) {
   }, !writable, true)]));
   if (!record.members.length) root.append(el("p", "No revisions selected yet."));
   root.append(button("Create immutable snapshot", async () => { const snapshot = await client.request(path("sessions", id, "snapshots"), { method: "POST", version: record.version }); message(`Snapshot created: ${snapshot.snapshot_id}. It protects this session from deletion.`); await show(); }, !writable || !record.members.length), button("Inspect session analysis", () => ui.openAnalysis({ session_id: id }), !record.members.length));
-  content.append(inputForm("Rename session", [["label", "Session name", record.label]], async (body) => { await client.request(path("sessions", id), { method: "PATCH", version: record.version, body }); await show(); }, { disabled: !writable, submitText: "Save name" }));
+  content.append(inputForm("Rename session", [["label", "Session name", record.label]], async (body) => { await client.request(path("sessions", id), { method: "PATCH", version: record.version, body }); await show(); message("Session renamed."); }, { disabled: !writable, submitText: "Save name" }));
   const add = card("Add or replace a member"); const form = el("form", undefined, "management-form");
   const memberLabel = el("label", "Member ID"); const memberInput = el("input"); memberInput.required = true; memberInput.maxLength = 256; memberInput.value = crypto.randomUUID(); memberLabel.append(memberInput);
   const revisionLabel = el("label", "Published revision"); const revisions = el("select"); revisionLabel.append(revisions);
