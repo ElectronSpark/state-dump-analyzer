@@ -381,7 +381,10 @@ print("headless scan and indexed queries passed")
             "end_ns": "30",
             "selection": {"ids": ["root"]},
         }
-        rule = {"lane_id": "retained", "pattern": "retained", "source_types": ["trace"]}
+        rule = {
+            "lane_id": "retained", "pattern": "retained", "source_types": ["trace"],
+            "source_record_uid": "source-1",
+        }
         query = TimelineQuery(
             0,
             100,
@@ -391,6 +394,7 @@ print("headless scan and indexed queries passed")
         )
         selected_range["selection"]["ids"].append("changed")
         rule["source_types"][0] = "not-declared"
+        rule["source_record_uid"] = "source-other"
         with self.assertRaises(TypeError):
             query.selected_range["selection"]["ids"][0] = "changed"
         with self.assertRaises(TypeError):
@@ -398,6 +402,7 @@ print("headless scan and indexed queries passed")
         first = queries.timeline(query)
         self.assertEqual(first["selection"]["range"]["selection"]["ids"], ["root"])
         self.assertEqual(first["record_lanes"][0]["record_count"], 1)
+        self.assertEqual(first["record_lanes"][0]["source_record_uid"], "source-1")
         first["selection"]["range"]["selection"]["ids"].clear()
         second = queries.timeline(query)
         self.assertEqual(second["selection"]["range"]["selection"]["ids"], ["root"])

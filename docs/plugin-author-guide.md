@@ -1764,6 +1764,11 @@ The plug-in supplies decoded source semantics and an optional
 `matched_event_uid`. Use `matched_event_uids` when one decoded input contributes
 to several normalized events. It does **not** assign `source_record_uid`; the
 core turns the emission into a persisted `SourceRecord` with stable identity.
+Generic source jumps select that exact identity through core timeline rules,
+so a message mentioning another record's UID cannot redirect the jump. No
+parser change or browser callback is needed. Run
+`python -m unittest tests.test_source_record_core -v` for exact-identity,
+combined-filter and source-lane cap checks.
 
 Set `copy_text` only when the plug-in can provide a safe canonical plain-text
 form for an operator to copy. The plug-in must redact secrets before assigning

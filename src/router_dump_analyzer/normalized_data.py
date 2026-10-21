@@ -4098,29 +4098,58 @@ class NormalizedDataService:
         end_ns: int,
     ) -> dict[str, Any]:
         dataset = self.load_dataset()
-        selected = self.events_in_range(start_ns, end_ns)
         policy = self.event_redaction_policy(dataset)
+        runtime = self.history_runtime(dataset)
+        if runtime is not None:
+            selected = runtime.events
+            event_left = bisect_left(runtime.event_times, start_ns)
+            event_right = bisect_right(runtime.event_times, end_ns)
+            event_count = max(0, event_right - event_left)
+            detail_events = selected[
+                event_left:min(event_right, event_left + MAX_RANGE_DETAILS)
+            ]
+        else:
+            selected = self.events_in_range(start_ns, end_ns)
+            detail_events = selected
         projected_selected = [
             self.redact_event_for_client(
                 item,
                 dataset,
                 policy=policy,
             )
-            for item in selected
+            for item in detail_events
         ]
         all_sensitive = set(policy[2])
-        runtime = self.history_runtime(dataset)
         if runtime is not None:
-            affected_ids = {
-                str(identifier)
-                for event in projected_selected
-                for identifier in event.get("affected_resources", [])
-                if identifier
-            }
+            # Counts need only public scalar facts; nested event payloads are
+            # projected only for the bounded detail prefix. Preserve the normal
+            # projection for unusual structured resource references.
+            by_outcome: Counter[Any] = Counter()
+            by_action: Counter[Any] = Counter()
+            affected_ids: set[str] = set()
+            for index in range(event_left, event_right):
+                event = selected[index]
+                for field, counts in (("outcome", by_outcome), ("action", by_action)):
+                    value = _safe_public_scalar(event.get(field, "unknown"))
+                    counts["unknown" if value is _DROP_CLIENT_FIELD else value] += 1
+                identifiers = event.get("affected_resources", ())
+                if not isinstance(identifiers, (list, tuple)):
+                    continue
+                if any(isinstance(identifier, Mapping) for identifier in identifiers):
+                    identifiers = self.redact_event_for_client(
+                        event, dataset, policy=policy,
+                    ).get("affected_resources", [])
+                for identifier in identifiers:
+                    public = _safe_public_scalar(identifier)
+                    if isinstance(identifier, Mapping):
+                        public = identifier
+                    if public is not _DROP_CLIENT_FIELD and public:
+                        affected_ids.add(str(public))
             mutation_left = bisect_left(runtime.mutation_times, start_ns)
             mutation_right = bisect_right(runtime.mutation_times, end_ns)
-            mutations = runtime.mutations[mutation_left:mutation_right]
-            for mutation in mutations:
+            mutation_count = max(0, mutation_right - mutation_left)
+            for index in range(mutation_left, mutation_right):
+                mutation = runtime.mutations[index]
                 affected_ids.update((str(mutation["source"]), str(mutation["target"])))
             descriptors = {
                 str(item["relation_type"]): item
@@ -4169,23 +4198,12 @@ class NormalizedDataService:
                 "revision_id": self.current_revision_id(dataset),
                 "start_ns": str(start_ns),
                 "end_ns": str(end_ns),
-                "event_count": len(selected),
-                "failure_count": sum(
-                    item.get("outcome") == "failure" for item in projected_selected
-                ),
-                "events": projected_selected[:MAX_RANGE_DETAILS],
+                "event_count": event_count,
+                "failure_count": by_outcome["failure"],
+                "events": projected_selected,
                 "counts": {
-                    "by_outcome": dict(
-                        Counter(
-                            item.get("outcome", "unknown")
-                            for item in projected_selected
-                        )
-                    ),
-                    "by_action": dict(
-                        Counter(
-                            item.get("action", "unknown") for item in projected_selected
-                        )
-                    ),
+                    "by_outcome": dict(by_outcome),
+                    "by_action": dict(by_action),
                 },
                 "affected_resource_count": len(affected),
                 "affected_resources": affected[:MAX_RANGE_DETAILS],
@@ -4202,7 +4220,7 @@ class NormalizedDataService:
                     len(affected),
                     MAX_RANGE_DETAILS,
                 ),
-                "relationship_change_count": len(mutations),
+                "relationship_change_count": mutation_count,
                 "relationship_changes": [
                     redact_sensitive_tree(
                         {
@@ -4214,14 +4232,16 @@ class NormalizedDataService:
                         },
                         all_sensitive,
                     )
-                    for item in mutations[:MAX_RANGE_DETAILS]
+                    for item in runtime.mutations[
+                        mutation_left:min(mutation_right, mutation_left + MAX_RANGE_DETAILS)
+                    ]
                 ],
                 "truncated": {
-                    "events": len(selected) > MAX_RANGE_DETAILS,
+                    "events": event_count > MAX_RANGE_DETAILS,
                     "affected_resources": (len(affected) > MAX_RANGE_DETAILS),
                     "status_segments": status_truncated,
                     "endpoint_diff": len(affected) > MAX_RANGE_DETAILS,
-                    "relationship_changes": (len(mutations) > MAX_RANGE_DETAILS),
+                    "relationship_changes": mutation_count > MAX_RANGE_DETAILS,
                 },
                 "selection_behavior": (
                     "highlight events and status spans; exact counts use the "

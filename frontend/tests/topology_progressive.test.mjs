@@ -48,12 +48,14 @@ function harness({ fail = false } = {}) {
   };
   for (const name of ['renderReconstructionTimeline', 'clearRoutePacketSelection', 'clearRoutePathPreview', 'clearRouteHover', 'setFormBusy', 'renderSourceBanner', 'renderCapabilityNodeIndex', 'renderRouteTables', 'syncUrl']) dependencies[name] = () => {};
   const methods = new Function(...Object.keys(dependencies), `${extract('loadRouteTables')}\n${extract('runQuery')}\nreturn { runQuery };`)(...Object.values(dependencies));
-  return { ...methods, state, effects, caps, tables, requests };
+  return { ...methods, state, effects, caps, tables, requests, byId };
 }
 const settle = async () => { await new Promise((resolve) => setImmediate(resolve)); };
 test('committed topology renders while route capabilities and tables remain pending; tracing is explicit', async () => {
   const h = harness();
+  h.byId('mn-route-error').textContent = 'Previous destination was outside the device set';
   await h.runQuery();
+  assert.equal(h.byId('mn-route-error').textContent, '', 'successful reconstruction retires the obsolete trace error before retry');
   assert.deepEqual(h.effects.renders, ['ctx-1']);
   assert.equal(h.state.pending, false);
   assert.equal(h.state.routeTablePending, true);

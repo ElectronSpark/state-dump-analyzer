@@ -4580,9 +4580,11 @@ class MultiNodeRouteService:
                     "route_type",
                     "route_family",
                     "address_family",
+                    "vrf_id",
                 )
                 if scenario.get(key)
             }
+            directional_contexts = scenario.get("directional_routing_contexts") or {}
             pairs.append(
                 {
                     "pair_id": (
@@ -4597,11 +4599,13 @@ class MultiNodeRouteService:
                         "source_id": source_id,
                         "destination_id": destination_id,
                         **route_context,
+                        **directional_contexts.get("forward", {}),
                     },
                     "reverse": {
                         "source_id": f"source:{destination_node}",
                         "destination_id": f"destination:{source_node}",
                         **route_context,
+                        **directional_contexts.get("reverse", {}),
                     },
                     "expected_comparison": str(
                         scenario.get("expected_outcome")
@@ -8005,10 +8009,49 @@ class MultiNodeRouteService:
                 json.dumps(value, sort_keys=True, default=str)
                 for _label, value in normalized_candidates
             }
-            if len(encoded) > 1:
+            if len(encoded) == 1:
+                normalized_candidates = normalized_candidates[:1]
+        if len(normalized_candidates) > 1:
+            # A row may supply {node_id} while the form supplies the advertised
+            # start descriptor for that same node. Compare resolved identities,
+            # not optional presentation/provenance fields. A more specific
+            # resource selector refines the compatible node-only aliases.
+            resource_ids = {
+                str(resource_id)
+                for _label, value in normalized_candidates
+                for resource_id in (
+                    value.get("resource_id"),
+                    (value.get("ingress_resource_ref") or {}).get("resource_id")
+                    if isinstance(value.get("ingress_resource_ref"), dict)
+                    else None,
+                )
+                if resource_id is not None
+            }
+            if len(resource_ids) > 1:
                 raise MultiNodeRouteRequestError(
                     "trace start selectors for the requested direction disagree"
                 )
+            resolved_candidates = []
+            for _label, value in normalized_candidates:
+                selector = dict(value)
+                if resource_ids:
+                    selector.setdefault("resource_id", next(iter(resource_ids)))
+                resolved_candidates.append(self._resolve_trace_start(
+                    {"trace_starts": {direction: selector}},
+                    scenario, direction, directional_source,
+                    scenario_direction=scenario_direction,
+                ))
+            identities = {
+                tuple(item.get(key) for key in (
+                    "node_id", "member_id", "resource_id", "attachment_id"
+                ))
+                for item in resolved_candidates
+            }
+            if len(identities) != 1:
+                raise MultiNodeRouteRequestError(
+                    "trace start selectors for the requested direction disagree"
+                )
+            return resolved_candidates[0]
         request = (
             dict(normalized_candidates[0][1])
             if normalized_candidates

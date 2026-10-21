@@ -145,7 +145,8 @@ test("panning preserves selections, lanes, zoom, and the full capture domain", (
   const references = { ...harness.state };
   const before = structuredClone(harness.state);
   assert.equal(harness.api.panTimelineViewport(1), true);
-  const { timelineWindowStartNs, timelineWindowEndNs, ...preserved } = harness.state;
+  const { timelineWindowStartNs, timelineWindowEndNs, timelineNavigationIntent, ...preserved } = harness.state;
+  assert.equal(timelineNavigationIntent, 1);
   const { timelineWindowStartNs: oldStart, timelineWindowEndNs: oldEnd, ...expected } = before;
   assert.deepEqual(preserved, expected);
   assert.equal(preserved.explicitLaneIds, references.explicitLaneIds);
@@ -168,8 +169,9 @@ test("direct pan records before/after views and invalidates before rendering and
 });
 
 test("wheel pan defers history and refresh to burst completion", () => {
-  const harness = navigationHarness();
+  const harness = navigationHarness({ timelineNavigationIntent: 7 });
   assert.equal(harness.api.panTimelineViewportByPixels(500, { recordHistory: false, fromWheel: true }), true);
+  assert.equal(harness.state.timelineNavigationIntent, 7, "the scheduled frame is not a new user navigation intent");
   assert.deepEqual(harness.calls, [
     { kind: "invalidate" },
     { kind: "render", startNs: 4_500n, endNs: 5_500n, zoom: 10 },

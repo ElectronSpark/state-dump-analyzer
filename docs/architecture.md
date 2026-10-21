@@ -1067,6 +1067,8 @@ not retained as reusable revision indexes.
 
 The HTTP timeline/density wrapper drains the request body before monitoring
 disconnects, then binds a thread-safe cancellation probe for core checkpoints.
+Disconnect during that initial body read uses the same cancellation error
+without starting a watcher or acquiring a query provider.
 It cannot interrupt arbitrary synchronous plug-in or archive work. The browser
 aborts obsolete requests, uses revision/bounds-scoped aligned density pages,
 and refines explicitly labelled cached summaries after gestures settle.
@@ -2462,6 +2464,11 @@ the current group. Hovering a mark shows a bounded summary; selection opens exac
 events and provides an explicit jump to the raw CTF/text source locator. A
 cluster summary exposes its count and a bounded preview, while the exact-event
 endpoint supplies a deterministic scrollable remainder.
+Explicit requested lanes consume the resource cap before automatic relationship
+expansion. Exact source-record jumps use a core identity predicate alongside
+the existing safe text/type/time filters; plug-ins need no navigation hook.
+Frontend previews and sampled relationship glyphs disclose their limits, while
+core summaries retain exact aggregate counts and bound detailed projection.
 
 Log inclusion has one core-owned normalized-event stream plus zero or more
 plug-in-declared source-record presentation groups.

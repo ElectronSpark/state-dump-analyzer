@@ -22,7 +22,7 @@ function harness(forward, reverse, symmetry = {}) {
     "routeValueIsTerminal", "routeValueIsCycle", "routeValueIsPolicyBlocked", "routePolicyPresentation", "pathIsDead",
     "pathIsControlPlaneOnly", "pathIsInferred", "pathIsUnresolved", "pathIsInconsistent", "pathIsUsableActive",
     "traceIsControlPlaneOnly", "controlPlaneOnlyFinding", "controlPlaneOnlyReason", "traceIsInconsistent", "traceIsIncomplete",
-    "traceDirectionState", "bidirectionalSummary", "routeTraceOutcome",
+    "traceDirectionState", "bidirectionalSummary", "routeTraceOutcome", "routeBudgetPresentation",
   ];
   const constants = SOURCE.match(/const ROUTE_[A-Z_]+ = new Set\([\s\S]*?\);/g);
   assert.ok(constants?.length);
@@ -54,7 +54,8 @@ test("budget-limited unresolved directions remain incomplete, not a proven bidir
     assert.equal(comparison.label, "Endpoint validation incomplete");
     assert.match(comparison.detail, /unresolved forward · unresolved return/);
     const outcome = api.routeTraceOutcome(forward, comparison);
-    assert.equal(outcome.code, "incomplete"); assert.equal(outcome.label, "Trace is incomplete");
+    assert.equal(outcome.code, "incomplete"); assert.equal(outcome.label, "Traversal limit reached");
+    assert.match(outcome.detail, /Hop limit reached/);
   }
 });
 

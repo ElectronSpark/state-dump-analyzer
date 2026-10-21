@@ -1,0 +1,521 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+
+const source = readFileSync(new URL('../assets/app.js', import.meta.url), 'utf8');
+function load(names, deps) {
+  const bodies = names.map(name => {
+    const match = new RegExp(`^(?:async )?function ${name}\\(`, 'm').exec(source);
+    assert.ok(match, name);
+    const tail = source.slice(match.index);
+    const end = /\n(?:async )?function \w+\(/.exec(tail);
+    return tail.slice(0, end?.index);
+  });
+  return new Function(...Object.keys(deps), `${bodies.join('\n')}\nreturn {${names.join(',')}};`)(...Object.values(deps));
+}
+const noop = () => {};
+const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
+
+test('dense timeline layout bounds neighboring footprints without changing exact cluster identity', () => {
+  let zoom = 1;
+  const api = load(['timelineGlyphLayout'], { timelinePercent: time => Number(time) * zoom / 10 });
+  const cluster = { kind: 'cluster', clusterId: '132-events', startNs: 124n, endNs: 149n, count: 132 };
+  const next = { kind: 'cluster', clusterId: '12-events', startNs: 149n, endNs: 151n, count: 12 };
+  const event = { kind: 'event', eventUid: 'exact', timeNs: 130n, failure: true };
+  const layout = api.timelineGlyphLayout([cluster, next, event], 1000);
+  assert.deepEqual(layout.map(item => item.glyph), [event, cluster, next]);
+  assert.deepEqual(layout.map(item => item.space), [6, 6, 14]);
+  assert.equal(cluster.clusterId, '132-events');
+  assert.equal(cluster.count, 132);
+  assert.deepEqual([cluster.startNs, cluster.endNs], [124n, 149n]);
+  zoom = 10;
+  assert.deepEqual(api.timelineGlyphLayout([cluster, next, event], 1000).map(item => item.space), [27, 27, 27]);
+  const css = readFileSync(new URL('../assets/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /max-width: var\(--glyph-space, 27px\)/);
+  assert.match(css, /\.event-mark\.cluster span\s*\{\s*pointer-events: none/);
+});
+
+test('equal-time events and a stale cluster midpoint retain visible footprints', () => {
+  const api = load(['timelineGlyphLayout'], { timelinePercent: Number });
+  const glyphs = [
+    { eventUid: 'a', timeNs: 50n }, { eventUid: 'b', timeNs: 50n, failure: true },
+    { kind: 'cluster', startNs: 40n, endNs: 60n, staleWindow: true },
+  ];
+  assert.deepEqual(api.timelineGlyphLayout(glyphs, 100).map(item => item.space), [27, 27, 27]);
+  assert.deepEqual(api.timelineGlyphLayout([...glyphs, {timeNs: 60n}], 100).map(item => item.space), [10, 10, 10, 10]);
+});
+function bindControlGroup(selector, nextSelector, deps) {
+  const start=source.indexOf(`document.querySelectorAll("${selector}").forEach((button) => button.addEventListener`);
+  const end=source.indexOf(`document.querySelectorAll("${nextSelector}")`,start+1);
+  assert.ok(start>=0&&end>start);
+  new Function(...Object.keys(deps),source.slice(start,end))(...Object.values(deps));
+}
+function viewportDeps(state) {
+  const element={value:'',style:{},scrollLeft:0,scrollWidth:800,clientWidth:800,
+    getBoundingClientRect:()=>({left:0}),setAttribute:noop};
+  return {byId:()=>element,cancelScheduledTimelineZoom:noop,timelinePhysicalTrackWidth:()=>800,timelineLaneWidth:()=>200,
+    timelineZoomControlValue:String,clampNs:x=>x,visibleTimelineCenterNs:()=>50n,
+    timelineWindowBounds:()=>[state.timelineWindowStartNs,state.timelineWindowEndNs],
+    timelineWindowForZoom:({zoom,anchorNs})=>({zoom,startNs:anchorNs-20n,endNs:anchorNs+20n}),
+    rememberTimelineView:noop,scheduleTimelineWindowRefresh:noop,invalidatePendingTimelineWindowRequest:noop,
+    renderTimeline:noop,updateTimelineCommandAvailability:noop};
+}
+
+for (const newer of ['back', 'pan', 'hide', 'none']) test(`pending toolbar Reveal yields to originating ${newer} handler`, async () => {
+  const response = deferred();
+  const state = { timelineNavigationIntent: 0, eventLogSelectionFocus: 0, cursorNs: 90n,
+    timelineViewHistoryIndex: 1, timelineViewHistory: [{ zoom: 2, startNs: 50n, endNs: 100n }, { zoom: 2, startNs: 0n, endNs: 50n }],
+    viewStartNs: 0n, viewEndNs: 100n, timelineWindowStartNs: 10n, timelineWindowEndNs: 30n,
+    laneMode: 'custom', explicitLaneIds: new Set(['r']), hiddenTimelineResourceIds: new Set() };
+  const jumps = [];
+  const api = load(['revealFocusedEventLogSelection', 'restoreTimelineView', 'panTimelineViewportByPixels', 'setExplicitLaneVisibility'], {
+    state, resolveEventLogSelection: () => response.promise, rememberTimelineEntryProjection: item => item,
+    jumpToTimelineEvent: uid => jumps.push(uid), forgetTimelineEntryProjection: noop, pruneServerEventLogOwnedCaches: noop,
+    showToast: assert.fail, canonicalResourceId: x => x, isScaleMode: () => false,
+    renderTimeline: noop, renderResourceTables: noop, cancelScheduledTimelineZoom: noop,
+    invalidatePendingTimelineWindowRequest: noop, byId: () => ({style:{}}), timelineZoomControlValue: String,
+    scheduleTimelineWindowRefresh: noop, updateTimelineCommandAvailability: noop,
+    timelineWindowBounds: () => [state.timelineWindowStartNs,state.timelineWindowEndNs], timelinePhysicalTrackWidth: () => 100,
+    timelineTimeAtRatio: ({ratio,endNs}) => BigInt(Math.round(ratio * Number(endNs))), rememberTimelineView: noop,
+  });
+  const pending = api.revealFocusedEventLogSelection();
+  if (newer === 'back') api.restoreTimelineView(0);
+  if (newer === 'pan') api.panTimelineViewportByPixels(20);
+  if (newer === 'hide') api.setExplicitLaneVisibility('r', false);
+  if (newer === 'none') {
+    const button={dataset:{laneAction:'none'},addEventListener(_type,fn){this.click=fn;}};
+    bindControlGroup('[data-lane-action]','[data-correlation-view]',{state,document:{querySelectorAll:()=>[button]},
+      isScaleMode:()=>false,renderTimeline:noop,renderResourceTables:noop});
+    button.click();
+  }
+  const finalView = [state.timelineWindowStartNs,state.timelineWindowEndNs];
+  response.resolve({ items: [{uid:'old',display_index:0}] });
+  await pending;
+  assert.deepEqual(jumps, []);
+  assert.deepEqual([state.timelineWindowStartNs,state.timelineWindowEndNs],finalView);
+  if (newer === 'hide') assert.equal(state.explicitLaneIds.has('r'),false);
+  if (newer === 'none') assert.equal(state.explicitLaneIds.size,0);
+});
+
+for (const changed of [false,true]) test(`independent log actions share unchanged selection resolution; changed=${changed}`, async () => {
+  const response = deferred(); let requests = 0;
+  const state = { eventLogSelectionRequestId: 0, eventLogSelectionRanges:[[0,1]], eventLogSelectionQueryKey:'q',
+    hiddenTimelineEntryIds:new Set(['event:a','event:b']), markedTimelineEntryIds:new Set(['event:a','event:b']),
+    localMarkedTimelineEntryIds:new Set(['event:a','event:b']), durableReview:{markedEntryIds:new Set()} };
+  const messages=[];
+  const api = load(['resolveEventLogSelection','applyEventLogTimelineAction'], {
+    state, eventLogSelectionCount:()=>2, eventLogSelectionSignature:()=>`${state.eventLogSelectionRequestId}`,
+    MAX_EVENT_LOG_SELECTION_ITEMS:5000,MAX_EVENT_LOG_SELECTION_RANGES:128,eventLogSelectionRequestBody:()=>({}),
+    analysisRuntimeApi:()=>{requests++;return response.promise;},revisionPath:x=>x,
+    beginDurableReviewOperation:()=>({}),isDurableReviewReady:()=>false,isDurableReviewWritable:()=>false,
+    applyLocalMarkerSelection:items=>items.forEach(item=>state.localMarkedTimelineEntryIds.delete(item.entry_id)),
+    forgetTimelineEntryProjection:noop,pruneServerEventLogOwnedCaches:noop,rerenderTimelinePreservingScroll:noop,
+    renderEventTableWindow:noop,showToast:m=>messages.push(m),finishDurableReviewOperation:noop,
+  });
+  const show=api.applyEventLogTimelineAction('show');
+  const remove=api.applyEventLogTimelineAction('unmark');
+  assert.equal(requests,1);
+  if(changed) state.eventLogSelectionRequestId++;
+  response.resolve({items:[{entry_id:'event:a'},{entry_id:'event:b'}]});
+  await Promise.all([show,remove]);
+  assert.equal(state.hiddenTimelineEntryIds.size,changed?2:0);
+  assert.equal(state.markedTimelineEntryIds.size,changed?2:0);
+  assert.equal(messages.filter(m=>m.startsWith('Could not')).length,changed?2:0);
+});
+
+test('multi-effect event reveal enables and focuses the originally chosen resource after refinement', async () => {
+  const frames=[];const target={focus:()=>{target.focused=true;},dataset:{eventUid:'e'},closest:()=>({dataset:{resourceId:'etg'}})};
+  const row={dataset:{resourceId:'etg'}};
+  const state={timelineNavigationIntent:0,zoom:2,viewStartNs:0n,viewEndNs:1000n,timelineWindowStartNs:0n,timelineWindowEndNs:100n,
+    hiddenTimelineResourceIds:new Set(),activeLayers:new Set(['control']),
+    laneMode:'custom',explicitLaneIds:new Set(['etg']),laneByResource:new Map([['etg',{resourceId:'etg',layer:'bridge'}]])};
+  let first=true;let selected;
+  const api=load(['jumpToTimelineEvent','moveTimelineWindowToReveal','applyTimelineZoom'],{state,...viewportDeps(state),eventOrMark:()=>({}),eventTime:()=>120n,eventResourceRefs:()=>['etg'],
+    eventLaneFor:()=>first?(first=false,{resourceId:'etg',layer:'bridge'}):{resourceId:'peer',layer:'control'},
+    isScaleMode:()=>false,refreshTimelineForNavigation:async()=>true,
+    laneSelectedByMode:id=>state.explicitLaneIds.has(id),renderLayerToggles:noop,
+    selectEvent:(_uid,_move,id)=>{selected=id;},window:{requestAnimationFrame:f=>frames.push(f)},
+    document:{querySelectorAll:selector=>selector.includes('data-event-uid')?[target]:[row]},
+    scrollTimelineTargetIntoView:noop,navigationPulse:noop});
+  state.hoverModels=new Map();
+  await api.jumpToTimelineEvent('e');frames.forEach(f=>f());
+  assert.equal(selected,'etg');assert.ok(state.activeLayers.has('bridge'));assert.equal(state.activeLayers.has('hardware'),false);
+  assert.equal(target.focused,true);
+});
+
+test('combined association rendering honors counterpart layers and samples the full wide window',()=>{
+  const state={correlationTimelineView:'combined',selectedResourceId:'root',correlationTimelineExpanded:true,
+    activeLayers:new Set(['control','bridge']),laneByResource:new Map([['root',{layer:'control'}],['child',{layer:'bridge'}]]),
+    resourceById:new Map(),hoverModels:new Map(),viewStartNs:0n,viewEndNs:10000n};
+  let spans=Array.from({length:8000},(_,i)=>({id:String(i),source:'root',target:'child',startNs:BigInt(i),endNs:BigInt(i+1)}));
+  const api=load(['combinedAssociationLane'],{state,resourceHiddenFromTimeline:()=>false,temporalRelationshipSpans:()=>spans,
+    resourceLayer:()=> 'bridge',timelineIntervalVisible:()=>true,rangeBounds:()=>null,timelineRangeBandHtml:()=>'',
+    timelinePointVisible:()=>true,timelinePercent:x=>Number(x)/100,barStyle:()=>'',safeClass:String,escapeHtml:String,
+    intersectsRange:()=>false,layerColor:()=>'',resourceLabel:(_,id)=>id,relationshipDisplayLabel:String,timelineLaneWidth:()=>200});
+  const wide=api.combinedAssociationLane(800);
+  assert.match(wide,/Sampled 300 of 8000/);
+  assert.equal((wide.match(/class="association-segment /g)||[]).length,300);
+  assert.ok(state.hoverModels.has('relationship:0:combined'));assert.ok(state.hoverModels.has('relationship:7999:combined'));
+  state.activeLayers.delete('bridge');assert.doesNotMatch(api.combinedAssociationLane(800),/class="association-segment /);
+  state.activeLayers.add('bridge');spans=spans.slice(4000,4050);
+  const narrow=api.combinedAssociationLane(800);assert.doesNotMatch(narrow,/Sampled/);
+  assert.equal((narrow.match(/class="association-segment /g)||[]).length,50);
+});
+
+test('cluster accessibility retains authoritative totals and qualifies preview range counts',()=>{
+  const attrs={};const classes=new Set();
+  const element={dataset:{hoverKey:'cluster'},classList:{contains:()=>false,toggle:(key,on)=>on?classes.add(key):classes.delete(key)},setAttribute:(k,v)=>attrs[k]=v};
+  const cluster={count:249,items:Array.from({length:50},(_,i)=>({timeNs:BigInt(i)})),staleWindow:true};
+  const api=load(['pointClusterRangeState','applyRangeHighlight'],{state:{hoverModels:new Map([['cluster',{cluster}]])},
+    byId:()=>({classList:{toggle:noop}}),document:{querySelectorAll:s=>s.includes('[data-hover-key]')?[element]:[]}});
+  api.applyRangeHighlight(null);assert.match(attrs['aria-label'],/^249 collapsed events;/);
+  api.applyRangeHighlight([0n,48n]);assert.match(attrs['aria-label'],/49 of 50 loaded preview events/);
+  assert.match(attrs['aria-label'],/previous viewport/);assert.equal(classes.has('in-range'),false);
+  cluster.detailHydrated=true;cluster.detailItems=Array.from({length:200},(_,i)=>({timeNs:BigInt(i)}));
+  api.applyRangeHighlight([0n,65n]);assert.match(attrs['aria-label'],/66 of 200 loaded preview events/);
+});
+
+test('cache pruning bounds history while preserving visible, selected, projected, open and pending evidence',()=>{
+  const entries=prefix=>new Map(Array.from({length:2000},(_,i)=>[`${prefix}${i}`,{i}]));
+  const state={eventByUid:entries('e'),eventDetailByUid:entries('e'),sourceRecordByUid:entries('s'),
+    selectedEventUid:'e0',selectedSourceRecordUid:'s0',eventDetailRequests:new Map([['e1',{}]]),
+    lanes:[{marks:[{eventUid:'e2'}],clusters:[{items:[{eventUid:'e3'}],detailItems:[{eventUid:'e4'}]}]}],
+    recordLanes:[{marks:[{sourceRecordUid:'s1'}]}],hoverKey:'open',hoverModels:new Map([['open',{mark:{eventUid:'e5'}}]]),
+    eventLogServerItems:new Map([[0,{kind:'entry',entry:{event_uid:'e6'}}]]),
+    timelineEntryProjections:new Map([['source:s2',{streamKind:'source',uid:'s2'}]])};
+  const api=load(['pruneTimelineCaches'],{state,isScaleMode:()=>true,isSourceLogEntry:()=>false});
+  api.pruneTimelineCaches();
+  for(let i=0;i<7;i++) assert.ok(state.eventByUid.has(`e${i}`));
+  assert.equal(state.eventByUid.size,519);assert.equal(state.eventDetailByUid.size,519);assert.equal(state.sourceRecordByUid.size,515);
+  state.lanes=[];state.recordLanes=[];state.hoverModels.clear();state.eventDetailRequests.clear();state.eventLogServerItems.clear();state.timelineEntryProjections.clear();
+  api.pruneTimelineCaches();assert.equal(state.eventByUid.size,513);assert.equal(state.sourceRecordByUid.size,513);
+});
+
+test('a boundary range key preserves completed facts and does not repeat the summary request',()=>{
+  const summary={event_count:100};const state={rangeStartNs:0n,rangeEndNs:720n,viewStartNs:0n,viewEndNs:720n,rangeSummary:summary};
+  const api=load(['timelineHandleKeyDown','applyHandlePosition'],{state,rangeBounds:()=>[state.rangeStartNs,state.rangeEndNs],
+    rangeMinimumNs:()=>1n,clampNs:x=>x<0n?0n:x>720n?720n:x,requestRangeSummary:assert.fail,updateRangeBands:assert.fail,syncRangeInputs:assert.fail});
+  api.timelineHandleKeyDown({key:'End',target:{closest:()=>({dataset:{rangeHandle:'end'}})},preventDefault:noop});
+  assert.equal(state.rangeSummary,summary);
+});
+
+test('cancelling a brush replaces an interrupted summary instead of restoring an orphan loading state',async()=>{
+  const responses=[];const renders=[];
+  const state={rangeStartNs:600n,rangeEndNs:610n,rangeRequestId:0,rangeSummary:null,brush:null,rangeMode:false};
+  const elements=new Map();const byId=id=>{
+    if(!elements.has(id)) elements.set(id,{classList:{add:noop,remove:noop},contains:()=>true,setPointerCapture:noop,hasPointerCapture:()=>true,releasePointerCapture:noop});
+    return elements.get(id);
+  };
+  const api=load(['rangeBounds','requestRangeSummary','timelinePointerDown','finishTimelinePointer'],{
+    state,byId,abortLatestRequests:key=>state[key]?.abort(),isTopologyNodeSnapshot:()=>false,
+    beginLatestRequest:key=>state[key]=new AbortController(),finishLatestRequest:(key,c)=>{if(state[key]===c)state[key]=null;},
+    analysisRuntimeApi:(_path,options)=>{const response=deferred();responses.push({...response,body:JSON.parse(options.body)});return response.promise;},
+    revisionPath:x=>x,requestWasAborted:(_error,c)=>c.signal.aborted,
+    renderRangeSummary:()=>renders.push({start:state.rangeStartNs,summary:state.rangeSummary}),
+    hideTimelineHoverLine:noop,pointNsFromClientX:()=>50n,timelineViewportSnapshot:()=>({}),updateRangePreview:noop,
+    window:{cancelAnimationFrame:noop},stopBrushAutoScroll:noop,finishBrushViewportNavigation:noop,
+    updateRangeBands:noop,syncRangeInputs:noop,performance:{now:()=>0},
+  });
+  const old=api.requestRangeSummary();
+  const track={dataset:{resourceId:'r'}};
+  api.timelinePointerDown({button:0,pointerId:1,clientX:100,shiftKey:true,target:{closest:s=>s==='.lane-track'?track:null},preventDefault:noop});
+  responses[0].resolve({event_count:100,source:'server'});await old;
+  assert.equal(renders.some(r=>r.start===50n&&r.summary?.event_count===100),false);
+  api.finishTimelinePointer(null,true);
+  assert.equal(responses.length,2);assert.deepEqual(responses[1].body,{start_ns:'600',end_ns:'610'});
+  assert.ok(state.rangeAbortController);responses[1].resolve({event_count:100,source:'server'});
+  await Promise.resolve();await Promise.resolve();
+  assert.equal(state.rangeSummary.event_count,100);assert.equal(state.rangeAbortController,null);
+});
+
+test('cluster paging retains keyboard control while loading, then a reachable final destination',()=>{
+  const document={body:{},activeElement:null};let controls=[];
+  const control=kind=>({kind,hasAttribute:name=>name==='data-cluster-detail-offset'&&kind==='more',
+    focus(){document.activeElement=this;},scrollIntoView(){this.scrolled=true;}});
+  const cluster={detailLoading:false,hasMore:true};const model={type:'cluster',cluster};
+  const windowElement={scrollTop:120};
+  const card={hidden:false,contains:x=>controls.includes(x),set innerHTML(_value){
+    if(this.contains(document.activeElement))document.activeElement=document.body;
+    controls=[control('close'),...(cluster.hasMore||cluster.detailLoading?[control('more')]:[])];
+  },querySelector:s=>s==='.cluster-window'?windowElement:controls.find(c=>c.kind===(s==='.hover-close'?'close':'more'))};
+  const api=load(['refreshOpenClusterHover'],{state:{hoverKey:'key',hoverModels:new Map([['key',model]])},document,
+    byId:()=>card,clusterHoverHtml:()=>'',bindHoverCardActions:noop});
+  card.innerHTML='';controls[1].focus();cluster.detailLoading=true;api.refreshOpenClusterHover('key',cluster,{});
+  assert.equal(document.activeElement.kind,'more');assert.equal(windowElement.scrollTop,120);
+  cluster.detailLoading=false;cluster.hasMore=false;api.refreshOpenClusterHover('key',cluster,{});
+  assert.equal(document.activeElement.kind,'close');assert.equal(document.activeElement.scrolled,true);
+  const external={};document.activeElement=external;api.refreshOpenClusterHover('key',cluster,{});assert.equal(document.activeElement,external);
+});
+
+function resourceHarness() {
+  const document={body:{},activeElement:null};let rows=[];let buttons=[];let html='';
+  const makeRow=(id,path)=>{
+    const row={tagName:'TR',dataset:{resourceId:id,...(path?{bundlePath:path}:{})},handlers:{},
+      closest:()=>row,addEventListener(type,fn){this.handlers[type]=fn;},focus(){document.activeElement=this;}};
+    row.input={tagName:'INPUT',dataset:{laneToggle:id},checked:true,closest:()=>row,handlers:{},
+      addEventListener(type,fn){this.handlers[type]=fn;},focus(){document.activeElement=this;}};
+    return row;
+  };
+  const wrap={contains:x=>rows.some(r=>r===x||r.input===x),set innerHTML(value){
+    if(this.contains(document.activeElement))document.activeElement=document.body;
+    html=value;rows=[...value.matchAll(/<tr data-resource-id="([^"]+)"/g)].map(m=>makeRow(m[1]));
+  },get innerHTML(){return html;},querySelectorAll(selector){
+    if(selector==='tr[data-resource-id]')return rows;
+    if(selector.startsWith('input'))return rows.map(r=>r.input);
+    return rows.flatMap(r=>[r,r.input]);
+  }};
+  const tabs={contains:x=>buttons.includes(x),set innerHTML(value){
+    if(this.contains(document.activeElement))document.activeElement=document.body;
+    buttons=[...value.matchAll(/data-kind="([^"]+)" aria-selected="([^"]+)"/g)].map(m=>({tagName:'BUTTON',dataset:{kind:m[1]},selected:m[2],
+      closest:()=>null,addEventListener:noop,focus(){document.activeElement=this;}}));
+  },querySelectorAll:selector=>selector.includes('data-resource-view')?[]:buttons};
+  const state={selectedResourceKind:'ETG',selectedResourceViewId:null,selectedResourceId:'r',resourceQuery:{items:[{resource_id:'r',kind:'ETG'}],counts_by_kind:{ETG:1}}};
+  const search={value:''};const elements={'resource-table-wrap':wrap,'resource-type-tabs':tabs,'resource-search':search,'resource-table-summary':{}};
+  let api;let selected=0;
+  api=load(['renderResourceTables','bindLaneVisibilityCheckboxes'],{state,document,byId:id=>elements[id],
+    initializeResourceTableView:noop,resourceTableViewDescriptors:()=>[],canonicalResourceId:x=>x,escapeHtml:String,humanResourceType:String,
+    presentationColumns:()=>[],resourcePageDetails:()=>({returned:state.resourceQuery.items.length,first:1,last:state.resourceQuery.items.length}),
+    resourceTimeSummary:()=>'',resourcePaginationMarkup:()=>'',resourceLayer:()=>'',resourceLabel:(_,id)=>id,
+    humanLayer:String,presentationTags:()=>new Set(),resourceExistenceLabel:()=>'',stateChipClassName:()=>'',
+    laneVisibilityCheckbox:()=>'',MAX_RESOURCE_ROWS:500,bindResourcePagination:noop,
+    selectResource:()=>{selected++;api.renderResourceTables();},setExplicitLaneVisibility:(_id,visible)=>{api.renderResourceTables();rows[0].input.checked=visible;return true;},
+    laneSelectedByMode:()=>true});
+  return {api,state,search,document,rows:()=>rows,buttons:()=>buttons,selected:()=>selected};
+}
+
+test('flat row activation retains identity, while nested Space reaches the native checkbox',()=>{
+  const h=resourceHarness();h.api.renderResourceTables();h.rows()[0].focus();
+  h.rows()[0].handlers.keydown({target:h.rows()[0],key:'Enter',preventDefault:noop});
+  assert.equal(h.document.activeElement,h.rows()[0]);assert.equal(h.selected(),1);
+  const row=h.rows()[0];row.input.focus();let prevented=false;
+  row.handlers.keydown({target:row.input,key:' ',preventDefault:()=>{prevented=true;}});
+  assert.equal(prevented,false);assert.equal(h.selected(),1);
+  row.input.checked=false;row.input.handlers.click({stopPropagation:noop});
+  assert.equal(h.document.activeElement,h.rows()[0].input);assert.equal(h.rows()[0].input.checked,false);
+});
+
+test('a filtered empty flat table retains its selected kind tab alongside matching other kinds',()=>{
+  const h=resourceHarness();h.api.renderResourceTables();h.search.value='peer';
+  h.state.resourceQuery={items:[],counts_by_kind:{NEIGHBOR:1}};h.api.renderResourceTables();
+  assert.deepEqual(h.buttons().map(b=>[b.dataset.kind,b.selected]),[['ETG','true'],['NEIGHBOR','false']]);
+  h.state.resourceQuery.counts_by_kind={};h.api.renderResourceTables();
+  assert.deepEqual(h.buttons().map(b=>[b.dataset.kind,b.selected]),[['ETG','true']]);
+});
+
+test('successive real timeline normalization and detail requests retain only the current evidence plus bounded caches',async()=>{
+  const state={dataset:{},viewStartNs:0n,viewEndNs:10000n,resourceById:new Map(),eventByUid:new Map(),eventDetailByUid:new Map(),
+    eventDetailRequests:new Map(),sourceRecordByUid:new Map(),eventLogOwnedEvents:new Map(),eventLogOwnedSources:new Map(),
+    eventLogServerItems:new Map(),timelineEntryProjections:new Map(),hoverModels:new Map(),lanes:[],recordLanes:[]};
+  const api=load(['ensureLane','normalizeTimeline','normalizeMark','normalizeRecordLane','normalizeSourceMark',
+    'hydrateEventDetail','requestEventDetail','pruneTimelineCaches','pruneServerEventLogOwnedCaches'],{
+    state,isScaleMode:()=>true,isTopologyNodeSnapshot:()=>false,canonicalResourceId:x=>x,resourceIdOf:r=>r?.resource_id,
+    registerResource:r=>{state.resourceById.set(r.resource_id,r);return r.resource_id;},
+    resourceLayer:()=> 'link',resourceKind:()=> 'port',resourceLabel:(_r,id)=>id,presentationTags:()=>[],
+    toNs:(v,fallback)=>v==null?fallback:BigInt(v),resourceEffectFor:()=>null,normalizedEventOutcome:()=> 'success',titleCase:String,
+    eventFailed:()=>false,eventChangesState:()=>false,deriveLaneIntervals:noop,
+    eventTime:e=>e.timestamp_ns==null?null:BigInt(e.timestamp_ns),sourceRecordTime:r=>r.timestamp_ns==null?null:BigInt(r.timestamp_ns),
+    sourceRecordMatchedEventUids:()=>[],isSourceLogEntry:r=>'source_record_uid' in r,sourceRecordUid:r=>r.source_record_uid,
+    normalizedLogEntryId:uid=>`event:${uid}`,sourceLogEntryId:uid=>`source:${uid}`,revisionPath:x=>x,
+    api:async()=>({timestamp_ns:'1',message:'exact detail'}),eventOrMark:()=>null,
+  });
+  for(let page=0;page<100;page++){
+    const events=Array.from({length:20},(_,i)=>({event_uid:`e-${page}-${i}`,timestamp_ns:String(page*20+i)}));
+    const sources=Array.from({length:20},(_,i)=>({source_record_uid:`s-${page}-${i}`,timestamp_ns:String(page*20+i),source_type:'trace'}));
+    api.normalizeTimeline({lanes:[{resource_id:'r',event_marks:events}],record_lanes:[{lane_id:'source',marks:sources}]});
+    api.pruneServerEventLogOwnedCaches();
+    assert.ok(state.eventByUid.size<=532);assert.ok(state.sourceRecordByUid.size<=532);
+    assert.ok(events.every(e=>state.eventByUid.has(e.event_uid)));assert.ok(sources.every(r=>state.sourceRecordByUid.has(r.source_record_uid)));
+  }
+  for(let i=0;i<700;i++)await api.requestEventDetail(`detail-${i}`);
+  assert.equal(state.eventDetailByUid.size,512);assert.equal(state.eventDetailRequests.size,0);
+  api.normalizeTimeline({lanes:[],record_lanes:[]});
+  assert.equal(state.eventByUid.size,512);assert.equal(state.sourceRecordByUid.size,512);
+});
+
+test('range reuse is owned by the same loaded revision and bounds',async()=>{
+  const requests=[];const state={dataset:{revision:'a'},rangeStartNs:0n,rangeEndNs:10n,rangeRequestId:0};
+  const api=load(['requestRangeSummary'],{state,rangeBounds:()=>[state.rangeStartNs,state.rangeEndNs],isTopologyNodeSnapshot:()=>false,
+    abortLatestRequests:key=>state[key]?.abort(),beginLatestRequest:key=>state[key]=new AbortController(),
+    finishLatestRequest:(key,c)=>{if(state[key]===c)state[key]=null;},revisionPath:x=>x,
+    analysisRuntimeApi:()=>{const r=deferred();requests.push(r);return r.promise;},renderRangeSummary:noop,requestWasAborted:()=>false});
+  const first=api.requestRangeSummary();requests[0].resolve({event_count:1});await first;
+  await api.requestRangeSummary();assert.equal(requests.length,1);
+  state.dataset={revision:'b'};const second=api.requestRangeSummary();assert.equal(requests.length,2);
+  requests[1].resolve({event_count:2});await second;assert.equal(state.rangeSummary.event_count,2);
+});
+
+test('applied topology policy comes from retained result basis, never an invalid newer draft',()=>{
+  const target={};const button={};let clock='strict';
+  const state={topologyCapabilities:{projections:[{id:'p'}],status_perspectives:[{id:'s'}]},
+    topologyQuery:{projection_id:'p',status_perspective_id:'s',resolved_basis:{clock_policy:'strict'}}};
+  const api=load(['renderTopologyQueryState'],{state,byId:id=>id==='topology-query-state'?target:{value:clock},
+    document:{querySelector:()=>button},topologyProjectionId:x=>x.id,topologyPerspectiveId:x=>x.id,
+    firstArray:(...xs)=>xs.find(Array.isArray)||[],escapeHtml:String});
+  api.renderTopologyQueryState();clock='best_effort';api.renderTopologyQueryState();
+  assert.match(target.innerHTML,/Clock <strong>strict<\/strong>/);assert.doesNotMatch(target.innerHTML,/best_effort/);
+});
+
+test('timeline reveal corrects page-header occlusion and inner-scroller clipping before focus',()=>{
+  let pageShift=0,inner=89;const topbar={getBoundingClientRect:()=>({bottom:84})};
+  const header={getBoundingClientRect:()=>({bottom:164})};
+  const scroll={scrollIntoView:noop,getBoundingClientRect:()=>({top:100+pageShift,bottom:400+pageShift}),
+    get scrollTop(){return inner;},set scrollTop(v){inner=Math.max(0,v);}};
+  const row={getBoundingClientRect:()=>({top:100+pageShift-inner,bottom:160+pageShift-inner})};
+  const api=load(['scrollTimelineTargetIntoView'],{byId:()=>scroll,
+    document:{querySelector:s=>s==='.topbar'?topbar:header},window:{innerHeight:700,scrollBy:({top})=>{pageShift-=top;}}});
+  api.scrollTimelineTargetIntoView(row);const rect=row.getBoundingClientRect();
+  assert.ok(rect.top>=164);assert.ok(rect.bottom<=scroll.getBoundingClientRect().bottom);
+});
+
+test('bundle repaint restores the same duplicate-resource instance control',()=>{
+  const document={body:{},activeElement:null};let controls=[];
+  const build=()=>['root/primary/shared','root/backup/shared'].map(path=>{
+    const row={dataset:{resourceId:'shared',bundlePath:path}};
+    return {tagName:'BUTTON',dataset:{bundleDetails:'shared'},closest:()=>row,focus(){document.activeElement=this;}};
+  });
+  controls=build();document.activeElement=controls[1];
+  const container={contains:node=>controls.includes(node),querySelectorAll:()=>controls};
+  const tabs={contains:()=>false,querySelectorAll:()=>[]};
+  const state={selectedResourceViewId:'bundle',resourceQuery:{items:[],counts_by_kind:{}}};
+  const api=load(['renderResourceTables'],{state,document,byId:id=>id==='resource-table-wrap'?container:id==='resource-type-tabs'?tabs:{value:''},
+    initializeResourceTableView:noop,resourceTableViewDescriptors:()=>[{view_id:'bundle',label:'Bundle'}],escapeHtml:String,
+    renderResourceBundleTable:()=>{document.activeElement=document.body;controls=build();}});
+  api.renderResourceTables();
+  assert.equal(document.activeElement,controls[1]);assert.equal(document.activeElement.closest().dataset.bundlePath,'root/backup/shared');
+});
+
+for(const declared of [false,true]) test(`visible incident buttons retain selectable evidence across cache turnover; causal=${declared}`,()=>{
+  const oldEvents=Array.from({length:8},(_,i)=>({event_uid:`old-${i}`,timestamp_ns:String(i),event_type:'failure'}));
+  const state={dataset:{causal_links:declared?Array.from({length:7},(_,i)=>({source_event_uid:`old-${i}`,target_event_uid:`old-${i+1}`})):[]},
+    failureIncidentPreview:declared?[]:oldEvents.slice(0,3),eventByUid:new Map(oldEvents.map(e=>[e.event_uid,e])),
+    eventDetailByUid:new Map(),sourceRecordByUid:new Map(),eventDetailRequests:new Map(),lanes:[],recordLanes:[],
+    hoverModels:new Map(),eventLogServerItems:new Map(),timelineEntryProjections:new Map()};
+  let buttons=[];const inspected=[];
+  const container={set innerHTML(value){buttons=[...value.matchAll(/data-event-uid="([^"]+)"/g)].map(m=>({dataset:{eventUid:m[1]},
+    addEventListener(_type,handler){this.click=handler;}}));},querySelectorAll:()=>buttons};
+  const api=load(['pruneTimelineCaches','incidentCausalPath','renderIncidentSummary','eventOrMark','selectEvent'],{
+    state,isScaleMode:()=>true,isTopologyNodeSnapshot:()=>false,byId:id=>id==='incident-chain'?container:{scrollIntoView:noop},
+    compareLogEntries:(a,b)=>Number(a.timestamp_ns)-Number(b.timestamp_ns),compareLogEntryIds:(a,b)=>a.localeCompare(b),
+    eventSubject:()=>({layer:'control'}),causalLinkDisplayLabel:()=> 'causes',escapeHtml:String,layerColor:()=>'',humanLayer:String,
+    formatValue:String,eventOutcomeText:()=> 'failure',formatOffset:String,eventTime:e=>BigInt(e.timestamp_ns),
+    eventResourceRefs:()=>[],pruneServerEventLogOwnedCaches:noop,renderEventInspector:e=>inspected.push(e.event_uid),
+    setCursor:time=>state.cursorNs=time,renderTimeline:noop,renderEventTable:noop,requestEventDetail:()=>Promise.resolve(null),
+  });
+  api.renderIncidentSummary();const visible=buttons.slice();
+  assert.equal(visible.length,declared?4:3);
+  for(let batch=0;batch<5;batch++){
+    for(let i=0;i<300;i++){const uid=`new-${batch}-${i}`;state.eventByUid.set(uid,{event_uid:uid,timestamp_ns:String(100+i)});}
+    api.pruneTimelineCaches();
+  }
+  for(const button of visible){
+    button.click();assert.equal(state.selectedEventUid,button.dataset.eventUid);
+    assert.equal(inspected.at(-1),button.dataset.eventUid);
+  }
+  assert.ok(state.eventByUid.size<=512+visible.length);
+  assert.equal(state.eventByUid.has('old-7'),false);
+  assert.equal(state.eventByUid.has('new-0-0'),false);
+  api.renderIncidentSummary();assert.deepEqual(buttons.map(b=>b.dataset.eventUid),visible.map(b=>b.dataset.eventUid));
+});
+
+for(const mode of ['ctrl','meta','pan']) for(const continued of [false,true]) {
+  test(`pending Reveal yields before a queued ${mode} wheel frame; continued burst=${continued}`,async()=>{
+    const response=deferred();const frames=new Map();const timers=new Map();const history=[];const applied=[];const jumps=[];
+    let nextId=0,refreshes=0;
+    const state={timelineNavigationIntent:0,eventLogSelectionFocus:0,zoom:2,
+      timelineWheelBurstActive:false,timelineWheelMode:null,timelineWheelHistoryTimer:null,
+      timelineWheelFrameId:null,timelinePanFrameId:null,timelineWheelTargetZoom:null,timelinePanDeltaPx:0};
+    const api=load(['revealFocusedEventLogSelection','timelineWheel','scheduleTimelineZoom','scheduleTimelinePan',
+      'beginTimelineWheelBurst','scheduleTimelineWheelBurstFinish','settlePendingTimelineWheelFrames','finishTimelineWheelBurst'],{
+      state,resolveEventLogSelection:()=>response.promise,rememberTimelineEntryProjection:item=>item,
+      jumpToTimelineEvent:uid=>jumps.push(uid),forgetTimelineEntryProjection:noop,pruneServerEventLogOwnedCaches:noop,showToast:assert.fail,
+      pointNsFromClientX:()=>50n,visibleTimelineCenterNs:()=>50n,closeTimelineContextMenu:noop,
+      WheelEvent:{DOM_DELTA_LINE:1,DOM_DELTA_PAGE:2},TIMELINE_WHEEL_HISTORY_DELAY_MS:180,
+      timelineZoomStep:(zoom,direction,factor)=>direction==='in'?zoom*factor:zoom/factor,
+      window:{requestAnimationFrame:fn=>{frames.set(++nextId,fn);return nextId;},cancelAnimationFrame:id=>frames.delete(id),
+        setTimeout:fn=>{timers.set(++nextId,fn);return nextId;},clearTimeout:id=>timers.delete(id)},
+      rememberTimelineView:()=>history.push(state.zoom),scheduleTimelineWindowRefresh:()=>refreshes++,
+      applyTimelineZoom:(zoom,options)=>{applied.push({zoom,options});state.zoom=zoom;},
+      panTimelineViewportByPixels:(delta,options)=>applied.push({delta,options}),
+    });
+    const wheel=()=>api.timelineWheel({ctrlKey:mode==='ctrl',metaKey:mode==='meta',shiftKey:false,
+      deltaMode:0,deltaX:mode==='pan'?10:0,deltaY:mode==='pan'?0:-10,clientX:100,
+      target:{closest:()=>({})},preventDefault:noop});
+    if(continued)wheel();
+    const pending=api.revealFocusedEventLogSelection();wheel();
+    assert.equal(frames.size,1);assert.equal(applied.length,0);assert.equal(history.length,1);assert.equal(timers.size,1);
+    response.resolve({items:[{uid:'older',display_index:0}]});await pending;
+    assert.deepEqual(jumps,[]);
+    api.finishTimelineWheelBurst();
+    assert.equal(applied.length,1);assert.equal(applied[0].options.recordHistory,false);assert.equal(applied[0].options.fromWheel,true);
+    assert.equal(history.length,2);assert.equal(refreshes,1);assert.equal(frames.size,0);assert.equal(timers.size,0);
+    assert.equal(state.timelineWheelBurstActive,false);
+  });
+}
+
+for(const retainCurrent of [false,true]) test(`late cluster pages stay bounded after navigation; current evidence=${retainCurrent}`,async()=>{
+  const responses=[];
+  const lanes=Array.from({length:20},(_,i)=>({resourceId:`r${i}`,marks:[],clusters:[{serverBacked:true,
+    startNs:0n,endNs:99n,detailRequestId:0,detailTruncated:true,detailNextOffset:null,items:[],eventUids:[],detailItems:[]}]}));
+  const state={lanes,recordLanes:[],eventByUid:new Map(),eventDetailByUid:new Map(),sourceRecordByUid:new Map(),
+    eventDetailRequests:new Map(),hoverModels:new Map(),eventLogServerItems:new Map(),timelineEntryProjections:new Map(),hiddenTimelineEntryIds:new Set()};
+  const api=load(['requestClusterDetail','clusterDetailRequestAvailable','normalizeMark','pruneTimelineCaches'],{
+    state,isScaleMode:()=>true,isTopologyNodeSnapshot:()=>false,refreshOpenClusterHover:noop,revisionPath:x=>x,
+    CLUSTER_DETAIL_PAGE_SIZE:100,api:()=>{const response=deferred();responses.push(response);return response.promise;},
+    normalizedLogEntryId:uid=>`event:${uid}`,resourceEffectFor:()=>null,toNs:x=>BigInt(x),normalizedEventOutcome:()=> 'success',
+    titleCase:String,eventFailed:()=>false,eventChangesState:()=>false,
+  });
+  const requests=lanes.map((lane,i)=>api.requestClusterDetail(`c${i}`,lane.clusters[0],lane));
+  assert.equal(responses.length,20);
+  state.lanes=retainCurrent?[lanes[1]]:[];
+  if(retainCurrent){state.hoverKey='open';state.hoverModels.set('open',{cluster:lanes[0].clusters[0]});}
+  api.pruneTimelineCaches();assert.equal(state.eventByUid.size,0);
+  for(let i=0;i<20;i++){
+    responses[i].resolve({items:Array.from({length:100},(_,j)=>({event_uid:`e${i}-${j}`,timestamp_ns:String(j)})),total_count:100,next_offset:null});
+    assert.equal(await requests[i],true);
+    assert.ok(state.eventByUid.size<=512+(retainCurrent?200:0));
+  }
+  assert.equal(state.eventByUid.size,512+(retainCurrent?200:0));
+  if(retainCurrent) for(let i=0;i<2;i++) for(let j=0;j<100;j++) assert.ok(state.eventByUid.has(`e${i}-${j}`));
+});
+
+for(const newer of ['preset','remove','add','layer','fit']) test(`pending Reveal yields to accepted ${newer} controls`,async()=>{
+  const response=deferred(),staged=deferred();const jumps=[];let layerButtons=[];
+  const state={timelineNavigationIntent:0,eventLogSelectionFocus:0,recordLaneRules:[{lane_id:'custom'}],
+    recordLanePresets:[{lane_id:'preset',pattern:'.'}],customRecordLaneSequence:0,
+    activeLayers:new Set(['control','bridge']),layerMeta:new Map([['control',{}],['bridge',{}]]),
+    zoom:1,viewStartNs:20n,viewEndNs:60n,timelineWindowStartNs:0n,timelineWindowEndNs:40n};
+  const button={disabled:false};const controls=new Map(['label','pattern','source','unmatched','error'].map(k=>[`record-lane-${k}`,{value:'',checked:false}]));
+  controls.get('record-lane-label').value='New';controls.get('record-lane-pattern').value='warning';
+  controls.set('record-lane-form',{querySelector:()=>button,querySelectorAll:()=>[controls.get('record-lane-label')],reset:noop});
+  const layers={contains:()=>false,set innerHTML(value){layerButtons=[...value.matchAll(/data-layer="([^"]+)"/g)].map(m=>({dataset:{layer:m[1]},addEventListener(_t,f){this.click=f;}}));},querySelectorAll:()=>layerButtons};
+  const viewport=viewportDeps(state);
+  const api=load(['revealFocusedEventLogSelection','setRecordLanePreset','removeRecordLane','addRecordLane',
+    'renderLayerToggles','fitTimelineCapture','applyTimelineZoom'],{
+    state,...viewport,byId:id=>id==='layer-toggles'?layers:controls.get(id)||viewport.byId(id),document:{activeElement:null},
+    resolveEventLogSelection:()=>response.promise,rememberTimelineEntryProjection:item=>item,jumpToTimelineEvent:uid=>jumps.push(uid),
+    forgetTimelineEntryProjection:noop,pruneServerEventLogOwnedCaches:noop,showToast:noop,
+    MAX_RECORD_LANES:8,refreshRecordLanes:noop,validateRecordLanePattern:()=>'',isTopologyNodeSnapshot:()=>false,
+    requestTimeline:()=>staged.promise,normalizeTimeline:noop,escapeHtml:String,layerColor:()=>'',humanLayer:String,
+  });
+  const pending=api.revealFocusedEventLogSelection();let add;
+  if(newer==='preset')api.setRecordLanePreset('preset',true);
+  if(newer==='remove')api.removeRecordLane('custom');
+  if(newer==='add')add=api.addRecordLane({preventDefault:noop});
+  if(newer==='layer'){api.renderLayerToggles();layerButtons[1].click();}
+  if(newer==='fit')api.fitTimelineCapture({announce:false});
+  response.resolve({items:[{uid:'old',display_index:0}]});await pending;
+  assert.deepEqual(jumps,[]);
+  if(add){staged.resolve({});await add;assert.equal(state.recordLaneRules.length,2);}
+});
+
+test('source reveal keeps ownership through its own viewport move',async()=>{
+  const state={timelineNavigationIntent:0,zoom:2,viewStartNs:0n,viewEndNs:1000n,timelineWindowStartNs:0n,timelineWindowEndNs:100n,
+    sourceRecordByUid:new Map([['s',{source_record_uid:'s'}]])};
+  const selected=[];
+  const api=load(['jumpSourceRecordToTimeline','moveTimelineWindowToReveal','applyTimelineZoom'],{
+    state,...viewportDeps(state),sourceRecordTime:()=>120n,refreshTimelineForNavigation:async()=>true,
+    ensureSourceRecordLane:async()=>({laneId:'source'}),selectSourceRecord:uid=>selected.push(uid),window:{requestAnimationFrame:noop},
+  });
+  await api.jumpSourceRecordToTimeline('s');
+  assert.deepEqual(selected,['s']);assert.equal(state.timelineWindowStartNs,100n);
+});

@@ -1160,6 +1160,10 @@ persists the resulting `SourceRecord`. No match is also a first-class result:
 unmatched records remain queryable and can appear on dedicated timeline lanes.
 The core owns stable source-record IDs, timestamp normalization, storage,
 pagination, range membership, and source-to-domain links.
+Core timeline rules may select an exact persisted `source_record_uid` in
+addition to their other filters; see the [source-record API](api-contract.md#6-timeline-and-cluster-expansion).
+Plug-ins still emit source coordinates and semantics, not core-assigned IDs or
+custom browser jump logic. The exact selector is not a `RecordLanePreset` field.
 
 A source record without a known point timestamp retains `null` through log
 query and selection. Core displays it as Unknown, after timed entries in the

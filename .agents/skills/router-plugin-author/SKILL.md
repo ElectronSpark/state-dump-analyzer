@@ -185,8 +185,15 @@ capture navigation or review ownership before the first await, including
 selection resolution, and recheck it before deferred focus or dialog opening.
 Treat explicit cursor interaction at an unchanged value as navigation intent.
 Reuse existing ownership tokens and pending allocations instead of adding a
-parallel state mechanism. Preserve disclosure state during pagination and use
+parallel state mechanism. All newer navigation, including Back, pan and hide,
+must supersede a pending reveal; unchanged-selection consumers should share
+resolution rather than cancel each other. Preserve disclosure on same-query
+rerenders, and restore focus to a visible control in the same instance. Use
 the same bounded range adjustment for pointer and keyboard input.
+Keep applied-result facts separate from draft controls, exact counts separate
+from previews, and missing evidence separate from disagreement. Bound retained
+records as well as rendered glyphs; preserve active selections and exact
+drill-down. Follow the map for source identity and route seed recovery.
 The map covers lane presets, derived source marks, inferred-edge presentation,
 programmatic form seeding, and superseded reads without adding plug-in hooks.
 

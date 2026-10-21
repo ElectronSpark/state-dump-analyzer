@@ -16,6 +16,35 @@ from router_dump_analyzer.web._query_cancellation import (
 
 
 class ZoomCancellationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_disconnect_before_body_completion_uses_cancellation_boundary(self):
+        from fastapi import FastAPI
+        from router_dump_analyzer.web.runtime_api import api_router
+
+        app = FastAPI()
+        app.include_router(api_router)
+        for path in ("events/density/query", "timeline/query"):
+            for partial in (False, True):
+                with self.subTest(path=path, partial=partial):
+                    messages = asyncio.Queue()
+                    if partial:
+                        await messages.put({"type": "http.request", "body": b'{"start_ns":', "more_body": True})
+                    await messages.put({"type": "http.disconnect"})
+                    sent = []
+
+                    async def send(message):
+                        sent.append(message)
+
+                    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+                             "method": "POST", "scheme": "http", "path": f"/v1/revisions/unloaded/{path}",
+                             "raw_path": b"/", "query_string": b"", "root_path": "",
+                             "headers": [(b"content-type", b"application/json")],
+                             "server": ("localhost", 80), "client": ("test", 123)}
+                    # No runtime is activated: cancellation must precede
+                    # provider acquisition, body validation and query execution.
+                    await asyncio.wait_for(app(scope, messages.get, send), 3)
+                    self.assertEqual([m["status"] for m in sent if m["type"] == "http.response.start"], [499])
+                    self.assertIsNone(current_query_cancellation_probe())
+
     async def test_body_drained_then_disconnect_reaches_thread(self):
         messages = asyncio.Queue()
         await messages.put({"type": "http.request", "body": b'{"x":', "more_body": True})

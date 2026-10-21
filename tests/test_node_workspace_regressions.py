@@ -225,17 +225,18 @@ class NodeWorkspaceRegressionTests(unittest.TestCase):
     def test_timeline_request_generation_ignores_stale_success_and_failure(self) -> None:
         function = javascript_function(self.script, "requestTimeline")
         self.assertIn("const requestId = ++state.timelineRequestId;", function)
+        stale_guard = "if (requestId !== state.timelineRequestId || (navigationIntent !== null && navigationIntent !== state.timelineNavigationIntent))"
         self.assertGreaterEqual(
-            function.count("if (requestId !== state.timelineRequestId) return false;"),
+            function.count(stale_guard),
             2,
         )
         self.assertLess(
-            function.index("if (requestId !== state.timelineRequestId) return false;"),
+            function.index(stale_guard),
             function.index("state.timelinePayload = payload;"),
         )
         catch_index = function.index("} catch (error) {")
         self.assertIn(
-            "if (requestId !== state.timelineRequestId) return false;",
+            stale_guard,
             function[catch_index:],
         )
 
@@ -262,11 +263,12 @@ class NodeWorkspaceRegressionTests(unittest.TestCase):
 
         self.assertIn("13 / Math.max(1, state.trackWidth) * 100", clustering)
         self.assertNotIn("Math.max(7", clustering)
-        self.assertIn("const requestedBins = 180 * state.zoom", density)
-        self.assertIn("Number.isFinite(requestedBins) ? Math.round(requestedBins)", density)
-        self.assertIn("maximumUsefulBins", density)
-        self.assertIn("captureSlots", density)
-        self.assertNotRegex(density, r"Math\.min\(\s*\d[\d_]*\s*,\s*requestedBins")
+        resolution = (ROOT / "frontend" / "assets" / "density_viewport.js").read_text(encoding="utf-8")
+        self.assertIn('from "./density_viewport.js"', self.script)
+        self.assertIn("densityResolution(state.zoom, state.viewStartNs, state.viewEndNs)", density)
+        self.assertIn("const slots = endNs - startNs + 1n", resolution)
+        self.assertIn("Math.round(Math.log2(Math.max(1, zoom)))", resolution)
+        self.assertIn("Math.min(useful, 180 * 2 ** level)", resolution)
         self.assertIn("const bins = new Map();", density)
         self.assertIn("densityRenderWindow(binCount, trackWidth)", density)
         self.assertIn("if (index < renderWindow.start || index >= renderWindow.end) continue;", density)
@@ -357,7 +359,7 @@ class NodeWorkspaceRegressionTests(unittest.TestCase):
 
     def test_keyboard_space_activation_prevents_page_scrolling(self) -> None:
         patterns = [
-            r'if \(event\.key !== "Enter" && event\.key !== " "\) return;\s*event\.preventDefault\(\);\s*choose\(\);',
+            r'if \(event\.target !== row \|\| \(event\.key !== "Enter" && event\.key !== " "\)\) return;\s*event\.preventDefault\(\);\s*choose\(\);',
             r'if \(event\.target !== row \|\| \(event\.key !== "Enter" && event\.key !== " "\)\) return;\s*event\.preventDefault\(\);\s*closeCorrelationHover\(\);\s*selectResource\(row\.dataset\.resourceId\);',
         ]
         for pattern in patterns:

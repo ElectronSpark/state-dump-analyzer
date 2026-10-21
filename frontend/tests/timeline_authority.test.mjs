@@ -30,7 +30,7 @@ function harness() {
     "canonicalResourceId", "resourceIdOf", "resourceKindDescriptor",
     "resourceKind", "resourceLayer", "resourceLabel", "presentationTags",
     "registerResource", "ensureLane", "normalizeInterval", "deriveLaneIntervals",
-    "normalizeTimeline", "normalizeRecordLane", "normalizeSourceMark", "statusAtLane",
+    "pruneTimelineCaches", "normalizeTimeline", "normalizeRecordLane", "normalizeSourceMark", "statusAtLane",
     "fallbackResourceItems",
   ];
   const factory = new Function("state", `

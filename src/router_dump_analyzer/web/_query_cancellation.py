@@ -8,7 +8,9 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppres
 from contextvars import ContextVar
 from threading import Event
 
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
+
+from router_dump_analyzer.revision_queries import RevisionQueryCancellationError
 
 
 _QUERY_CANCELLED: ContextVar[Event | None] = ContextVar("viewport_query_cancelled", default=None)
@@ -26,7 +28,12 @@ def query_cancellation_scope(request: Request) -> AbstractAsyncContextManager[No
 async def _query_cancellation_scope(request: Request) -> AsyncIterator[None]:
     # Drain and cache the body before listening: competing receive consumers
     # could otherwise steal a JSON chunk from FastAPI's parser.
-    await request.body()
+    try:
+        await request.body()
+    except ClientDisconnect as error:
+        # An aborted upload is the same cancellation as a later disconnect;
+        # no query work or watcher has started yet.
+        raise RevisionQueryCancellationError("revision query was cancelled") from error
     cancelled = Event()
     token = _QUERY_CANCELLED.set(cancelled)
 

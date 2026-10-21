@@ -596,6 +596,16 @@ def normalize_record_lane_rule(
         "case_sensitive": case_sensitive,
         "plugin_defined": _boolean_field(raw, "plugin_defined", default=False),
     }
+    if "source_record_uid" in raw:
+        uid = raw["source_record_uid"]
+        if (
+            not isinstance(uid, str)
+            or not 1 <= len(uid) <= MAX_PROJECTED_IDENTIFIER_LENGTH
+        ):
+            raise SourceRecordRequestError(
+                "record lane source_record_uid must contain 1 to 256 characters"
+            )
+        normalized["source_record_uid"] = uid
     return normalized, compiled
 
 
@@ -608,6 +618,11 @@ def _record_matches(
     if source_types and str(record.get("source_type")) not in source_types:
         return False
     if rule["unmatched_only"] and source_record_event_uids(record):
+        return False
+    if (
+        "source_record_uid" in rule
+        and record.get("source_record_uid") != rule["source_record_uid"]
+    ):
         return False
     return compiled.search(source_record_haystack(record)) is not None
 

@@ -90,7 +90,7 @@ function harness(search = "", limits = {
     query: { context_id: "context", request: { basis: { kind: "absolute_time", time_ns: "1" }, node_queries: [] } },
   };
   const functions = [
-    "firstDeclaredString", "routeStartSelectorValue", "selectedRouteScenario", "directionalPairForScenario",
+    "firstDeclaredString", "routeStartSelectorValue", "selectedRouteScenario", "directionalPairForScenario", "routeScenarioContext",
     "routeBudgetDefinition", "routeBudgetValue", "renderRouteBudgetControls", "routeTraceBudgets", "syncRouteBudgetParams",
     "routeScenarioEndpointDefaults", "routeScenarioStartDefault", "renderRouteScenarioGuide", "renderRouteControls", "buildRouteTraceRequest",
   ];
@@ -158,6 +158,23 @@ test("explicit URL endpoints and start override scenario defaults; transit start
   assert.equal(override.byId("mn-route-source").value, "source:a");
   assert.equal(override.byId("mn-route-destination").value, "destination:external");
   assert.equal(override.byId("mn-route-start").value, "start:e");
+});
+
+test("Return deep links use the scenario's Return context while explicit URL context stays authoritative", () => {
+  for (const override of [false, true]) {
+    const h = harness(`?route_scenario=ordinary&route_direction=reverse${override ? "&route_type=ipv4&route_family=ipv4&route_vrf=blue" : ""}`);
+    h.state.routeCapabilities.scenarios[0].directional_routing_contexts = {
+      forward: { route_type: "ipv4", route_family: "ipv4", vrf_id: "blue" },
+      reverse: { route_type: "mpls", route_family: "labeled", vrf_id: "default" },
+    };
+    h.state.routeCapabilities.route_types.push({ type_id: "mpls", label: "MPLS" });
+    h.state.routeCapabilities.route_families.push({ route_family: "labeled", address_family: "ipv4", label: "Labeled IPv4" });
+    h.api.renderRouteControls();
+    assert.equal(h.byId("mn-route-validation").value, "reverse");
+    assert.equal(h.byId("mn-route-type").value, override ? "ipv4" : "mpls");
+    assert.equal(h.byId("mn-route-family").value, override ? "ipv4" : "labeled");
+    assert.equal(h.byId("mn-route-vrf").value, override ? "blue" : "default");
+  }
 });
 
 test("scenario changes and deep links share endpoint defaults, including directional pairs", () => {

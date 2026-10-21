@@ -180,6 +180,7 @@ const state = {
   eventLogSelectionFocus: null,
   eventLogSelectionRequestId: 0,
   eventLogSelectionCache: null,
+  eventLogSelectionPending: null,
   eventLogDrag: null,
   eventLogSuppressClickUntil: 0,
   eventLogHoverModels: new Map(),
@@ -222,6 +223,7 @@ const state = {
   brush: null,
   suppressTimelineClickUntil: 0,
   rangeSummary: null,
+  rangeSummaryKey: null,
   rangeRequestId: 0,
   rangeAbortController: null,
   zoom: 1,
@@ -2572,6 +2574,7 @@ function normalizeTimeline(payload) {
   state.lanes = lanes;
   state.laneByResource = new Map(lanes.map((lane) => [lane.resourceId, lane]));
   state.recordLanes = (payload?.record_lanes || []).map(normalizeRecordLane);
+  pruneTimelineCaches();
 }
 
 function timelineExpansionNoticeHtml(trackWidth = state.trackWidth) {
@@ -2715,6 +2718,27 @@ function buildClientGlyphs(lane) {
   }
   flush();
   return result;
+}
+
+function timelineGlyphLayout(glyphs, trackWidth) {
+  const layout = glyphs.map((glyph) => ({
+    glyph,
+    time: glyph.kind === "cluster" ? glyph.startNs + (glyph.endNs - glyph.startNs) / 2n : glyph.timeNs,
+  })).sort((a, b) => a.time < b.time ? -1 : a.time > b.time ? 1 : 0);
+  const positions = layout.map((item) => timelinePercent(item.time) * trackWidth / 100);
+  for (let index = 0; index < layout.length;) {
+    let end = index + 1;
+    while (end < layout.length && positions[end] === positions[index]) end++;
+    // Equal-time evidence must remain visible; only distinct centers constrain
+    // its footprint. Keyboard/exact drill-down still exposes coincident marks.
+    const space = Math.max(0, Math.min(27,
+      index ? positions[index] - positions[index - 1] : Infinity,
+      end < positions.length ? positions[end] - positions[index] : Infinity,
+    ));
+    for (let item = index; item < end; item++) layout[item].space = space;
+    index = end;
+  }
+  return layout;
 }
 
 function rangeBounds() {
@@ -2926,11 +2950,18 @@ function combinedAssociationLane(trackWidth = state.trackWidth) {
       edge.endNs > edge.startNs
       && timelineIntervalVisible(edge.startNs, edge.endNs)
       && !resourceHiddenFromTimeline(edge.otherId)
+      && state.activeLayers.has(state.laneByResource.get(edge.otherId)?.layer
+        || resourceLayer(state.resourceById.get(edge.otherId) || {}, edge.otherId))
     ))
     .sort((a, b) => a.startNs < b.startNs ? -1 : a.startNs > b.startNs ? 1 : a.otherId.localeCompare(b.otherId));
   const bounds = rangeBounds();
   const rangeBand = timelineRangeBandHtml(bounds);
-  const segments = spans.map((edge, index) => {
+  const budget = Math.max(30, Math.min(3000, Math.floor(trackWidth / 8) * 3));
+  const sampled = spans.length > budget;
+  const displayedSpans = sampled
+    ? Array.from({ length: budget }, (_, index) => spans[Math.floor(index * (spans.length - 1) / (budget - 1))])
+    : spans;
+  const segments = displayedSpans.map((edge, index) => {
     const key = `relationship:${edge.id}:combined`;
     const other = state.resourceById.get(edge.otherId) || {};
     state.hoverModels.set(key, {
@@ -2949,7 +2980,7 @@ function combinedAssociationLane(trackWidth = state.trackWidth) {
     return `<button class="association-segment ${edge.direction} quality-${safeClass(edge.quality)}${intersectsRange(edge.startNs, edge.endNs) ? " in-range" : ""}" type="button" data-hover-key="${escapeHtml(key)}" data-range-start-ns="${edge.startNs}" data-range-end-ns="${edge.endNs}" style="${barStyle(edge)};--association-row:${index % 3};--association-color:${layerColor(resourceLayer(other, edge.otherId))}"><span>${escapeHtml(resourceLabel(other, edge.otherId))}</span><small>${escapeHtml(relationshipDisplayLabel(edge.type))}</small></button>${startBoundary}${endBoundary}`;
   }).join("");
   return `<div class="timeline-row correlation-combined-row" style="grid-template-columns:${timelineLaneWidth()}px ${trackWidth}px;--layer-color:var(--violet)">
-    <div class="lane-label association-lane-label"><span class="lane-dot" aria-hidden="true"></span><span class="lane-copy"><strong>Correlations</strong><span class="lane-meta"><span class="lane-type">${spans.length} intervals</span></span></span></div>
+    <div class="lane-label association-lane-label"><span class="lane-dot" aria-hidden="true"></span><span class="lane-copy"><strong>Correlations</strong><span class="lane-meta"><span class="lane-type">${sampled ? `Sampled ${displayedSpans.length} of ${spans.length} intervals · zoom to refine` : `${spans.length} intervals`}</span></span></span></div>
     <div class="lane-track association-track" data-resource-id="${escapeHtml(state.selectedResourceId)}">${rangeBand}${segments}</div>
   </div>`;
 }
@@ -3208,15 +3239,17 @@ function buildSourceGlyphs(lane) {
   return result;
 }
 
-function pointClusterRangeState(items, bounds = rangeBounds()) {
+function pointClusterRangeState(items, bounds = rangeBounds(), total = items?.length || 0) {
   const points = (items || []).filter((item) => item?.timeNs !== null && item?.timeNs !== undefined);
   const count = bounds
     ? points.filter((item) => item.timeNs >= bounds[0] && item.timeNs <= bounds[1]).length
     : 0;
   return {
     count,
-    total: points.length,
-    className: count && count === points.length ? " in-range" : count ? " partial-range" : "",
+    total,
+    loadedTotal: points.length,
+    sampled: points.length < total,
+    className: count && count === total ? " in-range" : count ? " partial-range" : "",
   };
 }
 
@@ -3236,7 +3269,7 @@ function sourceRecordLanesHtml(trackWidth = state.trackWidth) {
         state.hoverModels.set(key, { type: "source-cluster", cluster: glyph, lane });
         const selected = glyph.recordUids.includes(state.selectedSourceRecordUid);
         const time = glyph.startNs + (glyph.endNs - glyph.startNs) / 2n;
-        const rangeState = pointClusterRangeState(glyph.items, bounds);
+        const rangeState = pointClusterRangeState(glyph.items, bounds, glyph.count);
         const rangeDescription = rangeState.count
           ? `; ${rangeState.count} of ${rangeState.total} records are in the selected range`
           : "";
@@ -3463,33 +3496,33 @@ function renderTimeline() {
       state.hoverModels.set(key, { type: "interval", interval, lane });
       return `<button class="${statusSegmentClassName({ status_class: interval.statusClass })}${intersectsRange(interval.startNs, interval.endNs) ? " in-range" : ""}" data-hover-key="${escapeHtml(key)}" data-start-ns="${interval.startNs}" data-end-ns="${interval.endNs}" data-range-start-ns="${interval.startNs}" data-range-end-ns="${interval.endNs}" data-open-end="${interval.openEnd}" style="${barStyle(interval)};--segment-color:${escapeHtml(layerColor(lane.layer))}" type="button"><span>${escapeHtml(interval.status)}</span></button>`;
     }).join("");
-    const glyphs = buildClientGlyphs(lane).filter((glyph) => (
+    const glyphs = timelineGlyphLayout(buildClientGlyphs(lane).filter((glyph) => (
       glyph.kind === "cluster"
         ? timelinePointIntervalVisible(glyph.startNs, glyph.endNs)
         : timelinePointVisible(glyph.timeNs)
-    )).map((glyph) => {
+    )), trackWidth).map(({ glyph, time, space }) => {
       if (glyph.kind === "cluster") {
         const key = hoverKey("cluster", hoverIdentity, glyph.clusterId);
         state.hoverModels.set(key, { type: "cluster", cluster: glyph, lane });
         const selected = glyph.eventUids.includes(state.selectedEventUid);
-        const time = glyph.startNs + (glyph.endNs - glyph.startNs) / 2n;
         const latest = [...glyph.items].sort((a, b) => a.timeNs < b.timeNs ? -1 : a.timeNs > b.timeNs ? 1 : 0).at(-1);
         const lastEventUid = latest?.eventUid || glyph.eventUids.at(-1) || "";
         const clusterItems = glyph.items.length
           ? glyph.items
           : glyph.eventUids.map((uid) => lane.marks.find((mark) => mark.eventUid === uid)).filter(Boolean);
-        const rangeState = pointClusterRangeState(clusterItems, bounds);
+        const rangeState = pointClusterRangeState(glyph.detailHydrated ? glyph.detailItems : clusterItems, bounds, glyph.detailTotal ?? glyph.count);
         const rangeDescription = rangeState.count
-          ? `; ${rangeState.count} of ${rangeState.total} events are in the selected range`
+          ? `; ${rangeState.count} of ${rangeState.loadedTotal} ${rangeState.sampled ? "loaded preview " : ""}events are in the selected range`
           : "";
         const staleCopy = glyph.staleWindow
           ? "; previous viewport overlap shown while exact events refresh"
           : "";
-        return `<button class="event-mark cluster${glyph.staleWindow ? " stale-window" : ""}${glyph.failureCount ? " has-failure" : ""}${selected ? " selected" : ""}${rangeState.className}" data-hover-key="${escapeHtml(key)}" data-cluster-id="${escapeHtml(glyph.clusterId)}" data-last-event-uid="${escapeHtml(lastEventUid)}" data-range-start-ns="${glyph.startNs}" data-range-end-ns="${glyph.endNs}" style="left:${timelinePercent(time)}%;--event-color:${glyph.failureCount ? "#ff6879" : layerColor(lane.layer)}" type="button" aria-label="${glyph.count} collapsed events${rangeDescription}${staleCopy}"><span>${glyph.staleWindow ? "~" : ""}${glyph.count}</span></button>`;
+        const countLabel = `${glyph.staleWindow ? "~" : ""}${glyph.count}`;
+        return `<button class="event-mark cluster${glyph.staleWindow ? " stale-window" : ""}${glyph.failureCount ? " has-failure" : ""}${selected ? " selected" : ""}${rangeState.className}" data-hover-key="${escapeHtml(key)}" data-cluster-id="${escapeHtml(glyph.clusterId)}" data-last-event-uid="${escapeHtml(lastEventUid)}" data-range-start-ns="${glyph.startNs}" data-range-end-ns="${glyph.endNs}" style="left:${timelinePercent(time)}%;--glyph-space:${space}px;--event-color:${glyph.failureCount ? "#ff6879" : layerColor(lane.layer)}" type="button" aria-label="${glyph.count} collapsed events${rangeDescription}${staleCopy}"><span${space < countLabel.length * 6 + 4 ? " hidden" : ""}>${countLabel}</span></button>`;
       }
       const key = hoverKey("event", hoverIdentity, glyph.eventUid);
       state.hoverModels.set(key, { type: "event", mark: glyph, lane });
-      return `<button class="event-mark ${eventMarkClass(glyph)}${glyph.eventUid === state.selectedEventUid ? " selected" : ""}${inSelectedRange(glyph.timeNs) ? " in-range" : ""}" data-event-uid="${escapeHtml(glyph.eventUid)}" data-hover-key="${escapeHtml(key)}" data-time-ns="${glyph.timeNs}" style="left:${timelinePercent(glyph.timeNs)}%;--event-color:${glyph.failure ? "#ff6879" : layerColor(lane.layer)}" type="button" aria-label="${escapeHtml(`${glyph.label} at ${formatOffset(glyph.timeNs, visibleTimelineOffsetPrecision())}`)}"></button>`;
+      return `<button class="event-mark ${eventMarkClass(glyph)}${glyph.eventUid === state.selectedEventUid ? " selected" : ""}${inSelectedRange(glyph.timeNs) ? " in-range" : ""}" data-event-uid="${escapeHtml(glyph.eventUid)}" data-hover-key="${escapeHtml(key)}" data-time-ns="${glyph.timeNs}" style="left:${timelinePercent(glyph.timeNs)}%;--glyph-space:${space}px;--event-color:${glyph.failure ? "#ff6879" : layerColor(lane.layer)}" type="button" aria-label="${escapeHtml(`${glyph.label} at ${formatOffset(glyph.timeNs, visibleTimelineOffsetPrecision())}`)}"></button>`;
     }).join("");
     const relationshipRibbons = relationshipRibbonsForLane(lane, instance);
     const rangeBand = timelineRangeBandHtml(bounds);
@@ -3748,6 +3781,7 @@ function timelinePointerDown(event) {
     viewportChanged: false,
     priorRange: state.rangeStartNs === null ? null : [state.rangeStartNs, state.rangeEndNs],
     priorSummary: state.rangeSummary,
+    priorSummaryKey: state.rangeSummaryKey,
     target: mark ? {
       eventUid: mark.dataset.eventUid || null,
       clusterId: mark.dataset.clusterId || null,
@@ -3761,6 +3795,9 @@ function timelinePointerDown(event) {
     } : null,
   };
   if (wantsRange) {
+    state.rangeRequestId += 1;
+    abortLatestRequests("rangeAbortController");
+    state.rangeSummary = null;
     if (!handle) state.rangeStartNs = state.rangeEndNs = anchorNs;
     byId("timeline-frame").classList.add("is-brushing");
     updateRangePreview();
@@ -3873,6 +3910,11 @@ function timelinePointerMove(event) {
   brush.latestNs = brushNsFromClientX(brush, event.clientX);
   if (brush.mode === "pending" && Math.abs(brush.latestX - brush.startX) >= 4) {
     brush.mode = "range";
+    brush.priorSummary = state.rangeSummary;
+    brush.priorSummaryKey = state.rangeSummaryKey;
+    state.rangeRequestId += 1;
+    abortLatestRequests("rangeAbortController");
+    state.rangeSummary = null;
     state.rangeStartNs = brush.anchorNs;
     state.rangeEndNs = brush.latestNs;
     state.suppressTimelineClickUntil = performance.now() + 400;
@@ -3961,11 +4003,13 @@ function finishTimelinePointer(event, cancelled = false) {
     if (brush.target) state.suppressTimelineClickUntil = performance.now() + 120;
     if (brush.priorRange) [state.rangeStartNs, state.rangeEndNs] = brush.priorRange;
     else state.rangeStartNs = state.rangeEndNs = null;
-    state.rangeSummary = brush.priorSummary;
+    state.rangeSummary = brush.priorSummary?.source === "loading" ? null : brush.priorSummary;
+    state.rangeSummaryKey = brush.priorSummaryKey;
     finishBrushViewportNavigation(brush, true);
     updateRangeBands();
     syncRangeInputs();
     renderRangeSummary();
+    if (brush.priorRange && !state.rangeSummary) requestRangeSummary();
     return;
   }
 
@@ -3978,11 +4022,13 @@ function finishTimelinePointer(event, cancelled = false) {
 
   if (brush.mode === "handle" && moved < 1) {
     [state.rangeStartNs, state.rangeEndNs] = brush.priorRange;
-    state.rangeSummary = brush.priorSummary;
+    state.rangeSummary = brush.priorSummary?.source === "loading" ? null : brush.priorSummary;
+    state.rangeSummaryKey = brush.priorSummaryKey;
     finishBrushViewportNavigation(brush, true);
     updateRangeBands();
     syncRangeInputs();
     renderRangeSummary();
+    if (brush.priorRange && !state.rangeSummary) requestRangeSummary();
     return;
   }
 
@@ -4027,15 +4073,18 @@ function applyRangeHighlight(bounds) {
   });
   document.querySelectorAll(".event-mark.cluster[data-hover-key], .source-record-mark.cluster[data-hover-key]").forEach((element) => {
     const model = state.hoverModels.get(element.dataset.hoverKey);
-    const rangeState = pointClusterRangeState(model?.cluster?.items || [], bounds);
+    const cluster = model?.cluster;
+    const items = cluster?.detailHydrated ? cluster.detailItems : cluster?.items || [];
+    const rangeState = pointClusterRangeState(items, bounds, cluster?.detailTotal ?? cluster?.count ?? items.length);
     element.classList.toggle("in-range", Boolean(bounds) && rangeState.count === rangeState.total && rangeState.count > 0);
     element.classList.toggle("partial-range", Boolean(bounds) && rangeState.count > 0 && rangeState.count < rangeState.total);
-    element.classList.toggle("out-of-range", Boolean(bounds) && rangeState.count === 0);
+    element.classList.toggle("out-of-range", Boolean(bounds) && rangeState.count === 0 && !rangeState.sampled);
     const noun = element.classList.contains("source-record-mark") ? "source records" : "events";
-    const rangeCopy = bounds && rangeState.count
-      ? `; ${rangeState.count} of ${rangeState.total} ${noun} are in the selected range`
+    const rangeCopy = bounds
+      ? `; ${rangeState.count} of ${rangeState.loadedTotal} ${rangeState.sampled ? "loaded preview " : ""}${noun} are in the selected range`
       : "";
-    element.setAttribute("aria-label", `${rangeState.total} collapsed ${noun}${rangeCopy}`);
+    const staleCopy = cluster?.staleWindow ? "; previous viewport overlap shown while exact events refresh" : "";
+    element.setAttribute("aria-label", `${rangeState.total} collapsed ${noun}${rangeCopy}${staleCopy}`);
   });
   document.querySelectorAll("[data-range-start-ns][data-range-end-ns]:not(.event-mark.cluster):not(.source-record-mark.cluster)").forEach((element) => {
     const hit = Boolean(bounds) && (
@@ -4100,6 +4149,7 @@ function timelineHandleKeyDown(event) {
     : event.key === "End" ? state.viewEndNs
       : bounds[boundary === "start" ? 0 : 1] + direction * step;
   applyHandlePosition({ boundary, latestNs });
+  if (state.rangeStartNs === bounds[0] && state.rangeEndNs === bounds[1]) return;
   state.rangeSummary = null;
   updateRangeBands();
   syncRangeInputs();
@@ -4238,6 +4288,49 @@ function hydrateEventDetail(eventUid, detail) {
   return normalized;
 }
 
+function pruneTimelineCaches() {
+  if (!isScaleMode()) return;
+  const events = new Set([state.selectedEventUid, ...state.eventDetailRequests.keys()]);
+  const sources = new Set([state.selectedSourceRecordUid]);
+  const incidents = [
+    ...(state.failureIncidentPreview || []).slice(0, 3),
+    ...(state.dataset?.causal_links?.length ? incidentCausalPath().events : []),
+  ];
+  for (const event of incidents) events.add(String(event.event_uid || event.event_id || ""));
+  const retainMark = (mark) => {
+    if (mark.eventUid) events.add(String(mark.eventUid));
+    if (mark.sourceRecordUid) sources.add(String(mark.sourceRecordUid));
+  };
+  for (const lane of [...state.lanes, ...state.recordLanes]) {
+    (lane.marks || []).forEach(retainMark);
+    for (const cluster of lane.clusters || []) {
+      (cluster.items || []).forEach(retainMark);
+      (cluster.detailItems || []).forEach(retainMark);
+    }
+  }
+  const open = state.hoverModels.get(state.hoverKey);
+  if (open?.mark) retainMark(open.mark);
+  if (open?.cluster) [...(open.cluster.items || []), ...(open.cluster.detailItems || [])].forEach(retainMark);
+  for (const row of state.eventLogServerItems.values()) {
+    if (row?.kind !== "entry") continue;
+    if (isSourceLogEntry(row.entry)) sources.add(sourceRecordUid(row.entry));
+    else events.add(String(row.entry?.event_uid || row.entry?.event_id || ""));
+  }
+  for (const projection of state.timelineEntryProjections.values()) {
+    (projection.streamKind === "source" ? sources : events).add(projection.uid);
+  }
+  // Keep current evidence and a small recent working set, rather than every
+  // window visited. Map insertion order supplies the eviction order.
+  for (const [cache, retained] of [[state.eventDetailByUid, events], [state.eventByUid, events], [state.sourceRecordByUid, sources]]) {
+    let spare = 512;
+    for (const uid of [...cache.keys()].reverse()) {
+      if (retained.has(uid)) continue;
+      if (spare > 0) spare -= 1;
+      else cache.delete(uid);
+    }
+  }
+}
+
 function requestEventDetail(eventUid) {
   const uid = String(eventUid || "");
   if (!uid) return Promise.resolve(null);
@@ -4247,7 +4340,10 @@ function requestEventDetail(eventUid) {
   const request = api(revisionPath(`events/${encodeURIComponent(uid)}`))
     .then((detail) => hydrateEventDetail(uid, detail))
     .catch(() => eventOrMark(uid))
-    .finally(() => state.eventDetailRequests.delete(uid));
+    .finally(() => {
+      state.eventDetailRequests.delete(uid);
+      pruneTimelineCaches();
+    });
   state.eventDetailRequests.set(uid, request);
   return request;
 }
@@ -4390,7 +4486,7 @@ async function ensureSourceRecordLane(record, intent = state.timelineNavigationI
   const pattern = regexEscape(uid);
   const sourceType = String(record.source_type || "unknown");
   const pendingRule = state.recordLaneRules.find((rule) => rule.transient
-    && rule.pattern === pattern && rule.source_types?.[0] === sourceType);
+    && rule.source_record_uid === uid && rule.source_types?.[0] === sourceType);
   if (!pendingRule && state.recordLaneRules.length >= MAX_RECORD_LANES) {
     showToast("Remove a source-record lane before adding a jump lane.");
     return null;
@@ -4398,6 +4494,7 @@ async function ensureSourceRecordLane(record, intent = state.timelineNavigationI
   if (!pendingRule) state.recordLaneRules.push({
     lane_id: "jump-record-" + (++state.customRecordLaneSequence),
     label: "Jump target · " + String(record.record_name || uid).slice(0, 72),
+    source_record_uid: uid,
     pattern,
     source_types: [sourceType],
     unmatched_only: false,
@@ -4411,6 +4508,27 @@ async function ensureSourceRecordLane(record, intent = state.timelineNavigationI
   renderLanePicker();
   lane = sourceRecordLaneFor(uid);
   return lane;
+}
+
+function scrollTimelineTargetIntoView(row) {
+  const scroll = byId("timeline-scroll");
+  if (!scroll) return;
+  // Center the nested viewport first. A row-centered smooth scroll can align
+  // the page and inner scroller against different sticky-header positions.
+  scroll.scrollIntoView({ behavior: "instant", block: "center", inline: "nearest" });
+  const topbar = document.querySelector(".topbar")?.getBoundingClientRect();
+  const header = document.querySelector(".timeline-floating-header")?.getBoundingClientRect();
+  let viewport = scroll.getBoundingClientRect();
+  const occlusion = Math.max(0, topbar?.bottom || 0, header?.bottom || 0);
+  if (viewport.top < occlusion + 8) {
+    window.scrollBy({ top: viewport.top - occlusion - 8, behavior: "instant" });
+    viewport = scroll.getBoundingClientRect();
+  }
+  const target = row.getBoundingClientRect();
+  const top = Math.max(viewport.top, document.querySelector(".timeline-floating-header")?.getBoundingClientRect().bottom || 0) + 8;
+  const bottom = Math.min(viewport.bottom, window.innerHeight) - 8;
+  if (target.top < top) scroll.scrollTop += target.top - top;
+  else if (target.bottom > bottom) scroll.scrollTop += target.bottom - bottom;
 }
 
 async function jumpSourceRecordToTimeline(recordUid) {
@@ -4427,6 +4545,7 @@ async function jumpSourceRecordToTimeline(recordUid) {
     return;
   }
   const movedViewport = moveTimelineWindowToReveal(sourceRecordTime(record));
+  intent = state.timelineNavigationIntent;
   if (movedViewport) await refreshTimelineForNavigation();
   if (intent !== state.timelineNavigationIntent) return;
   const lane = await ensureSourceRecordLane(record, intent);
@@ -4447,7 +4566,7 @@ async function jumpSourceRecordToTimeline(recordUid) {
     const laneRow = document.querySelector('.timeline-row[data-source-lane-id="' + CSS.escape(lane.laneId) + '"]');
     const destination = target || clusterTarget || laneRow;
     if (!destination) return;
-    (laneRow || destination).scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+    scrollTimelineTargetIntoView(laneRow || destination);
     if (target || clusterTarget) destination.focus({ preventScroll: true });
     navigationPulse(destination);
   });
@@ -4484,12 +4603,13 @@ async function jumpToTimelineEvent(eventUid) {
       state.laneMode = "custom";
     }
     if (state.laneMode === "custom") {
-      if (state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) state.explicitLaneIds.delete(state.explicitLaneIds.values().next().value);
-      state.explicitLaneIds.add(resourceId);
+      if (!state.explicitLaneIds.has(resourceId) && state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) state.explicitLaneIds.delete([...state.explicitLaneIds].at(-1));
+      state.explicitLaneIds = new Set([resourceId, ...state.explicitLaneIds]);
     }
     addedScaleLane = true;
   }
   const movedViewport = moveTimelineWindowToReveal(eventTime(event));
+  intent = state.timelineNavigationIntent;
   // The server's bounded cluster preview guarantees the selected event. Pin
   // the target before the navigation query so a middle event in a million-row
   // cluster remains focusable after the exact logical window is returned.
@@ -4499,7 +4619,7 @@ async function jumpToTimelineEvent(eventUid) {
   if (movedViewport || addedScaleLane || !lane) {
     await refreshTimelineForNavigation();
     if (intent !== state.timelineNavigationIntent) return;
-    lane = eventLaneFor(eventUid) || state.laneByResource.get(resourceId);
+    lane = state.laneByResource.get(resourceId) || eventLaneFor(eventUid);
   }
   if (lane) {
     state.activeLayers.add(lane.layer);
@@ -4531,7 +4651,7 @@ async function jumpToTimelineEvent(eventUid) {
       : null;
     const target = eventTarget || row;
     if (!target) return;
-    (row || target).scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+    scrollTimelineTargetIntoView(row || target);
     if (eventTarget) eventTarget.focus({ preventScroll: true });
     navigationPulse(eventTarget || row);
   });
@@ -4553,8 +4673,8 @@ async function jumpToTimelineResource(resourceId) {
       state.laneMode = "custom";
     }
     if (state.laneMode === "custom") {
-      if (state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) state.explicitLaneIds.delete(state.explicitLaneIds.values().next().value);
-      state.explicitLaneIds.add(resourceId);
+      if (!state.explicitLaneIds.has(resourceId) && state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) state.explicitLaneIds.delete([...state.explicitLaneIds].at(-1));
+      state.explicitLaneIds = new Set([resourceId, ...state.explicitLaneIds]);
     }
     await refreshScaleTimeline({ navigationIntent: intent });
     if (intent !== state.timelineNavigationIntent) return;
@@ -4574,7 +4694,7 @@ async function jumpToTimelineResource(resourceId) {
     const row = [...document.querySelectorAll(".timeline-row[data-resource-id]")]
       .find((item) => item.dataset.resourceId === resourceId);
     if (!row) return;
-    row.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+    scrollTimelineTargetIntoView(row);
     row.querySelector(".lane-label")?.focus({ preventScroll: true });
     navigationPulse(row);
   });
@@ -4747,7 +4867,7 @@ function clusterHoverHtml(cluster, lane) {
       : "";
   let detailControl = "";
   if (cluster.detailLoading) {
-    detailControl = '<p class="cluster-detail-state" role="status">Loading exact events…</p>';
+    detailControl = `<button class="cluster-load-more" type="button" aria-disabled="true" data-cluster-detail-offset="${cluster.detailRetryOffset}">Loading exact events…</button>`;
   } else if (cluster.detailError) {
     detailControl = `<div class="cluster-detail-state error"><span>${escapeHtml(cluster.detailError)}</span><button type="button" data-cluster-detail-offset="${cluster.detailRetryOffset}">Retry</button></div>`;
   } else if (cluster.detailNextOffset !== null) {
@@ -4777,10 +4897,17 @@ function refreshOpenClusterHover(key, cluster, lane) {
   const card = byId("timeline-hover");
   if (!card || card.hidden) return;
   const scrollTop = card.querySelector(".cluster-window")?.scrollTop || 0;
+  const focused = card.contains(document.activeElement) ? document.activeElement : null;
+  const detailControlFocused = focused?.hasAttribute("data-cluster-detail-offset");
   card.innerHTML = clusterHoverHtml(cluster, lane);
   bindHoverCardActions(card, model, key);
   const windowElement = card.querySelector(".cluster-window");
   if (windowElement) windowElement.scrollTop = scrollTop;
+  if (detailControlFocused && (!document.activeElement || document.activeElement === document.body)) {
+    const target = card.querySelector("[data-cluster-detail-offset]") || card.querySelector(".hover-close");
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+  }
 }
 
 function requestClusterDetail(key, cluster, lane, requestedOffset = 0) {
@@ -4842,6 +4969,7 @@ function requestClusterDetail(key, cluster, lane, requestedOffset = 0) {
     if (requestId !== cluster.detailRequestId) return;
     cluster.detailLoading = false;
     refreshOpenClusterHover(key, cluster, lane);
+    pruneTimelineCaches();
   });
 }
 
@@ -5103,7 +5231,7 @@ function applyRangeEditor(event) {
       if (start + minimum <= state.viewEndNs) state.rangeEndNs = start + minimum;
       else state.rangeStartNs = start - minimum >= state.viewStartNs ? start - minimum : state.viewStartNs;
     }
-    state.rangeSummary = null;
+    if (state.rangeSummaryKey !== rangeBounds().map(String).join(":")) state.rangeSummary = null;
     error.textContent = "";
     byId("clear-range").hidden = false;
     updateRangeBands();
@@ -5194,6 +5322,12 @@ function renderRangeSummary() {
 async function requestRangeSummary() {
   const bounds = rangeBounds();
   if (!bounds) return;
+  const key = bounds.map(String).join(":");
+  const dataset = state.dataset;
+  if (dataset === state.rangeSummaryDataset && key === state.rangeSummaryKey
+    && state.rangeSummary && state.rangeSummary.source !== "unavailable") return true;
+  state.rangeSummaryDataset = dataset;
+  state.rangeSummaryKey = key;
   const requestId = ++state.rangeRequestId;
   abortLatestRequests("rangeAbortController");
   if (isTopologyNodeSnapshot()) {
@@ -5212,11 +5346,11 @@ async function requestRangeSummary() {
       signal: controller.signal,
       body: JSON.stringify({ start_ns: bounds[0].toString(), end_ns: bounds[1].toString() }),
     });
-    if (requestId !== state.rangeRequestId) return;
+    if (requestId !== state.rangeRequestId || dataset !== state.dataset) return;
     if (controller.signal.aborted) throw new DOMException("Range summary request was cancelled.", "AbortError");
     state.rangeSummary = summary;
   } catch (error) {
-    if (requestId !== state.rangeRequestId || !rangeBounds()) return;
+    if (requestId !== state.rangeRequestId || dataset !== state.dataset || !rangeBounds()) return;
     state.rangeSummary = {
       source: "unavailable",
       unavailable_reason: requestWasAborted(error, controller)
@@ -5370,6 +5504,7 @@ async function requestTimeline({ navigationIntent = null, recordLaneRules = null
           label: rule.label,
           description: rule.description || "",
           pattern: rule.pattern,
+          ...(rule.source_record_uid ? { source_record_uid: rule.source_record_uid } : {}),
           source_types: rule.source_types || [],
           unmatched_only: Boolean(rule.unmatched_only),
           case_sensitive: Boolean(rule.case_sensitive),
@@ -6027,6 +6162,15 @@ function renderResourceBundleTable(container, descriptor) {
 function renderResourceTables() {
   const container = byId("resource-table-wrap");
   if (!container) return;
+  const tabs = byId("resource-type-tabs");
+  const focused = document.activeElement;
+  const focusRoot = container.contains(focused) ? container : tabs?.contains(focused) ? tabs : null;
+  const row = focusRoot && focused.closest("tr[data-resource-id]");
+  const identity = focusRoot ? {
+    tag: focused.tagName, data: { ...focused.dataset },
+    resourceId: row?.dataset.resourceId, path: row?.dataset.bundlePath,
+  } : null;
+  try {
   initializeResourceTableView();
   const viewDescriptors = resourceTableViewDescriptors();
   const activeView = viewDescriptors.find((item) => String(item.view_id) === state.selectedResourceViewId) || null;
@@ -6039,7 +6183,10 @@ function renderResourceTables() {
     groups.get(kind).push({ ...item, resource_id: id, kind });
   }
   const countsByKind = state.resourceQuery?.counts_by_kind || {};
-  const kinds = (Object.keys(countsByKind).length ? Object.keys(countsByKind) : [...groups.keys()]).sort();
+  const kinds = [...new Set([
+    ...(Object.keys(countsByKind).length ? Object.keys(countsByKind) : [...groups.keys()]),
+    ...(!activeView && state.selectedResourceKind ? [state.selectedResourceKind] : []),
+  ])].sort();
   const resourceSearchActive = Boolean((byId("resource-search")?.value || "").trim());
   if (!activeView && !state.selectedResourceKind) {
     state.selectedResourceKind = kinds[0] || null;
@@ -6101,13 +6248,24 @@ function renderResourceTables() {
     const choose = () => selectResource(row.dataset.resourceId);
     row.addEventListener("click", choose);
     row.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
+      if (event.target !== row || (event.key !== "Enter" && event.key !== " ")) return;
       event.preventDefault();
       choose();
     });
   });
   bindLaneVisibilityCheckboxes(container);
   bindResourcePagination(container);
+  } finally {
+    if (identity && (!document.activeElement || document.activeElement === document.body)) {
+      [...focusRoot.querySelectorAll("button, input, tr[tabindex]")].find((item) => {
+        const candidateRow = item.closest("tr[data-resource-id]");
+        return item.tagName === identity.tag
+          && Object.entries(identity.data).every(([key, value]) => item.dataset[key] === value)
+          && candidateRow?.dataset.resourceId === identity.resourceId
+          && candidateRow?.dataset.bundlePath === identity.path;
+      })?.focus({ preventScroll: true });
+    }
+  }
 }
 
 function dashboardDescriptors() {
@@ -7135,6 +7293,7 @@ function showCorrelationHover(anchor, html, { pinned = false } = {}) {
   card.hidden = false;
   card.dataset.pinned = String(pinned);
   card.style.width = `${Math.min(440, window.innerWidth - 24)}px`;
+  card.style.maxHeight = "";
   const rect = anchor.getBoundingClientRect();
   const width = card.getBoundingClientRect().width;
   const height = Math.min(430, card.scrollHeight || 250);
@@ -7154,9 +7313,17 @@ function showCorrelationHover(anchor, html, { pinned = false } = {}) {
   } else if (rect.right + gap + width <= window.innerWidth - margin) {
     card.style.left = `${rect.right + gap}px`;
     card.style.top = `${clampTop(rect.top + rect.height / 2 - height / 2)}px`;
-  } else {
-    card.style.left = `${Math.max(margin, rect.left - width - gap)}px`;
+  } else if (rect.left - width - gap >= margin) {
+    card.style.left = `${rect.left - width - gap}px`;
     card.style.top = `${clampTop(rect.top + rect.height / 2 - height / 2)}px`;
+  } else {
+    // In a narrow viewport, scroll the card within the available vertical
+    // space instead of covering the control that opened it.
+    const aboveSpace = Math.max(0, rect.top - gap - margin);
+    const belowSpace = Math.max(0, window.innerHeight - margin - belowTop);
+    card.style.left = `${centeredLeft}px`;
+    card.style.maxHeight = `${Math.max(aboveSpace, belowSpace)}px`;
+    card.style.top = `${aboveSpace > belowSpace ? margin : belowTop}px`;
   }
 }
 
@@ -7237,6 +7404,13 @@ function graphEdgeHoverHtml(edge, nodes) {
 function renderCorrelationList(graph) {
   const container = byId("correlation-list");
   const graphTimeNs = graphDisplayTimeNs(graph);
+  const queryKey = JSON.stringify([state.selectedResourceId, String(graphTimeNs), Boolean(state.graphShowFull)]);
+  const disclosures = container.dataset.correlationQueryKey === queryKey
+    ? new Map([...container.querySelectorAll("details")].map((item) => [
+      `${item.className}:${item.matches(".correlation-group") ? "" : item.querySelector("[data-correlation-edge-id]")?.dataset.correlationEdgeId}`,
+      item.open,
+    ])) : new Map();
+  container.dataset.correlationQueryKey = queryKey;
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   const resourceName = (id) => nodes.get(id)?.label || resourceLabel(state.resourceById.get(id), id);
   const resourceDetails = (id) => {
@@ -7284,6 +7458,10 @@ function renderCorrelationList(graph) {
         ${renderGroup("incoming", "Declared target endpoints", "Selected resource is the target endpoint", incoming)}
       </div>`;
   }
+  container.querySelectorAll("details").forEach((item) => {
+    const key = `${item.className}:${item.matches(".correlation-group") ? "" : item.querySelector("[data-correlation-edge-id]")?.dataset.correlationEdgeId}`;
+    if (disclosures.has(key)) item.open = disclosures.get(key);
+  });
   container.querySelectorAll("[data-resource-id]").forEach((button) => {
     button.addEventListener("click", (event) => {
       if (event.ctrlKey || event.metaKey) {
@@ -7303,21 +7481,13 @@ function renderCorrelationList(graph) {
     button.addEventListener("click", () => {
       const group = button.closest(".correlation-group");
       const direction = group?.classList.contains("incoming") ? "incoming" : "outgoing";
-      const disclosures = new Map([...container.querySelectorAll("details")].map((item) => [
-        `${item.className}:${item.matches(".correlation-group") ? "" : item.querySelector("[data-correlation-edge-id]")?.dataset.correlationEdgeId}`,
-        item.open,
-      ]));
-      const scrollTop = container.scrollTop;
       state.correlationListLimit += CORRELATION_LIST_PAGE_SIZE;
       closeCorrelationHover();
       renderCorrelationList(graph);
-      container.querySelectorAll("details").forEach((item) => {
-        const key = `${item.className}:${item.matches(".correlation-group") ? "" : item.querySelector("[data-correlation-edge-id]")?.dataset.correlationEdgeId}`;
-        if (disclosures.has(key)) item.open = disclosures.get(key);
-      });
       const destination = group ? container.querySelector(`.correlation-group.${direction}`) : container;
-      (destination.querySelector("[data-correlation-show-more]") || destination.querySelector("summary, button"))?.focus({ preventScroll: true });
-      container.scrollTop = scrollTop;
+      const control = destination.querySelector("[data-correlation-show-more]") || destination.querySelector("summary, button");
+      control?.focus({ preventScroll: true });
+      control?.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
     });
   });
 }
@@ -7763,8 +7933,8 @@ function selectResource(resourceId, { deferRequests = false } = {}) {
       state.laneMode = "custom";
     }
     if (state.laneMode === "custom") {
-      if (state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) state.explicitLaneIds.delete(state.explicitLaneIds.values().next().value);
-      state.explicitLaneIds.add(resourceId);
+      if (!state.explicitLaneIds.has(resourceId) && state.explicitLaneIds.size >= MAX_SCALE_TIMELINE_LANES) state.explicitLaneIds.delete([...state.explicitLaneIds].at(-1));
+      state.explicitLaneIds = new Set([resourceId, ...state.explicitLaneIds]);
     }
     refreshScaleTimeline();
   }
@@ -7779,13 +7949,18 @@ function selectResource(resourceId, { deferRequests = false } = {}) {
 
 function renderLayerToggles() {
   const container = byId("layer-toggles");
+  const focusedLayer = container.contains(document.activeElement) ? document.activeElement?.dataset.layer : null;
   container.innerHTML = [...state.layerMeta.keys()].map((layer) => `<button class="layer-toggle" type="button" data-layer="${escapeHtml(layer)}" aria-pressed="${state.activeLayers.has(layer)}" style="--layer-color:${layerColor(layer)}">${escapeHtml(humanLayer(layer))}</button>`).join("");
   container.querySelectorAll(".layer-toggle").forEach((button) => button.addEventListener("click", () => {
     const layer = button.dataset.layer;
     if (state.activeLayers.has(layer) && state.activeLayers.size === 1) return showToast("Keep at least one layer visible.");
+    state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
     if (state.activeLayers.has(layer)) state.activeLayers.delete(layer); else state.activeLayers.add(layer);
     renderLayerToggles(); renderTimeline();
   }));
+  if (focusedLayer && (!document.activeElement || document.activeElement === document.body)) {
+    [...container.querySelectorAll(".layer-toggle")].find((button) => button.dataset.layer === focusedLayer)?.focus({ preventScroll: true });
+  }
 }
 
 function currentModeLaneIds() {
@@ -7806,6 +7981,7 @@ async function refreshScaleTimeline({ navigationIntent = null } = {}) {
 }
 
 function setLaneMode(mode) {
+  state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   if (["selected", "correlated"].includes(mode) && !state.selectedResourceId) {
     showToast("Select a resource first.");
     return;
@@ -7825,6 +8001,7 @@ function setLaneMode(mode) {
 }
 
 function setExplicitLaneVisibility(resourceId, visible) {
+  state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   resourceId = canonicalResourceId(resourceId);
   if (!resourceId) return false;
   if (state.laneMode !== "custom") state.explicitLaneIds = currentModeLaneIds();
@@ -7874,6 +8051,7 @@ async function refreshRecordLanes() {
 function setRecordLanePreset(laneId, enabled) {
   const preset = state.recordLanePresets.find((item) => String(item.lane_id) === String(laneId));
   if (!preset) return;
+  state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   state.recordLaneRules = state.recordLaneRules.filter((rule) => String(rule.lane_id) !== String(laneId));
   if (enabled) {
     if (state.recordLaneRules.length >= MAX_RECORD_LANES) {
@@ -7887,6 +8065,7 @@ function setRecordLanePreset(laneId, enabled) {
 }
 
 function removeRecordLane(laneId) {
+  state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   state.recordLaneRules = state.recordLaneRules.filter((rule) => String(rule.lane_id) !== String(laneId));
   refreshRecordLanes();
 }
@@ -7967,6 +8146,7 @@ async function addRecordLane(event) {
   let payload, requestId;
   const interruptedRefresh = Boolean(state.timelineAbortController);
   let accepted = false;
+  state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   submit.disabled = true;
   try {
     // Stage the rule in the ordinary timeline query; publish only accepted input.
@@ -8067,7 +8247,11 @@ function renderLanePicker() {
     ? `<p class="lane-picker-empty">Showing ${filtered.length.toLocaleString()} of ${matching.length.toLocaleString()} matches. Refine the search to reach another resource.</p>`
     : "";
   list.innerHTML = windowNote + ([...groups.entries()].map(([kind, lanes]) => `<fieldset><legend>${escapeHtml(titleCase(kind))}<span>${lanes.length}</span></legend>${lanes.map((lane) => `<label><input type="checkbox" data-lane-resource-id="${escapeHtml(lane.resourceId)}" ${laneSelectedByMode(lane.resourceId) ? "checked" : ""}><span><strong>${escapeHtml(lane.label)}</strong><small>${escapeHtml(`${humanLayer(lane.layer)} / ${lane.resourceId}`)}</small></span>${state.correlatedResourceIds.has(lane.resourceId) ? '<i>related</i>' : ""}</label>`).join("")}</fieldset>`).join("") || '<p class="lane-picker-empty">No resources match this search.</p>');
-  list.querySelectorAll("[data-lane-resource-id]").forEach((input) => input.addEventListener("change", () => setExplicitLaneVisibility(input.dataset.laneResourceId, input.checked)));
+  list.querySelectorAll("[data-lane-resource-id]").forEach((input) => input.addEventListener("change", () => {
+    if (!setExplicitLaneVisibility(input.dataset.laneResourceId, input.checked)) {
+      input.checked = laneSelectedByMode(input.dataset.laneResourceId);
+    }
+  }));
   document.querySelectorAll("[data-lane-action]").forEach((button) => {
     button.disabled = Boolean(
       combined
@@ -8712,7 +8896,7 @@ function renderTopologyQueryState() {
   target.innerHTML = [
     `<span class="topology-state-chip">Projection <strong>${escapeHtml(projection?.label || payload.projection_id || "unknown")}</strong></span>`,
     `<span class="topology-state-chip">Status <strong>${escapeHtml(perspective?.label || payload.status_perspective_id || "unknown")}</strong></span>`,
-    `<span class="topology-state-chip">Clock <strong>${escapeHtml(payload.clock_policy || byId("topology-clock-policy").value)}</strong></span>`,
+    `<span class="topology-state-chip">Clock <strong>${escapeHtml(payload.clock_policy || payload.resolved_basis?.clock_policy || "not declared")}</strong></span>`,
     `<span class="topology-state-chip ${payload.source === "unavailable" ? "is-warning" : ""}">Source <strong>${escapeHtml(payload.source || "versioned API")}</strong></span>`,
     `<span class="topology-state-chip ${completeness.complete === false ? "is-warning" : ""}">Coverage <strong>${escapeHtml(completeness.complete === true ? "complete" : completeness.complete === false ? "partial" : "not declared")}</strong></span>`,
     ...limitations.slice(0, 3).map((item) => `<span class="topology-state-chip is-warning">${escapeHtml(item)}</span>`),
@@ -9645,6 +9829,7 @@ function registerServerEventLogItem(raw, fallbackIndex) {
 }
 
 function pruneServerEventLogOwnedCaches() {
+  pruneTimelineCaches();
   if (!state.eventLogOwnedEvents.size && !state.eventLogOwnedSources.size) return;
   const loadedEvents = new Set();
   const loadedSources = new Set();
@@ -10317,23 +10502,27 @@ async function resolveEventLogSelection() {
   if (state.eventLogSelectionCache?.signature === signature) {
     return state.eventLogSelectionCache.payload;
   }
-  const requestId = ++state.eventLogSelectionRequestId;
-  const payload = await analysisRuntimeApi(revisionPath("event-log/selection"), {
+  const requestId = state.eventLogSelectionRequestId;
+  const pending = state.eventLogSelectionPending;
+  if (pending?.signature === signature && pending.requestId === requestId) return pending.promise;
+  const promise = analysisRuntimeApi(revisionPath("event-log/selection"), {
     method: "POST",
     body: JSON.stringify(eventLogSelectionRequestBody()),
+  }).then((payload) => {
+    if (requestId !== state.eventLogSelectionRequestId || signature !== eventLogSelectionSignature()) {
+      throw new Error("The event-log selection changed while the action was resolving.");
+    }
+    state.eventLogSelectionCache = { signature, payload };
+    if (payload.copy_action_label) {
+      const copyButton = byId("event-selection-copy");
+      if (copyButton) copyButton.textContent = String(payload.copy_action_label);
+    }
+    return payload;
+  }).finally(() => {
+    if (state.eventLogSelectionPending?.promise === promise) state.eventLogSelectionPending = null;
   });
-  if (
-    requestId !== state.eventLogSelectionRequestId
-    || signature !== eventLogSelectionSignature()
-  ) {
-    throw new Error("The event-log selection changed while the action was resolving.");
-  }
-  state.eventLogSelectionCache = { signature, payload };
-  if (payload.copy_action_label) {
-    const copyButton = byId("event-selection-copy");
-    if (copyButton) copyButton.textContent = String(payload.copy_action_label);
-  }
-  return payload;
+  state.eventLogSelectionPending = { signature, requestId, promise };
+  return promise;
 }
 
 async function writeClipboardText(text) {
@@ -11351,6 +11540,8 @@ function cancelScheduledTimelineZoom({ commitHistory = false } = {}) {
 }
 
 function beginTimelineWheelBurst(mode) {
+  // The received gesture owns navigation before its deferred frame can run.
+  state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   if (state.timelineWheelBurstActive && state.timelineWheelMode !== mode) {
     finishTimelineWheelBurst();
   }
@@ -11420,6 +11611,7 @@ function restoreTimelineView(index) {
   cancelScheduledTimelineZoom({ commitHistory: true });
   index = state.timelineViewHistoryIndex + relativeOffset;
   if (index < 0 || index >= state.timelineViewHistory.length) return false;
+  state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   const snapshot = state.timelineViewHistory[index];
   state.timelineViewRestoring = true;
   state.timelineViewHistoryIndex = index;
@@ -11498,6 +11690,7 @@ function applyTimelineZoom(rawValue, {
     if (announce) showToast("That zoom cannot be represented by this browser viewport.");
     return false;
   }
+  if (recordHistory) state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   if (
     Math.abs(state.zoom - viewport.zoom) <= Number.EPSILON * Math.max(1, state.zoom, viewport.zoom)
     && state.timelineWindowStartNs === viewport.startNs
@@ -11645,6 +11838,7 @@ function panTimelineViewportByPixels(deltaPx, {
   fromWheel = false,
 } = {}) {
   if (!Number.isFinite(deltaPx) || deltaPx === 0) return false;
+  if (!fromWheel) state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   if (!fromWheel) cancelScheduledTimelineZoom({ commitHistory: recordHistory });
   const [startNs, endNs] = timelineWindowBounds();
   const duration = endNs - startNs;
@@ -12292,6 +12486,7 @@ function bindControls() {
   document.querySelectorAll("[data-lane-action]").forEach((button) => button.addEventListener("click", () => {
     const action = button.dataset.laneAction;
     if (action === "none") {
+      state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
       state.laneMode = "custom";
       state.explicitLaneIds.clear();
       if (isScaleMode()) refreshScaleTimeline();

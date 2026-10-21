@@ -67,7 +67,7 @@ test('Use in trace refreshes scenario guidance after applying the row scenario',
   byId('mn-route-scenario-description').textContent = 'Old guidance';
   const deps = { state, byId, selectedRouteScenario: () => scenarios.find((s) => s.scenario_id === byId('mn-route-scenario').value),
     routeEndpointSeedValue: () => '', routeStartSeedValue: () => '', renderRouteSteeringProfiles() {},
-    setRouteEndpointInput() {}, setRouteStartInput() {}, ensureRouteSelectValue() {}, invalidateRouteTraceResult() {}, syncUrl() {},
+    setRouteEndpointInput() {}, setRouteStartInput() {}, syncRouteStartControlState() {}, ensureRouteSelectValue() {}, invalidateRouteTraceResult() {}, syncUrl() {},
     matchMedia: () => ({ matches: true }), showToast() {} };
   const use = new Function(...Object.keys(deps), `${extract('renderRouteScenarioGuide')} ${extract('useRouteTableEntry')} return useRouteTableEntry;`)(...Object.values(deps));
   use('row');

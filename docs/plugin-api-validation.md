@@ -438,6 +438,17 @@ well as Arrow keys; an animation-frame retry alone may precede data arrival.
 Source-preset controls need the same focus preservation as resource checkboxes.
 Pagination within an unchanged query should preserve group disclosure, expanded
 relationship identities and keyboard focus, including the final page.
+Check dialog reopen and settled asynchronous rerenders too. Restored focus must
+be visible below the actual sticky controls; `preventScroll` alone does not
+establish visibility. Nested native controls must retain their keyboard action
+instead of bubbling into a row-selection shortcut. A rejected cap-limited
+checkbox change must restore its checked state.
+At narrow viewport widths, check the hit target beneath hover cards as well:
+an inspection card must not cover and intercept its own jump control. Keep
+overflowing facts scrollable and reset any size constraint on the next open.
+For dense timelines, hit-test adjacent marker centers and compare pointer and
+keyboard drill-down identities. Keep counts/IDs intact when shrinking glyphs,
+restore their presentation on zoom, and retain equal-time evidence.
 
 Exercise normalized source-lane construction together with lookup, hover and
 reveal. Display clusters may be derived from marks instead of stored on the
@@ -447,6 +458,9 @@ Repeated reveals while data is pending must reuse the target's lane allocation,
 including near capacity. Validate a custom regex with core before retaining its
 rule or clearing the form; rejection must not poison later timeline requests.
 Use the existing server policy instead of maintaining another regex grammar.
+Use the exact core source-record UID selector for a single-record jump. A regex
+over record text can match thousands of references before the target itself.
+Combine supplied filters, and test collisions in messages plus capped results.
 Keep newer form input intact if validation finishes after it changes.
 If staged validation replaces a pending viewport read, recover that read when
 the candidate is discarded, without canceling a newer request.
@@ -455,6 +469,12 @@ Exercise typed ranges narrower than one pixel at both capture ends. Pointer
 and keyboard adjustments must remain ordered and inside the capture, without
 moving against the requested direction to enforce a visual minimum. Check the
 actual summary request as well as formatted fields, which may hide clamping.
+During a pending range query, start and cancel a new brush after the old query
+settles. Restore the previous range's result or issue its read again; never
+restore an orphaned loading placeholder. An unchanged range should reuse its
+current result or pending request while still superseding older navigation.
+For full-capture summaries, count all events but project only bounded detail;
+verify omitted-tail counts, redaction, generic mappings and inclusive bounds.
 
 Validate requests before sending them, but invalidate older response authority
 when a newer user intent fails validation. Cover enabled change handlers while
@@ -462,10 +482,24 @@ submit is disabled. Programmatic form seeding must update dependent guidance
 and controls, not just values. Render explicit edge direction independently
 of descriptor availability; inference-rule identity is not a relationship type.
 Unknown vocabulary must remain honest without discarding other declared facts.
+Keep displayed clock policy and endpoint labels bound to the applied result
+after invalid controls or a failed request. Route-row seeds must retain logical
+endpoint descriptors, update direction-dependent controls and clear obsolete
+errors. Compare canonical start identity rather than incidental descriptor
+shape. Missing resolution and traversal-budget exhaustion are not evidence of
+disagreement; withdrawn candidates must not invalidate an active path.
+
+At scale, bound combined relationship glyphs across the whole visible window,
+disclose sampling and recover exact narrow-window detail. Preview lengths are
+not exact cluster or selected-range counts. Repeated navigation must also
+retire old event/source/detail cache entries while protecting current lanes,
+selection and open detail; a small DOM alone does not establish bounded memory.
 
 Cancel superseded read requests where the transport supports it and retain
 generation checks for already-settled work. Do not report browser cancellation
 as proof that backend CPU work stopped without a cooperative cancellation check.
+Cover disconnects before and during body upload as well as after query work
+starts; an early abort should use the existing cancellation boundary.
 
 Form resets restore values but not dynamically assigned validity constraints.
 Keep conditional visibility and native validation synchronized on initial load,

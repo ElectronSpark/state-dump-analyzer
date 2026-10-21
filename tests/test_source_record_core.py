@@ -295,6 +295,50 @@ class SourceRecordCoreTests(unittest.TestCase):
             ["record-1"],
         )
 
+    def test_exact_lane_uid_cannot_be_crowded_out_by_messages_mentioning_it(self) -> None:
+        target_uid = "ab" * 32
+        records = [
+            {"source_record_uid": f"{index:064x}", "timestamp_ns": str(index),
+             "source_type": "ctf", "message": f"refers to {target_uid}"}
+            for index in range(5_000)
+        ]
+        records.append({"source_record_uid": target_uid, "timestamp_ns": "5000",
+                        "source_type": "ctf", "message": "target"})
+        lane = record_lanes_for_window(records, [{
+            "lane_id": "exact", "pattern": target_uid,
+            "source_record_uid": target_uid,
+        }], start_ns=0, end_ns=5000)[0]
+        self.assertEqual(lane["source_record_uid"], target_uid)
+        self.assertEqual(lane["record_count"], 1)
+        self.assertFalse(lane["truncated"])
+        self.assertEqual([mark["source_record_uid"] for mark in lane["marks"]], [target_uid])
+
+    def test_exact_lane_uid_intersects_other_filters_and_preserves_untimed_records(self) -> None:
+        rule = {"lane_id": "exact", "pattern": ".+", "source_record_uid": "record-2"}
+        cases = (
+            ({}, 1),
+            ({"source_record_uid": "RECORD-2"}, 0),
+            ({"source_types": ["ctf"]}, 0),
+            ({"unmatched_only": True}, 0),
+            ({"pattern": "not-in-record"}, 0),
+        )
+        for extra, count in cases:
+            with self.subTest(extra=extra):
+                lane = record_lanes_for_window(RECORDS, [{**rule, **extra}], start_ns=0, end_ns=300)[0]
+                self.assertEqual(lane["record_count"], count)
+        untimed = record_lanes_for_window([UNTIMED_RECORD], [{
+            **rule, "source_record_uid": UNTIMED_RECORD["source_record_uid"],
+        }], start_ns=0, end_ns=300)[0]
+        self.assertEqual(untimed["marks"], [])
+        self.assertEqual(untimed["unplaced_count"], 1)
+
+    def test_exact_lane_uid_rejects_invalid_values(self) -> None:
+        for uid in (None, 1, False, [], {}, "", "x" * 257):
+            with self.subTest(uid=uid), self.assertRaisesRegex(ValueError, "source_record_uid"):
+                record_lanes_for_window(RECORDS, [{
+                    "lane_id": "exact", "pattern": ".+", "source_record_uid": uid,
+                }], start_ns=0, end_ns=300)
+
     def test_lane_marks_expose_only_the_bounded_generic_record_projection(self) -> None:
         private_record = {
             **RECORDS[0],

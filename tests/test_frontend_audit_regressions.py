@@ -128,15 +128,16 @@ class SingleNodeAuditRegressionContractTests(unittest.TestCase):
         timeline = javascript_function(self.script, "renderTimeline")
 
         self.assertIn("item.timeNs >= bounds[0] && item.timeNs <= bounds[1]", exact)
-        self.assertIn("count === points.length", exact)
+        self.assertIn("count === total", exact)
+        self.assertIn("sampled: points.length < total", exact)
         self.assertIn('" partial-range"', exact)
         self.assertIn("state.hoverModels.get(element.dataset.hoverKey)", highlight)
-        self.assertIn("pointClusterRangeState(model?.cluster?.items || [], bounds)", highlight)
+        self.assertIn("pointClusterRangeState(items, bounds, cluster?.detailTotal ?? cluster?.count ?? items.length)", highlight)
         self.assertIn('element.classList.toggle("partial-range"', highlight)
         self.assertIn(":not(.event-mark.cluster):not(.source-record-mark.cluster)", highlight)
         self.assertIn('element.setAttribute("aria-label"', highlight)
-        self.assertIn("pointClusterRangeState(glyph.items, bounds)", source_lanes)
-        self.assertIn("pointClusterRangeState(clusterItems, bounds)", timeline)
+        self.assertIn("pointClusterRangeState(glyph.items, bounds, glyph.count)", source_lanes)
+        self.assertIn("pointClusterRangeState(glyph.detailHydrated ? glyph.detailItems : clusterItems, bounds, glyph.detailTotal ?? glyph.count)", timeline)
         self.assertIn("inSelectedRange(mark.timeNs)", source_hover)
         self.assertIn("in selected range", source_hover)
 
@@ -410,8 +411,12 @@ class SingleNodeAuditRegressionContractTests(unittest.TestCase):
             self.assertIn(controller, schedule)
         topology = javascript_function(self.script, "requestTopology")
         self.assertLess(
-            topology.index("request = topologyRequestBody()"),
             topology.index('abortLatestRequests("topologyAbortController")'),
+            topology.index("request = topologyRequestBody()"),
+        )
+        self.assertLess(
+            topology.index("++state.topologyRequestId"),
+            topology.index("request = topologyRequestBody()"),
         )
         topology_schedule = javascript_function(
             self.script,
@@ -615,8 +620,16 @@ class TopologyAuditRegressionContractTests(unittest.TestCase):
             seed.index("entry.destination?.destination_id"),
             seed.index("entry.destination?.value"),
         )
-        self.assertIn('setRouteEndpointInput("destination", destination)', seed)
-        self.assertIn('setRouteEndpointInput("source", source)', seed)
+        self.assertIn(
+            'setRouteEndpointInput("destination", explicitFlowDestination && '
+            'typeof explicitFlowDestination === "object" ? explicitFlowDestination : destination)',
+            seed,
+        )
+        self.assertIn(
+            'setRouteEndpointInput("source", explicitFlowSource && '
+            'typeof explicitFlowSource === "object" ? explicitFlowSource : source)',
+            seed,
+        )
         self.assertNotIn('if (source) setRouteEndpointInput("source", source)', seed)
         self.assertIn("setRouteStartInput(start)", seed)
         self.assertIn("routeStartSeedValue(startDescriptor, entry.node_id)", seed)

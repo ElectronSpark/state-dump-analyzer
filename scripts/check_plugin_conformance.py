@@ -31,7 +31,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
     "presentation": (
         "dashboard_core", "dashboard_query_api", "history_search_core",
         "history_search_algorithms", "history_search_reuse", "history_search_validation", "history_query_algorithms",
-        "zoom_timeline", "zoom_density", "zoom_cancellation",
+        "zoom_timeline", "zoom_density", "zoom_cancellation", "range_summary_bounds",
         "topology_core", "topology_federation", "federation_executor",
         "multi_node_topology", "resource_property_policy",
     ),

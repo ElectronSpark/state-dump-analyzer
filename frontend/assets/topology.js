@@ -114,6 +114,7 @@ const state = {
   routeHoverTokens: new Set(),
   routeHoverSource: "",
   routeHoverExact: false,
+  routePacketKeyboardAnchor: null,
   routeTokenIndex: new Map(),
   routeFocusIndex: new Map(),
   routeTokenElements: new Set(),
@@ -1557,8 +1558,10 @@ function explicitRouteCompleteness(value) {
 function explicitRouteConsistency(value) {
   const direct = routeStateEnum(value?.consistency ?? value?.consistency_state ?? value?.consistency_status);
   if (direct) return direct;
-  const consistent = explicitRouteBoolean(value?.consistent);
-  return consistent === true ? "consistent" : consistent === false ? "inconsistent" : "unknown";
+  const consistent = explicitRouteBoolean(value?.consistent, value?.consistency?.consistent);
+  // A negative proof flag also covers missing evidence. Only a declared
+  // conflict state or an explicit inconsistent flag establishes disagreement.
+  return consistent === true ? "consistent" : "unknown";
 }
 
 function explicitRouteDisposition(value) {
@@ -1866,12 +1869,10 @@ function normalizeRouteSegment(raw, index, nodes) {
   const inferred = inferredFlag !== null ? inferredFlag : routeCompletenessIsInferred(completeness) ? true : null;
   const unresolved = unresolvedFlag !== null ? unresolvedFlag : routeCompletenessIsUnresolved(completeness) ? true : null;
   const inconsistentFlag = explicitRouteBoolean(raw?.inconsistent);
-  const consistentFlag = explicitRouteBoolean(raw?.consistent, raw?.consistency?.consistent);
   const inconsistent = inconsistentFlag !== null
     ? inconsistentFlag
-    : consistentFlag !== null ? !consistentFlag
-      : ROUTE_INCONSISTENT_STATES.has(consistency) ? true
-        : ROUTE_CONSISTENT_STATES.has(consistency) ? false : null;
+    : ROUTE_INCONSISTENT_STATES.has(consistency) ? true
+      : ROUTE_CONSISTENT_STATES.has(consistency) ? false : null;
   const segment = {
     ...raw,
     segment_id: segmentId,
@@ -2461,13 +2462,13 @@ function normalizeRoutePath(raw, index, nodes) {
   const completeness = explicitRouteCompleteness(raw);
   const consistency = explicitRouteConsistency(raw);
   const inconsistentFlag = explicitRouteBoolean(raw?.inconsistent);
-  const consistentFlag = explicitRouteBoolean(raw?.consistent, raw?.consistency?.consistent);
   const segmentConsistency = segments.map((segment) => segment.inconsistent).filter((value) => value !== null);
   const inconsistent = inconsistentFlag !== null
     ? inconsistentFlag
-    : consistentFlag !== null ? !consistentFlag
-      : ROUTE_INCONSISTENT_STATES.has(consistency) || segmentConsistency.includes(true) ? true
-        : ROUTE_CONSISTENT_STATES.has(consistency) || (segments.length > 0 && segmentConsistency.length === segments.length && segmentConsistency.every((value) => value === false)) ? false : null;
+    : ROUTE_INCONSISTENT_STATES.has(consistency) || segmentConsistency.includes(true) ? true
+      : ROUTE_CONSISTENT_STATES.has(consistency) ? false
+        : consistency !== "unknown" ? null
+          : segments.length > 0 && segmentConsistency.length === segments.length && segmentConsistency.every((value) => value === false) ? false : null;
   const inferredFlag = explicitRouteBoolean(raw?.inferred);
   const inferred = inferredFlag !== null
     ? inferredFlag
@@ -2565,7 +2566,7 @@ function normalizeRouteTrace(raw, request) {
     target_id: String(target?.target_id ?? target?.id ?? ""),
   }));
   const consistency = explicitRouteConsistency(raw);
-  const traceConsistent = explicitRouteBoolean(raw?.consistent, raw?.consistency?.consistent);
+  const inconsistentFlag = explicitRouteBoolean(raw?.inconsistent);
   const inconsistentIssueIds = new Set([
     ...firstArray(raw?.consistency?.issue_refs, raw?.consistency_issue_refs).map(String),
     ...findings.filter((finding) => finding?.affects_consistency === true).map((finding) => finding.finding_id),
@@ -2582,10 +2583,10 @@ function normalizeRouteTrace(raw, request) {
     summary: raw?.summary || raw?.counts || {},
     completeness,
     consistency,
-    inconsistent: traceConsistent === null
-      ? ROUTE_INCONSISTENT_STATES.has(consistency) ? true
-        : ROUTE_CONSISTENT_STATES.has(consistency) ? false : null
-      : !traceConsistent,
+    inconsistent: inconsistentFlag !== null ? inconsistentFlag
+      : ROUTE_INCONSISTENT_STATES.has(consistency) || inconsistentIssueIds.size > 0 ? true
+      : ROUTE_CONSISTENT_STATES.has(consistency) ? false
+        : null,
     forwarding_capable: explicitRouteBoolean(raw?.forwarding_capable),
     paths,
     findings,
@@ -2792,6 +2793,20 @@ function directionalPairForScenario(scenario = selectedRouteScenario()) {
   ) || null;
 }
 
+function routeScenarioContext(scenario = selectedRouteScenario(), direction = byId("mn-route-validation").value) {
+  const side = direction === "reverse" ? "reverse" : "forward";
+  const declared = scenario?.directional_routing_contexts?.[side] || {};
+  const pair = directionalPairForScenario(scenario)?.[side] || {};
+  return {
+    routeType: declared.route_type ?? pair.route_type ?? scenario?.route_type ?? state.routeCapabilities?.default_route_type,
+    routeFamily: declared.route_family ?? declared.address_family ?? pair.route_family ?? pair.address_family
+      ?? scenario?.route_family ?? scenario?.address_family ?? state.routeCapabilities?.default_route_family,
+    vrf: declared.vrf ?? declared.vrf_id ?? pair.vrf ?? pair.vrf_id ?? scenario?.vrf ?? scenario?.vrf_id
+      ?? state.routeCapabilities?.default_vrf,
+    scenario,
+  };
+}
+
 function routeEndpointDescriptor(kind) {
   return {
     input: byId(kind === "source" ? "mn-route-source" : "mn-route-destination"),
@@ -2838,15 +2853,25 @@ function routeEndpointInputValue(kind, rawValue) {
 
 function setRouteEndpointInput(kind, rawValue) {
   const { input, idField } = routeEndpointDescriptor(kind);
-  const match = routeEndpointMatch(kind, rawValue);
-  const display = routeEndpointInputValue(kind, rawValue);
+  const descriptor = rawValue && typeof rawValue === "object" ? rawValue : null;
+  const seed = descriptor ? routeEndpointSeedValue(descriptor, kind) : rawValue;
+  const match = routeEndpointMatch(kind, seed);
+  const display = descriptor && !match
+    ? String(descriptor.value || descriptor.label || seed || "")
+    : routeEndpointInputValue(kind, seed);
   input.value = display;
+  if (descriptor) {
+    input.dataset.endpointDescriptor = JSON.stringify(descriptor);
+    input.dataset.endpointDisplay = display;
+  } else {
+    delete input.dataset.endpointDescriptor;
+  }
   if (match) {
     input.dataset.endpointId = String(match[idField]);
     input.dataset.endpointDisplay = display;
   } else {
     delete input.dataset.endpointId;
-    delete input.dataset.endpointDisplay;
+    if (!descriptor) delete input.dataset.endpointDisplay;
   }
 }
 
@@ -2863,6 +2888,13 @@ function routeEndpointRequestValue(kind) {
 
 function selectedRouteEndpoint(kind) {
   const { input, values, idField } = routeEndpointDescriptor(kind);
+  if (input.dataset.endpointDescriptor && input.value.trim() === input.dataset.endpointDisplay) {
+    try {
+      const descriptor = JSON.parse(input.dataset.endpointDescriptor);
+      if (descriptor && typeof descriptor === "object" && !Array.isArray(descriptor)) return descriptor;
+    } catch { /* Recover through the visible value if cached identity was lost. */ }
+    delete input.dataset.endpointDescriptor;
+  }
   if (input.dataset.endpointId && input.value.trim() === input.dataset.endpointDisplay) {
     return values.find((item) => item[idField] === input.dataset.endpointId) || null;
   }
@@ -3644,8 +3676,12 @@ function bindRouteCorrelationElements(scope = document) {
     const source = `${element.dataset.routeKind || "component"}:${element.dataset.routeId || Math.random().toString(36).slice(2)}`;
     element.dataset.routeHoverSource = source;
     const exactTargets = readRouteFocusTargets(element);
-    const enter = () => setRouteHover(exactTargets.length ? exactTargets : readRouteTokens(element), source, Boolean(exactTargets.length));
+    const enter = (event) => {
+      if (event?.type === "pointerenter" && routePacketKeyboardPreviewActive()) return;
+      setRouteHover(exactTargets.length ? exactTargets : readRouteTokens(element), source, Boolean(exactTargets.length));
+    };
     const leave = (event) => {
+      if (event.type === "pointerleave" && routePacketKeyboardPreviewActive()) return;
       const next = event.relatedTarget?.closest?.("[data-route-focus-targets], [data-route-tokens]");
       if (next && scope.contains(next) && next.dataset.routeBound === "true") {
         const nextExactTargets = readRouteFocusTargets(next);
@@ -3659,6 +3695,11 @@ function bindRouteCorrelationElements(scope = document) {
       clearRouteHover(source);
     };
     element.addEventListener("pointerenter", enter);
+    element.addEventListener("pointermove", (event) => {
+      if (!state.routePacketKeyboardAnchor || !(event.movementX || event.movementY)) return;
+      state.routePacketKeyboardAnchor = null;
+      enter(event);
+    });
     element.addEventListener("pointerleave", leave);
     element.addEventListener("focus", enter);
     element.addEventListener("blur", leave);
@@ -4098,6 +4139,7 @@ function selectRoutePacketTransition(packetRef, trigger = null) {
 }
 
 function clearRoutePacketSelection(options = {}) {
+  state.routePacketKeyboardAnchor = null;
   const trigger = state.routePacketPinnedTrigger || state.routePacketPreviewAnchor;
   clearTimeout(state.routePacketPreviewTimer);
   state.routePacketPinnedRef = "";
@@ -4145,18 +4187,33 @@ function renderRoutePacketEvolution(path) {
   applyRoutePacketFocus();
 }
 
+function routePacketKeyboardPreviewActive() {
+  return Boolean(state.routePacketKeyboardAnchor?.isConnected
+    && document.activeElement === state.routePacketKeyboardAnchor);
+}
+
 function bindRoutePacketElements(scope) {
   scope.querySelectorAll("[data-route-packet-ref]").forEach((element) => {
     if (element.dataset.routePacketBound === "true") return;
     element.dataset.routePacketBound = "true";
     const packetRef = element.dataset.routePacketRef;
-    const enter = (event) => showRoutePacketPreview(packetRef, element, {
-      clientX: event.clientX,
-      clientY: event.clientY,
-    });
+    const enter = (event) => {
+      if (routePacketKeyboardPreviewActive()) return;
+      showRoutePacketPreview(packetRef, element, { clientX: event.clientX, clientY: event.clientY });
+    };
     element.addEventListener("pointerenter", enter);
-    element.addEventListener("pointerleave", () => scheduleClearRoutePacketPreview());
-    element.addEventListener("focus", () => showRoutePacketPreview(packetRef, element));
+    element.addEventListener("pointermove", (event) => {
+      if (!(event.movementX || event.movementY)) return;
+      state.routePacketKeyboardAnchor = null;
+      enter(event);
+    });
+    element.addEventListener("pointerleave", () => {
+      if (!routePacketKeyboardPreviewActive()) scheduleClearRoutePacketPreview();
+    });
+    element.addEventListener("focus", () => {
+      state.routePacketKeyboardAnchor = element;
+      showRoutePacketPreview(packetRef, element);
+    });
     element.addEventListener("blur", () => scheduleClearRoutePacketPreview());
     element.addEventListener("click", () => selectRoutePacketTransition(packetRef, element));
     element.addEventListener("keydown", (event) => {
@@ -4179,12 +4236,19 @@ function bindRoutePacketGraphElements(scope) {
     const refs = readRoutePacketRefs(element);
     if (refs.length !== 1) return;
     const packetRef = refs[0];
-    const enter = (event) => showRoutePacketPreview(packetRef, element, {
-      clientX: event.clientX,
-      clientY: event.clientY,
-    });
+    const enter = (event) => {
+      if (routePacketKeyboardPreviewActive()) return;
+      showRoutePacketPreview(packetRef, element, { clientX: event.clientX, clientY: event.clientY });
+    };
     element.addEventListener("pointerenter", enter);
-    element.addEventListener("pointerleave", () => scheduleClearRoutePacketPreview());
+    element.addEventListener("pointermove", (event) => {
+      if (!(event.movementX || event.movementY)) return;
+      state.routePacketKeyboardAnchor = null;
+      enter(event);
+    });
+    element.addEventListener("pointerleave", () => {
+      if (!routePacketKeyboardPreviewActive()) scheduleClearRoutePacketPreview();
+    });
     element.addEventListener("focus", () => showRoutePacketPreview(packetRef, element));
     element.addEventListener("blur", () => scheduleClearRoutePacketPreview());
     if (element.dataset.routeKind === "route-segment" && element.getAttribute("aria-hidden") !== "true") {
@@ -4415,6 +4479,10 @@ function renderRouteControls() {
     `<option value="${escapeHtml(vrf.vrf)}">${escapeHtml(vrf.label)}</option>`
   ).join("");
   const scenario = selectedRouteScenario();
+  const requestedValidation = params.get("route_direction") || "bidirectional";
+  validationSelect.value = ["forward", "reverse", "bidirectional"].includes(requestedValidation)
+    ? requestedValidation : "bidirectional";
+  const scenarioContext = routeScenarioContext(scenario);
   const scenarioEndpoints = routeScenarioEndpointDefaults(scenario, scenarioPair);
   setRouteEndpointInput("source", params.get("route_source") || scenarioEndpoints.source);
   setRouteEndpointInput("destination", params.get("route_destination") || scenarioEndpoints.destination);
@@ -4427,17 +4495,15 @@ function renderRouteControls() {
     const suffix = [family.address_family, family.safi].filter(Boolean).join("/");
     return `<option value="${escapeHtml(family.route_family)}">${escapeHtml(`${family.label}${suffix && suffix !== family.route_family ? ` / ${suffix}` : ""}`)}</option>`;
   }).join("") || '<option value="">Plug-in default</option>';
-  const requestedFamily = params.get("route_family") || scenarioPair?.forward?.route_family || scenario?.route_family
-    || scenario?.address_family || state.routeCapabilities.default_route_family;
+  const requestedFamily = params.get("route_family") || scenarioContext.routeFamily;
   typeSelect.innerHTML = state.routeCapabilities.route_types.map((type) =>
     `<option value="${escapeHtml(type.type_id)}">${escapeHtml(type.label)}</option>`
   ).join("") || '<option value="">Plug-in default</option>';
   policySelect.innerHTML = state.routeCapabilities.policies.map((policy) =>
     `<option value="${escapeHtml(policy)}">${escapeHtml(titleCase(policy))}</option>`
   ).join("") || '<option value="">No policy advertised</option>';
-  const requestedType = params.get("route_type") || scenarioPair?.forward?.route_type || scenario?.route_type
-    || state.routeCapabilities.default_route_type;
-  const requestedVrf = params.get("route_vrf") || scenario?.vrf || scenario?.vrf_id || state.routeCapabilities.default_vrf;
+  const requestedType = params.get("route_type") || scenarioContext.routeType;
+  const requestedVrf = params.get("route_vrf") || scenarioContext.vrf;
   applyCompatibleRouteContext({
     routeType: requestedType,
     routeFamily: requestedFamily,
@@ -4452,9 +4518,6 @@ function renderRouteControls() {
     || scenario?.steering_profile_id
     || state.routeCapabilities.default_steering_profile;
   renderRouteSteeringProfiles(scenario, requestedSteering);
-  const requestedValidation = params.get("route_direction") || "bidirectional";
-  validationSelect.value = ["forward", "reverse", "bidirectional"].includes(requestedValidation)
-    ? requestedValidation : requestedValidation === "both" ? "bidirectional" : "bidirectional";
   scenarioSelect.disabled = !state.routeCapabilities.scenarios.length;
   startInput.disabled = false;
   sourceInput.disabled = false;
@@ -4502,10 +4565,18 @@ function traceIsInconsistent(trace) {
 }
 
 function traceIsIncomplete(trace) {
+  const paths = trace?.paths || [];
+  const relevant = paths.filter((path) => !ROUTE_INACTIVE_STATES.has(firstRouteEnum(path?.activity))
+    && !ROUTE_STANDBY_STATES.has(firstRouteEnum(path?.selection, path?.eligibility))
+    && firstRouteEnum(path?.selection, path?.eligibility) !== "ineligible_dead");
+  // Retained withdrawn/standby coverage does not qualify established active
+  // forwarding. Unknown or unresolved eligible branches still count.
+  if (trace?.endpoint_reachability?.reaches_target === true && relevant.length
+    && relevant.every((path) => pathIsUsableActive(path) && !pathIsInferred(path))) return false;
   return routeCompletenessIsUnresolved(trace)
     || routeCompletenessIsInferred(trace)
     || routeCompletenessIsUnknown(trace)
-    || Boolean((trace?.paths || []).some((path) => pathIsUnresolved(path) || pathIsInferred(path)));
+    || relevant.some((path) => pathIsUnresolved(path) || pathIsInferred(path));
 }
 
 function traceDirectionState(trace) {
@@ -4592,12 +4663,13 @@ function routeFlowEndpointLabel(trace, side) {
   const capabilities = side === "source"
     ? state.routeCapabilities?.sources || []
     : state.routeCapabilities?.destinations || [];
-  const capability = capabilities.find((item) =>
+  const capability = endpointId && capabilities.find((item) =>
     item.endpoint_id === endpointId
     || item.source_id === endpointId
     || item.destination_id === endpointId
-  ) || capabilities.find((item) => item.node_id && item.node_id === endpoint.node_id);
-  return capability?.label || endpoint.label || endpoint.value || endpoint.node_id || endpointId
+  );
+  const node = capabilities.find((item) => item.node_id && item.node_id === endpoint.node_id);
+  return endpoint.label || capability?.label || endpoint.value || node?.label || endpoint.node_id || endpointId
     || (side === "source" ? "traffic source" : "traffic destination");
 }
 
@@ -4855,6 +4927,11 @@ function routeTraceOutcome(trace, directional) {
   if (directionState.code === "dropped") {
     return { code: "unreachable", label: "Route is not reachable", detail: "No complete forwarding path was resolved for the selected direction.", className: "is-inconsistent" };
   }
+  const budget = !trace.paths.some(pathIsUsableActive)
+    && trace.paths.map(routeBudgetPresentation).find(Boolean);
+  if (budget) {
+    return { code: "incomplete", label: "Traversal limit reached", detail: budget.detail, className: "is-unresolved" };
+  }
   const incomplete = traceIsIncomplete(trace) || directionState.code === "unresolved" || directional.code === "incomplete";
   const inconsistent = traceIsInconsistent(trace);
   if (incomplete && inconsistent) {
@@ -4917,7 +4994,27 @@ function routePathBadges(path) {
   return badges.join("");
 }
 
+function routeBudgetPresentation(path) {
+  const reason = firstRouteEnum(path?.terminal_reason, path?.termination_reason, path?.result, path?.disposition);
+  const budget = path?.resolution_budget;
+  const kind = budget?.kind || ({
+    hop_limit_exceeded: "max_hops", hop_budget_exhausted: "max_hops",
+    recursion_limit_exceeded: "max_recursion", recursion_budget_exhausted: "max_recursion",
+  })[reason];
+  if (!kind) return null;
+  const label = kind === "max_hops" ? "Hop limit reached"
+    : kind === "max_recursion" ? "Recursion limit reached" : "Traversal limit reached";
+  const values = [
+    budget?.limit != null ? `configured limit ${budget.limit}` : "",
+    budget?.observed != null ? `observed ${budget.observed}` : "",
+    reason ? `terminal reason ${reason}` : "",
+  ].filter(Boolean).join("; ");
+  return { label, detail: `${label}${values ? ` (${values})` : ""}. Traversal stopped at the requested limit; retained node-local steps do not establish delivery.` };
+}
+
 function pathStatusSummary(path) {
+  const budget = routeBudgetPresentation(path);
+  if (budget) return budget.label;
   if (routeValueIsCycle(path)) {
     const reason = firstRouteEnum(path?.terminal_reason, path?.termination_reason);
     return reason ? `Loop detected: ${titleCase(reason)}` : "Forwarding loop detected";
@@ -4936,7 +5033,7 @@ function pathStatusSummary(path) {
   if (new Set(["comparison_only", "control_expected_not_observed"]).has(selection)) {
     return "Control expected / comparison only";
   }
-  if (pathIsInconsistent(path)) return "Layer disagreement";
+  if (pathIsInconsistent(path)) return "Inconsistent evidence";
   if (pathIsUnresolved(path)) return "Incomplete";
   if (pathIsInferred(path)) return "Best-effort continuation";
   if (routeCompletenessIsUnknown(path)) return "Completeness unknown";
@@ -4960,6 +5057,15 @@ function routeStepMarkup(step, index) {
 
 function routeDiagnosticItems(path) {
   const diagnostics = [];
+  const budget = routeBudgetPresentation(path);
+  if (budget) {
+    const terminal = routeForwardingSegments(path).at(-1);
+    diagnostics.push({
+      step_id: `${path.path_id}:budget-diagnostic`, text: budget.label, detail: budget.detail,
+      parts: [], component_tokens: terminal?.component_tokens || [],
+      highlight_target_ids: terminal?.highlight_target_ids || [], provided_by: null,
+    });
+  }
   if (routeValueIsCycle(path)) {
     const closingSegment = routeForwardingSegments(path).find((segment, index) =>
       routeSegmentIsCycleClosing(segment, path, index)
@@ -9084,6 +9190,17 @@ function currentReturnTarget(node = null, resource = null) {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
+function refreshNodeReturnTargets() {
+  document.querySelectorAll('a[href*="return_to="]').forEach((anchor) => {
+    const url = new URL(anchor.href, location.origin);
+    if (url.origin !== location.origin || url.pathname !== "/node") return;
+    const node = { member_id: url.searchParams.get("member_id"), node_id: url.searchParams.get("node_id") };
+    const resource = { resource_id: url.searchParams.get("resource_id") };
+    url.searchParams.set("return_to", currentReturnTarget(node, resource));
+    anchor.href = `${url.pathname}${url.search}${url.hash}`;
+  });
+}
+
 function applyNodeNavigationBasis(url, basis = {}, requestBasis = {}) {
   const kind = url.searchParams.get("basis_kind")
     || requestBasis.kind
@@ -9584,15 +9701,16 @@ function useRouteTableEntry(entryId) {
   // Always replace every seeded field.  Leaving an empty plug-in field alone
   // would silently retain the previous route's endpoint and trace a different
   // flow from the row the operator selected.
-  setRouteEndpointInput("source", source);
+  setRouteEndpointInput("source", explicitFlowSource && typeof explicitFlowSource === "object" ? explicitFlowSource : source);
   setRouteStartInput(start);
-  setRouteEndpointInput("destination", destination);
+  setRouteEndpointInput("destination", explicitFlowDestination && typeof explicitFlowDestination === "object" ? explicitFlowDestination : destination);
   byId("mn-route-vrf").value = String(query.vrf ?? query.vrf_id ?? entry.vrf);
   ensureRouteSelectValue(byId("mn-route-family"), String(query.route_family ?? query.address_family ?? entry.route_family));
   ensureRouteSelectValue(byId("mn-route-type"), String(query.route_type ?? entry.route_type));
   const requestedDirection = query.direction === "both" ? "bidirectional" : query.direction;
   byId("mn-route-validation").value = ["forward", "reverse", "bidirectional"].includes(requestedDirection)
     ? requestedDirection : "bidirectional";
+  syncRouteStartControlState();
   state.activeRouteDirection = requestedDirection === "reverse" ? "reverse" : "forward";
   state.focusedRouteEntryId = entry.route_entry_id;
   state.focusedRouteEntryRef = entry.route_entry_ref;
@@ -9603,6 +9721,7 @@ function useRouteTableEntry(entryId) {
 }
 
 function invalidateRouteTraceResult() {
+  byId("mn-route-error").textContent = "";
   cancelPendingRouteTrace();
   clearRoutePacketSelection();
   state.routeBundle = null;
@@ -9725,6 +9844,7 @@ function syncUrl() {
     url.searchParams.delete("route_path");
   }
   history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  refreshNodeReturnTargets();
 }
 
 async function runRouteTrace(event) {
@@ -9850,6 +9970,7 @@ async function runQuery(event) {
     state.apiMode = state.query.source_mode;
     state.apiError = "";
     state.queryControlsDirty = false;
+    byId("mn-route-error").textContent = "";
     if (!state.focusedNodeKey || !state.query.nodes.some((node) => node.key === state.focusedNodeKey)) {
       state.focusedNodeKey = state.query.nodes[0]?.key || "";
       state.focusedResourceRef = null;
@@ -9915,15 +10036,7 @@ function bindControls() {
     if (destination) setRouteEndpointInput("destination", destination);
     setRouteStartInput(routeScenarioStartDefault(scenario));
     renderRouteScenarioGuide(scenario);
-    const vrf = scenario?.vrf ?? scenario?.vrf_id;
-    const family = pair?.forward?.route_family ?? scenario?.route_family ?? scenario?.address_family;
-    const routeType = pair?.forward?.route_type ?? scenario?.route_type;
-    applyCompatibleRouteContext({
-      routeType: routeType || byId("mn-route-type").value,
-      routeFamily: family || byId("mn-route-family").value,
-      vrf: vrf || byId("mn-route-vrf").value,
-      scenario,
-    });
+    applyCompatibleRouteContext(routeScenarioContext(scenario));
     const steeringProfileId = String(
       scenario?.steering_profile_id
       ?? state.routeCapabilities.default_steering_profile
@@ -9938,24 +10051,29 @@ function bindControls() {
   ["mn-route-source", "mn-route-destination"].forEach((id) => {
     const control = byId(id);
     control.addEventListener("input", () => {
+      delete control.dataset.endpointDescriptor;
+      byId("mn-route-error").textContent = "";
       if (state.focusedRouteEntryId) clearFocusedRouteEntry();
       if (state.routeTrace || state.routeBundle || state.routePending) invalidateRouteTraceResult();
       syncUrl();
     });
     control.addEventListener("change", () => {
       refreshRouteEndpointIdentity(id === "mn-route-source" ? "source" : "destination");
+      byId("mn-route-error").textContent = "";
       clearFocusedRouteEntry();
       if (state.routeTrace || state.routeBundle || state.routePending) invalidateRouteTraceResult();
       syncUrl();
     });
   });
   byId("mn-route-start").addEventListener("input", () => {
+    byId("mn-route-error").textContent = "";
     if (state.focusedRouteEntryId) clearFocusedRouteEntry();
     if (state.routeTrace || state.routeBundle || state.routePending) invalidateRouteTraceResult();
     syncUrl();
   });
   byId("mn-route-start").addEventListener("change", () => {
     refreshRouteStartIdentity();
+    byId("mn-route-error").textContent = "";
     clearFocusedRouteEntry();
     if (state.routeTrace || state.routeBundle || state.routePending) invalidateRouteTraceResult();
     syncUrl();
@@ -9963,6 +10081,7 @@ function bindControls() {
   ["mn-route-vrf", "mn-route-family", "mn-route-type"].forEach((id) => {
     const control = byId(id);
     if (control.tagName === "INPUT") control.addEventListener("input", () => {
+      byId("mn-route-error").textContent = "";
       if (state.focusedRouteEntryId) clearFocusedRouteEntry();
       if (state.routeTrace || state.routeBundle || state.routePending) invalidateRouteTraceResult();
       syncUrl();
@@ -9973,6 +10092,7 @@ function bindControls() {
         routeFamily: byId("mn-route-family").value,
         vrf: byId("mn-route-vrf").value,
       });
+      byId("mn-route-error").textContent = "";
       clearFocusedRouteEntry();
       if (state.routeTrace || state.routeBundle || state.routePending) invalidateRouteTraceResult();
       syncUrl();
@@ -9995,6 +10115,8 @@ function bindControls() {
     syncUrl();
   });
   byId("mn-route-validation").addEventListener("change", () => {
+    const scenario = selectedRouteScenario();
+    if (scenario?.directional_routing_contexts) applyCompatibleRouteContext(routeScenarioContext(scenario));
     syncRouteStartControlState();
     clearFocusedRouteEntry();
     invalidateRouteTraceResult();

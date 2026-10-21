@@ -29,6 +29,11 @@ group from the repository root with
 `python scripts/check_plugin_conformance.py --group foundation`, or use
 `--group combined` for the demo's durable and cross-node integrations.
 
+Retained-source jumps use core-assigned exact record identity, not a search for
+that ID in arbitrary text. The teaching parser remains unchanged. Run
+`python -m unittest tests.test_source_record_core tests.test_range_summary_bounds -v`
+for combined source filters and exact aggregate counts with bounded detail.
+
 The generated archive adapter stores immutable compact event mappings and
 shares one UID ordinal index with its row lookup view. Bounded load-local
 pools reuse complete immutable subject and string-result values with exact

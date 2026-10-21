@@ -35,7 +35,7 @@ test("the production resource-table renderer does not turn unknown existence int
   assert.ok(start >= 0 && end > start, "production renderer must be present");
   const elements = new Map();
   for (const id of ["resource-table-wrap", "resource-search", "resource-type-tabs", "resource-table-summary"]) {
-    elements.set(id, { innerHTML: "", value: "", querySelectorAll: () => [] });
+    elements.set(id, { innerHTML: "", value: "", contains: () => false, querySelectorAll: () => [] });
   }
   const items = [true, false, null].map((exists, index) => ({
     resource_id: `r${index}`, label: `r${index}`, kind: "interface", layer: "hardware",
@@ -43,6 +43,7 @@ test("the production resource-table renderer does not turn unknown existence int
   }));
   const context = vm.createContext({
     byId: (id) => elements.get(id),
+    document: { activeElement: null },
     state: { resourceQuery: { items }, selectedResourceKind: "interface" },
     MAX_RESOURCE_ROWS: 100,
     initializeResourceTableView() {},

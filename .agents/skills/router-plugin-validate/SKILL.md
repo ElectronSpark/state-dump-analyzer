@@ -150,8 +150,15 @@ optional fields can hide an integration mismatch. See the map for these checks.
 Exercise actual originating handlers when superseding work; manually advancing
 a token cannot prove that slider, selection, or disconnect actions advance it.
 Include a slider key or pointer action that leaves its value unchanged.
-Include pending repeated reveals, subpixel ranges at both capture boundaries,
-and pagination with expanded details. Distinguish natural browser timing from
+Include pending repeated reveals followed by Back, pan or hide, concurrent
+actions on the same uncached selection, subpixel ranges at both capture
+boundaries, and pagination/reopening with expanded details. Check focus
+visibility below sticky controls, not only activeElement identity; in narrow
+viewports, verify that hover cards do not intercept their trigger's click and
+dense marker centers hit the expected identity, including after zoom. Compare
+exact counts with paged detail, and retained-result labels with the applied
+request after invalid input. Exercise route-row seeds across directions and
+equivalent endpoint descriptors. Distinguish natural browser timing from
 controlled delayed-response tests and report both evidence levels.
 
 ## Report accurately

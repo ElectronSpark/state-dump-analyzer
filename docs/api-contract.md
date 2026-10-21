@@ -3536,7 +3536,10 @@ When no explicit forward start is supplied, core derives it from a declared
 source endpoint attachment. `ingress` selects the forward observation/start
 point and may therefore be a transit member or resource unrelated to the source
 endpoint's attachment. `trace_starts.forward` is the per-direction form of the
-same selection. An explicit
+same selection. A start supplied through multiple aliases is compared after
+canonical resolution: an advertised descriptor and a node-only descriptor for
+the same start are compatible. Conflicting node, member, resource or attachment
+identities remain errors; presentation labels do not define identity. An explicit
 `trace_starts.reverse` or `reverse_ingress` may select a known return
 observation point; otherwise the return trace starts from a plug-in-declared
 attachment of the traffic destination. It targets the exact traffic source
@@ -3969,6 +3972,12 @@ Timeline query:
 }
 ```
 
+With relationship-history expansion, explicit `resource_ids`, followed by
+missing valid `relationship_history_roots`, take priority within the
+100-resource lane cap. Discovered endpoints use the remaining capacity;
+omitted identities remain disclosed. Without expansion, requests exceeding the
+existing explicit-resource cap are still rejected.
+
 Each returned lane is permanently bound to one canonical resource. It contains
 separate lifecycle and status intervals plus marks describing that event's
 effect on this resource, rather than a single event being assigned to its first
@@ -4183,6 +4192,15 @@ of literals, character classes, dot, anchors, and at most one `*`, `+`, or `?`
 quantified atom per alternative. Groups, counted repetition, lookaround,
 backreferences, unsupported escapes, and ambiguous/nested repetition are
 rejected with no unsafe fallback. Lane and mark counts are capped.
+
+A rule may additionally contain `source_record_uid`, a nonempty string of at
+most 256 characters, to select one exact retained record. It is an additional
+predicate: the regex, source types, unmatched-only flag and time window still
+apply. Matching text that merely mentions another record's UID cannot satisfy
+this selector. Core source jumps use it so unrelated references cannot consume
+the mark cap before the target. This is a core query field, not a new parser
+hook or a `RecordLanePreset` schema field. See `tests.test_source_record_core`
+for exact identity, combined filters, untimed records and cap regressions.
 
 ### Windowed scale history
 
@@ -4567,6 +4585,12 @@ concurrently moving snapshot that resets on restart. It contains no event
 fields, tenant correlation, request data, or queue contents and is not a
 durable security/compliance audit.
 
+Timeline and density requests use the existing HTTP 499 server cancellation classification
+when the client disconnects, including before its JSON body is complete.
+An already-disconnected browser need not receive that response.
+An incomplete disconnected upload does not acquire a provider or start query
+work; later disconnects signal cooperative core checkpoints.
+
 The visible density query is:
 
 ```http
@@ -4876,8 +4900,10 @@ evaluated dashboards:
 The browser displays this failure instead of presenting an empty dashboard as a
 successful query.
 
-A range summary receives `[start_ns,end_ns)` and returns intersecting events,
-intersecting status/lifecycle intervals, relationship add/remove mutations with
+A range summary receives `start_ns` and `end_ns`. Point events and relationship
+mutations include both boundary timestamps; status/lifecycle interval overlap
+uses the half-open window `[start_ns,end_ns)`. It returns these events, intervals
+and relationship add/remove mutations with
 stable relationship and cause-event IDs, aggregate counts, and an optional diff
 between the two endpoint worlds. A timeline query also returns relationship
 validity spans clipped to the lifecycles of both endpoint resources. The point

@@ -1925,15 +1925,10 @@ class RevisionQueryService:
                 )
             )
             history_candidate_ids = sorted(expanded.difference(base_ids))
-            # Expansion is useful only if at least one dependency lane survives the
-            # global safety cap. Split the capacity deterministically between the
-            # requested/root lanes and discovered endpoints, and disclose every
-            # omitted identity instead of claiming that it was rendered.
-            reserve = min(
-                len(history_candidate_ids),
-                max(1, MAX_TIMELINE_RESOURCE_LANES // 2),
-            )
-            base_capacity = MAX_TIMELINE_RESOURCE_LANES - reserve
+            # Explicit choices take precedence over automatically discovered
+            # endpoints. Expansion uses only remaining capacity, with every
+            # omitted identity disclosed to the caller.
+            base_capacity = MAX_TIMELINE_RESOURCE_LANES
             accepted_base = base_ids[:base_capacity]
             accepted_base_ids = accepted_base
             dropped_base_ids = base_ids[base_capacity:]

@@ -4943,6 +4943,38 @@ footer button {
   font-size: 8px;
 }
 
+/* Keep dense marks inside their neighboring time centers, including on hover. */
+.event-mark {
+  max-width: var(--glyph-space, 27px);
+  min-width: 0;
+  border-width: min(1px, calc(var(--glyph-space, 27px) / 2));
+  overflow: hidden;
+}
+
+.event-mark:hover,
+.event-mark.selected {
+  transform: translateX(-50%);
+}
+
+.event-mark.cluster {
+  border-width: min(2px, calc(var(--glyph-space, 27px) / 2));
+}
+
+.event-mark.cluster span {
+  pointer-events: none;
+}
+
+.event-mark.failure {
+  max-width: calc(var(--glyph-space, 27px) / 1.414214);
+  max-height: calc(var(--glyph-space, 27px) / 1.414214);
+  border-width: 0;
+}
+
+.event-mark.failure:hover,
+.event-mark.failure.selected {
+  transform: translateX(-50%) rotate(45deg);
+}
+
 .relationship-ribbon {
   bottom: calc(2px + var(--ribbon-row) * 4px);
   height: 3px;

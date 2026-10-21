@@ -305,7 +305,7 @@ class SingleNodeApiBoundsTests(unittest.TestCase):
                     self.assertEqual(lane["event_marks"], [])
                 self.assertEqual((payload["start_ns"], payload["end_ns"]), ("0", "60"))
 
-    def test_relationship_history_reserves_child_lanes_and_discloses_truncation(self) -> None:
+    def test_relationship_history_preserves_explicit_lanes_and_discloses_truncation(self) -> None:
         roots = [f"test/ETG/{index:02d}" for index in range(60)]
         children = [f"test/ETE/{index:02d}" for index in range(60)]
         resources = [resource(identifier, "ETG") for identifier in roots]
@@ -348,11 +348,12 @@ class SingleNodeApiBoundsTests(unittest.TestCase):
 
         expansion = payload["relationship_history_expansion"]
         self.assertEqual(len(payload["lanes"]), 100)
-        self.assertEqual(len(expansion["accepted_base_ids"]), 50)
-        self.assertEqual(len(expansion["dropped_base_ids"]), 10)
-        self.assertEqual(len(expansion["accepted_resource_ids"]), 50)
-        self.assertEqual(len(expansion["dropped_resource_ids"]), 10)
-        self.assertEqual(len(expansion["dropped_root_ids"]), 10)
+        self.assertEqual(expansion["accepted_base_ids"], roots)
+        self.assertEqual(expansion["dropped_base_ids"], [])
+        self.assertEqual(len(expansion["accepted_resource_ids"]), 40)
+        self.assertEqual(len(expansion["dropped_resource_ids"]), 20)
+        self.assertEqual(expansion["dropped_root_ids"], [])
+        self.assertTrue(set(roots).issubset(item["resource_id"] for item in payload["lanes"]))
         self.assertTrue(expansion["truncated"])
 
     def test_range_endpoint_diff_is_not_starved_by_status_segment_budget(self) -> None:

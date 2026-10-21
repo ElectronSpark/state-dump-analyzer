@@ -65,6 +65,9 @@ detail.
 In the event log, enable Status input to inspect the four retained records.
 The window-only observation displays Unknown time and remains selectable;
 it does not create a point on the timeline.
+Source jumps use core-assigned record identity, including when another record's
+text mentions the same UID. The example needs no jump hook; the combined filter
+and bounded-lane behavior is exercised by `tests.test_source_record_core`.
 Zooming and bounded history summaries are core behavior; this parser needs no
 zoom hook. The [zoom conformance checks](plugin-api-validation.md#zoom-and-history-query-validation)
 exercise dense event histories beyond this small status fixture.

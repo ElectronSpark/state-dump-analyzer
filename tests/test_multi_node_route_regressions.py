@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -233,6 +234,66 @@ class MultiNodeRouteRegressionTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         cls.client_context.__exit__(None, None, None)
+
+    def test_transit_row_accepts_equivalent_advertised_start_aliases(self) -> None:
+        table = query_all_route_table_rows(
+            self.client, {"filters": {"node_id": "transit-p-1"}}
+        )
+        row = next(item for item in table["items"] if item["route_entry_id"]
+                   == "transit-p-1/route/transit-start-endpoint-reachability")
+        capabilities = self.client.get("/v1/topologies/routes/capabilities").json()
+        start = next(item for item in capabilities["start_points"]
+                     if item["node_id"] == "transit-p-1")
+        baseline = self.client.post("/v1/topologies/routes/trace", json=row["trace_query"])
+        self.assertEqual(baseline.status_code, 200, baseline.text)
+        request = copy.deepcopy(row["trace_query"])
+        request.update(ingress=start, trace_starts={"forward": start})
+        response = self.client.post("/v1/topologies/routes/trace", json=request)
+        self.assertEqual(response.status_code, 200, response.text)
+        trace = response.json()
+        self.assertEqual(trace["trace_start"]["node_id"], "transit-p-1")
+        self.assertEqual(trace["flow"]["source"]["node_id"], "node-a")
+        self.assertEqual(trace["flow"]["destination"]["node_id"], "node-b")
+        self.assertEqual(trace["focused_path_id"], baseline.json()["focused_path_id"])
+        self.assertEqual(trace["paths"][0]["node_sequence"], ["transit-p-1", "node-b"])
+
+    def test_start_alias_identity_conflicts_are_still_rejected(self) -> None:
+        for aliases in [
+            {"ingress": {"node_id": "transit-p-1"}, "starting_point": {"node_id": "node-a"}},
+            {"ingress": {"node_id": "transit-p-1", "resource_id": "resource:a"},
+             "starting_point": {"node_id": "transit-p-1", "resource_id": "resource:b"}},
+            {"ingress": {"node_id": "transit-p-1", "start_id": "start:node-a"},
+             "starting_point": {"node_id": "transit-p-1"}},
+        ]:
+            with self.subTest(aliases=aliases):
+                response = self.client.post("/v1/topologies/routes/trace", json={
+                    "scenario_id": "transit-start-endpoint-reachability", "direction": "forward", **aliases,
+                })
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertIn("disagree", response.text)
+
+    def test_reverse_trace_ignores_forward_start_aliases(self) -> None:
+        response = self.client.post("/v1/topologies/routes/trace", json={
+            "scenario_id": "transit-start-endpoint-reachability", "direction": "reverse",
+            "ingress": {"node_id": "transit-p-1"}, "starting_point": {"node_id": "node-a"},
+            "trace_starts": {"reverse": {"node_id": "node-b"}},
+            "reverse_ingress": {"start_id": "start:node-b", "label": "Presentation only"},
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        trace = response.json()
+        self.assertEqual(trace["trace_start"]["node_id"], "node-b")
+        self.assertEqual(trace["paths"][0]["node_sequence"], ["node-b", "transit-p-2", "node-a"])
+
+    def test_directional_pair_capabilities_preserve_asymmetric_contexts(self) -> None:
+        capabilities = self.client.get("/v1/topologies/routes/capabilities").json()
+        scenario = next(item for item in capabilities["scenarios"]
+                        if item["scenario_id"] == "site-a-site-c-asymmetric")
+        pair = next(item for item in capabilities["directional_pairs"]
+                    if item["scenario_id"] == scenario["scenario_id"])
+        for direction in ("forward", "reverse"):
+            for field, value in scenario["directional_routing_contexts"][direction].items():
+                self.assertEqual(pair[direction][field], value)
+        self.assertNotEqual(pair["forward"]["route_type"], pair["reverse"]["route_type"])
 
     def assert_candidate_geometry_comes_from_generated_projection(
         self,

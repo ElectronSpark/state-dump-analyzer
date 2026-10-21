@@ -39,11 +39,15 @@ function harness() {
     return elements.get(id);
   };
   let buttons = [];
+  const document = { body: {}, activeElement: null };
   const toggles = {
+    contains: element => buttons.includes(element),
     set innerHTML(html) {
+      if (buttons.includes(document.activeElement)) document.activeElement = document.body;
       buttons = [...html.matchAll(/data-layer="([^"]+)" aria-pressed="([^"]+)"/g)]
         .map(([, layer, pressed]) => ({
           dataset: { layer }, pressed,
+          focus() { document.activeElement = this; },
           addEventListener(type, callback) { assert.equal(type, "click"); this.click = callback; },
         }));
     },
@@ -57,7 +61,7 @@ function harness() {
     "visibleTimelineCenterNs", "panTimelineViewportByPixels", "panTimelineViewport",
   ];
   const dependencies = {
-    state, byId,
+    state, byId, document,
     window: {
       setTimeout(callback) { const id = nextTimer++; timers.set(id, callback); return id; },
       clearTimeout(id) { timers.delete(id); },
@@ -92,7 +96,8 @@ function harness() {
   api.discoverPresentation();
   api.renderLayerToggles();
   return {
-    state, api, requests, renders,
+    state, api, requests, renders, document,
+    focus(layer) { buttons.find(button => button.dataset.layer === layer).focus(); },
     click(layer) { buttons.find((button) => button.dataset.layer === layer).click(); },
     pressed(layer) { return buttons.find((button) => button.dataset.layer === layer)?.pressed; },
     runRefreshTimer() {
@@ -174,4 +179,15 @@ test("a superseded scale query does not republish obsolete presentation", async 
   assert.equal(h.renders.length, renders);
   assert.equal(h.state.layerMeta.has("obsolete"), false);
   assert.equal(h.pressed("routing"), "false");
+});
+
+for (const layout of ["separate", "combined"]) test(`layer activation preserves current keyboard target in ${layout}`, () => {
+  const h = harness();
+  h.state.correlationTimelineView = layout;
+  h.focus("routing");
+  h.click("routing");
+  assert.equal(h.document.activeElement.dataset.layer, "routing");
+  assert.equal(h.pressed("routing"), "false");
+  h.document.activeElement.click();
+  assert.equal(h.pressed("routing"), "true");
 });
