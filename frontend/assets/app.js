@@ -3778,7 +3778,8 @@ function rangeMinimumNs() {
 function applyHandlePosition(brush) {
   const bounds = rangeBounds();
   if (!bounds) return;
-  const minimum = rangeMinimumNs();
+  const pixel = rangeMinimumNs();
+  const minimum = bounds[1] - bounds[0] < pixel ? bounds[1] - bounds[0] : pixel;
   if (brush.boundary === "start") {
     const latest = clampNs(brush.latestNs);
     state.rangeStartNs = latest > bounds[1] - minimum ? bounds[1] - minimum : latest;
@@ -4094,19 +4095,11 @@ function timelineHandleKeyDown(event) {
   const bounds = rangeBounds();
   const minimum = rangeMinimumNs();
   const step = minimum * (event.shiftKey ? 10n : 1n);
-  if (handle.dataset.rangeHandle === "start") {
-    const requested = event.key === "Home" ? state.viewStartNs
-      : event.key === "End" ? bounds[1] - minimum
-        : bounds[0] + direction * step;
-    state.rangeStartNs = requested < state.viewStartNs ? state.viewStartNs : requested > bounds[1] - minimum ? bounds[1] - minimum : requested;
-    state.rangeEndNs = bounds[1];
-  } else {
-    const requested = event.key === "End" ? state.viewEndNs
-      : event.key === "Home" ? bounds[0] + minimum
-        : bounds[1] + direction * step;
-    state.rangeStartNs = bounds[0];
-    state.rangeEndNs = requested > state.viewEndNs ? state.viewEndNs : requested < bounds[0] + minimum ? bounds[0] + minimum : requested;
-  }
+  const boundary = handle.dataset.rangeHandle;
+  const latestNs = event.key === "Home" ? state.viewStartNs
+    : event.key === "End" ? state.viewEndNs
+      : bounds[boundary === "start" ? 0 : 1] + direction * step;
+  applyHandlePosition({ boundary, latestNs });
   state.rangeSummary = null;
   updateRangeBands();
   syncRangeInputs();
@@ -4149,6 +4142,7 @@ function updateCursorVisual() {
 }
 
 function setCursor(value, schedule = true, selected = true, scheduleTopology = true) {
+  state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   state.cursorNs = clampNs(value);
   state.cursorSelected = selected;
   state.resourceOffset = 0;
@@ -4159,6 +4153,12 @@ function setCursor(value, schedule = true, selected = true, scheduleTopology = t
   scheduleTopologyRefreshFromCursor(scheduleTopology);
   updateTimelineCommandAvailability();
   if (schedule) scheduleTemporalRefresh();
+}
+
+function timelineCursorInteraction(event) {
+  if (event.type === "keydown" && !["Home", "End", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown"].includes(event.key)) return;
+  state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
+  if (event.type === "input") setCursor(nsAtRatio(Number(event.target.value) / 1_000_000));
 }
 
 function graphDisplayTimeNs(graph = state.graph) {
@@ -4387,16 +4387,19 @@ async function ensureSourceRecordLane(record, intent = state.timelineNavigationI
   const uid = sourceRecordUid(record);
   let lane = sourceRecordLaneFor(uid);
   if (lane) return lane;
-  if (state.recordLaneRules.length >= MAX_RECORD_LANES) {
+  const pattern = regexEscape(uid);
+  const sourceType = String(record.source_type || "unknown");
+  const pendingRule = state.recordLaneRules.find((rule) => rule.transient
+    && rule.pattern === pattern && rule.source_types?.[0] === sourceType);
+  if (!pendingRule && state.recordLaneRules.length >= MAX_RECORD_LANES) {
     showToast("Remove a source-record lane before adding a jump lane.");
     return null;
   }
-  const laneId = "jump-record-" + (++state.customRecordLaneSequence);
-  state.recordLaneRules.push({
-    lane_id: laneId,
+  if (!pendingRule) state.recordLaneRules.push({
+    lane_id: "jump-record-" + (++state.customRecordLaneSequence),
     label: "Jump target · " + String(record.record_name || uid).slice(0, 72),
-    pattern: regexEscape(uid),
-    source_types: [String(record.source_type || "unknown")],
+    pattern,
+    source_types: [sourceType],
     unmatched_only: false,
     case_sensitive: true,
     plugin_defined: false,
@@ -5334,7 +5337,7 @@ function scaleTimelineResourceIds() {
   return [...state.explicitLaneIds].slice(0, MAX_SCALE_TIMELINE_LANES);
 }
 
-async function requestTimeline({ navigationIntent = null } = {}) {
+async function requestTimeline({ navigationIntent = null, recordLaneRules = null } = {}) {
   const requestId = ++state.timelineRequestId;
   abortLatestRequests("timelineAbortController");
   if (isTopologyNodeSnapshot()) {
@@ -5362,7 +5365,7 @@ async function requestTimeline({ navigationIntent = null } = {}) {
         viewport_pixels: timelinePhysicalTrackWidth(),
         max_glyphs: 3000,
         max_record_marks: 5000,
-        record_lane_rules: state.recordLaneRules.map((rule) => ({
+        record_lane_rules: (recordLaneRules || state.recordLaneRules).map((rule) => ({
           lane_id: rule.lane_id,
           label: rule.label,
           description: rule.description || "",
@@ -5390,7 +5393,11 @@ async function requestTimeline({ navigationIntent = null } = {}) {
     if (isScaleMode() && (selectedRelationshipRoot !== canonicalResourceId(state.selectedResourceId)
       || JSON.stringify(scaleResourceIds) !== JSON.stringify(scaleTimelineResourceIds()))) {
       finishLatestRequest("timelineAbortController", controller);
-      return requestTimeline({ navigationIntent });
+      return requestTimeline({ navigationIntent, recordLaneRules });
+    }
+    if (recordLaneRules) {
+      finishLatestRequest("timelineAbortController", controller);
+      return payload;
     }
     state.timelinePayload = payload;
   } catch (error) {
@@ -5398,6 +5405,10 @@ async function requestTimeline({ navigationIntent = null } = {}) {
     if (requestId !== state.timelineRequestId || (navigationIntent !== null && navigationIntent !== state.timelineNavigationIntent)) {
       finishLatestRequest("timelineAbortController", controller);
       return false;
+    }
+    if (recordLaneRules) {
+      finishLatestRequest("timelineAbortController", controller);
+      throw error;
     }
     showToast("Timeline query rejected: " + error.message);
     if (!state.timelinePayload) state.timelinePayload = { lanes: [], record_lanes: [] };
@@ -7290,9 +7301,23 @@ function renderCorrelationList(graph) {
   });
   container.querySelectorAll("[data-correlation-show-more]").forEach((button) => {
     button.addEventListener("click", () => {
+      const group = button.closest(".correlation-group");
+      const direction = group?.classList.contains("incoming") ? "incoming" : "outgoing";
+      const disclosures = new Map([...container.querySelectorAll("details")].map((item) => [
+        `${item.className}:${item.matches(".correlation-group") ? "" : item.querySelector("[data-correlation-edge-id]")?.dataset.correlationEdgeId}`,
+        item.open,
+      ]));
+      const scrollTop = container.scrollTop;
       state.correlationListLimit += CORRELATION_LIST_PAGE_SIZE;
       closeCorrelationHover();
       renderCorrelationList(graph);
+      container.querySelectorAll("details").forEach((item) => {
+        const key = `${item.className}:${item.matches(".correlation-group") ? "" : item.querySelector("[data-correlation-edge-id]")?.dataset.correlationEdgeId}`;
+        if (disclosures.has(key)) item.open = disclosures.get(key);
+      });
+      const destination = group ? container.querySelector(`.correlation-group.${direction}`) : container;
+      (destination.querySelector("[data-correlation-show-more]") || destination.querySelector("summary, button"))?.focus({ preventScroll: true });
+      container.scrollTop = scrollTop;
     });
   });
 }
@@ -7869,6 +7894,9 @@ function removeRecordLane(laneId) {
 function renderRecordLaneManager() {
   const list = byId("record-lane-list");
   if (!list) return;
+  const controls = [...list.querySelectorAll("input, button")];
+  const focusedIndex = controls.indexOf(document.activeElement);
+  const focused = focusedIndex >= 0 ? document.activeElement.dataset : null;
   byId("record-lane-count").textContent = state.recordLaneRules.length + " / " + MAX_RECORD_LANES;
   const activeIds = new Set(state.recordLaneRules.map((rule) => String(rule.lane_id)));
   const presetRows = state.recordLanePresets.map((preset) => `<label class="record-lane-item preset">
@@ -7896,9 +7924,16 @@ function renderRecordLaneManager() {
     .map((descriptor) => `<option value="${escapeHtml(descriptor.source_type)}">${escapeHtml(descriptor.label)}</option>`)
     .join("");
   sourceSelect.value = state.sourceRecordTypes.has(selected) ? selected : "";
+  if (focused && (!document.activeElement || document.activeElement === document.body)) {
+    const replacements = [...list.querySelectorAll("input, button")];
+    const target = replacements.find((item) => focused.recordLanePreset
+      ? item.dataset.recordLanePreset === focused.recordLanePreset
+      : item.dataset.removeRecordLane === focused.removeRecordLane);
+    (target || replacements[Math.min(focusedIndex, replacements.length - 1)] || byId("record-lane-label"))?.focus({ preventScroll: true });
+  }
 }
 
-function addRecordLane(event) {
+async function addRecordLane(event) {
   event.preventDefault();
   const label = byId("record-lane-label").value.trim();
   const pattern = byId("record-lane-pattern").value.trim();
@@ -7917,18 +7952,57 @@ function addRecordLane(event) {
     return;
   }
   const sourceType = byId("record-lane-source").value;
-  state.recordLaneRules.push({
-    lane_id: "custom-record-" + (++state.customRecordLaneSequence),
-    label,
-    pattern,
+  const form = byId("record-lane-form");
+  const submit = form.querySelector('button[type="submit"]');
+  if (submit.disabled) return;
+  const hadFocus = document.activeElement === submit;
+  const inputs = [...form.querySelectorAll("input, select")].map((input) => [input, input.value, input.checked]);
+  const unchanged = () => inputs.every(([input, value, checked]) => input.value === value && input.checked === checked);
+  const rule = {
+    lane_id: "custom-record-" + (++state.customRecordLaneSequence), label, pattern,
     source_types: sourceType ? [sourceType] : [],
     unmatched_only: byId("record-lane-unmatched").checked,
-    case_sensitive: false,
-    plugin_defined: false,
-  });
+    case_sensitive: false, plugin_defined: false,
+  };
+  let payload, requestId;
+  const interruptedRefresh = Boolean(state.timelineAbortController);
+  let accepted = false;
+  submit.disabled = true;
+  try {
+    // Stage the rule in the ordinary timeline query; publish only accepted input.
+    if (!isTopologyNodeSnapshot()) {
+      const intent = state.timelineNavigationIntent;
+      const request = requestTimeline({ navigationIntent: intent, recordLaneRules: [...state.recordLaneRules, rule] });
+      requestId = state.timelineRequestId;
+      payload = await request;
+      if (requestId !== state.timelineRequestId || intent !== state.timelineNavigationIntent) payload = false;
+    }
+    if (!unchanged()) return;
+    if (payload === false) {
+      errorBox.textContent = "The timeline changed while validating the lane. Add it again to retry.";
+      return;
+    }
+    if (state.recordLaneRules.length >= MAX_RECORD_LANES) {
+      errorBox.textContent = "Remove a lane before adding another.";
+      return;
+    }
+    accepted = true;
+  } catch (error) {
+    if (unchanged()) errorBox.textContent = error.message;
+    return;
+  } finally {
+    submit.disabled = false;
+    if (hadFocus && document.activeElement === document.body) submit.focus({ preventScroll: true });
+    if (!accepted && interruptedRefresh && requestId === state.timelineRequestId) refreshRecordLanes();
+  }
+  state.recordLaneRules.push(rule);
   errorBox.textContent = "";
   byId("record-lane-form").reset();
-  refreshRecordLanes();
+  if (payload) {
+    state.timelinePayload = payload;
+    normalizeTimeline(payload);
+    renderTimeline();
+  } else refreshRecordLanes();
 }
 
 function renderLanePicker() {
@@ -9198,6 +9272,7 @@ function clearEventLogSelection({ render = true, announce = false } = {}) {
   state.eventLogSelectionFocus = null;
   state.eventLogSelectionCache = null;
   state.eventLogSelectionRequestId += 1;
+  state.eventLogLocateRequestId = (state.eventLogLocateRequestId || 0) + 1;
   if (render) {
     renderEventLogSelectionToolbar();
     renderEventTableWindow();
@@ -9216,6 +9291,7 @@ function setEventLogSelectionRanges(ranges, {
   state.eventLogSelectionFocus = Number.isSafeInteger(Number(focus)) ? Number(focus) : null;
   state.eventLogSelectionCache = null;
   state.eventLogSelectionRequestId += 1;
+  state.eventLogLocateRequestId = (state.eventLogLocateRequestId || 0) + 1;
   if (render) {
     renderEventLogSelectionToolbar();
     renderEventTableWindow();
@@ -10590,8 +10666,10 @@ async function openManualCorrelationDialog() {
     );
     return;
   }
+  const connectionToken = durableReviewConnectionToken();
   try {
     const payload = await resolveEventLogSelection();
+    if (!durableReviewTokenIsCurrent(connectionToken) || !isDurableReviewWritable()) return;
     const subjects = uniqueReviewSubjects(payload.items || [], { eventsOnly: true });
     if (subjects.length < 2) {
       throw new Error("Select at least two normalized events; source records are not correlation endpoints.");
@@ -10605,6 +10683,7 @@ async function openManualCorrelationDialog() {
     byId("correlation-dialog").showModal();
     byId("correlation-link-type").focus();
   } catch (error) {
+    if (!durableReviewTokenIsCurrent(connectionToken)) return;
     showToast("Could not prepare correlation: " + error.message);
   }
 }
@@ -10843,8 +10922,10 @@ async function applyEventLogTimelineAction(action) {
 }
 
 async function revealFocusedEventLogSelection() {
+  const intent = state.timelineNavigationIntent = (state.timelineNavigationIntent || 0) + 1;
   try {
     const payload = await resolveEventLogSelection();
+    if (intent !== state.timelineNavigationIntent) return;
     const focus = state.eventLogSelectionFocus;
     const item = (payload.items || []).find(
       (candidate) => Number(candidate.display_index) === focus,
@@ -10859,6 +10940,7 @@ async function revealFocusedEventLogSelection() {
     forgetTimelineEntryProjection(projection.entryId);
     pruneServerEventLogOwnedCaches();
   } catch (error) {
+    if (intent !== state.timelineNavigationIntent) return;
     showToast("Could not reveal selection: " + error.message);
   }
 }
@@ -10894,6 +10976,8 @@ function syncEventLogIncludeControls() {
 }
 
 function focusServerEventLogTarget(entryId, virtualIndex) {
+  const queryId = state.eventLogServerQueryId;
+  const locateRequestId = state.eventLogLocateRequestId;
   state.eventLogKeyboardFocusIndex = null;
   const scroll = byId("event-log-scroll");
   scroll.scrollTop = virtualScrollTopForIndex({
@@ -10907,6 +10991,7 @@ function focusServerEventLogTarget(entryId, virtualIndex) {
   renderEventTableWindow();
   byId("event-log").scrollIntoView({ behavior: "smooth", block: "nearest" });
   window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+    if (queryId !== state.eventLogServerQueryId || locateRequestId !== state.eventLogLocateRequestId) return;
     const row = [...byId("event-table-body").querySelectorAll("tr[data-log-entry-id]")]
       .find((item) => item.dataset.logEntryId === entryId);
     if (!row) return;
@@ -12116,7 +12201,7 @@ function bindControls() {
   byId("range-mode").addEventListener("click", () => { state.rangeMode = !state.rangeMode; byId("range-mode").setAttribute("aria-pressed", String(state.rangeMode)); byId("range-mode").textContent = state.rangeMode ? "Range brush on" : "Range brush"; byId("timeline-frame").classList.toggle("range-mode", state.rangeMode); });
   byId("clear-range").addEventListener("click", clearRangeSelection);
   byId("reset-view").addEventListener("click", resetTimelineView);
-  byId("time-cursor").addEventListener("input", (event) => setCursor(nsAtRatio(Number(event.target.value) / 1_000_000)));
+  ["input", "pointerdown", "keydown"].forEach((type) => byId("time-cursor").addEventListener(type, timelineCursorInteraction));
   byId("timeline-scroll").addEventListener("wheel", timelineWheel, { passive: false });
   timelineScroll.addEventListener("scroll", () => {
     hideTimelineHoverLine();

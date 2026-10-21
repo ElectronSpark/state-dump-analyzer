@@ -415,6 +415,12 @@ reveal must preserve the current preset's intent, rather than revive an old
 custom set; every layout must honor applicable layer and resource visibility.
 Guard a navigation intent across awaits and deferred focus/scroll callbacks,
 including newer targets that are already loaded and explicit clear actions.
+Begin ownership before toolbar selection resolution. Cursor input and newer
+log selection must invalidate the relevant pending navigation; check again
+on cursor key or pointer interaction even when its value does not change, and
+after page loading and immediately before deferred focus. Test actual handlers,
+not a simulated token increment. Capture the existing review connection token
+before correlation preparation and reject a result after disconnect/reconnect.
 Rejecting stale query data alone does not prevent a stale continuation. Conversely,
 guarding only the continuation still allows an obsolete payload to replace the
 current lanes. Exercise the composed request, selection and normalization path.
@@ -429,11 +435,26 @@ branches. Restore focus without stealing it from a newer user action, and keep
 popups anchored to the same instance. For virtual logs, carry the latest
 keyboard destination through an uncached page response and cover Home/End as
 well as Arrow keys; an animation-frame retry alone may precede data arrival.
+Source-preset controls need the same focus preservation as resource checkboxes.
+Pagination within an unchanged query should preserve group disclosure, expanded
+relationship identities and keyboard focus, including the final page.
 
 Exercise normalized source-lane construction together with lookup, hover and
 reveal. Display clusters may be derived from marks instead of stored on the
 lane; test a source in a later lane and one absent from current lanes. Keep
 untimed records explicitly untimed.
+Repeated reveals while data is pending must reuse the target's lane allocation,
+including near capacity. Validate a custom regex with core before retaining its
+rule or clearing the form; rejection must not poison later timeline requests.
+Use the existing server policy instead of maintaining another regex grammar.
+Keep newer form input intact if validation finishes after it changes.
+If staged validation replaces a pending viewport read, recover that read when
+the candidate is discarded, without canceling a newer request.
+
+Exercise typed ranges narrower than one pixel at both capture ends. Pointer
+and keyboard adjustments must remain ordered and inside the capture, without
+moving against the requested direction to enforce a visual minimum. Check the
+actual summary request as well as formatted fields, which may hide clamping.
 
 Validate requests before sending them, but invalidate older response authority
 when a newer user intent fails validation. Cover enabled change handlers while

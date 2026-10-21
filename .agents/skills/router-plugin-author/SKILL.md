@@ -181,7 +181,12 @@ For generic frontend repairs, use the map's
 Keep user choices separate from newly discovered data, and validate recovery
 through the real form or event handler as well as controller unit tests.
 Use stable control and tree-instance identities when replacing UI subtrees;
-carry keyboard and navigation intent through delayed data and invalid input.
+capture navigation or review ownership before the first await, including
+selection resolution, and recheck it before deferred focus or dialog opening.
+Treat explicit cursor interaction at an unchanged value as navigation intent.
+Reuse existing ownership tokens and pending allocations instead of adding a
+parallel state mechanism. Preserve disclosure state during pagination and use
+the same bounded range adjustment for pointer and keyboard input.
 The map covers lane presets, derived source marks, inferred-edge presentation,
 programmatic form seeding, and superseded reads without adding plug-in hooks.
 

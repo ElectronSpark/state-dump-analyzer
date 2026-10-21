@@ -147,6 +147,12 @@ while an older read is pending. Verify selected presets, focus, popup anchors,
 and dependent guidance after the settled render. Use production-normalized
 source lanes and server-shaped inferred edges in composed regressions; invented
 optional fields can hide an integration mismatch. See the map for these checks.
+Exercise actual originating handlers when superseding work; manually advancing
+a token cannot prove that slider, selection, or disconnect actions advance it.
+Include a slider key or pointer action that leaves its value unchanged.
+Include pending repeated reveals, subpixel ranges at both capture boundaries,
+and pagination with expanded details. Distinguish natural browser timing from
+controlled delayed-response tests and report both evidence levels.
 
 ## Report accurately
 
