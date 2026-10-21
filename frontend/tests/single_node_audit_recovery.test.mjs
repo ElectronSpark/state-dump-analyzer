@@ -16,7 +16,7 @@ function load(names, deps) {
 const noop = () => {};
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
-for (const kind of ['cluster', 'source-cluster']) test(`dense ${kind} layout bounds neighboring footprints without changing exact identity`, () => {
+for (const kind of ['cluster', 'source-cluster', 'annotation-cluster']) test(`dense ${kind} layout bounds neighboring footprints without changing exact identity`, () => {
   let zoom = 1;
   const api = load(['timelineGlyphLayout'], { timelinePercent: time => Number(time) * zoom / 10 });
   const cluster = { kind, clusterId: '132-events', startNs: 124n, endNs: 149n, count: 132 };
@@ -35,7 +35,7 @@ for (const kind of ['cluster', 'source-cluster']) test(`dense ${kind} layout bou
   assert.match(css, /\.event-mark\.cluster span\s*\{\s*pointer-events: none/);
 });
 
-for (const kind of ['cluster', 'source-cluster']) test(`equal-time events and a ${kind} midpoint retain visible footprints`, () => {
+for (const kind of ['cluster', 'source-cluster', 'annotation-cluster']) test(`equal-time events and a ${kind} midpoint retain visible footprints`, () => {
   const api = load(['timelineGlyphLayout'], { timelinePercent: Number });
   const glyphs = [
     { eventUid: 'a', timeNs: 50n }, { eventUid: 'b', timeNs: 50n, failure: true },
@@ -43,6 +43,126 @@ for (const kind of ['cluster', 'source-cluster']) test(`equal-time events and a 
   ];
   assert.deepEqual(api.timelineGlyphLayout(glyphs, 100).map(item => item.space), [27, 27, 27]);
   assert.deepEqual(api.timelineGlyphLayout([...glyphs, {timeNs: 60n}], 100).map(item => item.space), [10, 10, 10, 10]);
+});
+
+test('review markers keep both nearby identities reachable and bound adjacent cluster footprints through zoom changes', () => {
+  let zoom = 1;
+  const projections = Array.from({ length: 130 }, (_, index) => ({
+    entryId: `event:${index}`, uid: String(index), streamKind: 'event', timeNs: BigInt(index),
+    entry: { event_type: `event-${index}` },
+  }));
+  const state = { trackWidth: 1000, hoverModels: new Map(), hiddenTimelineEntryIds: new Set(['event:0']),
+    markedTimelineEntryIds: new Set(), timelineEntryProjections: new Map(projections.map(item => [item.entryId, item])) };
+  const api = load(['buildAnnotationGlyphs', 'timelineGlyphLayout', 'reviewMarkerLaneHtml',
+    'annotationClusterHoverHtml', 'annotationProjectionLabel'], {
+    state, timelinePercent: ns => Number(ns) * zoom / 100, timelinePointVisible: () => true,
+    escapeHtml: String, formatOffset: String, visibleTimelineOffsetPrecision: () => 3,
+    timelineLaneWidth: () => 210, eventLogHoverModel: entry => ({ entry }),
+  });
+  state.markedTimelineEntryIds = new Set(['event:0', 'event:1']);
+  let html = api.reviewMarkerLaneHtml();
+  assert.equal((html.match(/class="review-marker cluster/g) || []).length, 1);
+  assert.match(html, /2 review markers; 1 underlying marks hidden/);
+  const cluster = [...state.hoverModels.values()][0];
+  assert.deepEqual(cluster.items.map(item => item.entryId), ['event:0', 'event:1']);
+  const drilldown = api.annotationClusterHoverHtml(cluster.items);
+  for (const id of ['event:0', 'event:1']) assert.ok(drilldown.includes(`data-annotation-entry-id="${id}"`));
+  zoom = 200;
+  html = api.reviewMarkerLaneHtml();
+  assert.equal((html.match(/class="review-marker event/g) || []).length, 2);
+  for (const id of ['event:0', 'event:1']) assert.ok(html.includes(`data-log-entry-id="${id}"`));
+  zoom = 1;
+  state.markedTimelineEntryIds = new Set(projections.map(item => item.entryId));
+  state.hoverModels.clear();
+  html = api.reviewMarkerLaneHtml();
+  assert.equal((html.match(/class="review-marker cluster/g) || []).length, 3);
+  const layout = api.timelineGlyphLayout(api.buildAnnotationGlyphs(projections), state.trackWidth);
+  assert.deepEqual(layout.map(item => item.glyph.items.length), [64, 64, 2]);
+  assert.deepEqual([...state.hoverModels.values()].flatMap(model => model.items.map(item => item.entryId)),
+    projections.map(item => item.entryId));
+  layout.forEach(({ space }) => assert.ok(html.includes(`--glyph-space:${space}px`)));
+  for (let index = 1; index < layout.length; index++) {
+    const gap = Number(layout[index].time - layout[index - 1].time) / 10;
+    assert.ok((layout[index].space + layout[index - 1].space) / 2 <= gap + 1e-10);
+  }
+});
+
+test('log and review hover reuse the matching resource mark including finite or open duration and effect operation', () => {
+  const unrelated = { eventUid: 'other', durationToNextChangeNs: 900n };
+  const mark = { eventUid: 'event', action: 'modify', durationToNextChangeNs: 120_000_000_000n };
+  const lane = { resourceId: 'backup', marks: [unrelated, mark] };
+  const state = { lanes: [lane], resourceById: new Map() };
+  const api = load(['eventLogHoverModel', 'formatDuration'], {
+    state, isSourceLogEntry: () => false, eventResourceRefs: () => ['primary'],
+    normalizeMark: () => assert.fail('rebuilding the raw entry loses per-resource history'), toNs: BigInt,
+  });
+  const model = api.eventLogHoverModel({ event_uid: 'event', action: 'state-change' });
+  assert.equal(model.lane, lane);
+  assert.equal(model.mark, mark);
+  assert.equal(model.mark.action, 'modify');
+  assert.equal(api.formatDuration(model.mark.durationToNextChangeNs), '2m 0s');
+  mark.durationToNextChangeNs = null;
+  assert.equal(api.formatDuration(api.eventLogHoverModel({ event_uid: 'event' }).mark.durationToNextChangeNs), 'until capture end');
+});
+
+test('unloaded log events distinguish unknown duration from explicit open-ended evidence without inventing history', () => {
+  const state = { lanes: [], resourceById: new Map(), eventByUid: new Map() };
+  const api = load(['eventLogHoverModel', 'normalizeMark', 'formatDuration'], {
+    state, isSourceLogEntry: () => false, eventResourceRefs: () => ['resource'],
+    eventSubject: () => ({}), resourceLayer: () => 'layer', resourceKind: () => 'kind',
+    resourceEffectFor: () => null, normalizedEventOutcome: () => 'success', titleCase: String,
+    eventFailed: () => false, eventChangesState: () => true,
+    toNs: (value, fallback) => value == null ? fallback : BigInt(value),
+  });
+  for (const [raw, expected] of [
+    [{}, 'unknown'], [{ duration_to_next_change_ns: null }, 'until capture end'],
+    [{ duration_to_next_change_ns: '0' }, '0 ns'], [{ duration_to_next_change_ns: '120000000000' }, '2m 0s'],
+  ]) {
+    const model = api.eventLogHoverModel({ event_uid: 'unloaded', timestamp_ns: '10', ...raw });
+    assert.equal(api.formatDuration(model.mark.durationToNextChangeNs), expected);
+    assert.equal(model.lane.resourceId, 'resource');
+    assert.deepEqual(model.occurrenceLanes, []);
+  }
+});
+
+test('server duration evidence survives normalization, bounded lane derivation and shared log/review hover', () => {
+  const state = { viewEndNs: 100n, eventByUid: new Map(), resourceById: new Map(), lanes: [] };
+  const api = load(['normalizeMark', 'deriveLaneIntervals', 'eventLogHoverModel'], {
+    state, toNs: (value, fallback) => value == null ? fallback : BigInt(value),
+    resourceEffectFor: () => ({ effect_type: 'modify', state_changed: true }),
+    normalizedEventOutcome: () => 'success', titleCase: String, eventFailed: () => false,
+    eventChangesState: () => true, isSourceLogEntry: () => false, eventResourceRefs: () => ['resource'],
+  });
+  for (const duration of ['0', '90', null, undefined]) {
+    const lane = { laneId: 'resource', resourceId: 'resource', authoritativeHistory: true };
+    const raw = { event_uid: 'event', time_ns: '10', duration_to_next_change_ns: duration,
+      event: { event_uid: 'event', timestamp_ns: '10' } };
+    lane.marks = [api.normalizeMark(raw, lane)];
+    state.lanes = [lane];
+    api.deriveLaneIntervals(lane);
+    assert.equal(api.eventLogHoverModel(raw.event).mark.durationToNextChangeNs,
+      duration == null ? duration : BigInt(duration));
+  }
+});
+
+test('inspector duration belongs to the selected resource even when only another effect is loaded', () => {
+  const elements = new Map();
+  const byId = id => { if (!elements.has(id)) elements.set(id, {}); return elements.get(id); };
+  const lane = { resourceId: 'loaded', label: 'Loaded resource' };
+  lane.marks = [{ eventUid: 'event', lane, durationToNextChangeNs: 90n }];
+  const state = { selectedEventResourceId: 'loaded', lanes: [lane], resourceById: new Map() };
+  const api = load(['formatDuration', 'renderEventInspector'], {
+    state, byId, toNs: BigInt, eventSubject: () => ({ resource_id: 'other' }),
+    resourceEffectFor: () => ({ effect_type: 'modify' }), resourceEffectCondition: () => null,
+    titleCase: String, humanLayer: String, eventOutcomeText: () => 'success', eventTime: () => 10n,
+    formatOffset: String, formatValue: String, eventStatus: () => 'unknown', escapeHtml: String,
+    eventEffectMarkup: () => '',
+  });
+  for (const [selected, duration] of [['loaded', '90 ns'], ['other', 'unknown']]) {
+    state.selectedEventResourceId = selected;
+    api.renderEventInspector({ event_uid: 'event', event_type: 'changed' });
+    assert.ok(byId('selected-event-fields').innerHTML.includes(`<dt>Status duration</dt><dd>${duration}</dd>`));
+  }
 });
 function bindControlGroup(selector, nextSelector, deps) {
   const start=source.indexOf(`document.querySelectorAll("${selector}").forEach((button) => button.addEventListener`);

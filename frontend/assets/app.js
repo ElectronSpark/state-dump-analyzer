@@ -699,7 +699,8 @@ function timelineLaneWidth() {
 }
 
 function formatDuration(value) {
-  if (value === null || value === undefined) return "until capture end";
+  if (value === undefined) return "unknown";
+  if (value === null) return "until capture end";
   let ns = toNs(value);
   const sign = ns < 0n ? "-" : "";
   if (ns < 0n) ns = -ns;
@@ -2312,8 +2313,8 @@ function normalizeMark(raw, lane) {
     failure: raw?.failure === true || eventFailed(event),
     stateChanged: effect?.state_changed ?? raw?.state_changed ?? eventChangesState(event),
     effectType: effect?.effect_type || raw?.effect_type || event.effect_type || "unknown",
-    durationToNextChangeNs: raw?.duration_to_next_change_ns === null || raw?.duration_to_next_change_ns === undefined
-      ? null
+    durationToNextChangeNs: raw?.duration_to_next_change_ns == null
+      ? raw?.duration_to_next_change_ns
       : toNs(raw.duration_to_next_change_ns),
     event,
     effect,
@@ -2369,18 +2370,17 @@ function ensureLane(laneMap, config) {
 
 function deriveLaneIntervals(lane) {
   lane.marks.sort((a, b) => (a.timeNs < b.timeNs ? -1 : a.timeNs > b.timeNs ? 1 : 0));
+  // Server previews are bounded evidence, not a complete history from which
+  // to infer missing durations or intervals.
+  if (lane.authoritativeHistory) return;
   // A failed operation is not proof that no mutation occurred.  The plug-in's
   // explicit per-resource state_changed/effect declaration is authoritative.
   const changed = lane.marks.filter((mark) => mark.stateChanged === true);
   lane.marks.forEach((mark) => {
-    if (mark.durationToNextChangeNs !== null) return;
+    if (mark.durationToNextChangeNs !== undefined) return;
     const next = changed.find((candidate) => candidate.timeNs > mark.timeNs);
     mark.durationToNextChangeNs = next ? next.timeNs - mark.timeNs : state.viewEndNs - mark.timeNs;
   });
-
-  // Empty server intervals describe the selected window. They are never a
-  // request to reconstruct history from event previews or the final snapshot.
-  if (lane.authoritativeHistory) return;
 
   if (!lane.lifecycle.length) {
     let open = null;
@@ -2723,7 +2723,7 @@ function buildClientGlyphs(lane) {
 function timelineGlyphLayout(glyphs, trackWidth) {
   const layout = glyphs.map((glyph) => ({
     glyph,
-    time: glyph.kind === "cluster" || glyph.kind === "source-cluster"
+    time: glyph.kind === "cluster" || glyph.kind === "source-cluster" || glyph.kind === "annotation-cluster"
       ? glyph.startNs + (glyph.endNs - glyph.startNs) / 2n : glyph.timeNs,
   })).sort((a, b) => a.time < b.time ? -1 : a.time > b.time ? 1 : 0);
   const positions = layout.map((item) => timelinePercent(item.time) * trackWidth / 100);
@@ -3303,7 +3303,7 @@ function buildAnnotationGlyphs(projections) {
   const result = [];
   let group = [];
   const flush = () => {
-    if (group.length >= 3) {
+    if (group.length >= 2) {
       result.push({
         kind: "annotation-cluster",
         items: group,
@@ -3345,7 +3345,7 @@ function reviewMarkerLaneHtml(trackWidth = state.trackWidth) {
     ));
   if (!allMarked.length) return "";
   const marked = allMarked.filter((projection) => timelinePointVisible(projection.timeNs));
-  const glyphs = buildAnnotationGlyphs(marked).map((glyph, index) => {
+  const glyphs = timelineGlyphLayout(buildAnnotationGlyphs(marked), trackWidth).map(({ glyph, time, space }, index) => {
     if (glyph.kind === "annotation-cluster") {
       const key = `annotation-cluster:${index}:${glyph.startNs}`;
       const last = glyph.items[glyph.items.length - 1];
@@ -3361,8 +3361,7 @@ function reviewMarkerLaneHtml(trackWidth = state.trackWidth) {
         type: "annotation-cluster",
         items: glyph.items,
       });
-      const time = glyph.startNs + (glyph.endNs - glyph.startNs) / 2n;
-      return `<button class="review-marker cluster${hiddenInCluster ? " has-hidden" : ""}" type="button" data-hover-key="${escapeHtml(key)}" data-range-start-ns="${glyph.startNs}" data-range-end-ns="${glyph.endNs}" data-range-semantics="inclusive" ${lastJump} style="left:${timelinePercent(time)}%" aria-label="${glyph.items.length} review markers${hiddenInCluster ? `; ${hiddenInCluster} underlying marks hidden` : ""}"><span>${glyph.items.length}</span></button>`;
+      return `<button class="review-marker cluster${hiddenInCluster ? " has-hidden" : ""}" type="button" data-hover-key="${escapeHtml(key)}" data-range-start-ns="${glyph.startNs}" data-range-end-ns="${glyph.endNs}" data-range-semantics="inclusive" ${lastJump} style="left:${timelinePercent(time)}%;--glyph-space:${space}px" aria-label="${glyph.items.length} review markers${hiddenInCluster ? `; ${hiddenInCluster} underlying marks hidden` : ""}"><span${space < 10 ? " hidden" : ""}>${glyph.items.length}</span></button>`;
     }
     const key = `review-marker:${glyph.entryId}`;
     const jump = glyph.streamKind === "source"
@@ -3372,7 +3371,7 @@ function reviewMarkerLaneHtml(trackWidth = state.trackWidth) {
     const hiddenClass = state.hiddenTimelineEntryIds.has(glyph.entryId)
       ? " underlying-hidden"
       : "";
-    return `<button class="review-marker ${glyph.streamKind}${hiddenClass}" type="button" data-hover-key="${escapeHtml(key)}" data-log-entry-id="${escapeHtml(glyph.entryId)}" data-time-ns="${glyph.timeNs}" ${jump} style="left:${timelinePercent(glyph.timeNs)}%" aria-label="${escapeHtml(`Marked ${annotationProjectionLabel(glyph)} at ${formatOffset(glyph.timeNs, visibleTimelineOffsetPrecision())}${hiddenClass ? "; underlying mark hidden" : ""}`)}"><span aria-hidden="true">&#9733;</span></button>`;
+    return `<button class="review-marker ${glyph.streamKind}${hiddenClass}" type="button" data-hover-key="${escapeHtml(key)}" data-log-entry-id="${escapeHtml(glyph.entryId)}" data-time-ns="${glyph.timeNs}" ${jump} style="left:${timelinePercent(time)}%;--glyph-space:${space}px" aria-label="${escapeHtml(`Marked ${annotationProjectionLabel(glyph)} at ${formatOffset(glyph.timeNs, visibleTimelineOffsetPrecision())}${hiddenClass ? "; underlying mark hidden" : ""}`)}"><span aria-hidden="true"${space < 10 ? " hidden" : ""}>&#9733;</span></button>`;
   }).join("");
   const hiddenCount = allMarked.filter(
     (projection) => state.hiddenTimelineEntryIds.has(projection.entryId),
@@ -4754,8 +4753,7 @@ function renderEventInspector(event) {
   const result = event.attributes?.result || event.result || {};
   const uid = event.event_uid || event.event_id;
   const mark = state.lanes.flatMap((lane) => lane.marks)
-    .find((item) => item.eventUid === uid && (!state.selectedEventResourceId || item.lane.resourceId === state.selectedEventResourceId))
-    || state.lanes.flatMap((lane) => lane.marks).find((item) => item.eventUid === uid);
+    .find((item) => item.eventUid === uid && (!state.selectedEventResourceId || item.lane.resourceId === state.selectedEventResourceId));
   const canonicalId = state.selectedEventResourceId || mark?.lane?.resourceId || subject.resource_id;
   const canonicalResource = canonicalId ? state.resourceById.get(canonicalId) : null;
   const resourceText = canonicalResource
@@ -9565,7 +9563,7 @@ function eventLogHoverModel(entry) {
   };
   return {
     type: "event",
-    mark: normalizeMark(entry, lane),
+    mark: lane.marks.find((mark) => mark.eventUid === uid) || normalizeMark(entry, lane),
     lane,
     occurrenceLanes,
   };

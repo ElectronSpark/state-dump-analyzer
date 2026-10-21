@@ -194,7 +194,10 @@ resolution rather than cancel each other. Preserve disclosure on same-query
 rerenders, and restore focus to a visible control in the same instance. Reveal
 the actual marker or log row in both axes of its nested scrollport and the
 browser viewport, accounting for sticky labels and headers. Share glyph-spacing
-logic between normalized and source marks. Use the same bounded range
+logic between normalized, source and review marks, including small groups and
+cluster boundaries. Reuse a loaded mark's per-resource history in log/review
+popups; missing duration is unknown, not evidence of an open-ended state.
+Use the same bounded range
 adjustment for pointer and keyboard input.
 Keep applied-result facts separate from draft controls, exact counts separate
 from previews, and missing evidence separate from disagreement. Bound retained

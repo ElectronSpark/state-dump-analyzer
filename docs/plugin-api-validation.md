@@ -330,6 +330,10 @@ separately when those measurements are available.
 ### Cold search and import measurements
 
 Use a fresh process and empty search-cache directory for the first-query path.
+Record the process's effective cache path and search-cache overrides before
+classifying a delay as sidecar reopening; a sidecar in another directory is not
+evidence of reuse. Trace validation and construction separately, and isolate
+concurrent temporal work from first-use search before attributing a stall.
 The browser deployment defers search-corpus construction; an API-only warmup
 can build it before a timer starts. Include the exact client-safe redaction and
 JSON projection, not just matching against an already constructed sidecar.
@@ -450,11 +454,18 @@ checkbox change must restore its checked state.
 At narrow viewport widths, check the hit target beneath hover cards as well:
 an inspection card must not cover and intercept its own jump control. Keep
 overflowing facts scrollable and reset any size constraint on the next open.
-For dense timelines, hit-test adjacent normalized and source marker centers
+For dense timelines, hit-test adjacent normalized, source and review marker centers
 and compare pointer and keyboard drill-down identities, including selected marks.
-Reuse the same spacing calculation for both renderers. Keep counts/IDs intact
+Reuse the same spacing calculation across renderers. Include two nearby review
+items and groups spanning the bounded cluster size; exact drill-down must retain
+every identity. Keep counts/IDs intact
 when shrinking glyphs, restore their presentation on zoom, and retain equal-time
 evidence; constrain rotated marks as well as clusters.
+Compare the same event's same resource effect in lane, log and review popups.
+Reuse known per-resource duration and operation from the loaded mark. Distinguish
+unloaded/unknown duration from explicit open-ended evidence, and test finite,
+zero and open-ended values after changing loaded lanes. A raw event entry alone
+does not establish when its affected resource next changes state.
 
 Exercise normalized source-lane construction together with lookup, hover and
 reveal. Display clusters may be derived from marks instead of stored on the

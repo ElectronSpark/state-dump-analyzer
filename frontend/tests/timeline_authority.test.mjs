@@ -126,15 +126,15 @@ test("authoritative empty properties and declared status survive normalization",
   });
 });
 
-test("server event previews retain display durations without becoming another reducer", () => {
+for (const duration of [undefined, null, 0n, 90n]) test(`server event previews preserve ${duration} duration without inferring omitted history`, () => {
   const h = harness();
   const lane = normalize(h, serverLane());
   lane.marks.push({
     timeNs: 10n, stateChanged: true, effectType: "created",
-    durationToNextChangeNs: null,
+    durationToNextChangeNs: duration,
   });
   h.deriveLaneIntervals(lane);
-  assert.equal(lane.marks[0].durationToNextChangeNs, 90n);
+  assert.equal(lane.marks[0].durationToNextChangeNs, duration);
   assert.deepEqual(lane.lifecycle, []);
   assert.deepEqual(lane.statuses, []);
   assert.equal(h.statusAtLane(lane, 50n).exists, false);

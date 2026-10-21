@@ -158,8 +158,11 @@ boundaries, and pagination/reopening with expanded details. Check actual marker
 and log-row visibility in both axes of the nested and browser viewports, including
 sticky labels and headers, not only activeElement identity. In narrow viewports,
 verify that hover cards do not intercept their trigger's click and dense
-normalized/source marker centers hit the expected identity, including selected
-marks and zoom changes. Compare
+normalized/source/review marker centers hit the expected identity, including
+two-item groups, cluster boundaries, selected marks and zoom changes. Compare
+the same event and resource across lane, log and review popups; preserve finite
+and explicitly open-ended durations, and label unavailable history as unknown.
+Compare
 exact counts with paged detail, and retained-result labels with the applied
 request after invalid input. Exercise route-row seeds across directions and
 equivalent endpoint descriptors. Distinguish natural browser timing from
