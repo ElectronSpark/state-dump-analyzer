@@ -77,7 +77,7 @@ for (const timing of ['pending response', 'clear', 'queued focus', 'unchanged'])
   const state = { eventLogInclude: {}, eventLogServerQueryId: 1, eventLogLocateRequestId: 0,
     eventLogServerItems: new Map([[20, {}]]), eventLogRows: Array(30), eventLogSelectionRequestId: 0 };
   const scroll = { set scrollTop(value) { scrolled.push(value); } };
-  const api = load(['locateServerEventLogEntry', 'focusServerEventLogTarget', 'setEventLogSelectionRanges', 'clearEventLogSelection'], {
+  const api = load(['locateServerEventLogEntry', 'focusEventLogTarget', 'setEventLogSelectionRanges', 'clearEventLogSelection'], {
     state, syncEventLogIncludeControls: noop, prepareServerEventLogQuery: noop, revisionPath: x => x,
     serverEventLogRequestBody: () => ({}), analysisRuntimeApi: () => response.promise,
     applyServerEventLogPayload: noop, EVENT_LOG_PAGE_SIZE: 80, EVENT_LOG_OVERSCAN: 10,
@@ -87,7 +87,9 @@ for (const timing of ['pending response', 'clear', 'queued focus', 'unchanged'])
     showToast: assert.fail, normalizeEventLogSelectionRanges: x => x,
     eventLogSelectionCount: () => 1, finishEventLogDrag: noop,
     byId: id => id === 'event-log-scroll' ? scroll : { scrollIntoView: noop,
-      querySelectorAll: () => [{ dataset: { logEntryId: 'event:old' }, focus: () => focused.push('old') }] },
+      querySelectorAll: () => [{ dataset: { logEntryId: 'event:old' }, focus: () => focused.push('old'),
+        scrollIntoView: noop, getBoundingClientRect: () => ({top: 200, bottom: 244}) }] },
+    document: {querySelector: () => null},
     window: { requestAnimationFrame: fn => frames.push(fn) },
   });
   const pending = api.locateServerEventLogEntry('event:old');

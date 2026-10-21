@@ -16,11 +16,11 @@ function load(names, deps) {
 const noop = () => {};
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
-test('dense timeline layout bounds neighboring footprints without changing exact cluster identity', () => {
+for (const kind of ['cluster', 'source-cluster']) test(`dense ${kind} layout bounds neighboring footprints without changing exact identity`, () => {
   let zoom = 1;
   const api = load(['timelineGlyphLayout'], { timelinePercent: time => Number(time) * zoom / 10 });
-  const cluster = { kind: 'cluster', clusterId: '132-events', startNs: 124n, endNs: 149n, count: 132 };
-  const next = { kind: 'cluster', clusterId: '12-events', startNs: 149n, endNs: 151n, count: 12 };
+  const cluster = { kind, clusterId: '132-events', startNs: 124n, endNs: 149n, count: 132 };
+  const next = { kind, clusterId: '12-events', startNs: 149n, endNs: 151n, count: 12 };
   const event = { kind: 'event', eventUid: 'exact', timeNs: 130n, failure: true };
   const layout = api.timelineGlyphLayout([cluster, next, event], 1000);
   assert.deepEqual(layout.map(item => item.glyph), [event, cluster, next]);
@@ -35,11 +35,11 @@ test('dense timeline layout bounds neighboring footprints without changing exact
   assert.match(css, /\.event-mark\.cluster span\s*\{\s*pointer-events: none/);
 });
 
-test('equal-time events and a stale cluster midpoint retain visible footprints', () => {
+for (const kind of ['cluster', 'source-cluster']) test(`equal-time events and a ${kind} midpoint retain visible footprints`, () => {
   const api = load(['timelineGlyphLayout'], { timelinePercent: Number });
   const glyphs = [
     { eventUid: 'a', timeNs: 50n }, { eventUid: 'b', timeNs: 50n, failure: true },
-    { kind: 'cluster', startNs: 40n, endNs: 60n, staleWindow: true },
+    { kind, startNs: 40n, endNs: 60n, staleWindow: true },
   ];
   assert.deepEqual(api.timelineGlyphLayout(glyphs, 100).map(item => item.space), [27, 27, 27]);
   assert.deepEqual(api.timelineGlyphLayout([...glyphs, {timeNs: 60n}], 100).map(item => item.space), [10, 10, 10, 10]);
@@ -358,13 +358,78 @@ test('applied topology policy comes from retained result basis, never an invalid
 test('timeline reveal corrects page-header occlusion and inner-scroller clipping before focus',()=>{
   let pageShift=0,inner=89;const topbar={getBoundingClientRect:()=>({bottom:84})};
   const header={getBoundingClientRect:()=>({bottom:164})};
-  const scroll={scrollIntoView:noop,getBoundingClientRect:()=>({top:100+pageShift,bottom:400+pageShift}),
+  const scroll={scrollIntoView:noop,getBoundingClientRect:()=>({top:100+pageShift,bottom:400+pageShift}),clientTop:0,clientHeight:285,
     get scrollTop(){return inner;},set scrollTop(v){inner=Math.max(0,v);}};
   const row={getBoundingClientRect:()=>({top:100+pageShift-inner,bottom:160+pageShift-inner})};
   const api=load(['scrollTimelineTargetIntoView'],{byId:()=>scroll,
     document:{querySelector:s=>s==='.topbar'?topbar:header},window:{innerHeight:700,scrollBy:({top})=>{pageShift-=top;}}});
   api.scrollTimelineTargetIntoView(row);const rect=row.getBoundingClientRect();
-  assert.ok(rect.top>=164);assert.ok(rect.bottom<=scroll.getBoundingClientRect().bottom);
+  assert.ok(rect.top>=164);assert.ok(rect.bottom<=scroll.getBoundingClientRect().top+scroll.clientHeight);
+});
+
+for (const initialLeft of [638, 180]) test(`timeline reveal brings a marker at x=${initialLeft} inside the scrollport and past its sticky label`,()=>{
+  const initialScroll=initialLeft>580?8:300;
+  let horizontal=initialScroll;
+  const viewport={left:13,right:580,top:180,bottom:500};
+  const label={getBoundingClientRect:()=>({right:223})};
+  const scroll={scrollIntoView:noop,getBoundingClientRect:()=>viewport,scrollTop:0,
+    clientTop:0,clientHeight:305,clientLeft:0,clientWidth:552,
+    get scrollLeft(){return horizontal;},set scrollLeft(value){horizontal=Math.max(0,value);}};
+  const marker={closest:()=>({parentElement:{querySelector:()=>label}}),
+    getBoundingClientRect:()=>({left:initialLeft+initialScroll-horizontal,right:initialLeft+initialScroll+23-horizontal,top:220,bottom:240})};
+  const api=load(['scrollTimelineTargetIntoView'],{byId:()=>scroll,
+    document:{querySelector:()=>null},window:{innerWidth:608,innerHeight:668,scrollBy:assert.fail}});
+  api.scrollTimelineTargetIntoView(marker);
+  assert.ok(marker.getBoundingClientRect().left>=231);
+  assert.ok(marker.getBoundingClientRect().right<=557);
+  assert.equal(scroll.scrollTop,0);
+});
+
+test('source lanes apply shared footprint bounds while retaining cluster and singleton identities',()=>{
+  const cluster={kind:'source-cluster',clusterId:'s1',startNs:120n,endNs:124n,
+    recordUids:['s1','s2'],count:2,items:[{timeNs:120n},{timeNs:124n}]};
+  const mark={kind:'source-record',sourceRecordUid:'s3',timeNs:125n,recordName:'record'};
+  const state={recordLanes:[{laneId:'lane',sourceTypes:['ctf'],marks:[cluster,mark],recordCount:3}],
+    selectedSourceRecordUid:'s1',hoverModels:new Map()};
+  const api=load(['timelineGlyphLayout','sourceRecordLanesHtml','pointClusterRangeState'],{
+    state,rangeBounds:()=>null,timelineRangeBandHtml:()=>'',sourceTypeDescriptor:()=>({label:'CTF',color:'#fff'}),
+    buildSourceGlyphs:lane=>lane.marks,timelinePercent:ns=>Number(ns)/10,escapeHtml:String,inSelectedRange:()=>false,
+    formatOffset:String,visibleTimelineOffsetPrecision:()=>1,timelineLaneWidth:()=>210});
+  const html=api.sourceRecordLanesHtml(1000);
+  assert.equal((html.match(/--glyph-space:3px/g)||[]).length,2);
+  assert.match(html,/source-record-mark cluster selected/);
+  assert.match(html,/data-last-source-record-uid="s2"/);
+  assert.match(html,/data-source-record-uid="s3"/);
+  assert.equal(state.hoverModels.get('source-cluster:lane:s1').cluster,cluster);
+});
+
+for(const initialTop of [1108,40]) test(`log locate reveals the actual row at y=${initialTop} before focus, after tall controls and sticky headers`,()=>{
+  let top=initialTop,focused=false;
+  const frames=[];
+  const scroll={scrollTop:0};
+  const row={dataset:{logEntryId:'source:s1'},getBoundingClientRect:()=>({top,bottom:top+44}),
+    scrollIntoView:()=>assert.fail('native scrolling disturbs compressed virtual positioning'),
+    focus:()=>{assert.ok(top>=92&&top+44<=668);focused=true;}};
+  const state={eventLogServerQueryId:1,eventLogLocateRequestId:1,eventLogRows:Array(30)};
+  const api=load(['focusEventLogTarget'],{state,byId:id=>id==='event-table-body'?{querySelectorAll:()=>[row]}:scroll,
+    virtualScrollTopForIndex:()=>20,eventLogBodyViewportHeight:()=>400,renderEventTableWindow:noop,navigationPulse:noop,
+    EVENT_LOG_OVERSCAN:10,EVENT_LOG_ROW_HEIGHT:44,EVENT_LOG_MAX_SCROLL_HEIGHT:8000000,
+    document:{querySelector:()=>({getBoundingClientRect:()=>({bottom:84})})},
+    window:{innerHeight:668,requestAnimationFrame:fn=>frames.push(fn),scrollBy:opts=>{assert.equal(opts.behavior,'instant');top-=opts.top;}}});
+  api.focusEventLogTarget('source:s1',20);
+  while(frames.length)frames.shift()();
+  assert.equal(focused,true);
+  assert.equal(scroll.scrollTop,20);
+});
+
+test('small capture jumps reuse the same row focus routine and retire the previous popup and queued locate',()=>{
+  const state={eventLogInclude:{},eventLogIndexById:new Map([['event:e1',12]]),eventLogLocateRequestId:7};
+  const focus=[];let closed=0;
+  const api=load(['jumpToLogEntry'],{state,closeHover:()=>closed++,usesServerWindowedHistory:()=>false,
+    syncEventLogIncludeControls:noop,byId:()=>({value:''}),renderEventTable:noop,
+    focusEventLogTarget:(...args)=>focus.push(args),showToast:assert.fail});
+  api.jumpToLogEntry('event:e1');
+  assert.deepEqual(focus,[['event:e1',12]]);assert.equal(closed,1);assert.equal(state.eventLogLocateRequestId,8);
 });
 
 test('bundle repaint restores the same duplicate-resource instance control',()=>{

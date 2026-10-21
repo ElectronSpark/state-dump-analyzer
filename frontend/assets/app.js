@@ -2723,7 +2723,8 @@ function buildClientGlyphs(lane) {
 function timelineGlyphLayout(glyphs, trackWidth) {
   const layout = glyphs.map((glyph) => ({
     glyph,
-    time: glyph.kind === "cluster" ? glyph.startNs + (glyph.endNs - glyph.startNs) / 2n : glyph.timeNs,
+    time: glyph.kind === "cluster" || glyph.kind === "source-cluster"
+      ? glyph.startNs + (glyph.endNs - glyph.startNs) / 2n : glyph.timeNs,
   })).sort((a, b) => a.time < b.time ? -1 : a.time > b.time ? 1 : 0);
   const positions = layout.map((item) => timelinePercent(item.time) * trackWidth / 100);
   for (let index = 0; index < layout.length;) {
@@ -3263,21 +3264,20 @@ function sourceRecordLanesHtml(trackWidth = state.trackWidth) {
     const color = lane.sourceTypes.length === 1
       ? sourceTypeDescriptor(lane.sourceTypes[0]).color
       : "#66b8ff";
-    const glyphs = buildSourceGlyphs(lane).map((glyph) => {
+    const glyphs = timelineGlyphLayout(buildSourceGlyphs(lane), trackWidth).map(({ glyph, time, space }) => {
       if (glyph.kind === "source-cluster") {
         const key = "source-cluster:" + lane.laneId + ":" + glyph.clusterId;
         state.hoverModels.set(key, { type: "source-cluster", cluster: glyph, lane });
         const selected = glyph.recordUids.includes(state.selectedSourceRecordUid);
-        const time = glyph.startNs + (glyph.endNs - glyph.startNs) / 2n;
         const rangeState = pointClusterRangeState(glyph.items, bounds, glyph.count);
         const rangeDescription = rangeState.count
           ? `; ${rangeState.count} of ${rangeState.total} records are in the selected range`
           : "";
-        return `<button class="source-record-mark cluster${selected ? " selected" : ""}${rangeState.className}" data-hover-key="${escapeHtml(key)}" data-source-cluster-id="${escapeHtml(glyph.clusterId)}" data-last-source-record-uid="${escapeHtml(glyph.recordUids.at(-1) || "")}" data-range-start-ns="${glyph.startNs}" data-range-end-ns="${glyph.endNs}" style="left:${timelinePercent(time)}%;--source-color:${escapeHtml(color)}" type="button" aria-label="${glyph.count} collapsed source records${rangeDescription}"><span>${glyph.count}</span></button>`;
+        return `<button class="source-record-mark cluster${selected ? " selected" : ""}${rangeState.className}" data-hover-key="${escapeHtml(key)}" data-source-cluster-id="${escapeHtml(glyph.clusterId)}" data-last-source-record-uid="${escapeHtml(glyph.recordUids.at(-1) || "")}" data-range-start-ns="${glyph.startNs}" data-range-end-ns="${glyph.endNs}" style="left:${timelinePercent(time)}%;--glyph-space:${space}px;--source-color:${escapeHtml(color)}" type="button" aria-label="${glyph.count} collapsed source records${rangeDescription}"><span>${glyph.count}</span></button>`;
       }
       const key = "source-record:" + lane.laneId + ":" + glyph.sourceRecordUid;
       state.hoverModels.set(key, { type: "source-record", mark: glyph, lane });
-      return `<button class="source-record-mark${glyph.matchedEventUid ? " matched" : " unmatched"}${glyph.sourceRecordUid === state.selectedSourceRecordUid ? " selected" : ""}${inSelectedRange(glyph.timeNs) ? " in-range" : ""}" data-source-record-uid="${escapeHtml(glyph.sourceRecordUid)}" data-hover-key="${escapeHtml(key)}" data-time-ns="${glyph.timeNs}" style="left:${timelinePercent(glyph.timeNs)}%;--source-color:${escapeHtml(color)}" type="button" aria-label="${escapeHtml(glyph.recordName + " at " + formatOffset(glyph.timeNs, visibleTimelineOffsetPrecision()))}"></button>`;
+      return `<button class="source-record-mark${glyph.matchedEventUid ? " matched" : " unmatched"}${glyph.sourceRecordUid === state.selectedSourceRecordUid ? " selected" : ""}${inSelectedRange(glyph.timeNs) ? " in-range" : ""}" data-source-record-uid="${escapeHtml(glyph.sourceRecordUid)}" data-hover-key="${escapeHtml(key)}" data-time-ns="${glyph.timeNs}" style="left:${timelinePercent(time)}%;--glyph-space:${space}px;--source-color:${escapeHtml(color)}" type="button" aria-label="${escapeHtml(glyph.recordName + " at " + formatOffset(glyph.timeNs, visibleTimelineOffsetPrecision()))}"></button>`;
     }).join("");
     const countCopy = lane.truncated
       ? lane.marks.length.toLocaleString() + " of " + lane.recordCount.toLocaleString()
@@ -4525,10 +4525,18 @@ function scrollTimelineTargetIntoView(row) {
     viewport = scroll.getBoundingClientRect();
   }
   const target = row.getBoundingClientRect();
-  const top = Math.max(viewport.top, document.querySelector(".timeline-floating-header")?.getBoundingClientRect().bottom || 0) + 8;
-  const bottom = Math.min(viewport.bottom, window.innerHeight) - 8;
+  const top = Math.max(viewport.top + scroll.clientTop, document.querySelector(".timeline-floating-header")?.getBoundingClientRect().bottom || 0) + 8;
+  const bottom = Math.min(viewport.top + scroll.clientTop + scroll.clientHeight, window.innerHeight) - 8;
   if (target.top < top) scroll.scrollTop += target.top - top;
   else if (target.bottom > bottom) scroll.scrollTop += target.bottom - bottom;
+  const track = row.closest?.(".lane-track");
+  if (track) {
+    const label = track.parentElement.querySelector(".lane-label")?.getBoundingClientRect();
+    const left = Math.max(viewport.left + scroll.clientLeft, label?.right || 0) + 8;
+    const right = Math.min(viewport.left + scroll.clientLeft + scroll.clientWidth, window.innerWidth) - 8;
+    if (target.left < left) scroll.scrollLeft += target.left - left;
+    else if (target.right > right) scroll.scrollLeft += target.right - right;
+  }
 }
 
 async function jumpSourceRecordToTimeline(recordUid) {
@@ -4566,7 +4574,7 @@ async function jumpSourceRecordToTimeline(recordUid) {
     const laneRow = document.querySelector('.timeline-row[data-source-lane-id="' + CSS.escape(lane.laneId) + '"]');
     const destination = target || clusterTarget || laneRow;
     if (!destination) return;
-    scrollTimelineTargetIntoView(laneRow || destination);
+    scrollTimelineTargetIntoView(destination);
     if (target || clusterTarget) destination.focus({ preventScroll: true });
     navigationPulse(destination);
   });
@@ -4651,7 +4659,7 @@ async function jumpToTimelineEvent(eventUid) {
       : null;
     const target = eventTarget || row;
     if (!target) return;
-    scrollTimelineTargetIntoView(row || target);
+    scrollTimelineTargetIntoView(target);
     if (eventTarget) eventTarget.focus({ preventScroll: true });
     navigationPulse(eventTarget || row);
   });
@@ -11164,7 +11172,7 @@ function syncEventLogIncludeControls() {
     });
 }
 
-function focusServerEventLogTarget(entryId, virtualIndex) {
+function focusEventLogTarget(entryId, virtualIndex) {
   const queryId = state.eventLogServerQueryId;
   const locateRequestId = state.eventLogLocateRequestId;
   state.eventLogKeyboardFocusIndex = null;
@@ -11178,12 +11186,19 @@ function focusServerEventLogTarget(entryId, virtualIndex) {
     viewportHeight: eventLogBodyViewportHeight(scroll),
   });
   renderEventTableWindow();
-  byId("event-log").scrollIntoView({ behavior: "smooth", block: "nearest" });
   window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
     if (queryId !== state.eventLogServerQueryId || locateRequestId !== state.eventLogLocateRequestId) return;
     const row = [...byId("event-table-body").querySelectorAll("tr[data-log-entry-id]")]
       .find((item) => item.dataset.logEntryId === entryId);
     if (!row) return;
+    const top = (document.querySelector(".topbar")?.getBoundingClientRect().bottom || 0) + 8;
+    const bottom = window.innerHeight - 8;
+    const rect = row.getBoundingClientRect();
+    // Preserve the compressed virtual scroll position; native row scrolling
+    // would move the inner viewport too and change the logical row on repaint.
+    if (rect.top < top || rect.bottom > bottom) {
+      window.scrollBy({ top: (rect.top + rect.bottom - top - bottom) / 2, behavior: "instant" });
+    }
     row.focus({ preventScroll: true });
     navigationPulse(row);
   }));
@@ -11260,7 +11275,7 @@ async function locateServerEventLogEntry(entryId) {
     if (!state.eventLogServerItems.has(safeDataIndex)) await requestServerEventLogPage(pageOffset);
     if (queryId !== state.eventLogServerQueryId || locateRequestId !== state.eventLogLocateRequestId) return;
     const virtualIndex = serverEventLogVirtualRowForDataIndex(safeDataIndex);
-    focusServerEventLogTarget(entryId, virtualIndex);
+    focusEventLogTarget(entryId, virtualIndex);
   } catch (error) {
     if (queryId !== state.eventLogServerQueryId || locateRequestId !== state.eventLogLocateRequestId) return;
     showToast(`Could not locate the target record: ${error.message}`);
@@ -11268,6 +11283,7 @@ async function locateServerEventLogEntry(entryId) {
 }
 
 function jumpToLogEntry(entryId) {
+  closeHover();
   state.eventLogKeyboardFocusIndex = null;
   if (usesServerWindowedHistory()) {
     locateServerEventLogEntry(entryId);
@@ -11287,24 +11303,8 @@ function jumpToLogEntry(entryId) {
     showToast("The target record is not available in this retained stream.");
     return;
   }
-  const scroll = byId("event-log-scroll");
-  scroll.scrollTop = virtualScrollTopForIndex({
-    overscan: EVENT_LOG_OVERSCAN,
-    index,
-    rowCount: state.eventLogRows.length,
-    rowHeight: EVENT_LOG_ROW_HEIGHT,
-    maximumHeight: EVENT_LOG_MAX_SCROLL_HEIGHT,
-    viewportHeight: eventLogBodyViewportHeight(scroll),
-  });
-  renderEventTableWindow();
-  byId("event-log").scrollIntoView({ behavior: "smooth", block: "nearest" });
-  window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-    const row = [...byId("event-table-body").querySelectorAll("tr[data-log-entry-id]")]
-      .find((item) => item.dataset.logEntryId === entryId);
-    if (!row) return;
-    row.focus({ preventScroll: true });
-    navigationPulse(row);
-  }));
+  ++state.eventLogLocateRequestId;
+  focusEventLogTarget(entryId, index);
 }
 
 function loadReview() {

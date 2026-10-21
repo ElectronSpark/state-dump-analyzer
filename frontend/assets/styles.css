@@ -6114,14 +6114,16 @@ footer button {
   top: 50%;
   width: 10px;
   height: 10px;
-  margin: -5px 0 0 -5px;
+  max-width: calc(var(--glyph-space, 27px) / 1.414214);
+  max-height: calc(var(--glyph-space, 27px) / 1.414214);
+  margin: 0;
   padding: 0;
-  border: 2px solid #07151e;
+  border: min(2px, calc(var(--glyph-space, 27px) / 4)) solid #07151e;
   border-radius: 2px;
   background: var(--source-color);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--source-color) 68%, white), 0 0 8px color-mix(in srgb, var(--source-color) 40%, transparent);
   cursor: pointer;
-  transform: rotate(45deg);
+  transform: translate(-50%, -50%) rotate(45deg);
 }
 
 .source-record-mark.unmatched {
@@ -6141,16 +6143,19 @@ footer button {
   display: grid;
   width: 23px;
   height: 20px;
-  margin: -10px 0 0 -11px;
+  max-width: var(--glyph-space, 27px);
+  max-height: none;
+  overflow: hidden;
   place-items: center;
-  border: 1px solid color-mix(in srgb, var(--source-color) 72%, white);
+  border: min(1px, calc(var(--glyph-space, 27px) / 2)) solid color-mix(in srgb, var(--source-color) 72%, white);
   border-radius: 6px;
   background: #0a1b25;
   color: var(--source-color);
-  transform: none;
+  transform: translate(-50%, -50%);
 }
 
 .source-record-mark.cluster span {
+  pointer-events: none;
   font-family: var(--mono);
   font-size: 6px;
   font-weight: 800;

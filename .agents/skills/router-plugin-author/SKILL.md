@@ -132,6 +132,9 @@ must preserve complete disclosure and integrity checks. An optional
 `ordered_events_by_resource` accelerator must contain complete lanes in
 canonical order. The performance map covers lifecycle and combined-query
 checks, including adapters that require request-local cache fallback.
+For merged event/source log pages, reuse the existing ordered index without
+materializing the full normalized stream. Preserve ordering, range grouping
+and locate semantics; measure locate and the destination page together.
 
 For core compressed search storage, preserve canonical UTF-8 document
 boundaries and ordered ordinals. Bound decompression before allocating its
@@ -188,8 +191,11 @@ Reuse existing ownership tokens and pending allocations instead of adding a
 parallel state mechanism. All newer navigation, including Back, pan and hide,
 must supersede a pending reveal; unchanged-selection consumers should share
 resolution rather than cancel each other. Preserve disclosure on same-query
-rerenders, and restore focus to a visible control in the same instance. Use
-the same bounded range adjustment for pointer and keyboard input.
+rerenders, and restore focus to a visible control in the same instance. Reveal
+the actual marker or log row in both axes of its nested scrollport and the
+browser viewport, accounting for sticky labels and headers. Share glyph-spacing
+logic between normalized and source marks. Use the same bounded range
+adjustment for pointer and keyboard input.
 Keep applied-result facts separate from draft controls, exact counts separate
 from previews, and missing evidence separate from disagreement. Bound retained
 records as well as rendered glyphs; preserve active selections and exact

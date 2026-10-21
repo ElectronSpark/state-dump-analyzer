@@ -1663,22 +1663,20 @@ class RevisionQueryService:
         # deliberately not retained for all 100K+ rows; they are redacted before
         # search and again only for the bounded return page.
         candidates: list[
-            tuple[int, int | None, int, str, str, str, str, dict[str, Any]]
+            tuple[int, int | None, int, str, str, str, str, Mapping[str, Any]]
         ] = []
-        inside_count = 0
 
         def optional_timestamp(entry: Mapping[str, Any]) -> int | None:
             value = entry.get("timestamp_ns")
             return None if value is None else temporal_integer(value, "timestamp_ns")
 
-        def append_candidate(
+        def candidate_for(
             *,
             stream_kind: str,
             uid: str,
             timestamp_ns: int | None,
-            entry: dict[str, Any],
-        ) -> None:
-            nonlocal inside_count
+            entry: Mapping[str, Any],
+        ) -> tuple[int, int | None, int, str, str, str, str, Mapping[str, Any]]:
             if selected_range is None:
                 membership = "all"
                 group_rank = 0
@@ -1689,27 +1687,29 @@ class RevisionQueryService:
                 )
                 membership = "inside" if in_range else "outside"
                 group_rank = 0 if in_range else 1
-                if in_range:
-                    inside_count += 1
             stable_id = f"{stream_kind}:{uid}"
             source_sequence = temporal_integer(
                 entry.get("source_sequence", 0),
                 "source_sequence",
             )
-            candidates.append(
-                (
-                    group_rank,
-                    timestamp_ns,
-                    source_sequence,
-                    stable_id,
-                    stream_kind,
-                    uid,
-                    membership,
-                    entry,
-                )
+            return (
+                group_rank,
+                timestamp_ns,
+                source_sequence,
+                stable_id,
+                stream_kind,
+                uid,
+                membership,
+                entry,
             )
 
-        if include_normalized:
+        # The indexed normalized stream is already in canonical order. Keep it
+        # implicit for an unfiltered merge instead of copying and sorting every
+        # event just to page a few rows alongside the retained source records.
+        indexed_merge = (
+            runtime is not None and include_normalized and not layers and not search
+        )
+        if include_normalized and not indexed_merge:
             event_source = (
                 runtime.events if runtime is not None else dataset.get("events", [])
             )
@@ -1747,11 +1747,13 @@ class RevisionQueryService:
                 uid = str(
                     event.get("event_uid") or event.get("event_id") or f"event-{index}"
                 )
-                append_candidate(
-                    stream_kind="event",
-                    uid=uid,
-                    timestamp_ns=optional_timestamp(event),
-                    entry=event,
+                candidates.append(
+                    candidate_for(
+                        stream_kind="event",
+                        uid=uid,
+                        timestamp_ns=optional_timestamp(event),
+                        entry=event,
+                    )
                 )
 
         if not source_types_supplied or selected_source_types:
@@ -1770,39 +1772,151 @@ class RevisionQueryService:
                     or record.get("record_uid")
                     or f"source-{index}"
                 )
-                append_candidate(
-                    stream_kind="source",
-                    uid=uid,
-                    timestamp_ns=optional_timestamp(record),
-                    entry=record,
+                candidates.append(
+                    candidate_for(
+                        stream_kind="source",
+                        uid=uid,
+                        timestamp_ns=optional_timestamp(record),
+                        entry=record,
+                    )
                 )
 
         # Untimed rows remain selectable after all timed rows in their group.
         # The sort-only zero is never exposed as a timestamp or used for range
         # membership; negative revision-relative instants retain their order.
-        candidates.sort(
-            key=lambda item: (
+        def candidate_key(item):
+            return (
                 item[0],
                 item[1] is None,
                 item[1] if item[1] is not None else 0,
                 item[2],
                 item[3],
             )
-        )
-        total_count = len(candidates)
-        outside_count = total_count - inside_count
-        located_display_index = None
-        if locate is not None:
-            located_display_index = next(
-                (
-                    index
-                    for index, candidate in self._checked(enumerate(candidates))
-                    if candidate[4] == locate[0] and candidate[5] == locate[1]
-                ),
-                None,
-            )
 
-        selected = candidates[offset : offset + limit]
+        candidates.sort(key=candidate_key)
+        inside_count = sum(item[6] == "inside" for item in self._checked(candidates))
+        located_display_index = None
+        if indexed_merge:
+            events, event_times = runtime.events, runtime.event_times
+            event_count = len(events)
+            if selected_range is None:
+                left, right = 0, event_count
+            else:
+                left = bisect_left(event_times, selected_range[0])
+                right = bisect_right(event_times, selected_range[1])
+            event_inside = right - left if selected_range is not None else 0
+            inside_count += event_inside
+
+            def display_event_index(index):
+                if selected_range is None:
+                    return index
+                if left <= index < right:
+                    return index - left
+                return event_inside + (index if index < left else left + index - right)
+
+            def event_candidate(index):
+                event = events[index]
+                return candidate_for(
+                    stream_kind="event",
+                    uid=str(
+                        event.get("event_uid") or event.get("event_id") or f"event-{index}"
+                    ),
+                    timestamp_ns=int(event_times[index]),
+                    entry=event,
+                )
+
+            # Rank each source against the existing timestamp index. Only equal
+            # timestamps need event payload comparisons (sequence and identity).
+            # Untimed source rows sort after every indexed, timed event.
+            source_positions = []
+            for source_index, candidate in self._checked(enumerate(candidates)):
+                timestamp = candidate[1]
+                if timestamp is None:
+                    before = event_count
+                else:
+                    low = bisect_left(event_times, timestamp)
+                    high = bisect_right(event_times, timestamp)
+                    key = candidate_key(candidate)
+                    while low < high:
+                        middle = (low + high) // 2
+                        if candidate_key(event_candidate(middle)) < key:
+                            low = middle + 1
+                        else:
+                            high = middle
+                    before = low
+                    if selected_range is not None:
+                        if candidate[6] == "inside":
+                            before -= left
+                        elif timestamp < selected_range[0]:
+                            before += event_inside
+                source_positions.append(before + source_index)
+
+            total_count = event_count + len(candidates)
+            if locate is not None and locate[0] == "event":
+                ordinals = getattr(runtime, "event_index_by_uid", {})
+                # The ordinal index selects the last duplicate. Legacy merged
+                # locate selects the first, so only use direct lookup when the
+                # mapping proves every event has a unique nonempty identity.
+                if len(ordinals) == event_count:
+                    target = ordinals.get(locate[1])
+                else:
+                    target = min(
+                        (index for index in self._checked(range(event_count))
+                         if event_candidate(index)[5] == locate[1]),
+                        key=display_event_index,
+                        default=None,
+                    )
+                if target is not None:
+                    event_position = display_event_index(target)
+                    source_before = bisect_left(
+                        candidates, candidate_key(event_candidate(target)), key=candidate_key
+                    )
+                    located_display_index = event_position + source_before
+            elif locate is not None:
+                target = next(
+                    (index for index, candidate in self._checked(enumerate(candidates))
+                     if candidate[5] == locate[1]),
+                    None,
+                )
+                if target is not None:
+                    located_display_index = source_positions[target]
+
+            selected = []
+            source_index = bisect_left(source_positions, offset)
+            event_position = offset - source_index
+            for display_index in self._checked(
+                range(offset, min(total_count, offset + limit))
+            ):
+                if (
+                    source_index < len(candidates)
+                    and source_positions[source_index] == display_index
+                ):
+                    selected.append(candidates[source_index])
+                    source_index += 1
+                else:
+                    if selected_range is None:
+                        original = event_position
+                    elif event_position < event_inside:
+                        original = left + event_position
+                    elif event_position - event_inside < left:
+                        original = event_position - event_inside
+                    else:
+                        original = right + event_position - event_inside - left
+                    selected.append(event_candidate(original))
+                    event_position += 1
+        else:
+            total_count = len(candidates)
+            if locate is not None:
+                located_display_index = next(
+                    (
+                        index
+                        for index, candidate in self._checked(enumerate(candidates))
+                        if candidate[4] == locate[0] and candidate[5] == locate[1]
+                    ),
+                    None,
+                )
+            selected = candidates[offset : offset + limit]
+        outside_count = total_count - inside_count
         items: list[dict[str, Any]] = []
         for display_index, candidate in self._checked(
             enumerate(selected, start=offset)

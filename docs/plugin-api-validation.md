@@ -438,17 +438,23 @@ well as Arrow keys; an animation-frame retry alone may precede data arrival.
 Source-preset controls need the same focus preservation as resource checkboxes.
 Pagination within an unchanged query should preserve group disclosure, expanded
 relationship identities and keyboard focus, including the final page.
-Check dialog reopen and settled asynchronous rerenders too. Restored focus must
-be visible below the actual sticky controls; `preventScroll` alone does not
-establish visibility. Nested native controls must retain their keyboard action
+Check dialog reopen and settled asynchronous rerenders too. Reveal the actual
+destination marker or log row, rather than only its containing lane or section.
+Check both horizontal and vertical bounds against the nested scrollport and
+browser viewport after settling; account for sticky lane labels and headers.
+An in-window timestamp or `preventScroll` focus does not establish visibility.
+Include a timeline-to-log-to-timeline round trip with tall wrapped log controls
+and a clipped horizontal track. Nested native controls must retain their keyboard action
 instead of bubbling into a row-selection shortcut. A rejected cap-limited
 checkbox change must restore its checked state.
 At narrow viewport widths, check the hit target beneath hover cards as well:
 an inspection card must not cover and intercept its own jump control. Keep
 overflowing facts scrollable and reset any size constraint on the next open.
-For dense timelines, hit-test adjacent marker centers and compare pointer and
-keyboard drill-down identities. Keep counts/IDs intact when shrinking glyphs,
-restore their presentation on zoom, and retain equal-time evidence.
+For dense timelines, hit-test adjacent normalized and source marker centers
+and compare pointer and keyboard drill-down identities, including selected marks.
+Reuse the same spacing calculation for both renderers. Keep counts/IDs intact
+when shrinking glyphs, restore their presentation on zoom, and retain equal-time
+evidence; constrain rotated marks as well as clusters.
 
 Exercise normalized source-lane construction together with lookup, hover and
 reveal. Display clusters may be derived from marks instead of stored on the
@@ -550,6 +556,16 @@ work/size and entries, scoped to live immutable revision identity, isolated
 across revision replacement, and safe under concurrent calls. Cancellation
 must not publish partial results or incomplete indexes. A browser abort only
 stops backend work where a cooperative checkpoint observes the disconnect.
+
+For mixed event/source history, compare unfiltered indexed pages and locate
+results with the exact fallback, including tied timestamps, range-first groups,
+untimed sources, duplicate/empty UIDs, and filtered queries. Reuse ordered
+indexes rather than rebuilding all normalized candidates for a small page.
+Count indexed access and projections for both locate and the destination page,
+including deep offsets. Benchmark repeated normalized-only, source-only and
+merged requests separately, then the complete jump; a fast constituent stream
+does not establish a fast merge. Report transient peak and retained memory
+alongside CPU, without attributing service timings to browser input-to-paint.
 
 Use these focused checks after changes to this path:
 

@@ -130,7 +130,7 @@ class ScaleHistoryFrontendTests(unittest.TestCase):
         self.assertIn("Math.floor(safeDataIndex / EVENT_LOG_PAGE_SIZE)", locate)
         self.assertIn("await requestServerEventLogPage(pageOffset)", locate)
         self.assertIn("serverEventLogVirtualRowForDataIndex(safeDataIndex)", locate)
-        self.assertIn("focusServerEventLogTarget(entryId, virtualIndex)", locate)
+        self.assertIn("focusEventLogTarget(entryId, virtualIndex)", locate)
         self.assertIn("layout.outsideGroupIndex + 1", virtual_index)
         self.assertIn("usesServerWindowedHistory()", jump)
         self.assertIn("locateServerEventLogEntry(entryId)", jump)

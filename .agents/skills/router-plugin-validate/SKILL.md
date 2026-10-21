@@ -106,8 +106,10 @@ workloads' latency without relaxing source or invocation-boundary verification.
 For combined history changes, exercise cache retirement with an active
 reader, same-revision replacement, dense and sparse searches, refinement,
 paged layer filters, and cold narrow timeline windows against exact raw
-references. Check retained bytes and visited records, not only response
-limits. The performance map lists relevant tests and generation commands;
+references. Include repeated merged event/source locate and destination-page
+requests: fast single-stream queries can conceal a full-stream merge. Check
+retained bytes and visited records, not only response limits. The performance
+map lists relevant tests and generation commands;
 a small fixture establishes correctness, not million-event performance.
 
 For compressed search storage, compare all ordered literal matches with an
@@ -152,10 +154,12 @@ a token cannot prove that slider, selection, or disconnect actions advance it.
 Include a slider key or pointer action that leaves its value unchanged.
 Include pending repeated reveals followed by Back, pan or hide, concurrent
 actions on the same uncached selection, subpixel ranges at both capture
-boundaries, and pagination/reopening with expanded details. Check focus
-visibility below sticky controls, not only activeElement identity; in narrow
-viewports, verify that hover cards do not intercept their trigger's click and
-dense marker centers hit the expected identity, including after zoom. Compare
+boundaries, and pagination/reopening with expanded details. Check actual marker
+and log-row visibility in both axes of the nested and browser viewports, including
+sticky labels and headers, not only activeElement identity. In narrow viewports,
+verify that hover cards do not intercept their trigger's click and dense
+normalized/source marker centers hit the expected identity, including selected
+marks and zoom changes. Compare
 exact counts with paged detail, and retained-result labels with the applied
 request after invalid input. Exercise route-row seeds across directions and
 equivalent endpoint descriptors. Distinguish natural browser timing from
