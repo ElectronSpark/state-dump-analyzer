@@ -16,6 +16,97 @@ function load(names, deps) {
 const noop = () => {};
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
+for (const [kind, identity, key] of [
+  ['event', { eventUid: 'e', resourceId: 'r', treeKey: 'branch-b' }, 'event:branch-b:e'],
+  ['event review', { eventUid: 'e', resourceId: null }, 'review-marker:event:e'],
+  ['source', { sourceRecordUid: 's', sourceLaneId: 'preset-b' }, 'source-record:preset-b:s'],
+  ['source review', { sourceRecordUid: 's', sourceLaneId: null }, 'review-marker:source:s'],
+  ['event cluster', { clusterId: 'c' }, 'cluster:branch-b:c'],
+  ['source cluster', { sourceClusterId: 'c' }, 'source-cluster:preset-b:c'],
+  ['review cluster', {}, 'annotation-cluster:0:10'],
+]) test(`${kind} pointer activation anchors to its live instance through repeated timeline replacement`, () => {
+  const original = { dataset: { hoverKey: key }, isConnected: true };
+  const other = { dataset: { hoverKey: `other-instance:${key}` }, isConnected: true };
+  let replacement = original;
+  let current = [other, original];
+  const selections = [];
+  const shown = [];
+  const select = (...args) => {
+    selections.push(args);
+    replacement.isConnected = false;
+    replacement = { dataset: { hoverKey: key }, isConnected: true };
+    current = [other, replacement];
+  };
+  const timeline = { querySelector: selector => current.find(item => selector === `[data-hover-key="${item.dataset.hoverKey}"]`) || null };
+  const api = load(['activateShortGestureTarget'], {
+    state: {}, performance: { now: () => 1000 }, CSS: { escape: String }, byId: () => timeline,
+    selectEvent: select, selectSourceRecord: select,
+    showHover: (hoverKey, anchor, pin) => shown.push({ hoverKey, anchor, pin }),
+  });
+  for (let repeat = 0; repeat < 2; repeat++) {
+    assert.equal(api.activateShortGestureTarget({ ...identity, hoverKey: key, element: original }), true);
+    assert.deepEqual(shown.at(-1), { hoverKey: key, anchor: replacement, pin: true });
+    assert.equal(shown.at(-1).anchor.isConnected, true);
+    assert.notEqual(shown.at(-1).anchor, other);
+  }
+  const selectedArgs = identity.eventUid ? ['e', true, identity.resourceId] : ['s', true];
+  assert.deepEqual(selections, identity.eventUid || identity.sourceRecordUid ? [selectedArgs, selectedArgs] : []);
+  current = [];
+  const count = shown.length;
+  assert.equal(api.activateShortGestureTarget({ hoverKey: key, element: original }), true);
+  assert.equal(shown.length, count, 'a removed target must not anchor to detached DOM');
+});
+
+test('source keyboard click handler reacquires its instance after selection and keeps Ctrl-click navigation', () => {
+  const listeners = new Map();
+  const key = 'source-record:preset-b:source-1';
+  const original = { dataset: { sourceRecordUid: 'source-1', hoverKey: key },
+    addEventListener: (type, listener) => listeners.set(type, listener) };
+  const replacement = { dataset: { ...original.dataset }, isConnected: true };
+  const timeline = {
+    querySelectorAll: selector => selector === '.source-record-mark[data-source-record-uid]' ? [original] : [],
+    querySelector: selector => selector === `[data-hover-key="${key}"]` ? replacement : null,
+  };
+  const shown = [], selected = [], jumped = [];
+  const api = load(['bindTimelineInteractions'], {
+    byId: () => timeline, state: { suppressTimelineClickUntil: 0 },
+    performance: { now: () => 1000 }, CSS: { escape: String },
+    selectSourceRecord: (...args) => { original.isConnected = false; selected.push(args); },
+    showHover: (...args) => shown.push(args), jumpToSourceLog: uid => jumped.push(uid),
+  });
+  api.bindTimelineInteractions();
+  const click = listeners.get('click');
+  for (let repeat = 0; repeat < 2; repeat++) click({ stopPropagation: noop });
+  assert.deepEqual(selected, [['source-1', true], ['source-1', true]]);
+  assert.deepEqual(shown, [[key, replacement, true], [key, replacement, true]]);
+  click({ ctrlKey: true, stopPropagation: noop, preventDefault: noop });
+  assert.deepEqual(jumped, ['source-1']);
+  assert.equal(selected.length, 2);
+  assert.equal(shown.length, 2);
+  timeline.querySelector = () => null;
+  click({ stopPropagation: noop });
+  assert.equal(shown.length, 2, 'a removed source instance must not reopen a stale popup');
+});
+
+for (const kind of ['event', 'event review', 'source review']) test(`${kind} click skips a popup when selection removes its instance`, () => {
+  const listeners = new Map();
+  const entryId = kind === 'source review' ? 'source:s' : 'event:e';
+  const original = { isConnected: true, dataset: { eventUid: 'e', hoverKey: kind, logEntryId: entryId },
+    addEventListener: (type, listener) => listeners.set(type, listener), closest: () => ({ dataset: { resourceId: 'r' } }) };
+  const selector = kind === 'event' ? '.event-mark[data-event-uid]' : '.review-marker[data-hover-key]';
+  const timeline = { querySelectorAll: value => value === selector && original.isConnected ? [original] : [], querySelector: () => null };
+  const api = load(['bindTimelineInteractions'], {
+    byId: () => timeline, state: { suppressTimelineClickUntil: 0,
+      timelineEntryProjections: new Map([[entryId, { streamKind: kind === 'source review' ? 'source' : 'event', uid: 'id' }]]) },
+    performance: { now: () => 1000 }, CSS: { escape: String },
+    selectEvent: () => { original.isConnected = false; }, selectSourceRecord: () => { original.isConnected = false; },
+    showHover: () => assert.fail('detached marker used as a popup anchor'),
+  });
+  api.bindTimelineInteractions();
+  listeners.get('click')({ stopPropagation: noop });
+  assert.equal(original.isConnected, false);
+});
+
 for (const kind of ['cluster', 'source-cluster', 'annotation-cluster']) test(`dense ${kind} layout bounds neighboring footprints without changing exact identity`, () => {
   let zoom = 1;
   const api = load(['timelineGlyphLayout'], { timelinePercent: time => Number(time) * zoom / 10 });

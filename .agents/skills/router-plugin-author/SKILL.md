@@ -191,7 +191,11 @@ Reuse existing ownership tokens and pending allocations instead of adding a
 parallel state mechanism. All newer navigation, including Back, pan and hide,
 must supersede a pending reveal; unchanged-selection consumers should share
 resolution rather than cancel each other. Preserve disclosure on same-query
-rerenders, and restore focus to a visible control in the same instance. Reveal
+rerenders, and restore focus to a visible control in the same instance. After
+selection replaces timeline DOM, reacquire popup anchors by the existing
+instance key; never fall back to a detached marker. Keep open popup geometry
+aligned when document or nested scrolling moves its anchor, without rebuilding
+the card or losing its focused control. Reveal
 the actual marker or log row in both axes of its nested scrollport and the
 browser viewport, accounting for sticky labels and headers. Share glyph-spacing
 logic between normalized, source and review marks, including small groups and

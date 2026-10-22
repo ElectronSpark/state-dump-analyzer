@@ -157,7 +157,12 @@ actions on the same uncached selection, subpixel ranges at both capture
 boundaries, and pagination/reopening with expanded details. Check actual marker
 and log-row visibility in both axes of the nested and browser viewports, including
 sticky labels and headers, not only activeElement identity. In narrow viewports,
-verify that hover cards do not intercept their trigger's click and dense
+verify that hover cards do not intercept their trigger's click and that
+markers retain live, instance-specific popup anchors after selection rerenders.
+Compare pointer and Enter/Space activation of individual source and review
+markers as well as clusters. Check placement after focus scrolling settles in
+both the document and nested scrollport, while retaining popup content and
+keyboard focus. Check that
 normalized/source/review marker centers hit the expected identity, including
 two-item groups, cluster boundaries, selected marks and zoom changes. Compare
 the same event and resource across lane, log and review popups; preserve finite

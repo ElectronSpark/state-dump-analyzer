@@ -436,7 +436,23 @@ When a render replaces interactive elements, preserve the activated control's
 stable identity and its containing tree/module/device instance. An event UID
 plus resource ID is not unique when the same resource appears in several tree
 branches. Restore focus without stealing it from a newer user action, and keep
-popups anchored to the same instance. For virtual logs, carry the latest
+popups anchored to the same instance.
+
+Selection can synchronously replace a timeline marker before its activation
+handler opens a popup. Reacquire the anchor through the existing instance key
+after selection, including single source and review markers, without falling
+back to detached DOM. Compare pointer and Enter/Space input and duplicate
+source presets; working cluster activation does not establish single-marker
+behavior.
+
+A live anchor can still move after opening, including during native focus
+scrolling. Compare opening and settled marker/card rectangles with document
+and nested scroll offsets. Fixed-position cards must follow that movement
+without replacing their contents, resetting detail scroll or losing keyboard
+focus. A stationary activation control or a single animation-frame delay does
+not establish correct placement throughout scrolling.
+
+For virtual logs, carry the latest
 keyboard destination through an uncached page response and cover Home/End as
 well as Arrow keys; an animation-frame retry alone may precede data arrival.
 Source-preset controls need the same focus preservation as resource checkboxes.

@@ -3672,7 +3672,7 @@ function bindTimelineInteractions() {
       selectEvent(eventUid, true, resourceId);
       const replacement = [...timeline.querySelectorAll(".event-mark[data-event-uid]")]
         .find((item) => item.dataset.eventUid === eventUid && item.dataset.hoverKey === key);
-      showHover(key, replacement || mark, true);
+      if (replacement) showHover(key, replacement, true);
     });
   });
   timeline.querySelectorAll(".event-mark[data-cluster-id]").forEach((mark) => {
@@ -3692,13 +3692,15 @@ function bindTimelineInteractions() {
       event.stopPropagation();
       if (performance.now() < state.suppressTimelineClickUntil) return;
       const recordUid = mark.dataset.sourceRecordUid;
+      const hoverKey = mark.dataset.hoverKey;
       if (event.ctrlKey || event.metaKey) {
         event.preventDefault();
         jumpToSourceLog(recordUid);
         return;
       }
       selectSourceRecord(recordUid, true);
-      showHover(mark.dataset.hoverKey, mark, true);
+      const replacement = timeline.querySelector(`[data-hover-key="${CSS.escape(hoverKey)}"]`);
+      if (replacement) showHover(hoverKey, replacement, true);
     });
   });
   timeline.querySelectorAll(".source-record-mark[data-source-cluster-id]").forEach((mark) => {
@@ -3729,7 +3731,7 @@ function bindTimelineInteractions() {
           `.review-marker[data-log-entry-id="${CSS.escape(entryId)}"]`,
         )
         : mark;
-      showHover(hoverKey, replacement || mark, true);
+      if (replacement) showHover(hoverKey, replacement, true);
     });
   });
   timeline.querySelectorAll("[data-hover-key]").forEach((element) => bindHoverTarget(element));
@@ -3943,43 +3945,18 @@ function finishBrushViewportNavigation(brush, cancelled) {
 }
 
 function activateShortGestureTarget(target) {
-  if (!target) return false;
+  if (!target?.hoverKey) return false;
   state.suppressTimelineClickUntil = performance.now() + 400;
   if (target.eventUid) {
     selectEvent(target.eventUid, true, target.resourceId);
-    const replacement = [...document.querySelectorAll(".event-mark[data-event-uid]")]
-      .find((item) => item.dataset.eventUid === target.eventUid && item.closest(".lane-track")?.dataset.resourceId === target.resourceId
-        && (!target.treeKey || item.closest(".timeline-row")?.dataset.treeKey === target.treeKey));
-    showHover(target.hoverKey, replacement || target.element, true);
-    return true;
-  }
-  if (target.clusterId) {
-    const replacement = [...document.querySelectorAll(".event-mark[data-cluster-id]")]
-      .find((item) => item.dataset.clusterId === target.clusterId && item.closest(".lane-track")?.dataset.resourceId === target.resourceId
-        && (!target.treeKey || item.closest(".timeline-row")?.dataset.treeKey === target.treeKey));
-    showHover(target.hoverKey, replacement || target.element, true);
-    return true;
-  }
-  if (target.sourceRecordUid) {
+  } else if (target.sourceRecordUid) {
     selectSourceRecord(target.sourceRecordUid, true);
-    const replacement = [...document.querySelectorAll(".source-record-mark[data-source-record-uid]")]
-      .find((item) => item.dataset.sourceRecordUid === target.sourceRecordUid
-        && (!target.sourceLaneId || item.closest(".timeline-row")?.dataset.sourceLaneId === target.sourceLaneId));
-    showHover(target.hoverKey, replacement || target.element, true);
-    return true;
   }
-  if (target.sourceClusterId) {
-    const replacement = [...document.querySelectorAll(".source-record-mark[data-source-cluster-id]")]
-      .find((item) => item.dataset.sourceClusterId === target.sourceClusterId
-        && (!target.sourceLaneId || item.closest(".timeline-row")?.dataset.sourceLaneId === target.sourceLaneId));
-    showHover(target.hoverKey, replacement || target.element, true);
-    return true;
-  }
-  if (target.hoverKey) {
-    showHover(target.hoverKey, target.element, true);
-    return true;
-  }
-  return false;
+  // Selection can replace the timeline. The hover key identifies the exact
+  // resource/source instance or review marker in the current render.
+  const replacement = byId("timeline-content")?.querySelector(`[data-hover-key="${CSS.escape(target.hoverKey)}"]`);
+  if (replacement) showHover(target.hoverKey, replacement, true);
+  return true;
 }
 
 function finishTimelinePointer(event, cancelled = false) {
@@ -5113,15 +5090,7 @@ function showHover(key, anchor, pin) {
           ? densityHoverHtml(model.bin)
           : intervalHoverHtml(model.interval, model.lane);
   card.hidden = false;
-  const rect = anchor.getBoundingClientRect();
-  const width = Math.min(390, window.innerWidth - 24);
-  const left = Math.max(12, Math.min(window.innerWidth - width - 12, rect.left + rect.width / 2 - width / 2));
-  const estimatedHeight = Math.min(430, card.scrollHeight || 300);
-  const below = rect.bottom + 10;
-  const top = below + estimatedHeight < window.innerHeight ? below : Math.max(12, rect.top - estimatedHeight - 10);
-  card.style.width = `${width}px`;
-  card.style.left = `${left}px`;
-  card.style.top = `${top}px`;
+  positionHover(anchor);
   bindHoverCardActions(card, model, key);
   if (model.type === "cluster"
       && clusterDetailRequestAvailable(model.cluster)
@@ -5130,6 +5099,22 @@ function showHover(key, anchor, pin) {
       && !model.cluster.detailError) {
     requestClusterDetail(key, model.cluster, model.lane, 0);
   }
+}
+
+function positionHover(anchor = null) {
+  const card = byId("timeline-hover");
+  if (!card || card.hidden || !state.hoverKey) return;
+  anchor ||= document.querySelector(`[data-hover-key="${CSS.escape(state.hoverKey)}"]`);
+  if (!anchor?.isConnected) return closeHover();
+  const rect = anchor.getBoundingClientRect();
+  const width = Math.min(390, window.innerWidth - 24);
+  card.style.width = `${width}px`;
+  const left = Math.max(12, Math.min(window.innerWidth - width - 12, rect.left + rect.width / 2 - width / 2));
+  const estimatedHeight = Math.min(430, card.scrollHeight || 300);
+  const below = rect.bottom + 10;
+  const top = below + estimatedHeight < window.innerHeight ? below : Math.max(12, rect.top - estimatedHeight - 10);
+  card.style.left = `${left}px`;
+  card.style.top = `${top}px`;
 }
 
 function closeHover() {
@@ -12461,8 +12446,12 @@ function bindControls() {
     finishEventLogDrag(null, true);
     closeTimelineContextMenu();
   });
+  document.addEventListener("scroll", (event) => {
+    if (!byId("timeline-hover").contains(event.target)) positionHover();
+  }, { capture: true, passive: true });
   window.addEventListener("resize", () => {
     closeTimelineContextMenu();
+    positionHover();
     window.clearTimeout(bindControls.timelineResizeTimer);
     bindControls.timelineResizeTimer = window.setTimeout(() => {
       if (state.dataset && timelinePhysicalTrackWidth() !== state.trackWidth) renderTimeline();
