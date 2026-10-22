@@ -75,6 +75,10 @@ same scenarios locally.
 
 For loading or cache changes, use the map's
 [performance boundaries](../../../docs/plugin-api-validation.md#loading-and-performance-boundaries).
+For temporal scan optimizations, compare complete outputs against the existing
+algorithm over overlapping identities, boundary times and unknown/deleted
+presence. Check ordering and provider fallback separately, count intermediate
+work, and measure repeated late-cursor CPU plus transient/retained memory.
 For navigation eviction, verify destination size/checksum validation precedes
 idle reclamation, missing/changed packs preserve current cache, and active-reader
 release during a blocked cold load still reserves the incoming slot. Exercise
@@ -162,7 +166,21 @@ markers retain live, instance-specific popup anchors after selection rerenders.
 Compare pointer and Enter/Space activation of individual source and review
 markers as well as clusters. Check placement after focus scrolling settles in
 both the document and nested scrollport, while retaining popup content and
-keyboard focus. Check that
+keyboard focus. Repeat while changing preceding lanes or removing the anchor
+without scrolling; opening the lane picker must leave its controls clickable.
+Move pinned anchors fully outside each scroll boundary and behind sticky controls,
+then click a surrounding control. Compare a partially visible anchor and verify
+that scrolling back does not revive a dismissed card. Include log-row anchors
+and native keyboard activation after scrolling, not just timeline markers.
+Start Enter/Space from timeline targets above and below the viewport, including
+an upward source-marker reveal and horizontal label occlusion. Check the settled
+card; use visible and partially visible pointer targets and virtual-log focus
+as controls.
+Focus a density bin, scroll it out of view, and wait for row replacement; passive
+focus repair must preserve scroll and keep the clipped card dismissed.
+Compare an already-open cluster with its timeline after Apply/Clear/Apply range
+changes, preserving loaded pages and focus rather than relying on reopening.
+Check that
 normalized/source/review marker centers hit the expected identity, including
 two-item groups, cluster boundaries, selected marks and zoom changes. Compare
 the same event and resource across lane, log and review popups; preserve finite

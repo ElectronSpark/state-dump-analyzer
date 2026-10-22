@@ -128,6 +128,28 @@ instrumented seconds are not request latency. The
 [method](topology-route-profile.md) cover direct providers. A small fixture
 does not establish full-scale archive performance.
 
+For cursor-refresh spikes, time the actual graph, resource, dashboard and topology
+requests separately, then repeat an identical late-cursor request. Record selected
+views, limits and time basis. Profile clock-uncertainty probes and relationship
+history traversal before adding caches: a bounded result page need not bound
+intermediate work. Test disconnect propagation separately; an aborted browser
+fetch or progress-poll count does not attribute server CPU or prove cancellation.
+
+When optimizing relationship sampling, preserve the original ordered probe set
+and final wire output, including same-identity history precedence. The indexed
+path resolves active last writers before relation/presence filtering; a callback
+reader's returned rows are filtered before duplicate identity resolution. Do not
+silently unify those behaviors or add previously unsampled transition boundaries.
+Validate both interval bounds once per visited history entry, even for excluded
+or out-of-window rows. Inclusive starts, exclusive ends, unbounded endpoints,
+unknown/deleted presence, center-or-first representatives, and independent
+relationship/connectivity limits need equivalence checks. Count visited entries
+and timestamp parsing separately from returned rows; measure temporary maps as
+well as retained memory. Run `tests.test_temporal_relationship_probes`,
+`tests.test_reconstruction_truth` and `tests.test_provider_execution_boundaries`
+for the frozen scan oracle, deterministic boundary cases and provider behavior.
+The probe suite is also included in the presentation conformance group.
+
 Core owns execution identity, request cancellation, and public loading state.
 A compilation cache may retain bounded immutable artifacts derived from exact
 source/compiler inputs; it must not retain a trust decision or replace fresh
@@ -451,6 +473,47 @@ and nested scroll offsets. Fixed-position cards must follow that movement
 without replacing their contents, resetting detail scroll or losing keyboard
 focus. A stationary activation control or a single animation-frame delay does
 not establish correct placement throughout scrolling.
+
+Native keyboard focus can begin smooth scrolling while its target is still
+fully outside the viewport. Settle the intentional timeline focus reveal before
+opening a popup or dismissing it for clipping. Keep nearest alignment for visible
+targets and preserve the virtual log's separately calculated scroll position.
+Native nearest alignment can still place an upward target behind the sticky
+header or a horizontal target behind its lane label. Reuse timeline reveal
+correction for that occlusion, leaving fully and partially visible targets in
+place. Validate Enter/Space starting above and below the viewport and behind a
+lane label, including individual source markers; then repeat from visible and
+partially visible targets. Synthetic rectangles alone do not establish native
+focus/scroll ordering.
+
+Passive focus restoration after a render is separate from an intentional reveal.
+Calling `focus({preventScroll: true})` still runs focus handlers, so a handler
+must not override the saved scroll during that restoration. Focus a density bin,
+wheel its row out of view, and wait for density replacement; repeat with a full
+timeline rerender. Verify offsets after the restoration animation frame, keep
+clipped popups dismissed, and confirm a later explicit focus still reveals its
+target. A newer user focus move must continue to supersede the repair.
+
+Connection to the DOM is not visibility. Intersect a popup anchor with the
+document and its own nested client viewport, accounting for sticky headers and
+lane labels (or the log's table header). Dismiss fully clipped anchors and keep
+partially visible cards within the viewport. Scroll in both axes, click Lanes
+after the anchor leaves view, then scroll back: an old pinned card must not
+intercept that click or revive. Verify pointer and native Enter/Space activation
+after reveal; clipping must not strand a valid newly focused target. Avoid using
+timeline bounds for an anchor in a different component.
+
+Also change layout without scrolling: remove a preceding lane, disable the
+popup's own preset, or collapse a containing resource tree. Reconcile the live
+anchor after rendering and close cards whose instance disappeared. Opening a
+picker must retire an older inspection overlay before it can intercept the new
+controls; increasing stacking order alone does not resolve competing ownership.
+Change and clear the selected range while source and normalized cluster cards
+remain open. Update their range classes and labels in place from each displayed
+entry's timestamp, retaining focus, detail scroll, and loaded pages. Reopening a
+card can hide stale derived facts and is only a comparison control. Compare each
+stream with its own fresh rendering and contract; do not invent identical label
+conventions across source and normalized cards.
 
 For virtual logs, carry the latest
 keyboard destination through an uncached page response and cover Home/End as

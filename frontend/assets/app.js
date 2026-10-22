@@ -247,6 +247,7 @@ const state = {
   timelineViewHistoryIndex: -1,
   timelineViewHistoryTimer: null,
   timelineViewRestoring: false,
+  timelineFocusRestoring: false,
   selectedEventUid: null,
   selectedEventResourceId: null,
   selectedResourceId: null,
@@ -3427,8 +3428,13 @@ function restoreTimelineFocusDescriptor(descriptor) {
     // A user-initiated focus move after the render wins over this repair.
     if (document.activeElement && document.activeElement !== document.body
       && document.activeElement !== document.documentElement) return;
-    (timelineElementForFocusDescriptor(descriptor) || byId("timeline-scroll"))
-      ?.focus({ preventScroll: true });
+    state.timelineFocusRestoring = true;
+    try {
+      (timelineElementForFocusDescriptor(descriptor) || byId("timeline-scroll"))
+        ?.focus({ preventScroll: true });
+    } finally {
+      state.timelineFocusRestoring = false;
+    }
   });
 }
 
@@ -3575,6 +3581,7 @@ function renderTimeline() {
   renderLanePicker();
   updateTimelineCommandAvailability();
   restoreTimelineFocusDescriptor(focusDescriptor);
+  positionHover();
   window.requestAnimationFrame(drawTimelineCorrelationOverlay);
 }
 
@@ -4042,10 +4049,14 @@ function updateRangePreview() {
 function applyRangeHighlight(bounds) {
   const frame = byId("timeline-frame");
   frame.classList.toggle("has-range", Boolean(bounds));
-  document.querySelectorAll(".event-mark[data-time-ns], .source-record-mark[data-time-ns]").forEach((mark) => {
+  document.querySelectorAll(".event-mark[data-time-ns], .source-record-mark[data-time-ns], .cluster-event[data-time-ns]").forEach((mark) => {
     const hit = Boolean(bounds) && toNs(mark.dataset.timeNs) >= bounds[0] && toNs(mark.dataset.timeNs) <= bounds[1];
     mark.classList.toggle("in-range", hit);
     mark.classList.toggle("out-of-range", Boolean(bounds) && !hit);
+    const rangeLabel = mark.querySelector(".cluster-range-label");
+    if (rangeLabel) rangeLabel.textContent = bounds && (hit || mark.hasAttribute("data-cluster-event-uid"))
+      ? ` / ${hit ? "in" : "outside"} selected range`
+      : "";
   });
   document.querySelectorAll(".event-mark.cluster[data-hover-key], .source-record-mark.cluster[data-hover-key]").forEach((element) => {
     const model = state.hoverModels.get(element.dataset.hoverKey);
@@ -4146,6 +4157,7 @@ function updateRangeBands(bounds = rangeBounds(), refreshEventLog = true) {
     renderEventTable({ resetScroll: Boolean(bounds) });
   }
   updateTimelineCommandAvailability();
+  if (refreshEventLog) positionHover();
 }
 
 function updateCursorVisual() {
@@ -4507,7 +4519,7 @@ function scrollTimelineTargetIntoView(row) {
   else if (target.bottom > bottom) scroll.scrollTop += target.bottom - bottom;
   const track = row.closest?.(".lane-track");
   if (track) {
-    const label = track.parentElement.querySelector(".lane-label")?.getBoundingClientRect();
+    const label = track.parentElement.querySelector(".resource-lane-label-shell, .lane-label")?.getBoundingClientRect();
     const left = Math.max(viewport.left + scroll.clientLeft, label?.right || 0) + 8;
     const right = Math.min(viewport.left + scroll.clientLeft + scroll.clientWidth, window.innerWidth) - 8;
     if (target.left < left) scroll.scrollLeft += target.left - left;
@@ -4801,7 +4813,22 @@ function bindHoverTarget(element) {
     state.hoverOpenTimer = window.setTimeout(() => showHover(element.dataset.hoverKey, element, false), HOVER_OPEN_DELAY_MS);
   });
   element.addEventListener("pointerleave", scheduleHoverClose);
-  element.addEventListener("focus", () => showHover(element.dataset.hoverKey, element, false));
+  element.addEventListener("focus", () => {
+    // Finish native smooth focus scrolling before testing the anchor's visibility.
+    // Passive focus repair and virtual logs retain their separately owned scroll positions.
+    if (!state.timelineFocusRestoring && element.closest("#timeline-content")) {
+      element.scrollIntoView({ behavior: "instant", block: "nearest", inline: "nearest" });
+      const rect = element.getBoundingClientRect();
+      const top = Math.max(0, document.querySelector(".topbar")?.getBoundingClientRect().bottom || 0,
+        byId("timeline-floating-header")?.getBoundingClientRect().bottom || 0);
+      const label = element.closest(".lane-track")?.parentElement.querySelector(".resource-lane-label-shell, .lane-label")?.getBoundingClientRect();
+      // Native nearest alignment does not account for sticky occlusion.
+      if (rect.bottom <= top || (label && rect.right <= label.right && rect.top < label.bottom && rect.bottom > label.top)) {
+        scrollTimelineTargetIntoView(element);
+      }
+    }
+    showHover(element.dataset.hoverKey, element, false);
+  });
   element.addEventListener("blur", scheduleHoverClose);
 }
 
@@ -4862,7 +4889,7 @@ function clusterHoverHtml(cluster, lane) {
     ? '<p class="cluster-detail-state">This clipped marker overlaps the previous viewport. Visible preview events are retained while the exact window refreshes.</p>'
     : "";
   return `<div class="hover-heading"><div><span>COLLAPSED EVENTS</span><strong>${total} events${cluster.failureCount ? ` / ${cluster.failureCount} failed` : ""}${cluster.hiddenCount ? ` / ${cluster.hiddenCount} hidden` : ""}</strong>${progress}</div><button class="hover-close" type="button" aria-label="Close">x</button></div>
-    ${staleNotice}<div class="cluster-window">${items.map((mark) => `<button type="button" class="cluster-event${mark.failure ? " failed" : ""}${inSelectedRange(mark.timeNs) ? " in-range" : ""}" data-cluster-event-uid="${escapeHtml(mark.eventUid)}"><span>${escapeHtml(formatOffset(mark.timeNs))}</span><strong>${escapeHtml(mark.label)}</strong><small>${escapeHtml(`${mark.action} / ${mark.failure ? "failed" : mark.outcome}${rangeBounds() ? (inSelectedRange(mark.timeNs) ? " / in selected range" : " / outside selected range") : ""}`)}</small></button>`).join("") || '<p class="empty-cluster">No event detail was returned for this cluster.</p>'}${detailControl}</div>`;
+    ${staleNotice}<div class="cluster-window">${items.map((mark) => `<button type="button" class="cluster-event${mark.failure ? " failed" : ""}${inSelectedRange(mark.timeNs) ? " in-range" : ""}" data-cluster-event-uid="${escapeHtml(mark.eventUid)}" data-time-ns="${mark.timeNs}"><span>${escapeHtml(formatOffset(mark.timeNs))}</span><strong>${escapeHtml(mark.label)}</strong><small>${escapeHtml(`${mark.action} / ${mark.failure ? "failed" : mark.outcome}`)}<span class="cluster-range-label">${rangeBounds() ? (inSelectedRange(mark.timeNs) ? " / in selected range" : " / outside selected range") : ""}</span></small></button>`).join("") || '<p class="empty-cluster">No event detail was returned for this cluster.</p>'}${detailControl}</div>`;
 }
 
 function clusterDetailRequestAvailable(cluster) {
@@ -4978,7 +5005,7 @@ function sourceClusterHoverHtml(cluster) {
   return `<div class="hover-heading"><div><span>COLLAPSED SOURCE RECORDS</span><strong>${cluster.count} records</strong></div><button class="hover-close" type="button" aria-label="Close">x</button></div>
     <div class="cluster-window">${cluster.items.map((mark) => {
     const selected = inSelectedRange(mark.timeNs);
-    return `<button type="button" class="cluster-event${mark.matchedEventUid ? "" : " failed"}${selected ? " in-range" : ""}" data-cluster-source-record-uid="${escapeHtml(mark.sourceRecordUid)}"><span>${escapeHtml(formatOffset(mark.timeNs))}</span><strong>${escapeHtml(mark.recordName)}</strong><small>${escapeHtml(mark.sourceType + " / " + (mark.matchedEventUid ? "matched" : "unmatched") + (selected ? " / in selected range" : ""))}</small></button>`;
+    return `<button type="button" class="cluster-event${mark.matchedEventUid ? "" : " failed"}${selected ? " in-range" : ""}" data-cluster-source-record-uid="${escapeHtml(mark.sourceRecordUid)}" data-time-ns="${mark.timeNs}"><span>${escapeHtml(formatOffset(mark.timeNs))}</span><strong>${escapeHtml(mark.recordName)}</strong><small>${escapeHtml(mark.sourceType + " / " + (mark.matchedEventUid ? "matched" : "unmatched"))}<span class="cluster-range-label">${selected ? " / in selected range" : ""}</span></small></button>`;
   }).join("")}</div>`;
 }
 
@@ -5091,6 +5118,7 @@ function showHover(key, anchor, pin) {
           : intervalHoverHtml(model.interval, model.lane);
   card.hidden = false;
   positionHover(anchor);
+  if (card.hidden) return;
   bindHoverCardActions(card, model, key);
   if (model.type === "cluster"
       && clusterDetailRequestAvailable(model.cluster)
@@ -5107,12 +5135,37 @@ function positionHover(anchor = null) {
   anchor ||= document.querySelector(`[data-hover-key="${CSS.escape(state.hoverKey)}"]`);
   if (!anchor?.isConnected) return closeHover();
   const rect = anchor.getBoundingClientRect();
+  let visibleLeft = 0, visibleRight = window.innerWidth;
+  let visibleTop = Math.max(0, document.querySelector(".topbar")?.getBoundingClientRect().bottom || 0);
+  let visibleBottom = window.innerHeight;
+  const scroll = anchor.closest("#timeline-scroll, #event-log-scroll");
+  if (scroll) {
+    const viewport = scroll.getBoundingClientRect();
+    visibleLeft = Math.max(visibleLeft, viewport.left + scroll.clientLeft);
+    visibleRight = Math.min(visibleRight, viewport.left + scroll.clientLeft + scroll.clientWidth);
+    visibleTop = Math.max(visibleTop, viewport.top + scroll.clientTop);
+    visibleBottom = Math.min(visibleBottom, viewport.top + scroll.clientTop + scroll.clientHeight);
+    const header = scroll.id === "timeline-scroll" ? byId("timeline-floating-header") : scroll.querySelector("thead");
+    const headerRect = header?.getBoundingClientRect();
+    if (headerRect && headerRect.top <= visibleTop && headerRect.left < visibleRight && headerRect.right > visibleLeft) {
+      visibleTop = Math.max(visibleTop, headerRect.bottom);
+    }
+    const label = anchor.closest(".lane-track")?.parentElement.querySelector(".resource-lane-label-shell, .lane-label");
+    const labelRect = label?.getBoundingClientRect();
+    if (labelRect && labelRect.left <= visibleLeft && labelRect.top < visibleBottom && labelRect.bottom > visibleTop) {
+      visibleLeft = Math.max(visibleLeft, labelRect.right);
+    }
+  }
+  const anchorLeft = Math.max(rect.left, visibleLeft), anchorRight = Math.min(rect.right, visibleRight);
+  const anchorTop = Math.max(rect.top, visibleTop), anchorBottom = Math.min(rect.bottom, visibleBottom);
+  if (anchorLeft >= anchorRight || anchorTop >= anchorBottom) return closeHover();
   const width = Math.min(390, window.innerWidth - 24);
   card.style.width = `${width}px`;
-  const left = Math.max(12, Math.min(window.innerWidth - width - 12, rect.left + rect.width / 2 - width / 2));
-  const estimatedHeight = Math.min(430, card.scrollHeight || 300);
-  const below = rect.bottom + 10;
-  const top = below + estimatedHeight < window.innerHeight ? below : Math.max(12, rect.top - estimatedHeight - 10);
+  const left = Math.max(12, Math.min(window.innerWidth - width - 12, (anchorLeft + anchorRight - width) / 2));
+  const estimatedHeight = Math.min(430, window.innerHeight - 24, card.scrollHeight || 300);
+  const below = anchorBottom + 10;
+  const preferredTop = below + estimatedHeight <= window.innerHeight - 12 ? below : anchorTop - estimatedHeight - 10;
+  const top = Math.max(12, Math.min(window.innerHeight - estimatedHeight - 12, preferredTop));
   card.style.left = `${left}px`;
   card.style.top = `${top}px`;
 }
@@ -12465,7 +12518,10 @@ function bindControls() {
     const picker = byId("lane-picker");
     picker.hidden = !picker.hidden;
     byId("lane-picker-toggle").setAttribute("aria-expanded", String(!picker.hidden));
-    if (!picker.hidden) byId("lane-filter").focus();
+    if (!picker.hidden) {
+      closeHover();
+      byId("lane-filter").focus();
+    }
   });
   byId("close-lane-picker").addEventListener("click", () => { byId("lane-picker").hidden = true; byId("lane-picker-toggle").setAttribute("aria-expanded", "false"); });
   byId("lane-filter").addEventListener("input", (event) => { state.laneFilterText = event.target.value; renderLanePicker(); });

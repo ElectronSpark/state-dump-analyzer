@@ -32,7 +32,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "dashboard_core", "dashboard_query_api", "history_search_core",
         "history_search_algorithms", "history_search_reuse", "history_search_validation", "history_query_algorithms",
         "zoom_timeline", "zoom_density", "zoom_cancellation", "range_summary_bounds",
-        "topology_core", "topology_federation", "federation_executor",
+        "topology_core", "temporal_relationship_probes", "topology_federation", "federation_executor",
         "multi_node_topology", "resource_property_policy",
     ),
     "forwarding": (

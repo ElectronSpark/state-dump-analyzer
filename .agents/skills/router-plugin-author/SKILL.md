@@ -73,6 +73,11 @@ For performance work in providers or compatibility adapters, read the
 Keep core-owned identity checks and archive validation intact when reusing
 immutable work or deferring loads. Measure the actual user path and separate
 fixture preparation, backend readiness, and browser readiness.
+For temporal relationship queries, remove repeated history traversal before
+adding caches. Preserve the exact uncertainty probes, half-open/unbounded
+intervals, tri-state presence, overwrite/filter order and representative choice.
+Indexed histories and callback readers can have different ordering semantics;
+validate both against their existing behavior and measure transient memory.
 For search or durable-import latency, use the map's
 [cold-path measurement checks](../../../docs/plugin-api-validation.md#cold-search-and-import-measurements).
 An API warmup can hide browser-first-query work, and a tiny input can still incur
@@ -194,8 +199,17 @@ resolution rather than cancel each other. Preserve disclosure on same-query
 rerenders, and restore focus to a visible control in the same instance. After
 selection replaces timeline DOM, reacquire popup anchors by the existing
 instance key; never fall back to a detached marker. Keep open popup geometry
-aligned when document or nested scrolling moves its anchor, without rebuilding
-the card or losing its focused control. Reveal
+aligned after layout renders as well as document or nested scrolling, and close
+it if its instance disappears or becomes fully clipped. Intersect the anchor's
+own scrollport with the document and sticky occlusion; preserve partial visibility
+and clamp the card to the viewport. Settle intentional timeline focus reveal
+before clipping-driven dismissal; native nearest alignment can leave a target
+behind sticky headers or labels, so reuse the timeline reveal path for that
+occlusion. Passive focus restoration after rendering must retain saved scroll
+positions without invoking reveal. Keep visible pointer targets stationary and
+preserve virtual-log scroll ownership. Opening an overlapping control surface should
+dismiss the older inspection card. Update derived range facts in an open card
+in place, preserving focused controls, loaded detail pages and scroll. Reveal
 the actual marker or log row in both axes of its nested scrollport and the
 browser viewport, accounting for sticky labels and headers. Share glyph-spacing
 logic between normalized, source and review marks, including small groups and

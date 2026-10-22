@@ -2381,7 +2381,7 @@ class MultiNodeTopologyTests(unittest.TestCase):
         self.assertIn("dimensions.positions.entries()", geometry_signature)
         self.assertIn("dimensions.domainPositions.entries()", geometry_signature)
         self.assertIn("stableLayoutHash", geometry_signature)
-        self.assertIn("compactDecisions,\n    directLinks,", render)
+        self.assertRegex(render, r"compactDecisions,\r?\n    directLinks,")
         self.assertIn("connectivityLayoutSignature(", render)
         self.assertIn("connectivityLayoutGeometrySignature(dimensions)", render)
         self.assertIn("TOPOLOGY_LAYOUT_VERSION", render)

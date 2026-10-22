@@ -2079,10 +2079,34 @@ class TemporalTopologyService:
                     if boundary_ns > min_ns:
                         probe_times.add(boundary_ns - 1)
         ordered_probe_times = sorted(probe_times)
-        samples = [
-            self._relationship_candidates(timestamp_ns, resource_ids)
-            for timestamp_ns in ordered_probe_times
-        ]
+        if self.runtime is None:
+            samples = [
+                self._relationship_candidates(timestamp_ns, resource_ids)
+                for timestamp_ns in ordered_probe_times
+            ]
+        else:
+            # Invert the scan: validate each interval once and visit only the
+            # probes it covers. Preserve endpoint/list order and overwrite
+            # before filtering, including absent or excluded newer records.
+            samples_by_key: list[dict[str, dict[str, Any]]] = [
+                {} for _ in ordered_probe_times
+            ]
+            for identifier in resource_ids:
+                for item in self.runtime.relationships_by_endpoint.get(identifier, []):
+                    valid_from = item.get("valid_from_ns")
+                    valid_to = item.get("valid_to_ns")
+                    start = 0 if valid_from is None else bisect_left(
+                        ordered_probe_times, _ns(valid_from, "relationship.valid_from_ns")
+                    )
+                    end = len(ordered_probe_times) if valid_to is None else bisect_left(
+                        ordered_probe_times, _ns(valid_to, "relationship.valid_to_ns")
+                    )
+                    if start < end:
+                        key = _relationship_key(item)
+                        for index in range(start, end):
+                            samples_by_key[index][key] = item
+            samples = [list(sample.values()) for sample in samples_by_key]
+            del samples_by_key
         maps = [
             {
                 _relationship_key(item): item
