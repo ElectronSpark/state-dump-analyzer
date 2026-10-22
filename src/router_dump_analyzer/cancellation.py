@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from contextvars import ContextVar
 from heapq import merge
+from threading import Event
 from typing import Final
 
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
@@ -12,6 +14,40 @@ type CancellationErrorFactory = Callable[[], BaseException]
 
 _COOPERATIVE_SORT_CHUNK_ITEMS: Final = 8_192
 _COOPERATIVE_SORT_CHECKPOINT_ITEMS: Final = 256
+
+# One request owns this event. Context propagation into worker threads preserves
+# cancellation without putting mutable request state on shared query services.
+_QUERY_CANCELLED: ContextVar[Event | None] = ContextVar("query_cancelled", default=None)
+
+
+def current_query_cancellation_probe() -> Callable[[], bool] | None:
+    cancelled = _QUERY_CANCELLED.get()
+    return cancelled.is_set if cancelled is not None else None
+
+
+def query_cancellation_checkpoint() -> None:
+    cancelled = _QUERY_CANCELLED.get()
+    if cancelled is not None and cancelled.is_set():
+        # Keep the established query error identity, without an import cycle
+        # between normalized data and the query service that consumes it.
+        from .revision_queries import RevisionQueryCancellationError
+
+        raise RevisionQueryCancellationError("revision query was cancelled")
+
+
+def query_checked[Value](values: Iterable[Value]) -> Iterable[Value]:
+    """Check request cancellation while scanning, leaving non-HTTP calls alone."""
+    if _QUERY_CANCELLED.get() is None:
+        return values
+
+    def checked() -> Iterable[Value]:
+        for ordinal, value in enumerate(values):
+            if ordinal % _COOPERATIVE_SORT_CHECKPOINT_ITEMS == 0:
+                query_cancellation_checkpoint()
+            yield value
+        query_cancellation_checkpoint()
+
+    return checked()
 
 
 def check_cancellation_probe(
@@ -89,4 +125,7 @@ __all__ = [
     "CancellationErrorFactory",
     "check_cancellation_probe",
     "cooperatively_sorted",
+    "current_query_cancellation_probe",
+    "query_cancellation_checkpoint",
+    "query_checked",
 ]

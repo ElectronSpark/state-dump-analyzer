@@ -4,6 +4,7 @@ import copy
 import random
 import unittest
 from collections import UserDict
+from unittest.mock import patch
 
 from router_dump_analyzer.normalized_data import redact_event_for_client, redact_sensitive_tree
 
@@ -28,6 +29,41 @@ def reference_redact(value, sensitive, prefix=()):
 
 
 class EventProjectionPerformanceTests(unittest.TestCase):
+    def test_empty_disclosure_policy_skips_irrelevant_resource_resolution(self):
+        event = {
+            'event_uid': 'e', 'resource_id': 'known', 'resource_kind': 'K',
+            'subject': {'resource_id': 'missing', 'kind': 'OTHER', 'key': {'visible': ['雪']}},
+            'subjects': [{'resource_id': 'known', 'kind': 'K'}],
+            'effects': [{'resource_id': 'missing', 'kind': 'OTHER', 'after': {'value': 'kept'}}],
+            'affected_resources': ['missing'], 'result': {'value': 1}, 'private_envelope': 'omit',
+        }
+        policy = ({'K': frozenset()}, {'known': 'K'}, frozenset(), {'K': False})
+        expected = {key: copy.deepcopy(value) for key, value in event.items() if key != 'private_envelope'}
+        with patch('router_dump_analyzer.normalized_data._event_resource_kinds',
+                   side_effect=AssertionError('no resource association can change an empty policy')):
+            for value in (event, UserDict(event)):
+                projected = redact_event_for_client(value, {}, policy=policy)
+                self.assertEqual(projected, expected)
+                projected['subject']['key']['visible'].append('changed')
+                self.assertEqual(event['subject']['key']['visible'], ['雪'])
+
+    def test_empty_policy_shortcut_does_not_skip_private_fields_or_conditions(self):
+        event = {'resource_id': 'r', 'resource_kind': 'K', 'status': 'private-status',
+                 'subject': {'resource_id': 'missing'}, 'result': {'secret': 'private-value', 'visible': 1}}
+        policies = [
+            ({'K': frozenset({'secret'})}, {'r': 'K'}, frozenset({'secret'}), {'K': False}),
+            ({'K': frozenset()}, {'r': 'K'}, frozenset({'secret'}), {'K': False}),
+            ({'K': frozenset({'secret'})}, {'r': 'K'}, frozenset(), {'K': False}),
+            ({'K': frozenset()}, {'r': 'K'}, frozenset(), {'K': True}),
+        ]
+        for index, policy in enumerate(policies):
+            with self.subTest(index=index):
+                projected = redact_event_for_client(event, {}, policy=policy)
+                if index < 3:
+                    self.assertEqual(projected['result'], {'visible': 1})
+                else:
+                    self.assertEqual(projected['status'], 'unknown')
+
     def test_nested_redaction_matches_segment_path_oracle(self):
         rng = random.Random(20261003)
         keys = ('a', 'b', 'private', 'a.b', 'b.private', 'a.b.private', 'visible')

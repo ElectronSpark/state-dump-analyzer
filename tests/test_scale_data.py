@@ -36,6 +36,36 @@ SNAPSHOT_ID = "control-plane/EVPN_ES/es-00001"
 
 
 class MillionScaleBoundsTests(unittest.TestCase):
+    def test_state_and_affected_reuse_preserves_owned_ordered_json(self) -> None:
+        pool = _EventValuePool(max_subjects=1)
+        for state in ({"z": 1, "a": "α", "n": None}, {"n": None, "a": "α", "z": 1},
+                      {"z": True}, {"z": 1.0}, {"z": -0.0}, {"z": [1, {"a": True}]}):
+            raw = {"event_uid": "event", "timestamp_ns": "1", "resource_id": "root",
+                   "effects": [{"resource_id": "other", "state_changed": True,
+                                "before": deepcopy(state), "after": deepcopy(state)}]}
+            expected = json.dumps(dict(_compact_event(raw)), ensure_ascii=False)
+            first = _compact_event(raw, value_pool=pool)
+            repeated = _compact_event(raw, value_pool=pool)
+            self.assertEqual(json.dumps(dict(first), ensure_ascii=False), expected)
+            self.assertEqual(json.dumps(dict(repeated), ensure_ascii=False), expected)
+            self.assertIs(first["affected_resources"], repeated["affected_resources"])
+            self.assertEqual(first["affected_resources"], ["root", "other"])
+            raw["effects"][0]["before"].clear()
+            raw["effects"][0]["after"].clear()
+            self.assertEqual(json.dumps(dict(first), ensure_ascii=False), expected)
+            with self.assertRaises(TypeError):
+                first["effects"][0]["after"].clear()
+            with self.assertRaises(TypeError):
+                first["affected_resources"].reverse()
+        a = pool.state({"v": 1})
+        self.assertIs(a, pool.state({"v": 1}))
+        self.assertIsNot(a, _EventValuePool().state({"v": 1}))
+        for number in range(4100):
+            pool.state({"number": number})
+            pool.affected([str(number)])
+        self.assertEqual(len(pool._states), 4096)
+        self.assertEqual(len(pool._affected), 1)
+
     def test_all_retained_json_metadata_is_owned_and_recursively_immutable(self) -> None:
         payload = {"items": [True, 1, 1.0, {"z": "α", "a": None}]}
 

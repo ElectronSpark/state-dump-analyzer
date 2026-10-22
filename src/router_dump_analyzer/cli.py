@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ipaddress
+import sys
 import threading
 import webbrowser
 from collections.abc import Callable, Sequence
@@ -12,8 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from .plugin_composition_deployment import (
-    _control_plane_composition_options,
     PluginCompositionDeploymentContext,
+    _control_plane_composition_options,
     load_plugin_composition_deployment,
 )
 from .plugin_loading import (
@@ -363,7 +364,7 @@ def _run_uvicorn(application: Any, *, host: str, port: int) -> None:
     # Uvicorn 0.30 through 0.35 configures its event-loop policy through
     # setup_event_loop(); 0.36 and later return a loop factory instead.  Keep
     # both declared dependency generations functional and retain Uvicorn's
-    # uvloop/asyncio and Windows policy selection.  Entering Runner initializes
+    # uvloop/asyncio selection outside Windows. Entering Runner initializes
     # the selected loop before the lifespan coroutine is constructed, so a
     # broken loop configuration cannot also leak an un-awaited coroutine.
     get_loop_factory = getattr(configuration, "get_loop_factory", None)
@@ -378,6 +379,12 @@ def _run_uvicorn(application: Any, *, host: str, port: int) -> None:
             )
         setup_event_loop()
         loop_factory = None
+
+    if sys.platform == "win32":
+        # Keep IOCP and subprocess support while completing reset socket cleanup.
+        from .windows_event_loop import new_event_loop
+
+        loop_factory = new_event_loop
 
     with asyncio.Runner(loop_factory=loop_factory) as runner:
         runner.run(serve_with_core_lifespan())

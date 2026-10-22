@@ -1,3 +1,4 @@
+from .cancellation import query_cancellation_checkpoint as query_cancellation_checkpoint, query_checked as query_checked
 from collections.abc import Callable as Callable, Iterable, Sequence
 from pathlib import Path
 

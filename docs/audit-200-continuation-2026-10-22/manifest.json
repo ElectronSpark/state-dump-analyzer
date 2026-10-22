@@ -1,0 +1,43 @@
+{
+  "scope": "Audit artifacts only. SHA-256 of each delivered file except this manifest.",
+  "files": [
+    {
+      "path": "case-index.csv",
+      "bytes": 106248,
+      "sha256": "98f415d1208e94c5692db9ec77d4e2ec63f7a69f76ac07e5be947f35126573da"
+    },
+    {
+      "path": "case-ledger.json",
+      "bytes": 849803,
+      "sha256": "a5a58a8ed336fe8b888985ff2700f4dffa1e4e0cd0d124c9094e94212637e5a5"
+    },
+    {
+      "path": "evidence.zip",
+      "bytes": 907809,
+      "sha256": "0420e0194959319c5b6b21a4be06b8e11226bf0a4c150a493bc6ebba6d8d26e0"
+    },
+    {
+      "path": "final-timeline.png",
+      "bytes": 94845,
+      "sha256": "c4fd0232efcceb30265f0ab496401143690c2c6dfdd94772367f6c2f2a95e39f"
+    },
+    {
+      "path": "handoff-state.json",
+      "bytes": 1070,
+      "sha256": "a53e8394beebcc8915218eb5f9b24b00d42af12d10feb03b7536b0da366b2223"
+    },
+    {
+      "path": "performance-summary.json",
+      "bytes": 6420,
+      "sha256": "d06aa33722ea3cfe9596ecdd7685c2c73013fd7061590fabcbcecaf627895218"
+    },
+    {
+      "path": "README.md",
+      "bytes": 9705,
+      "sha256": "95667745fdfa912429e85d71501b1861d9111d706ecd5912ba32d19c619af5df"
+    }
+  ],
+  "verified_case_raw_references": 200,
+  "archive_entries": 59,
+  "archive_content_verified": true
+}

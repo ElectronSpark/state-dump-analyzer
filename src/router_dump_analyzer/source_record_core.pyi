@@ -1,4 +1,5 @@
 import re
+from .cancellation import query_cancellation_checkpoint as query_cancellation_checkpoint, query_checked as query_checked
 from .temporal_core import temporal_integer as temporal_integer
 from .value_core import MAX_JSON_SAFE_INTEGER as MAX_JSON_SAFE_INTEGER, parse_decimal_integer as parse_decimal_integer
 from collections.abc import Iterable

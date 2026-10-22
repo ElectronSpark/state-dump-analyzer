@@ -1,0 +1,136 @@
+{
+  "created_utc": "2026-10-22T21:26:36.328588+00:00",
+  "archive": {
+    "path": "evidence.zip",
+    "sha256": "265432ab44629956f6bc8a852c3fd1e7f7f66331fae6d09af29d7caf7d6d19bf",
+    "bytes": 285784
+  },
+  "archive_members": [
+    {
+      "path": "browser.jsonl",
+      "sha256": "4024fc33641c209ef3807ca96c9504dd3c03c46a7f34948c9afb69a5592dcc4d",
+      "bytes": 768856
+    },
+    {
+      "path": "browser-proof.mjs",
+      "sha256": "a3a8a018bb9f9ed321033538591555d4d0552ad03d0728a6d3f493869dac12de",
+      "bytes": 1986
+    },
+    {
+      "path": "delay_proxy.py",
+      "sha256": "ea6bf04064a6a8f68021ce57b6fc7964c2b2e41c63958490166f5831d8e988cb",
+      "bytes": 3866
+    },
+    {
+      "path": "frontend-check-unsandboxed.log",
+      "sha256": "932bc95512a7961390ee5f884dc3339a2a4481b88337800f26253fbb8f9b2962",
+      "bytes": 125929
+    },
+    {
+      "path": "frontend-check.log",
+      "sha256": "c0b9ae2239a8ef6bd44a12da5927cee7c7e287238eb0eb3ba8a92ee12c38f0c7",
+      "bytes": 129323
+    },
+    {
+      "path": "proxy-stopped-utc.txt",
+      "sha256": "c8294cd25a3a2a8094b27d0c4a9e1365ea0223d2dd7c1ee5015e6692dc3ac0b4",
+      "bytes": 30
+    },
+    {
+      "path": "brush-focus/results.json",
+      "sha256": "7146dfba9048f3ec0dd7b53beecf500c8422b48139fd06a83fb9a06d5c9226bc",
+      "bytes": 12195
+    },
+    {
+      "path": "brush-focus/tests.log",
+      "sha256": "6cf0feb6dbc11b07601ce9b53fd3aabc679d41a6fc1472a2f8a988e9efb60e2c",
+      "bytes": 24502
+    },
+    {
+      "path": "drag-filter/case-results.json",
+      "sha256": "7d19e854ddd297afdb99afbaa460102c2a427310385f3d63044e347a286fc56a",
+      "bytes": 4652
+    },
+    {
+      "path": "drag-filter/findings.md",
+      "sha256": "3c24cbace67939069ff5b6cc6e770168e64c9b58a0b270729cd9ebea9bda3881",
+      "bytes": 4660
+    },
+    {
+      "path": "drag-filter/run.json",
+      "sha256": "5bd7c928a2555175da34aed658223ddd793817a7e3cc395d90d5de3cd131882c",
+      "bytes": 416
+    },
+    {
+      "path": "drag-filter/test-output.txt",
+      "sha256": "6001e1abdeaa4e8c2f9ced7c0b33e64f2b98027d8b8748c98f7c9d3c33ace447",
+      "bytes": 2622
+    },
+    {
+      "path": "races/report.md",
+      "sha256": "71d33c8080d3e9b367d1c18bb0eeb2cdacb241c2642495dfd277a88e3bcf8389",
+      "bytes": 4658
+    },
+    {
+      "path": "races/tests.tap",
+      "sha256": "5608ba100f3e04c900a4c67484e7d99e51dbf385059910965ba27771bed3b72a",
+      "bytes": 3379
+    },
+    {
+      "path": "density-clipped.png",
+      "sha256": "c7c02aa24a1d8656e801673a07b46630f227dda8b1542c9358c3a46a5d7b439d",
+      "bytes": 107275
+    },
+    {
+      "path": "focus-after-release.png",
+      "sha256": "e271c74931be053963366e3522acfefedeb435b8cdd5920458a9ec1c72aa747b",
+      "bytes": 100582
+    },
+    {
+      "path": "drag-success.png",
+      "sha256": "6689f79428e1fbc2c34f2e0bb9ed66825992276a249daf14c3164674dc8c437a",
+      "bytes": 75684
+    },
+    {
+      "path": "proxy-evidence.jsonl",
+      "sha256": "abb07daed9a1d77e82f47f36c94011e4e0fa1c70a50961372d79502181408203",
+      "bytes": 90305
+    }
+  ],
+  "standalone_image": {
+    "path": "restored-demo.png",
+    "sha256": "dfd158c7ba6f21d76ede5b0607366cdb47f2f8c43f7b4d97cc1b4372e9a00505"
+  },
+  "production_source": {
+    "path": "frontend/assets/app.js",
+    "sha256": "3cbdcdfa1f28725dffee14330cadaf9bb010c319fe0216167ebcf3785dae302d"
+  },
+  "tests": [
+    {
+      "path": "frontend/tests/audit_brush_focus_followup.test.mjs",
+      "sha256": "313644ca12865a67432f44a0d722551cd169020d06098f99b33301035dea6de8"
+    },
+    {
+      "path": "frontend/tests/audit_drag_filter_followup.test.mjs",
+      "sha256": "b0f34d673a6bae18b465d67edcf4a95ab39153cbba81d5827d08abc2518aa532"
+    },
+    {
+      "path": "frontend/tests/audit_request_races_followup.test.mjs",
+      "sha256": "35d789cac16c07664c9d09d4c31ccbd8617fb87697f81454744da91c02a7ec56"
+    }
+  ],
+  "prior_ledger": {
+    "path": "docs/audit-200-continuation-2026-10-22/case-ledger.json",
+    "sha256": "a5a58a8ed336fe8b888985ff2700f4dffa1e4e0cd0d124c9094e94212637e5a5"
+  },
+  "proxy_filter": {
+    "source_path": ".runtime/audit-followup-2026-10-22/proxy.jsonl",
+    "source_sha256": "9527e281860155a7ff11364d1727144cf704a419a1cd43c62ef4b9150f073b5a",
+    "source_lines": 923,
+    "retained_lines": 247,
+    "rule": "Exclude only records whose path equals /v1/analysis-load. Preserve all gate events and all other request/response/error events. Each retained record adds source_line for original-log references.",
+    "archive_member": "proxy-evidence.jsonl",
+    "sha256": "abb07daed9a1d77e82f47f36c94011e4e0fa1c70a50961372d79502181408203",
+    "bytes": 90305
+  }
+}

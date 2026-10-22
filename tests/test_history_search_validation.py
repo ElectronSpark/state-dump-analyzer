@@ -3,11 +3,14 @@ from __future__ import annotations
 import gc
 import os
 import sqlite3
+import struct
 import unittest
 import weakref
 import zlib
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
+from hashlib import sha256
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
@@ -100,6 +103,62 @@ class CompressedValidationReuseTests(unittest.TestCase):
                 reused = self.corpus()
                 self.assertTrue(reused.ready)
                 reused.close()
+
+    def test_cold_validation_hashes_original_utf8_frames_and_fuses_exact_matching(self):
+        self.documents = ("", "雪", "é\0🛤", "end", "start", "", "tail")
+        first = self.corpus()
+        first.query("雪", lambda: self.documents)
+        first.close()
+        canonical = sha256()
+        for ordinal, text in enumerate(self.documents):
+            encoded = text.encode("utf-8")
+            canonical.update(ordinal.to_bytes(8, "big"))
+            canonical.update(len(encoded).to_bytes(8, "big"))
+            canonical.update(encoded)
+        with closing(sqlite3.connect(self.path)) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT documents_digest FROM metadata"
+            ).fetchone()[0], canonical.hexdigest())
+        for needle in ("", "雪", "é\0🛤", "endstart", "\ud800"):
+            encoded_types = []
+            update = HistorySearchCorpus._update_documents_digest
+            def observe(digest, ordinal, encoded):
+                encoded_types.append(type(encoded))
+                update(digest, ordinal, encoded)
+            with self.subTest(needle=needle), patch(
+                "router_dump_analyzer.history_search_core._validated_compressed", _ValidationCache(),
+            ), patch.object(HistorySearchCorpus, "_update_documents_digest", side_effect=observe):
+                reopened = self.corpus(eager_validate_sidecar=False)
+                self.assertEqual(list(reopened.query(needle, lambda: self.fail("builder"))),
+                                 [i for i, text in enumerate(self.documents) if needle in text])
+                self.assertEqual(reopened.character_count, sum(map(len, self.documents)))
+                self.assertEqual(encoded_types, [memoryview] * len(self.documents))
+                reopened.close()
+
+    def test_cold_validator_rejects_valid_utf8_block_with_invalid_document_boundaries(self):
+        self.build()
+        # The combined bytes are valid UTF-8, but neither one-byte document is.
+        # Stored raw and corpus digests are consistent with these corrupt frames.
+        for lengths, text in (((1, 1), b"\xc3\xa9"), ((2, 0, 1), b"\xf0\x9f\x9b"), ((1, 1), b"\xffx")):
+            raw = struct.pack(f">{len(lengths)}I", *lengths) + text
+            digest = sha256()
+            offset = 0
+            for ordinal, length in enumerate(lengths):
+                HistorySearchCorpus._update_documents_digest(digest, ordinal, text[offset:offset + length])
+                offset += length
+            with closing(sqlite3.connect(self.path)) as connection, connection:
+                connection.execute("DELETE FROM document_blocks")
+                connection.execute("INSERT INTO document_blocks VALUES (?, ?, ?, ?, ?)",
+                                   (0, len(lengths), len(raw), zlib.compress(raw, 1), sha256(raw).hexdigest()))
+                connection.execute("UPDATE metadata SET document_count=?, character_count=1, documents_digest=?",
+                                   (len(lengths), digest.hexdigest()))
+            with self.subTest(lengths=lengths, text=text), patch(
+                "router_dump_analyzer.history_search_core._validated_compressed", _ValidationCache(),
+            ):
+                reopened = self.corpus()
+                self.assertFalse(reopened.ready)
+                self.assertEqual(reopened._block_digests, {})
+                reopened.close()
 
     def test_last_payload_same_size_restored_timestamp_still_runs_full_validator(self):
         self.build()

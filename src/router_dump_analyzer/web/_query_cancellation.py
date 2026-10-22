@@ -1,24 +1,22 @@
-"""Connect a viewport request's disconnect to cooperative core query checks."""
+"""Connect a read-only request's disconnect to cooperative core query checks."""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
-from contextvars import ContextVar
 from threading import Event
 
 from starlette.requests import ClientDisconnect, Request
 
+from router_dump_analyzer.cancellation import (
+    _QUERY_CANCELLED,
+    current_query_cancellation_probe as current_query_cancellation_probe,
+    query_cancellation_checkpoint,
+)
 from router_dump_analyzer.revision_queries import RevisionQueryCancellationError
 
-
-_QUERY_CANCELLED: ContextVar[Event | None] = ContextVar("viewport_query_cancelled", default=None)
-
-
-def current_query_cancellation_probe() -> Callable[[], bool] | None:
-    cancelled = _QUERY_CANCELLED.get()
-    return cancelled.is_set if cancelled is not None else None
+__all__ = ["current_query_cancellation_probe", "query_cancellation_scope"]
 
 
 def query_cancellation_scope(request: Request) -> AbstractAsyncContextManager[None]:
@@ -52,6 +50,10 @@ async def _query_cancellation_scope(request: Request) -> AsyncIterator[None]:
 
     watcher = asyncio.create_task(watch_disconnect())
     try:
+        # Observe an already queued disconnect before entering synchronous
+        # dependency/provider acquisition, which may load a shared runtime.
+        await asyncio.sleep(0)
+        query_cancellation_checkpoint()
         yield
     finally:
         cancelled.set()

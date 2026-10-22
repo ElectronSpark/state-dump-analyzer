@@ -21,6 +21,8 @@ from typing import Any
 from urllib.parse import quote, urlencode
 from uuid import UUID
 
+from .cancellation import query_cancellation_checkpoint, query_checked
+
 from router_dump_analyzer.canonical import (
     CanonicalValueError,
     bounded_value_key,
@@ -520,7 +522,7 @@ def _status_window_at(
     """
 
     sample_times = {minimum_ns, center_ns, maximum_ns}
-    for change in resource.get("changes", []):
+    for change in query_checked(resource.get("changes", [])):
         change_time = _integer_ns(change.get("time_ns"), "change.time_ns")
         if minimum_ns <= change_time <= maximum_ns:
             sample_times.add(change_time)
@@ -541,7 +543,7 @@ def _status_window_at(
 
     samples = [
         (sampled_at, _status_view_at(resource, sampled_at))
-        for sampled_at in sorted(sample_times)
+        for sampled_at in query_checked(sorted(sample_times))
     ]
     unique, comparison_complete = distinct_temporal_states(samples)
     center = _status_view_at(resource, center_ns)
@@ -597,7 +599,7 @@ def _status_window_at(
                 "valid_from_ns": view.get("valid_from_ns"),
                 "valid_to_ns": view.get("valid_to_ns"),
             }
-            for sampled_at, view in sorted(unique)
+            for sampled_at, view in query_checked(sorted(unique))
         ],
         "unknown_fields": [
             {
@@ -1187,6 +1189,7 @@ class MultiNodeTopologyService:
 
     @_analysis_load_stage(AnalysisLoadStage.RECONSTRUCTING_TOPOLOGY)
     def query(self, body: dict[str, Any]) -> dict[str, Any]:
+        query_cancellation_checkpoint()
         if not isinstance(body, dict):
             raise MultiNodeTopologyRequestError("request body must be an object")
         clock_policy = str(body.get("clock_policy", "best_effort"))
@@ -1286,7 +1289,7 @@ class MultiNodeTopologyService:
             _TypedResourceScopeKey, tuple[dict[str, Any], ...]
         ] = {}
         basis_kinds: set[str] = set()
-        for node_query in node_queries:
+        for node_query in query_checked(node_queries):
             node = self._node(str(node_query["node_id"]))
             basis = node_query.get("basis", global_basis)
             snapshot = self._query_one_node(
@@ -1305,10 +1308,10 @@ class MultiNodeTopologyService:
                 typed_invocations_complete
                 and snapshot.pop("_typed_invocations_complete", True)
             )
-            for scope, rows in snapshot.pop("_typed_resources", {}).items():
+            for scope, rows in query_checked(snapshot.pop("_typed_resources", {}).items()):
                 typed_resources[scope] = typed_resources.get(scope, ()) + rows
             basis_kinds.update(
-                item["basis_kind"] for item in snapshot["resolved_times"]
+                item["basis_kind"] for item in query_checked(snapshot["resolved_times"])
             )
 
         (
@@ -1365,7 +1368,7 @@ class MultiNodeTopologyService:
                         "linker_plugin_id": item.linker_plugin_id,
                         "linker_plugin_version": item.linker_plugin_version,
                     }
-                    for item in typed_assembly.failures
+                    for item in query_checked(typed_assembly.failures)
                 )
         (
             network_segments,
@@ -1380,15 +1383,15 @@ class MultiNodeTopologyService:
         )
         unresolved_segment_claims = [
             item
-            for item in segment_resolutions
+            for item in query_checked(segment_resolutions)
             if item.get("resolution") == "unsupported_matcher_contract"
         ]
         incomplete_nodes = [
-            item["node_id"] for item in snapshots if not item["complete"]
+            item["node_id"] for item in query_checked(snapshots) if not item["complete"]
         ]
-        relative = any(kind == "relative_capture_vector" for kind in basis_kinds)
+        relative = any(kind == "relative_capture_vector" for kind in query_checked(basis_kinds))
         mixed = len(basis_kinds) > 1
-        requested_node_ids = [item["node_id"] for item in snapshots]
+        requested_node_ids = [item["node_id"] for item in query_checked(snapshots)]
         resolved_basis = {
             "requested": global_basis,
             "kind": (
@@ -1402,7 +1405,7 @@ class MultiNodeTopologyService:
             ),
             "node_count": len(snapshots),
             "projection_time_count": sum(
-                len(item["resolved_times"]) for item in snapshots
+                len(item["resolved_times"]) for item in query_checked(snapshots)
             ),
         }
         topology_href = self._topology_href(
@@ -1427,13 +1430,13 @@ class MultiNodeTopologyService:
             "counts": {
                 "nodes": len(snapshots),
                 "plugin_results": sum(
-                    len(item["plugin_results"]) for item in snapshots
+                    len(item["plugin_results"]) for item in query_checked(snapshots)
                 ),
-                "resources": sum(len(item["resources"]) for item in snapshots),
+                "resources": sum(len(item["resources"]) for item in query_checked(snapshots)),
                 "topology_endpoints": sum(
-                    len(item.get("topology_endpoints", [])) for item in snapshots
+                    len(item.get("topology_endpoints", [])) for item in query_checked(snapshots)
                 ),
-                "local_links": sum(len(item["local_links"]) for item in snapshots),
+                "local_links": sum(len(item["local_links"]) for item in query_checked(snapshots)),
                 "connector_claims": len(all_claims),
                 "typed_connector_claims": (
                     len(typed_assembly.claims) if typed_assembly is not None else 0
@@ -1508,7 +1511,7 @@ class MultiNodeTopologyService:
                     "context_id": context_id,
                 },
                 "individual_nodes": [
-                    item["deep_links"]["individual_node"] for item in snapshots
+                    item["deep_links"]["individual_node"] for item in query_checked(snapshots)
                 ],
             },
             "semantic_ownership": {
@@ -1598,6 +1601,7 @@ class MultiNodeTopologyService:
         resource_limit: int,
         context_id: str,
     ) -> dict[str, Any]:
+        query_cancellation_checkpoint()
         plugin_set_id, selections = self._select_node_projections(node, request)
         plugin_results: list[dict[str, Any]] = []
         resolved_times: list[dict[str, Any]] = []
@@ -1613,7 +1617,7 @@ class MultiNodeTopologyService:
         ] = {}
         incomplete_reasons: list[dict[str, Any]] = []
 
-        for selection in selections:
+        for selection in query_checked(selections):
             plugin = selection["plugin"]
             projection = selection["projection"]
             perspective_id = selection["status_perspective_id"]
@@ -1687,7 +1691,7 @@ class MultiNodeTopologyService:
                 typed_invocations_complete
                 and result.pop("_typed_invocations_complete", True)
             )
-            for scope, rows in result.pop("_typed_resources", {}).items():
+            for scope, rows in query_checked(result.pop("_typed_resources", {}).items()):
                 typed_resources[scope] = typed_resources.get(scope, ()) + rows
             if not result["complete"]:
                 incomplete_reasons.append(
@@ -1703,12 +1707,12 @@ class MultiNodeTopologyService:
 
         resource_totals = [
             item["counts"]["resources"]["total_count"]
-            for item in plugin_results
+            for item in query_checked(plugin_results)
         ]
         resource_total_count = (
             None
-            if any(value is None for value in resource_totals)
-            else sum(int(value) for value in resource_totals)
+            if any(value is None for value in query_checked(resource_totals))
+            else sum(int(value) for value in query_checked(resource_totals))
         )
         primary_projection = selections[0] if selections else None
         primary_time = resolved_times[0] if resolved_times else None
@@ -1745,7 +1749,7 @@ class MultiNodeTopologyService:
             "plugin_set_id": plugin_set_id,
             "node_query": primary_plan,
             "installed_plugin_sets": [
-                self._public_plugin_set(item) for item in node["plugin_sets"]
+                self._public_plugin_set(item) for item in query_checked(node["plugin_sets"])
             ],
             "selected_plugins": [
                 self._plugin_provenance(item["plugin"], plugin_set_id)
@@ -1753,7 +1757,7 @@ class MultiNodeTopologyService:
                     "projection_id": item["projection"]["projection_id"],
                     "status_perspective_id": item["status_perspective_id"],
                 }
-                for item in selections
+                for item in query_checked(selections)
             ],
             "resolved_time": primary_time,
             "resolved_basis": primary_time,
@@ -1772,7 +1776,7 @@ class MultiNodeTopologyService:
                     "returned_count": len(resources),
                     "truncated": any(
                         bool(item["counts"]["resources"]["truncated"])
-                        for item in plugin_results
+                        for item in query_checked(plugin_results)
                     ),
                 },
                 "topology_endpoints": len(topology_endpoints),
@@ -2273,6 +2277,7 @@ class MultiNodeTopologyService:
         resource_limit: int,
         context_id: str,
     ) -> dict[str, Any]:
+        query_cancellation_checkpoint()
         timestamp_value = (
             resolved_time.get("query_time_ns")
             if resolved_time.get("query_time_ns") is not None
@@ -2307,7 +2312,7 @@ class MultiNodeTopologyService:
         # connectivity-domain claims are evaluated against the complete,
         # coordinator-bounded projection so lowering a table/page budget cannot
         # silently remove topology edges.
-        for resource_index, item in enumerate(all_resources):
+        for resource_index, item in query_checked(enumerate(all_resources)):
             temporal_state = _status_window_at(
                 item,
                 center_ns=timestamp_ns,
@@ -2378,7 +2383,7 @@ class MultiNodeTopologyService:
                 resources.append(record)
 
         local_links = []
-        for item in projection.get("local_links", []):
+        for item in query_checked(projection.get("local_links", [])):
             if item["source_resource_id"] not in state_by_id or item[
                 "target_resource_id"
             ] not in state_by_id:
@@ -2400,7 +2405,7 @@ class MultiNodeTopologyService:
             )
 
         claims = []
-        for item in projection.get("connector_claims", []):
+        for item in query_checked(projection.get("connector_claims", [])):
             source = state_by_id.get(item["resource_id"])
             if not source:
                 continue
@@ -2433,7 +2438,7 @@ class MultiNodeTopologyService:
                 }
             )
         segment_claims = []
-        for item in projection.get("network_segment_claims", []):
+        for item in query_checked(projection.get("network_segment_claims", [])):
             source = state_by_id.get(item["resource_id"])
             if not source:
                 continue
@@ -2583,11 +2588,11 @@ class MultiNodeTopologyService:
                 typed_failure_reason = "typed_projection_failed"
 
         all_legacy_resource_ids = {
-            str(item["resource_id"]) for item in all_resources
+            str(item["resource_id"]) for item in query_checked(all_resources)
         }
         unique_typed_rows = [
             item
-            for item in typed_resource_rows
+            for item in query_checked(typed_resource_rows)
             if str(item["resource_id"]) not in all_legacy_resource_ids
         ]
         total_resource_count = len(all_resources) + len(unique_typed_rows)
@@ -2872,7 +2877,7 @@ class MultiNodeTopologyService:
         inactive_record_count = 0
         unknown_basis_record_count = 0
 
-        for record in typed_records:
+        for record in query_checked(typed_records):
             active = self._typed_record_active_during(
                 record,
                 invocation.world_basis,
@@ -2891,7 +2896,7 @@ class MultiNodeTopologyService:
             "catalog_revision_id": provider.catalog_revision_id,
         }
 
-        for record in active_records:
+        for record in query_checked(active_records):
             if type(record.payload) is not TopologyResourceRecord:
                 continue
             resource = record.payload.resource
@@ -2955,10 +2960,10 @@ class MultiNodeTopologyService:
                         "reason_code": item.reason_code,
                         "message": item.message,
                     }
-                    for item in record.unknown_fields
+                    for item in query_checked(record.unknown_fields)
                 ],
                 "provenance": record.provenance.value,
-                "evidence": [_typed_evidence(item) for item in record.evidence],
+                "evidence": [_typed_evidence(item) for item in query_checked(record.evidence)],
                 "valid_from_ns": (
                     None
                     if record.valid_from_ns is None
@@ -2971,7 +2976,7 @@ class MultiNodeTopologyService:
                 ),
                 "source_resources": [
                     self._typed_resource_identity(item)[1]
-                    for item in record.source_resources
+                    for item in query_checked(record.source_resources)
                 ],
                 "plugin_provenance": plugin_provenance,
                 "typed_projection": True,
@@ -3002,7 +3007,7 @@ class MultiNodeTopologyService:
             )
             mutable_global_rows.setdefault(scoped_key, []).append(row)
 
-        for record in active_records:
+        for record in query_checked(active_records):
             if type(record.payload) is not TopologyEndpointRecord:
                 continue
             target = self._typed_reference_payload(
@@ -3024,7 +3029,7 @@ class MultiNodeTopologyService:
                     "quality": record.quality.value,
                     "provenance": record.provenance.value,
                     "evidence": [
-                        _typed_evidence(item) for item in record.evidence
+                        _typed_evidence(item) for item in query_checked(record.evidence)
                     ],
                     "unknown_fields": [
                         {
@@ -3032,7 +3037,7 @@ class MultiNodeTopologyService:
                             "reason_code": item.reason_code,
                             "message": item.message,
                         }
-                        for item in record.unknown_fields
+                        for item in query_checked(record.unknown_fields)
                     ],
                     "valid_from_ns": (
                         None
@@ -3049,7 +3054,7 @@ class MultiNodeTopologyService:
                 }
             )
 
-        for record in active_records:
+        for record in query_checked(active_records):
             if type(record.payload) is not TopologyLinkRecord:
                 continue
             source_resources = self._typed_reference_resources(
@@ -3058,10 +3063,10 @@ class MultiNodeTopologyService:
             target_resources = self._typed_reference_resources(
                 record.payload.target
             )
-            for source in source_resources:
-                for target in target_resources:
-                    for source_row in rows_by_resource.get(source, []):
-                        for target_row in rows_by_resource.get(target, []):
+            for source in query_checked(source_resources):
+                for target in query_checked(target_resources):
+                    for source_row in query_checked(rows_by_resource.get(source, [])):
+                        for target_row in query_checked(rows_by_resource.get(target, [])):
                             local_links.append(
                                 {
                                     "link_id": record.payload.link_id,
@@ -3086,7 +3091,7 @@ class MultiNodeTopologyService:
                                     "provenance": record.provenance.value,
                                     "evidence": [
                                         _typed_evidence(item)
-                                        for item in record.evidence
+                                        for item in query_checked(record.evidence)
                                     ],
                                     "valid_from_ns": (
                                         None
@@ -3108,7 +3113,7 @@ class MultiNodeTopologyService:
             endpoints,
             {
                 key: tuple(values)
-                for key, values in mutable_global_rows.items()
+                for key, values in query_checked(mutable_global_rows.items())
             },
             inactive_record_count,
             unknown_basis_record_count,
@@ -3177,7 +3182,7 @@ class MultiNodeTopologyService:
                     "quality": row["quality"],
                     "deep_link": row.get("deep_link"),
                 }
-                for row in rows
+                for row in query_checked(rows)
             ],
         }
         if len(rows) == 1:
@@ -3275,20 +3280,20 @@ class MultiNodeTopologyService:
         links_by_identity: dict[tuple[Any, ...], dict[str, Any]] = {}
         resolutions: list[dict[str, Any]] = []
         unmatched: list[dict[str, Any]] = []
-        selected_node_ids = [str(item["node_id"]) for item in self.contract["nodes"]]
+        selected_node_ids = [str(item["node_id"]) for item in query_checked(self.contract["nodes"])]
         contexts_by_identity = {
             self._federated_claim_identity(
                 item.claim.endpoint,
                 item.claim.claim.claim_id,
             ): item
-            for item in assembly.claim_contexts
+            for item in query_checked(assembly.claim_contexts)
         }
         claims_by_identity = {
             self._federated_claim_identity(
                 item.endpoint,
                 item.claim.claim_id,
             ): item
-            for item in assembly.claims
+            for item in query_checked(assembly.claims)
         }
         global_claim_coverage_complete = bool(
             assembly.invocations_complete
@@ -3299,12 +3304,12 @@ class MultiNodeTopologyService:
             not assembly.invocations_complete or not assembly.claims_complete
         )
 
-        for policy_execution in assembly.policy_executions:
+        for policy_execution in query_checked(assembly.policy_executions):
             execution = policy_execution.execution
             state_counts: dict[str, int] = {}
             resolution_claims: list[dict[str, Any]] = []
             result_audits: list[dict[str, Any]] = []
-            for result in execution.results:
+            for result in query_checked(execution.results):
                 state = FederationMatchState(result.state)
                 state_counts[state.value] = state_counts.get(state.value, 0) + 1
                 source_identity = self._federated_claim_identity(
@@ -3324,7 +3329,7 @@ class MultiNodeTopologyService:
                 )
                 resolution_claims.append(source_claim)
                 candidate_audits: list[dict[str, Any]] = []
-                for candidate in result.candidates:
+                for candidate in query_checked(result.candidates):
                     target_identity = self._federated_claim_identity(
                         candidate.endpoint,
                         candidate.claim_id,
@@ -3353,7 +3358,7 @@ class MultiNodeTopologyService:
                             "confidence": candidate.confidence,
                             "evidence": [
                                 _typed_evidence(item)
-                                for item in candidate.evidence
+                                for item in query_checked(candidate.evidence)
                             ],
                         }
                     )
@@ -3369,7 +3374,7 @@ class MultiNodeTopologyService:
                     "directed": result.directed,
                     "properties": _typed_json_value(result.properties),
                     "evidence": [
-                        _typed_evidence(item) for item in result.evidence
+                        _typed_evidence(item) for item in query_checked(result.evidence)
                     ],
                 }
                 result_audits.append(result_audit)
@@ -3387,11 +3392,11 @@ class MultiNodeTopologyService:
                         }
                     )
                     continue
-                for candidate, candidate_audit in zip(
+                for candidate, candidate_audit in query_checked(zip(
                     result.candidates,
                     candidate_audits,
                     strict=True,
-                ):
+                )):
                     target = candidate_audit["endpoint"]
                     target_identity = self._federated_claim_identity(
                         candidate.endpoint,
@@ -3500,7 +3505,7 @@ class MultiNodeTopologyService:
                 }
             )
 
-        for failure in assembly.failures:
+        for failure in query_checked(assembly.failures):
             resolutions.append(
                 {
                     "matcher_id": failure.policy_id,
@@ -3533,7 +3538,7 @@ class MultiNodeTopologyService:
             "unknown": 2,
             "ambiguous": 3,
         }
-        for identity, aggregate in sorted(links_by_identity.items()):
+        for identity, aggregate in query_checked(sorted(links_by_identity.items())):
             endpoint_a = aggregate["_pair"][0][1]
             endpoint_b = aggregate["_pair"][1][1]
             state = max(
@@ -3597,9 +3602,9 @@ class MultiNodeTopologyService:
             )
             candidate_endpoints = [
                 value
-                for _candidate_identity, value in sorted(
+                for _candidate_identity, value in query_checked(sorted(
                     aggregate["_candidate_endpoints"].items()
-                )
+                ))
             ]
             plugin_provenance = sorted(
                 (
@@ -3717,7 +3722,7 @@ class MultiNodeTopologyService:
             )
         authoritative_links = [
             link
-            for link in ordered_links
+            for link in query_checked(ordered_links)
             if link.get("resolution") == FederationMatchState.MATCHED.value
             and link.get("federation_complete") is True
             and link.get("federation_truncated") is False
@@ -3750,13 +3755,13 @@ class MultiNodeTopologyService:
 
         matcher_contracts = {
             str(item["matcher_id"]): item
-            for item in self.contract.get("network_segment_matchers", [])
+            for item in query_checked(self.contract.get("network_segment_matchers", []))
         }
         claims_by_identity: dict[tuple[str, str], dict[str, Any]] = {}
         unresolved_matchers: list[dict[str, Any]] = []
 
         exact_claims: list[ExactMatchClaim] = []
-        for claim_index, claim in enumerate(claims):
+        for claim_index, claim in query_checked(enumerate(claims)):
             (
                 plugin_semantics,
                 plugin_semantics_key,
@@ -3830,12 +3835,12 @@ class MultiNodeTopologyService:
         segments: list[dict[str, Any]] = []
         resolutions: list[dict[str, Any]] = unresolved_matchers
 
-        for group in selected_groups:
+        for group in query_checked(selected_groups):
             matcher_id = group.matcher_id.value
             canonical_segment_key = group.typed_key
             values = [
                 claims_by_identity[(claim.partition_id, claim.claim_id)]
-                for claim in group.claims
+                for claim in query_checked(group.claims)
             ]
             segment_key = values[0]["_normalized_segment_key"]
             matcher_contract = matcher_contracts.get(matcher_id, {})
@@ -3867,7 +3872,7 @@ class MultiNodeTopologyService:
                 tuple[Any, ...],
                 dict[str, Any],
             ] = {}
-            for item in values:
+            for item in query_checked(values):
                 semantics = item["plugin_semantics"]
                 semantic_variants_by_key.setdefault(
                     item["_plugin_semantics_key"],
@@ -3876,14 +3881,14 @@ class MultiNodeTopologyService:
             semantic_variants = list(semantic_variants_by_key.values())
             merge_critical_fields = tuple(
                 str(field_name)
-                for field_name in matcher_contract.get(
+                for field_name in query_checked(matcher_contract.get(
                     "merge_critical_semantic_fields", []
-                )
+                ))
             )
             semantic_conflicts: dict[str, list[Any]] = {}
-            for field_name in merge_critical_fields:
+            for field_name in query_checked(merge_critical_fields):
                 field_variants: dict[tuple[Any, ...], Any] = {}
-                for semantics in semantic_variants:
+                for semantics in query_checked(semantic_variants):
                     value = semantics.get(field_name)
                     field_variants.setdefault(
                         _semantic_comparison_key(
@@ -3903,14 +3908,14 @@ class MultiNodeTopologyService:
                 plugin_semantics.get("topology_presentation")
             )
 
-            existing = [item for item in values if item.get("exists") is True]
-            observed_node_ids = sorted({str(item["node_id"]) for item in values})
+            existing = [item for item in query_checked(values) if item.get("exists") is True]
+            observed_node_ids = sorted({str(item["node_id"]) for item in query_checked(values)})
             observed_member_ids = sorted(
-                {str(item["member_id"]) for item in values}
+                {str(item["member_id"]) for item in query_checked(values)}
             )
-            node_ids = sorted({str(item["node_id"]) for item in existing})
-            member_ids = sorted({str(item["member_id"]) for item in existing})
-            usable_values = {item.get("usable") for item in existing}
+            node_ids = sorted({str(item["node_id"]) for item in query_checked(existing)})
+            member_ids = sorted({str(item["member_id"]) for item in query_checked(existing)})
+            usable_values = {item.get("usable") for item in query_checked(existing)}
             status_combination_policy = str(
                 matcher_contract.get(
                     "status_combination_policy",
@@ -3938,7 +3943,7 @@ class MultiNodeTopologyService:
             evidence: list[dict[str, Any]] = []
             plugin_provenance: list[dict[str, Any]] = []
             endpoint_observations: list[dict[str, Any]] = []
-            for item in values:
+            for item in query_checked(values):
                 explicit_attachment_key = item.get("attachment_key")
                 canonical_attachment_key = (
                     _canonical_opaque_key(explicit_attachment_key)[1]
@@ -3964,7 +3969,7 @@ class MultiNodeTopologyService:
                 score = confidence.get("score")
                 if isinstance(score, (int, float)) and not isinstance(score, bool):
                     confidence_scores.append(float(score))
-                item_evidence = [dict(entry) for entry in item.get("evidence", [])]
+                item_evidence = [dict(entry) for entry in query_checked(item.get("evidence", []))]
                 evidence.extend(
                     {
                         **entry,
@@ -3972,7 +3977,7 @@ class MultiNodeTopologyService:
                         "node_id": item["node_id"],
                         "plugin_run_id": item["plugin_run_id"],
                     }
-                    for entry in item_evidence
+                    for entry in query_checked(item_evidence)
                 )
                 provenance = self._claim_provenance(item)
                 if provenance not in plugin_provenance:
@@ -3985,7 +3990,7 @@ class MultiNodeTopologyService:
                         "revision_id": item["revision_id"],
                         "local_resource_id": resource_id,
                     }
-                    for resource_id in item.get("component_resource_ids", [])
+                    for resource_id in query_checked(item.get("component_resource_ids", []))
                 ]
                 attachments.append(
                     {
@@ -4054,7 +4059,7 @@ class MultiNodeTopologyService:
 
             same_absolute = all(
                 item.get("basis_kind") == "absolute_time"
-                for item in endpoint_observations
+                for item in query_checked(endpoint_observations)
             )
             quality_order = {
                 "exact": 0,
@@ -4062,7 +4067,7 @@ class MultiNodeTopologyService:
                 "ambiguous": 2,
                 "unknown": 3,
             }
-            reported_qualities = [str(item.get("quality", "unknown")) for item in values]
+            reported_qualities = [str(item.get("quality", "unknown")) for item in query_checked(values)]
             if semantic_conflict:
                 reported_qualities.append("ambiguous")
             aggregate_quality = max(
@@ -4072,7 +4077,7 @@ class MultiNodeTopologyService:
             )
             returned_ids = {
                 item["attachment_id"]
-                for item in attachments[:attachment_limit]
+                for item in query_checked(attachments[:attachment_limit])
                 if item["segment_id"] == segment_id
             }
             plugin_asserted_external = (
@@ -4088,7 +4093,7 @@ class MultiNodeTopologyService:
                     and classification.role
                     is TopologyDomainRole.EXTERNAL
                     and classification.coverage_complete
-                    for item in existing
+                    for item in query_checked(existing)
                 )
             )
             segments.append(
@@ -4132,7 +4137,7 @@ class MultiNodeTopologyService:
                     "existing_attachment_count": len(existing),
                     "returned_attachment_count": len(returned_ids),
                     "attachment_ids": [
-                        item for item in attachment_ids if item in returned_ids
+                        item for item in query_checked(attachment_ids) if item in returned_ids
                     ],
                     "shared_by_multiple_nodes": len(node_ids) > 1,
                     "single_sided_in_query_scope": len(node_ids) == 1,
@@ -4196,19 +4201,19 @@ class MultiNodeTopologyService:
         all_attachment_count = len(attachments)
         attachments = attachments[:attachment_limit]
         returned_by_segment: dict[str, list[dict[str, Any]]] = {}
-        for attachment in attachments:
+        for attachment in query_checked(attachments):
             returned_by_segment.setdefault(attachment["segment_id"], []).append(
                 attachment
             )
-        for segment in segments:
+        for segment in query_checked(segments):
             returned = returned_by_segment.get(segment["segment_id"], [])
             segment["attachment_ids"] = [
-                attachment["attachment_id"] for attachment in returned
+                attachment["attachment_id"] for attachment in query_checked(returned)
             ]
             segment["returned_attachment_count"] = len(returned)
             segment["members"] = [
                 attachment
-                for attachment in returned
+                for attachment in query_checked(returned)
                 if attachment.get("exists") is True
             ]
         return (
@@ -4248,7 +4253,7 @@ class MultiNodeTopologyService:
         seen_claims: set[tuple[str, str, tuple[Any, ...]]] = set()
 
         def exact_claim_stream() -> Iterator[ExactMatchClaim]:
-            for claim in claims:
+            for claim in query_checked(claims):
                 presentation, route_trace_role = (
                     _validated_inter_node_presentation(
                         claim.get("presentation")
@@ -4299,7 +4304,7 @@ class MultiNodeTopologyService:
             tuple[MatcherId, str],
             list[tuple[dict[str, Any], dict[str, Any]]],
         ] = {}
-        for candidate in match_result.candidates:
+        for candidate in query_checked(match_result.candidates):
             left = claims_by_identity[
                 (candidate.left.partition_id, candidate.left.claim_id)
             ]
@@ -4315,11 +4320,11 @@ class MultiNodeTopologyService:
         resolutions: list[dict[str, Any]] = []
         unmatched: list[dict[str, Any]] = []
         linker = self.contract["federation_plugin"]
-        for group in match_result.groups:
+        for group in query_checked(match_result.groups):
             matcher_id = group.matcher_id.value
             values = [
                 claims_by_identity[(claim.partition_id, claim.claim_id)]
-                for claim in group.claims
+                for claim in query_checked(group.claims)
             ]
             match_key = str(values[0]["match_key"])
             link_match_key = match_key
@@ -4346,7 +4351,7 @@ class MultiNodeTopologyService:
                         "resolution": resolution,
                         "reason_code": "no_compatible_remote_claim",
                     }
-                    for item in values
+                    for item in query_checked(values)
                 ]
                 unmatched.extend(unresolved)
                 resolutions.append(
@@ -4366,13 +4371,13 @@ class MultiNodeTopologyService:
                     "match_key": match_key,
                     "resolution": resolution,
                     "candidate_count": group.candidate_count,
-                    "claims": [self._claim_endpoint(item) for item in values],
+                    "claims": [self._claim_endpoint(item) for item in query_checked(values)],
                     "linker_plugin_provenance": linker,
                 }
             )
             base_link_occurrences: dict[str, int] = {}
             used_link_ids: set[str] = set()
-            for left, right in cross_node_pairs:
+            for left, right in query_checked(cross_node_pairs):
                 policies = {
                     str(left.get("combination_policy", "all_claims_usable")),
                     str(right.get("combination_policy", "all_claims_usable")),

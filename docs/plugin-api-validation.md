@@ -188,6 +188,24 @@ without guessed percentages. Browser timeout bounds waiting and does not
 prove synchronous backend execution stopped. Run the relevant frontend tests
 and browse the resulting integration before claiming UI readiness.
 
+Read-only runtime routes connect disconnects to request-local core checkpoints,
+including graph, resource, dashboard, source, topology and search scans. Durable
+mutations do not inherit this scope. Shared cold runtime materialization remains
+noninterruptible; distinguish it from a cancellable worker scan. Cancellation
+must release leases and search-build waiters without retaining a partial cache
+or permanently poisoning the next request. Exercise real ASGI receive messages,
+mid-scan aborts and independent readers with
+`python -m unittest tests.test_read_query_cancellation tests.test_zoom_cancellation -v`.
+
+The Windows CLI owns a Proactor loop that handles peer-reset socket shutdown
+while retaining CPython's existing close/detach cleanup. Its narrow private
+transport-construction hooks preserve the exact socket object and descriptor;
+rewrapping an IOCP-registered descriptor can fail on outgoing TCP/TLS. Validate
+normal and reset closes, unrelated errors, custom-socket rejection, over 512
+connections, TLS, subprocesses and actual CLI lifespan shutdown with
+`python -m unittest tests.test_windows_event_loop tests.test_uvicorn_compatibility -v`.
+Do not replace this evidence with traceback filtering or a global asyncio patch.
+
 The core safe-text sidecar uses versioned SQLite storage. Plain corpora below
 1 MiB retain 4 KiB pages; larger plain corpora and compressed corpora use
 64 KiB pages. Above the eager-candidate character budget (64 × 1024² characters by default),
@@ -202,6 +220,10 @@ Block framing targets 256 KiB, allows a single document up to the configured
 document-byte limit, and caps each block at 65,536 documents. Full validation checks
 contiguous ordinals, counts, UTF-8, exact framing, bounded decompression, per-block
 SHA-256 and the complete canonical document digest against revision identity.
+Cold compressed validation decodes each bounded block once and rejects document
+boundaries inside UTF-8 scalars, then hashes original framed bytes. Empty frames,
+invalid boundaries and trailing data remain invalid even when concatenation
+decodes. The canonical digest and storage format are unchanged.
 Queries pin validated block framing, raw digests and compressed-payload SHA-256
 hashes to the generation. They recheck generation/framing metadata and verify
 compressed bytes against those pins before bounded decompression, preserving

@@ -1,0 +1,26 @@
+{
+  "utc": "2026-10-22T20:22:46.107Z",
+  "card": "EVENT\nEvpn Single Home Service Create\nx\nWhen\n+120.000 s\n1759680119996000000 ns\nResource\npeer-00000\nNeighbors\nOperation\ncreate\nOutcome\nsuccess\nResult\nup\n{adjacency_state=established, hold_time_seconds=120, local_interface=ae-00000, local_interface_id=node-a/data-bridge-layer/VIRTUAL_INTERFACE/ae-00000, member_interface=Ethernet1/1, peer_address=172.20.0.1, peer_identity=02:00:00:00:00:01, peer_name=fabric-peer-01, protocol=LLDP, reachability=reachable, resolution_basis=LLDP adjacency observed on Ethernet1/1, source=synthetic_plugin.neighbor_resolver, status=up}\nDuration\n4m 0s\nuntil next accepted state change",
+  "cardHidden": false,
+  "cursor": "+120.000 s",
+  "lanes": "Lanes 14 / 7,510 · 3 logs",
+  "order": [
+    {
+      "id": "scale-overview",
+      "open": "true"
+    },
+    {
+      "id": "forwarding-population",
+      "open": "true"
+    },
+    {
+      "id": "event-phases",
+      "open": "false"
+    },
+    {
+      "id": "neighbor-health",
+      "open": "true"
+    }
+  ],
+  "review": 0
+}

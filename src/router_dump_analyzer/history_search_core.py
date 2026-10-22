@@ -15,7 +15,8 @@ import zlib
 from array import array
 from bisect import bisect_left
 from collections import OrderedDict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from hashlib import sha256
 from hmac import compare_digest
 from pathlib import Path
@@ -26,6 +27,7 @@ from uuid import uuid4
 from ._history_search_cache import _shared_results
 from ._history_search_validation import _validated_compressed
 from ._import_scheduling import _cooperate_with_durable_import
+from .cancellation import query_cancellation_checkpoint, query_checked
 from .history_search_matches import MatchSet as _MatchSet
 from .load_progress import AnalysisLoadStage as _AnalysisLoadStage
 from .load_progress import report_analysis_load as _report_analysis_load
@@ -330,38 +332,43 @@ class HistorySearchCorpus:
                 del snapshot_blocks
             actual_count = 0
             actual_character_count = 0
-            for expected_ordinal, (ordinal, safe_text) in enumerate(
-                self._iter_disk_documents(connection, str(backend), _validated_blocks=validated_blocks,
-                                          _validated_maximum=validated_maximum)
-            ):
-                if int(ordinal) != expected_ordinal:
-                    return None
-                if not isinstance(safe_text, str):
-                    return None
+            if backend == self._BLOCK_BACKEND:
                 try:
-                    encoded = safe_text.encode("utf-8")
+                    encoded_needle = _needle.encode("utf-8") if _needle is not None else None
                 except UnicodeEncodeError:
-                    return None
-                if len(encoded) > self._max_document_bytes:
-                    return None
-                self._update_documents_digest(
-                    digest,
-                    expected_ordinal,
-                    encoded,
-                )
-                if (
-                    _needle is not None
-                    and _matches is not None
-                    and _needle in safe_text
+                    encoded_needle = None
+                counts = [0, 0]
+                for ordinal, _ in self._iter_disk_documents(
+                    connection, str(backend), _validated_blocks=validated_blocks,
+                    _validated_maximum=validated_maximum, _validation_digest=digest,
+                    _validation_counts=counts, _matching_needle=encoded_needle,
                 ):
-                    _matches.append(expected_ordinal)
-                actual_count += 1
-                actual_character_count += len(safe_text)
-                if actual_count % 1024 == 0:
-                    _report_analysis_load(
-                        _AnalysisLoadStage.INDEXING,
-                        records_processed=actual_count,
-                    )
+                    if _matches is not None:
+                        _matches.append(ordinal)
+                actual_count, actual_character_count = counts
+            else:
+                for expected_ordinal, (ordinal, safe_text) in enumerate(
+                    self._iter_disk_documents(connection, str(backend))
+                ):
+                    if int(ordinal) != expected_ordinal:
+                        return None
+                    if not isinstance(safe_text, str):
+                        return None
+                    try:
+                        encoded = safe_text.encode("utf-8")
+                    except UnicodeEncodeError:
+                        return None
+                    if len(encoded) > self._max_document_bytes:
+                        return None
+                    self._update_documents_digest(digest, expected_ordinal, encoded)
+                    if _needle is not None and _matches is not None and _needle in safe_text:
+                        _matches.append(expected_ordinal)
+                    actual_count += 1
+                    actual_character_count += len(safe_text)
+                    if actual_count % 1024 == 0:
+                        _report_analysis_load(
+                            _AnalysisLoadStage.INDEXING, records_processed=actual_count,
+                        )
             if (
                 actual_count != int(document_count)
                 or actual_character_count != int(character_count)
@@ -440,10 +447,10 @@ class HistorySearchCorpus:
         blocks: dict[int, tuple[int, int, str, str]] = {}
         expected = 0
         maximum = max(self._BLOCK_TARGET_BYTES, self._max_document_bytes + 4)
-        for first, count, size, payload_size, digest_size in connection.execute(
+        for first, count, size, payload_size, digest_size in query_checked(connection.execute(
             "SELECT first_ordinal, document_count, raw_bytes, length(payload), length(digest) "
             "FROM document_blocks ORDER BY first_ordinal"
-        ):
+        )):
             if (type(first) is not int or first != expected or type(count) is not int
                 or not 1 <= count <= self._BLOCK_MAX_DOCUMENTS
                 or expected + count > self._max_documents or type(size) is not int
@@ -480,10 +487,9 @@ class HistorySearchCorpus:
     def _update_documents_digest(
         digest: Any,
         ordinal: int,
-        encoded: bytes,
+        encoded: bytes | memoryview,
     ) -> None:
-        digest.update(ordinal.to_bytes(8, "big", signed=False))
-        digest.update(len(encoded).to_bytes(8, "big", signed=False))
+        digest.update(struct.pack(">QQ", ordinal, len(encoded)))
         digest.update(encoded)
 
     def _bounded_documents(
@@ -532,7 +538,7 @@ class HistorySearchCorpus:
         # and validates the complete safe projection.
         self._reuse_identity = None
         self._reuse_file_stamp = None
-        return tuple(document for _, document in self._bounded_documents(documents))
+        return tuple(document for _, document in query_checked(self._bounded_documents(documents)))
 
     def _set_reuse_identity(self, documents_digest: str, count: int) -> None:
         digest = sha256()
@@ -665,7 +671,7 @@ class HistorySearchCorpus:
                 nonlocal block_bytes
                 if not block:
                     return
-                raw = b"".join(struct.pack(">I", len(item)) for item in block) + b"".join(block)
+                raw = b"".join(struct.pack(">I", len(item)) for item in query_checked(block)) + b"".join(block)
                 assert connection is not None
                 connection.execute("INSERT INTO document_blocks VALUES (?, ?, ?, ?, ?)",
                     (block_first, len(block), len(raw), zlib.compress(raw, 1), sha256(raw).hexdigest()))
@@ -682,7 +688,7 @@ class HistorySearchCorpus:
                 block.append(encoded)
                 block_bytes += len(encoded) + 4
 
-            for ordinal, text in self._bounded_documents(documents):
+            for ordinal, text in query_checked(self._bounded_documents(documents)):
                 reusable_projection = reusable_projection and type(text) is str
                 try:
                     encoded = text.encode("utf-8")
@@ -701,7 +707,7 @@ class HistorySearchCorpus:
                         and len(pending) < self._BLOCK_MAX_DOCUMENTS):
                         continue
                     compressed = True
-                    for pending_ordinal, pending_text in pending:
+                    for pending_ordinal, pending_text in query_checked(pending):
                         append_block(pending_ordinal, pending_text.encode("utf-8"))
                     pending.clear()
                 else:
@@ -711,7 +717,7 @@ class HistorySearchCorpus:
             else:
                 connection.executemany("INSERT INTO documents VALUES (?, ?)", pending)
                 connection.executemany("INSERT INTO documents_fts_exceptions VALUES (?)",
-                    ((ordinal,) for ordinal, text in pending if "\0" in text))
+                    ((ordinal,) for ordinal, text in query_checked(pending) if "\0" in text))
             pending.clear()
             # Persist the exact corpus first.  The FTS table is only a candidate
             # accelerator, so a SQLite build without FTS5/trigram support still
@@ -834,17 +840,19 @@ class HistorySearchCorpus:
         *, _matching_needle: bytes | None = None,
         _validated_blocks: dict[int, tuple[int, int, str, str]] | None = None,
         _validated_maximum: list[int] | None = None,
+        _validation_digest: Any = None,
+        _validation_counts: list[int] | None = None,
     ) -> Iterable[tuple[int, str]]:
         if backend != self._BLOCK_BACKEND:
-            yield from connection.execute("SELECT ordinal, safe_text FROM documents ORDER BY ordinal")
+            yield from query_checked(connection.execute("SELECT ordinal, safe_text FROM documents ORDER BY ordinal"))
             return
         expected = 0
         validated_digests: dict[int, tuple[int, int, str, str]] = {}
         maximum = max(self._BLOCK_TARGET_BYTES, self._max_document_bytes + 4)
         try:
-            for first, count, size, payload_size, digest_size in connection.execute(
+            for first, count, size, payload_size, digest_size in query_checked(connection.execute(
                 "SELECT first_ordinal, document_count, raw_bytes, length(payload), length(digest) FROM document_blocks ORDER BY first_ordinal"
-            ):
+            )):
                 if (type(first) is not int or first != expected or type(count) is not int
                     or not 1 <= count <= self._BLOCK_MAX_DOCUMENTS
                     or expected + count > self._max_documents or type(size) is not int
@@ -852,7 +860,7 @@ class HistorySearchCorpus:
                     or type(payload_size) is not int or not 0 < payload_size <= maximum + 1024
                     or digest_size != 64):
                     raise ValueError("invalid compressed search block framing")
-                if _matching_needle is not None:
+                if _matching_needle is not None and _validation_digest is None:
                     pinned = self._block_digests.get(first)
                     if pinned is None or pinned[:2] != (count, size):
                         raise ValueError("compressed search block framing changed")
@@ -866,7 +874,7 @@ class HistorySearchCorpus:
                 ).fetchone()
                 if not isinstance(payload, bytes) or len(payload) > maximum + 1024:
                     raise ValueError("invalid compressed search block payload")
-                if _matching_needle is not None:
+                if _matching_needle is not None and _validation_digest is None:
                     pinned = self._block_digests.get(first)
                     if (pinned is None or pinned[:3] != (count, size, digest)
                         or not compare_digest(sha256(payload).hexdigest(), pinned[3])):
@@ -876,7 +884,7 @@ class HistorySearchCorpus:
                 if (len(raw) != size or not decoder.eof or decoder.unused_data
                     or decoder.unconsumed_tail or not isinstance(digest, str)):
                     raise ValueError("invalid compressed search block stream")
-                if _matching_needle is None:
+                if _matching_needle is None or _validation_digest is not None:
                     if not compare_digest(sha256(raw).hexdigest(), digest):
                         raise ValueError("invalid compressed search block digest")
                     # Pin exact compressed bytes only after validating raw bytes.
@@ -885,15 +893,30 @@ class HistorySearchCorpus:
                     validated_digests[first] = (count, size, digest, sha256(payload).hexdigest())
                 offset = count * 4
                 lengths = struct.unpack_from(f">{count}I", raw)
+                if _validation_digest is not None:
+                    # Validate UTF-8 once for the bounded block, then ensure no
+                    # document starts inside a scalar. This proves each framed
+                    # document is valid without decoding and re-encoding every
+                    # row merely to hash its original bytes again.
+                    character_count = len(raw[offset:].decode("utf-8"))
+                    raw_view = memoryview(raw)
+                    assert _validation_counts is not None
+                    _validation_counts[1] += character_count
                 if _validated_maximum is not None:
                     block_maximum = max(lengths)
                     if block_maximum > _validated_maximum[0]:  # noqa: PLR1730 - avoid another max() call in this hot loop.
                         _validated_maximum[0] = block_maximum
-                for length in lengths:
+                for length in query_checked(lengths):
                     end = offset + length
                     if length > self._max_document_bytes or end > size:
                         raise ValueError("invalid compressed search document length")
-                    if _matching_needle is None:
+                    if _validation_digest is not None:
+                        if offset < size and raw[offset] & 0xC0 == 0x80:
+                            raise ValueError("UTF-8 scalar crosses a search document boundary")
+                        self._update_documents_digest(_validation_digest, expected, raw_view[offset:end])
+                        if _matching_needle is not None and raw.find(_matching_needle, offset, end) >= 0:
+                            yield expected, ""
+                    elif _matching_needle is None:
                         yield expected, raw[offset:end].decode("utf-8")
                     else:
                         # UTF-8 literal matching is equivalent to scalar substring
@@ -902,12 +925,16 @@ class HistorySearchCorpus:
                             yield expected, ""
                     offset = end
                     expected += 1
+                    if _validation_digest is not None and expected % 1024 == 0:
+                        _report_analysis_load(_AnalysisLoadStage.INDEXING, records_processed=expected)
                 if offset != size:
                     raise ValueError("trailing compressed search document bytes")
             declared_count = connection.execute("SELECT document_count FROM metadata WHERE singleton=1").fetchone()
             if declared_count is None or declared_count[0] != expected:
                 raise ValueError("compressed search document count mismatch")
-            if _matching_needle is None and _validated_blocks is not None:
+            if _validation_counts is not None:
+                _validation_counts[0] = expected
+            if (_matching_needle is None or _validation_digest is not None) and _validated_blocks is not None:
                 _validated_blocks.update(validated_digests)
         except (ValueError, zlib.error, UnicodeError, struct.error) as error:
             raise sqlite3.DatabaseError("corrupt compressed search corpus") from error
@@ -1003,18 +1030,31 @@ class HistorySearchCorpus:
             digest.update(int(ordinal).to_bytes(8, "big", signed=False))
         return digest.hexdigest()
 
+    @contextmanager
+    def _query_lock(self) -> Iterator[None]:
+        # A disconnected waiter owns neither the builder nor its result. Keep
+        # waiting bounded while the independent reader retains the same lock.
+        while not self._condition.acquire(timeout=0.05):
+            query_cancellation_checkpoint()
+        try:
+            query_cancellation_checkpoint()
+            yield
+        finally:
+            self._condition.release()
+
     def ensure(
         self, documents: Callable[[], Iterable[str]], *, _needle: str | None = None
     ) -> Sequence[int] | None:
         """Build or reopen the exact safe corpus once."""
 
-        with self._condition:
+        with self._query_lock():
             if self._closed:
                 raise RuntimeError("history search corpus is closed")
             while self._building and (
                 self._documents is None and not self._sidecar_ready
             ):
-                self._condition.wait()
+                self._condition.wait(timeout=0.05)
+                query_cancellation_checkpoint()
             if self._closed:
                 raise RuntimeError("history search corpus is closed")
             if self._documents is not None or self._sidecar_ready:
@@ -1074,10 +1114,16 @@ class HistorySearchCorpus:
                 document_count = self._document_count
                 character_count = self._character_count
                 backend = "memory-scan"
+            query_cancellation_checkpoint()
         except Exception as error:
+            from .revision_queries import RevisionQueryCancellationError
+
             with self._condition:
                 self._building = False
-                self._error = error
+                # Cancellation belongs to this reader, not the shared corpus.
+                # Completed sidecars stay intact; interrupted temporary builds
+                # are cleaned by _build_sidecar and a waiting reader may retry.
+                self._error = None if isinstance(error, RevisionQueryCancellationError) else error
                 self._condition.notify_all()
             raise
 
@@ -1098,7 +1144,7 @@ class HistorySearchCorpus:
         candidates = min(
             (
                 matches
-                for term, matches in self._results.items()
+                for term, matches in query_checked(self._results.items())
                 if term in needle and len(matches) * 2 < self._document_count
             ),
             key=len,
@@ -1110,7 +1156,7 @@ class HistorySearchCorpus:
                     "I",
                     (
                         ordinal
-                        for ordinal in candidates
+                        for ordinal in query_checked(candidates)
                         if needle in self._documents[ordinal]
                     ),
                 )
@@ -1118,7 +1164,7 @@ class HistorySearchCorpus:
                 "I",
                 (
                     index
-                    for index, document in enumerate(self._documents)
+                    for index, document in query_checked(enumerate(self._documents))
                     if needle in document
                 ),
             )
@@ -1149,10 +1195,10 @@ class HistorySearchCorpus:
                 raise sqlite3.DatabaseError("history search generation changed")
             if self._candidate_backend == self._BLOCK_BACKEND:
                 matches = array("I")
-                for ordinal, _ in self._iter_disk_documents(
+                for ordinal, _ in query_checked(self._iter_disk_documents(
                     connection, self._BLOCK_BACKEND, candidates,
                     _matching_needle=needle.encode("utf-8"),
-                ):
+                )):
                     if candidates is not None:
                         index = bisect_left(candidates, ordinal)
                         if index == len(candidates) or candidates[index] != ordinal:
@@ -1161,15 +1207,15 @@ class HistorySearchCorpus:
                 return matches
             if candidates is not None:
                 matches = array("I")
-                for start in range(0, len(candidates), self._INSERT_BATCH_SIZE):
+                for start in query_checked(range(0, len(candidates), self._INSERT_BATCH_SIZE)):
                     batch = candidates[start : start + self._INSERT_BATCH_SIZE]
-                    placeholders = ",".join("?" for _ in batch)
+                    placeholders = ",".join("?" for _ in query_checked(batch))
                     rows = connection.execute(
                         f"SELECT ordinal, safe_text FROM documents WHERE ordinal IN ({placeholders}) ORDER BY ordinal",
                         batch,
                     )
                     matches.extend(
-                        int(ordinal) for ordinal, text in rows if needle in text
+                        int(ordinal) for ordinal, text in query_checked(rows) if needle in text
                     )
                 return matches
             candidate = self._fts5_candidate_expression(needle)
@@ -1195,7 +1241,7 @@ class HistorySearchCorpus:
                         """,
                         (needle, candidate),
                     )
-                    return array("I", (int(row[0]) for row in rows))
+                    return array("I", (int(row[0]) for row in query_checked(rows)))
                 except sqlite3.OperationalError:
                     # MATCH is an accelerator only.  If a platform-specific
                     # FTS parser rejects a candidate, preserve exact behavior
@@ -1205,7 +1251,7 @@ class HistorySearchCorpus:
                 "I",
                 (
                     int(row[0])
-                    for row in connection.execute(
+                    for row in query_checked(connection.execute(
                         """
                         SELECT ordinal
                         FROM documents
@@ -1213,7 +1259,7 @@ class HistorySearchCorpus:
                         ORDER BY ordinal
                         """,
                         (needle,),
-                    )
+                    ))
                 ),
             )
         finally:
@@ -1281,7 +1327,7 @@ class HistorySearchCorpus:
     ) -> Sequence[int]:
         """Return time-ordered ordinals containing one literal folded string."""
 
-        with self._condition:
+        with self._query_lock():
             if self._closed:
                 raise RuntimeError("history search corpus is closed")
             cached = self._results.get(needle)
@@ -1290,7 +1336,7 @@ class HistorySearchCorpus:
                 return cached
 
         first_matches = self.ensure(documents, _needle=needle)
-        with self._condition:
+        with self._query_lock():
             if self._closed:
                 raise RuntimeError("history search corpus is closed")
             if first_matches is not None:
@@ -1325,14 +1371,14 @@ class HistorySearchCorpus:
                 matches = None
         if matches is None:
             first_matches = self.ensure(documents, _needle=needle)
-            with self._condition:
+            with self._query_lock():
                 if self._closed:
                     raise RuntimeError("history search corpus is closed")
                 if first_matches is not None:
                     return first_matches
                 matches = self._query_ready(needle)
                 return self._remember(needle, matches)
-        with self._condition:
+        with self._query_lock():
             if self._closed:
                 raise RuntimeError("history search corpus is closed")
             return self._remember(needle, matches)

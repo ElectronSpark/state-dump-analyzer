@@ -12,6 +12,8 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
+from .cancellation import query_cancellation_checkpoint, query_checked
+
 from .temporal_core import temporal_integer
 from .value_core import MAX_JSON_SAFE_INTEGER, parse_decimal_integer
 
@@ -246,6 +248,7 @@ def project_source_record_text_selection(
     and the exact plain-text representation through ``copy_text``.
     """
 
+    query_cancellation_checkpoint()
     if max_items < 1 or max_items > MAX_COPY_TEXT_ITEMS:
         raise ValueError(f"max_items must be between 1 and {MAX_COPY_TEXT_ITEMS}")
     if max_total_bytes < 1 or max_total_bytes > MAX_COPY_TEXT_TOTAL_BYTES:
@@ -256,11 +259,11 @@ def project_source_record_text_selection(
     materialized = list(records)
     by_uid: dict[str, dict[str, Any]] = {}
     by_event: dict[str, list[dict[str, Any]]] = {}
-    for record in materialized:
+    for record in query_checked(materialized):
         uid = str(record.get("source_record_uid") or "")
         if uid:
             by_uid[uid] = record
-        for event_uid in source_record_event_uids(record):
+        for event_uid in query_checked(source_record_event_uids(record)):
             by_event.setdefault(event_uid, []).append(record)
 
     items: list[dict[str, Any]] = []
@@ -269,7 +272,7 @@ def project_source_record_text_selection(
     total_bytes = 0
     truncated = False
 
-    for raw in selection:
+    for raw in query_checked(selection):
         if not isinstance(raw, dict):
             omitted.append({"selection_id": "invalid", "reason": "invalid_selection"})
             continue
@@ -285,7 +288,7 @@ def project_source_record_text_selection(
         )
         copyable_for_selection = False
         unavailable_reasons: list[str] = []
-        for record in candidates:
+        for record in query_checked(candidates):
             source_uid = str(record.get("source_record_uid") or "")
             if not source_uid or source_uid in seen_source_uids:
                 continue
@@ -330,7 +333,7 @@ def project_source_record_text_selection(
             )
         elif not copyable_for_selection and not any(
             str(candidate.get("source_record_uid") or "") in seen_source_uids
-            for candidate in candidates
+            for candidate in query_checked(candidates)
         ):
             omitted.append(
                 {
@@ -635,6 +638,7 @@ def query_source_records(
 ) -> dict[str, Any]:
     """Filter and page retained records without applying domain semantics."""
 
+    query_cancellation_checkpoint()
     if not isinstance(body, dict):
         raise SourceRecordRequestError("source-record query must be an object")
     start = body.get("start_ns")
@@ -683,7 +687,7 @@ def query_source_records(
     selected: list[dict[str, Any]] = []
     unplaced_count = 0
     has_time_window = start_ns is not None or end_ns is not None
-    for record in records:
+    for record in query_checked(records):
         if source_types and str(record.get("source_type")) not in source_types:
             continue
         is_matched = bool(source_record_event_uids(record))
@@ -731,6 +735,7 @@ def record_lanes_for_window(
 ) -> list[dict[str, Any]]:
     """Project retained records into bounded, regex-selected timeline lanes."""
 
+    query_cancellation_checkpoint()
     start_ns = _request_nanoseconds(start_ns, "start_ns")
     end_ns = _request_nanoseconds(end_ns, "end_ns")
     if end_ns < start_ns:
@@ -743,25 +748,25 @@ def record_lanes_for_window(
         )
     record_window: list[tuple[dict[str, Any], int]] = []
     unplaced_records: list[dict[str, Any]] = []
-    for record in records:
+    for record in query_checked(records):
         timestamp_ns = _source_record_timestamp_ns(record)
         if timestamp_ns is None:
             unplaced_records.append(record)
         elif start_ns <= timestamp_ns <= end_ns:
             record_window.append((record, timestamp_ns))
     prepared: list[tuple[dict[str, Any], list[tuple[dict[str, Any], int]], int]] = []
-    for raw_rule in rules:
+    for raw_rule in query_checked(rules):
         rule, compiled = normalize_record_lane_rule(
             raw_rule,
             known_source_types=known_source_types,
         )
         matched_records = [
             (record, timestamp_ns)
-            for record, timestamp_ns in record_window
+            for record, timestamp_ns in query_checked(record_window)
             if _record_matches(record, rule, compiled)
         ]
         unplaced_count = sum(
-            1 for record in unplaced_records if _record_matches(record, rule, compiled)
+            1 for record in query_checked(unplaced_records) if _record_matches(record, rule, compiled)
         )
         prepared.append((rule, matched_records, unplaced_count))
 
@@ -770,8 +775,8 @@ def record_lanes_for_window(
     # This keeps a broad rule from starving an exact Ctrl-click jump lane that
     # appears later in plug-in/user ordering.
     remaining = max(0, min(int(max_marks), MAX_RECORD_LANE_MARKS))
-    allocations = [0 for _ in prepared]
-    for index, (_rule, matched_records, _unplaced_count) in enumerate(prepared):
+    allocations = [0 for _ in query_checked(prepared)]
+    for index, (_rule, matched_records, _unplaced_count) in query_checked(enumerate(prepared)):
         if remaining <= 0:
             break
         if matched_records:
@@ -780,14 +785,14 @@ def record_lanes_for_window(
     while remaining > 0:
         pending = [
             index
-            for index, (_rule, matched_records, _unplaced_count) in enumerate(prepared)
+            for index, (_rule, matched_records, _unplaced_count) in query_checked(enumerate(prepared))
             if allocations[index] < len(matched_records)
         ]
         if not pending:
             break
         share = max(1, remaining // len(pending))
         progressed = 0
-        for index in pending:
+        for index in query_checked(pending):
             matched_records = prepared[index][1]
             granted = min(
                 share,
@@ -803,11 +808,11 @@ def record_lanes_for_window(
             break
 
     lanes: list[dict[str, Any]] = []
-    for (rule, matched_records, unplaced_count), allocation in zip(
+    for (rule, matched_records, unplaced_count), allocation in query_checked(zip(
         prepared,
         allocations,
         strict=True,
-    ):
+    )):
         visible = matched_records[:allocation]
         lanes.append(
             {
@@ -820,7 +825,7 @@ def record_lanes_for_window(
                         record,
                         timestamp_ns=timestamp_ns,
                     )
-                    for record, timestamp_ns in visible
+                    for record, timestamp_ns in query_checked(visible)
                 ],
             }
         )

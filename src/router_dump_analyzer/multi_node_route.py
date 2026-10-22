@@ -53,6 +53,8 @@ from router_dump_analyzer.topology_core import (
 )
 from router_dump_analyzer.value_core import mutable_json_value, parse_decimal_integer
 
+from .cancellation import query_cancellation_checkpoint, query_checked
+
 from .canonical import CanonicalValueError, packet_value_json
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 
@@ -568,6 +570,7 @@ class MultiNodeRouteService:
         executes that scenario.
         """
 
+        query_cancellation_checkpoint()
         coverage = self._generated_coverage_by_id.get(scenario_id)
         if coverage is None:
             raise MultiNodeRouteRequestError(
@@ -1381,9 +1384,9 @@ class MultiNodeRouteService:
             return
         decisions = {
             str(item["node_id"]): item
-            for item in projection["forwarding_decisions"]
+            for item in query_checked(projection["forwarding_decisions"])
         }
-        for path in paths:
+        for path in query_checked(paths):
             candidate = cls._generated_candidate_for_path(
                 path,
                 projection,
@@ -1402,18 +1405,18 @@ class MultiNodeRouteService:
                     candidate["alternative_state"]
                 )
             node_sequence = [
-                str(item) for item in path.get("node_sequence", [])
+                str(item) for item in query_checked(path.get("node_sequence", []))
             ]
             local_segments = [
                 segment
-                for segment in sorted(
+                for segment in query_checked(sorted(
                     path.get("segments", []),
                     key=lambda item: item["ordinal"],
-                )
+                ))
                 if segment.get("segment_kind") == "node_resolution"
             ]
             path_evidence: list[dict[str, Any]] = []
-            for index, node_id in enumerate(node_sequence):
+            for index, node_id in query_checked(enumerate(node_sequence)):
                 segment = (
                     local_segments[index]
                     if index < len(local_segments)
@@ -1476,7 +1479,7 @@ class MultiNodeRouteService:
                 "all_rendered_candidates_match": bool(path_evidence)
                 and all(
                     item["matches_rendered_candidate"]
-                    for item in path_evidence
+                    for item in query_checked(path_evidence)
                 ),
                 "counterfactual": counterfactual,
             }
@@ -1513,16 +1516,16 @@ class MultiNodeRouteService:
             return
         decisions = {
             str(item["node_id"]): item
-            for item in projection["forwarding_decisions"]
+            for item in query_checked(projection["forwarding_decisions"])
         }
-        for path in paths:
+        for path in query_checked(paths):
             candidate_id = str(path.get("generated_candidate_id") or "")
             if not candidate_id:
                 raise MultiNodeRouteRequestError(
                     "generated route path lacks its validated candidate identity"
                 )
             node_sequence = [
-                str(item) for item in path.get("node_sequence", []) if item
+                str(item) for item in query_checked(path.get("node_sequence", [])) if item
             ]
             ordered_segments = sorted(
                 path.get("segments", []),
@@ -1530,16 +1533,16 @@ class MultiNodeRouteService:
             )
             local_segments = [
                 item
-                for item in ordered_segments
+                for item in query_checked(ordered_segments)
                 if item.get("segment_kind") == "node_resolution"
             ]
             boundary_segments = [
                 item
-                for item in ordered_segments
+                for item in query_checked(ordered_segments)
                 if item.get("segment_kind") == "inter_node_boundary"
             ]
 
-            for index, node_id in enumerate(node_sequence):
+            for index, node_id in query_checked(enumerate(node_sequence)):
                 if index >= len(local_segments):
                     continue
                 segment = local_segments[index]
@@ -1570,14 +1573,14 @@ class MultiNodeRouteService:
                 )
                 evidence_ids = [
                     str(item)
-                    for item in decision.get(
+                    for item in query_checked(decision.get(
                         "evidence_resource_ids",
                         [],
-                    )
+                    ))
                 ]
                 evidence_records = [
                     resources[item]
-                    for item in evidence_ids
+                    for item in query_checked(evidence_ids)
                     if item in resources
                 ]
                 member_id = (
@@ -1587,7 +1590,7 @@ class MultiNodeRouteService:
                 )
                 resource_refs = [
                     dict(item["resource_ref"])
-                    for item in evidence_records
+                    for item in query_checked(evidence_records)
                 ]
                 if not resource_refs:
                     revision_id = self._generated_revision_by_node.get(
@@ -1601,11 +1604,11 @@ class MultiNodeRouteService:
                             "revision_id": revision_id,
                             "local_resource_id": resource_id,
                         }
-                        for resource_id in evidence_ids
+                        for resource_id in query_checked(evidence_ids)
                     ]
                 resource_target_ids = [
                     self._resource_target(item, targets)
-                    for item in evidence_records
+                    for item in query_checked(evidence_records)
                 ]
                 node_target_id = self._node_target(
                     node_id,
@@ -1631,7 +1634,7 @@ class MultiNodeRouteService:
                     [
                         *(
                             item.get("plugin_provenance", {})
-                            for item in evidence_records
+                            for item in query_checked(evidence_records)
                         ),
                         provider,
                     ]
@@ -1804,7 +1807,7 @@ class MultiNodeRouteService:
                     and not explicitly_terminal
                 )
 
-            for index, boundary in enumerate(boundary_segments):
+            for index, boundary in query_checked(enumerate(boundary_segments)):
                 if index + 1 >= len(node_sequence):
                     continue
                 source_node_id = node_sequence[index]
@@ -1851,7 +1854,7 @@ class MultiNodeRouteService:
                 topology_references = next_hop.get("topology_references", [])
                 typed_references = [
                     item
-                    for item in topology_references
+                    for item in query_checked(topology_references)
                     if isinstance(item, Mapping)
                     and item.get("reference_kind")
                     == "typed_inter_node_link"
@@ -2111,7 +2114,7 @@ class MultiNodeRouteService:
                 ]
                 attachment_target_ids = [
                     self._resource_target(item, targets)
-                    for item in attachment_records
+                    for item in query_checked(attachment_records)
                 ]
                 target_ids = [
                     domain_target_id,
@@ -3251,9 +3254,9 @@ class MultiNodeRouteService:
                 "route projection exceeds the advertised "
                 f"{self.MAX_CANDIDATE_PATHS}-candidate limit"
             )
-        for candidate in candidates:
+        for candidate in query_checked(candidates):
             node_sequence = [
-                str(item) for item in candidate["node_sequence"]
+                str(item) for item in query_checked(candidate["node_sequence"])
             ]
             if not node_sequence:
                 raise MultiNodeRouteRequestError(
@@ -4975,6 +4978,7 @@ class MultiNodeRouteService:
     def route_tables(self, body: dict[str, Any]) -> dict[str, Any]:
         """Federate opaque plug-in route rows at one topology time context."""
 
+        query_cancellation_checkpoint()
         if not isinstance(body, dict):
             raise MultiNodeRouteRequestError("request body must be an object")
         context_aliases = {
@@ -5057,7 +5061,7 @@ class MultiNodeRouteService:
 
         selected_node_ids = {
             str(item["node_id"])
-            for item in snapshot["nodes"]
+            for item in query_checked(snapshot["nodes"])
             if item.get("available", True)
         }
         node_filter = self._filter_values(
@@ -5078,14 +5082,14 @@ class MultiNodeRouteService:
             singular=("vrf_id", "vrf"),
         )
         vrf_filter = {
-            self._vrf(value)["vrf_id"] for value in vrf_filter
+            self._vrf(value)["vrf_id"] for value in query_checked(vrf_filter)
         }
         family_filter = self._filter_values(
             filters,
             plural=("route_families",),
             singular=("route_family",),
         )
-        for value in family_filter:
+        for value in query_checked(family_filter):
             self._family(value)
         address_filter = self._filter_values(
             filters,
@@ -5093,7 +5097,7 @@ class MultiNodeRouteService:
             singular=("address_family",),
         )
         known_address_families = {
-            item["address_family"] for item in self._route_families
+            item["address_family"] for item in query_checked(self._route_families)
         }
         unknown_addresses = address_filter - known_address_families
         if unknown_addresses:
@@ -5105,7 +5109,7 @@ class MultiNodeRouteService:
             plural=("route_types",),
             singular=("route_type",),
         )
-        known_types = {item["route_type"] for item in self._route_types}
+        known_types = {item["route_type"] for item in query_checked(self._route_types)}
         unknown_types = type_filter - known_types
         if unknown_types:
             raise MultiNodeRouteRequestError(
@@ -5142,9 +5146,9 @@ class MultiNodeRouteService:
                 "semantics belong to the node plug-in"
             )
 
-        nodes_by_id = {str(item["node_id"]): item for item in snapshot["nodes"]}
+        nodes_by_id = {str(item["node_id"]): item for item in query_checked(snapshot["nodes"])}
         rows: list[dict[str, Any]] = []
-        for row in self._route_table_entries():
+        for row in query_checked(self._route_table_entries()):
             if row["node_id"] not in selected_node_ids:
                 continue
             if vrf_filter and row["vrf_id"] not in vrf_filter:
@@ -5173,7 +5177,7 @@ class MultiNodeRouteService:
                     if destination_match == "exact"
                     else any(
                         destination_value.casefold() in value.casefold()
-                        for value in candidate_values
+                        for value in query_checked(candidate_values)
                     )
                 )
                 if not matches:
@@ -5216,7 +5220,7 @@ class MultiNodeRouteService:
         context_material = {
             "topology_context_id": snapshot["context_id"],
             "filters": filters,
-            "route_entry_ids": [item["route_entry_id"] for item in rows],
+            "route_entry_ids": [item["route_entry_id"] for item in query_checked(rows)],
         }
         context_digest = hashlib.sha256(
             json.dumps(
@@ -5231,7 +5235,7 @@ class MultiNodeRouteService:
             offset = self._decode_route_table_cursor(
                 cursor, route_table_context_id
             )
-        for row in rows:
+        for row in query_checked(rows):
             row["route_table_context_id"] = route_table_context_id
             if row["traceable"]:
                 row["trace_query"] = {
@@ -5250,10 +5254,10 @@ class MultiNodeRouteService:
             if truncated
             else None
         )
-        returned_ids = {item["route_entry_id"] for item in returned}
+        returned_ids = {item["route_entry_id"] for item in query_checked(returned)}
         node_summaries = []
-        for node in snapshot["nodes"]:
-            node_rows = [item for item in rows if item["node_id"] == node["node_id"]]
+        for node in query_checked(snapshot["nodes"]):
+            node_rows = [item for item in query_checked(rows) if item["node_id"] == node["node_id"]]
             node_summaries.append(
                 {
                     "node_id": node["node_id"],
@@ -5265,7 +5269,7 @@ class MultiNodeRouteService:
                     "complete": node.get("complete", False),
                     "entry_count": len(node_rows),
                     "returned_count": sum(
-                        item["route_entry_id"] in returned_ids for item in node_rows
+                        item["route_entry_id"] in returned_ids for item in query_checked(node_rows)
                     ),
                     "plugin_provenance": dict(
                         self._generated_provider_by_node.get(
@@ -5297,14 +5301,14 @@ class MultiNodeRouteService:
                     "resolved_time": mutable_json_value(item.get("resolved_time")),
                     "complete": item.get("complete", False),
                 }
-                for item in snapshot["nodes"]
+                for item in query_checked(snapshot["nodes"])
             ],
             "items": returned,
             "node_summaries": node_summaries,
             "counts": {
                 "total": total,
                 "returned": len(returned),
-                "nodes": len({item["node_id"] for item in rows}),
+                "nodes": len({item["node_id"] for item in query_checked(rows)}),
             },
             "facets": {
                 "node_ids": self._facet_counts(rows, "node_id"),
@@ -5341,7 +5345,7 @@ class MultiNodeRouteService:
         }
         self._route_table_contexts[route_table_context_id] = {
             "topology_context_id": snapshot["context_id"],
-            "route_entry_ids": {item["route_entry_id"] for item in rows},
+            "route_entry_ids": {item["route_entry_id"] for item in query_checked(rows)},
         }
         while len(self._route_table_contexts) > 32:
             self._route_table_contexts.pop(next(iter(self._route_table_contexts)))
@@ -5887,6 +5891,7 @@ class MultiNodeRouteService:
 
     @_analysis_load_stage(AnalysisLoadStage.TRACING_ROUTES)
     def trace(self, body: dict[str, Any]) -> dict[str, Any]:
+        query_cancellation_checkpoint()
         if not isinstance(body, dict):
             raise MultiNodeRouteRequestError("request body must be an object")
         scenario_id = str(
@@ -5920,7 +5925,7 @@ class MultiNodeRouteService:
         )
         advertised_steering_ids = {
             str(item["profile_id"])
-            for item in self.policy.steering_profiles
+            for item in query_checked(self.policy.steering_profiles)
         }
         if steering_profile_id not in advertised_steering_ids:
             raise MultiNodeRouteRequestError(
@@ -5928,7 +5933,7 @@ class MultiNodeRouteService:
             )
         scenario_steering_ids = {
             str(item)
-            for item in scenario.get("steering_profiles", ("observed",))
+            for item in query_checked(scenario.get("steering_profiles", ("observed",)))
         }
         if steering_profile_id not in scenario_steering_ids:
             raise MultiNodeRouteRequestError(
@@ -6097,7 +6102,7 @@ class MultiNodeRouteService:
             if isinstance(reverse_request.get("routing_context"), dict):
                 reverse_request["routing_context"] = {
                     key: value
-                    for key, value in reverse_request["routing_context"].items()
+                    for key, value in query_checked(reverse_request["routing_context"].items())
                     if key != "route_entry_ref"
                 }
             forward = self.trace(forward_request)
@@ -6153,7 +6158,7 @@ class MultiNodeRouteService:
                 and candidate["node_sequence"]
                 and str(candidate["node_sequence"][0])
                 == trace_start["node_id"]
-                for candidate in generated_projection["candidate_paths"]
+                for candidate in query_checked(generated_projection["candidate_paths"])
             )
         ):
             generated_projection = self._generated_inventory_projection(
@@ -6251,11 +6256,11 @@ class MultiNodeRouteService:
         # an auxiliary evidence snapshot, not a replacement topology context.
         requested_node_queries = {
             str(item["node_id"]): item
-            for item in body.get("node_queries", [])
+            for item in query_checked(body.get("node_queries", []))
             if isinstance(item, dict) and item.get("node_id")
         }
         route_node_queries: list[dict[str, Any]] = []
-        for node in snapshot["nodes"]:
+        for node in query_checked(snapshot["nodes"]):
             original = requested_node_queries.get(str(node["node_id"]), {})
             route_node_query = {
                 "node_id": node["node_id"],
@@ -6280,11 +6285,11 @@ class MultiNodeRouteService:
         route_evidence = self.topology.query(route_evidence_request)
         resources = {
             item["resource_id"]: item
-            for node in route_evidence["nodes"]
-            for item in node.get("resources", [])
+            for node in query_checked(route_evidence["nodes"])
+            for item in query_checked(node.get("resources", []))
         }
         links: dict[str, list[dict[str, Any]]] = {}
-        for link in route_evidence.get("inter_node_links", []):
+        for link in query_checked(route_evidence.get("inter_node_links", [])):
             links.setdefault(str(link["link_id"]), []).append(link)
 
         targets: dict[str, dict[str, Any]] = {}
@@ -6386,7 +6391,7 @@ class MultiNodeRouteService:
         )
         # Declared findings are authoritative independently of a fixture's
         # expected outcome or the plug-in's open category vocabulary.
-        if any(item.get("affects_consistency") is True for item in issues):
+        if any(item.get("affects_consistency") is True for item in query_checked(issues)):
             consistency_state = "inconsistent"
         if self._materialize_control_plane_only_issue(paths, issues):
             consistency_state = "control_plane_only_not_forwarding"
@@ -6394,17 +6399,17 @@ class MultiNodeRouteService:
         route_entry_correlations = list(
             {
                 item["route_entry_id"]: item
-                for path in paths
-                for item in path.get("route_entry_correlations", [])
+                for path in query_checked(paths)
+                for item in query_checked(path.get("route_entry_correlations", []))
             }.values()
         )
-        path_ids = {item["path_id"] for item in paths}
+        path_ids = {item["path_id"] for item in query_checked(paths)}
         requested_focus = body.get("focus_path_id")
         trace_candidate_id = body.get("trace_candidate_id")
         if requested_focus is None and trace_candidate_id is not None:
             candidate_matches = [
                 item
-                for item in paths
+                for item in query_checked(paths)
                 if str(
                     item.get("generated_candidate_id")
                     or item.get("candidate_id")
@@ -6431,18 +6436,18 @@ class MultiNodeRouteService:
                 f"focus_path_id is not a candidate in this trace: {requested_focus}"
             )
         focused_path_id = str(requested_focus) if requested_focus else self._default_focus(paths)
-        for path in paths:
+        for path in query_checked(paths):
             path["focused"] = path["path_id"] == focused_path_id
 
-        focused = next(item for item in paths if item["path_id"] == focused_path_id)
-        issue_by_id = {item["issue_id"]: item for item in issues}
-        active_paths = [item for item in paths if item["active"]]
-        primary = next((item for item in paths if item["primary"]), None)
+        focused = next(item for item in query_checked(paths) if item["path_id"] == focused_path_id)
+        issue_by_id = {item["issue_id"]: item for item in query_checked(issues)}
+        active_paths = [item for item in query_checked(paths) if item["active"]]
+        primary = next((item for item in query_checked(paths) if item["primary"]), None)
         multipath_mode = self._route_executor_multipath_mode(
             scenario,
             selected_count=sum(
                 1
-                for item in paths
+                for item in query_checked(paths)
                 if bool(
                     item.get(
                         "selected_active_by_plugin",
@@ -6475,10 +6480,10 @@ class MultiNodeRouteService:
             json.dumps(trace_material, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()[:24]
         all_end_to_end = all(
-            item["completeness"]["end_to_end_resolved"] for item in paths
+            item["completeness"]["end_to_end_resolved"] for item in query_checked(paths)
         )
         exact = all(
-            item["completeness"]["state"] == "complete" for item in paths
+            item["completeness"]["state"] == "complete" for item in query_checked(paths)
         )
         reachable = endpoint_reachability["reaches_target"] is True
         directional_pair = self._directional_pair(
@@ -6631,7 +6636,7 @@ class MultiNodeRouteService:
                 "selection_owner": "node_plugins",
                 "candidate_count": len(paths),
                 "active_path_count": len(active_paths),
-                "active_path_ids": [item["path_id"] for item in active_paths],
+                "active_path_ids": [item["path_id"] for item in query_checked(active_paths)],
                 "primary_path_id": primary["path_id"] if primary else None,
                 "all_candidates_retained": True,
             },
@@ -6640,7 +6645,7 @@ class MultiNodeRouteService:
             "matched_route_entry_refs": route_entry_refs,
             "route_table_entry_correlations": route_entry_correlations,
             "route_table_entry_ids": [
-                item["route_entry_id"] for item in route_entry_refs
+                item["route_entry_id"] for item in query_checked(route_entry_refs)
             ],
             "focused_path_id": focused_path_id,
             "focus": {
@@ -6662,7 +6667,7 @@ class MultiNodeRouteService:
                 "consistent": consistency_state.startswith("consistent"),
                 "issue_refs": [
                     item["issue_id"]
-                    for item in issues
+                    for item in query_checked(issues)
                     if item.get("affects_consistency") is True
                     or (
                         item["category"]
@@ -6673,8 +6678,8 @@ class MultiNodeRouteService:
                 "compared_status_perspectives": sorted(
                     {
                         provider.get("status_perspective_id")
-                        for path in paths
-                        for provider in path["plugin_provenance"]
+                        for path in query_checked(paths)
+                        for provider in query_checked(path["plugin_provenance"])
                         if provider.get("status_perspective_id")
                     }
                 ),
@@ -6688,14 +6693,14 @@ class MultiNodeRouteService:
                 "state": "complete" if exact else "partial",
                 "inferred_segment_count": sum(
                     1
-                    for path in paths
-                    for segment in path["segments"]
+                    for path in query_checked(paths)
+                    for segment in query_checked(path["segments"])
                     if segment["completeness"]["state"] == "best_effort_inferred"
                 ),
                 "unresolved_segment_count": sum(
                     1
-                    for path in paths
-                    for segment in path["segments"]
+                    for path in query_checked(paths)
+                    for segment in query_checked(path["segments"])
                     if segment["completeness"]["state"] == "unresolved"
                 ),
             },
@@ -6723,7 +6728,7 @@ class MultiNodeRouteService:
                             "status_perspective_id",
                         )
                     )
-                    for item in requested_node_queries.values()
+                    for item in query_checked(requested_node_queries.values())
                 ),
                 "node_queries": route_node_queries,
                 "resolved_basis": route_evidence["resolved_basis"],
@@ -6995,6 +7000,7 @@ class MultiNodeRouteService:
     ) -> None:
         """Validate declared plug-in transitions and attach protocol-neutral JSON."""
 
+        query_cancellation_checkpoint()
         local_segments = [
             item
             for item in sorted(
@@ -9264,6 +9270,7 @@ class MultiNodeRouteService:
         destination_node_id: str | None = None,
         terminal_next_hop_node_id: str | None = None,
     ) -> dict[str, Any]:
+        query_cancellation_checkpoint()
         if not node_sequence:
             raise MultiNodeRouteRequestError(
                 "plug-in route node_sequence must contain at least one router"

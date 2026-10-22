@@ -1,3 +1,4 @@
+from .cancellation import query_cancellation_checkpoint as query_cancellation_checkpoint, query_checked as query_checked
 from collections.abc import Callable as Callable, Iterable, Mapping
 from router_dump_analyzer.canonical import CanonicalValueError as CanonicalValueError, bounded_value_key as bounded_value_key, canonical_opaque_value as canonical_opaque_value, opaque_value_json as opaque_value_json
 from router_dump_analyzer.capability_router import CapabilityProviderRef as CapabilityProviderRef, RevisionSetCapabilityKey as RevisionSetCapabilityKey

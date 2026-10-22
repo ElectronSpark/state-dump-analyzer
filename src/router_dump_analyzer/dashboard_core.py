@@ -14,6 +14,8 @@ from copy import deepcopy
 from math import isfinite
 from typing import Any, NoReturn
 
+from .cancellation import query_cancellation_checkpoint, query_checked
+
 from .canonical import bounded_value_key
 from .plugin_api import (
     DashboardAggregation,
@@ -562,17 +564,17 @@ def dashboard_filter_matches(
 def _widget_rows(
     rows: Sequence[Mapping[str, Any]], descriptor: Mapping[str, Any]
 ) -> list[Mapping[str, Any]]:
-    kinds = {str(item) for item in descriptor.get("resource_kinds", ())}
+    kinds = {str(item) for item in query_checked(descriptor.get("resource_kinds", ()))}
     include_absent = bool(descriptor.get("include_absent", False))
     filters = [
-        item for item in descriptor.get("filters", ()) if isinstance(item, Mapping)
+        item for item in query_checked(descriptor.get("filters", ())) if isinstance(item, Mapping)
     ]
     return [
         row
-        for row in rows
+        for row in query_checked(rows)
         if (not kinds or str(row.get("kind")) in kinds)
         and (include_absent or row.get("exists") is True)
-        and all(dashboard_filter_matches(row, item) for item in filters)
+        and all(dashboard_filter_matches(row, item) for item in query_checked(filters))
     ]
 
 
@@ -582,7 +584,7 @@ def _statistic(
     matching = _widget_rows(rows, descriptor)
     field = descriptor.get("field")
     values: list[Any] = []
-    for row in matching:
+    for row in query_checked(matching):
         found, value = _dashboard_field_lookup(
             row,
             str(field) if field else None,
@@ -596,12 +598,12 @@ def _statistic(
         statistic_value = len(matching)
         sample_count = len(matching)
     elif aggregation == "count_distinct":
-        keys = [key for item in values if (key := _comparison_key(item)) is not None]
+        keys = [key for item in query_checked(values) if (key := _comparison_key(item)) is not None]
         statistic_value = len(set(keys))
         sample_count = len(keys)
     elif aggregation in {"sum", "average", "minimum", "maximum"}:
         numeric: list[int | float] = []
-        for item in values:
+        for item in query_checked(values):
             if isinstance(item, bool) or not isinstance(item, (int, float)):
                 continue
             if isinstance(item, float) and not isfinite(item):
@@ -612,7 +614,7 @@ def _statistic(
             statistic_value = sum(numeric)
         elif numeric and aggregation == "average":
             total = sum(numeric)
-            if all(isinstance(item, int) for item in numeric):
+            if all(isinstance(item, int) for item in query_checked(numeric)):
                 quotient, remainder = divmod(total, len(numeric))
                 statistic_value = quotient if remainder == 0 else total / len(numeric)
             else:
@@ -715,7 +717,7 @@ def _table(
     page = matching[:max_rows]
     return {
         "table_id": descriptor.get("table_id"),
-        "items": [_project_table_row(row, descriptor) for row in page],
+        "items": [_project_table_row(row, descriptor) for row in query_checked(page)],
         "total_count": len(matching),
         "returned_count": len(page),
         "truncated": len(matching) > max_rows,
@@ -730,22 +732,23 @@ def evaluate_dashboards(
 ) -> list[dict[str, Any]]:
     """Evaluate selected descriptors against one immutable temporal population."""
 
+    query_cancellation_checkpoint()
     validated = validate_dashboard_descriptors(
         descriptors,
         dashboard_ids=dashboard_ids,
     )
     results: list[dict[str, Any]] = []
-    for descriptor in validated:
+    for descriptor in query_checked(validated):
         dashboard_id = str(descriptor["dashboard_id"])
         statistics = [
             _statistic(rows, item)
-            for item in descriptor.get("statistics", ())
+            for item in query_checked(descriptor.get("statistics", ()))
             if isinstance(item, Mapping)
             and str(item.get("aggregation") or "count") != "precomputed"
         ]
         tables = [
             _table(rows, item)
-            for item in descriptor.get("tables", ())
+            for item in query_checked(descriptor.get("tables", ()))
             if isinstance(item, Mapping)
         ]
         results.append(

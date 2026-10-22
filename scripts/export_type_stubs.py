@@ -28,6 +28,12 @@ PACKAGE_ROOTS = (
     / "state_dump_generator",
 )
 STUB_SUPPLEMENTS = {
+    Path("router_dump_analyzer/cancellation.pyi"): (
+        "\n# Private request state shared with the ASGI cancellation adapter.\n"
+        "from contextvars import ContextVar\n"
+        "from threading import Event\n"
+        "_QUERY_CANCELLED: ContextVar[Event | None]\n"
+    ),
     Path("router_dump_analyzer/_history_search_validation.pyi"): (
         "\n# Private validation facts consumed by compressed history storage.\n"
         "_validated_compressed: _ValidationCache\n"

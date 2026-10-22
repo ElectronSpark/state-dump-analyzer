@@ -20,7 +20,11 @@ from types import TracebackType
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
-from .cancellation import check_cancellation_probe
+from .cancellation import (
+    check_cancellation_probe,
+    query_cancellation_checkpoint,
+    query_checked,
+)
 from .dashboard_core import (
     DashboardDescriptorValidationError,
     evaluate_dashboards,
@@ -2513,24 +2517,29 @@ def redact_event_for_client(
         all_sensitive,
         sensitive_condition_by_kind,
     ) = policy or event_redaction_policy(dataset, runtime)
-    kinds, unresolved_identifiers = _event_resource_kinds(
-        event,
-        kind_by_id,
-    )
-    sensitive: set[str] = set()
-    for kind in kinds:
-        sensitive.update(sensitive_by_kind.get(kind, ()))
-    conservative_fallback = (
-        not kinds
-        or unresolved_identifiers
-        or any(kind not in sensitive_by_kind for kind in kinds)
-    )
-    if conservative_fallback:
-        sensitive.update(all_sensitive)
-    sensitive_condition = any(
-        sensitive_condition_by_kind.get(kind, False) for kind in kinds
-    ) or (conservative_fallback and any(sensitive_condition_by_kind.values()))
-    path_trie = _property_path_trie(frozenset(str(field) for field in sensitive))
+    if (not all_sensitive and not any(sensitive_by_kind.values())
+            and not any(sensitive_condition_by_kind.values())):
+        # With no private declarations, every known or unknown resource has
+        # the same empty effective policy. Resolving the event's repeated
+        # subjects/effects cannot change disclosure and only repeats work.
+        sensitive_condition = False
+        path_trie = _property_path_trie(frozenset())
+    else:
+        kinds, unresolved_identifiers = _event_resource_kinds(event, kind_by_id)
+        sensitive: set[str] = set()
+        for kind in kinds:
+            sensitive.update(sensitive_by_kind.get(kind, ()))
+        conservative_fallback = (
+            not kinds
+            or unresolved_identifiers
+            or any(kind not in sensitive_by_kind for kind in kinds)
+        )
+        if conservative_fallback:
+            sensitive.update(all_sensitive)
+        sensitive_condition = any(
+            sensitive_condition_by_kind.get(kind, False) for kind in kinds
+        ) or (conservative_fallback and any(sensitive_condition_by_kind.values()))
+        path_trie = _property_path_trie(frozenset(str(field) for field in sensitive))
     result: dict[Any, Any] = {}
     for key, nested in event.items():
         name = str(key)
@@ -2888,8 +2897,15 @@ class NormalizedDataService:
         try:
             with operation.bind():
                 yield
-        except BaseException:
-            operation.fail("dataset_load_failed")
+        except BaseException as error:
+            from .revision_queries import RevisionQueryCancellationError
+
+            if isinstance(error, RevisionQueryCancellationError):
+                # A superseded reader is not a corrupt/failed dataset load.
+                # Retire its progress lease without poisoning concurrent work.
+                operation.complete()
+            else:
+                operation.fail("dataset_load_failed")
             raise
         operation.complete()
 
@@ -3189,6 +3205,7 @@ class NormalizedDataService:
         *,
         perspective_ref: StatusPerspectiveRef | None = None,
     ) -> dict[str, Any]:
+        query_cancellation_checkpoint()
         dataset = self.load_dataset()
         runtime = self.history_runtime(dataset)
         if runtime is not None:
@@ -3202,19 +3219,19 @@ class NormalizedDataService:
             record = next(
                 (
                     item
-                    for item in dataset.get("resources", [])
+                    for item in query_checked(dataset.get("resources", []))
                     if resource_id(item) == resource_identifier
                 ),
                 None,
             )
             lifecycle = [
                 item
-                for item in dataset.get("lifecycle_intervals", [])
+                for item in query_checked(dataset.get("lifecycle_intervals", []))
                 if item.get("resource") == resource_identifier
             ]
             states = [
                 item
-                for item in dataset.get("state_intervals", [])
+                for item in query_checked(dataset.get("state_intervals", []))
                 if item.get("resource") == resource_identifier
             ]
         has_state_history = bool(states)
@@ -3328,11 +3345,12 @@ class NormalizedDataService:
         self,
         timestamp_ns: int,
     ) -> list[dict[str, Any]]:
+        query_cancellation_checkpoint()
         dataset = self.load_dataset()
         runtime = self.history_runtime(dataset)
         if runtime is not None:
             result = []
-            for item in runtime.relationships:
+            for item in query_checked(runtime.relationships):
                 if relationship_presence(item) is False:
                     continue
                 if not contains_time(
@@ -3368,7 +3386,7 @@ class NormalizedDataService:
 
         active_ids = {
             str(item["resource"])
-            for item in dataset.get("lifecycle_intervals", [])
+            for item in query_checked(dataset.get("lifecycle_intervals", []))
             if item.get("resource")
             and contains_time(
                 timestamp_ns,
@@ -3383,10 +3401,10 @@ class NormalizedDataService:
                 item.get("target"),
                 item.get("relation_type", item.get("type")),
             )
-            for item in intervals
+            for item in query_checked(intervals)
         }
         result: list[dict[str, Any]] = []
-        for item in dataset.get("relationships", []):
+        for item in query_checked(dataset.get("relationships", [])):
             if relationship_presence(item) is False:
                 continue
             if not {item.get("source"), item.get("target")} <= active_ids:
@@ -3406,7 +3424,7 @@ class NormalizedDataService:
                     ),
                 }
             )
-        for interval in intervals:
+        for interval in query_checked(intervals):
             if relationship_presence(interval) is False:
                 continue
             if not contains_time(
@@ -3493,11 +3511,12 @@ class NormalizedDataService:
         limit: int | None,
         offset: int,
     ) -> dict[str, Any]:
+        query_cancellation_checkpoint()
         descriptors = dataset.get("resource_table_view_descriptors") or dataset.get(
             "schema", {}
         ).get("resource_table_views", [])
         descriptor = next(
-            (item for item in descriptors if item.get("view_id") == view_id),
+            (item for item in query_checked(descriptors) if item.get("view_id") == view_id),
             None,
         )
         if descriptor is None:
@@ -3508,8 +3527,8 @@ class NormalizedDataService:
             resource_by_id = runtime.resource_by_id
             root_records = [
                 record
-                for kind in descriptor.get("root_kinds", [])
-                for record in runtime.resources_by_kind.get(kind, [])
+                for kind in query_checked(descriptor.get("root_kinds", []))
+                for record in query_checked(runtime.resources_by_kind.get(kind, []))
             ]
             counts_by_kind = dict(sorted(runtime.resource_counts.items()))
 
@@ -3520,24 +3539,24 @@ class NormalizedDataService:
 
         else:
             resource_by_id = {
-                resource_id(record): record for record in dataset.get("resources", [])
+                resource_id(record): record for record in query_checked(dataset.get("resources", []))
             }
             root_kinds = set(descriptor.get("root_kinds", []))
             root_records = [
                 record
-                for record in dataset.get("resources", [])
+                for record in query_checked(dataset.get("resources", []))
                 if record.get("kind") in root_kinds
             ]
             counts_by_kind = dict(
                 sorted(
                     Counter(
                         record.get("kind", "UNKNOWN")
-                        for record in resource_by_id.values()
+                        for record in query_checked(resource_by_id.values())
                     ).items()
                 )
             )
             by_endpoint: dict[str, list[dict[str, Any]]] = defaultdict(list)
-            for relationship in self.relationships_at(timestamp_ns):
+            for relationship in query_checked(self.relationships_at(timestamp_ns)):
                 by_endpoint[str(relationship["source"])].append(relationship)
                 if relationship["target"] != relationship["source"]:
                     by_endpoint[str(relationship["target"])].append(relationship)
@@ -3621,7 +3640,7 @@ class NormalizedDataService:
             direction = str(level.get("direction", "outgoing"))
             found: list[tuple[dict[str, Any], dict[str, Any]]] = []
             seen: set[tuple[Any, ...]] = set()
-            for relationship in endpoint_relationships(identifier):
+            for relationship in query_checked(endpoint_relationships(identifier)):
                 if relationship_presence(relationship) is False:
                     continue
                 relation_type = relationship.get(
@@ -3647,7 +3666,7 @@ class NormalizedDataService:
                     and relationship.get("target") == identifier
                 ):
                     candidates.append(str(relationship.get("source")))
-                for target_id in candidates:
+                for target_id in query_checked(candidates):
                     target = resource_by_id.get(target_id)
                     if target is None:
                         continue
@@ -3711,7 +3730,7 @@ class NormalizedDataService:
             if not matched and depth < len(levels):
                 matched = any(
                     branch_matches(target, depth + 1)
-                    for _, target in neighbors(identifier, depth)[:max_children]
+                    for _, target in query_checked(neighbors(identifier, depth)[:max_children])
                 )
             match_cache[cache_key] = matched
             return matched
@@ -3761,7 +3780,7 @@ class NormalizedDataService:
             if depth < len(levels):
                 candidates = neighbors(identifier, depth)
                 children: list[dict[str, Any]] = []
-                for child_relationship, child_record in candidates[:max_children]:
+                for child_relationship, child_record in query_checked(candidates[:max_children]):
                     child = build_node(
                         child_record,
                         depth + 1,
@@ -3790,7 +3809,7 @@ class NormalizedDataService:
         )
         matched_records: list[dict[str, Any]] = []
         matched_count = 0
-        for record in root_records:
+        for record in query_checked(root_records):
             if not include_absent and exists(resource_id(record)) is False:
                 continue
             if not branch_matches(record, 0):
@@ -3799,7 +3818,7 @@ class NormalizedDataService:
                 matched_records.append(record)
             matched_count += 1
         bundles: list[dict[str, Any]] = []
-        for record in matched_records:
+        for record in query_checked(matched_records):
             node = build_node(record, 0)
             if node is not None:
                 bundles.append(node)
@@ -3810,10 +3829,10 @@ class NormalizedDataService:
         def collect(node: dict[str, Any]) -> None:
             view = node["resource"]
             unique_items[view["resource_id"]] = view
-            for child in node["children"]:
+            for child in query_checked(node["children"]):
                 collect(child)
 
-        for bundle in bundles:
+        for bundle in query_checked(bundles):
             collect(bundle)
         return {
             "revision_id": self.current_revision_id(dataset),
@@ -3855,6 +3874,7 @@ class NormalizedDataService:
         offset: int = 0,
         view_id: str | None = None,
     ) -> dict[str, Any]:
+        query_cancellation_checkpoint()
         dataset = self.load_dataset()
         if view_id:
             return self._resource_table_view_at(
@@ -3887,7 +3907,7 @@ class NormalizedDataService:
                             ),
                             descriptors.get(str(record.get("kind", "UNKNOWN"))),
                         )
-                        for record in runtime.resources
+                        for record in query_checked(runtime.resources)
                     }
 
                 search_documents = runtime.resource_search.get_or_build(
@@ -3897,7 +3917,7 @@ class NormalizedDataService:
             counts_by_kind: Counter[str] = Counter()
             matched_count = 0
             page_records: list[dict[str, Any]] = []
-            for record in runtime.resources:
+            for record in query_checked(runtime.resources):
                 kind = str(record.get("kind", "UNKNOWN"))
                 layer = str(record.get("layer", "unknown"))
                 identifier = resource_id(record)
@@ -3917,10 +3937,10 @@ class NormalizedDataService:
                 matched_count += 1
             rows = [
                 self.resource_state_at(resource_id(record), timestamp_ns)
-                for record in page_records
+                for record in query_checked(page_records)
             ]
             grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-            for row in rows:
+            for row in query_checked(rows):
                 grouped[str(row["kind"])].append(row)
             return {
                 "revision_id": self.current_revision_id(dataset),
@@ -3948,13 +3968,13 @@ class NormalizedDataService:
                         "count": counts_by_kind[kind],
                         "items": items,
                     }
-                    for kind, items in sorted(grouped.items())
+                    for kind, items in query_checked(sorted(grouped.items()))
                 ],
                 "windowed": True,
             }
 
         rows: list[dict[str, Any]] = []
-        for record in dataset.get("resources", []):
+        for record in query_checked(dataset.get("resources", [])):
             kind = str(record.get("kind", "UNKNOWN"))
             layer = str(record.get("layer", "unknown"))
             if kinds and kind not in kinds:
@@ -3977,7 +3997,7 @@ class NormalizedDataService:
             )
         )
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for row in rows:
+        for row in query_checked(rows):
             grouped[str(row["kind"])].append(row)
         return {
             "revision_id": self.current_revision_id(dataset),
@@ -3994,7 +4014,7 @@ class NormalizedDataService:
                     "count": len(items),
                     "items": items,
                 }
-                for kind, items in sorted(grouped.items())
+                for kind, items in query_checked(sorted(grouped.items()))
             ],
         }
 
@@ -4003,6 +4023,7 @@ class NormalizedDataService:
         start_ns: int,
         end_ns: int,
     ) -> Sequence[Mapping[str, Any]]:
+        query_cancellation_checkpoint()
         dataset = self.load_dataset()
         runtime = self.history_runtime(dataset)
         if runtime is not None:
@@ -4011,7 +4032,7 @@ class NormalizedDataService:
             return runtime.events[left:right]
         return [
             event
-            for event in dataset.get("events", [])
+            for event in query_checked(dataset.get("events", []))
             if start_ns <= int(event["timestamp_ns"]) <= end_ns
         ]
 
@@ -4021,9 +4042,10 @@ class NormalizedDataService:
         *,
         dashboard_ids: Iterable[str] | None = None,
     ) -> dict[str, Any]:
+        query_cancellation_checkpoint()
         dataset = self.load_dataset()
         selected_ids = (
-            {str(item) for item in dashboard_ids if str(item)}
+            {str(item) for item in query_checked(dashboard_ids) if str(item)}
             if dashboard_ids is not None
             else None
         )
@@ -4045,12 +4067,12 @@ class NormalizedDataService:
             }
         selected = [
             item
-            for item in descriptors
+            for item in query_checked(descriptors)
             if selected_ids is None or str(item["dashboard_id"]) in selected_ids
         ]
         relevant_kinds: set[str] = set()
         unfiltered = False
-        for descriptor in selected:
+        for descriptor in query_checked(selected):
             for widget in (
                 *descriptor.get("statistics", []),
                 *descriptor.get("tables", []),
@@ -4059,7 +4081,7 @@ class NormalizedDataService:
                     continue
                 if str(widget.get("aggregation", "count")) == "precomputed":
                     continue
-                widget_kinds = {str(item) for item in widget.get("resource_kinds", [])}
+                widget_kinds = {str(item) for item in query_checked(widget.get("resource_kinds", []))}
                 if widget_kinds:
                     relevant_kinds.update(widget_kinds)
                 else:
@@ -4070,7 +4092,7 @@ class NormalizedDataService:
         )
         rows: list[dict[str, Any]] = []
         if selected and (relevant_kinds or unfiltered):
-            for record in records:
+            for record in query_checked(records):
                 kind = str(record.get("kind", "UNKNOWN"))
                 if not unfiltered and kind not in relevant_kinds:
                     continue
@@ -4097,6 +4119,7 @@ class NormalizedDataService:
         start_ns: int,
         end_ns: int,
     ) -> dict[str, Any]:
+        query_cancellation_checkpoint()
         dataset = self.load_dataset()
         policy = self.event_redaction_policy(dataset)
         runtime = self.history_runtime(dataset)
@@ -4117,7 +4140,7 @@ class NormalizedDataService:
                 dataset,
                 policy=policy,
             )
-            for item in detail_events
+            for item in query_checked(detail_events)
         ]
         all_sensitive = set(policy[2])
         if runtime is not None:
@@ -4127,7 +4150,7 @@ class NormalizedDataService:
             by_outcome: Counter[Any] = Counter()
             by_action: Counter[Any] = Counter()
             affected_ids: set[str] = set()
-            for index in range(event_left, event_right):
+            for index in query_checked(range(event_left, event_right)):
                 event = selected[index]
                 for field, counts in (("outcome", by_outcome), ("action", by_action)):
                     value = _safe_public_scalar(event.get(field, "unknown"))
@@ -4135,11 +4158,11 @@ class NormalizedDataService:
                 identifiers = event.get("affected_resources", ())
                 if not isinstance(identifiers, (list, tuple)):
                     continue
-                if any(isinstance(identifier, Mapping) for identifier in identifiers):
+                if any(isinstance(identifier, Mapping) for identifier in query_checked(identifiers)):
                     identifiers = self.redact_event_for_client(
                         event, dataset, policy=policy,
                     ).get("affected_resources", [])
-                for identifier in identifiers:
+                for identifier in query_checked(identifiers):
                     public = _safe_public_scalar(identifier)
                     if isinstance(identifier, Mapping):
                         public = identifier
@@ -4148,17 +4171,17 @@ class NormalizedDataService:
             mutation_left = bisect_left(runtime.mutation_times, start_ns)
             mutation_right = bisect_right(runtime.mutation_times, end_ns)
             mutation_count = max(0, mutation_right - mutation_left)
-            for index in range(mutation_left, mutation_right):
+            for index in query_checked(range(mutation_left, mutation_right)):
                 mutation = runtime.mutations[index]
                 affected_ids.update((str(mutation["source"]), str(mutation["target"])))
             descriptors = {
                 str(item["relation_type"]): item
-                for item in dataset.get("relationship_descriptors", [])
+                for item in query_checked(dataset.get("relationship_descriptors", []))
                 if isinstance(item, Mapping) and item.get("relation_type")
             }
             affected = sorted(affected_ids)
             endpoint_diff: list[dict[str, Any]] = []
-            for identifier in affected[:MAX_RANGE_DETAILS]:
+            for identifier in query_checked(affected[:MAX_RANGE_DETAILS]):
                 before = self.resource_state_at(identifier, start_ns)
                 after = self.resource_state_at(identifier, end_ns)
                 if (
@@ -4179,8 +4202,8 @@ class NormalizedDataService:
                     )
             status_segments: list[dict[str, Any]] = []
             status_truncated = False
-            for identifier in affected:
-                for interval in runtime.state_by_resource.get(identifier, []):
+            for identifier in query_checked(affected):
+                for interval in query_checked(runtime.state_by_resource.get(identifier, [])):
                     if not overlaps_range(
                         interval.get("valid_from_ns"),
                         interval.get("valid_to_ns"),
@@ -4213,7 +4236,7 @@ class NormalizedDataService:
                         item,
                         dataset,
                     )
-                    for item in status_segments
+                    for item in query_checked(status_segments)
                 ],
                 "endpoint_diff": endpoint_diff[:MAX_RANGE_DETAILS],
                 "endpoint_diff_evaluated_count": min(
@@ -4232,9 +4255,9 @@ class NormalizedDataService:
                         },
                         all_sensitive,
                     )
-                    for item in runtime.mutations[
+                    for item in query_checked(runtime.mutations[
                         mutation_left:min(mutation_right, mutation_left + MAX_RANGE_DETAILS)
-                    ]
+                    ])
                 ],
                 "truncated": {
                     "events": event_count > MAX_RANGE_DETAILS,
@@ -4251,22 +4274,22 @@ class NormalizedDataService:
 
         affected_ids = {
             str(effect["resource_id"])
-            for event in projected_selected
-            for effect in event.get("effects", [])
+            for event in query_checked(projected_selected)
+            for effect in query_checked(event.get("effects", []))
             if effect.get("resource_id")
         } | {
             str(subject["resource_id"])
-            for event in projected_selected
-            for subject in event.get("subjects", [])
+            for event in query_checked(projected_selected)
+            for subject in query_checked(event.get("subjects", []))
             if subject.get("resource_id")
         }
         descriptor_by_type = {
             str(item["relation_type"]): item
-            for item in dataset.get("relationship_descriptors", [])
+            for item in query_checked(dataset.get("relationship_descriptors", []))
             if isinstance(item, Mapping) and item.get("relation_type")
         }
         relationship_changes: list[dict[str, Any]] = []
-        for mutation in dataset.get("relationship_mutations", []):
+        for mutation in query_checked(dataset.get("relationship_mutations", [])):
             if not (start_ns <= int(mutation["effective_time_ns"]) <= end_ns):
                 continue
             boundary = (
@@ -4275,7 +4298,7 @@ class NormalizedDataService:
             interval = next(
                 (
                     item
-                    for item in dataset.get("relationship_intervals", [])
+                    for item in query_checked(dataset.get("relationship_intervals", []))
                     if item["source"] == mutation["source"]
                     and item["target"] == mutation["target"]
                     and item["relation_type"] == mutation["relation_type"]
@@ -4301,7 +4324,7 @@ class NormalizedDataService:
             affected_ids.update((str(mutation["source"]), str(mutation["target"])))
         affected = sorted(affected_ids)
         endpoint_diff: list[dict[str, Any]] = []
-        for identifier in affected:
+        for identifier in query_checked(affected):
             before = self.resource_state_at(identifier, start_ns)
             after = self.resource_state_at(identifier, end_ns)
             if (
@@ -4322,7 +4345,7 @@ class NormalizedDataService:
                 )
         status_segments = [
             item
-            for item in dataset.get("state_intervals", [])
+            for item in query_checked(dataset.get("state_intervals", []))
             if item.get("resource") in affected_ids
             and overlaps_range(
                 item.get("valid_from_ns"),
@@ -4337,18 +4360,18 @@ class NormalizedDataService:
             "end_ns": str(end_ns),
             "event_count": len(selected),
             "failure_count": sum(
-                item.get("outcome") == "failure" for item in projected_selected
+                item.get("outcome") == "failure" for item in query_checked(projected_selected)
             ),
             "events": projected_selected,
             "counts": {
                 "by_outcome": dict(
                     Counter(
-                        item.get("outcome", "unknown") for item in projected_selected
+                        item.get("outcome", "unknown") for item in query_checked(projected_selected)
                     )
                 ),
                 "by_action": dict(
                     Counter(
-                        item.get("action", "unknown") for item in projected_selected
+                        item.get("action", "unknown") for item in query_checked(projected_selected)
                     )
                 ),
             },
@@ -4359,7 +4382,7 @@ class NormalizedDataService:
                     item,
                     dataset,
                 )
-                for item in status_segments
+                for item in query_checked(status_segments)
             ],
             "endpoint_diff": endpoint_diff,
             "relationship_changes": relationship_changes,

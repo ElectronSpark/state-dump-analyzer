@@ -86,6 +86,12 @@ validation/load failure, retry, and concurrent close with exact cleanup counts.
 Compare cold and warm behavior, including changed inputs and failed or
 superseded requests. A faster successful call does not establish unchanged
 identity enforcement, archive safety, or browser readiness.
+For disconnects, exercise actual ASGI body/receive messages, mid-scan cancellation,
+independent readers, lease cleanup, cache-build retry and durable-router exclusion.
+Distinguish cancellable core scans from noninterruptible shared runtime loading.
+For Windows loop changes, test reset cleanup exactly once, unrelated errors,
+socket identity, TCP/TLS client and server paths, over 512 connections, subprocesses
+and the real CLI shutdown. Socket rewrapping can break IOCP despite preserving its descriptor.
 For reported search/import latency, follow the map's
 [cold-path measurement checks](../../../docs/plugin-api-validation.md#cold-search-and-import-measurements).
 Separate complete user-path timings from instrumented attribution and tiny
@@ -120,7 +126,11 @@ For compressed search storage, compare all ordered literal matches with an
 exact safe-text reference, including Unicode, NUL, empty needles/documents and
 cross-document boundaries. Exercise malformed framing, bounded decompression,
 block and corpus digests, format/revision identity, reopen and corruption
-fallback. Check that selective refinements decode only candidate blocks and
+fallback. Whole-block UTF-8 validation must reject a scalar split across document
+frames, including empty frames; a valid concatenation alone is insufficient.
+For an empty disclosure-policy shortcut, require every field and condition
+declaration to be empty; preserve ordinary envelope projection and output ownership.
+Check that selective refinements decode only candidate blocks and
 that small sidecars retain compact storage. Separate these correctness and
 work-bound checks from fresh full-corpus size and CPU measurements; prototype
 measurements do not establish production performance.

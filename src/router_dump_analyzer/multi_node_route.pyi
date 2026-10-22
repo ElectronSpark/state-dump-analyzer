@@ -1,3 +1,4 @@
+from .cancellation import query_cancellation_checkpoint as query_cancellation_checkpoint, query_checked as query_checked
 from .canonical import CanonicalValueError as CanonicalValueError, packet_value_json as packet_value_json
 from .process_control import PROCESS_CONTROL_EXCEPTIONS as PROCESS_CONTROL_EXCEPTIONS
 from collections.abc import Callable, Mapping

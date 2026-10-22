@@ -1,3 +1,4 @@
+from .cancellation import query_cancellation_checkpoint as query_cancellation_checkpoint, query_checked as query_checked
 from .contract_validation import strict_integer as strict_integer
 from .normalized_data import IndexedHistory as IndexedHistory, active_interval as active_interval, state_intervals_for_perspective as state_intervals_for_perspective
 from .plugin_api import StatusPerspectiveRef as StatusPerspectiveRef

@@ -104,6 +104,11 @@ def _fake_uvicorn(
 
 
 class UvicornCompatibilityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Dependency-generation selection remains Uvicorn-owned off Windows.
+        # The Windows-only cleanup factory is exercised by its own real tests.
+        self.enterContext(patch("router_dump_analyzer.cli.sys.platform", "linux"))
+
     def test_legacy_loop_setup_preserves_the_complete_application_lifespan(
         self,
     ) -> None:

@@ -1,0 +1,127 @@
+{
+  "created_utc": "2026-10-22T20:22:38.150037+00:00",
+  "scope": "Passive2-second exact-PID CPU/RSS/log-size observation of browser audit. No benchmarks or server restarts. One separately recorded parent-authorized status GET at19:17:23.789UTC is the only observer-issued request.",
+  "pid": 26180,
+  "process_creation_filetime": 134371655675994247,
+  "server_still_alive": true,
+  "all_observers_stopped": true,
+  "sampling_segments": [
+    {
+      "name": "live-1",
+      "first_utc": "2026-10-22T18:00:35.537993+00:00",
+      "last_utc": "2026-10-22T19:42:27.183221+00:00",
+      "sample_count": 3053,
+      "complete": true,
+      "stop_reason": "parent_stop_signal"
+    },
+    {
+      "name": "live-2",
+      "first_utc": "2026-10-22T19:41:59.173427+00:00",
+      "last_utc": "2026-10-22T20:14:21.380868+00:00",
+      "sample_count": 971,
+      "complete": false,
+      "stop_reason": null
+    },
+    {
+      "name": "final-idle-1",
+      "first_utc": "2026-10-22T20:19:27.725002+00:00",
+      "last_utc": "2026-10-22T20:20:03.759522+00:00",
+      "sample_count": 19,
+      "complete": true,
+      "stop_reason": "maximum_observation_duration"
+    }
+  ],
+  "handoff": {
+    "overlap_seconds": 28.016000000061467,
+    "accounting": "Global cumulativeCPU difference uses the same process identity once. Continuous samples switch from live-1 to live-2 only after live-1 ends; overlap is not summed."
+  },
+  "coverage_gap": {
+    "from_utc": "2026-10-22T20:14:21.380868+00:00",
+    "to_utc": "2026-10-22T20:19:27.725002+00:00",
+    "seconds": 306.34399999992456,
+    "cause": "Unknown; live-2 stopped writing without completion/error marker, exec session was no longer available, and later scoped process check found no audit observer. Preserve its original complete=false summary.",
+    "known_cpu_counter_difference_across_gap_seconds": 14.90625,
+    "limitations": "Aggregate process CPU delta is known from endpoints; timing, interveningRSS and per-action attribution are unavailable. C036loops2/3 and its first idle interval fall in this gap."
+  },
+  "whole_window": {
+    "first_utc": "2026-10-22T18:00:35.537993+00:00",
+    "last_utc": "2026-10-22T20:20:03.759522+00:00",
+    "wall_seconds": 8368.219000000041,
+    "cumulative_cpu_delta_seconds": 1781.328125,
+    "mean_logical_core_equivalents": 0.2128682489069647,
+    "initial_sampled_rss_bytes": 1452429312,
+    "final_sampled_rss_bytes": 3334082560,
+    "sampled_rss_peak_bytes": 3456430080,
+    "sampled_rss_min_bytes": 1194921984,
+    "final_process_lifetime_peak_rss_bytes": 3456430080,
+    "final_process_lifetime_peak_commit_bytes": 3465404416,
+    "final_total_cpu_seconds": 1821.8125,
+    "access_log_growth_bytes": 520471,
+    "stderr_growth_bytes": 0,
+    "stderr_final_bytes": 117,
+    "logged_http_response_status_counts": {
+      "200": 6272
+    },
+    "logged_http_error_response_count": 0
+  },
+  "final_idle": {
+    "ui_idle_parent_reported_start_utc": "2026-10-22T20:17:40.273Z",
+    "raw_checkpoint_idle_start_utc": "2026-10-22T20:17:40.248Z",
+    "raw_checkpoint_idle_end_utc": "2026-10-22T20:18:39.866Z",
+    "measured_start_utc": "2026-10-22T20:19:27.725002+00:00",
+    "measured_end_utc": "2026-10-22T20:20:03.759522+00:00",
+    "wall_seconds": 36.03100000007544,
+    "cpu_seconds": 1.3125,
+    "mean_logical_core_equivalents": 0.0364269656683759,
+    "rss_min_bytes": 3334082560,
+    "rss_max_bytes": 3334082560,
+    "access_log_growth_bytes": 0,
+    "stderr_growth_bytes": 0,
+    "interpretation": "Server retained stableRSS; idleCPU was low but nonzero. Background CPU source not traced. This later quiet window is distinct from the unsampled initial C036idle interval."
+  },
+  "cold_transit_navigation": {
+    "case": "M279",
+    "start_utc": "2026-10-22T19:00:28.690Z",
+    "completed_observed_utc": "2026-10-22T19:01:15.687Z",
+    "automation_action_to_observed_seconds": 46.997,
+    "server_cpu_seconds_bounds": [
+      44.203125,
+      47.359375
+    ],
+    "rss_before_bytes": 3339546624,
+    "rss_min_bytes": 1194921984,
+    "rss_peak_bytes": 3456430080,
+    "rss_completion_sample_bytes": 2917490688,
+    "finding": "First cold transit-p-1 member navigation materializes and indexes its full selected-node history; one-materialized-node cache evicts the prior idle member. Outer ten-node assembly is reused. Observed47s includes initialization and subsequent frontend queries."
+  },
+  "c036": {
+    "case_start": "2026-10-22T20:12:41.727Z",
+    "case_end": "2026-10-22T20:18:39.888Z",
+    "observation_count": 32,
+    "timed_step_count": 25,
+    "action_to_observation_ms_min": 4109,
+    "action_to_observation_ms_max": 7368,
+    "passive_full_coverage_observations": 9,
+    "passive_partial_coverage_observations": 1,
+    "passive_missing_coverage_observations": 22,
+    "details": "c036-performance-correlation.json",
+    "interpretation": "Automation action-to-observation timings are not pure UI latency. Only early loop1 has full passive coverage; no timing/per-stepCPU is inferred across the gap."
+  },
+  "other_evidence": {
+    "fabric_cases": "fabric-time-snapshot-1/analysis.json",
+    "cold_member": "transit-navigation-snapshot-1/analysis.json",
+    "false_process_absence": "liveness-check-1915/analysis.json",
+    "observer_stop_verification": "final-observer-status.json",
+    "raw_hash_manifest": "raw-file-manifest.json",
+    "immutable_browser_observations": "final-evidence/results.jsonl and checkpoint.json",
+    "immutable_server_logs": "final-evidence/server.log and server.err.log truncated to final measured sample bytecounts"
+  },
+  "limits": [
+    "Process-wideCPU cannot establish browser latency or exact request/function attribution.",
+    "2-second sampledRSS can miss brief spikes; lifetimepeak spans all process activity since launch.",
+    "Serveraccesslogs have no per-line timestamps/durations; completionappend windows are bracketed by sampled file sizes.",
+    "The audit includes initial loading, cold member replacement, and varied operations; initial-to-finalRSS increase alone is not evidence of a leak.",
+    "No continuous-coverage claim: the20:14:21\u201320:19:27 gap is explicit.",
+    "Final screenshot and dashboard-order restoration were authorized by parent only after the final passiveidle sample; later server activity is outside this summary."
+  ]
+}

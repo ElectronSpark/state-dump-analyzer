@@ -132,15 +132,17 @@ def _freeze_event_value(value: Any) -> Any:
 
 
 class _EventValuePool:
-    """Bounded load-local reuse of complete immutable subject/result values.
+    """Bounded load-local reuse of complete immutable event values.
 
     Exact string guards avoid Python equality collisions between JSON scalars.
     Unusual or nested values retain the ordinary owned-freeze path.
     """
 
-    __slots__ = ("_subjects", "_results", "_max_subjects", "_max_results")
+    __slots__ = ("_subjects", "_results", "_states", "_affected", "_max_subjects", "_max_results")
 
     def __init__(self, max_subjects: int = 131_072, max_results: int = 128) -> None:
+        self._states: dict[tuple[Any, ...], _FrozenDict] = {}
+        self._affected: dict[tuple[str, ...], _FrozenList] = {}
         if max_subjects < 0 or max_results < 0:
             raise ValueError("event value pool limits must be nonnegative")
         self._max_subjects = max_subjects
@@ -183,6 +185,33 @@ class _EventValuePool:
                     self._results[key] = frozen
                 return frozen
         return _freeze_event_value(value)
+
+    def state(self, value: Any) -> Any:
+        # Only exact, unambiguous JSON scalars qualify. Floats/bools and nested
+        # trees use the existing ownership path; Python equates 1/1.0/True.
+        if type(value) is dict and value and all(
+            type(item) is str or type(item) is int or item is None
+            for item in value.values()
+        ):
+            key = tuple(value.items())
+            cached = self._states.get(key)
+            if cached is not None:
+                return cached
+            frozen = _FrozenDict(value)
+            if len(self._states) < 4096:
+                self._states[key] = frozen
+            return frozen
+        return _freeze_event_value(value)
+
+    def affected(self, identifiers: list[str]) -> _FrozenList:
+        key = tuple(identifiers)
+        cached = self._affected.get(key)
+        if cached is not None:
+            return cached
+        frozen = _FrozenList(identifiers)
+        if len(self._affected) < self._max_subjects:
+            self._affected[key] = frozen
+        return frozen
 
 
 _EVENT_FIELDS = (
@@ -678,7 +707,10 @@ def _compact_event(
             "state_changed": state_changed,
         }
         if isinstance(effect.get("before"), dict):
-            summary["before"] = _freeze_event_value(effect["before"])
+            summary["before"] = (
+                _freeze_event_value(effect["before"]) if value_pool is None
+                else value_pool.state(effect["before"])
+            )
         if condition_supplied:
             summary["condition"] = (
                 _freeze_event_value(condition)
@@ -690,7 +722,10 @@ def _compact_event(
                 if type(status_class) is not str and isinstance(status_class, _EVENT_JSON_CONTAINERS) else status_class
             )
         if state_changed and effect.get("after"):
-            summary["after"] = _freeze_event_value(effect["after"])
+            summary["after"] = (
+                _freeze_event_value(effect["after"]) if value_pool is None
+                else value_pool.state(effect["after"])
+            )
         effect_summaries.append(_FrozenDict(summary))
         if identifier not in seen:
             seen.add(identifier)
@@ -753,7 +788,7 @@ def _compact_event(
         resource_kind,
         subject,
         subjects,
-        _FrozenList(affected),
+        _FrozenList(affected) if value_pool is None else value_pool.affected(affected),
         _FrozenList(effect_summaries),
         _FrozenDict({
             "properties": _freeze_event_value(raw.get("properties", {})),

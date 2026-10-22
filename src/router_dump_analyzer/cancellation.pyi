@@ -1,7 +1,15 @@
 from collections.abc import Callable, Iterable
 
-__all__ = ['CancellationErrorFactory', 'check_cancellation_probe', 'cooperatively_sorted']
+__all__ = ['CancellationErrorFactory', 'current_query_cancellation_probe', 'query_cancellation_checkpoint', 'query_checked', 'check_cancellation_probe', 'cooperatively_sorted']
 
 type CancellationErrorFactory = Callable[[], BaseException]
+def current_query_cancellation_probe() -> Callable[[], bool] | None: ...
+def query_cancellation_checkpoint() -> None: ...
+def query_checked[Value](values: Iterable[Value]) -> Iterable[Value]: ...
 def check_cancellation_probe(cancellation_probe: Callable[[], bool] | None, *, cancelled_error: CancellationErrorFactory, unavailable_error: CancellationErrorFactory, invalid_result_error: CancellationErrorFactory) -> None: ...
 def cooperatively_sorted[Value](values: Iterable[Value], cancellation_checkpoint: Callable[[], None] | None) -> tuple[Value, ...]: ...
+
+# Private request state shared with the ASGI cancellation adapter.
+from contextvars import ContextVar
+from threading import Event
+_QUERY_CANCELLED: ContextVar[Event | None]

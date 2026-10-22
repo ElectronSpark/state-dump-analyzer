@@ -21,6 +21,10 @@ from router_dump_analyzer.control_plane import (
     DatasetIntegrityError,
     validate_revision_consistency_dataset,
 )
+from router_dump_analyzer.cancellation import (
+    query_cancellation_checkpoint,
+    query_checked,
+)
 from router_dump_analyzer.load_progress import AnalysisLoadStage
 from router_dump_analyzer.multi_node_route import MultiNodeRouteRequestError
 from router_dump_analyzer.multi_node_topology import MultiNodeTopologyRequestError
@@ -368,7 +372,10 @@ def _runtime_api_call(
     **kwargs: Any,
 ) -> Any:
     try:
-        return operation(*args, **kwargs)
+        query_cancellation_checkpoint()
+        result = operation(*args, **kwargs)
+        query_cancellation_checkpoint()
+        return result
     except PROCESS_CONTROL_EXCEPTIONS:
         raise
     except Exception as error:  # noqa: BLE001 - closed policy re-raises unknowns
@@ -394,10 +401,13 @@ class _BoundedRuntimeApiRoute(APIRoute):
 
         async def bounded(request: Request) -> Any:
             try:
-                if self.name in {"event_density_query", "timeline_query"}:
-                    async with query_cancellation_scope(request):
-                        return await original(request)
-                return await original(request)
+                # This router exposes analysis reads, including POST queries.
+                # Durable service/mutation routers retain their own route class
+                # and do not inherit request-disconnect cancellation.
+                async with query_cancellation_scope(request):
+                    response = await original(request)
+                    query_cancellation_checkpoint()
+                    return response
             except asyncio.CancelledError:
                 raise
             except PROCESS_CONTROL_EXCEPTIONS:
@@ -519,8 +529,10 @@ async def _bind_request_revision_scope(
         yield
         return
     revision_id = str(parsed_revision_id)
+    query_cancellation_checkpoint()
     _require_revision(revision_id)
     with revision_scope(revision_id):
+        query_cancellation_checkpoint()
         yield
 
 
@@ -1206,7 +1218,7 @@ def resources(
             record,
             descriptor_by_kind.get(str(record.get("kind", "UNKNOWN"))),
         )
-        for record in dataset["resources"]
+        for record in query_checked(dataset["resources"])
     ]
     if kind:
         items = [item for item in items if item.get("kind") == kind]
@@ -1358,7 +1370,7 @@ def events(
         return {
             "items": [
                 redact_event_for_client(item, dataset, policy=policy)
-                for item in source_events[:limit]
+                for item in query_checked(source_events[:limit])
             ],
             "count": len(source_events),
             "next_cursor": None,
@@ -1371,7 +1383,7 @@ def events(
     # or client serialization.  This preserves exact count/limit semantics for
     # 100K+ streams while preventing raw sensitive values from becoming a
     # search oracle.
-    for item in source_events:
+    for item in query_checked(source_events):
         if layer:
             subjects = item.get("subjects") or [{}]
             if subjects[0].get("layer") != layer:
@@ -1615,7 +1627,7 @@ def event_detail(revision_id: str, event_uid: str) -> dict[str, Any]:
         if item is not None:
             return redact_event_for_client(item, dataset)
         raise _RuntimeHTTPResponse(status_code=404, detail="event not found")
-    for item in dataset["events"]:
+    for item in query_checked(dataset["events"]):
         if item["event_uid"] == event_uid:
             return redact_event_for_client(item, dataset)
     raise _RuntimeHTTPResponse(status_code=404, detail="event not found")
@@ -1744,7 +1756,7 @@ def event_log_selection(
     }
     selected_items: list[dict[str, Any]] = []
     selection_refs: list[dict[str, str]] = []
-    for range_start, range_end in ranges:
+    for range_start, range_end in query_checked(ranges):
         offset = range_start
         while offset <= range_end:
             limit = min(MAX_EVENT_LOG_LIMIT, range_end - offset + 1)
@@ -1759,7 +1771,7 @@ def event_log_selection(
             page = payload.get("items", [])
             if not page:
                 break
-            for item in page:
+            for item in query_checked(page):
                 kind = str(item.get("stream_kind") or "event")
                 uid = str(item.get("uid") or "")
                 entry = item.get("entry") if isinstance(item.get("entry"), dict) else {}
@@ -1789,9 +1801,9 @@ def event_log_selection(
     source_records = list(dataset.get("source_records", []))
     copy_linked_events = {
         event_uid
-        for record in source_records
+        for record in query_checked(source_records)
         if record.get("copy_text") is not None
-        for event_uid in source_record_event_uids(record)
+        for event_uid in query_checked(source_record_event_uids(record))
     }
     runtime = history_runtime(dataset)
     event_lookup = (
@@ -1799,10 +1811,10 @@ def event_log_selection(
         if runtime is not None
         else {
             str(event.get("event_uid") or event.get("event_id")): event
-            for event in dataset.get("events", [])
+            for event in query_checked(dataset.get("events", []))
         }
     )
-    for reference in selection_refs:
+    for reference in query_checked(selection_refs):
         if reference["kind"] != "event":
             continue
         event_uid = reference["uid"]
@@ -1820,7 +1832,7 @@ def event_log_selection(
     )
     source_group_by_type = {
         str(descriptor.get("source_type")): str(descriptor.get("stream_group"))
-        for descriptor in dataset.get("source_record_descriptors", [])
+        for descriptor in query_checked(dataset.get("source_record_descriptors", []))
         if (
             isinstance(descriptor, dict)
             and descriptor.get("source_type")
@@ -1829,7 +1841,7 @@ def event_log_selection(
     }
     copy_label_by_group = {
         str(group.get("group_id")): str(group.get("copy_action_label"))
-        for group in dataset.get("source_record_group_descriptors", [])
+        for group in query_checked(dataset.get("source_record_group_descriptors", []))
         if (
             isinstance(group, dict)
             and group.get("group_id")
@@ -1838,7 +1850,7 @@ def event_log_selection(
     }
     selected_copy_labels = {
         copy_label_by_group[group_id]
-        for item in copy_projection.get("items", [])
+        for item in query_checked(copy_projection.get("items", []))
         if (
             (group_id := source_group_by_type.get(str(item.get("source_type"))))
             and group_id in copy_label_by_group
@@ -1857,7 +1869,7 @@ def event_log_selection(
     )
     return {
         "revision_id": revision_id,
-        "selection_ranges": [{"start": start, "end": end} for start, end in ranges],
+        "selection_ranges": [{"start": start, "end": end} for start, end in query_checked(ranges)],
         "selection_count": len(selected_items),
         "items": selected_items,
         "copy_action_label": copy_action_label,
@@ -2013,15 +2025,15 @@ def timeline_cluster_detail(
             raise _RuntimeHTTPResponse(status_code=404, detail="resource not found")
         candidates = runtime.events_by_resource.get(identifier, [])
     else:
-        if not any(resource_id(item) == identifier for item in dataset["resources"]):
+        if not any(resource_id(item) == identifier for item in query_checked(dataset["resources"])):
             raise _RuntimeHTTPResponse(status_code=404, detail="resource not found")
         candidates = [
             item
-            for item in dataset["events"]
+            for item in query_checked(dataset["events"])
             if identifier in _event_resource_ids(item)
         ]
     selected = [
-        item for item in candidates if start_ns <= int(item["timestamp_ns"]) <= end_ns
+        item for item in query_checked(candidates) if start_ns <= int(item["timestamp_ns"]) <= end_ns
     ]
     selected.sort(
         key=lambda item: temporal_order_key(
@@ -2033,7 +2045,7 @@ def timeline_cluster_detail(
     page = selected[offset : offset + limit]
     items = [
         _timeline_mark(redact_event_for_client(item, dataset), identifier, None)
-        for item in page
+        for item in query_checked(page)
     ]
     next_offset = offset + len(items)
     return {

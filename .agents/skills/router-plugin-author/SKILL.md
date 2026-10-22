@@ -108,6 +108,14 @@ records alone does not establish that an index was built.
 Long core index builds should publish bounded progress while consuming the
 corpus, without exposing evidence text or declaring readiness before complete
 validation and atomic publication.
+Scope disconnect cancellation to read-only requests and propagate it through
+core scans; preserve durable writes and independent readers. A cancelled shared
+index build must release waiters and permit retry without caching cancellation
+as a permanent failure. Keep completed cache publication atomic. Shared cold
+runtime materialization has a separate lifetime from its requesting reader.
+For Windows transport cleanup, preserve socket object identity as well as the
+descriptor: IOCP registration tracks identity. Validate actual TCP, TLS,
+subprocess and graceful shutdown, not only a mocked shutdown call.
 Keep cooperative scheduling in core. Scope import activity through every
 success, failure, and cancellation exit; nested or concurrent imports must
 retain their own activity until they finish. Pause a background search only

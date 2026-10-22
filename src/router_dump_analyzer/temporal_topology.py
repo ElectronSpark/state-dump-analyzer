@@ -22,6 +22,8 @@ from bisect import bisect_left
 from collections.abc import Callable
 from typing import Any
 
+from .cancellation import query_cancellation_checkpoint, query_checked
+
 from .contract_validation import strict_integer
 from .normalized_data import (
     IndexedHistory,
@@ -501,6 +503,7 @@ class TemporalTopologyService:
         ]
 
     def query(self, body: dict[str, Any]) -> dict[str, Any]:
+        query_cancellation_checkpoint()
         self._reject_generic_cursor(body)
         projection, perspective = self._selection(
             body.get("projection_id", body.get("topology_projection_id")),
@@ -824,6 +827,7 @@ class TemporalTopologyService:
         return response
 
     def query_changes(self, body: dict[str, Any]) -> dict[str, Any]:
+        query_cancellation_checkpoint()
         self._reject_generic_cursor(body)
         """Return a bounded ordered replay slice between two temporal bases."""
 
@@ -1372,7 +1376,7 @@ class TemporalTopologyService:
         if resource_ids:
             candidates = [
                 self.resource_by_id[item]
-                for item in resource_ids
+                for item in query_checked(resource_ids)
                 if item in self.resource_by_id
             ]
         else:
@@ -1381,10 +1385,10 @@ class TemporalTopologyService:
             # therefore keeps this ordered catalog stable.
             candidates = list(self.resource_by_id.values())
         if kinds:
-            candidates = [item for item in candidates if item.get("kind") in kinds]
+            candidates = [item for item in query_checked(candidates) if item.get("kind") in kinds]
         if projection_kinds:
             candidates = [
-                item for item in candidates if item.get("kind") in projection_kinds
+                item for item in query_checked(candidates) if item.get("kind") in projection_kinds
             ]
         candidates.sort(
             key=lambda item: (
@@ -1396,7 +1400,7 @@ class TemporalTopologyService:
         if not resource_ids and self.runtime is not None:
             representative = [
                 self.resource_by_id[item]
-                for item in getattr(self.runtime, "initial_resource_ids", [])
+                for item in query_checked(getattr(self.runtime, "initial_resource_ids", []))
                 if item in self.resource_by_id
                 and (not kinds or self.resource_by_id[item].get("kind") in kinds)
                 and (
@@ -1404,9 +1408,9 @@ class TemporalTopologyService:
                     or self.resource_by_id[item].get("kind") in projection_kinds
                 )
             ]
-            seen = {item["resource_id"] for item in representative}
+            seen = {item["resource_id"] for item in query_checked(representative)}
             representative.extend(
-                item for item in candidates if item["resource_id"] not in seen
+                item for item in query_checked(candidates) if item["resource_id"] not in seen
             )
             candidates = representative
         return candidates
@@ -1436,9 +1440,9 @@ class TemporalTopologyService:
                 "resource_cursor is beyond the end of this query"
             )
         page = candidates[offset : offset + limit]
-        time_by_node = {item["node_id"]: item for item in node_times}
+        time_by_node = {item["node_id"]: item for item in query_checked(node_times)}
         result: list[dict[str, Any]] = []
-        for record in page:
+        for record in query_checked(page):
             node_id = _resource_node(record, self.default_node)
             node_time = time_by_node.get(node_id)
             if not node_time or node_time.get("query_time_ns") is None:
@@ -1493,7 +1497,7 @@ class TemporalTopologyService:
                         sample_times.add(timestamp)
                         if timestamp > min_ns:
                             sample_times.add(timestamp - 1)
-        for item in status_events:
+        for item in query_checked(status_events):
             timestamp = int(item["timestamp_ns"])
             if min_ns <= timestamp <= max_ns:
                 sample_times.add(timestamp)
@@ -1506,7 +1510,7 @@ class TemporalTopologyService:
                     record, perspective, timestamp, status_events
                 ),
             )
-            for timestamp in sorted(sample_times)
+            for timestamp in query_checked(sorted(sample_times))
         ]
         unique, comparison_complete = distinct_temporal_states(samples)
         center = self._perspective_state_at(
@@ -1571,7 +1575,7 @@ class TemporalTopologyService:
                         "valid_from_ns": view.get("valid_from_ns"),
                         "valid_to_ns": view.get("valid_to_ns"),
                     }
-                    for sampled_at, view in sorted(unique)
+                    for sampled_at, view in query_checked(sorted(unique))
                 ],
                 "unknown_fields": [
                     {
@@ -1611,11 +1615,11 @@ class TemporalTopologyService:
                 lifecycle = list(self.runtime.lifecycle_by_resource.get(resource_id, ()))
             else:
                 states = [
-                    item for item in self.dataset.get("state_intervals", [])
+                    item for item in query_checked(self.dataset.get("state_intervals", []))
                     if item.get("resource") == resource_id
                 ]
                 lifecycle = [
-                    item for item in self.dataset.get("lifecycle_intervals", [])
+                    item for item in query_checked(self.dataset.get("lifecycle_intervals", []))
                     if item.get("resource") == resource_id
                 ]
             cached = states, lifecycle
@@ -1658,12 +1662,12 @@ class TemporalTopologyService:
         else:
             candidates = [
                 event
-                for event in self._events
+                for event in query_checked(self._events)
                 if resource_id in event.get("affected_resources", [])
                 or event.get("resource_id") == resource_id
                 or any(
                     effect.get("resource_id") == resource_id
-                    for effect in event.get("effects", [])
+                    for effect in query_checked(event.get("effects", []))
                 )
             ]
         entries: list[dict[str, Any]] = []
@@ -1671,12 +1675,12 @@ class TemporalTopologyService:
             self._has_named_history(self._resource_history(resource_id)[0])
             or not self._allows_unqualified_perspective(perspective)
         )
-        for event in candidates:
+        for event in query_checked(candidates):
             if _event_layer(event) != perspective["layer"]:
                 continue
             effects = [
                 effect
-                for effect in event.get("effects", [])
+                for effect in query_checked(event.get("effects", []))
                 if effect.get("resource_id") == resource_id
                 and effect.get("state_changed", event.get("state_changed", True))
             ]
@@ -1691,7 +1695,7 @@ class TemporalTopologyService:
                         "state_changed": True,
                     }
             ]
-            for effect_index, effect in enumerate(effects):
+            for effect_index, effect in query_checked(enumerate(effects)):
                 explicit = effect.get("perspective_ref", event.get("perspective_ref"))
                 if named and explicit is None:
                     continue
@@ -1798,13 +1802,13 @@ class TemporalTopologyService:
             if valid_from is not None else None
         )
         anchor_order = next(
-            (tuple(entry["order_key"]) for entry in entries
+            (tuple(entry["order_key"]) for entry in query_checked(entries)
              if source_event_uid is not None and entry.get("event_uid") == source_event_uid),
             None,
         )
         snapshot_times = {
             temporal_integer(item["valid_from_ns"], "valid_from_ns")
-            for item in selected_states
+            for item in query_checked(selected_states)
             if item.get("valid_from_ns") is not None
             and item.get("start_event_uid", item.get("source_event_uid")) is None
         }
@@ -1813,14 +1817,14 @@ class TemporalTopologyService:
             and int(entry["timestamp_ns"]) == (
                 timestamp_ns if through_order is not None else anchor_ns
             )
-            for entry in entries
+            for entry in query_checked(entries)
         )
         if unresolved_order:
             # Snapshot observations have no event-sequence coordinate. Neither
             # their iterator position nor their timestamp orders a same-time effect.
             observed = False
             entries = []
-        for entry in entries:
+        for entry in query_checked(entries):
             entry_time = int(entry["timestamp_ns"])
             entry_order = tuple(entry["order_key"])
             if entry_time > timestamp_ns or (
@@ -1852,12 +1856,12 @@ class TemporalTopologyService:
         if lifecycle and active_lifecycle is None:
             exists = False
             previous_ends = [
-                int(item["valid_to_ns"]) for item in lifecycle
+                int(item["valid_to_ns"]) for item in query_checked(lifecycle)
                 if item.get("valid_to_ns") is not None
                 and int(item["valid_to_ns"]) <= timestamp_ns
             ]
             next_starts = [
-                int(item["valid_from_ns"]) for item in lifecycle
+                int(item["valid_from_ns"]) for item in query_checked(lifecycle)
                 if item.get("valid_from_ns") is not None
                 and int(item["valid_from_ns"]) > timestamp_ns
             ]
@@ -1991,8 +1995,8 @@ class TemporalTopologyService:
                 "relationship read",
             )
         unique: dict[str, dict[str, Any]] = {}
-        for identifier in resource_ids:
-            for item in self.runtime.relationships_by_endpoint.get(identifier, []):
+        for identifier in query_checked(resource_ids):
+            for item in query_checked(self.runtime.relationships_by_endpoint.get(identifier, [])):
                 valid_from = item.get("valid_from_ns")
                 valid_to = item.get("valid_to_ns")
                 if contains_time(
@@ -2028,7 +2032,7 @@ class TemporalTopologyService:
         node_time = next(
             (
                 item
-                for item in node_times
+                for item in query_checked(node_times)
                 if item["node_id"] == self.default_node
                 and item.get("query_time_ns") is not None
             ),
@@ -2056,12 +2060,12 @@ class TemporalTopologyService:
         if self.runtime is not None:
             interval_candidates = {
                 _relationship_key(item): item
-                for identifier in resource_ids
-                for item in self.runtime.relationships_by_endpoint.get(identifier, [])
+                for identifier in query_checked(resource_ids)
+                for item in query_checked(self.runtime.relationships_by_endpoint.get(identifier, []))
             }.values()
         else:
             interval_candidates = self.dataset.get("relationship_intervals", [])
-        for item in interval_candidates:
+        for item in query_checked(interval_candidates):
             relation_type = item.get("relation_type", item.get("type", "related_to"))
             if relation_types is not None and relation_type not in relation_types:
                 continue
@@ -2082,17 +2086,17 @@ class TemporalTopologyService:
         if self.runtime is None:
             samples = [
                 self._relationship_candidates(timestamp_ns, resource_ids)
-                for timestamp_ns in ordered_probe_times
+                for timestamp_ns in query_checked(ordered_probe_times)
             ]
         else:
             # Invert the scan: validate each interval once and visit only the
             # probes it covers. Preserve endpoint/list order and overwrite
             # before filtering, including absent or excluded newer records.
             samples_by_key: list[dict[str, dict[str, Any]]] = [
-                {} for _ in ordered_probe_times
+                {} for _ in query_checked(ordered_probe_times)
             ]
-            for identifier in resource_ids:
-                for item in self.runtime.relationships_by_endpoint.get(identifier, []):
+            for identifier in query_checked(resource_ids):
+                for item in query_checked(self.runtime.relationships_by_endpoint.get(identifier, [])):
                     valid_from = item.get("valid_from_ns")
                     valid_to = item.get("valid_to_ns")
                     start = 0 if valid_from is None else bisect_left(
@@ -2103,14 +2107,14 @@ class TemporalTopologyService:
                     )
                     if start < end:
                         key = _relationship_key(item)
-                        for index in range(start, end):
+                        for index in query_checked(range(start, end)):
                             samples_by_key[index][key] = item
-            samples = [list(sample.values()) for sample in samples_by_key]
+            samples = [list(sample.values()) for sample in query_checked(samples_by_key)]
             del samples_by_key
         maps = [
             {
                 _relationship_key(item): item
-                for item in values
+                for item in query_checked(values)
                 if (
                     relation_types is None
                     or item.get("relation_type", item.get("type")) in relation_types
@@ -2122,18 +2126,18 @@ class TemporalTopologyService:
                     or item.get("target") in resource_ids
                 )
             }
-            for values in samples
+            for values in query_checked(samples)
         ]
         center_map = maps[ordered_probe_times.index(center_ns)]
-        keys = sorted(set().union(*(set(item) for item in maps)))
+        keys = sorted(set().union(*(set(item) for item in query_checked(maps))))
         total = len(keys)
         result: list[dict[str, Any]] = []
         connectivity_sources: list[dict[str, Any]] = []
         connectivity_types = set(projection.get("connectivity_relation_types") or [])
         connectivity_candidate_count = 0
-        for key in keys:
+        for key in query_checked(keys):
             item = center_map.get(key) or next(
-                mapping[key] for mapping in maps if key in mapping
+                mapping[key] for mapping in query_checked(maps) if key in mapping
             )
             relation_type = item.get("relation_type", item.get("type", "related_to"))
             is_connectivity = relation_type in connectivity_types
@@ -2148,8 +2152,8 @@ class TemporalTopologyService:
                 continue
             possible_presence = sorted({
                 value
-                for mapping in maps
-                for value in possible_relationship_presence(mapping.get(key))
+                for mapping in query_checked(maps)
+                for value in query_checked(possible_relationship_presence(mapping.get(key)))
             })
             confirmed_present = possible_presence == [True]
             view = {
@@ -2191,15 +2195,15 @@ class TemporalTopologyService:
         relationships: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
-        time_by_node = {item["node_id"]: item for item in node_times}
-        for connection in projection.get("static_connectivity", []):
+        time_by_node = {item["node_id"]: item for item in query_checked(node_times)}
+        for connection in query_checked(projection.get("static_connectivity", [])):
             node_id = str(connection.get("status_node_id", self.default_node))
             node_time = time_by_node.get(node_id)
             source_ids = connection.get("status_sources", {}).get(
                 perspective["perspective_id"], []
             )
             source_views = []
-            for identifier in source_ids:
+            for identifier in query_checked(source_ids):
                 record = self.resource_by_id.get(identifier)
                 if not record:
                     source_views.append(
@@ -2240,7 +2244,7 @@ class TemporalTopologyService:
                             "status": item["status"],
                             "temporal_resolution": item["temporal_resolution"],
                         }
-                        for item in source_views
+                        for item in query_checked(source_views)
                     ],
                     "inference": {
                         "owner": "plugin",
@@ -2260,7 +2264,7 @@ class TemporalTopologyService:
                 }
             )
         dynamic_types = set(projection.get("connectivity_relation_types") or [])
-        for relationship in relationships:
+        for relationship in query_checked(relationships):
             if relationship["relation_type"] not in dynamic_types:
                 continue
             source_views = []
@@ -2330,7 +2334,7 @@ class TemporalTopologyService:
                             "status": item["status"],
                             "temporal_resolution": item["temporal_resolution"],
                         }
-                        for item in source_views
+                        for item in query_checked(source_views)
                     ],
                     "inference": {
                         "owner": "plugin",
@@ -2470,7 +2474,7 @@ class TemporalTopologyService:
         event_right = bisect_left(self._event_times, end_ns)
         local_node = next(
             item
-            for item in self.contract["nodes"]
+            for item in query_checked(self.contract["nodes"])
             if item["node_id"] == self.default_node
         )
         local_clock = self._clock(local_node, perspective)
@@ -2496,7 +2500,7 @@ class TemporalTopologyService:
             }
 
         def event_changes():
-            for index in range(event_left, event_right):
+            for index in query_checked(range(event_left, event_right)):
                 event = self._events[index]
                 timestamp, source_sequence, event_uid = temporal_order_key(
                     event,
@@ -2515,13 +2519,13 @@ class TemporalTopologyService:
                     continue
                 affected = [
                     str(item)
-                    for item in event.get("affected_resources", [])
+                    for item in query_checked(event.get("affected_resources", []))
                     if not resource_ids or str(item) in resource_ids
                 ]
                 if resource_ids and not affected:
                     continue
                 state_changes = []
-                for resource_id in affected:
+                for resource_id in query_checked(affected):
                     record = self.resource_by_id.get(resource_id)
                     if record is None:
                         continue
@@ -2566,10 +2570,10 @@ class TemporalTopologyService:
                     after_value = state_changes[0]["after"]
                 elif state_changes:
                     before_value = {
-                        item["resource_id"]: item["before"] for item in state_changes
+                        item["resource_id"]: item["before"] for item in query_checked(state_changes)
                     }
                     after_value = {
-                        item["resource_id"]: item["after"] for item in state_changes
+                        item["resource_id"]: item["after"] for item in query_checked(state_changes)
                     }
                 yield order_key, {
                     "change_id": f"event:{event['event_uid']}",
@@ -2598,7 +2602,7 @@ class TemporalTopologyService:
         mutation_right = bisect_left(self._mutation_times, end_ns)
 
         def mutation_changes():
-            for index in range(mutation_left, mutation_right):
+            for index in query_checked(range(mutation_left, mutation_right)):
                 mutation = self._mutations[index]
                 (
                     timestamp,
@@ -2669,7 +2673,7 @@ class TemporalTopologyService:
         buffered: list[
             tuple[tuple[int, int, int, str], dict[str, Any]]
         ] = []
-        for item in heapq.merge(event_changes(), mutation_changes(), key=lambda row: row[0]):
+        for item in query_checked(heapq.merge(event_changes(), mutation_changes(), key=lambda row: row[0])):
             buffered.append(item)
             if len(buffered) > limit:
                 break
@@ -2681,7 +2685,7 @@ class TemporalTopologyService:
         minimum_total = _page_count(
             next_position + (1 if has_more else 0), "change page count"
         )
-        return [item[1] for item in page], {
+        return [item[1] for item in query_checked(page)], {
             "total_count": None if has_more else next_position,
             "total_count_is_exact": not has_more,
             "minimum_total_count": minimum_total,
@@ -2710,16 +2714,16 @@ class TemporalTopologyService:
     def _public_perspective(self, item: dict[str, Any]) -> dict[str, Any]:
         available_ids = {
             str(resource["resource_id"])
-            for resource in self.resource_by_id.values()
+            for resource in query_checked(self.resource_by_id.values())
             if resource.get("layer") == item["layer"]
         }
-        for event in self._events:
+        for event in query_checked(self._events):
             if _event_layer(event) != item["layer"]:
                 continue
-            available_ids.update(str(value) for value in event.get("affected_resources", []))
+            available_ids.update(str(value) for value in query_checked(event.get("affected_resources", [])))
             available_ids.update(
                 str(effect["resource_id"])
-                for effect in event.get("effects", [])
+                for effect in query_checked(event.get("effects", []))
                 if effect.get("resource_id")
             )
         count = len(available_ids & set(self.resource_by_id))

@@ -294,15 +294,23 @@ NETWORK_CAPABLE_IMPORT_PREFIXES = (
 )
 CORE_NETWORK_IMPORT_ALLOWLIST = {
     "cli.py": ("asyncio",),
+    # Local web-server IOCP transport cleanup; private analysis cannot import it.
+    "windows_event_loop.py": ("asyncio", "socket"),
     "control_plane_server.py": ("asyncio",),
     "multi_node_topology.py": ("urllib.parse",),
     "runtime.py": ("asyncio",),
     "web/control_plane_api.py": ("asyncio", "urllib.parse"),
+    "web/_query_cancellation.py": ("asyncio",),
+    "web/runtime_api.py": ("asyncio",),
 }
 CORE_ASYNCIO_ATTRIBUTE_ALLOWLIST = {
     "cli.py": frozenset({"Runner", "run"}),
+    "windows_event_loop.py": frozenset({"AbstractEventLoop", "ProactorEventLoop"}),
     "control_plane_server.py": frozenset({"to_thread"}),
     "runtime.py": frozenset({"to_thread"}),
+    # Local ASGI disconnect observation and cancellation propagation only.
+    "web/_query_cancellation.py": frozenset({"CancelledError", "create_task", "sleep"}),
+    "web/runtime_api.py": frozenset({"CancelledError"}),
     # Local streamed-upload handoff, backpressure, and cancellation only.
     "web/control_plane_api.py": frozenset({
         "CancelledError",

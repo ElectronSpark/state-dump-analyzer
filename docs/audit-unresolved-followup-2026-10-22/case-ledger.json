@@ -1,0 +1,2432 @@
+{
+  "schema_version": 1,
+  "generated_utc": "2026-10-22T21:26:36.377772+00:00",
+  "scope": "Follow-up for exactly the 20 inconclusive and 12 blocked cases in the prior 200-case audit. Prior results are preserved unchanged.",
+  "summary": {
+    "original_unresolved_cases": 32,
+    "original_inconclusive": 20,
+    "original_blocked": 12,
+    "followup_counts": {
+      "controlled_handlers_verified_native_gesture_unavailable": 12,
+      "browser_overlap_and_controlled_late_response_verified": 11,
+      "native_drag_and_controlled_handlers_verified": 3,
+      "revised_browser_sequence_verified_original_precondition_unavailable": 4,
+      "partial_browser_and_controlled_completion_verified": 2
+    },
+    "new_controlled_tests": 46,
+    "frontend_tests": 601,
+    "frontend_pass": 601,
+    "new_confirmed_product_bugs": 0,
+    "product_code_changes": false
+  },
+  "interpretation": "Qualified outcomes record evidence type and remaining limits. These are not 32 fully executed original native-browser scenarios.",
+  "evidence_archive": "evidence.zip",
+  "manifest": "evidence-manifest.json",
+  "prior_ledger": {
+    "path": "docs/audit-200-continuation-2026-10-22/case-ledger.json",
+    "sha256": "a5a58a8ed336fe8b888985ff2700f4dffa1e4e0cd0d124c9094e94212637e5a5"
+  },
+  "cases": {
+    "S094": {
+      "id": "S094",
+      "title": "subpixel capture-start: cancel a brush after a settled summary",
+      "original_outcome": "blocked",
+      "original_ledger_key": "S094",
+      "original_assertions": [
+        "Cancel restores the original range and its settled facts.",
+        "No new gesture's count is attributed to the restored period and no stuck loading state remains.",
+        "The following successful Apply settles normally; pointer cancellation does not leave dragging or capture stuck."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [],
+      "remaining_limits": [
+        "The available native browser drag is atomic; Escape cannot be inserted while its pointer button remains held.",
+        "These cases are not native-browser passes. Controlled tests execute the real pointer, Escape and cancellation handlers with simulated event/capture delivery."
+      ],
+      "outcome": "controlled_handlers_verified_native_gesture_unavailable",
+      "evidence_types": [
+        "controlled_production_handlers"
+      ],
+      "range_seconds": [
+        "0",
+        "0.01"
+      ],
+      "conclusion": "Production held-brush/Escape cancellation and subsequent recovery pass with exact saved range bounds and controlled summary completion.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_brush_focus_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Production form handler sends exact absolute nanoseconds.",
+          "Production pointerdown and pointermove begin and update a held range.",
+          "Production document Escape handler restores original completed range facts.",
+          "Capture release, lostpointercapture and later pointerup do not commit the cancelled range.",
+          "Following Apply succeeds and retains correct facts."
+        ],
+        "limits": [
+          "Native held-pointer Escape delivery and browser pointer capture are simulated; this does not change the original browser case to a native-browser pass.",
+          "Pointer-to-time geometry is substituted. Native subpixel mapping and browser pointer capture are not established."
+        ]
+      }
+    },
+    "S095": {
+      "id": "S095",
+      "title": "subpixel capture-start: pending summary during cancelled brush",
+      "original_outcome": "blocked",
+      "original_ledger_key": "S095",
+      "original_assertions": [
+        "An old response is not labelled as the temporary brush period.",
+        "After cancellation the original period has either valid facts or a replacement request that settles; it cannot remain loading with no read in flight.",
+        "The pending overlap must be observed; otherwise record this race assertion as unexercised rather than passed."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [],
+      "remaining_limits": [
+        "The available native browser drag is atomic; Escape cannot be inserted while its pointer button remains held.",
+        "These cases are not native-browser passes. Controlled tests execute the real pointer, Escape and cancellation handlers with simulated event/capture delivery."
+      ],
+      "outcome": "controlled_handlers_verified_native_gesture_unavailable",
+      "evidence_types": [
+        "controlled_production_handlers"
+      ],
+      "range_seconds": [
+        "0",
+        "0.01"
+      ],
+      "conclusion": "Production held-brush/Escape cancellation and subsequent recovery pass with exact saved range bounds and controlled summary completion.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_brush_focus_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Original range request is genuinely unresolved when production pointerdown cancels it.",
+          "Original reply completes while the brush is active, or after Escape starts the replacement read.",
+          "Old response is never attributed to the temporary period; a late old finally cannot clear the new controller.",
+          "Escape restores exact bounds and issues a replacement read for the interrupted summary.",
+          "Replacement settles, capture is released, later pointerup is harmless and following Apply works."
+        ],
+        "limits": [
+          "Controlled deferred transport and simulated capture prove handler sequencing, not native held-pointer or network timing.",
+          "Pointer-to-time geometry is substituted. Native subpixel mapping and browser pointer capture are not established."
+        ]
+      }
+    },
+    "S099": {
+      "id": "S099",
+      "title": "subpixel capture-end: cancel a brush after a settled summary",
+      "original_outcome": "blocked",
+      "original_ledger_key": "S099",
+      "original_assertions": [
+        "Cancel restores the original range and its settled facts.",
+        "No new gesture's count is attributed to the restored period and no stuck loading state remains.",
+        "The following successful Apply settles normally; pointer cancellation does not leave dragging or capture stuck."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [],
+      "remaining_limits": [
+        "The available native browser drag is atomic; Escape cannot be inserted while its pointer button remains held.",
+        "These cases are not native-browser passes. Controlled tests execute the real pointer, Escape and cancellation handlers with simulated event/capture delivery."
+      ],
+      "outcome": "controlled_handlers_verified_native_gesture_unavailable",
+      "evidence_types": [
+        "controlled_production_handlers"
+      ],
+      "range_seconds": [
+        "719.986",
+        "719.996"
+      ],
+      "conclusion": "Production held-brush/Escape cancellation and subsequent recovery pass with exact saved range bounds and controlled summary completion.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_brush_focus_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Production form handler sends exact absolute nanoseconds.",
+          "Production pointerdown and pointermove begin and update a held range.",
+          "Production document Escape handler restores original completed range facts.",
+          "Capture release, lostpointercapture and later pointerup do not commit the cancelled range.",
+          "Following Apply succeeds and retains correct facts."
+        ],
+        "limits": [
+          "Native held-pointer Escape delivery and browser pointer capture are simulated; this does not change the original browser case to a native-browser pass.",
+          "Pointer-to-time geometry is substituted. Native subpixel mapping and browser pointer capture are not established."
+        ]
+      }
+    },
+    "S100": {
+      "id": "S100",
+      "title": "subpixel capture-end: pending summary during cancelled brush",
+      "original_outcome": "blocked",
+      "original_ledger_key": "S100",
+      "original_assertions": [
+        "An old response is not labelled as the temporary brush period.",
+        "After cancellation the original period has either valid facts or a replacement request that settles; it cannot remain loading with no read in flight.",
+        "The pending overlap must be observed; otherwise record this race assertion as unexercised rather than passed."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [],
+      "remaining_limits": [
+        "The available native browser drag is atomic; Escape cannot be inserted while its pointer button remains held.",
+        "These cases are not native-browser passes. Controlled tests execute the real pointer, Escape and cancellation handlers with simulated event/capture delivery."
+      ],
+      "outcome": "controlled_handlers_verified_native_gesture_unavailable",
+      "evidence_types": [
+        "controlled_production_handlers"
+      ],
+      "range_seconds": [
+        "719.986",
+        "719.996"
+      ],
+      "conclusion": "Production held-brush/Escape cancellation and subsequent recovery pass with exact saved range bounds and controlled summary completion.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_brush_focus_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Original range request is genuinely unresolved when production pointerdown cancels it.",
+          "Original reply completes while the brush is active, or after Escape starts the replacement read.",
+          "Old response is never attributed to the temporary period; a late old finally cannot clear the new controller.",
+          "Escape restores exact bounds and issues a replacement read for the interrupted summary.",
+          "Replacement settles, capture is released, later pointerup is harmless and following Apply works."
+        ],
+        "limits": [
+          "Controlled deferred transport and simulated capture prove handler sequencing, not native held-pointer or network timing.",
+          "Pointer-to-time geometry is substituted. Native subpixel mapping and browser pointer capture are not established."
+        ]
+      }
+    },
+    "S104": {
+      "id": "S104",
+      "title": "empty early period: cancel a brush after a settled summary",
+      "original_outcome": "blocked",
+      "original_ledger_key": "S104",
+      "original_assertions": [
+        "Cancel restores the original range and its settled facts.",
+        "No new gesture's count is attributed to the restored period and no stuck loading state remains.",
+        "The following successful Apply settles normally; pointer cancellation does not leave dragging or capture stuck."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [],
+      "remaining_limits": [
+        "The available native browser drag is atomic; Escape cannot be inserted while its pointer button remains held.",
+        "These cases are not native-browser passes. Controlled tests execute the real pointer, Escape and cancellation handlers with simulated event/capture delivery."
+      ],
+      "outcome": "controlled_handlers_verified_native_gesture_unavailable",
+      "evidence_types": [
+        "controlled_production_handlers"
+      ],
+      "range_seconds": [
+        "50",
+        "60"
+      ],
+      "conclusion": "Production held-brush/Escape cancellation and subsequent recovery pass with exact saved range bounds and controlled summary completion.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_brush_focus_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Production form handler sends exact absolute nanoseconds.",
+          "Production pointerdown and pointermove begin and update a held range.",
+          "Production document Escape handler restores original completed range facts.",
+          "Capture release, lostpointercapture and later pointerup do not commit the cancelled range.",
+          "Following Apply succeeds and retains correct facts."
+        ],
+        "limits": [
+          "Native held-pointer Escape delivery and browser pointer capture are simulated; this does not change the original browser case to a native-browser pass.",
+          "Pointer-to-time geometry is substituted. Native subpixel mapping and browser pointer capture are not established."
+        ]
+      }
+    },
+    "S105": {
+      "id": "S105",
+      "title": "empty early period: pending summary during cancelled brush",
+      "original_outcome": "blocked",
+      "original_ledger_key": "S105",
+      "original_assertions": [
+        "An old response is not labelled as the temporary brush period.",
+        "After cancellation the original period has either valid facts or a replacement request that settles; it cannot remain loading with no read in flight.",
+        "The pending overlap must be observed; otherwise record this race assertion as unexercised rather than passed."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [],
+      "remaining_limits": [
+        "The available native browser drag is atomic; Escape cannot be inserted while its pointer button remains held.",
+        "These cases are not native-browser passes. Controlled tests execute the real pointer, Escape and cancellation handlers with simulated event/capture delivery."
+      ],
+      "outcome": "controlled_handlers_verified_native_gesture_unavailable",
+      "evidence_types": [
+        "controlled_production_handlers"
+      ],
+      "range_seconds": [
+        "50",
+        "60"
+      ],
+      "conclusion": "Production held-brush/Escape cancellation and subsequent recovery pass with exact saved range bounds and controlled summary completion.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_brush_focus_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Original range request is genuinely unresolved when production pointerdown cancels it.",
+          "Original reply completes while the brush is active, or after Escape starts the replacement read.",
+          "Old response is never attributed to the temporary period; a late old finally cannot clear the new controller.",
+          "Escape restores exact bounds and issues a replacement read for the interrupted summary.",
+          "Replacement settles, capture is released, later pointerup is harmless and following Apply works."
+        ],
+        "limits": [
+          "Controlled deferred transport and simulated capture prove handler sequencing, not native held-pointer or network timing.",
+          "Pointer-to-time geometry is substituted. Native subpixel mapping and browser pointer capture are not established."
+        ]
+      }
+    },
+    "S109": {
+      "id": "S109",
+      "title": "busy create period: cancel a brush after a settled summary",
+      "original_outcome": "blocked",
+      "original_ledger_key": "S109",
+      "original_assertions": [
+        "Cancel restores the original range and its settled facts.",
+        "No new gesture's count is attributed to the restored period and no stuck loading state remains.",
+        "The following successful Apply settles normally; pointer cancellation does not leave dragging or capture stuck."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [],
+      "remaining_limits": [
+        "The available native browser drag is atomic; Escape cannot be inserted while its pointer button remains held.",
+        "These cases are not native-browser passes. Controlled tests execute the real pointer, Escape and cancellation handlers with simulated event/capture delivery."
+      ],
+      "outcome": "controlled_handlers_verified_native_gesture_unavailable",
+      "evidence_types": [
+        "controlled_production_handlers"
+      ],
+      "range_seconds": [
+        "120",
+        "121"
+      ],
+      "conclusion": "Production held-brush/Escape cancellation and subsequent recovery pass with exact saved range bounds and controlled summary completion.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_brush_focus_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Production form handler sends exact absolute nanoseconds.",
+          "Production pointerdown and pointermove begin and update a held range.",
+          "Production document Escape handler restores original completed range facts.",
+          "Capture release, lostpointercapture and later pointerup do not commit the cancelled range.",
+          "Following Apply succeeds and retains correct facts."
+        ],
+        "limits": [
+          "Native held-pointer Escape delivery and browser pointer capture are simulated; this does not change the original browser case to a native-browser pass.",
+          "Pointer-to-time geometry is substituted. Native subpixel mapping and browser pointer capture are not established."
+        ]
+      }
+    },
+    "S110": {
+      "id": "S110",
+      "title": "busy create period: pending summary during cancelled brush",
+      "original_outcome": "blocked",
+      "original_ledger_key": "S110",
+      "original_assertions": [
+        "An old response is not labelled as the temporary brush period.",
+        "After cancellation the original period has either valid facts or a replacement request that settles; it cannot remain loading with no read in flight.",
+        "The pending overlap must be observed; otherwise record this race assertion as unexercised rather than passed."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [],
+      "remaining_limits": [
+        "The available native browser drag is atomic; Escape cannot be inserted while its pointer button remains held.",
+        "These cases are not native-browser passes. Controlled tests execute the real pointer, Escape and cancellation handlers with simulated event/capture delivery."
+      ],
+      "outcome": "controlled_handlers_verified_native_gesture_unavailable",
+      "evidence_types": [
+        "controlled_production_handlers"
+      ],
+      "range_seconds": [
+        "120",
+        "121"
+      ],
+      "conclusion": "Production held-brush/Escape cancellation and subsequent recovery pass with exact saved range bounds and controlled summary completion.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_brush_focus_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Original range request is genuinely unresolved when production pointerdown cancels it.",
+          "Original reply completes while the brush is active, or after Escape starts the replacement read.",
+          "Old response is never attributed to the temporary period; a late old finally cannot clear the new controller.",
+          "Escape restores exact bounds and issues a replacement read for the interrupted summary.",
+          "Replacement settles, capture is released, later pointerup is harmless and following Apply works."
+        ],
+        "limits": [
+          "Controlled deferred transport and simulated capture prove handler sequencing, not native held-pointer or network timing.",
+          "Pointer-to-time geometry is substituted. Native subpixel mapping and browser pointer capture are not established."
+        ]
+      }
+    },
+    "S114": {
+      "id": "S114",
+      "title": "partial dense-cluster period: cancel a brush after a settled summary",
+      "original_outcome": "blocked",
+      "original_ledger_key": "S114",
+      "original_assertions": [
+        "Cancel restores the original range and its settled facts.",
+        "No new gesture's count is attributed to the restored period and no stuck loading state remains.",
+        "The following successful Apply settles normally; pointer cancellation does not leave dragging or capture stuck."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [],
+      "remaining_limits": [
+        "The available native browser drag is atomic; Escape cannot be inserted while its pointer button remains held.",
+        "These cases are not native-browser passes. Controlled tests execute the real pointer, Escape and cancellation handlers with simulated event/capture delivery."
+      ],
+      "outcome": "controlled_handlers_verified_native_gesture_unavailable",
+      "evidence_types": [
+        "controlled_production_handlers"
+      ],
+      "range_seconds": [
+        "240",
+        "245"
+      ],
+      "conclusion": "Production held-brush/Escape cancellation and subsequent recovery pass with exact saved range bounds and controlled summary completion.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_brush_focus_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Production form handler sends exact absolute nanoseconds.",
+          "Production pointerdown and pointermove begin and update a held range.",
+          "Production document Escape handler restores original completed range facts.",
+          "Capture release, lostpointercapture and later pointerup do not commit the cancelled range.",
+          "Following Apply succeeds and retains correct facts."
+        ],
+        "limits": [
+          "Native held-pointer Escape delivery and browser pointer capture are simulated; this does not change the original browser case to a native-browser pass.",
+          "Pointer-to-time geometry is substituted. Native subpixel mapping and browser pointer capture are not established."
+        ]
+      }
+    },
+    "S115": {
+      "id": "S115",
+      "title": "partial dense-cluster period: pending summary during cancelled brush",
+      "original_outcome": "blocked",
+      "original_ledger_key": "S115",
+      "original_assertions": [
+        "An old response is not labelled as the temporary brush period.",
+        "After cancellation the original period has either valid facts or a replacement request that settles; it cannot remain loading with no read in flight.",
+        "The pending overlap must be observed; otherwise record this race assertion as unexercised rather than passed."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [],
+      "remaining_limits": [
+        "The available native browser drag is atomic; Escape cannot be inserted while its pointer button remains held.",
+        "These cases are not native-browser passes. Controlled tests execute the real pointer, Escape and cancellation handlers with simulated event/capture delivery."
+      ],
+      "outcome": "controlled_handlers_verified_native_gesture_unavailable",
+      "evidence_types": [
+        "controlled_production_handlers"
+      ],
+      "range_seconds": [
+        "240",
+        "245"
+      ],
+      "conclusion": "Production held-brush/Escape cancellation and subsequent recovery pass with exact saved range bounds and controlled summary completion.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_brush_focus_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Original range request is genuinely unresolved when production pointerdown cancels it.",
+          "Original reply completes while the brush is active, or after Escape starts the replacement read.",
+          "Old response is never attributed to the temporary period; a late old finally cannot clear the new controller.",
+          "Escape restores exact bounds and issues a replacement read for the interrupted summary.",
+          "Replacement settles, capture is released, later pointerup is harmless and following Apply works."
+        ],
+        "limits": [
+          "Controlled deferred transport and simulated capture prove handler sequencing, not native held-pointer or network timing.",
+          "Pointer-to-time geometry is substituted. Native subpixel mapping and browser pointer capture are not established."
+        ]
+      }
+    },
+    "S119": {
+      "id": "S119",
+      "title": "late mass-operation period: cancel a brush after a settled summary",
+      "original_outcome": "blocked",
+      "original_ledger_key": "S119",
+      "original_assertions": [
+        "Cancel restores the original range and its settled facts.",
+        "No new gesture's count is attributed to the restored period and no stuck loading state remains.",
+        "The following successful Apply settles normally; pointer cancellation does not leave dragging or capture stuck."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [],
+      "remaining_limits": [
+        "The available native browser drag is atomic; Escape cannot be inserted while its pointer button remains held.",
+        "These cases are not native-browser passes. Controlled tests execute the real pointer, Escape and cancellation handlers with simulated event/capture delivery."
+      ],
+      "outcome": "controlled_handlers_verified_native_gesture_unavailable",
+      "evidence_types": [
+        "controlled_production_handlers"
+      ],
+      "range_seconds": [
+        "600",
+        "610"
+      ],
+      "conclusion": "Production held-brush/Escape cancellation and subsequent recovery pass with exact saved range bounds and controlled summary completion.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_brush_focus_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Production form handler sends exact absolute nanoseconds.",
+          "Production pointerdown and pointermove begin and update a held range.",
+          "Production document Escape handler restores original completed range facts.",
+          "Capture release, lostpointercapture and later pointerup do not commit the cancelled range.",
+          "Following Apply succeeds and retains correct facts."
+        ],
+        "limits": [
+          "Native held-pointer Escape delivery and browser pointer capture are simulated; this does not change the original browser case to a native-browser pass.",
+          "Pointer-to-time geometry is substituted. Native subpixel mapping and browser pointer capture are not established."
+        ]
+      }
+    },
+    "S120": {
+      "id": "S120",
+      "title": "late mass-operation period: pending summary during cancelled brush",
+      "original_outcome": "blocked",
+      "original_ledger_key": "S120",
+      "original_assertions": [
+        "An old response is not labelled as the temporary brush period.",
+        "After cancellation the original period has either valid facts or a replacement request that settles; it cannot remain loading with no read in flight.",
+        "The pending overlap must be observed; otherwise record this race assertion as unexercised rather than passed."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [],
+      "remaining_limits": [
+        "The available native browser drag is atomic; Escape cannot be inserted while its pointer button remains held.",
+        "These cases are not native-browser passes. Controlled tests execute the real pointer, Escape and cancellation handlers with simulated event/capture delivery."
+      ],
+      "outcome": "controlled_handlers_verified_native_gesture_unavailable",
+      "evidence_types": [
+        "controlled_production_handlers"
+      ],
+      "range_seconds": [
+        "600",
+        "610"
+      ],
+      "conclusion": "Production held-brush/Escape cancellation and subsequent recovery pass with exact saved range bounds and controlled summary completion.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_brush_focus_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Original range request is genuinely unresolved when production pointerdown cancels it.",
+          "Original reply completes while the brush is active, or after Escape starts the replacement read.",
+          "Old response is never attributed to the temporary period; a late old finally cannot clear the new controller.",
+          "Escape restores exact bounds and issues a replacement read for the interrupted summary.",
+          "Replacement settles, capture is released, later pointerup is harmless and following Apply works."
+        ],
+        "limits": [
+          "Controlled deferred transport and simulated capture prove handler sequencing, not native held-pointer or network timing.",
+          "Pointer-to-time geometry is substituted. Native subpixel mapping and browser pointer capture are not established."
+        ]
+      }
+    },
+    "S232": {
+      "id": "S232",
+      "title": "NEIGHBOR: pending filter/tab replacement",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "S232",
+      "original_assertions": [
+        "Only the latest tab/filter request owns the settled table.",
+        "Rows are not rendered with another kind's columns or a newer time label.",
+        "Returning to the original kind clears stale empty/error state and remains usable."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 36,
+          "label": "search-response-held",
+          "utc": "2026-10-22T21:16:51.014Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 37,
+          "label": "after-obsolete-release",
+          "utc": "2026-10-22T21:16:56.919Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 38,
+          "label": "clear-query-recovery",
+          "utc": "2026-10-22T21:17:08.833Z"
+        }
+      ],
+      "remaining_limits": [
+        "Browser cancellation prevented delivery of the old body. Controlled tests ignore cancellation and exercise both old/new completion orders.",
+        "S232 latest filtered result is empty; populated recovery is a separate clear-search observation."
+      ],
+      "outcome": "browser_overlap_and_controlled_late_response_verified",
+      "evidence_types": [
+        "live_browser_response_gate",
+        "controlled_production_handlers"
+      ],
+      "response_gate": {
+        "id": "resources-S232",
+        "held": {
+          "source_line": 427,
+          "utc": "2026-10-22T21:16:44.688615+00:00",
+          "kind": "held",
+          "gate": "resources-S232",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/resources/query",
+          "status": 200,
+          "bytes": 388317
+        },
+        "release": {
+          "source_line": 458,
+          "utc": "2026-10-22T21:16:54.370905+00:00",
+          "kind": "released",
+          "gate": "resources-S232",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/resources/query",
+          "explicit": true
+        },
+        "after_release": {
+          "source_line": 459,
+          "utc": "2026-10-22T21:16:54.370905+00:00",
+          "kind": "client-disconnected",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/resources/query",
+          "error": "ConnectionAbortedError"
+        },
+        "archive_member": "proxy-evidence.jsonl"
+      },
+      "observed": {
+        "current_resource_text": "No resources match this view.",
+        "search": "peer-000",
+        "active_control_html": "<button type=\"button\" role=\"tab\" data-kind=\"VIRTUAL_INTERFACE\" aria-selected=\"true\">Virtual Interface<span>0</span></button>",
+        "result_unchanged_after_release": true
+      },
+      "conclusion": "The held search was superseded by VIRTUAL_INTERFACE. Its empty peer-filtered result stayed current; clearing search restored populated rows.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_drag_filter_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "actual input debounce and kind click",
+          "pending overlap established",
+          "both response completion orders",
+          "aborted transport response ignored by request ID",
+          "current columns rows time and selected kind",
+          "clear and return recovery"
+        ],
+        "limits": [
+          "The harness substitutes column presentation, so this test alone establishes current-kind rendering rather than real schema selection."
+        ]
+      }
+    },
+    "S238": {
+      "id": "S238",
+      "title": "IP_ROUTING: pending filter/tab replacement",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "S238",
+      "original_assertions": [
+        "Only the latest tab/filter request owns the settled table.",
+        "Rows are not rendered with another kind's columns or a newer time label.",
+        "Returning to the original kind clears stale empty/error state and remains usable."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 39,
+          "label": "search-response-held",
+          "utc": "2026-10-22T21:17:14.355Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 40,
+          "label": "after-obsolete-release",
+          "utc": "2026-10-22T21:17:18.944Z"
+        }
+      ],
+      "remaining_limits": [
+        "Browser cancellation prevented delivery of the old body. Controlled tests ignore cancellation and exercise both old/new completion orders.",
+        "The final browser snapshot supports MPLS rows; clear-and-return recovery is covered by controlled handlers."
+      ],
+      "outcome": "browser_overlap_and_controlled_late_response_verified",
+      "evidence_types": [
+        "live_browser_response_gate",
+        "controlled_production_handlers"
+      ],
+      "response_gate": {
+        "id": "resources-S238",
+        "held": {
+          "source_line": 475,
+          "utc": "2026-10-22T21:17:12.129312+00:00",
+          "kind": "held",
+          "gate": "resources-S238",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/resources/query",
+          "status": 200,
+          "bytes": 3553
+        },
+        "release": {
+          "source_line": 490,
+          "utc": "2026-10-22T21:17:16.839167+00:00",
+          "kind": "released",
+          "gate": "resources-S238",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/resources/query",
+          "explicit": true
+        },
+        "after_release": {
+          "source_line": 491,
+          "utc": "2026-10-22T21:17:16.840247+00:00",
+          "kind": "client-disconnected",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/resources/query",
+          "error": "ConnectionAbortedError"
+        },
+        "archive_member": "proxy-evidence.jsonl"
+      },
+      "observed": {
+        "current_resource_text": "RESOURCE\tLAYER\tEXISTS\tSTATUS\tTIMELINE\tSTATE · STATUS\tSTATE · OPER STATE\tSTATE · NEXT HOP\n\nconsistency:mpls-handoff:forward\nnode-a/hardware-driver-plane/MPLS_BINDING/consistency:mpls-handoff:forward\n\tHardware driver\tyes\tup\t\t—\t—\t—\n\nconsistency:mpls-handoff:reverse\nnode-a/hardware-driver-plane/MPLS_BINDING/consistency:mpls-handoff:reverse\n\tHardware driver\tyes\tup\t\t—\t—\t—",
+        "search": "node-a",
+        "active_control_html": "<button type=\"button\" role=\"tab\" data-kind=\"MPLS_BINDING\" aria-selected=\"true\">MPLS_BINDING<span>2</span></button>",
+        "result_unchanged_after_release": true
+      },
+      "conclusion": "The held IP_ROUTING search was superseded by MPLS_BINDING. Its two populated rows and schema stayed current after obsolete release.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_drag_filter_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "actual input debounce and kind click",
+          "pending overlap established",
+          "both response completion orders",
+          "aborted transport response ignored by request ID",
+          "current columns rows time and selected kind",
+          "clear and return recovery"
+        ],
+        "limits": [
+          "The harness substitutes column presentation, so this test alone establishes current-kind rendering rather than real schema selection."
+        ]
+      }
+    },
+    "S244": {
+      "id": "S244",
+      "title": "scale overview: drag reorder then keyboard recovery",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "S244",
+      "original_assertions": [
+        "A real pointer drag moves exactly this module once and clears drag/drop styling.",
+        "A later keyboard move remains functional and order labels stay synchronized.",
+        "If the input tool cannot deliver native drag, record blocked delivery rather than a product failure."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 9,
+          "label": "collapsed-drag-baseline",
+          "utc": "2026-10-22T21:05:00.916Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 10,
+          "label": "native-drag-scale-below-forwarding",
+          "utc": "2026-10-22T21:05:13.295Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 11,
+          "label": "native-drag-forwarding-below-phases",
+          "utc": "2026-10-22T21:05:48.357Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 12,
+          "label": "native-drag-scale-below-phases-retry",
+          "utc": "2026-10-22T21:06:01.787Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 14,
+          "label": "keyboard-down-after-drag",
+          "utc": "2026-10-22T21:06:20.161Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 15,
+          "label": "keyboard-up-recovery",
+          "utc": "2026-10-22T21:06:24.502Z"
+        }
+      ],
+      "remaining_limits": [
+        "Some earlier native attempts left order unchanged and were retried. Those attempts do not independently establish an application defect.",
+        "Reload persistence and every intermediate drag event were not instrumented."
+      ],
+      "outcome": "native_drag_and_controlled_handlers_verified",
+      "evidence_types": [
+        "live_browser_native_drag",
+        "controlled_production_handlers"
+      ],
+      "observed": {
+        "module": "scale-overview",
+        "orders": [
+          {
+            "line": 9,
+            "order": [
+              "scale-overview",
+              "forwarding-population",
+              "event-phases",
+              "neighbor-health"
+            ]
+          },
+          {
+            "line": 10,
+            "order": [
+              "scale-overview",
+              "forwarding-population",
+              "event-phases",
+              "neighbor-health"
+            ]
+          },
+          {
+            "line": 11,
+            "order": [
+              "scale-overview",
+              "event-phases",
+              "forwarding-population",
+              "neighbor-health"
+            ]
+          },
+          {
+            "line": 12,
+            "order": [
+              "event-phases",
+              "scale-overview",
+              "forwarding-population",
+              "neighbor-health"
+            ]
+          },
+          {
+            "line": 14,
+            "order": [
+              "event-phases",
+              "forwarding-population",
+              "scale-overview",
+              "neighbor-health"
+            ]
+          },
+          {
+            "line": 15,
+            "order": [
+              "event-phases",
+              "scale-overview",
+              "forwarding-population",
+              "neighbor-health"
+            ]
+          }
+        ]
+      },
+      "conclusion": "A native drag changed the module order, and subsequent Move down/up recovery worked. Earlier unchanged-order attempts remain in the raw record.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_drag_filter_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "production dragstart dragover drop dragend",
+          "upper and lower half placement",
+          "exactly one reorder",
+          "drag styling cleared",
+          "keyboard recovery and index order"
+        ],
+        "limits": [
+          "DOM drag dispatch and persistence storage are substituted; the native drag proof comes from the separate browser replay."
+        ]
+      }
+    },
+    "S246": {
+      "id": "S246",
+      "title": "scale overview: resource search does not redefine statistics",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "S246",
+      "original_assertions": [
+        "Precomputed or authoritative statistics remain scoped as declared and are not recomputed from the bounded resource table.",
+        "A no-match resource search does not erase unrelated dashboard population.",
+        "Table truncation and time attribution remain explicit."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 2,
+          "label": "nonempty-baseline",
+          "utc": "2026-10-22T21:03:46.267Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 3,
+          "label": "filtered-nonempty-populations",
+          "utc": "2026-10-22T21:04:07.382Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 4,
+          "label": "no-match-reopen",
+          "utc": "2026-10-22T21:04:11.735Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 7,
+          "label": "module-content-equality",
+          "utc": "2026-10-22T21:04:35.501Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 8,
+          "label": "clear-then-kind-recovery",
+          "utc": "2026-10-22T21:04:42.042Z"
+        }
+      ],
+      "remaining_limits": [
+        "With zero matches only the selected flat kind is available. The original different-kind-before-clear sequence has no actionable target and was not executed.",
+        "The reachable revised sequence clears the filter before choosing another kind; it must not be reported as the original sequence passing."
+      ],
+      "outcome": "revised_browser_sequence_verified_original_precondition_unavailable",
+      "evidence_types": [
+        "live_browser_revised_sequence",
+        "controlled_production_handlers"
+      ],
+      "observed": {
+        "module_content_equal_after_filter_and_reopen": true,
+        "full_comparison_reference": {
+          "archive_member": "browser.jsonl",
+          "line": 7,
+          "fields": [
+            "before",
+            "after",
+            "sameModules"
+          ]
+        },
+        "recovery_active_control": "<button type=\"button\" role=\"tab\" data-kind=\"DTE\" aria-selected=\"true\">Decapsulation Tunnel Entry<span>1,875</span></button>",
+        "recovery_resource_table": "RESOURCE\tLAYER\tEXISTS\tSTATUS\tTIMELINE\tKEY · VRF\tKEY · SERVICE ID\tSTATE · STATUS\tSTATE · PACKET ACTION\tSTATE · NEXT HOP\n\ndte-000000\nnode-a/data-bridge-layer/DTE/blue/dte-000000\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000000\tprogrammed\tPOP_VNI\tnode-a/data-bridge-layer/ETG/blue/etg-000017\n\ndte-000001\nnode-a/data-bridge-layer/DTE/blue/dte-000001\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000001\tprogrammed\tSWAP_LABEL\tnode-a/control-plane/IP_ROUTING/blue\n\ndte-000002\nnode-a/data-bridge-layer/DTE/blue/dte-000002\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000002\tprogrammed\tPOP_VNI\tnode-a/data-bridge-layer/ETG/blue/etg-000019\n\ndte-000003\nnode-a/data-bridge-layer/DTE/blue/dte-000003\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000003\tprogrammed\tSWAP_LABEL\tnode-a/control-plane/IP_ROUTING/blue\n\ndte-000004\nnode-a/data-bridge-layer/DTE/blue/dte-000004\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000004\tprogrammed\tPOP_VNI\tnode-a/data-bridge-layer/ETG/blue/etg-000021\n\ndte-000005\nnode-a/data-bridge-layer/DTE/blue/dte-000005\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000005\tprogrammed\tSWAP_LABEL\tnode-a/control-plane/IP_ROUTING/blue\n\ndte-000006\nnode-a/data-bridge-layer/DTE/blue/dte-000006\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000006\tprogrammed\tPOP_VNI\tnode-a/data-bridge-layer/ETG/blue/etg-000023\n\ndte-000007\nnode-a/data-bridge-layer/DTE/blue/dte-000007\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000007\tprogrammed\tSWAP_LABEL\tnode-a/data-bridge-layer/ETG/blue/etg-000008\n\ndte-000008\nnode-a/data-bridge-layer/DTE/blue/dte-000008\n\tData br"
+      },
+      "conclusion": "At a nonempty baseline, a no-match resource filter and dashboard close/reopen preserved module contents. Clearing the filter then choosing DTE recovered a populated resource table.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_drag_filter_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "no-match retains selected kind only",
+          "nonempty authoritative dashboard counts preserved",
+          "archive metrics and table truncation preserved",
+          "close reopen uses independent dashboard query",
+          "clear then kind switch recovers"
+        ],
+        "limits": [
+          "Dashboard responses are synthetic; the browser equality comparison supplies real nonempty-population evidence."
+        ]
+      }
+    },
+    "S254": {
+      "id": "S254",
+      "title": "Final forwarding catalog: drag reorder then keyboard recovery",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "S254",
+      "original_assertions": [
+        "A real pointer drag moves exactly this module once and clears drag/drop styling.",
+        "A later keyboard move remains functional and order labels stay synchronized.",
+        "If the input tool cannot deliver native drag, record blocked delivery rather than a product failure."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 9,
+          "label": "collapsed-drag-baseline",
+          "utc": "2026-10-22T21:05:00.916Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 11,
+          "label": "native-drag-forwarding-below-phases",
+          "utc": "2026-10-22T21:05:48.357Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 16,
+          "label": "keyboard-down-after-drag",
+          "utc": "2026-10-22T21:06:28.561Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 17,
+          "label": "keyboard-up-recovery",
+          "utc": "2026-10-22T21:06:32.446Z"
+        }
+      ],
+      "remaining_limits": [
+        "Some earlier native attempts left order unchanged and were retried. Those attempts do not independently establish an application defect.",
+        "Reload persistence and every intermediate drag event were not instrumented."
+      ],
+      "outcome": "native_drag_and_controlled_handlers_verified",
+      "evidence_types": [
+        "live_browser_native_drag",
+        "controlled_production_handlers"
+      ],
+      "observed": {
+        "module": "forwarding-population",
+        "orders": [
+          {
+            "line": 9,
+            "order": [
+              "scale-overview",
+              "forwarding-population",
+              "event-phases",
+              "neighbor-health"
+            ]
+          },
+          {
+            "line": 11,
+            "order": [
+              "scale-overview",
+              "event-phases",
+              "forwarding-population",
+              "neighbor-health"
+            ]
+          },
+          {
+            "line": 16,
+            "order": [
+              "event-phases",
+              "scale-overview",
+              "neighbor-health",
+              "forwarding-population"
+            ]
+          },
+          {
+            "line": 17,
+            "order": [
+              "event-phases",
+              "scale-overview",
+              "forwarding-population",
+              "neighbor-health"
+            ]
+          }
+        ]
+      },
+      "conclusion": "A native drag changed the module order, and subsequent Move down/up recovery worked. Earlier unchanged-order attempts remain in the raw record.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_drag_filter_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "production dragstart dragover drop dragend",
+          "upper and lower half placement",
+          "exactly one reorder",
+          "drag styling cleared",
+          "keyboard recovery and index order"
+        ],
+        "limits": [
+          "DOM drag dispatch and persistence storage are substituted; the native drag proof comes from the separate browser replay."
+        ]
+      }
+    },
+    "S256": {
+      "id": "S256",
+      "title": "Final forwarding catalog: resource search does not redefine statistics",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "S256",
+      "original_assertions": [
+        "Precomputed or authoritative statistics remain scoped as declared and are not recomputed from the bounded resource table.",
+        "A no-match resource search does not erase unrelated dashboard population.",
+        "Table truncation and time attribution remain explicit."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 2,
+          "label": "nonempty-baseline",
+          "utc": "2026-10-22T21:03:46.267Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 3,
+          "label": "filtered-nonempty-populations",
+          "utc": "2026-10-22T21:04:07.382Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 5,
+          "label": "no-match-reopen",
+          "utc": "2026-10-22T21:04:15.529Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 7,
+          "label": "module-content-equality",
+          "utc": "2026-10-22T21:04:35.501Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 8,
+          "label": "clear-then-kind-recovery",
+          "utc": "2026-10-22T21:04:42.042Z"
+        }
+      ],
+      "remaining_limits": [
+        "With zero matches only the selected flat kind is available. The original different-kind-before-clear sequence has no actionable target and was not executed.",
+        "The reachable revised sequence clears the filter before choosing another kind; it must not be reported as the original sequence passing."
+      ],
+      "outcome": "revised_browser_sequence_verified_original_precondition_unavailable",
+      "evidence_types": [
+        "live_browser_revised_sequence",
+        "controlled_production_handlers"
+      ],
+      "observed": {
+        "module_content_equal_after_filter_and_reopen": true,
+        "full_comparison_reference": {
+          "archive_member": "browser.jsonl",
+          "line": 7,
+          "fields": [
+            "before",
+            "after",
+            "sameModules"
+          ]
+        },
+        "recovery_active_control": "<button type=\"button\" role=\"tab\" data-kind=\"DTE\" aria-selected=\"true\">Decapsulation Tunnel Entry<span>1,875</span></button>",
+        "recovery_resource_table": "RESOURCE\tLAYER\tEXISTS\tSTATUS\tTIMELINE\tKEY · VRF\tKEY · SERVICE ID\tSTATE · STATUS\tSTATE · PACKET ACTION\tSTATE · NEXT HOP\n\ndte-000000\nnode-a/data-bridge-layer/DTE/blue/dte-000000\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000000\tprogrammed\tPOP_VNI\tnode-a/data-bridge-layer/ETG/blue/etg-000017\n\ndte-000001\nnode-a/data-bridge-layer/DTE/blue/dte-000001\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000001\tprogrammed\tSWAP_LABEL\tnode-a/control-plane/IP_ROUTING/blue\n\ndte-000002\nnode-a/data-bridge-layer/DTE/blue/dte-000002\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000002\tprogrammed\tPOP_VNI\tnode-a/data-bridge-layer/ETG/blue/etg-000019\n\ndte-000003\nnode-a/data-bridge-layer/DTE/blue/dte-000003\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000003\tprogrammed\tSWAP_LABEL\tnode-a/control-plane/IP_ROUTING/blue\n\ndte-000004\nnode-a/data-bridge-layer/DTE/blue/dte-000004\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000004\tprogrammed\tPOP_VNI\tnode-a/data-bridge-layer/ETG/blue/etg-000021\n\ndte-000005\nnode-a/data-bridge-layer/DTE/blue/dte-000005\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000005\tprogrammed\tSWAP_LABEL\tnode-a/control-plane/IP_ROUTING/blue\n\ndte-000006\nnode-a/data-bridge-layer/DTE/blue/dte-000006\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000006\tprogrammed\tPOP_VNI\tnode-a/data-bridge-layer/ETG/blue/etg-000023\n\ndte-000007\nnode-a/data-bridge-layer/DTE/blue/dte-000007\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000007\tprogrammed\tSWAP_LABEL\tnode-a/data-bridge-layer/ETG/blue/etg-000008\n\ndte-000008\nnode-a/data-bridge-layer/DTE/blue/dte-000008\n\tData br"
+      },
+      "conclusion": "At a nonempty baseline, a no-match resource filter and dashboard close/reopen preserved module contents. Clearing the filter then choosing DTE recovered a populated resource table.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_drag_filter_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "no-match retains selected kind only",
+          "nonempty authoritative dashboard counts preserved",
+          "archive metrics and table truncation preserved",
+          "close reopen uses independent dashboard query",
+          "clear then kind switch recovers"
+        ],
+        "limits": [
+          "Dashboard responses are synthetic; the browser equality comparison supplies real nonempty-population evidence."
+        ]
+      }
+    },
+    "S264": {
+      "id": "S264",
+      "title": "Mass-operation phases: drag reorder then keyboard recovery",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "S264",
+      "original_assertions": [
+        "A real pointer drag moves exactly this module once and clears drag/drop styling.",
+        "A later keyboard move remains functional and order labels stay synchronized.",
+        "If the input tool cannot deliver native drag, record blocked delivery rather than a product failure."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 12,
+          "label": "native-drag-scale-below-phases-retry",
+          "utc": "2026-10-22T21:06:01.787Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 13,
+          "label": "native-drag-phases-below-forwarding",
+          "utc": "2026-10-22T21:06:16.202Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 18,
+          "label": "keyboard-down-after-drag",
+          "utc": "2026-10-22T21:06:36.482Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 19,
+          "label": "keyboard-up-recovery",
+          "utc": "2026-10-22T21:06:40.397Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 20,
+          "label": "native-drag-phases-below-forwarding-settled",
+          "utc": "2026-10-22T21:08:05.406Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 21,
+          "label": "native-drag-keyboard-recovery",
+          "utc": "2026-10-22T21:08:13.107Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 22,
+          "label": "native-drag-phases-adjacent",
+          "utc": "2026-10-22T21:08:43.724Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 23,
+          "label": "keyboard-recovery-after-successful-drag",
+          "utc": "2026-10-22T21:09:01.609Z"
+        }
+      ],
+      "remaining_limits": [
+        "Some earlier native attempts left order unchanged and were retried. Those attempts do not independently establish an application defect.",
+        "Reload persistence and every intermediate drag event were not instrumented."
+      ],
+      "outcome": "native_drag_and_controlled_handlers_verified",
+      "evidence_types": [
+        "live_browser_native_drag",
+        "controlled_production_handlers"
+      ],
+      "observed": {
+        "module": "event-phases",
+        "orders": [
+          {
+            "line": 12,
+            "order": [
+              "event-phases",
+              "scale-overview",
+              "forwarding-population",
+              "neighbor-health"
+            ]
+          },
+          {
+            "line": 13,
+            "order": [
+              "event-phases",
+              "scale-overview",
+              "forwarding-population",
+              "neighbor-health"
+            ]
+          },
+          {
+            "line": 18,
+            "order": [
+              "scale-overview",
+              "event-phases",
+              "forwarding-population",
+              "neighbor-health"
+            ]
+          },
+          {
+            "line": 19,
+            "order": [
+              "event-phases",
+              "scale-overview",
+              "forwarding-population",
+              "neighbor-health"
+            ]
+          },
+          {
+            "line": 20,
+            "order": [
+              "event-phases",
+              "scale-overview",
+              "forwarding-population",
+              "neighbor-health"
+            ]
+          },
+          {
+            "line": 21,
+            "order": [
+              "event-phases",
+              "scale-overview",
+              "forwarding-population",
+              "neighbor-health"
+            ]
+          },
+          {
+            "line": 22,
+            "order": [
+              "scale-overview",
+              "event-phases",
+              "forwarding-population",
+              "neighbor-health"
+            ]
+          },
+          {
+            "line": 23,
+            "order": [
+              "scale-overview",
+              "forwarding-population",
+              "event-phases",
+              "neighbor-health"
+            ]
+          }
+        ]
+      },
+      "conclusion": "A native drag changed the module order, and subsequent Move down/up recovery worked. Earlier unchanged-order attempts remain in the raw record.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_drag_filter_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "production dragstart dragover drop dragend",
+          "upper and lower half placement",
+          "exactly one reorder",
+          "drag styling cleared",
+          "keyboard recovery and index order"
+        ],
+        "limits": [
+          "DOM drag dispatch and persistence storage are substituted; the native drag proof comes from the separate browser replay."
+        ]
+      }
+    },
+    "S266": {
+      "id": "S266",
+      "title": "Mass-operation phases: resource search does not redefine statistics",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "S266",
+      "original_assertions": [
+        "Precomputed or authoritative statistics remain scoped as declared and are not recomputed from the bounded resource table.",
+        "A no-match resource search does not erase unrelated dashboard population.",
+        "Table truncation and time attribution remain explicit."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 2,
+          "label": "nonempty-baseline",
+          "utc": "2026-10-22T21:03:46.267Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 3,
+          "label": "filtered-nonempty-populations",
+          "utc": "2026-10-22T21:04:07.382Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 6,
+          "label": "no-match-reopen",
+          "utc": "2026-10-22T21:04:19.852Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 7,
+          "label": "module-content-equality",
+          "utc": "2026-10-22T21:04:35.501Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 8,
+          "label": "clear-then-kind-recovery",
+          "utc": "2026-10-22T21:04:42.042Z"
+        }
+      ],
+      "remaining_limits": [
+        "With zero matches only the selected flat kind is available. The original different-kind-before-clear sequence has no actionable target and was not executed.",
+        "The reachable revised sequence clears the filter before choosing another kind; it must not be reported as the original sequence passing."
+      ],
+      "outcome": "revised_browser_sequence_verified_original_precondition_unavailable",
+      "evidence_types": [
+        "live_browser_revised_sequence",
+        "controlled_production_handlers"
+      ],
+      "observed": {
+        "module_content_equal_after_filter_and_reopen": true,
+        "full_comparison_reference": {
+          "archive_member": "browser.jsonl",
+          "line": 7,
+          "fields": [
+            "before",
+            "after",
+            "sameModules"
+          ]
+        },
+        "recovery_active_control": "<button type=\"button\" role=\"tab\" data-kind=\"DTE\" aria-selected=\"true\">Decapsulation Tunnel Entry<span>1,875</span></button>",
+        "recovery_resource_table": "RESOURCE\tLAYER\tEXISTS\tSTATUS\tTIMELINE\tKEY · VRF\tKEY · SERVICE ID\tSTATE · STATUS\tSTATE · PACKET ACTION\tSTATE · NEXT HOP\n\ndte-000000\nnode-a/data-bridge-layer/DTE/blue/dte-000000\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000000\tprogrammed\tPOP_VNI\tnode-a/data-bridge-layer/ETG/blue/etg-000017\n\ndte-000001\nnode-a/data-bridge-layer/DTE/blue/dte-000001\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000001\tprogrammed\tSWAP_LABEL\tnode-a/control-plane/IP_ROUTING/blue\n\ndte-000002\nnode-a/data-bridge-layer/DTE/blue/dte-000002\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000002\tprogrammed\tPOP_VNI\tnode-a/data-bridge-layer/ETG/blue/etg-000019\n\ndte-000003\nnode-a/data-bridge-layer/DTE/blue/dte-000003\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000003\tprogrammed\tSWAP_LABEL\tnode-a/control-plane/IP_ROUTING/blue\n\ndte-000004\nnode-a/data-bridge-layer/DTE/blue/dte-000004\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000004\tprogrammed\tPOP_VNI\tnode-a/data-bridge-layer/ETG/blue/etg-000021\n\ndte-000005\nnode-a/data-bridge-layer/DTE/blue/dte-000005\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000005\tprogrammed\tSWAP_LABEL\tnode-a/control-plane/IP_ROUTING/blue\n\ndte-000006\nnode-a/data-bridge-layer/DTE/blue/dte-000006\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000006\tprogrammed\tPOP_VNI\tnode-a/data-bridge-layer/ETG/blue/etg-000023\n\ndte-000007\nnode-a/data-bridge-layer/DTE/blue/dte-000007\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000007\tprogrammed\tSWAP_LABEL\tnode-a/data-bridge-layer/ETG/blue/etg-000008\n\ndte-000008\nnode-a/data-bridge-layer/DTE/blue/dte-000008\n\tData br"
+      },
+      "conclusion": "At a nonempty baseline, a no-match resource filter and dashboard close/reopen preserved module contents. Clearing the filter then choosing DTE recovered a populated resource table.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_drag_filter_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "no-match retains selected kind only",
+          "nonempty authoritative dashboard counts preserved",
+          "archive metrics and table truncation preserved",
+          "close reopen uses independent dashboard query",
+          "clear then kind switch recovers"
+        ],
+        "limits": [
+          "Dashboard responses are synthetic; the browser equality comparison supplies real nonempty-population evidence."
+        ]
+      }
+    },
+    "S273": {
+      "id": "S273",
+      "title": "All-active ECMP: rapid route replacement",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "S273",
+      "original_assertions": [
+        "An older route response cannot overwrite the latest selected route.",
+        "Title, destination, basis and branches all belong to one request context.",
+        "Controls settle and a subsequent ordinary Resolve succeeds."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 26,
+          "label": "obsolete-response-held",
+          "utc": "2026-10-22T21:14:30.088Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 27,
+          "label": "after-obsolete-release",
+          "utc": "2026-10-22T21:14:39.786Z"
+        }
+      ],
+      "remaining_limits": [
+        "Browser cancellation prevented the obsolete body from arriving; forced late-arrival rejection is controlled-test proof.",
+        "Route results are node-local plug-in projections; this is not end-to-end forwarding verification."
+      ],
+      "outcome": "browser_overlap_and_controlled_late_response_verified",
+      "evidence_types": [
+        "live_browser_response_gate",
+        "controlled_production_handlers"
+      ],
+      "response_gate": {
+        "id": "route-S273",
+        "held": {
+          "source_line": 113,
+          "utc": "2026-10-22T21:14:25.367635+00:00",
+          "kind": "held",
+          "gate": "route-S273",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/routes/resolve",
+          "status": 200,
+          "bytes": 796
+        },
+        "release": {
+          "source_line": 142,
+          "utc": "2026-10-22T21:14:35.135185+00:00",
+          "kind": "released",
+          "gate": "route-S273",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/routes/resolve",
+          "explicit": true
+        },
+        "after_release": {
+          "source_line": 143,
+          "utc": "2026-10-22T21:14:35.136202+00:00",
+          "kind": "client-disconnected",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/routes/resolve",
+          "error": "ConnectionAbortedError"
+        },
+        "archive_member": "proxy-evidence.jsonl"
+      },
+      "observed": {
+        "selected_route_id": "node-a/route/all-active-ecmp",
+        "result_unchanged_after_release": true,
+        "result_text": "All-active equal-cost multipath\nObserved Capture Vector · returned for +610.001 s · result Resolved\nMATCHED DESTINATION\ndemo:node-b:all-active-ecmp\nFORWARDING NEXT HOP\ntransit-p-1, transit-p-2\n2 active\nFORWARDING EGRESS\nadjacency:node-a:transit-p-1, adjacency:node-a:transit-p-2\n2 active\nPlug-in-declared branches\ntransit-p-1\nadjacency:node-a:transit-p-1\nactive\ntransit-p-2\nadjacency:node-a:transit-p-2\nactive\nmpls_transport / node-a/route/all-active-ecmp / state=active\nnext_hop / transit-p-1 / state=active / Candidate next hop\nnext_hop / transit-p-2 / state=active / Candidate next hop\n\nobserved_capture_vector / exact / resolved"
+      },
+      "conclusion": "A real obsolete route response was held while the latest route resolved. Cancellation disconnected the older response; the current route result remained unchanged after explicit release.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_request_races_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Production route change and submit handlers overlap three requests.",
+          "With transport abort deliberately ignored, obsolete successes and errors cannot replace latest title, destination, branches, basis or returned time.",
+          "A further ordinary Resolve succeeds."
+        ],
+        "limits": [
+          "Synthetic payloads test generic frontend ownership, not the demo forwarding algorithms."
+        ]
+      }
+    },
+    "S279": {
+      "id": "S279",
+      "title": "Recursive next-hop cycle: rapid route replacement",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "S279",
+      "original_assertions": [
+        "An older route response cannot overwrite the latest selected route.",
+        "Title, destination, basis and branches all belong to one request context.",
+        "Controls settle and a subsequent ordinary Resolve succeeds."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 28,
+          "label": "obsolete-response-held",
+          "utc": "2026-10-22T21:14:44.564Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 29,
+          "label": "after-obsolete-release",
+          "utc": "2026-10-22T21:14:54.372Z"
+        }
+      ],
+      "remaining_limits": [
+        "Browser cancellation prevented the obsolete body from arriving; forced late-arrival rejection is controlled-test proof.",
+        "Route results are node-local plug-in projections; this is not end-to-end forwarding verification."
+      ],
+      "outcome": "browser_overlap_and_controlled_late_response_verified",
+      "evidence_types": [
+        "live_browser_response_gate",
+        "controlled_production_handlers"
+      ],
+      "response_gate": {
+        "id": "route-S279",
+        "held": {
+          "source_line": 147,
+          "utc": "2026-10-22T21:14:39.830260+00:00",
+          "kind": "held",
+          "gate": "route-S279",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/routes/resolve",
+          "status": 200,
+          "bytes": 1319
+        },
+        "release": {
+          "source_line": 176,
+          "utc": "2026-10-22T21:14:49.649786+00:00",
+          "kind": "released",
+          "gate": "route-S279",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/routes/resolve",
+          "explicit": true
+        },
+        "after_release": {
+          "source_line": 177,
+          "utc": "2026-10-22T21:14:49.649786+00:00",
+          "kind": "client-disconnected",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/routes/resolve",
+          "error": "ConnectionAbortedError"
+        },
+        "archive_member": "proxy-evidence.jsonl"
+      },
+      "observed": {
+        "selected_route_id": "node-a/route/recursive-resolution-cycle",
+        "result_unchanged_after_release": true,
+        "result_text": "Recursive next-hop cycle\nObserved Capture Vector · returned for +610.015 s · result Resolved\nMATCHED DESTINATION\ndemo:node-b:recursive-resolution-cycle\nFORWARDING NEXT HOP\nNot returned\nno active branch\nFORWARDING EGRESS\nNot returned\nno active branch\nNo forwarding branches returned\nThe core does not infer local delivery from an empty result.\nstatic_recursive / node-a/route/recursive-resolution-cycle / state=active\n\nobserved_capture_vector / exact / resolved"
+      },
+      "conclusion": "A real obsolete route response was held while the latest route resolved. Cancellation disconnected the older response; the current route result remained unchanged after explicit release.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_request_races_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Production route change and submit handlers overlap three requests.",
+          "With transport abort deliberately ignored, obsolete successes and errors cannot replace latest title, destination, branches, basis or returned time.",
+          "A further ordinary Resolve succeeds."
+        ],
+        "limits": [
+          "Synthetic payloads test generic frontend ownership, not the demo forwarding algorithms."
+        ]
+      }
+    },
+    "S285": {
+      "id": "S285",
+      "title": "Cross-layer forwarding inconsistency: rapid route replacement",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "S285",
+      "original_assertions": [
+        "An older route response cannot overwrite the latest selected route.",
+        "Title, destination, basis and branches all belong to one request context.",
+        "Controls settle and a subsequent ordinary Resolve succeeds."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 30,
+          "label": "obsolete-response-held",
+          "utc": "2026-10-22T21:14:59.164Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 31,
+          "label": "after-obsolete-release",
+          "utc": "2026-10-22T21:15:08.982Z"
+        }
+      ],
+      "remaining_limits": [
+        "Browser cancellation prevented the obsolete body from arriving; forced late-arrival rejection is controlled-test proof.",
+        "Route results are node-local plug-in projections; this is not end-to-end forwarding verification."
+      ],
+      "outcome": "browser_overlap_and_controlled_late_response_verified",
+      "evidence_types": [
+        "live_browser_response_gate",
+        "controlled_production_handlers"
+      ],
+      "response_gate": {
+        "id": "route-S285",
+        "held": {
+          "source_line": 181,
+          "utc": "2026-10-22T21:14:54.414396+00:00",
+          "kind": "held",
+          "gate": "route-S285",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/routes/resolve",
+          "status": 200,
+          "bytes": 1319
+        },
+        "release": {
+          "source_line": 210,
+          "utc": "2026-10-22T21:15:04.390088+00:00",
+          "kind": "released",
+          "gate": "route-S285",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/routes/resolve",
+          "explicit": true
+        },
+        "after_release": {
+          "source_line": 211,
+          "utc": "2026-10-22T21:15:04.390088+00:00",
+          "kind": "client-disconnected",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/routes/resolve",
+          "error": "ConnectionAbortedError"
+        },
+        "archive_member": "proxy-evidence.jsonl"
+      },
+      "observed": {
+        "selected_route_id": "node-a/route/cross-layer-inconsistent",
+        "result_unchanged_after_release": true,
+        "result_text": "Cross-layer forwarding inconsistency\nObserved Capture Vector · returned for +610.004 s · result Resolved\nMATCHED DESTINATION\ndemo:node-b:cross-layer-inconsistent\nFORWARDING NEXT HOP\ntransit-p-1\n1 active\nFORWARDING EGRESS\nadjacency:node-a:transit-p-1\n1 active\nPlug-in-declared branches\ntransit-p-1\nadjacency:node-a:transit-p-1\nactive\ntransit-p-2\nadjacency:node-a:transit-p-2\ninactive / not forwarding\nevpn_service / node-a/route/cross-layer-inconsistent / state=active\nnext_hop / transit-p-1 / state=active / Candidate next hop\nnext_hop / transit-p-2 / state=inactive / Candidate next hop\n\nobserved_capture_vector / exact / resolved"
+      },
+      "conclusion": "A real obsolete route response was held while the latest route resolved. Cancellation disconnected the older response; the current route result remained unchanged after explicit release.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_request_races_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Production route change and submit handlers overlap three requests.",
+          "With transport abort deliberately ignored, obsolete successes and errors cannot replace latest title, destination, branches, basis or returned time.",
+          "A further ordinary Resolve succeeds."
+        ],
+        "limits": [
+          "Synthetic payloads test generic frontend ownership, not the demo forwarding algorithms."
+        ]
+      }
+    },
+    "S291": {
+      "id": "S291",
+      "title": "Single-active primary with eligible standby: rapid route replacement",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "S291",
+      "original_assertions": [
+        "An older route response cannot overwrite the latest selected route.",
+        "Title, destination, basis and branches all belong to one request context.",
+        "Controls settle and a subsequent ordinary Resolve succeeds."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 32,
+          "label": "obsolete-response-held",
+          "utc": "2026-10-22T21:15:13.814Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 33,
+          "label": "after-obsolete-release",
+          "utc": "2026-10-22T21:15:23.435Z"
+        }
+      ],
+      "remaining_limits": [
+        "Browser cancellation prevented the obsolete body from arriving; forced late-arrival rejection is controlled-test proof.",
+        "Route results are node-local plug-in projections; this is not end-to-end forwarding verification."
+      ],
+      "outcome": "browser_overlap_and_controlled_late_response_verified",
+      "evidence_types": [
+        "live_browser_response_gate",
+        "controlled_production_handlers"
+      ],
+      "response_gate": {
+        "id": "route-S291",
+        "held": {
+          "source_line": 215,
+          "utc": "2026-10-22T21:15:09.024318+00:00",
+          "kind": "held",
+          "gate": "route-S291",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/routes/resolve",
+          "status": 200,
+          "bytes": 1319
+        },
+        "release": {
+          "source_line": 244,
+          "utc": "2026-10-22T21:15:18.885664+00:00",
+          "kind": "released",
+          "gate": "route-S291",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/routes/resolve",
+          "explicit": true
+        },
+        "after_release": {
+          "source_line": 245,
+          "utc": "2026-10-22T21:15:18.886195+00:00",
+          "kind": "client-disconnected",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/routes/resolve",
+          "error": "ConnectionAbortedError"
+        },
+        "archive_member": "proxy-evidence.jsonl"
+      },
+      "observed": {
+        "selected_route_id": "node-a/route/single-active-primary",
+        "result_unchanged_after_release": true,
+        "result_text": "Single-active primary path\nObserved Capture Vector · returned for +610.000 s · result Resolved\nMATCHED DESTINATION\ndemo:node-b:single-active-primary\nFORWARDING NEXT HOP\ntransit-p-1\n1 active\nFORWARDING EGRESS\nadjacency:node-a:transit-p-1\n1 active\nPlug-in-declared branches\ntransit-p-1\nadjacency:node-a:transit-p-1\nactive\ntransit-p-2\nadjacency:node-a:transit-p-2\ninactive / not forwarding\nmpls_transport / node-a/route/single-active-primary / state=active\nnext_hop / transit-p-1 / state=active / Candidate next hop\nnext_hop / transit-p-2 / state=inactive / Candidate next hop\n\nobserved_capture_vector / exact / resolved"
+      },
+      "conclusion": "A real obsolete route response was held while the latest route resolved. Cancellation disconnected the older response; the current route result remained unchanged after explicit release.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_request_races_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Production route change and submit handlers overlap three requests.",
+          "With transport abort deliberately ignored, obsolete successes and errors cannot replace latest title, destination, branches, basis or returned time.",
+          "A further ordinary Resolve succeeds."
+        ],
+        "limits": [
+          "Synthetic payloads test generic frontend ownership, not the demo forwarding algorithms."
+        ]
+      }
+    },
+    "S297": {
+      "id": "S297",
+      "title": "Cross-node MPLS label handoff mismatch: rapid route replacement",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "S297",
+      "original_assertions": [
+        "An older route response cannot overwrite the latest selected route.",
+        "Title, destination, basis and branches all belong to one request context.",
+        "Controls settle and a subsequent ordinary Resolve succeeds."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 34,
+          "label": "obsolete-response-held",
+          "utc": "2026-10-22T21:15:55.289Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 35,
+          "label": "after-obsolete-release",
+          "utc": "2026-10-22T21:16:08.044Z"
+        }
+      ],
+      "remaining_limits": [
+        "Browser cancellation prevented the obsolete body from arriving; forced late-arrival rejection is controlled-test proof.",
+        "Route results are node-local plug-in projections; this is not end-to-end forwarding verification."
+      ],
+      "outcome": "browser_overlap_and_controlled_late_response_verified",
+      "evidence_types": [
+        "live_browser_response_gate",
+        "controlled_production_handlers"
+      ],
+      "response_gate": {
+        "id": "route-S297",
+        "held": {
+          "source_line": 248,
+          "utc": "2026-10-22T21:15:23.495399+00:00",
+          "kind": "held",
+          "gate": "route-S297",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/routes/resolve",
+          "status": 200,
+          "bytes": 1319
+        },
+        "release": {
+          "source_line": 416,
+          "utc": "2026-10-22T21:16:02.435537+00:00",
+          "kind": "released",
+          "gate": "route-S297",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/routes/resolve",
+          "explicit": true
+        },
+        "after_release": {
+          "source_line": 417,
+          "utc": "2026-10-22T21:16:02.436532+00:00",
+          "kind": "client-disconnected",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/routes/resolve",
+          "error": "ConnectionAbortedError"
+        },
+        "archive_member": "proxy-evidence.jsonl"
+      },
+      "observed": {
+        "selected_route_id": "node-a/route/cross-node-mpls-label-mismatch",
+        "result_unchanged_after_release": true,
+        "result_text": "Cross-node MPLS label handoff mismatch\nObserved Capture Vector · returned for +610.002 s · result Resolved\nMATCHED DESTINATION\ndemo:node-b:cross-node-mpls-label-mismatch\nFORWARDING NEXT HOP\ntransit-p-1\n1 active\nFORWARDING EGRESS\nadjacency:node-a:transit-p-1\n1 active\nPlug-in-declared branches\ntransit-p-1\nadjacency:node-a:transit-p-1\nactive\nmpls_transport / node-a/route/cross-node-mpls-label-mismatch / state=active\nnext_hop / transit-p-1 / state=active / Candidate next hop\n\nobserved_capture_vector / exact / resolved"
+      },
+      "conclusion": "A real obsolete route response was held while the latest route resolved. Cancellation disconnected the older response; the current route result remained unchanged after explicit release.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_request_races_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Production route change and submit handlers overlap three requests.",
+          "With transport abort deliberately ignored, obsolete successes and errors cannot replace latest title, destination, branches, basis or returned time.",
+          "A further ordinary Resolve succeeds."
+        ],
+        "limits": [
+          "Synthetic payloads test generic frontend ownership, not the demo forwarding algorithms."
+        ]
+      }
+    },
+    "C010": {
+      "id": "C010",
+      "title": "Reveal superseded by Back view",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "C010",
+      "original_assertions": [
+        "Observed pending reveal cannot overwrite the newer Back action.",
+        "If no pending overlap is observed, record that assertion as unexercised; subsequent explicit reveal still works."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 46,
+          "label": "reveal-response-held",
+          "utc": "2026-10-22T21:19:08.684Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 47,
+          "label": "after-obsolete-release",
+          "utc": "2026-10-22T21:19:12.583Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 48,
+          "label": "explicit-reveal-recovery",
+          "utc": "2026-10-22T21:19:23.509Z"
+        }
+      ],
+      "remaining_limits": [
+        "Browser abort disconnected the held old body; stale successful completion is tested independently in the controlled harness.",
+        "Saved browser captures include current marker/card/inspector identity but not final marker rectangles in both clipping axes."
+      ],
+      "outcome": "browser_overlap_and_controlled_late_response_verified",
+      "evidence_types": [
+        "live_browser_response_gate",
+        "controlled_production_handlers"
+      ],
+      "response_gate": {
+        "id": "timeline-C010",
+        "held": {
+          "source_line": 665,
+          "utc": "2026-10-22T21:19:06.727554+00:00",
+          "kind": "held",
+          "gate": "timeline-C010",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/timeline/query",
+          "status": 200,
+          "bytes": 34078
+        },
+        "release": {
+          "source_line": 682,
+          "utc": "2026-10-22T21:19:10.833780+00:00",
+          "kind": "released",
+          "gate": "timeline-C010",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/timeline/query",
+          "explicit": true
+        },
+        "after_release": {
+          "source_line": 683,
+          "utc": "2026-10-22T21:19:10.833780+00:00",
+          "kind": "client-disconnected",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/timeline/query",
+          "error": "ConnectionAbortedError"
+        },
+        "archive_member": "proxy-evidence.jsonl"
+      },
+      "conclusion": "Back selected +299.0..+310.9 s while reveal was held; release preserved that window. Explicit reveal then selected create at +30 s in +24.0..+35.9 s.",
+      "observed": {
+        "final_cursor": "+30.000 s",
+        "final_window": "+24.0 s – +35.9 s",
+        "final_active_html": "<button class=\"event-mark create selected out-of-range\" data-event-uid=\"node-a/scenario/node-a-route-create\" data-hover-key=\"event:root:node-a/control-plane/IP_ROUTE/route:blue:198.51.100.0/30:node-a/scenario/node-a-route-create\" data-time-ns=\"1759680029996000000\" style=\"left:50%;--glyph-space:27px;--event-color:#a58bff\" type=\"button\" aria-label=\"Scenario Resource Upsert at +30.0 s\"></button>",
+        "final_popup_hidden": false,
+        "final_inspector": "SELECTED EVENT\nScenario Resource Upsert\n\nControl plane / 30 / create -> success\n\nTime\n+30.000 s (1759680029996000000 ns)\nOperation\ncreate\nOutcome\nsuccess\nResulting status\ninstalled\nStatus duration\n4m 0s\nQuality\nunknown\nProperties\n{message=Installed the Ottawa service route through the west core., next_hop=10.64.0.2, protocol=isis, source_event_id=node-a-route-create, source_outcome=success, source_scenario_id=router-state-lab-default, vrf=blue}\nResult\n{updateStatus=Ok}\nEvidence\nNo source path\nNo locator\nAffected resources (1)\nnode-a/control-plane/IP_ROUTE/route:blue:198.51.100.0/30\n1 normalized resource effect\ncreate\nselected lane\nnode-a/control-plane/IP_ROUTE/route:blue:198.51.100.0/30\nState changed\nyes\nCondition\ninstalled\nBefore\n{exists=false, status=absent}\nAfter\n{exists=true, next_hop=10.64.0.2, protocol=isis, status=installed, vrf=blue}",
+        "back_window": "+299.0 s – +310.9 s",
+        "target_rows_after_hide": null
+      },
+      "controlled": {
+        "test_file": "frontend/tests/audit_request_races_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Real reveal/request authority and originating Back/Fit/checkbox handlers operate across unresolved responses.",
+          "Late obsolete payload cannot normalize lanes or run obsolete selection/focus.",
+          "Latest target or explicit recovery owns the expected event/resource and scroll/focus callback."
+        ],
+        "limits": [
+          "Normalization, painting, geometry and final selection side effects are bounded substitutes; target callback identity is not viewport geometry."
+        ]
+      }
+    },
+    "C011": {
+      "id": "C011",
+      "title": "Reveal superseded by Fit and another row",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "C011",
+      "original_assertions": [
+        "Latest event B owns selection, card and visible target; no late jump to A occurs.",
+        "Record whether actual pending overlap occurred rather than inferring it from action order."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 43,
+          "label": "reveal-A-response-held",
+          "utc": "2026-10-22T21:18:39.063Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 44,
+          "label": "reveal-B-before-release",
+          "utc": "2026-10-22T21:18:46.043Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 45,
+          "label": "reveal-B-after-release",
+          "utc": "2026-10-22T21:18:52.403Z"
+        }
+      ],
+      "remaining_limits": [
+        "Browser abort disconnected the held old body; stale successful completion is tested independently in the controlled harness.",
+        "Saved browser captures include current marker/card/inspector identity but not final marker rectangles in both clipping axes."
+      ],
+      "outcome": "browser_overlap_and_controlled_late_response_verified",
+      "evidence_types": [
+        "live_browser_response_gate",
+        "controlled_production_handlers"
+      ],
+      "response_gate": {
+        "id": "timeline-C011",
+        "held": {
+          "source_line": 562,
+          "utc": "2026-10-22T21:18:34.275194+00:00",
+          "kind": "held",
+          "gate": "timeline-C011",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/timeline/query",
+          "status": 200,
+          "bytes": 34056
+        },
+        "release": {
+          "source_line": 613,
+          "utc": "2026-10-22T21:18:46.083827+00:00",
+          "kind": "released",
+          "gate": "timeline-C011",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/timeline/query",
+          "explicit": true
+        },
+        "after_release": {
+          "source_line": 614,
+          "utc": "2026-10-22T21:18:46.085337+00:00",
+          "kind": "client-disconnected",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/timeline/query",
+          "error": "ConnectionAbortedError"
+        },
+        "archive_member": "proxy-evidence.jsonl"
+      },
+      "conclusion": "After held reveal A, Fit and reveal B selected the delete event at +210 s. Its inspector, full-capture window and open cluster card survived obsolete release.",
+      "observed": {
+        "final_cursor": "+210.000 s",
+        "final_window": "+0.0 s – +720.0 s",
+        "final_active_html": "<button class=\"event-mark cluster selected out-of-range\" data-hover-key=\"cluster:root:node-a/control-plane/IP_ROUTE/route:blue:198.51.100.0/30:node-a/control-plane/IP_ROUTE/route:blue:198.51.100.0/30::server-v2::0::1759680029996000000::1759680209996000000\" data-cluster-id=\"node-a/control-plane/IP_ROUTE/route:blue:198.51.100.0/30::server-v2::0::1759680029996000000::1759680209996000000\" data-last-event-uid=\"node-a/scenario/node-a-route-delete\" data-range-start-ns=\"1759680029996000000\" data-range-end-ns=\"1759680209996000000\" style=\"left:16.666666666666664%;--glyph-space:27px;--event-color:#a58bff",
+        "final_popup_hidden": false,
+        "final_inspector": "SELECTED EVENT\nScenario Resource Delete\n\nControl plane / 30 / delete -> success\n\nTime\n+210.000 s (1759680209996000000 ns)\nOperation\ndelete\nOutcome\nsuccess\nResulting status\nabsent\nStatus duration\nunknown\nQuality\nunknown\nProperties\n{message=PE-A removed the Ottawa service route., reason=policy-withdraw, source_event_id=node-a-route-delete, source_outcome=success, source_scenario_id=router-state-lab-default}\nResult\n{updateStatus=Ok}\nEvidence\nNo source path\nNo locator\nAffected resources (1)\nnode-a/control-plane/IP_ROUTE/route:blue:198.51.100.0/30\n1 normalized resource effect\ndelete\nselected lane\nnode-a/control-plane/IP_ROUTE/route:blue:198.51.100.0/30\nState changed\nyes\nCondition\nabsent\nBefore\n{exists=true, next_hop=10.64.0.2, protocol=isis, status=installed, vrf=blue}\nAfter\n{exists=false, status=absent}",
+        "back_window": null,
+        "target_rows_after_hide": null
+      },
+      "controlled": {
+        "test_file": "frontend/tests/audit_request_races_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Real reveal/request authority and originating Back/Fit/checkbox handlers operate across unresolved responses.",
+          "Late obsolete payload cannot normalize lanes or run obsolete selection/focus.",
+          "Latest target or explicit recovery owns the expected event/resource and scroll/focus callback."
+        ],
+        "limits": [
+          "Normalization, painting, geometry and final selection side effects are bounded substitutes; target callback identity is not viewport geometry."
+        ]
+      }
+    },
+    "C012": {
+      "id": "C012",
+      "title": "Resource addition and reveal superseded by hide",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "C012",
+      "original_assertions": [
+        "The newer hide action wins over pending allocation or reveal; no duplicate lane is left.",
+        "Recovery targets the exact resource; absent overlap is not a passed race assertion."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 49,
+          "label": "target-lane-absent",
+          "utc": "2026-10-22T21:19:32.867Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 50,
+          "label": "reveal-response-held",
+          "utc": "2026-10-22T21:19:34.271Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 51,
+          "label": "after-obsolete-release",
+          "utc": "2026-10-22T21:19:43.025Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 52,
+          "label": "explicit-reveal-recovery",
+          "utc": "2026-10-22T21:19:44.262Z"
+        }
+      ],
+      "remaining_limits": [
+        "Browser abort disconnected the held old body; stale successful completion is tested independently in the controlled harness.",
+        "Saved browser captures include current marker/card/inspector identity but not final marker rectangles in both clipping axes."
+      ],
+      "outcome": "browser_overlap_and_controlled_late_response_verified",
+      "evidence_types": [
+        "live_browser_response_gate",
+        "controlled_production_handlers"
+      ],
+      "response_gate": {
+        "id": "timeline-C012",
+        "held": {
+          "source_line": 747,
+          "utc": "2026-10-22T21:19:33.572420+00:00",
+          "kind": "held",
+          "gate": "timeline-C012",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/timeline/query",
+          "status": 200,
+          "bytes": 47863
+        },
+        "release": {
+          "source_line": 792,
+          "utc": "2026-10-22T21:19:42.328944+00:00",
+          "kind": "released",
+          "gate": "timeline-C012",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/timeline/query",
+          "explicit": true
+        },
+        "after_release": {
+          "source_line": 793,
+          "utc": "2026-10-22T21:19:42.328944+00:00",
+          "kind": "client-disconnected",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/timeline/query",
+          "error": "ConnectionAbortedError"
+        },
+        "archive_member": "proxy-evidence.jsonl"
+      },
+      "conclusion": "Hide superseded the held allocation/reveal. The target resource rows remained absent after release; explicit reveal then restored the delete-event marker at +210 s.",
+      "observed": {
+        "final_cursor": "+210.000 s",
+        "final_window": "+204.0 s – +215.9 s",
+        "final_active_html": "<button class=\"event-mark delete selected out-of-range\" data-event-uid=\"node-a/scenario/node-a-route-delete\" data-hover-key=\"event:root:node-a/control-plane/IP_ROUTE/route:blue:198.51.100.0/30:node-a/scenario/node-a-route-delete\" data-time-ns=\"1759680209996000000\" style=\"left:50%;--glyph-space:27px;--event-color:#a58bff\" type=\"button\" aria-label=\"Scenario Resource Delete at +210.0 s\"></button>",
+        "final_popup_hidden": false,
+        "final_inspector": "SELECTED EVENT\nScenario Resource Delete\n\nControl plane / 30 / delete -> success\n\nTime\n+210.000 s (1759680209996000000 ns)\nOperation\ndelete\nOutcome\nsuccess\nResulting status\nabsent\nStatus duration\n1m 0s\nQuality\nunknown\nProperties\n{message=PE-A removed the Ottawa service route., reason=policy-withdraw, source_event_id=node-a-route-delete, source_outcome=success, source_scenario_id=router-state-lab-default}\nResult\n{updateStatus=Ok}\nEvidence\nNo source path\nNo locator\nAffected resources (1)\nnode-a/control-plane/IP_ROUTE/route:blue:198.51.100.0/30\n1 normalized resource effect\ndelete\nselected lane\nnode-a/control-plane/IP_ROUTE/route:blue:198.51.100.0/30\nState changed\nyes\nCondition\nabsent\nBefore\n{exists=true, next_hop=10.64.0.2, protocol=isis, status=installed, vrf=blue}\nAfter\n{exists=false, status=absent}",
+        "back_window": null,
+        "target_rows_after_hide": []
+      },
+      "controlled": {
+        "test_file": "frontend/tests/audit_request_races_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Real reveal/request authority and originating Back/Fit/checkbox handlers operate across unresolved responses.",
+          "Late obsolete payload cannot normalize lanes or run obsolete selection/focus.",
+          "Latest target or explicit recovery owns the expected event/resource and scroll/focus callback."
+        ],
+        "limits": [
+          "Normalization, painting, geometry and final selection side effects are bounded substitutes; target callback identity is not viewport geometry."
+        ]
+      }
+    },
+    "C015": {
+      "id": "C015",
+      "title": "Density focus survives scroll-driven row replacement",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "C015",
+      "original_assertions": [
+        "Passive focus restoration does not pull the row or document back into view.",
+        "The clipped card stays dismissed; later intentional focus still reveals and opens it."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 56,
+          "label": "density-bin-focused",
+          "utc": "2026-10-22T21:20:59.521Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 57,
+          "label": "density-focused-row-scrolled-away",
+          "utc": "2026-10-22T21:21:07.231Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 58,
+          "label": "intentional-density-focus-recovery",
+          "utc": "2026-10-22T21:21:08.852Z"
+        }
+      ],
+      "remaining_limits": [
+        "Native DOM node replacement identity was not instrumented; the saved active-element HTML is identical before and after scrolling.",
+        "Live scroll/recovery does not itself prove the replacement-specific branch. The controlled test uses a distinct replacement object and verifies no reveal."
+      ],
+      "outcome": "partial_browser_and_controlled_completion_verified",
+      "evidence_types": [
+        "live_browser_scroll_recovery",
+        "controlled_production_handlers"
+      ],
+      "observed": {
+        "snapshots": [
+          {
+            "line": 56,
+            "active_html": "<button class=\"density-bin\" type=\"button\" data-hover-key=\"density:4320:11520\" data-range-start-ns=\"1759680269996000000\" data-range-end-ns=\"1759680270058499999\" data-range-semantics=\"inclusive\" style=\"left:50%;width:0.5249999999453934%;--density-height:9px;--failure-height:0%\" aria-label=\"1 events from +270.00 s to +270.06 s\"></button>",
+            "scrolls": {
+              "log": 0,
+              "timeline": 0,
+              "windowY": 915.2000122070312
+            },
+            "popup_hidden": false
+          },
+          {
+            "line": 57,
+            "active_html": "<button class=\"density-bin\" type=\"button\" data-hover-key=\"density:4320:11520\" data-range-start-ns=\"1759680269996000000\" data-range-end-ns=\"1759680270058499999\" data-range-semantics=\"inclusive\" style=\"left:50%;width:0.5249999999453934%;--density-height:9px;--failure-height:0%\" aria-label=\"1 events from +270.00 s to +270.06 s\"></button>",
+            "scrolls": {
+              "log": 0,
+              "timeline": 522.4000244140625,
+              "windowY": 915.2000122070312
+            },
+            "popup_hidden": true
+          },
+          {
+            "line": 58,
+            "active_html": "<button class=\"density-bin\" type=\"button\" data-hover-key=\"density:4320:11520\" data-range-start-ns=\"1759680269996000000\" data-range-end-ns=\"1759680270058499999\" data-range-semantics=\"inclusive\" style=\"left:50%;width:0.5249999999453934%;--density-height:9px;--failure-height:0%\" aria-label=\"1 events from +270.00 s to +270.06 s\"></button>",
+            "scrolls": {
+              "log": 0,
+              "timeline": 0,
+              "windowY": 915.2000122070312
+            },
+            "popup_hidden": false
+          }
+        ]
+      },
+      "controlled": {
+        "test_file": "frontend/tests/audit_brush_focus_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Production timeline scroll callback schedules refreshDensityLaneForScroll.",
+          "Production density refresh replaces the focused marker with a distinct object.",
+          "Production identity restoration and focus handler preserve nested/document offsets after the animation frame.",
+          "Clipped card stays dismissed; later explicit focus reveals the marker and opens the card."
+        ],
+        "limits": [
+          "Controlled DOM replacement/geometry and timer execution; no native browser wheel/reflow provenance added."
+        ]
+      },
+      "conclusion": "Focused density bin was scrolled out of view; its popup stayed hidden until explicit focus recovery. Production row replacement and passive focus repair are verified by the controlled test."
+    },
+    "C016": {
+      "id": "C016",
+      "title": "Focused marker remains offscreen through graph/detail completion",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "C016",
+      "original_assertions": [
+        "Passive restoration preserves document/nested offsets and does not reopen a clipped card.",
+        "Record observed replacement/completion; if none occurs, do not claim this async branch."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 53,
+          "label": "focused-marker-clipped",
+          "utc": "2026-10-22T21:20:28.773Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 54,
+          "label": "graph-completed-after-clipping",
+          "utc": "2026-10-22T21:20:30.569Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 55,
+          "label": "intentional-reveal-recovery",
+          "utc": "2026-10-22T21:20:44.635Z"
+        }
+      ],
+      "remaining_limits": [
+        "The detail response completed before clipping in the live run; delayed detail completion and both graph/detail orders are controlled-test evidence only.",
+        "Live node replacement identity and every intermediate frame were not instrumented."
+      ],
+      "outcome": "partial_browser_and_controlled_completion_verified",
+      "evidence_types": [
+        "live_browser_scroll_recovery",
+        "controlled_production_handlers",
+        "live_browser_response_gate"
+      ],
+      "observed": {
+        "snapshots": [
+          {
+            "line": 53,
+            "active_html": "<button class=\"event-mark create selected out-of-range\" data-event-uid=\"node-a/scenario/node-a-route-recreate\" data-hover-key=\"event:root:node-a/control-plane/IP_ROUTE/route:blue:198.51.100.0/30:node-a/scenario/node-a-route-recreate\" data-time-ns=\"1759680269996000000\" style=\"left:50%;--glyph-space:27px;--event-color:#a58bff\" type=\"button\" aria-label=\"Scenario Resource Upsert at +270.0 s\"></button>",
+            "scrolls": {
+              "log": 0,
+              "timeline": 522.4000244140625,
+              "windowY": 1041.5999755859375
+            },
+            "popup_hidden": true
+          },
+          {
+            "line": 54,
+            "active_html": "<button class=\"event-mark create selected out-of-range\" data-event-uid=\"node-a/scenario/node-a-route-recreate\" data-hover-key=\"event:root:node-a/control-plane/IP_ROUTE/route:blue:198.51.100.0/30:node-a/scenario/node-a-route-recreate\" data-time-ns=\"1759680269996000000\" style=\"left:50%;--glyph-space:27px;--event-color:#a58bff\" type=\"button\" aria-label=\"Scenario Resource Upsert at +270.0 s\"></button>",
+            "scrolls": {
+              "log": 0,
+              "timeline": 522.4000244140625,
+              "windowY": 1041.5999755859375
+            },
+            "popup_hidden": true
+          },
+          {
+            "line": 55,
+            "active_html": "<button class=\"event-mark create selected out-of-range\" data-event-uid=\"node-a/scenario/node-a-route-recreate\" data-hover-key=\"event:root:node-a/control-plane/IP_ROUTE/route:blue:198.51.100.0/30:node-a/scenario/node-a-route-recreate\" data-time-ns=\"1759680269996000000\" style=\"left:50%;--glyph-space:27px;--event-color:#a58bff\" type=\"button\" aria-label=\"Scenario Resource Upsert at +270.0 s\"></button>",
+            "scrolls": {
+              "log": 0,
+              "timeline": 280,
+              "windowY": 1041.5999755859375
+            },
+            "popup_hidden": false
+          }
+        ]
+      },
+      "controlled": {
+        "test_file": "frontend/tests/audit_brush_focus_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Production selectEvent initiates actual pending requestGraph and requestEventDetail work.",
+          "Both graph→detail and detail→graph order resolve after the focused marker is clipped.",
+          "Each completion calls the existing rerender path with a distinct simulated replacement marker.",
+          "Production focus descriptor/restoration/hover handlers preserve offsets and keep card dismissed.",
+          "Requests finish and hydrate expected data; explicit later focus still reveals/opens."
+        ],
+        "limits": [
+          "The DOM renderer and geometry are bounded substitutes; this establishes controlled originating/request/completion handlers, not full browser rendering or natural timing."
+        ]
+      },
+      "response_gate": {
+        "id": "focus-C016",
+        "held": {
+          "source_line": 843,
+          "utc": "2026-10-22T21:20:16.544305+00:00",
+          "kind": "held",
+          "gate": "focus-C016",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/graph/query",
+          "status": 200,
+          "bytes": 1115
+        },
+        "release": {
+          "source_line": 898,
+          "utc": "2026-10-22T21:20:28.819040+00:00",
+          "kind": "released",
+          "gate": "focus-C016",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/graph/query",
+          "explicit": true
+        },
+        "after_release": {
+          "source_line": 899,
+          "utc": "2026-10-22T21:20:28.820049+00:00",
+          "kind": "delivered",
+          "gate": "focus-C016",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/graph/query",
+          "status": 200,
+          "bytes": 1115
+        },
+        "archive_member": "proxy-evidence.jsonl"
+      },
+      "conclusion": "A real graph response was held until the focused marker was clipped, then delivered. Nested/document scroll offsets and hidden popup were preserved; explicit reveal still worked."
+    },
+    "C029": {
+      "id": "C029",
+      "title": "No-match resource search and dashboard reopen",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "C029",
+      "original_assertions": [
+        "No-match filtering does not erase unrelated dashboard population.",
+        "Kind/filter recovery and module data scopes remain explicit and stable."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 2,
+          "label": "nonempty-baseline",
+          "utc": "2026-10-22T21:03:46.267Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 3,
+          "label": "filtered-nonempty-populations",
+          "utc": "2026-10-22T21:04:07.382Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 4,
+          "label": "no-match-reopen",
+          "utc": "2026-10-22T21:04:11.735Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 5,
+          "label": "no-match-reopen",
+          "utc": "2026-10-22T21:04:15.529Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 6,
+          "label": "no-match-reopen",
+          "utc": "2026-10-22T21:04:19.852Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 7,
+          "label": "module-content-equality",
+          "utc": "2026-10-22T21:04:35.501Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 8,
+          "label": "clear-then-kind-recovery",
+          "utc": "2026-10-22T21:04:42.042Z"
+        }
+      ],
+      "remaining_limits": [
+        "With zero matches only the selected flat kind is available. The original different-kind-before-clear sequence has no actionable target and was not executed.",
+        "The reachable revised sequence clears the filter before choosing another kind; it must not be reported as the original sequence passing."
+      ],
+      "outcome": "revised_browser_sequence_verified_original_precondition_unavailable",
+      "evidence_types": [
+        "live_browser_revised_sequence",
+        "controlled_production_handlers"
+      ],
+      "observed": {
+        "module_content_equal_after_filter_and_reopen": true,
+        "full_comparison_reference": {
+          "archive_member": "browser.jsonl",
+          "line": 7,
+          "fields": [
+            "before",
+            "after",
+            "sameModules"
+          ]
+        },
+        "recovery_active_control": "<button type=\"button\" role=\"tab\" data-kind=\"DTE\" aria-selected=\"true\">Decapsulation Tunnel Entry<span>1,875</span></button>",
+        "recovery_resource_table": "RESOURCE\tLAYER\tEXISTS\tSTATUS\tTIMELINE\tKEY · VRF\tKEY · SERVICE ID\tSTATE · STATUS\tSTATE · PACKET ACTION\tSTATE · NEXT HOP\n\ndte-000000\nnode-a/data-bridge-layer/DTE/blue/dte-000000\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000000\tprogrammed\tPOP_VNI\tnode-a/data-bridge-layer/ETG/blue/etg-000017\n\ndte-000001\nnode-a/data-bridge-layer/DTE/blue/dte-000001\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000001\tprogrammed\tSWAP_LABEL\tnode-a/control-plane/IP_ROUTING/blue\n\ndte-000002\nnode-a/data-bridge-layer/DTE/blue/dte-000002\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000002\tprogrammed\tPOP_VNI\tnode-a/data-bridge-layer/ETG/blue/etg-000019\n\ndte-000003\nnode-a/data-bridge-layer/DTE/blue/dte-000003\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000003\tprogrammed\tSWAP_LABEL\tnode-a/control-plane/IP_ROUTING/blue\n\ndte-000004\nnode-a/data-bridge-layer/DTE/blue/dte-000004\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000004\tprogrammed\tPOP_VNI\tnode-a/data-bridge-layer/ETG/blue/etg-000021\n\ndte-000005\nnode-a/data-bridge-layer/DTE/blue/dte-000005\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000005\tprogrammed\tSWAP_LABEL\tnode-a/control-plane/IP_ROUTING/blue\n\ndte-000006\nnode-a/data-bridge-layer/DTE/blue/dte-000006\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000006\tprogrammed\tPOP_VNI\tnode-a/data-bridge-layer/ETG/blue/etg-000023\n\ndte-000007\nnode-a/data-bridge-layer/DTE/blue/dte-000007\n\tData bridge\tyes\tprogrammed\t\tblue\tsvc-000007\tprogrammed\tSWAP_LABEL\tnode-a/data-bridge-layer/ETG/blue/etg-000008\n\ndte-000008\nnode-a/data-bridge-layer/DTE/blue/dte-000008\n\tData br"
+      },
+      "conclusion": "At a nonempty baseline, a no-match resource filter and dashboard close/reopen preserved module contents. Clearing the filter then choosing DTE recovered a populated resource table.",
+      "controlled": {
+        "test_file": "frontend/tests/audit_drag_filter_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "no-match retains selected kind only",
+          "nonempty authoritative dashboard counts preserved",
+          "archive metrics and table truncation preserved",
+          "close reopen uses independent dashboard query",
+          "clear then kind switch recovers"
+        ],
+        "limits": [
+          "Dashboard responses are synthetic; the browser equality comparison supplies real nonempty-population evidence."
+        ]
+      }
+    },
+    "C030": {
+      "id": "C030",
+      "title": "Pending kind switch followed by dashboard resource selection",
+      "original_outcome": "inconclusive",
+      "original_ledger_key": "C030",
+      "original_assertions": [
+        "Only the latest selection/query owns rows, column schema and resource identity.",
+        "Record actual pending overlap separately from a rapid but already-settled sequence."
+      ],
+      "confirmed_product_bug": false,
+      "browser_evidence": [
+        {
+          "archive_member": "browser.jsonl",
+          "line": 41,
+          "label": "search-response-held",
+          "utc": "2026-10-22T21:18:01.072Z"
+        },
+        {
+          "archive_member": "browser.jsonl",
+          "line": 42,
+          "label": "after-obsolete-release",
+          "utc": "2026-10-22T21:18:13.542Z"
+        }
+      ],
+      "remaining_limits": [
+        "Live replay has held search followed by dashboard selection, not a second in-flight kind request. The full triple-action overlap is controlled-test evidence.",
+        "The browser selectedDetails field accidentally captured the event inspector, so it does not establish resource-inspector selection. Current table and clicked resource identity are captured separately.",
+        "Browser cancellation disconnected the obsolete body; forced late arrivals are controlled-test proof."
+      ],
+      "outcome": "browser_overlap_and_controlled_late_response_verified",
+      "evidence_types": [
+        "live_browser_response_gate",
+        "controlled_production_handlers"
+      ],
+      "response_gate": {
+        "id": "resources-C030",
+        "held": {
+          "source_line": 509,
+          "utc": "2026-10-22T21:17:56.135417+00:00",
+          "kind": "held",
+          "gate": "resources-C030",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/resources/query",
+          "status": 200,
+          "bytes": 1335290
+        },
+        "release": {
+          "source_line": 540,
+          "utc": "2026-10-22T21:18:07.884106+00:00",
+          "kind": "released",
+          "gate": "resources-C030",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/resources/query",
+          "explicit": true
+        },
+        "after_release": {
+          "source_line": 541,
+          "utc": "2026-10-22T21:18:07.885640+00:00",
+          "kind": "client-disconnected",
+          "path": "/v1/revisions/demo%2Fnode-a%2Frevision-0001/resources/query",
+          "error": "ConnectionAbortedError"
+        },
+        "archive_member": "proxy-evidence.jsonl"
+      },
+      "conclusion": "With DTE already settled, a held node-a search was superseded by the NEIGHBOR dashboard-resource click. The current NEIGHBOR resource table remained unchanged after obsolete release.",
+      "observed": {
+        "active_dashboard_resource_html": "<button class=\"dashboard-resource-link\" type=\"button\" data-dashboard-resource-id=\"node-a/control-plane/NEIGHBOR/blue/peer-00000\">\n      <strong>peer-00000</strong>\n      <small>node-a/control-plane/NEIGHBOR/blue/peer-00000</small>\n    </button>",
+        "resource_table": "RESOURCE\tLAYER\tEXISTS\tSTATUS\tTIMELINE\tKEY · LOCAL INTERFACE ID\tKEY · PROTOCOL\tKEY · PEER IDENTITY\tSTATE · STATUS\tSTATE · PROTOCOL\tSTATE · PEER NAME\tSTATE · PEER ADDRESS\tSTATE · LOCAL INTERFACE\tSTATE · REACHABILITY\tSTATE · ADJACENCY STATE\tSTATE · RESOLUTION BASIS\n\npeer-00000\nnode-a/control-plane/NEIGHBOR/blue/peer-00000\n\tControl plane\tyes\tup\t\tresource id: node-a/data-bridge-layer/VIRTUAL_INTERFACE/ae-00000\tenum: LLDP\tmac address: 02:00:00:00:00:01\tup\tLLDP\tfabric-peer-01\t172.20.0.1\tae-00000\treachable\testablished\tLLDP adjacency observed on Ethernet1/1\n\npeer-00001\nnode-a/control-plane/NEIGHBOR/blue/peer-00001\n\tControl plane\tyes\tup\t\tresource id: node-a/data-bridge-layer/VIRTUAL_INTERFACE/ae-00001\tenum: IS-IS\tisis system id: 0000.0000.0002\tup\tIS-IS\tfabric-peer-02\t172.20.0.2\tae-00001\treachable\testablished\tIS-IS adjacency observed on Ethernet2/1\n\npeer-00002\nnode-a/control-plane/NEIGHBOR/blue/peer-00002\n\tControl plane\tyes\tup\t\tresource id: node-a/data-bridge-layer/VIRTUAL_INTERFACE/ae-00002\tenum: ARP\tipv4 address: 172.20.0.3\tup\tARP\tfabric-peer-03\t172.20.0.3\tae-00002\treachable\testablished\tARP adjacency observed on Ethernet3/1\n\npeer-00003\nnode-a/control-plane/NEIGHBOR/blue/peer-00003\n\tControl plane\tyes\tup\t\tresource id: node-a/data-bridge-layer/VIRTUAL_INTERFACE/ae-00003\tenum: IPv6-ND\tipv6 address: fe80::4\tup\tIPv6-ND\tfabric-peer-04\tfe80::4\tae-00003\treachable\testablished\tIPv6-ND adjacency observed on Ethernet4/1\n\npeer-00004\nnode-a/control-plane/NEIGHBOR/blue/peer-00004\n\tControl plane\tyes\tu",
+        "unchanged_after_release": true
+      },
+      "controlled": {
+        "test_file": "frontend/tests/audit_request_races_followup.test.mjs",
+        "result": "passed",
+        "checks": [
+          "Actual search debounce, kind click and dashboard resource click generate original/alternate/original kind queries in both directions.",
+          "Latest rows, real column descriptors/cells, selected resource/kind and dashboard row survive reversed completion order."
+        ],
+        "limits": [
+          "Graph inspector and asynchronous dashboard queries are outside this harness."
+        ]
+      }
+    }
+  },
+  "global_limits": [
+    "Eleven browser stale-query gates were explicitly released after native cancellation, then logged client-disconnected. They prove pending overlap and cancellation/latest-result behavior, not stale-body arrival after abort.",
+    "Controlled tests intentionally resolve aborted requests and supply late successes/errors, independently proving obsolete continuation rejection.",
+    "Only focus-C016 delivered its gated response to the browser. All twelve gates were explicitly released before the 90-second fails-open limit.",
+    "Controlled DOM/event/transport substitutes do not prove native event delivery, layout, or every intermediate frame.",
+    "Artificial response holds and automation timings are not product performance measurements. No fresh 1M memory/CPU benchmark was requested or run for this verification."
+  ],
+  "harness_issues": [
+    "Initial audit proxy supported GET only; POST returned 501. POST forwarding was added before recorded gated case verification. This was test infrastructure, not a product regression.",
+    "Proxy/browser connection recovery and an automation loop timeout were harness issues; subsequent case observations and proxy releases establish the recorded outcomes.",
+    "Initial sandboxed frontend check had 590 passes and 11 EACCES-related failures. With local network permission, the unchanged suite passed all 601 tests.",
+    "Early route fixture used unsupported egress field; corrected to egress_interface_resource_id before the passing controlled run. Drag harness initially omitted resourceLabel dependency; corrected without product edits."
+  ],
+  "cleanup": {
+    "browser_last_record": {
+      "archive_member": "browser.jsonl",
+      "line": 59,
+      "id": "cleanup",
+      "label": "original-demo-restored-proxy-stopped",
+      "utc": "2026-10-22T21:22:26.878Z",
+      "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26relative_seconds%3D0%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_scenario%3Dpacket-vpn-over-vpn%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Dblue%26route_family%3Dvpnv4_unicast%26route_type%3Dmpls_l3vpn%26route_policy%3Dstrict%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dforward%26route_view%3Dfocused%26route_path%3Droute-path%253Agenerated%253Apacket-vpn-over-vpn%253Aforward%253Aobserved%23fabric#timeline"
+    },
+    "proxy_stop_record": "proxy-stopped-utc.txt inside evidence.zip",
+    "operator_observation": "Root restored the browser to port 8883, stopped only audit proxy PID 15480 after checking its command line, and retained original demo server PID 26180."
+  },
+  "documentation_drift_check": "Only tests and audit evidence were added. No public plug-in behavior, author-facing command, contract or example changed; no maintained authoring-document update was needed."
+}
